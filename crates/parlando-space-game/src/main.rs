@@ -49,7 +49,10 @@ async fn main() -> Result<()> {
         adapter,
         config,
         SocketAddr::new(cli.host, port),
-        ServeOptions { agent_factory },
+        ServeOptions {
+            agent_factory,
+            ..ServeOptions::default()
+        },
     )
     .await
 }

@@ -10,27 +10,13 @@ use crate::game::GameAdapter;
 /// Context passed to an agent factory when a new agent participant is created.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AgentInitContext {
+    /// Session-local player role the agent controls, such as `A` or `B`.
     pub role: String,
-    pub room_id: String,
-    pub participant_session_id: String,
-    pub game_index: i64,
+    /// Optional deterministic seed supplied by the experiment config.
     pub seed: Option<u64>,
+    /// Agent-specific configuration supplied by the game crate.
     #[serde(default)]
     pub config: Value,
-}
-
-/// Per-turn context passed to a game agent's `act` method.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct AgentActContext {
-    pub role: String,
-    pub room_id: String,
-    pub participant_session_id: String,
-    pub game_event_count: usize,
-    pub invalid_actions: usize,
-    pub last_error: Option<String>,
-    pub completed: bool,
-    #[serde(default)]
-    pub conversation: Vec<Value>,
 }
 
 /// Result returned by a game agent after observing a room state.
@@ -50,12 +36,17 @@ pub enum AgentResult<Action> {
 /// A per-room mutable game agent instance.
 #[async_trait]
 pub trait GameAgent<A: GameAdapter>: Send {
-    /// Chooses the agent's next action and/or message from a typed observation.
+    /// Chooses the agent's next action and/or message from the player-facing view.
+    ///
+    /// The `available_actions` value is the same optional affordance sent to the
+    /// human UI for this role. `None` means the game does not provide this
+    /// affordance; `Some(vec![])` means it does and the player currently has no
+    /// listed actions. Any returned action is still validated by the server
+    /// before it can affect game state.
     async fn act(
         &mut self,
         observation: A::Observation,
-        available_actions: Vec<A::Action>,
-        context: AgentActContext,
+        available_actions: Option<Vec<A::Action>>,
     ) -> Result<AgentResult<A::Action>>;
 }
 

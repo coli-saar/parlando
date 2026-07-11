@@ -5,9 +5,7 @@ use std::{
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
-use parlando_server::{
-    AgentActContext, AgentFactory, AgentInitContext, AgentResult, ExperimentConfig, GameAgent,
-};
+use parlando_server::{AgentFactory, AgentInitContext, AgentResult, ExperimentConfig, GameAgent};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde_json::Value;
 
@@ -96,8 +94,7 @@ impl GameAgent<SpaceGameAdapter> for BackAndForthAgent {
     async fn act(
         &mut self,
         observation: SpaceObservation,
-        _available_actions: Vec<SpaceAction>,
-        _context: AgentActContext,
+        _available_actions: Option<Vec<SpaceAction>>,
     ) -> Result<AgentResult<SpaceAction>> {
         if self.last_step_at.elapsed() < Duration::from_secs(1) {
             return Ok(AgentResult::None);
@@ -143,9 +140,7 @@ impl BackAndForthAgent {
 #[cfg(test)]
 mod tests {
     use parlando_server::config::{AgentsConfig, AgentsMode, HumanVsAgentConfig};
-    use parlando_server::{
-        AgentActContext, AgentInitContext, AgentResult, GameAdapter, PlayerRole,
-    };
+    use parlando_server::{AgentInitContext, AgentResult, GameAdapter, PlayerRole};
 
     use crate::game::state_engine::initial_state;
 
@@ -154,20 +149,8 @@ mod tests {
     fn init_context(role: &str) -> AgentInitContext {
         AgentInitContext {
             role: role.to_string(),
-            room_id: "room".to_string(),
-            participant_session_id: "agent-session".to_string(),
-            game_index: 1,
             seed: None,
             config: Value::Null,
-        }
-    }
-
-    fn act_context(role: &str) -> AgentActContext {
-        AgentActContext {
-            role: role.to_string(),
-            room_id: "room".to_string(),
-            participant_session_id: "agent-session".to_string(),
-            ..AgentActContext::default()
         }
     }
 
@@ -219,14 +202,8 @@ mod tests {
         let mut first = factory.create(init_context("A")).unwrap();
         let mut second = factory.create(init_context("A")).unwrap();
 
-        let first_result = first
-            .act(observation.clone(), vec![], act_context("A"))
-            .await
-            .unwrap();
-        let second_result = second
-            .act(observation, vec![], act_context("A"))
-            .await
-            .unwrap();
+        let first_result = first.act(observation.clone(), Some(vec![])).await.unwrap();
+        let second_result = second.act(observation, Some(vec![])).await.unwrap();
 
         assert!(matches!(
             first_result,
@@ -243,19 +220,13 @@ mod tests {
         let adapter = SpaceGameAdapter::new();
         let mut agent = BackAndForthAgent::new("B".to_string(), 1, Value::Null);
         let first_observation = adapter.observe_state(&initial_state(), PlayerRole::B);
-        let _ = agent
-            .act(first_observation, vec![], act_context("B"))
-            .await
-            .unwrap();
+        let _ = agent.act(first_observation, Some(vec![])).await.unwrap();
         agent.last_step_at = Instant::now() - Duration::from_secs(60);
         let mut moved_state = initial_state();
         moved_state.players.a.position.x += 1;
         let second_observation = adapter.observe_state(&moved_state, PlayerRole::B);
 
-        let result = agent
-            .act(second_observation, vec![], act_context("B"))
-            .await
-            .unwrap();
+        let result = agent.act(second_observation, Some(vec![])).await.unwrap();
 
         assert!(matches!(
             result,

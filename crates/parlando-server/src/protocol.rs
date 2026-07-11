@@ -100,8 +100,8 @@ pub struct RoomResponse {
     pub state: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observation: Option<Value>,
-    #[serde(default)]
-    pub available_actions: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub available_actions: Option<Vec<Value>>,
     #[serde(default)]
     pub events: Vec<Value>,
     #[serde(default)]
@@ -122,8 +122,8 @@ pub struct MatchmakingJoinResponse {
     pub state: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observation: Option<Value>,
-    #[serde(default)]
-    pub available_actions: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub available_actions: Option<Vec<Value>>,
     #[serde(default)]
     pub events: Vec<Value>,
     #[serde(default)]
@@ -207,7 +207,6 @@ pub struct TranscriptSegmentIn {
     pub start_time_ms: i64,
     #[serde(default)]
     pub end_time_ms: i64,
-    pub move_count: Option<i64>,
     pub text: String,
     #[serde(default)]
     pub metadata: Value,
@@ -272,8 +271,8 @@ pub struct ServerMessage {
     pub state: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observation: Option<Value>,
-    #[serde(default)]
-    pub available_actions: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub available_actions: Option<Vec<Value>>,
     #[serde(default)]
     pub events: Vec<Value>,
     #[serde(default)]
@@ -299,7 +298,7 @@ impl ServerMessage {
             role: None,
             state: None,
             observation: None,
-            available_actions: vec![],
+            available_actions: None,
             events: vec![],
             conversation: vec![],
             conversation_message: None,

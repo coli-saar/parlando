@@ -17,12 +17,14 @@ The intended backends are:
 
 Define `parlando-agent-protocol.proto` with messages for:
 
-- agent initialization, including role, room id, participant session id, seed, protocol version, agent name/version, and config.
-- act requests, including observation, available actions, conversation context, invalid action count, last error, and completion flag.
+- agent initialization, including role, seed, protocol version, agent name/version, and config.
+- act requests, including the role-specific observation and the same optional role-specific available actions that a human UI would receive.
 - act results: none, message, action, or action with message.
 - structured errors and optional cleanup/shutdown.
 
 Game-specific observations and actions cross the process boundary as protobuf `Struct` or equivalent JSON-compatible values. Inside the linked Rust binary they remain typed and are parsed/validated by the game adapter.
+
+Do not expose room ids, participant-session ids, conversation history, invalid-action counts, last errors, or completion flags through the agent API. A remote agent process that needs memory should keep it in its own per-agent instance or stream/session state.
 
 ## Python API Goal
 
@@ -30,7 +32,9 @@ Python agent authors should not write gRPC plumbing. A Python SDK should expose 
 
 ```python
 class MyAgent(GameAgent):
-    async def act(self, observation, available_actions, context):
+    async def act(self, observation, available_actions):
+        if not available_actions:
+            return AgentResult.none()
         return AgentResult.action(available_actions[0])
 ```
 

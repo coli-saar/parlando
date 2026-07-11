@@ -11,7 +11,7 @@ use sqlx::{
 };
 use tokio::sync::RwLock;
 
-use crate::{game::Seat, identity::new_id, protocol::ConversationMessageResponse};
+use crate::{game::Seat, identity::new_id};
 
 /// Returns the current UTC timestamp in ISO-8601/RFC3339 form.
 pub fn now_iso() -> String {
@@ -86,6 +86,21 @@ pub struct SessionEventRecord {
     pub game_state: Option<Value>,
 }
 
+/// Durable session event row returned by storage queries.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StoredSessionEvent {
+    pub event_id: i64,
+    pub experiment_id: String,
+    pub session_id: i64,
+    pub event_index: i64,
+    pub event_type: String,
+    pub actor_participant_id: Option<i64>,
+    pub actor_role: Option<String>,
+    pub payload: Value,
+    pub game_state: Option<Value>,
+    pub created_at: String,
+}
+
 /// Backend-neutral storage interface centered on experiment evaluation.
 #[async_trait]
 pub trait ExperimentStore: Send + Sync {
@@ -109,6 +124,13 @@ pub trait ExperimentStore: Send + Sync {
         -> Result<()>;
     /// Appends one ordered session event and returns its event index.
     async fn append_session_event(&self, event: SessionEventRecord) -> Result<i64>;
+    /// Returns ordered events for one session, optionally filtered by event type.
+    async fn session_events(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+        event_type: Option<&str>,
+    ) -> Result<Vec<StoredSessionEvent>>;
     /// Marks a session complete with an optional completion payload.
     async fn complete_session(
         &self,
@@ -279,6 +301,44 @@ impl ExperimentStore for MemoryExperimentStore {
             "created_at": now_iso(),
         }));
         Ok(event_index)
+    }
+
+    async fn session_events(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+        event_type: Option<&str>,
+    ) -> Result<Vec<StoredSessionEvent>> {
+        let inner = self.inner.read().await;
+        let mut events = inner
+            .session_events
+            .iter()
+            .filter(|row| row["experiment_id"].as_str() == Some(experiment_id))
+            .filter(|row| row["session_id"].as_i64() == Some(session_id))
+            .filter(|row| {
+                event_type.is_none_or(|event_type| row["event_type"].as_str() == Some(event_type))
+            })
+            .map(|row| StoredSessionEvent {
+                event_id: row["event_id"].as_i64().unwrap_or_default(),
+                experiment_id: row["experiment_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                session_id: row["session_id"].as_i64().unwrap_or_default(),
+                event_index: row["event_index"].as_i64().unwrap_or_default(),
+                event_type: row["event_type"].as_str().unwrap_or_default().to_string(),
+                actor_participant_id: row["actor_participant_id"].as_i64(),
+                actor_role: row["actor_role"].as_str().map(str::to_string),
+                payload: row["payload"].clone(),
+                game_state: row
+                    .get("game_state")
+                    .cloned()
+                    .filter(|value| !value.is_null()),
+                created_at: row["created_at"].as_str().unwrap_or_default().to_string(),
+            })
+            .collect::<Vec<_>>();
+        events.sort_by_key(|event| event.event_index);
+        Ok(events)
     }
 
     async fn complete_session(
@@ -646,6 +706,45 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(event_index)
     }
 
+    async fn session_events(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+        event_type: Option<&str>,
+    ) -> Result<Vec<StoredSessionEvent>> {
+        let sql = if event_type.is_some() {
+            "select event_id, experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, created_at from session_events where experiment_id = ? and session_id = ? and event_type = ? order by event_index"
+        } else {
+            "select event_id, experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, created_at from session_events where experiment_id = ? and session_id = ? order by event_index"
+        };
+        let mut query = sqlx::query_as::<
+            _,
+            (
+                i64,
+                String,
+                i64,
+                i64,
+                String,
+                Option<i64>,
+                Option<String>,
+                String,
+                Option<String>,
+                String,
+            ),
+        >(sql)
+        .bind(experiment_id)
+        .bind(session_id);
+        if let Some(event_type) = event_type {
+            query = query.bind(event_type);
+        }
+        query
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(stored_event_from_sql_row)
+            .collect()
+    }
+
     async fn complete_session(
         &self,
         experiment_id: &str,
@@ -682,6 +781,37 @@ pub async fn experiment_store_from_url(database_url: &str) -> Result<SharedExper
             SqliteExperimentStore::connect(database_url).await?,
         ))
     }
+}
+
+type SessionEventSqlRow = (
+    i64,
+    String,
+    i64,
+    i64,
+    String,
+    Option<i64>,
+    Option<String>,
+    String,
+    Option<String>,
+    String,
+);
+
+fn stored_event_from_sql_row(row: SessionEventSqlRow) -> Result<StoredSessionEvent> {
+    Ok(StoredSessionEvent {
+        event_id: row.0,
+        experiment_id: row.1,
+        session_id: row.2,
+        event_index: row.3,
+        event_type: row.4,
+        actor_participant_id: row.5,
+        actor_role: row.6,
+        payload: serde_json::from_str::<Value>(&row.7)?,
+        game_state: row
+            .8
+            .map(|raw| serde_json::from_str::<Value>(&raw))
+            .transpose()?,
+        created_at: row.9,
+    })
 }
 
 /// Exports SQLite rows as JSON objects for the current admin/evaluation export.
@@ -752,22 +882,7 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
     } else {
         "select event_id, experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, created_at from session_events where experiment_id = ? order by session_id, event_index"
     };
-    let mut event_query = sqlx::query_as::<
-        _,
-        (
-            i64,
-            String,
-            i64,
-            i64,
-            String,
-            Option<i64>,
-            Option<String>,
-            String,
-            Option<String>,
-            String,
-        ),
-    >(event_sql)
-    .bind(experiment_id);
+    let mut event_query = sqlx::query_as::<_, SessionEventSqlRow>(event_sql).bind(experiment_id);
     if let Some(session_id) = scope.and_then(|(_, id)| id) {
         event_query = event_query.bind(session_id);
     }
@@ -775,21 +890,8 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
         .fetch_all(pool)
         .await?
         .into_iter()
-        .map(|row| {
-            json!({
-                "event_id": row.0,
-                "experiment_id": row.1,
-                "session_id": row.2,
-                "event_index": row.3,
-                "event_type": row.4,
-                "actor_participant_id": row.5,
-                "actor_role": row.6,
-                "payload": serde_json::from_str::<Value>(&row.7).unwrap_or(Value::Null),
-                "game_state": row.8.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
-                "created_at": row.9,
-            })
-        })
-        .collect::<Vec<_>>();
+        .map(stored_event_from_sql_row)
+        .collect::<Result<Vec<_>>>()?;
     let participants_sql = if session_id.is_some() {
         r#"
         select distinct p.participant_id, p.participant_kind, p.identity_provider, p.external_id,
@@ -981,7 +1083,6 @@ pub struct TranscriptSegment {
     pub player: String,
     pub start_time_ms: i64,
     pub end_time_ms: i64,
-    pub move_count: Option<i64>,
     pub text: String,
     pub metadata: Value,
     pub created_at: String,
@@ -993,10 +1094,6 @@ pub struct MemoryState<S> {
     pub participants: HashMap<String, ParticipantSession>,
     pub rooms: HashMap<String, GameRoom<S>>,
     pub matchmaking_queues: HashMap<String, Vec<String>>,
-    pub transcripts: Vec<TranscriptSegment>,
-    pub conversation_messages: Vec<ConversationMessageResponse>,
-    pub voice_diagnostics: Vec<Value>,
-    pub completions: Vec<Value>,
 }
 
 impl<S> Default for MemoryState<S> {
@@ -1005,10 +1102,6 @@ impl<S> Default for MemoryState<S> {
             participants: HashMap::new(),
             rooms: HashMap::new(),
             matchmaking_queues: HashMap::new(),
-            transcripts: vec![],
-            conversation_messages: vec![],
-            voice_diagnostics: vec![],
-            completions: vec![],
         }
     }
 }
@@ -1044,24 +1137,6 @@ impl<S: Clone + Serialize> MemoryState<S> {
         self.rooms
             .values()
             .find(|room| room.participants.contains_key(participant_session_id))
-    }
-
-    /// Returns the most recent conversation messages for a room.
-    pub fn conversation_for_room(
-        &self,
-        room_id: &str,
-        limit: usize,
-    ) -> Vec<ConversationMessageResponse> {
-        let mut messages = self
-            .conversation_messages
-            .iter()
-            .filter(|message| message.room_id == room_id)
-            .cloned()
-            .collect::<Vec<_>>();
-        if messages.len() > limit {
-            messages = messages.split_off(messages.len() - limit);
-        }
-        messages
     }
 }
 

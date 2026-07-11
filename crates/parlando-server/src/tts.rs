@@ -8,27 +8,46 @@ use crate::config::TtsConfig;
 
 #[derive(Clone, Debug)]
 pub struct AudioChunk {
+    /// Raw mono PCM bytes decoded from the TTS provider.
     pub data: Vec<u8>,
+    /// Sample rate for this audio chunk.
     pub sample_rate: u32,
+    /// Number of audio channels.
     pub channels: u16,
+    /// True when the provider has finished the message stream.
     pub final_chunk: bool,
 }
 
+/// Streaming text-to-speech provider used by the agent voice runtime.
 #[async_trait]
 pub trait StreamingTtsProvider: Send + Sync {
+    /// Synthesizes one conversation message into ordered audio chunks.
     async fn synthesize(&self, text: &str, message_id: &str) -> Result<Vec<AudioChunk>>;
 }
 
+/// ElevenLabs WebSocket streaming TTS provider.
 pub struct ElevenLabsStreamingTtsProvider {
     config: TtsConfig,
+    base_url: String,
 }
 
 impl ElevenLabsStreamingTtsProvider {
+    /// Creates an ElevenLabs provider from validated TTS config.
     pub fn new(config: TtsConfig) -> Result<Self> {
         if config.api_key.is_empty() || config.voice_id.is_empty() {
             bail!("ElevenLabs TTS requires tts.api_key and tts.voice_id");
         }
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            base_url: "wss://api.elevenlabs.io".to_string(),
+        })
+    }
+
+    #[cfg(test)]
+    fn with_base_url(config: TtsConfig, base_url: String) -> Result<Self> {
+        let mut provider = Self::new(config)?;
+        provider.base_url = base_url;
+        Ok(provider)
     }
 }
 
@@ -37,8 +56,11 @@ impl StreamingTtsProvider for ElevenLabsStreamingTtsProvider {
     async fn synthesize(&self, text: &str, _message_id: &str) -> Result<Vec<AudioChunk>> {
         let sample_rate = sample_rate_from_output_format(&self.config.output_format);
         let url = format!(
-            "wss://api.elevenlabs.io/v1/text-to-speech/{}/stream-input?model_id={}&output_format={}",
-            self.config.voice_id, self.config.model, self.config.output_format
+            "{}/v1/text-to-speech/{}/stream-input?model_id={}&output_format={}",
+            self.base_url.trim_end_matches('/'),
+            self.config.voice_id,
+            self.config.model,
+            self.config.output_format
         );
         let (mut socket, _) = tokio_tungstenite::connect_async(url).await?;
         socket
@@ -96,6 +118,7 @@ impl StreamingTtsProvider for ElevenLabsStreamingTtsProvider {
     }
 }
 
+/// Maps an ElevenLabs output format string to its PCM sample rate.
 pub fn sample_rate_from_output_format(output_format: &str) -> u32 {
     if output_format.contains("44100") {
         44100
@@ -107,5 +130,84 @@ pub fn sample_rate_from_output_format(output_format: &str) -> u32 {
         16000
     } else {
         24000
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::Engine as _;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
+
+    use super::*;
+
+    // Creates a minimal TTS config suitable for provider tests.
+    fn tts_config() -> TtsConfig {
+        TtsConfig {
+            enabled: true,
+            provider: "elevenlabs".to_string(),
+            model: "eleven_flash_v2_5".to_string(),
+            voice_id: "voice-1".to_string(),
+            voice_name: "Voice".to_string(),
+            api_key: "api-key".to_string(),
+            output_format: "pcm_16000".to_string(),
+            worker_autostart: true,
+        }
+    }
+
+    #[test]
+    fn sample_rate_mapping_uses_output_format_suffix() {
+        assert_eq!(sample_rate_from_output_format("pcm_16000"), 16000);
+        assert_eq!(sample_rate_from_output_format("pcm_22050"), 22050);
+        assert_eq!(sample_rate_from_output_format("pcm_24000"), 24000);
+        assert_eq!(sample_rate_from_output_format("pcm_44100"), 44100);
+        assert_eq!(sample_rate_from_output_format("mp3_44100_128"), 44100);
+        assert_eq!(sample_rate_from_output_format("unknown"), 24000);
+    }
+
+    #[test]
+    fn elevenlabs_provider_requires_credentials() {
+        let mut config = tts_config();
+        config.api_key.clear();
+
+        assert!(ElevenLabsStreamingTtsProvider::new(config).is_err());
+    }
+
+    #[tokio::test]
+    async fn elevenlabs_streaming_client_decodes_audio_and_final_frame() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            let first = socket.next().await.unwrap().unwrap().into_text().unwrap();
+            assert!(first.contains("\"xi_api_key\":\"api-key\""));
+            let second = socket.next().await.unwrap().unwrap().into_text().unwrap();
+            assert!(second.contains("\"text\":\"hello\""));
+            let third = socket.next().await.unwrap().unwrap().into_text().unwrap();
+            assert!(third.contains("\"text\":\"\""));
+            let audio = base64::engine::general_purpose::STANDARD.encode([1_u8, 2, 3]);
+            socket
+                .send(Message::Text(json!({"audio": audio}).to_string()))
+                .await
+                .unwrap();
+            socket
+                .send(Message::Text(json!({"isFinal": true}).to_string()))
+                .await
+                .unwrap();
+        });
+        let provider =
+            ElevenLabsStreamingTtsProvider::with_base_url(tts_config(), format!("ws://{addr}"))
+                .unwrap();
+
+        let chunks = provider.synthesize("hello", "msg-1").await.unwrap();
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].data, vec![1, 2, 3]);
+        assert_eq!(chunks[0].sample_rate, 16000);
+        assert_eq!(chunks[0].channels, 1);
+        assert!(!chunks[0].final_chunk);
+        assert!(chunks[1].final_chunk);
+        server.await.unwrap();
     }
 }

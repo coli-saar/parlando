@@ -55,7 +55,7 @@ Implement Parlando as a fresh Rust workspace with two crates: `parlando-server` 
 - Implement `/ws/game/{room_id}?participantSessionId=...`.
 - Support `ready`, `heartbeat`, `submitAction`, `consentUpdated`, and `sendChatMessage`.
 - Emit `roleAssigned`, `presenceChanged`, `voiceStatusChanged`, `stateChanged`, `conversationMessageAdded`, `completed`, and `error`.
-- Do not store generic "move count" in the reusable server; persist action/event/state snapshots and let the game state define any counters.
+- Persist action/event/state snapshots with timestamps.
 - Acceptance: WebSocket tests cover connect, presence, rejected early actions, accepted actions, chat, completion, and reconnect.
 
 ### 8. Conversation, Transcripts, Diagnostics, And Export
@@ -128,4 +128,4 @@ Implement Parlando as a fresh Rust workspace with two crates: `parlando-server` 
 - The first production storage backend is SQLite, but all server logic depends on a general storage trait.
 - Existing YAML files are reused and adapted, with dynamic Python import fields treated as transitional compatibility fields.
 - `parlando-space-game` owns all Space Game-specific adapter and agent construction.
-- The reusable server never interprets game-specific move counters; it stores actions, state snapshots, and timestamps.
+- The reusable server stores actions, state snapshots, and timestamps.

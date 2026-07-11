@@ -152,7 +152,7 @@ The intended event vocabulary includes:
 - `tts_diagnostic`
 - `session_completed`
 
-Accepted game actions store the actor, typed action payload, game events, full resulting game state, and timestamp. There is no reusable-server move counter.
+Accepted game actions store the actor, typed action payload, game events, full resulting game state, and timestamp.
 
 ## Runtime Cache Boundary
 

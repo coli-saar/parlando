@@ -85,8 +85,21 @@ pub trait GameAdapter: Send + Sync + 'static {
     fn apply_action(&self, state: &Self::State, action: &Self::Action) -> Result<Self::State>;
     /// Builds a player-specific observation from the authoritative state.
     fn observe_state(&self, state: &Self::State, player: PlayerRole) -> Self::Observation;
-    /// Lists currently available actions for a player role.
-    fn available_actions(&self, state: &Self::State, player: PlayerRole) -> Vec<Self::Action>;
+    /// Lists currently available actions for a player role, when the game can
+    /// provide that player-facing affordance.
+    ///
+    /// `None` means this game does not provide an available-action list. An
+    /// empty `Some(vec![])` means the game does provide the affordance and the
+    /// player currently has no listed actions. The server still validates every
+    /// submitted action through `validate_action`; this method only supplies
+    /// player-facing UI and agent hints.
+    fn available_actions(
+        &self,
+        _state: &Self::State,
+        _player: PlayerRole,
+    ) -> Option<Vec<Self::Action>> {
+        None
+    }
     /// Computes transition events visible to a player after an accepted action.
     fn events_for_action(
         &self,

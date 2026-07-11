@@ -43,7 +43,6 @@ The Space Game crate is linked into the same Rust binary as the reusable server.
 - Keep `GameAdapter` as the only reusable-server interface for game semantics.
 - Let `GameAdapter::parse_action` default to serde deserialization so concrete games do not repeat JSON parsing boilerplate.
 - Treat `Seat` as exactly `A` or `B`; spectator-era optional role conversion was removed from the server path.
-- Keep Space Game-specific `moveCount` inside `SpaceGameState`; the reusable server does not interpret or maintain a generic move counter.
 - Keep agent factory selection in `parlando-space-game`, because selectors such as `space_game.back_and_forth` are game-specific.
 - Test client JSON compatibility only at protocol-shape assertions; all state transition tests operate on typed Rust structs.
 
@@ -80,3 +79,130 @@ The early HTTP request structs exposed a caller-controlled role override for tes
 ## Risks And Follow-Up
 
 - If future experiment designs need asymmetric assignment controls, introduce an explicit server-side matchmaking policy rather than a caller-controlled role override.
+
+# Targeted WebSocket Delivery
+
+## Context
+
+Room WebSockets use a shared broadcast channel for room-wide messages, but observations and available actions are participant-specific. Sending all personalized messages to the shared channel without delivery filtering can leak one participant's role assignment or state view to the other participant.
+
+## Chosen Approach
+
+- Keep one room broadcast channel for simple fanout.
+- Treat `ServerMessage.participant_session_id` as an optional delivery target.
+- Have each socket sender forward untargeted messages to everyone and targeted messages only to the matching participant session.
+- Mark `roleAssigned` and `stateChanged` as targeted messages.
+- Persist both `game_action_accepted` and `state_changed` events for accepted actions so evaluation exports can query actions and resulting states directly.
+
+## Tradeoffs
+
+- Filtering at the socket sender keeps the room bus simple, but it relies on every personalized message setting a target.
+- A future typed envelope could make targeted-vs-broadcast delivery impossible to forget, but the current protocol struct remains compatible with the existing client.
+
+## Risks And Follow-Up
+
+- WebSocket error messages are still generally broadcast unless a call site targets them explicitly. Later runtime work should decide which error classes are participant-local.
+
+# Transcript And Conversation Persistence
+
+## Context
+
+Speech transcription posts arrive from browser paths and include participant-facing metadata. For clean evaluations, the server should persist transcript segments and derived conversation messages exactly once in the session event stream, with trustworthy actor identity. The browser can keep its own live chat log, so the Rust server does not need public conversation or transcript replay endpoints.
+
+## Chosen Approach
+
+- Validate that transcript and voice-diagnostic posts reference a participant that belongs to the room.
+- Derive transcript sender role from `session_participants` instead of trusting the client-provided player field.
+- Store transcript segments as `transcript_segment` events.
+- Store typed chat, agent speech, and voice transcript conversation entries as `conversation_message` events.
+- Broadcast live conversation messages over the room WebSocket only.
+- Keep `POST /api/rooms/{room_id}/transcripts` for the browser speech pipeline, but remove public transcript history, transcript SSE, transcription-context, and conversation history endpoints.
+- Reconstruct conversation internally from `session_events` only where server logic needs it, such as agent context.
+
+## Tradeoffs
+
+- The transcript request still accepts the existing player field for client compatibility, but the server treats it as non-authoritative.
+- Reconnected browsers do not receive a server-replayed chat log. This is intentional: the live client owns display history, while the database owns evaluation history.
+- External legacy Python transcription or TTS workers that depended on replay endpoints must move to the current browser/Rust paths or to a purpose-built worker protocol.
+
+## Risks And Follow-Up
+
+- If we later need post-crash browser replay, add it deliberately as a client-facing feature backed by `session_events`, not as incidental runtime memory.
+
+# LiveKit And Speechmatics Audio Plans
+
+## Context
+
+The browser client expects the server to decide whether audio is disabled, handled entirely through LiveKit, or split between LiveKit partner audio and Speechmatics realtime transcription.
+
+## Chosen Approach
+
+- Use HS256 LiveKit tokens with identities formatted as `room_id:role:participant_session_id`.
+- Return disabled token/audio-session payloads when LiveKit is disabled.
+- Return one `livekit-combined` sink when LiveKit is enabled without Speechmatics transcription.
+- Return split `livekit-partner` and `speechmatics-transcription` sinks when transcription provider is Speechmatics.
+- Mint Speechmatics realtime temporary keys through the management API at audio-session request time.
+
+## Tradeoffs
+
+- Worker LiveKit identities are generated from the requested worker role without a durable participant row. That keeps worker tokens lightweight, but evaluation identity is not attached unless a later worker emits persisted events.
+- Speechmatics temporary-key minting is synchronous in the audio-session request. This is simple and client-compatible, but request latency includes the Speechmatics management API call.
+
+## Risks And Follow-Up
+
+- LiveKit token grants are broad enough for current browser/worker use (`can_publish`, `can_subscribe`, and data publish). We may want narrower grants for specific worker roles later.
+
+# In-Process Agent Runtime
+
+## Context
+
+Human-vs-agent rooms have an agent participant without a browser WebSocket. The reusable server still needs that participant to behave like an active room participant for readiness and action validation.
+
+## Chosen Approach
+
+- Create one fresh mutable agent instance per agent participant through the configured `AgentFactory`.
+- Pass only player-facing setup data to agent creation: role, optional seed, and agent-specific config.
+- Pass only the typed role-specific observation and the optional role-specific available-action affordance to each `act` call.
+- Mark the agent participant connected when its in-process runtime starts.
+- Persist `agent_started`, `agent_action`, `conversation_message`, normal game action events, and `agent_error` when invalid actions hit the configured limit.
+- Submit agent actions through the same `submit_action` path as human actions so validation, state transitions, completion, and exports remain shared.
+- Do not pass conversation history, room ids, participant-session ids, invalid-action counts, last errors, or completion flags into the agent.
+- Stop invalid agents cleanly after `invalid_action_limit`.
+
+## Tradeoffs
+
+- In-process agents are modeled as connected without a WebSocket. This is pragmatic for server-owned agents, but remote gRPC agents will need an explicit connection/liveness model.
+- `agent_action` records the proposal before validation; rejected proposals are therefore visible even when no `game_action_accepted` event follows.
+- Agents that need memory must keep it in their own per-room instance. This keeps the reusable server from imposing a history policy or doing DB reads for every agent turn.
+- `GameAdapter::available_actions` returns `Option<Vec<Action>>` and defaults to `None`. Games that cannot cheaply or cleanly enumerate legal actions can omit the affordance.
+- `None` means the game does not provide available actions. `Some(vec![])` means the game provides the affordance and this player currently has no listed actions.
+- When a game does provide available actions, the same role-specific affordance sent to a human UI is also passed to an agent controlling that role. Validation remains authoritative, so available actions never replace `validate_action`.
+
+## Risks And Follow-Up
+
+- Agent readiness is currently tied to room connection state rather than an explicit ready protocol. A richer ready barrier may be needed for remote agents or reinforcement-learning loops.
+- Removing available actions from the browser protocol requires a coordinated client change so controls are computed client-side or rendered through another game-specific mechanism.
+
+# Agent TTS Boundary
+
+## Context
+
+Agent messages need text-to-speech diagnostics and, eventually, audio publishing. TTS is downstream of the agent runtime: it converts text returned by an agent, not arbitrary conversation history.
+
+## Chosen Approach
+
+- Add an optional `StreamingTtsProvider` to `ServeOptions` for tests and embedding.
+- Create an ElevenLabs WebSocket streaming provider from config when TTS is enabled and no provider is injected.
+- Call TTS directly when the agent runtime persists an `origin: "agent"` conversation message.
+- Do not poll conversation memory for messages.
+- Persist the conversation message before synthesis so the diagnostic stream references a durable message id.
+- Persist `tts_diagnostic` events for start, first audio, audio chunks, completion, and failure.
+
+## Tradeoffs
+
+- The direct TTS path currently records audio chunk diagnostics but does not publish audio to LiveKit. This keeps step 11 testable while leaving RTC publishing to the explicit step 12 spike.
+- Durable exports still come from `session_events`.
+
+## Risks And Follow-Up
+
+- Once audio publishing is integrated, diagnostics should include publish latency and LiveKit track/packet metadata.

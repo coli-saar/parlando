@@ -106,8 +106,6 @@ pub struct SpaceGameState {
     pub visual_effects: Vec<String>,
     #[serde(rename = "beaconLaunched")]
     pub beacon_launched: bool,
-    #[serde(rename = "moveCount")]
-    pub move_count: i64,
 }
 
 /// Session-local player states keyed by Space Game role.
@@ -213,8 +211,6 @@ pub struct SpaceObservation {
     pub visual_effects: Vec<String>,
     #[serde(rename = "beaconLaunched")]
     pub beacon_launched: bool,
-    #[serde(rename = "moveCount")]
-    pub move_count: i64,
     pub role: String,
     pub systems: Systems,
     pub knowledge: FilteredKnowledge,
@@ -229,7 +225,6 @@ pub struct SpaceEvent {
     #[serde(rename = "type")]
     pub event_type: String,
     pub actor: Option<String>,
-    pub move_count: i64,
     pub text: String,
 }
 
@@ -238,8 +233,6 @@ pub struct SpaceEvent {
 pub struct SpaceSummary {
     #[serde(rename = "beaconLaunched")]
     pub beacon_launched: bool,
-    #[serde(rename = "moveCount")]
-    pub move_count: i64,
     pub systems: Systems,
 }
 
@@ -294,7 +287,6 @@ pub fn initial_state() -> SpaceGameState {
         },
         visual_effects: vec![],
         beacon_launched: false,
-        move_count: 0,
     }
 }
 
@@ -676,7 +668,7 @@ fn launch_beacon(state: &mut SpaceGameState, before: &Systems, player: &str) {
     }
 }
 
-// Applies shared post-action bookkeeping such as visual effects and move count.
+// Applies shared post-action visual-effect bookkeeping.
 fn finalize(
     mut state: SpaceGameState,
     before: Systems,
@@ -697,7 +689,6 @@ fn finalize(
             effects.push(effect.to_string());
         }
     }
-    state.move_count += 1;
     state.visual_effects = effects;
     state
 }
@@ -938,7 +929,7 @@ mod tests {
         let adapter = SpaceGameAdapter::new();
         let mut state = initial_state();
         state.players.a.position = Position { x: 1, y: 1 };
-        let actions = adapter.available_actions(&state, PlayerRole::A);
+        let actions = adapter.available_actions(&state, PlayerRole::A).unwrap();
         let expected = SpaceAction::ToggleFuse {
             player: "A".to_string(),
             color: "blue".to_string(),
@@ -960,9 +951,7 @@ mod tests {
         assert_eq!(value["overrideHeld"], false);
         assert_eq!(value["oxygenFanTripped"], false);
         assert_eq!(value["beaconLaunched"], false);
-        assert_eq!(value["moveCount"], 0);
         assert!(value.get("override_held").is_none());
-        assert!(value.get("move_count").is_none());
     }
 
     #[test]
@@ -1029,7 +1018,6 @@ mod tests {
         let value = serde_json::to_value(summary).unwrap();
 
         assert_eq!(value["beaconLaunched"], false);
-        assert_eq!(value["moveCount"], 0);
         assert_eq!(value["systems"]["readyToLaunch"], false);
         assert!(value.get("beacon_launched").is_none());
     }

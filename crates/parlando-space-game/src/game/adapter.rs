@@ -52,7 +52,6 @@ impl GameAdapter for SpaceGameAdapter {
             oxygen_fan_tripped: state.oxygen_fan_tripped,
             visual_effects: state.visual_effects.clone(),
             beacon_launched: state.beacon_launched,
-            move_count: state.move_count,
             role: player.as_str().to_string(),
             systems: derive_systems(state),
             knowledge: FilteredKnowledge {
@@ -76,8 +75,12 @@ impl GameAdapter for SpaceGameAdapter {
         }
     }
 
-    fn available_actions(&self, state: &Self::State, player: PlayerRole) -> Vec<Self::Action> {
-        available_actions(state, player.as_str())
+    fn available_actions(
+        &self,
+        state: &Self::State,
+        player: PlayerRole,
+    ) -> Option<Vec<Self::Action>> {
+        Some(available_actions(state, player.as_str()))
     }
 
     fn events_for_action(
@@ -93,7 +96,6 @@ impl GameAdapter for SpaceGameAdapter {
             events.push(SpaceEvent {
                 event_type: "action".to_string(),
                 actor: actor.map(str::to_string),
-                move_count: after.move_count,
                 text: event_text(action, actor == Some(player.as_str())),
             });
         }
@@ -112,7 +114,6 @@ impl GameAdapter for SpaceGameAdapter {
                 events.push(SpaceEvent {
                     event_type: "knowledge".to_string(),
                     actor: actor.map(str::to_string),
-                    move_count: after.move_count,
                     text: item.clone(),
                 });
             }
@@ -127,7 +128,6 @@ impl GameAdapter for SpaceGameAdapter {
     fn completion_summary(&self, state: &Self::State) -> Self::Summary {
         SpaceSummary {
             beacon_launched: state.beacon_launched,
-            move_count: state.move_count,
             systems: derive_systems(state),
         }
     }
