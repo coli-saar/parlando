@@ -1,4 +1,7 @@
-use std::{net::{IpAddr, SocketAddr}, path::PathBuf};
+use std::{
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+};
 
 use anyhow::Result;
 use clap::Parser;
@@ -14,6 +17,8 @@ struct Cli {
     host: IpAddr,
     #[arg(long)]
     port: Option<u16>,
+    #[arg(long)]
+    experiment_id: Option<String>,
 }
 
 #[tokio::main]
@@ -22,14 +27,21 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let cli = Cli::parse();
-    let config = if let Some(path) = cli.config {
+    let mut config = if let Some(path) = cli.config {
         ExperimentConfig::from_yaml(path)?
     } else {
         ExperimentConfig::default()
     };
+    if cli.experiment_id.is_some() {
+        config.experiment.id = cli.experiment_id;
+    }
     let port = cli
         .port
-        .or_else(|| std::env::var("PORT").ok().and_then(|value| value.parse().ok()))
+        .or_else(|| {
+            std::env::var("PORT")
+                .ok()
+                .and_then(|value| value.parse().ok())
+        })
         .unwrap_or(8000);
     let agent_factory = factory_from_config(&config)?;
     let adapter = SpaceGameAdapter::new();

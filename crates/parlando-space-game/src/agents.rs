@@ -1,23 +1,35 @@
-use std::{sync::Arc, time::{Duration, Instant}};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
-use parlando_server::{AgentActContext, AgentFactory, AgentInitContext, AgentResult, ExperimentConfig, GameAgent};
+use parlando_server::{
+    AgentActContext, AgentFactory, AgentInitContext, AgentResult, ExperimentConfig, GameAgent,
+};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde_json::Value;
 
-use crate::{game::state_engine::{SpaceAction, SpaceObservation}, SpaceGameAdapter};
+use crate::{
+    game::state_engine::{SpaceAction, SpaceObservation},
+    SpaceGameAdapter,
+};
 
-pub fn factory_from_config(config: &ExperimentConfig) -> Result<Option<Arc<dyn AgentFactory<SpaceGameAdapter>>>> {
+pub fn factory_from_config(
+    config: &ExperimentConfig,
+) -> Result<Option<Arc<dyn AgentFactory<SpaceGameAdapter>>>> {
     if config.agents.mode != parlando_server::config::AgentsMode::HumanVsAgent {
         return Ok(None);
     }
-    let human_vs_agent = config
-        .agents
-        .human_vs_agent
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("agents.human_vs_agent is required when agents.mode is human_vs_agent"))?;
-    match human_vs_agent.factory.as_deref().unwrap_or("space_game.back_and_forth") {
+    let human_vs_agent = config.agents.human_vs_agent.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("agents.human_vs_agent is required when agents.mode is human_vs_agent")
+    })?;
+    match human_vs_agent
+        .factory
+        .as_deref()
+        .unwrap_or("space_game.back_and_forth")
+    {
         "space_game.back_and_forth" | "space_game.agents:create_back_and_forth_agent" => {
             Ok(Some(Arc::new(BackAndForthAgentFactory {
                 seed: human_vs_agent.seed,
@@ -34,9 +46,16 @@ pub struct BackAndForthAgentFactory {
 }
 
 impl AgentFactory<SpaceGameAdapter> for BackAndForthAgentFactory {
-    fn create(&self, context: AgentInitContext) -> Result<Box<dyn GameAgent<SpaceGameAdapter> + Send>> {
+    fn create(
+        &self,
+        context: AgentInitContext,
+    ) -> Result<Box<dyn GameAgent<SpaceGameAdapter> + Send>> {
         let seed = context.seed.or(self.seed).unwrap_or(0);
-        Ok(Box::new(BackAndForthAgent::new(context.role, seed, self.config.clone())))
+        Ok(Box::new(BackAndForthAgent::new(
+            context.role,
+            seed,
+            self.config.clone(),
+        )))
     }
 }
 
@@ -80,10 +99,17 @@ impl GameAgent<SpaceGameAdapter> for BackAndForthAgent {
             return Ok(AgentResult::None);
         }
         self.last_step_at = Instant::now();
-        let directions: &[&str] = if self.role == "A" { &["left", "right"] } else { &["up", "down"] };
+        let directions: &[&str] = if self.role == "A" {
+            &["left", "right"]
+        } else {
+            &["up", "down"]
+        };
         let direction = directions[self.step_index % directions.len()];
         self.step_index += 1;
-        let action = SpaceAction::MoveStep { player: self.role.clone(), direction: direction.to_string() };
+        let action = SpaceAction::MoveStep {
+            player: self.role.clone(),
+            direction: direction.to_string(),
+        };
         if self.other_player_moved(&observation) {
             let message = self.utterances[self.rng.gen_range(0..self.utterances.len())].to_string();
             Ok(AgentResult::ActionWithMessage { action, message })
@@ -101,7 +127,9 @@ impl BackAndForthAgent {
             observation.players.a.position
         };
         let current = (position.x, position.y);
-        let moved = self.last_other_position.is_some_and(|previous| previous != current);
+        let moved = self
+            .last_other_position
+            .is_some_and(|previous| previous != current);
         self.last_other_position = Some(current);
         moved
     }

@@ -13,7 +13,11 @@ pub fn parse_livekit_identity(identity: &str) -> Result<(String, String, String)
     if parts.len() != 3 || parts.iter().any(|part| part.is_empty()) {
         bail!("invalid LiveKit participant identity: {identity:?}");
     }
-    Ok((parts[0].to_string(), parts[1].to_string(), parts[2].to_string()))
+    Ok((
+        parts[0].to_string(),
+        parts[1].to_string(),
+        parts[2].to_string(),
+    ))
 }
 
 #[derive(Serialize)]
@@ -59,5 +63,9 @@ pub fn create_livekit_token(
             can_publish_data: true,
         },
     };
-    Ok(encode(&Header::new(Algorithm::HS256), &claims, &EncodingKey::from_secret(config.api_secret.as_bytes()))?)
+    Ok(encode(
+        &Header::new(Algorithm::HS256),
+        &claims,
+        &EncodingKey::from_secret(config.api_secret.as_bytes()),
+    )?)
 }

@@ -2,7 +2,10 @@ use anyhow::Result;
 use parlando_server::{GameAdapter, PlayerRole};
 use serde_json::Value;
 
-use super::state_engine::{apply_action, available_actions, derive_systems, initial_state, validate_action, FilteredKnowledge, SpaceAction, SpaceEvent, SpaceGameState, SpaceObservation, SpaceSummary};
+use super::state_engine::{
+    apply_action, available_actions, derive_systems, initial_state, validate_action,
+    FilteredKnowledge, SpaceAction, SpaceEvent, SpaceGameState, SpaceObservation, SpaceSummary,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct SpaceGameAdapter;
@@ -28,7 +31,12 @@ impl GameAdapter for SpaceGameAdapter {
         Ok(serde_json::from_value(action)?)
     }
 
-    fn validate_action(&self, state: &Self::State, action: &Self::Action, player: PlayerRole) -> Result<()> {
+    fn validate_action(
+        &self,
+        state: &Self::State,
+        action: &Self::Action,
+        player: PlayerRole,
+    ) -> Result<()> {
         validate_action(state, action, player.as_str())
     }
 
@@ -53,10 +61,22 @@ impl GameAdapter for SpaceGameAdapter {
             role: player.as_str().to_string(),
             systems: derive_systems(state),
             knowledge: FilteredKnowledge {
-                a: if player == PlayerRole::A { state.knowledge.a.clone() } else { vec![] },
-                b: if player == PlayerRole::B { state.knowledge.b.clone() } else { vec![] },
+                a: if player == PlayerRole::A {
+                    state.knowledge.a.clone()
+                } else {
+                    vec![]
+                },
+                b: if player == PlayerRole::B {
+                    state.knowledge.b.clone()
+                } else {
+                    vec![]
+                },
             },
-            private_knowledge: if player == PlayerRole::A { state.knowledge.a.clone() } else { state.knowledge.b.clone() },
+            private_knowledge: if player == PlayerRole::A {
+                state.knowledge.a.clone()
+            } else {
+                state.knowledge.b.clone()
+            },
             log: vec![],
         }
     }
@@ -65,7 +85,13 @@ impl GameAdapter for SpaceGameAdapter {
         available_actions(state, player.as_str())
     }
 
-    fn events_for_action(&self, before: &Self::State, after: &Self::State, action: &Self::Action, player: PlayerRole) -> Vec<Self::Event> {
+    fn events_for_action(
+        &self,
+        before: &Self::State,
+        after: &Self::State,
+        action: &Self::Action,
+        player: PlayerRole,
+    ) -> Vec<Self::Event> {
         let actor = action.player();
         let mut events = vec![];
         if matches!(actor, Some("A" | "B")) {
@@ -76,8 +102,16 @@ impl GameAdapter for SpaceGameAdapter {
                 text: event_text(action, actor == Some(player.as_str())),
             });
         }
-        let before_items = if player == PlayerRole::A { &before.knowledge.a } else { &before.knowledge.b };
-        let after_items = if player == PlayerRole::A { &after.knowledge.a } else { &after.knowledge.b };
+        let before_items = if player == PlayerRole::A {
+            &before.knowledge.a
+        } else {
+            &before.knowledge.b
+        };
+        let after_items = if player == PlayerRole::A {
+            &after.knowledge.a
+        } else {
+            &after.knowledge.b
+        };
         for item in after_items {
             if !before_items.contains(item) {
                 events.push(SpaceEvent {
@@ -113,9 +147,17 @@ fn event_text(action: &SpaceAction, is_actor: bool) -> String {
     match action {
         SpaceAction::MoveStep { direction, .. } => format!("{subject} move {direction}."),
         SpaceAction::ToggleFuse { color, .. } => format!("{subject} toggle the {color} fuse."),
-        SpaceAction::ToggleBreaker { breaker, .. } => format!("{subject} toggle the {} breaker.", breaker.to_uppercase()),
-        SpaceAction::SetValve { valve, open, .. } => format!("{subject} {} valve {valve}.", if *open { "open" } else { "close" }),
-        SpaceAction::HoldOverride { held, .. } => format!("{subject} {} the bypass.", if *held { "hold" } else { "release" }),
+        SpaceAction::ToggleBreaker { breaker, .. } => {
+            format!("{subject} toggle the {} breaker.", breaker.to_uppercase())
+        }
+        SpaceAction::SetValve { valve, open, .. } => format!(
+            "{subject} {} valve {valve}.",
+            if *open { "open" } else { "close" }
+        ),
+        SpaceAction::HoldOverride { held, .. } => format!(
+            "{subject} {} the bypass.",
+            if *held { "hold" } else { "release" }
+        ),
         SpaceAction::ChargeBattery { .. } => format!("{subject} try the battery charger."),
         SpaceAction::MoveBattery { .. } => format!("{subject} move the battery sled."),
         SpaceAction::CycleRelay { .. } => format!("{subject} rotate the signal relay."),

@@ -57,7 +57,9 @@ impl StreamingTtsProvider for ElevenLabsStreamingTtsProvider {
             ))
             .await?;
         socket
-            .send(tokio_tungstenite::tungstenite::Message::Text(json!({"text": ""}).to_string()))
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                json!({"text": ""}).to_string(),
+            ))
             .await?;
         let mut chunks = vec![];
         while let Some(message) = socket.next().await {
@@ -76,8 +78,17 @@ impl StreamingTtsProvider for ElevenLabsStreamingTtsProvider {
                     });
                 }
             }
-            if payload.get("isFinal").and_then(|value| value.as_bool()).unwrap_or(false) {
-                chunks.push(AudioChunk { data: vec![], sample_rate, channels: 1, final_chunk: true });
+            if payload
+                .get("isFinal")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+            {
+                chunks.push(AudioChunk {
+                    data: vec![],
+                    sample_rate,
+                    channels: 1,
+                    final_chunk: true,
+                });
                 break;
             }
         }

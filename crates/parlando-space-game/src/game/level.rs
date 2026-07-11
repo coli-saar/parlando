@@ -126,7 +126,8 @@ pub fn devices_at_position(position: Position, battery_location: &str) -> Vec<De
         ("relay", 9, 8),
         ("beacon", 6, 8),
     ] {
-        if position.x == x && position.y == y && (id != "battery" || battery_location == "charger") {
+        if position.x == x && position.y == y && (id != "battery" || battery_location == "charger")
+        {
             devices.push(Device { id });
         }
     }

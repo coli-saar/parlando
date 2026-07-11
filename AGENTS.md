@@ -1,7 +1,7 @@
 # Agent Instructions
 
 ## Document technical choices
-- Document technical choices in a separate Markdown document under `notes/`.
+- Document technical choices in `notes/technical-decisions.md`.
 - When making implementation decisions, record the context, chosen approach, tradeoffs, and any follow-up questions or risks.
 - Keep technical-choice notes focused and durable enough for future contributors to understand why the decision was made.
 

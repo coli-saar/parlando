@@ -7,6 +7,9 @@ pub struct ParticipantCreateRequest {
     pub source: String,
     pub display_name: Option<String>,
     pub study_id: Option<String>,
+    pub external_id: Option<String>,
+    #[serde(default)]
+    pub metadata: Value,
 }
 
 fn default_direct() -> String {
@@ -17,12 +20,18 @@ fn default_direct() -> String {
 pub struct DirectStartRequest {
     pub display_name: Option<String>,
     pub study_id: Option<String>,
+    pub external_id: Option<String>,
+    #[serde(default)]
+    pub metadata: Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DirectEnterRequest {
     pub display_name: Option<String>,
     pub study_id: Option<String>,
+    pub external_id: Option<String>,
+    #[serde(default)]
+    pub metadata: Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -143,7 +152,12 @@ pub struct LiveKitTokenResponse {
 
 impl LiveKitTokenResponse {
     pub fn disabled() -> Self {
-        Self { enabled: false, url: None, token: None, identity: None }
+        Self {
+            enabled: false,
+            url: None,
+            token: None,
+            identity: None,
+        }
     }
 }
 
@@ -177,7 +191,11 @@ fn default_capture() -> Value {
 
 impl AudioSessionPlanResponse {
     pub fn disabled() -> Self {
-        Self { enabled: false, capture: default_capture(), sinks: vec![] }
+        Self {
+            enabled: false,
+            capture: default_capture(),
+            sinks: vec![],
+        }
     }
 }
 

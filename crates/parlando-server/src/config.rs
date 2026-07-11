@@ -1,4 +1,8 @@
-use std::{collections::HashMap, env, fs, path::{Path, PathBuf}};
+use std::{
+    collections::HashMap,
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{anyhow, bail, Context, Result};
 use regex::Regex;
@@ -85,6 +89,12 @@ impl Default for ServerConfig {
 #[serde(default)]
 pub struct DatabaseConfig {
     pub url: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ExperimentIdentityConfig {
+    pub id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -239,6 +249,7 @@ pub struct AgentsConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ExperimentConfig {
+    pub experiment: ExperimentIdentityConfig,
     pub study: StudyConfig,
     pub game: LegacyGameConfig,
     pub direct: DirectConfig,
@@ -258,7 +269,11 @@ impl Default for ExperimentConfig {
     fn default() -> Self {
         Self {
             study: StudyConfig::default(),
-            game: LegacyGameConfig { adapter: None, module_paths: vec!["src".to_string()] },
+            experiment: ExperimentIdentityConfig::default(),
+            game: LegacyGameConfig {
+                adapter: None,
+                module_paths: vec!["src".to_string()],
+            },
             direct: DirectConfig::default(),
             server: ServerConfig::default(),
             database: DatabaseConfig::default(),
@@ -274,6 +289,7 @@ impl Default for ExperimentConfig {
 }
 
 impl ExperimentConfig {
+    /// Loads an experiment configuration from YAML using the Python-compatible include semantics.
     pub fn from_yaml(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().canonicalize().with_context(|| {
             format!("failed to resolve config path {}", path.as_ref().display())
@@ -286,6 +302,7 @@ impl ExperimentConfig {
         Ok(config)
     }
 
+    /// Validates cross-field requirements that cannot be expressed by serde defaults alone.
     pub fn validate(&self) -> Result<()> {
         if self.tts.enabled {
             if self.tts.voice_id.is_empty() {
@@ -335,7 +352,10 @@ fn load_yaml_with_includes(path: &Path, seen: &mut Vec<PathBuf>) -> Result<Value
             if include.optional {
                 continue;
             }
-            return Err(anyhow!("config include not found: {}", include_path.display()));
+            return Err(anyhow!(
+                "config include not found: {}",
+                include_path.display()
+            ));
         }
         let include_data = load_yaml_with_includes(&include_path, seen)?;
         data = deep_merge(data, include_data);
@@ -352,7 +372,9 @@ struct IncludeEntry {
 }
 
 fn normalize_includes(value: Option<Value>) -> Result<Vec<IncludeEntry>> {
-    let Some(value) = value else { return Ok(vec![]) };
+    let Some(value) = value else {
+        return Ok(vec![]);
+    };
     let values = match value {
         Value::Array(values) => values,
         other => vec![other],
@@ -360,11 +382,23 @@ fn normalize_includes(value: Option<Value>) -> Result<Vec<IncludeEntry>> {
     values
         .into_iter()
         .map(|value| match value {
-            Value::String(path) => Ok(IncludeEntry { path: PathBuf::from(path), optional: false }),
+            Value::String(path) => Ok(IncludeEntry {
+                path: PathBuf::from(path),
+                optional: false,
+            }),
             Value::Object(map) => {
-                let path = map.get("path").and_then(Value::as_str).context("include entries need path")?;
-                let optional = map.get("optional").and_then(Value::as_bool).unwrap_or(false);
-                Ok(IncludeEntry { path: PathBuf::from(path), optional })
+                let path = map
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .context("include entries need path")?;
+                let optional = map
+                    .get("optional")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                Ok(IncludeEntry {
+                    path: PathBuf::from(path),
+                    optional,
+                })
             }
             _ => bail!("includes must be strings or objects with path/optional"),
         })
@@ -376,17 +410,22 @@ fn take_field(value: &mut Value, field: &str) -> Option<Value> {
 }
 
 fn value_to_path(value: &Value) -> Result<PathBuf> {
-    value.as_str().map(PathBuf::from).context("include path must be a string")
+    value
+        .as_str()
+        .map(PathBuf::from)
+        .context("include path must be a string")
 }
 
 fn resolve_include_path(config_path: &Path, include: PathBuf) -> Result<PathBuf> {
-    Ok(if include.is_absolute() {
+    let resolved = if include.is_absolute() {
         include
     } else {
-        config_path.parent().unwrap_or_else(|| Path::new(".")).join(include)
-    }
-    .canonicalize()
-    .unwrap_or_else(|_| config_path.parent().unwrap_or_else(|| Path::new(".")).join("")))
+        config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(include)
+    };
+    Ok(resolved.canonicalize().unwrap_or(resolved))
 }
 
 fn deep_merge(base: Value, override_value: Value) -> Value {
@@ -406,10 +445,20 @@ fn deep_merge(base: Value, override_value: Value) -> Value {
 }
 
 fn config_base_path(path: &Path) -> PathBuf {
-    if path.parent().and_then(Path::file_name).and_then(|s| s.to_str()) == Some("config") {
-        path.parent().and_then(Path::parent).unwrap_or_else(|| Path::new(".")).to_path_buf()
+    if path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|s| s.to_str())
+        == Some("config")
+    {
+        path.parent()
+            .and_then(Path::parent)
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
     } else {
-        path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
+        path.parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
     }
 }
 
@@ -418,15 +467,24 @@ fn resolve_relative_paths(data: &mut Value, base: &Path) {
         if let Some(path) = server.get("client_dist_path").and_then(Value::as_str) {
             let path = PathBuf::from(path);
             if !path.is_absolute() {
-                server.insert("client_dist_path".to_string(), Value::String(base.join(path).display().to_string()));
+                server.insert(
+                    "client_dist_path".to_string(),
+                    Value::String(base.join(path).display().to_string()),
+                );
             }
         }
     }
     if let Some(database) = data.get_mut("database").and_then(Value::as_object_mut) {
         if let Some(url) = database.get("url").and_then(Value::as_str) {
-            if url.starts_with("sqlite:///") && !url.starts_with("sqlite:////") && url != "sqlite:///:memory:" {
+            if url.starts_with("sqlite:///")
+                && !url.starts_with("sqlite:////")
+                && url != "sqlite:///:memory:"
+            {
                 let raw = url.trim_start_matches("sqlite:///");
-                database.insert("url".to_string(), Value::String(format!("sqlite:///{}", base.join(raw).display())));
+                database.insert(
+                    "url".to_string(),
+                    Value::String(format!("sqlite:///{}", base.join(raw).display())),
+                );
             }
         }
     }
@@ -436,8 +494,13 @@ fn apply_env_overrides(data: &mut Value) {
     if let Ok(mode) = env::var("EXPERIMENT_AGENTS_MODE") {
         if !mode.is_empty() {
             let root = data.as_object_mut().expect("config root must be object");
-            let agents = root.entry("agents").or_insert_with(|| Value::Object(Default::default()));
-            agents.as_object_mut().expect("agents must be object").insert("mode".to_string(), Value::String(mode));
+            let agents = root
+                .entry("agents")
+                .or_insert_with(|| Value::Object(Default::default()));
+            agents
+                .as_object_mut()
+                .expect("agents must be object")
+                .insert("mode".to_string(), Value::String(mode));
         }
     }
 }
@@ -445,6 +508,122 @@ fn apply_env_overrides(data: &mut Value) {
 fn expand_env(text: &str) -> String {
     let pattern = Regex::new(r"\$\{([A-Z0-9_]+)\}").expect("valid env regex");
     pattern
-        .replace_all(text, |captures: &regex::Captures| env::var(&captures[1]).unwrap_or_default())
+        .replace_all(text, |captures: &regex::Captures| {
+            env::var(&captures[1]).unwrap_or_default()
+        })
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, sync::Mutex};
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn yaml_extends_includes_env_and_relative_paths_match_expected_behavior() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        env::set_var("PARLANDO_TEST_STUDY", "Env Study");
+        env::set_var("EXPERIMENT_AGENTS_MODE", "human_vs_agent");
+
+        let temp = tempdir().expect("tempdir");
+        let project = temp.path();
+        let config_dir = project.join("config");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        fs::write(
+            config_dir.join("base.yaml"),
+            r#"
+study:
+  name: base
+direct:
+  require_consent: true
+database:
+  url: sqlite:///data/parlando.sqlite
+server:
+  client_dist_path: dist
+"#,
+        )
+        .expect("base config");
+        fs::write(
+            config_dir.join("include.yaml"),
+            r#"
+conversation:
+  max_history_messages: 12
+"#,
+        )
+        .expect("include config");
+        fs::write(
+            config_dir.join("experiment.yaml"),
+            r#"
+extends: base.yaml
+includes:
+  - include.yaml
+  - path: missing-private.yaml
+    optional: true
+study:
+  name: ${PARLANDO_TEST_STUDY}
+agents:
+  human_vs_agent:
+    factory: space_game.back_and_forth
+"#,
+        )
+        .expect("experiment config");
+
+        let config =
+            ExperimentConfig::from_yaml(config_dir.join("experiment.yaml")).expect("config loads");
+
+        assert_eq!(config.study.name, "Env Study");
+        assert!(config.direct.require_consent);
+        assert_eq!(config.conversation.max_history_messages, 12);
+        assert_eq!(config.agents.mode, AgentsMode::HumanVsAgent);
+        let canonical_project = config_dir
+            .canonicalize()
+            .expect("canonical config dir")
+            .parent()
+            .expect("project dir")
+            .to_path_buf();
+        assert_eq!(
+            config.server.client_dist_path.as_deref(),
+            Some(canonical_project.join("dist").to_str().unwrap())
+        );
+        assert_eq!(
+            config.database.url,
+            format!(
+                "sqlite:///{}",
+                canonical_project.join("data/parlando.sqlite").display()
+            )
+        );
+
+        env::remove_var("PARLANDO_TEST_STUDY");
+        env::remove_var("EXPERIMENT_AGENTS_MODE");
+    }
+
+    #[test]
+    fn yaml_required_include_must_exist() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("experiment.yaml");
+        fs::write(&path, "includes: missing.yaml\n").expect("config");
+
+        let error = ExperimentConfig::from_yaml(path).expect_err("missing required include fails");
+
+        assert!(
+            error.to_string().contains("Config include not found")
+                || error.to_string().contains("config include not found")
+        );
+    }
+
+    #[test]
+    fn validation_requires_enabled_tts_secrets() {
+        let mut config = ExperimentConfig::default();
+        config.tts.enabled = true;
+        config.tts.voice_id = "voice".to_string();
+
+        let error = config.validate().expect_err("missing api key fails");
+
+        assert!(error.to_string().contains("tts.api_key"));
+    }
 }
