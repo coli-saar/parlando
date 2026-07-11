@@ -92,8 +92,8 @@ pub trait AgentFactory<A: GameAdapter>: Send + Sync + 'static {
 - Port the Space Game engine into `parlando-space-game`, preserving existing state shape, observations, available actions, event payloads, and completion behavior.
 - Implement human-vs-human and human-vs-agent matchmaking. In agent mode, the Space Game crate supplies the selected Rust agent factory directly.
 - Implement LiveKit token signing and audio-session responses with the existing client-compatible shapes.
-- Implement Speechmatics temporary-key minting, transcript ingestion, transcript SSE, voice diagnostics, and transcript-to-conversation conversion.
-- Implement ElevenLabs streaming TTS and a per-room TTS task for new `origin: "agent"` conversation messages.
+- Implement Speechmatics temporary-key minting, transcript ingestion, voice diagnostics, and transcript-to-conversation conversion through the session event stream.
+- Implement ElevenLabs streaming TTS for `origin: "agent"` messages directly when the agent runtime emits them; do not poll conversation history.
 - Spike Rust LiveKit RTC audio publishing for the `agent-voice` track. If Rust RTC publishing is not viable, keep the fallback limited to an audio-publishing sidecar; Rust remains authoritative for config, state, storage, agents, conversation, tokens, and diagnostics.
 
 ## Test Plan

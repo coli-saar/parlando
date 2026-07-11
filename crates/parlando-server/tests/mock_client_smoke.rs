@@ -1,0 +1,574 @@
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use anyhow::{anyhow, bail, Result};
+use async_trait::async_trait;
+use axum::Router;
+use futures_util::{SinkExt, StreamExt};
+use parlando_server::{
+    agents::{AgentFactory, AgentInitContext, AgentResult, GameAgent},
+    build_router,
+    config::{
+        AgentsConfig, AgentsMode, ConversationConfig, DatabaseConfig, DirectConfig,
+        ExperimentConfig, ExperimentIdentityConfig, HumanVsAgentConfig, LiveKitConfig,
+        SpeechmaticsConfig, TranscriptionConfig,
+    },
+    game::{GameAdapter, PlayerRole},
+    protocol::TranscriptSegmentIn,
+    tts::{AudioChunk, StreamingTtsProvider},
+    ServeOptions,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tempfile::TempDir;
+use tokio::net::TcpListener;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+type TestSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct DummyState {
+    actions: usize,
+    done: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum DummyAction {
+    Mark { finish: bool },
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DummyObservation {
+    role: String,
+    actions: usize,
+    done: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DummyEvent {
+    kind: String,
+    actions: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DummySummary {
+    done: bool,
+    actions: usize,
+}
+
+#[derive(Clone)]
+struct DummyAdapter;
+
+impl GameAdapter for DummyAdapter {
+    type State = DummyState;
+    type Action = DummyAction;
+    type Observation = DummyObservation;
+    type Event = DummyEvent;
+    type Summary = DummySummary;
+
+    fn initial_state(&self) -> Self::State {
+        DummyState {
+            actions: 0,
+            done: false,
+        }
+    }
+
+    fn validate_action(
+        &self,
+        state: &Self::State,
+        _action: &Self::Action,
+        _player: PlayerRole,
+    ) -> Result<()> {
+        if state.done {
+            bail!("game already complete");
+        }
+        Ok(())
+    }
+
+    fn apply_action(&self, state: &Self::State, action: &Self::Action) -> Result<Self::State> {
+        let DummyAction::Mark { finish } = action;
+        Ok(DummyState {
+            actions: state.actions + 1,
+            done: *finish,
+        })
+    }
+
+    fn observe_state(&self, state: &Self::State, player: PlayerRole) -> Self::Observation {
+        DummyObservation {
+            role: player.as_str().to_string(),
+            actions: state.actions,
+            done: state.done,
+        }
+    }
+
+    fn available_actions(
+        &self,
+        _state: &Self::State,
+        _player: PlayerRole,
+    ) -> Option<Vec<Self::Action>> {
+        Some(vec![
+            DummyAction::Mark { finish: false },
+            DummyAction::Mark { finish: true },
+        ])
+    }
+
+    fn events_for_action(
+        &self,
+        _before: &Self::State,
+        after: &Self::State,
+        _action: &Self::Action,
+        _player: PlayerRole,
+    ) -> Vec<Self::Event> {
+        vec![DummyEvent {
+            kind: "marked".to_string(),
+            actions: after.actions,
+        }]
+    }
+
+    fn is_complete(&self, state: &Self::State) -> bool {
+        state.done
+    }
+
+    fn completion_summary(&self, state: &Self::State) -> Self::Summary {
+        DummySummary {
+            done: state.done,
+            actions: state.actions,
+        }
+    }
+}
+
+struct ScriptedAgent {
+    script: VecDeque<AgentResult<DummyAction>>,
+}
+
+#[async_trait]
+impl GameAgent<DummyAdapter> for ScriptedAgent {
+    async fn act(
+        &mut self,
+        observation: DummyObservation,
+        available_actions: Option<Vec<DummyAction>>,
+    ) -> Result<AgentResult<DummyAction>> {
+        assert_eq!(observation.role, "B");
+        assert_eq!(
+            available_actions,
+            Some(vec![
+                DummyAction::Mark { finish: false },
+                DummyAction::Mark { finish: true }
+            ])
+        );
+        Ok(self.script.pop_front().unwrap_or(AgentResult::None))
+    }
+}
+
+struct ScriptedAgentFactory {
+    scripts: Mutex<VecDeque<Vec<AgentResult<DummyAction>>>>,
+}
+
+impl ScriptedAgentFactory {
+    fn new(script: Vec<AgentResult<DummyAction>>) -> Self {
+        Self {
+            scripts: Mutex::new(VecDeque::from([script])),
+        }
+    }
+}
+
+impl AgentFactory<DummyAdapter> for ScriptedAgentFactory {
+    fn create(&self, context: AgentInitContext) -> Result<Box<dyn GameAgent<DummyAdapter> + Send>> {
+        assert_eq!(context.role, "B");
+        let script = self.scripts.lock().unwrap().pop_front().unwrap_or_default();
+        Ok(Box::new(ScriptedAgent {
+            script: script.into(),
+        }))
+    }
+}
+
+struct RecordingTts {
+    messages: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl StreamingTtsProvider for RecordingTts {
+    async fn synthesize(&self, text: &str, _message_id: &str) -> Result<Vec<AudioChunk>> {
+        self.messages.lock().unwrap().push(text.to_string());
+        Ok(vec![
+            AudioChunk {
+                data: vec![1, 2, 3, 4],
+                sample_rate: 16000,
+                channels: 1,
+                final_chunk: false,
+            },
+            AudioChunk {
+                data: vec![],
+                sample_rate: 16000,
+                channels: 1,
+                final_chunk: true,
+            },
+        ])
+    }
+}
+
+struct TestServer {
+    base_url: String,
+    ws_base_url: String,
+    _temp: TempDir,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn spawn_server(
+    config: ExperimentConfig,
+    options: ServeOptions<DummyAdapter>,
+) -> Result<TestServer> {
+    let temp = TempDir::new()?;
+    let mut config = config;
+    config.database = DatabaseConfig {
+        url: format!("sqlite:///{}", temp.path().join("mock-client.db").display()),
+    };
+    let router = build_router(DummyAdapter, config, options).await?;
+    spawn_router(router, temp).await
+}
+
+async fn spawn_router(router: Router, temp: TempDir) -> Result<TestServer> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let task = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    Ok(TestServer {
+        base_url: format!("http://{addr}"),
+        ws_base_url: format!("ws://{addr}"),
+        _temp: temp,
+        task,
+    })
+}
+
+fn config(mode: AgentsMode) -> ExperimentConfig {
+    ExperimentConfig {
+        experiment: ExperimentIdentityConfig {
+            id: Some("mock-client-smoke".to_string()),
+        },
+        direct: DirectConfig {
+            require_consent: true,
+            ..DirectConfig::default()
+        },
+        livekit: LiveKitConfig {
+            enabled: true,
+            url: "wss://livekit.example.test".to_string(),
+            api_key: "api-key".to_string(),
+            api_secret: "api-secret".to_string(),
+        },
+        speechmatics: SpeechmaticsConfig {
+            enabled: false,
+            ..SpeechmaticsConfig::default()
+        },
+        transcription: TranscriptionConfig {
+            enabled: false,
+            provider: "livekit".to_string(),
+            ..TranscriptionConfig::default()
+        },
+        conversation: ConversationConfig {
+            enabled: true,
+            max_history_messages: 50,
+        },
+        agents: AgentsConfig {
+            mode,
+            human_vs_agent: Some(HumanVsAgentConfig {
+                factory: Some("mock".to_string()),
+                act_timeout_seconds: 2.0,
+                invalid_action_limit: 2,
+                ..HumanVsAgentConfig::default()
+            }),
+        },
+        ..ExperimentConfig::default()
+    }
+}
+
+async fn create_participant(
+    client: &reqwest::Client,
+    base_url: &str,
+    name: &str,
+) -> Result<String> {
+    let response = client
+        .post(format!("{base_url}/api/participants"))
+        .json(&json!({"source": "direct", "display_name": name}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Value>()
+        .await?;
+    Ok(response["participant_session_id"]
+        .as_str()
+        .ok_or_else(|| anyhow!("missing participant_session_id"))?
+        .to_string())
+}
+
+async fn consent(client: &reqwest::Client, base_url: &str, participant: &str) -> Result<()> {
+    client
+        .post(format!("{base_url}/api/consent"))
+        .json(&json!({
+            "participant_session_id": participant,
+            "decisions": {"study": true}
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
+
+async fn create_room(client: &reqwest::Client, base_url: &str, participant: &str) -> Result<Value> {
+    Ok(client
+        .post(format!("{base_url}/api/rooms"))
+        .json(&json!({"participant_session_id": participant, "mode": "direct"}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?)
+}
+
+async fn join_room(
+    client: &reqwest::Client,
+    base_url: &str,
+    room_id: &str,
+    participant: &str,
+) -> Result<Value> {
+    Ok(client
+        .post(format!("{base_url}/api/rooms/{room_id}/join"))
+        .json(&json!({"participant_session_id": participant}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?)
+}
+
+async fn join_matchmaking(
+    client: &reqwest::Client,
+    base_url: &str,
+    participant: &str,
+) -> Result<Value> {
+    Ok(client
+        .post(format!("{base_url}/api/matchmaking/join"))
+        .json(&json!({"participant_session_id": participant}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?)
+}
+
+async fn ws_connect(ws_base_url: &str, room_id: &str, participant: &str) -> Result<TestSocket> {
+    let (socket, _) = connect_async(format!(
+        "{ws_base_url}/ws/game/{room_id}?participantSessionId={participant}"
+    ))
+    .await?;
+    Ok(socket)
+}
+
+async fn send_ws(socket: &mut TestSocket, payload: Value) -> Result<()> {
+    socket.send(Message::Text(payload.to_string())).await?;
+    Ok(())
+}
+
+async fn read_ws_type(socket: &mut TestSocket, expected: &str) -> Result<Value> {
+    for _ in 0..40 {
+        let message = tokio::time::timeout(Duration::from_secs(2), socket.next())
+            .await?
+            .ok_or_else(|| anyhow!("websocket closed"))??;
+        if !message.is_text() {
+            continue;
+        }
+        let value: Value = serde_json::from_str(message.to_text()?)?;
+        if value["type"] == expected {
+            return Ok(value);
+        }
+        if value["type"] == "error" {
+            bail!("unexpected websocket error: {value}");
+        }
+    }
+    bail!("timed out waiting for websocket message type {expected}");
+}
+
+#[tokio::test]
+async fn mock_browser_two_human_flow_covers_http_ws_chat_transcript_audio_and_export() -> Result<()>
+{
+    let server = spawn_server(config(AgentsMode::HumanVsHuman), ServeOptions::default()).await?;
+    let client = reqwest::Client::new();
+    let a = create_participant(&client, &server.base_url, "A").await?;
+    let b = create_participant(&client, &server.base_url, "B").await?;
+    consent(&client, &server.base_url, &a).await?;
+    consent(&client, &server.base_url, &b).await?;
+
+    let room = create_room(&client, &server.base_url, &a).await?;
+    assert_eq!(room["role"], "A");
+    assert_eq!(room["available_actions"].as_array().unwrap().len(), 2);
+    let room_id = room["room_id"].as_str().unwrap().to_string();
+    let joined = join_room(&client, &server.base_url, &room_id, &b).await?;
+    assert_eq!(joined["role"], "B");
+
+    let audio = client
+        .post(format!(
+            "{}/api/rooms/{room_id}/audio-session",
+            server.base_url
+        ))
+        .json(&json!({"participant_session_id": a}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Value>()
+        .await?;
+    assert_eq!(audio["enabled"], true);
+    assert_eq!(audio["sinks"][0]["id"], "livekit-combined");
+
+    let mut socket_a = ws_connect(&server.ws_base_url, &room_id, &a).await?;
+    let mut socket_b = ws_connect(&server.ws_base_url, &room_id, &b).await?;
+    let assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await?;
+    let assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await?;
+    assert_eq!(assigned_a["role"], "A");
+    assert_eq!(assigned_b["role"], "B");
+    send_ws(&mut socket_a, json!({"type": "ready"})).await?;
+    send_ws(&mut socket_b, json!({"type": "ready"})).await?;
+
+    send_ws(
+        &mut socket_a,
+        json!({"type": "sendChatMessage", "text": "browser chat"}),
+    )
+    .await?;
+    let chat = read_ws_type(&mut socket_b, "conversationMessageAdded").await?;
+    assert_eq!(chat["conversation_message"]["origin"], "typed");
+    assert_eq!(chat["conversation_message"]["text"], "browser chat");
+
+    let transcript = client
+        .post(format!(
+            "{}/api/rooms/{room_id}/transcripts",
+            server.base_url
+        ))
+        .json(&TranscriptSegmentIn {
+            participant_session_id: a.clone(),
+            player: "B".to_string(),
+            start_time_ms: 10,
+            end_time_ms: 40,
+            text: "voice transcript".to_string(),
+            metadata: json!({"source": "mock-browser"}),
+        })
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Value>()
+        .await?;
+    assert_eq!(transcript["player"], "A");
+    let voice_message = read_ws_type(&mut socket_b, "conversationMessageAdded").await?;
+    assert_eq!(
+        voice_message["conversation_message"]["origin"],
+        "voice_transcript"
+    );
+
+    send_ws(
+        &mut socket_a,
+        json!({"type": "submitAction", "action": {"type": "mark", "finish": true}}),
+    )
+    .await?;
+    let completed_a = read_ws_type(&mut socket_a, "completed").await?;
+    let completed_b = read_ws_type(&mut socket_b, "completed").await?;
+    assert_eq!(completed_a["summary"]["done"], true);
+    assert_eq!(completed_b["summary"]["done"], true);
+
+    let export = client
+        .get(format!("{}/api/admin/export", server.base_url))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Value>()
+        .await?;
+    let event_types = export["session_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["event_type"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(event_types.contains(&"conversation_message"));
+    assert!(event_types.contains(&"transcript_segment"));
+    assert!(event_types.contains(&"game_action_accepted"));
+    assert!(event_types.contains(&"session_completed"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_diagnostics(
+) -> Result<()> {
+    let tts = Arc::new(RecordingTts {
+        messages: Mutex::new(vec![]),
+    });
+    let factory = Arc::new(ScriptedAgentFactory::new(vec![
+        AgentResult::ActionWithMessage {
+            action: DummyAction::Mark { finish: true },
+            message: "agent says hello".to_string(),
+        },
+    ]));
+    let server = spawn_server(
+        config(AgentsMode::HumanVsAgent),
+        ServeOptions {
+            agent_factory: Some(factory),
+            tts_provider: Some(tts.clone()),
+        },
+    )
+    .await?;
+    let client = reqwest::Client::new();
+    let human = create_participant(&client, &server.base_url, "Human").await?;
+    consent(&client, &server.base_url, &human).await?;
+    let matched = join_matchmaking(&client, &server.base_url, &human).await?;
+    assert_eq!(matched["status"], "matched");
+    assert_eq!(matched["role"], "A");
+    let room_id = matched["room_id"].as_str().unwrap();
+
+    let mut socket = ws_connect(&server.ws_base_url, room_id, &human).await?;
+    let assigned = read_ws_type(&mut socket, "roleAssigned").await?;
+    assert_eq!(assigned["role"], "A");
+    let message = read_ws_type(&mut socket, "conversationMessageAdded").await?;
+    assert_eq!(message["conversation_message"]["origin"], "agent");
+    assert_eq!(message["conversation_message"]["text"], "agent says hello");
+    let completed = read_ws_type(&mut socket, "completed").await?;
+    assert_eq!(completed["summary"]["done"], true);
+
+    for _ in 0..20 {
+        if tts
+            .messages
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|message| message == "agent says hello")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let export = client
+        .get(format!("{}/api/admin/export", server.base_url))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Value>()
+        .await?;
+    let events = export["session_events"].as_array().unwrap();
+    assert!(events.iter().any(|event| {
+        event["event_type"] == "conversation_message" && event["payload"]["origin"] == "agent"
+    }));
+    assert!(events
+        .iter()
+        .any(|event| event["event_type"] == "agent_action"));
+    assert!(events
+        .iter()
+        .any(|event| event["event_type"] == "tts_diagnostic"));
+    Ok(())
+}

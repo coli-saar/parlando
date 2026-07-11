@@ -1,1 +1,3 @@
 /target/
+/config/*.private.yaml
+/config/*.private.yml

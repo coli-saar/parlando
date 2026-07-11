@@ -1,0 +1,42 @@
+# Example private live-service configuration for local Parlando testing.
+#
+# Copy this file to `config/experiment.livekit.private.yaml` and fill in real
+# credentials there. Files matching `config/*.private.yaml` are ignored by git;
+# this `.example.yaml` file is safe to commit.
+
+livekit:
+  enabled: true
+  # LiveKit Cloud project URL, for example: wss://example.livekit.cloud
+  url: "wss://YOUR_PROJECT.livekit.cloud"
+  api_key: "YOUR_LIVEKIT_API_KEY"
+  api_secret: "YOUR_LIVEKIT_API_SECRET"
+
+speechmatics:
+  enabled: true
+  api_key: "YOUR_SPEECHMATICS_API_KEY"
+  realtime_url: "wss://eu.rt.speechmatics.com/v2"
+  temporary_key_ttl_seconds: 60
+  max_delay: 2.0
+  enable_partials: true
+  end_of_utterance_silence_trigger: 1.2
+
+transcription:
+  enabled: true
+  provider: speechmatics
+  # Speechmatics model name used by the browser/client and live tests.
+  model: enhanced
+  # Keep this as `en` for Speechmatics realtime; the browser normalizes en-US to en.
+  language: en
+  worker_autostart: true
+  store_audio: false
+
+tts:
+  enabled: true
+  provider: elevenlabs
+  model: eleven_flash_v2_5
+  voice_id: "YOUR_ELEVENLABS_VOICE_ID"
+  voice_name: "YOUR_VOICE_DISPLAY_NAME"
+  api_key: "YOUR_ELEVENLABS_API_KEY"
+  # The live Speechmatics test streams raw 16 kHz PCM, so use pcm_16000 there.
+  output_format: pcm_16000
+  worker_autostart: true

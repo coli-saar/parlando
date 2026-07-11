@@ -74,8 +74,8 @@ Implement Parlando as a fresh Rust workspace with two crates: `parlando-server` 
   - disabled when LiveKit is disabled
   - `livekit-combined` when not using Speechmatics
   - split `livekit-partner` plus `speechmatics-transcription` when Speechmatics is enabled
-- Implement Speechmatics temporary key minting with mocked tests.
-- Acceptance: token claims and audio-session JSON match Python/client expectations.
+- Implement Speechmatics temporary key minting with mocked unit tests and opt-in live tests.
+- Acceptance: token claims and audio-session JSON match Python/client expectations; ignored live tests verify local LiveKit token minting, real Speechmatics temporary-key minting, and Speechmatics realtime STT from a bundled PCM resource.
 
 ### 10. Agent Runtime
 
@@ -92,8 +92,9 @@ Implement Parlando as a fresh Rust workspace with two crates: `parlando-server` 
 ### 11. ElevenLabs TTS
 
 - Implement ElevenLabs streaming WebSocket client and output-format-to-sample-rate mapping.
-- Implement per-room TTS task that polls new `origin: "agent"` messages, marks message IDs seen before speaking, streams audio chunks, and records diagnostics.
-- Acceptance: mocked WebSocket tests cover streaming frames, final frames, failure continuation, and diagnostic sequence.
+- Convert agent messages to speech directly when the agent runtime emits an `origin: "agent"` message; do not poll conversation history.
+- Record TTS diagnostics for start, first audio, audio chunks, completion, and failure.
+- Acceptance: mocked WebSocket tests cover streaming frames, final frames, failure continuation, and diagnostic sequence; ignored live tests verify ElevenLabs PCM generation and the combined ElevenLabs-to-Speechmatics path.
 
 ### 12. LiveKit Agent Audio Publishing Spike
 
