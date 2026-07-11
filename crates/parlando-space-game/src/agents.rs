@@ -16,6 +16,7 @@ use crate::{
     SpaceGameAdapter,
 };
 
+/// Builds the Space Game agent factory requested by the shared experiment config.
 pub fn factory_from_config(
     config: &ExperimentConfig,
 ) -> Result<Option<Arc<dyn AgentFactory<SpaceGameAdapter>>>> {
@@ -40,6 +41,7 @@ pub fn factory_from_config(
     }
 }
 
+/// Factory for the simple deterministic Space Game back-and-forth agent.
 pub struct BackAndForthAgentFactory {
     seed: Option<u64>,
     config: Value,
@@ -59,6 +61,7 @@ impl AgentFactory<SpaceGameAdapter> for BackAndForthAgentFactory {
     }
 }
 
+/// Space Game agent that alternates movement and comments when the human moves.
 pub struct BackAndForthAgent {
     role: String,
     rng: StdRng,
@@ -69,6 +72,7 @@ pub struct BackAndForthAgent {
 }
 
 impl BackAndForthAgent {
+    // Creates one mutable agent instance for a single room participant.
     fn new(role: String, seed: u64, _config: Value) -> Self {
         Self {
             role,
@@ -120,6 +124,7 @@ impl GameAgent<SpaceGameAdapter> for BackAndForthAgent {
 }
 
 impl BackAndForthAgent {
+    // Detects whether the other player moved since the previous agent turn.
     fn other_player_moved(&mut self, observation: &SpaceObservation) -> bool {
         let position = if self.role == "A" {
             observation.players.b.position
@@ -132,5 +137,132 @@ impl BackAndForthAgent {
             .is_some_and(|previous| previous != current);
         self.last_other_position = Some(current);
         moved
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use parlando_server::config::{AgentsConfig, AgentsMode, HumanVsAgentConfig};
+    use parlando_server::{
+        AgentActContext, AgentInitContext, AgentResult, GameAdapter, PlayerRole,
+    };
+
+    use crate::game::state_engine::initial_state;
+
+    use super::*;
+
+    fn init_context(role: &str) -> AgentInitContext {
+        AgentInitContext {
+            role: role.to_string(),
+            room_id: "room".to_string(),
+            participant_session_id: "agent-session".to_string(),
+            game_index: 1,
+            seed: None,
+            config: Value::Null,
+        }
+    }
+
+    fn act_context(role: &str) -> AgentActContext {
+        AgentActContext {
+            role: role.to_string(),
+            room_id: "room".to_string(),
+            participant_session_id: "agent-session".to_string(),
+            ..AgentActContext::default()
+        }
+    }
+
+    #[test]
+    fn factory_from_config_is_absent_for_human_vs_human() {
+        let config = ExperimentConfig::default();
+
+        assert!(factory_from_config(&config).unwrap().is_none());
+    }
+
+    #[test]
+    fn factory_from_config_accepts_default_and_legacy_selectors() {
+        for selector in [None, Some("space_game.agents:create_back_and_forth_agent")] {
+            let mut config = ExperimentConfig::default();
+            config.agents = AgentsConfig {
+                mode: AgentsMode::HumanVsAgent,
+                human_vs_agent: Some(HumanVsAgentConfig {
+                    factory: selector.map(str::to_string),
+                    ..HumanVsAgentConfig::default()
+                }),
+            };
+
+            assert!(factory_from_config(&config).unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn factory_from_config_rejects_unknown_selectors() {
+        let mut config = ExperimentConfig::default();
+        config.agents = AgentsConfig {
+            mode: AgentsMode::HumanVsAgent,
+            human_vs_agent: Some(HumanVsAgentConfig {
+                factory: Some("python.module:factory".to_string()),
+                ..HumanVsAgentConfig::default()
+            }),
+        };
+
+        assert!(factory_from_config(&config).is_err());
+    }
+
+    #[tokio::test]
+    async fn back_and_forth_factory_returns_fresh_agents() {
+        let factory = BackAndForthAgentFactory {
+            seed: Some(1),
+            config: Value::Null,
+        };
+        let adapter = SpaceGameAdapter::new();
+        let observation = adapter.observe_state(&initial_state(), PlayerRole::A);
+        let mut first = factory.create(init_context("A")).unwrap();
+        let mut second = factory.create(init_context("A")).unwrap();
+
+        let first_result = first
+            .act(observation.clone(), vec![], act_context("A"))
+            .await
+            .unwrap();
+        let second_result = second
+            .act(observation, vec![], act_context("A"))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            first_result,
+            AgentResult::Action(SpaceAction::MoveStep { direction, .. }) if direction == "left"
+        ));
+        assert!(matches!(
+            second_result,
+            AgentResult::Action(SpaceAction::MoveStep { direction, .. }) if direction == "left"
+        ));
+    }
+
+    #[tokio::test]
+    async fn back_and_forth_agent_speaks_when_other_player_moves() {
+        let adapter = SpaceGameAdapter::new();
+        let mut agent = BackAndForthAgent::new("B".to_string(), 1, Value::Null);
+        let first_observation = adapter.observe_state(&initial_state(), PlayerRole::B);
+        let _ = agent
+            .act(first_observation, vec![], act_context("B"))
+            .await
+            .unwrap();
+        agent.last_step_at = Instant::now() - Duration::from_secs(60);
+        let mut moved_state = initial_state();
+        moved_state.players.a.position.x += 1;
+        let second_observation = adapter.observe_state(&moved_state, PlayerRole::B);
+
+        let result = agent
+            .act(second_observation, vec![], act_context("B"))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            result,
+            AgentResult::ActionWithMessage {
+                action: SpaceAction::MoveStep { direction, .. },
+                message
+            } if direction == "down" && !message.is_empty()
+        ));
     }
 }

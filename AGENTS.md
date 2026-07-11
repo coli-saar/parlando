@@ -8,3 +8,5 @@
 ## Code quality
 - Leave comments in your source code that document each function.
 - For public traits/structs/functions, include detailed user-facing comments suitable for public rustdoc documentation.
+- Avoid keeping legacy code around. Our aim is a clean codebase, not the preservation of old code parts. If it can be cut without compromising functionality, cut it.
+- Aim for clean generalizations over ad-hoc patches.

@@ -1,6 +1,5 @@
 use anyhow::Result;
 use parlando_server::{GameAdapter, PlayerRole};
-use serde_json::Value;
 
 use super::state_engine::{
     apply_action, available_actions, derive_systems, initial_state, validate_action,
@@ -25,10 +24,6 @@ impl GameAdapter for SpaceGameAdapter {
 
     fn initial_state(&self) -> Self::State {
         initial_state()
-    }
-
-    fn parse_action(&self, action: Value) -> Result<Self::Action> {
-        Ok(serde_json::from_value(action)?)
     }
 
     fn validate_action(

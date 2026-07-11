@@ -43,10 +43,10 @@ impl Seat {
     }
 
     /// Converts a seat into the equivalent player role.
-    pub fn player_role(self) -> Option<PlayerRole> {
+    pub fn player_role(self) -> PlayerRole {
         match self {
-            Self::A => Some(PlayerRole::A),
-            Self::B => Some(PlayerRole::B),
+            Self::A => PlayerRole::A,
+            Self::B => PlayerRole::B,
         }
     }
 }
@@ -71,7 +71,9 @@ pub trait GameAdapter: Send + Sync + 'static {
     /// Creates a fresh authoritative state for a new room.
     fn initial_state(&self) -> Self::State;
     /// Parses a browser-provided JSON action into the game-specific action type.
-    fn parse_action(&self, action: Value) -> Result<Self::Action>;
+    fn parse_action(&self, action: Value) -> Result<Self::Action> {
+        Ok(serde_json::from_value(action)?)
+    }
     /// Validates that an action is legal for the given state and player role.
     fn validate_action(
         &self,

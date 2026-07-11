@@ -6,6 +6,7 @@ use super::level::{
     room_exits, Position,
 };
 
+/// Typed Space Game action accepted by the reusable Parlando server boundary.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "type")]
 pub enum SpaceAction {
@@ -44,6 +45,7 @@ pub enum SpaceAction {
 }
 
 impl SpaceAction {
+    /// Returns the player encoded in this action, when the action is player-scoped.
     pub fn player(&self) -> Option<&str> {
         match self {
             Self::MoveStep { player, .. }
@@ -63,6 +65,7 @@ impl SpaceAction {
         }
     }
 
+    /// Returns the client protocol action type string for this typed action.
     pub fn kind(&self) -> &'static str {
         match self {
             Self::MoveStep { .. } => "moveStep",
@@ -83,6 +86,7 @@ impl SpaceAction {
     }
 }
 
+/// Complete Space Game state as exchanged with the existing TypeScript client.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SpaceGameState {
     pub players: Players,
@@ -106,6 +110,7 @@ pub struct SpaceGameState {
     pub move_count: i64,
 }
 
+/// Session-local player states keyed by Space Game role.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Players {
     #[serde(rename = "A")]
@@ -114,6 +119,7 @@ pub struct Players {
     pub b: PlayerState,
 }
 
+/// Per-player position and room occupancy.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PlayerState {
     pub room: String,
@@ -122,6 +128,7 @@ pub struct PlayerState {
     pub plate_held: bool,
 }
 
+/// Fuse board state in the power room.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Fuses {
     pub blue: bool,
@@ -129,12 +136,14 @@ pub struct Fuses {
     pub red: bool,
 }
 
+/// Breaker state in the power room.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Breakers {
     pub main: bool,
     pub aux: bool,
 }
 
+/// Valve state in the valve room.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Valves {
     #[serde(rename = "A")]
@@ -144,6 +153,7 @@ pub struct Valves {
     pub floodgate: bool,
 }
 
+/// Battery sled state across charger and signal-array locations.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Battery {
     pub location: String,
@@ -151,6 +161,7 @@ pub struct Battery {
     pub spent: bool,
 }
 
+/// Role-private facts discovered while playing the Space Game.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Knowledge {
     #[serde(rename = "A")]
@@ -159,6 +170,7 @@ pub struct Knowledge {
     pub b: Vec<String>,
 }
 
+/// Observation knowledge with the other player's private facts filtered out.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FilteredKnowledge {
     #[serde(rename = "A")]
@@ -167,6 +179,7 @@ pub struct FilteredKnowledge {
     pub b: Vec<String>,
 }
 
+/// Derived system booleans shown by the client and used for launch prerequisites.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Systems {
@@ -181,6 +194,7 @@ pub struct Systems {
     pub ready_to_launch: bool,
 }
 
+/// Player-specific observation sent to one participant.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SpaceObservation {
     pub players: Players,
@@ -209,6 +223,7 @@ pub struct SpaceObservation {
     pub log: Vec<String>,
 }
 
+/// Human-readable game event emitted for one recipient after an action.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SpaceEvent {
     #[serde(rename = "type")]
@@ -218,6 +233,7 @@ pub struct SpaceEvent {
     pub text: String,
 }
 
+/// Completion summary persisted and sent when the beacon launches.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SpaceSummary {
     #[serde(rename = "beaconLaunched")]
@@ -227,6 +243,7 @@ pub struct SpaceSummary {
     pub systems: Systems,
 }
 
+/// Builds the initial Space Game state used for every new session.
 pub fn initial_state() -> SpaceGameState {
     SpaceGameState {
         players: Players {
@@ -281,6 +298,7 @@ pub fn initial_state() -> SpaceGameState {
     }
 }
 
+/// Computes derived system readiness from the stored game state.
 pub fn derive_systems(state: &SpaceGameState) -> Systems {
     let pump_powered = state.fuses.yellow && state.breakers.main && !state.oxygen_fan_tripped;
     let power_stable = state.fuses.blue && state.breakers.main && !state.battery.spent;
@@ -311,6 +329,7 @@ pub fn derive_systems(state: &SpaceGameState) -> Systems {
     }
 }
 
+/// Returns typed actions currently available to the given player.
 pub fn available_actions(state: &SpaceGameState, player: &str) -> Vec<SpaceAction> {
     let position = player_state(state, player).position;
     let mut actions = vec![];
@@ -373,6 +392,7 @@ pub fn available_actions(state: &SpaceGameState, player: &str) -> Vec<SpaceActio
     actions
 }
 
+/// Validates a typed action against the current state and player role.
 pub fn validate_action(state: &SpaceGameState, action: &SpaceAction, player: &str) -> Result<()> {
     if action.player() != Some(player) {
         bail!(
@@ -392,6 +412,7 @@ pub fn validate_action(state: &SpaceGameState, action: &SpaceAction, player: &st
     Ok(())
 }
 
+/// Applies one typed action and returns the next immutable game state.
 pub fn apply_action(state: &SpaceGameState, action: &SpaceAction) -> Result<SpaceGameState> {
     if matches!(action, SpaceAction::Reset { .. }) {
         return Ok(initial_state());
@@ -424,8 +445,11 @@ pub fn apply_action(state: &SpaceGameState, action: &SpaceAction) -> Result<Spac
         }
         SpaceAction::ChargeBattery { player } => charge_battery(&mut next, &before, player),
         SpaceAction::MoveBattery { player } => move_battery(&mut next, player),
-        SpaceAction::SetRelay { mode, .. } => next.relay = mode.clone(),
-        SpaceAction::CycleRelay { .. } => next.relay = next_relay(&next.relay).to_string(),
+        SpaceAction::SetRelay { mode, .. } => set_relay(&mut next, &before, mode, &mut effects),
+        SpaceAction::CycleRelay { player: _ } => {
+            let mode = next_relay(&next.relay).to_string();
+            set_relay(&mut next, &before, &mode, &mut effects);
+        }
         SpaceAction::RunDiagnostic { player } => {
             let diagnostic = diagnostic_for(&next, player);
             reveal(&mut next, player, diagnostic);
@@ -436,6 +460,7 @@ pub fn apply_action(state: &SpaceGameState, action: &SpaceAction) -> Result<Spac
     Ok(finalize(next, before, effects))
 }
 
+// Applies one grid step, including door and pressure-gate handling.
 fn apply_move_step(state: &mut SpaceGameState, before: &Systems, player: &str, direction: &str) {
     let current = player_state(state, player).position;
     let target = step(current, direction);
@@ -460,6 +485,7 @@ fn apply_move_step(state: &mut SpaceGameState, before: &Systems, player: &str, d
     }
 }
 
+// Moves directly between adjacent named rooms for legacy/client compatibility.
 fn apply_move(state: &mut SpaceGameState, before: &Systems, player: &str, room: &str) {
     let current_room = player_state(state, player).room.clone();
     if room_exits(&current_room).contains(&room) && (room != "airlock" || before.door_access) {
@@ -475,6 +501,7 @@ fn apply_move(state: &mut SpaceGameState, before: &Systems, player: &str, room: 
     }
 }
 
+// Toggles one fuse and records the system consequences of unsafe ordering.
 fn toggle_fuse(state: &mut SpaceGameState, player: &str, color: &str, effects: &mut Vec<String>) {
     match color {
         "yellow" => state.fuses.yellow = !state.fuses.yellow,
@@ -504,6 +531,7 @@ fn toggle_fuse(state: &mut SpaceGameState, player: &str, color: &str, effects: &
     }
 }
 
+// Toggles one breaker and records battery/fan side effects.
 fn toggle_breaker(state: &mut SpaceGameState, breaker: &str, effects: &mut Vec<String>) {
     if breaker == "aux" {
         state.breakers.aux = !state.breakers.aux;
@@ -532,6 +560,7 @@ fn toggle_breaker(state: &mut SpaceGameState, breaker: &str, effects: &mut Vec<S
     }
 }
 
+// Applies a valve change and records pressure/cooling side effects.
 fn set_valve(
     state: &mut SpaceGameState,
     before: &Systems,
@@ -569,6 +598,7 @@ fn set_valve(
     }
 }
 
+// Attempts to charge the battery, revealing diagnostics when prerequisites are missing.
 fn charge_battery(state: &mut SpaceGameState, before: &Systems, player: &str) {
     if before.charger_fed && state.battery.location == "charger" {
         state.battery.charged = true;
@@ -589,6 +619,7 @@ fn charge_battery(state: &mut SpaceGameState, before: &Systems, player: &str) {
     }
 }
 
+// Transfers the battery between the charger and the signal array.
 fn move_battery(state: &mut SpaceGameState, player: &str) {
     if state.battery.location == "charger" {
         if state.battery.charged {
@@ -613,6 +644,25 @@ fn move_battery(state: &mut SpaceGameState, player: &str) {
     }
 }
 
+// Points the signal relay and reveals early ARRAY-mode diagnostics.
+fn set_relay(state: &mut SpaceGameState, before: &Systems, mode: &str, effects: &mut Vec<String>) {
+    state.relay = mode.to_string();
+    effects.extend(["device:relay".to_string(), "room:signal".to_string()]);
+    if state.relay == "array" && !before.signal_routed {
+        reveal(
+            state,
+            "A",
+            "ARRAY mode should wait until charged battery and coolant are both ready.",
+        );
+        reveal(
+            state,
+            "B",
+            "A loop fault means relay mode was changed before the physical path was ready.",
+        );
+    }
+}
+
+// Attempts the final beacon launch and handles early-launch battery drain.
 fn launch_beacon(state: &mut SpaceGameState, before: &Systems, player: &str) {
     if before.ready_to_launch {
         state.beacon_launched = true;
@@ -626,6 +676,7 @@ fn launch_beacon(state: &mut SpaceGameState, before: &Systems, player: &str) {
     }
 }
 
+// Applies shared post-action bookkeeping such as visual effects and move count.
 fn finalize(
     mut state: SpaceGameState,
     before: Systems,
@@ -651,6 +702,7 @@ fn finalize(
     state
 }
 
+// Adds a role-private knowledge item once.
 fn reveal(state: &mut SpaceGameState, player: &str, text: &str) {
     let items = if player == "B" {
         &mut state.knowledge.b
@@ -662,6 +714,7 @@ fn reveal(state: &mut SpaceGameState, player: &str, text: &str) {
     }
 }
 
+// Chooses the current diagnostic report for a player from derived system state.
 fn diagnostic_for(state: &SpaceGameState, player: &str) -> &'static str {
     let systems = derive_systems(state);
     if !systems.power_stable {
@@ -712,6 +765,7 @@ fn diagnostic_for(state: &SpaceGameState, player: &str) -> &'static str {
     }
 }
 
+// Computes a one-cell grid step for movement actions.
 fn step(position: Position, direction: &str) -> Position {
     let (dx, dy) = match direction {
         "down" => (0, 1),
@@ -725,6 +779,7 @@ fn step(position: Position, direction: &str) -> Position {
     }
 }
 
+// Advances the relay through its client-visible cycle.
 fn next_relay(relay: &str) -> &'static str {
     match relay {
         "bypass" => "loop",
@@ -733,6 +788,7 @@ fn next_relay(relay: &str) -> &'static str {
     }
 }
 
+// Returns the immutable player state for a role, defaulting to A for legacy input.
 fn player_state<'a>(state: &'a SpaceGameState, player: &str) -> &'a PlayerState {
     if player == "B" {
         &state.players.b
@@ -741,6 +797,7 @@ fn player_state<'a>(state: &'a SpaceGameState, player: &str) -> &'a PlayerState 
     }
 }
 
+// Returns the mutable player state for a role, defaulting to A for legacy input.
 fn player_state_mut<'a>(state: &'a mut SpaceGameState, player: &str) -> &'a mut PlayerState {
     if player == "B" {
         &mut state.players.b
@@ -891,5 +948,89 @@ mod tests {
             serde_json::to_value(expected).unwrap(),
             json!({"type": "toggleFuse", "player": "A", "color": "blue"})
         );
+    }
+
+    #[test]
+    fn state_serializes_with_client_compatible_field_names() {
+        let state = initial_state();
+        let value = serde_json::to_value(state).unwrap();
+
+        assert_eq!(value["players"]["A"]["room"], "power");
+        assert_eq!(value["players"]["B"]["position"], json!({"x": 9, "y": 6}));
+        assert_eq!(value["overrideHeld"], false);
+        assert_eq!(value["oxygenFanTripped"], false);
+        assert_eq!(value["beaconLaunched"], false);
+        assert_eq!(value["moveCount"], 0);
+        assert!(value.get("override_held").is_none());
+        assert!(value.get("move_count").is_none());
+    }
+
+    #[test]
+    fn adapter_events_include_action_and_recipient_knowledge_delta() {
+        let adapter = SpaceGameAdapter::new();
+        let before = initial_state();
+        let after = apply_action(
+            &before,
+            &SpaceAction::ChargeBattery {
+                player: "A".to_string(),
+            },
+        )
+        .unwrap();
+
+        let events_a = adapter.events_for_action(
+            &before,
+            &after,
+            &SpaceAction::ChargeBattery {
+                player: "A".to_string(),
+            },
+            PlayerRole::A,
+        );
+        let events_b = adapter.events_for_action(
+            &before,
+            &after,
+            &SpaceAction::ChargeBattery {
+                player: "A".to_string(),
+            },
+            PlayerRole::B,
+        );
+
+        assert!(events_a
+            .iter()
+            .any(|event| event.event_type == "action" && event.text.starts_with("You ")));
+        assert!(events_b
+            .iter()
+            .any(|event| event.event_type == "action" && event.text.starts_with("Player A ")));
+        assert!(events_a.iter().any(|event| event.event_type == "knowledge"));
+        assert!(!events_b.iter().any(|event| event.event_type == "knowledge"));
+    }
+
+    #[test]
+    fn early_array_relay_reveals_python_compatible_diagnostics() {
+        let state = apply(vec![SpaceAction::SetRelay {
+            player: "B".to_string(),
+            mode: "array".to_string(),
+        }]);
+
+        assert!(state.knowledge.a.contains(
+            &"ARRAY mode should wait until charged battery and coolant are both ready.".to_string()
+        ));
+        assert!(state.knowledge.b.contains(
+            &"A loop fault means relay mode was changed before the physical path was ready."
+                .to_string()
+        ));
+        assert_eq!(state.visual_effects, vec!["device:relay", "room:signal"]);
+    }
+
+    #[test]
+    fn completion_summary_serializes_with_client_shape() {
+        let adapter = SpaceGameAdapter::new();
+        let state = initial_state();
+        let summary = adapter.completion_summary(&state);
+        let value = serde_json::to_value(summary).unwrap();
+
+        assert_eq!(value["beaconLaunched"], false);
+        assert_eq!(value["moveCount"], 0);
+        assert_eq!(value["systems"]["readyToLaunch"], false);
+        assert!(value.get("beacon_launched").is_none());
     }
 }

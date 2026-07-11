@@ -596,7 +596,6 @@ where
     A::State: Serialize,
 {
     require_consent(&state, &request.participant_session_id).await?;
-    let force_role = parse_seat(request.force_role.as_deref()).unwrap_or(Seat::A);
     let (room_id, role) = {
         let mut memory = state.memory.write().await;
         create_room_locked(
@@ -604,7 +603,7 @@ where
             &mut memory,
             request.participant_session_id.clone(),
             request.mode,
-            force_role,
+            Seat::A,
             Some(state.config.study.name.clone()),
         )
     }?;
@@ -639,7 +638,7 @@ where
     A::State: Serialize,
 {
     require_consent(&state, &request.participant_session_id).await?;
-    let role = {
+    let (role, newly_joined) = {
         let mut memory = state.memory.write().await;
         let existing_role = memory
             .rooms
@@ -649,7 +648,7 @@ where
             .get(&request.participant_session_id)
             .map(|existing| existing.role);
         if let Some(existing_role) = existing_role {
-            existing_role
+            (existing_role, false)
         } else {
             let consent_decisions = memory
                 .participants
@@ -666,8 +665,7 @@ where
                 .rooms
                 .get_mut(&room_id)
                 .ok_or_else(|| AppError::not_found("Room not found."))?;
-            let role = parse_seat(request.force_role.as_deref())
-                .or_else(|| next_role(room))
+            let role = next_role(room)
                 .ok_or_else(|| AppError::forbidden("Room already has two players."))?;
             room.participants.insert(
                 request.participant_session_id.clone(),
@@ -681,28 +679,24 @@ where
                     updated_at: now_iso(),
                 },
             );
-            if room
-                .participants
-                .values()
-                .filter(|p| p.role.player_role().is_some())
-                .count()
-                == 2
-            {
+            if room.participants.values().count() == 2 {
                 room.status = "playing".to_string();
             }
-            role
+            (role, true)
         }
     };
-    persist_session_participant(&state, &room_id, &request.participant_session_id).await?;
-    persist_session_event(
-        &state,
-        &room_id,
-        Some(&request.participant_session_id),
-        "participant_joined",
-        json!({"role": role.as_str()}),
-        None,
-    )
-    .await;
+    if newly_joined {
+        persist_session_participant(&state, &room_id, &request.participant_session_id).await?;
+        persist_session_event(
+            &state,
+            &room_id,
+            Some(&request.participant_session_id),
+            "participant_joined",
+            json!({"role": role.as_str()}),
+            None,
+        )
+        .await;
+    }
     Ok(Json(
         room_response(
             &state,
@@ -1092,21 +1086,16 @@ where
         .rooms
         .get(room_id)
         .ok_or_else(|| AppError::not_found("Room not found."))?;
-    let (observation, available_actions) = if let Some(player) = role.player_role() {
-        (
-            Some(protocol_json(
-                &state.adapter.observe_state(&room.state, player),
-            )?),
-            state
-                .adapter
-                .available_actions(&room.state, player)
-                .into_iter()
-                .map(|action| protocol_json(&action))
-                .collect::<Result<Vec<_>, _>>()?,
-        )
-    } else {
-        (Some(protocol_json(&room.state)?), vec![])
-    };
+    let player = role.player_role();
+    let observation = Some(protocol_json(
+        &state.adapter.observe_state(&room.state, player),
+    )?);
+    let available_actions = state
+        .adapter
+        .available_actions(&room.state, player)
+        .into_iter()
+        .map(|action| protocol_json(&action))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(RoomResponse {
         room_id: room_id.to_string(),
         participant_session_id: participant_session_id.to_string(),
@@ -1768,9 +1757,7 @@ async fn submit_action<A: GameAdapter>(
 where
     A::State: Serialize,
 {
-    let player = role
-        .player_role()
-        .ok_or_else(|| anyhow!("Only player roles can submit game actions."))?;
+    let player = role.player_role();
     let (before, after, events, completed, summary) = {
         let mut memory = state.memory.write().await;
         let room = memory
@@ -1781,7 +1768,7 @@ where
             .participants
             .values()
             .filter(|p| p.connected)
-            .filter_map(|p| p.role.player_role())
+            .map(|p| p.role.player_role())
             .collect::<HashSet<_>>();
         if connected_roles != HashSet::from([PlayerRole::A, PlayerRole::B]) {
             return Err(anyhow!("Room is waiting for both players to connect."));
@@ -1890,7 +1877,6 @@ where
             .map(|room| {
                 room.participants
                     .values()
-                    .filter(|participant| participant.role.player_role().is_some())
                     .filter(|participant| {
                         memory
                             .participants
@@ -1972,9 +1958,7 @@ async fn maybe_start_agent<A: GameAdapter>(
                 let Some(room) = memory.rooms.get(&room_id) else {
                     break;
                 };
-                let Some(player) = role.player_role() else {
-                    break;
-                };
+                let player = role.player_role();
                 (
                     state.adapter.observe_state(&room.state, player),
                     state.adapter.available_actions(&room.state, player),
@@ -2159,14 +2143,6 @@ async fn participant_role<A: GameAdapter>(
         .ok_or_else(|| AppError::forbidden("Participant is not in this room."))
 }
 
-fn parse_seat(value: Option<&str>) -> Option<Seat> {
-    match value {
-        Some("A") => Some(Seat::A),
-        Some("B") => Some(Seat::B),
-        _ => None,
-    }
-}
-
 fn next_role<S>(room: &GameRoom<S>) -> Option<Seat> {
     let roles = room
         .participants
@@ -2214,12 +2190,7 @@ async fn voice_message<A: GameAdapter>(state: &Arc<AppState<A>>, room_id: &str) 
         .await
         .rooms
         .get(room_id)
-        .map(|room| {
-            room.participants
-                .values()
-                .filter(|p| p.role.player_role().is_some())
-                .count()
-        })
+        .map(|room| room.participants.values().count())
         .unwrap_or(0);
     ServerMessage {
         room_id: Some(room_id.to_string()),
@@ -2327,10 +2298,6 @@ mod tests {
             TinyState { done: false }
         }
 
-        fn parse_action(&self, action: Value) -> Result<Self::Action> {
-            Ok(serde_json::from_value(action)?)
-        }
-
         fn validate_action(
             &self,
             _state: &Self::State,
@@ -2416,6 +2383,16 @@ mod tests {
         }
     }
 
+    fn sqlite_config() -> (ExperimentConfig, tempfile::TempDir) {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = step_five_config();
+        config.database.url = format!(
+            "sqlite:///{}",
+            temp.path().join("server-core.sqlite").display()
+        );
+        (config, temp)
+    }
+
     async fn json_request(
         router: Router,
         method: http::Method,
@@ -2459,6 +2436,16 @@ mod tests {
             .to_string()
     }
 
+    async fn create_participant_with_payload(router: Router, body: Value) -> String {
+        let (status, response) =
+            json_request(router, http::Method::POST, "/api/participants", body).await;
+        assert_eq!(status, StatusCode::OK);
+        response["participant_session_id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
     async fn consent_participant(router: Router, participant_session_id: &str) {
         let (status, _response) = json_request(
             router,
@@ -2471,6 +2458,103 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn health_and_public_config_expose_client_bootstrap_shape() {
+        let mut config = step_five_config();
+        config.study.name = "Bootstrap Study".to_string();
+        config.livekit.enabled = true;
+        config.livekit.url = "wss://livekit.example.test".to_string();
+        config.transcription.enabled = true;
+        config.tts.enabled = true;
+        config.tts.voice_id = "voice-1".to_string();
+        config.tts.api_key = "tts-secret".to_string();
+        config.tts.voice_name = "Agent Voice".to_string();
+        let router = build_router(TinyAdapter, config, ServeOptions::default())
+            .await
+            .unwrap();
+
+        let (health_status, health) =
+            json_request(router.clone(), http::Method::GET, "/health", Value::Null).await;
+        assert_eq!(health_status, StatusCode::OK);
+        assert_eq!(health["status"], "ok");
+
+        let (config_status, public_config) =
+            json_request(router, http::Method::GET, "/api/config", Value::Null).await;
+        assert_eq!(config_status, StatusCode::OK);
+        assert_eq!(public_config["study_name"], "Bootstrap Study");
+        assert_eq!(public_config["require_consent"], true);
+        assert_eq!(public_config["consents"][0]["id"], "study");
+        assert_eq!(public_config["livekit"]["enabled"], true);
+        assert_eq!(
+            public_config["livekit"]["url"],
+            "wss://livekit.example.test"
+        );
+        assert_eq!(public_config["transcription"]["enabled"], true);
+        assert_eq!(public_config["tts"]["voice_name"], "Agent Voice");
+        assert_eq!(public_config["conversation"]["enabled"], true);
+    }
+
+    #[tokio::test]
+    async fn direct_participant_creation_respects_direct_enabled_flag() {
+        let mut config = step_five_config();
+        config.direct.enabled = false;
+        let router = build_router(TinyAdapter, config, ServeOptions::default())
+            .await
+            .unwrap();
+
+        let (status, response) = json_request(
+            router,
+            http::Method::POST,
+            "/api/participants",
+            json!({"source": "direct", "display_name": "Blocked"}),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(response["raw"], "Direct mode is disabled.");
+    }
+
+    #[tokio::test]
+    async fn participant_external_identity_reuses_durable_export_row() {
+        let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+            .await
+            .unwrap();
+        let first = create_participant_with_payload(
+            router.clone(),
+            json!({
+                "source": "prolific",
+                "external_id": "PROLIFIC-1",
+                "display_name": "First",
+                "metadata": {"cohort": "pilot"}
+            }),
+        )
+        .await;
+        let second = create_participant_with_payload(
+            router.clone(),
+            json!({
+                "source": "prolific",
+                "external_id": "PROLIFIC-1",
+                "display_name": "Return",
+                "metadata": {"cohort": "followup"}
+            }),
+        )
+        .await;
+
+        assert_ne!(first, second);
+        let (export_status, export) =
+            json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
+        assert_eq!(export_status, StatusCode::OK);
+        let prolific_rows = export["participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| {
+                row["identity_provider"] == "prolific" && row["external_id"] == "PROLIFIC-1"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(prolific_rows.len(), 1);
     }
 
     #[tokio::test]
@@ -2502,6 +2586,39 @@ mod tests {
         assert_eq!(room["participant_session_id"], participant_session_id);
         assert_eq!(room["role"], "A");
         assert!(room["room_id"].as_str().is_some_and(|id| !id.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn required_consent_must_be_accepted_not_only_declared() {
+        let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+            .await
+            .unwrap();
+        let participant_session_id = create_direct_participant(router.clone(), "Nope").await;
+        let (consent_status, _consent_response) = json_request(
+            router.clone(),
+            http::Method::POST,
+            "/api/consent",
+            json!({
+                "participant_session_id": participant_session_id,
+                "decisions": {"study": false}
+            }),
+        )
+        .await;
+        assert_eq!(consent_status, StatusCode::OK);
+
+        let (room_status, response) = json_request(
+            router,
+            http::Method::POST,
+            "/api/rooms",
+            json!({"participant_session_id": participant_session_id}),
+        )
+        .await;
+
+        assert_eq!(room_status, StatusCode::FORBIDDEN);
+        assert!(response["raw"]
+            .as_str()
+            .unwrap()
+            .contains("Consent is required"));
     }
 
     #[tokio::test]
@@ -2553,6 +2670,173 @@ mod tests {
         )
         .await;
         assert_eq!(join_c_status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn adversarial_sqlite_rejoin_does_not_duplicate_session_participants() {
+        let (config, _temp) = sqlite_config();
+        let router = build_router(TinyAdapter, config, ServeOptions::default())
+            .await
+            .unwrap();
+        let a = create_direct_participant(router.clone(), "A").await;
+        let b = create_direct_participant(router.clone(), "B").await;
+        consent_participant(router.clone(), &a).await;
+        consent_participant(router.clone(), &b).await;
+        let (_, created) = json_request(
+            router.clone(),
+            http::Method::POST,
+            "/api/rooms",
+            json!({"participant_session_id": a}),
+        )
+        .await;
+        let room_id = created["room_id"].as_str().unwrap().to_string();
+
+        for _ in 0..3 {
+            let (status, joined) = json_request(
+                router.clone(),
+                http::Method::POST,
+                &format!("/api/rooms/{room_id}/join"),
+                json!({"participant_session_id": b}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(joined["role"], "B");
+        }
+
+        let (export_status, export) =
+            json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
+        assert_eq!(export_status, StatusCode::OK);
+        assert_eq!(export["session_participants"].as_array().unwrap().len(), 2);
+        let participant_joined_count = export["session_events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["event_type"] == "participant_joined")
+            .count();
+        assert_eq!(
+            participant_joined_count, 2,
+            "rejoining must not create a new participant_joined event"
+        );
+    }
+
+    #[tokio::test]
+    async fn adversarial_room_join_requires_known_participant_and_room() {
+        let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+            .await
+            .unwrap();
+        let participant = create_direct_participant(router.clone(), "Known").await;
+        consent_participant(router.clone(), &participant).await;
+        let (missing_room_status, missing_room) = json_request(
+            router.clone(),
+            http::Method::POST,
+            "/api/rooms/not-a-room/join",
+            json!({"participant_session_id": participant}),
+        )
+        .await;
+        assert_eq!(missing_room_status, StatusCode::NOT_FOUND);
+        assert_eq!(missing_room["raw"], "Room not found.");
+
+        let (missing_participant_status, missing_participant) = json_request(
+            router,
+            http::Method::POST,
+            "/api/rooms/not-a-room/join",
+            json!({"participant_session_id": "participant-session-does-not-exist"}),
+        )
+        .await;
+        assert_eq!(missing_participant_status, StatusCode::NOT_FOUND);
+        assert_eq!(missing_participant["raw"], "Participant session not found.");
+    }
+
+    #[tokio::test]
+    async fn adversarial_room_routes_reject_caller_controlled_role_fields() {
+        let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+            .await
+            .unwrap();
+        let a = create_direct_participant(router.clone(), "A").await;
+        let b = create_direct_participant(router.clone(), "B").await;
+        consent_participant(router.clone(), &a).await;
+        consent_participant(router.clone(), &b).await;
+        let (create_status, create_response) = json_request(
+            router.clone(),
+            http::Method::POST,
+            "/api/rooms",
+            json!({"participant_session_id": a, "role": "B"}),
+        )
+        .await;
+        assert_eq!(create_status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(create_response["raw"]
+            .as_str()
+            .unwrap()
+            .contains("unknown field `role`"));
+
+        let (_, created) = json_request(
+            router.clone(),
+            http::Method::POST,
+            "/api/rooms",
+            json!({"participant_session_id": a}),
+        )
+        .await;
+        let room_id = created["room_id"].as_str().unwrap().to_string();
+
+        let (join_status, join_response) = json_request(
+            router,
+            http::Method::POST,
+            &format!("/api/rooms/{room_id}/join"),
+            json!({"participant_session_id": b, "role": "A"}),
+        )
+        .await;
+        assert_eq!(join_status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(join_response["raw"]
+            .as_str()
+            .unwrap()
+            .contains("unknown field `role`"));
+    }
+
+    #[tokio::test]
+    async fn room_routes_persist_evaluation_session_and_join_events() {
+        let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+            .await
+            .unwrap();
+        let a = create_direct_participant(router.clone(), "A").await;
+        let b = create_direct_participant(router.clone(), "B").await;
+        consent_participant(router.clone(), &a).await;
+        consent_participant(router.clone(), &b).await;
+        let (_, created) = json_request(
+            router.clone(),
+            http::Method::POST,
+            "/api/rooms",
+            json!({"participant_session_id": a}),
+        )
+        .await;
+        let room_id = created["room_id"].as_str().unwrap().to_string();
+        let (_, _joined) = json_request(
+            router.clone(),
+            http::Method::POST,
+            &format!("/api/rooms/{room_id}/join"),
+            json!({"participant_session_id": b}),
+        )
+        .await;
+
+        let (export_status, export) =
+            json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
+        assert_eq!(export_status, StatusCode::OK);
+        assert_eq!(export["sessions"].as_array().unwrap().len(), 1);
+        assert_eq!(export["sessions"][0]["room_id"], room_id);
+        assert_eq!(export["session_participants"].as_array().unwrap().len(), 2);
+        let event_types = export["session_events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["event_type"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            event_types,
+            vec![
+                "session_created",
+                "participant_joined",
+                "participant_joined"
+            ]
+        );
     }
 
     #[tokio::test]

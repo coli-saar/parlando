@@ -71,17 +71,17 @@ pub struct ConsentRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateRoomRequest {
     pub participant_session_id: String,
     #[serde(default = "default_direct")]
     pub mode: String,
-    pub force_role: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct JoinRoomRequest {
     pub participant_session_id: String,
-    pub force_role: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
