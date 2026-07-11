@@ -46,7 +46,7 @@ pub trait AgentFactory<A: GameAdapter>: Send + Sync + 'static {
   - maps remote selectors such as `remote_grpc` to a reusable `RemoteGrpcAgentFactory`
   - fails clearly on unknown selectors
 - Define a language-neutral gRPC remote-agent protocol for agent init, act requests, act results, errors, and cleanup. Game-specific observations/actions cross the network as protobuf `Struct`/JSON-compatible values; inside the Rust binary they remain typed.
-- Provide a Python SDK/server wrapper so Python agent authors implement a clean async `act(observation, available_actions, context)` API rather than hand-writing protocol code.
+- Provide a Python SDK/server wrapper so Python agent authors implement a clean async `act(observation, available_actions)` API rather than hand-writing protocol code.
 - The reusable server owns agent lifecycle behavior:
   - create an agent participant in role `B`
   - call the factory once per agent participant

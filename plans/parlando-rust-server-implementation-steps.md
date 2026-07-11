@@ -4,6 +4,13 @@
 
 Implement Parlando as a fresh Rust workspace with two crates: `parlando-server` for reusable server/runtime behavior and `parlando-space-game` for the concrete Space Game adapter, state engine, binary, and agent factories. Build in vertical slices so each phase compiles, has tests, and preserves the existing TypeScript client contract.
 
+## Current Status
+
+- Steps 1-11 are implemented and covered by automated Rust tests, including mock browser flows and a mock gRPC remote-agent service.
+- Step 12 has a Rust LiveKit audio publisher wired behind `AgentAudioPublisher`, plus an ignored RTC PCM conversation test that passed locally on macOS after retaining WebRTC Objective-C categories with final-link `-ObjC`. Audible browser verification and Linux/deployment RTC validation remain incomplete.
+- Step 13 is implemented for static serving, CLI/env port precedence, Docker packaging, and Render configuration. A production deploy smoke test remains to be run with the real frontend dist.
+- Step 14 is complete for automated Rust validation and ignored live-service tests. It is not complete for actual TypeScript browser drop-in validation.
+
 ## Implementation Steps
 
 ### 1. Workspace Skeleton
@@ -83,7 +90,7 @@ Implement Parlando as a fresh Rust workspace with two crates: `parlando-server` 
 - Add a transport-agnostic remote agent backend using gRPC as the first network protocol, so agents can be implemented in Python or other languages without changing the Rust-side agent runtime.
 - Define a `parlando-agent-protocol.proto` contract for agent initialization, action requests, action results, errors, and optional shutdown/cleanup. Use protobuf `Struct`/JSON-compatible fields at the process boundary for game-specific observations, available actions, and returned actions.
 - Implement a `RemoteGrpcAgentFactory` that satisfies the same Rust-side `AgentFactory<A>`/`GameAgent<A>` interface as in-process agents. The server runtime should not know whether an agent is local Rust or remote gRPC.
-- Provide a Python agent SDK/server wrapper that hides gRPC details behind a clean Python API where authors implement an async `act(observation, available_actions, context)` method.
+- Provide a Python agent SDK/server wrapper that hides gRPC details behind a clean Python API where authors implement an async `act(observation, available_actions)` method.
 - Run the agent loop with readiness waiting, act timeout, invalid action limit, last error tracking, completion awareness, conversation history, and normal room action submission.
 - Persist agent lifecycle, actions, messages, and errors.
 - Persist remote-agent identity as `participant_kind = agent`, `identity_provider = remote_grpc`, and `external_id = <agent_name>@<agent_version>`; store protocol version and config hash in metadata, but never secrets.

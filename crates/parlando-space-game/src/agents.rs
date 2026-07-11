@@ -5,8 +5,12 @@ use std::{
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
-use parlando_server::{AgentFactory, AgentInitContext, AgentResult, ExperimentConfig, GameAgent};
+use parlando_server::{
+    AgentFactory, AgentInitContext, AgentResult, ExperimentConfig, GameAgent,
+    RemoteGrpcAgentConfig, RemoteGrpcAgentFactory,
+};
 use rand::{rngs::StdRng, Rng, SeedableRng};
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
@@ -35,8 +39,52 @@ pub fn factory_from_config(
                 config: human_vs_agent.config.clone(),
             })))
         }
+        "remote_grpc" | "parlando.remote_grpc" => {
+            let config = RemoteAgentSelectorConfig::from_value(
+                human_vs_agent.config.clone(),
+                human_vs_agent.act_timeout_seconds,
+            )?;
+            Ok(Some(Arc::new(
+                RemoteGrpcAgentFactory::<SpaceGameAdapter>::new(config),
+            )))
+        }
         other => bail!("unknown Space Game agent factory selector: {other}"),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoteAgentSelectorConfig {
+    endpoint: String,
+    #[serde(default = "default_remote_agent_name")]
+    agent_name: String,
+    #[serde(default = "default_remote_agent_version")]
+    agent_version: String,
+    #[serde(default = "default_remote_agent_protocol")]
+    protocol_version: String,
+}
+
+impl RemoteAgentSelectorConfig {
+    // Converts YAML agent config into the reusable remote gRPC factory config.
+    fn from_value(value: Value, act_timeout_seconds: f64) -> Result<RemoteGrpcAgentConfig> {
+        let selector: Self = serde_json::from_value(value)?;
+        let mut config = RemoteGrpcAgentConfig::new(selector.endpoint, selector.agent_name);
+        config.agent_version = selector.agent_version;
+        config.protocol_version = selector.protocol_version;
+        config.request_timeout = Duration::from_secs_f64(act_timeout_seconds.max(0.1));
+        Ok(config)
+    }
+}
+
+fn default_remote_agent_name() -> String {
+    "space-game-remote-agent".to_string()
+}
+
+fn default_remote_agent_version() -> String {
+    "dev".to_string()
+}
+
+fn default_remote_agent_protocol() -> String {
+    "parlando-agent-v1".to_string()
 }
 
 /// Factory for the simple deterministic Space Game back-and-forth agent.
@@ -175,6 +223,26 @@ mod tests {
 
             assert!(factory_from_config(&config).unwrap().is_some());
         }
+    }
+
+    #[test]
+    fn factory_from_config_accepts_remote_grpc_selector() {
+        let mut config = ExperimentConfig::default();
+        config.agents = AgentsConfig {
+            mode: AgentsMode::HumanVsAgent,
+            human_vs_agent: Some(HumanVsAgentConfig {
+                factory: Some("remote_grpc".to_string()),
+                act_timeout_seconds: 0.5,
+                config: serde_json::json!({
+                    "endpoint": "http://127.0.0.1:50051",
+                    "agent_name": "test-python-agent",
+                    "agent_version": "v1"
+                }),
+                ..HumanVsAgentConfig::default()
+            }),
+        };
+
+        assert!(factory_from_config(&config).unwrap().is_some());
     }
 
     #[test]

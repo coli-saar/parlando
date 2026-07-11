@@ -7,6 +7,29 @@ use serde_json::Value;
 
 use crate::game::GameAdapter;
 
+/// Durable identity metadata used when an agent participant is inserted.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AgentParticipantIdentity {
+    /// Identity provider stored in the durable participants table.
+    pub identity_provider: String,
+    /// Stable external id stored in the durable participants table.
+    pub external_id: Option<String>,
+    /// Non-secret metadata stored with the durable participant row.
+    #[serde(default)]
+    pub metadata: Value,
+}
+
+impl Default for AgentParticipantIdentity {
+    /// Creates the default identity used by local in-process agents.
+    fn default() -> Self {
+        Self {
+            identity_provider: "agent".to_string(),
+            external_id: None,
+            metadata: Value::Null,
+        }
+    }
+}
+
 /// Context passed to an agent factory when a new agent participant is created.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AgentInitContext {
@@ -54,6 +77,11 @@ pub trait GameAgent<A: GameAdapter>: Send {
 pub trait AgentFactory<A: GameAdapter>: Send + Sync + 'static {
     /// Instantiates one mutable agent for a room participant.
     fn create(&self, context: AgentInitContext) -> Result<Box<dyn GameAgent<A> + Send>>;
+
+    /// Returns durable participant identity metadata for agents created by this factory.
+    fn participant_identity(&self) -> AgentParticipantIdentity {
+        AgentParticipantIdentity::default()
+    }
 }
 
 /// Shared trait-object handle used by the reusable server.

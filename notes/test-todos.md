@@ -41,13 +41,13 @@ Steps 5-11 are complete at the Rust server-library level, but the server still n
 
 ## Remote Agent Tests
 
-- Implement and test the planned gRPC remote-agent bridge.
-- Add a small Python remote-agent test server using the intended clean Python API.
+- Install the Python SDK test dependencies and run a small Python remote-agent process using the intended clean Python API.
 - Verify remote-agent latency and throughput are acceptable for reinforcement-learning-style usage.
 - Verify remote-agent failures, disconnects, invalid actions, and timeouts are persisted as session events.
+- Add a remote-agent config hash to exported metadata if experiment reproducibility requires it.
 
 ## Live Audio And Deployment Tests
 
-- Prove browser audio in a real LiveKit room with Rust-minted tokens.
-- Decide and test the LiveKit agent-audio publishing path or documented sidecar fallback.
+- Run the ignored LiveKit RTC PCM and game-room agent-voice tests on Linux or the deployment platform.
+- Prove browser audio in a real LiveKit room with Rust-minted tokens and the `agent-voice` publisher.
 - Add packaging and deployment smoke tests for static serving and production startup.

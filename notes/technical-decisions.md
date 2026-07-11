@@ -206,3 +206,144 @@ Agent messages need text-to-speech diagnostics and, eventually, audio publishing
 ## Risks And Follow-Up
 
 - Once audio publishing is integrated, diagnostics should include publish latency and LiveKit track/packet metadata.
+
+# Remote gRPC Agent Bridge
+
+## Context
+
+Parlando needs agents that can be written in Python or other languages while the Rust server remains authoritative for rooms, state transitions, validation, persistence, and completion. This is especially important for future reinforcement-learning loops where the transport should be structured and efficient.
+
+## Chosen Approach
+
+The reusable server now includes a tonic/protobuf gRPC bridge:
+
+- `crates/parlando-server/proto/parlando_agent_v1.proto` defines the language-neutral service.
+- `RemoteGrpcAgentFactory<A>` implements the same `AgentFactory<A>` trait used by in-process agents.
+- `RemoteGrpcAgent` sends `CreateAgent` once per room agent and `Act` calls afterward.
+- Observations, available actions, and returned actions cross the process boundary as protobuf `Struct` values.
+- Returned actions are deserialized into the game-specific Rust action type and validated through the normal runtime before changing state.
+- Protobuf `Struct` represents numbers as doubles. The Rust bridge converts finite integral doubles back to JSON integers when deserializing returned actions so typed integer action fields keep working in normal cases.
+
+## Tradeoffs
+
+This preserves a clean Rust runtime boundary and gives Python agents a stable target, but it still uses JSON-compatible protobuf `Struct` for game-specific data. That is acceptable at the network boundary; it should not leak into in-process game state or action handling.
+
+## Follow-Up
+
+- Add a real Python-process integration test after installing SDK runtime dependencies.
+- Add a remote-agent config hash to participant metadata if needed for experiment reproducibility.
+
+## Update
+
+The Python SDK wrapper now lives under `python/parlando-agent-sdk`, and remote gRPC participant exports now record `identity_provider = remote_grpc` plus `<agent_name>@<agent_version>`. A config hash is still not recorded.
+
+# Static Serving And Deployment Packaging
+
+## Context
+
+The Rust server should be able to serve the existing TypeScript client as a drop-in backend/frontend bundle, but this Rust workspace does not currently contain the frontend source tree.
+
+## Chosen Approach
+
+Static serving remains runtime-configured through `server.client_dist_path`. When the path contains `index.html`, the server serves `/assets/*`, `/`, and SPA fallback paths while preserving backend `/api/*` and `/ws/*` routes. Deployment packaging builds the Rust binary and can serve a frontend build copied into `/app/client-dist`.
+
+## Tradeoffs
+
+The Dockerfile is honest about this workspace boundary: it builds the Rust binary and includes a Render-safe config, but it does not build a frontend that is not present in the Docker context. A production image that bundles the UI should either include the frontend source in the context or copy a prebuilt client dist into `/app/client-dist`.
+
+## Follow-Up
+
+- Decide where the TypeScript client source lives relative to the production Docker context.
+- Add a deploy smoke test that starts the container with a real `client_dist_path` and verifies browser navigation.
+
+# Agent Audio Publishing
+
+## Context
+
+Agent TTS should become audible in the LiveKit room instead of only producing diagnostics. The publisher needs to be separate from TTS so tests can mock it and so a sidecar remains possible if native RTC publishing is not reliable.
+
+## Chosen Approach
+
+The server now uses `AgentAudioPublisher` as the narrow boundary. `LiveKitAgentAudioPublisher` connects as a short-lived `agent-voice` participant, publishes a native LiveKit audio track, waits for LiveKit to confirm that at least one subscriber attached to the local track, submits raw PCM chunks via `NativeAudioSource`, and records publish diagnostics through the normal TTS diagnostic event stream.
+
+## Tradeoffs
+
+This keeps Rust authoritative for state, messages, TTS, diagnostics, and tokens. Waiting for subscriber attachment avoids losing short finite TTS clips during LiveKit subscription negotiation, at the cost of failing the publish operation if no subscriber appears within the timeout. Agent audio publishing also depends on the native LiveKit Rust SDK. Local macOS validation exposed an Objective-C category retention issue in the final binary: the WebRTC static archive contained `NSString(AbslStringView)`, but the test executable initially omitted it and aborted during video encoder initialization. Passing `-ObjC` from the final-linking Parlando crates retains those categories and allows the RTC conversation test to pass on macOS.
+
+## Follow-Up
+
+- Run the ignored RTC PCM conversation test on Linux or Render-like infrastructure too, so the macOS fix is not the only native-platform validation.
+- Manually verify that browsers hear the `agent-voice` track.
+- Keep the sidecar option available if native Rust RTC remains unstable in developer environments.
+
+# Release Dependency Hygiene
+
+## Context
+
+Live-service tests use real LiveKit, Speechmatics, and ElevenLabs clients, but the release binary should not gain extra dependencies merely because tests need helpers. Cargo feature unification can also make a normal dependency heavier than intended if one crate enables broad defaults.
+
+## Chosen Approach
+
+Test-only direct dependencies remain under `dev-dependencies`. Production HTTP uses `reqwest` with `default-features = false` and `rustls-tls-webpki-roots`, matching the rest of the Rust TLS stack and avoiding accidental `native-tls` linkage.
+
+## Tradeoffs
+
+This makes TLS behavior more explicit and keeps the release graph cleaner. The release binary still includes LiveKit, tonic/prost, and tokio-tungstenite because those are production features: RTC agent audio publishing, remote gRPC agents, server WebSockets, Speechmatics, and ElevenLabs streaming.
+
+## Follow-Up
+
+- If we later want a smaller binary without RTC publishing or remote agents, add explicit Cargo features for those production capabilities rather than hiding them as test dependencies.
+
+# Waiting Room And STT Readiness
+
+## Context
+
+The server needs predictable start dynamics across human-human and human-agent rooms. Human-human games should not accept actions until both human players have connected. Human-agent games should create the agent participant at room creation time, but the agent should not start acting merely because the room exists. When Speechmatics transcription is enabled, game progression should wait until the human participant's audio session has finished initializing STT.
+
+## Chosen Approach
+
+Room-local runtime participants now track `connected` and `audio_ready`. Agents are marked audio-ready immediately. Human participants are marked audio-ready immediately unless Speechmatics transcription is enabled; in that case `/api/rooms/{room_id}/audio-session` marks the participant ready only after the Speechmatics temporary key has been minted. Game action submission and agent startup both use the same room-readiness predicate: both roles must be connected, and any human role that requires Speechmatics must be audio-ready.
+
+The client-facing sequence is deliberately explicit:
+
+1. Setup screens collect consent, participant name/identity, and microphone/audio setup.
+2. Waiting-room responses and waiting-room WebSocket messages may expose presence and voice readiness, but they do not include game observations or available actions.
+3. `roleAssigned` is the game-start payload. It is sent only after the room-readiness predicate is satisfied, and it carries the participant-specific observation and optional available actions. Reconnecting participants in an already-started room receive the same targeted payload.
+
+For human-human matchmaking, the first participant receives `status: "waiting"` even though the server may already have created an internal room/session handle. The second participant creates the visible match, and the first participant can poll status to obtain the client-facing `room_id` and role once the room is actually paired.
+
+## Tradeoffs
+
+`audio_ready` is active runtime coordination state, not a durable identity or evaluation field. The durable event stream records the timing with `voice_diagnostic` events such as `stt_initialized`, while active memory lets the WebSocket/game loop avoid repeated DB reads. Treating `roleAssigned` as the start/reconnect payload reuses an existing client concept instead of adding a new message type, but it means clients should not interpret it as a mere room-entry acknowledgement.
+
+## Follow-Up
+
+- Verify the actual TypeScript client calls `/audio-session` early enough in both human-human and human-agent flows.
+- If browser-side STT initialization can fail after a temporary key is minted, add an explicit client-to-server `sttReady` signal instead of treating successful `/audio-session` as readiness.
+
+# Audio Session Provider Boundary
+
+## Context
+
+The Python server built `/audio-session` responses inline, while the TypeScript client had the cleaner abstraction: an audio-session plan containing sink descriptions, with browser-side sink implementations for LiveKit and Speechmatics. Rust should keep the stable client contract but avoid treating LiveKit and Speechmatics as interchangeable STT services. LiveKit is realtime room transport; Speechmatics is a browser-side STT provider; the old `transcription.provider = livekit` mode is a server/worker STT architecture layered on LiveKit audio.
+
+## Chosen Approach
+
+The Rust server now has `audio_session` as a reusable module with typed planning boundaries:
+
+- `DefaultAudioSessionPlanner` composes partner audio and transcription pieces into the existing `AudioSessionPlanResponse`.
+- `PartnerAudioProvider` owns LiveKit partner-audio sink construction and token minting.
+- `TranscriptionProvider` owns provider-specific transcription sinks and readiness semantics.
+- `SpeechmaticsBrowserTranscriptionProvider` returns the `speechmatics-transcription` WebSocket sink and marks readiness as satisfied once the temporary key has been minted.
+- `LiveKitWorkerTranscriptionProvider` keeps transcription attached to the LiveKit sink and marks readiness as requiring an external worker/client signal.
+
+`app.rs` now handles room authorization and readiness side effects, but not provider-specific credential construction.
+
+## Tradeoffs
+
+This is not a generic "STT service" trait because that would blur transport and recognition responsibilities. The planner still emits JSON-compatible sink credentials because that is the public browser protocol boundary, but the server-side choice of providers is typed and isolated. The current `NoopTranscriptionProvider` preserves the previous `livekit-combined` response shape for LiveKit-enabled studies without explicit Speechmatics.
+
+## Follow-Up
+
+- Decide whether `transcription.enabled = false` should continue labeling `livekit-combined` with the `transcription` purpose for legacy client compatibility, or whether new clients should receive partner-audio only.
+- Add an explicit readiness signal for LiveKit worker transcription before reintroducing worker-based STT in production.

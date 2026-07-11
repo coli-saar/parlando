@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package parlando.agent.v1;
+
+import "google/protobuf/struct.proto";
+
+service AgentService {
+  rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse);
+  rpc Act(ActRequest) returns (ActResponse);
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+}
+
+message CreateAgentRequest {
+  string protocol_version = 1;
+  string agent_name = 2;
+  string agent_version = 3;
+  string role = 4;
+  optional uint64 seed = 5;
+  google.protobuf.Struct config = 6;
+}
+
+message CreateAgentResponse {
+  string agent_id = 1;
+}
+
+message ActRequest {
+  string agent_id = 1;
+  string role = 2;
+  google.protobuf.Struct observation = 3;
+  bool available_actions_provided = 4;
+  repeated google.protobuf.Struct available_actions = 5;
+}
+
+enum AgentResultKind {
+  AGENT_RESULT_KIND_UNSPECIFIED = 0;
+  AGENT_RESULT_KIND_NONE = 1;
+  AGENT_RESULT_KIND_ACTION = 2;
+  AGENT_RESULT_KIND_MESSAGE = 3;
+  AGENT_RESULT_KIND_ACTION_WITH_MESSAGE = 4;
+}
+
+message ActResponse {
+  AgentResultKind result_kind = 1;
+  optional google.protobuf.Struct action = 2;
+  string message = 3;
+}
+
+message ShutdownRequest {
+  string agent_id = 1;
+}
+
+message ShutdownResponse {}

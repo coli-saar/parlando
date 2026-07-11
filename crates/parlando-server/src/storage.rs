@@ -1052,8 +1052,12 @@ pub struct ParticipantSession {
 pub struct RoomParticipant {
     pub participant_session_id: String,
     pub participant_id: i64,
+    /// Runtime participant source, used to distinguish humans from agents.
+    pub source: String,
     pub role: Seat,
     pub connected: bool,
+    /// Whether this participant has completed required audio/STT setup for this room.
+    pub audio_ready: bool,
     pub consent_decisions: HashMap<String, bool>,
     pub joined_at: String,
     pub updated_at: String,
@@ -1067,6 +1071,7 @@ pub struct GameRoom<S> {
     pub session_id: i64,
     pub mode: String,
     pub state: S,
+    /// Runtime lifecycle status: `waiting`, `playing`, or `completed`.
     pub status: String,
     pub study_id: Option<String>,
     pub participants: HashMap<String, RoomParticipant>,

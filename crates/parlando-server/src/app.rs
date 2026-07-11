@@ -29,12 +29,13 @@ use tower_http::{
 
 use crate::{
     agents::{AgentFactory, AgentInitContext, AgentResult, SharedAgentFactory},
+    audio_publisher::AgentAudioPublisher,
+    audio_session::{AudioSessionContext, DefaultAudioSessionPlanner, TranscriptionReadiness},
     config::{AgentsMode, ExperimentConfig},
     game::{GameAdapter, PlayerRole, Seat},
     identity::{new_id, room_code},
     livekit::{create_livekit_token, livekit_identity},
     protocol::*,
-    speechmatics::create_speechmatics_temporary_key,
     storage::{
         experiment_store_from_url, generated_experiment_id, now_iso, ConsentDeclarationRecord,
         ExperimentRecord, GameRoom, MemoryState, ParticipantRecord, RoomParticipant,
@@ -51,6 +52,8 @@ pub struct ServeOptions<A: GameAdapter> {
     pub agent_factory: Option<Arc<dyn AgentFactory<A>>>,
     /// Streaming TTS provider used for agent-origin conversation messages.
     pub tts_provider: Option<Arc<dyn StreamingTtsProvider>>,
+    /// Optional publisher used to send synthesized agent audio into RTC.
+    pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
 }
 
 impl<A: GameAdapter> Default for ServeOptions<A> {
@@ -59,6 +62,7 @@ impl<A: GameAdapter> Default for ServeOptions<A> {
         Self {
             agent_factory: None,
             tts_provider: None,
+            audio_publisher: None,
         }
     }
 }
@@ -74,6 +78,7 @@ pub struct AppState<A: GameAdapter> {
     pub agent_factory: Option<SharedAgentFactory<A>>,
     pub started_agents: RwLock<HashSet<String>>,
     pub tts_provider: Option<Arc<dyn StreamingTtsProvider>>,
+    pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
 }
 
 impl<A: GameAdapter> AppState<A> {
@@ -319,6 +324,7 @@ where
         agent_factory: options.agent_factory,
         started_agents: RwLock::new(HashSet::new()),
         tts_provider,
+        audio_publisher: options.audio_publisher,
     });
 
     let api = Router::new()
@@ -662,16 +668,15 @@ where
                 RoomParticipant {
                     participant_session_id: request.participant_session_id.clone(),
                     participant_id,
+                    source: "direct".to_string(),
                     role,
                     connected: false,
+                    audio_ready: !speechmatics_readiness_required(&state.config),
                     consent_decisions,
                     joined_at: now_iso(),
                     updated_at: now_iso(),
                 },
             );
-            if room.participants.values().count() == 2 {
-                room.status = "playing".to_string();
-            }
             (role, true)
         }
     };
@@ -742,26 +747,32 @@ where
     }
 
     if state.config.agents.mode == AgentsMode::HumanVsAgent {
+        let factory_identity = state
+            .agent_factory
+            .as_ref()
+            .map(|factory| factory.participant_identity())
+            .unwrap_or_default();
+        let configured_agent = state.config.agents.human_vs_agent.as_ref();
+        let external_id = factory_identity.external_id.clone().or_else(|| {
+            configured_agent
+                .and_then(|config| config.factory.clone())
+                .or_else(|| Some("agent".to_string()))
+        });
+        let metadata = if factory_identity.metadata.is_null() {
+            configured_agent
+                .map(|config| config.config.clone())
+                .unwrap_or(Value::Null)
+        } else {
+            factory_identity.metadata.clone()
+        };
         let agent_participant_db_id = state
             .store
             .upsert_participant(ParticipantRecord {
                 participant_kind: "agent".to_string(),
-                identity_provider: "agent".to_string(),
-                external_id: state
-                    .config
-                    .agents
-                    .human_vs_agent
-                    .as_ref()
-                    .and_then(|config| config.factory.clone())
-                    .or_else(|| Some("agent".to_string())),
+                identity_provider: factory_identity.identity_provider,
+                external_id,
                 display_name: Some("Agent".to_string()),
-                metadata: state
-                    .config
-                    .agents
-                    .human_vs_agent
-                    .as_ref()
-                    .map(|config| config.config.clone())
-                    .unwrap_or(Value::Null),
+                metadata,
             })
             .await?;
         let (room_id, role, agent_participant_id) = {
@@ -786,14 +797,15 @@ where
                 RoomParticipant {
                     participant_session_id: agent.id.clone(),
                     participant_id: agent.participant_id,
+                    source: "agent".to_string(),
                     role: Seat::B,
                     connected: true,
+                    audio_ready: true,
                     consent_decisions: HashMap::new(),
                     joined_at: now_iso(),
                     updated_at: now_iso(),
                 },
             );
-            room.status = "playing".to_string();
             (room_id, role, agent.id)
         };
         persist_created_session(&state, &room_id).await?;
@@ -817,13 +829,7 @@ where
             None,
         )
         .await;
-        maybe_start_agent(
-            state.clone(),
-            room_id.clone(),
-            agent_participant_id,
-            Seat::B,
-        )
-        .await;
+        maybe_start_room_agents(state.clone(), &room_id).await;
         return matched_response(&state, &room_id, &participant_session_id, role).await;
     }
 
@@ -868,7 +874,25 @@ where
                 None,
             )
             .await;
-            return matched_response(&state, &room_id, &participant_session_id, role).await;
+            let source = state
+                .memory
+                .read()
+                .await
+                .participants
+                .get(&participant_session_id)
+                .map(|p| p.source.clone());
+            return Ok(MatchmakingJoinResponse {
+                status: "waiting".to_string(),
+                participant_session_id,
+                source,
+                room_id: None,
+                role: None,
+                state: None,
+                observation: None,
+                available_actions: None,
+                events: vec![],
+                conversation: vec![],
+            });
         } else {
             Some(queue.remove(0))
         }
@@ -897,14 +921,15 @@ where
             RoomParticipant {
                 participant_session_id: participant_session_id.clone(),
                 participant_id: second_participant_id,
+                source: "direct".to_string(),
                 role: Seat::B,
                 connected: false,
+                audio_ready: !speechmatics_readiness_required(&state.config),
                 consent_decisions: HashMap::new(),
                 joined_at: now_iso(),
                 updated_at: now_iso(),
             },
         );
-        room.status = "playing".to_string();
         (room_id, Seat::B, created_room)
     };
     if created_room {
@@ -947,8 +972,10 @@ fn create_room_locked<A: GameAdapter>(
         RoomParticipant {
             participant_session_id,
             participant_id: participant.participant_id,
+            source: participant.source,
             role,
             connected: false,
+            audio_ready: !speechmatics_readiness_required(&state.config),
             consent_decisions: participant.consent_decisions,
             joined_at: now_iso(),
             updated_at: now_iso(),
@@ -987,12 +1014,28 @@ where
             .ok_or_else(|| AppError::not_found("Participant session not found."))?;
         if let Some(room) = memory.room_for_participant(participant_session_id) {
             let role = room.participants[participant_session_id].role;
-            Some((room.id.clone(), role, participant.source.clone()))
+            let matched = room.participants.values().any(|p| p.role == Seat::A)
+                && room.participants.values().any(|p| p.role == Seat::B);
+            Some((room.id.clone(), role, participant.source.clone(), matched))
         } else {
             None
         }
     };
-    if let Some((room_id, role, source)) = existing {
+    if let Some((room_id, role, source, matched)) = existing {
+        if !matched {
+            return Ok(MatchmakingJoinResponse {
+                status: "waiting".to_string(),
+                participant_session_id: participant_session_id.to_string(),
+                source: Some(source),
+                room_id: None,
+                role: None,
+                state: None,
+                observation: None,
+                available_actions: None,
+                events: vec![],
+                conversation: vec![],
+            });
+        }
         let response =
             room_response(&state, &room_id, participant_session_id, role, vec![]).await?;
         Ok(MatchmakingJoinResponse {
@@ -1071,12 +1114,24 @@ async fn room_response<A: GameAdapter>(
 where
     A::State: Serialize,
 {
-    let (observation, available_actions) = {
+    let (observation, available_actions, events) = {
         let memory = state.memory.read().await;
         let room = memory
             .rooms
             .get(room_id)
             .ok_or_else(|| AppError::not_found("Room not found."))?;
+        if room.status == "waiting" {
+            return Ok(RoomResponse {
+                room_id: room_id.to_string(),
+                participant_session_id: participant_session_id.to_string(),
+                role: role.as_str().to_string(),
+                state: None,
+                observation: None,
+                available_actions: None,
+                events: vec![],
+                conversation: vec![],
+            });
+        }
         let player = role.player_role();
         (
             Some(protocol_json(
@@ -1092,6 +1147,7 @@ where
                         .collect::<Result<Vec<_>, _>>()
                 })
                 .transpose()?,
+            events,
         )
     };
     Ok(RoomResponse {
@@ -1171,65 +1227,23 @@ async fn audio_session<A: GameAdapter>(
     Json(request): Json<AudioSessionRequest>,
 ) -> Result<Json<AudioSessionPlanResponse>, AppError> {
     let role = participant_role(&state, &room_id, &request.participant_session_id).await?;
-    if !state.config.livekit.enabled {
-        return Ok(Json(AudioSessionPlanResponse::disabled()));
+    let planned = DefaultAudioSessionPlanner::plan(AudioSessionContext {
+        config: &state.config,
+        room_id: &room_id,
+        role: role.as_str(),
+        participant_session_id: &request.participant_session_id,
+        token_ttl_seconds: 3600,
+    })
+    .await?;
+    if planned.transcription_readiness == TranscriptionReadiness::SatisfiedByPlan {
+        mark_participant_audio_ready(&state, &room_id, &request.participant_session_id).await;
+        let _ = state
+            .room_bus(&room_id)
+            .await
+            .send(voice_message(&state, &room_id).await);
+        maybe_start_game(state.clone(), &room_id).await;
     }
-    let token = create_livekit_token(
-        &state.config.livekit,
-        &room_id,
-        role.as_str(),
-        &request.participant_session_id,
-        3600,
-    )
-    .map_err(|error| AppError::bad_request(error.to_string()))?;
-    let identity = livekit_identity(&room_id, role.as_str(), &request.participant_session_id);
-    if state.config.transcription.enabled && state.config.transcription.provider == "speechmatics" {
-        if !state.config.speechmatics.enabled || state.config.speechmatics.api_key.is_empty() {
-            return Ok(Json(AudioSessionPlanResponse::disabled()));
-        }
-        let key = create_speechmatics_temporary_key(&state.config.speechmatics).await?;
-        return Ok(Json(AudioSessionPlanResponse {
-            enabled: true,
-            capture: json!({"audio": true}),
-            sinks: vec![
-                AudioSinkPlan {
-                    id: "livekit-partner".to_string(),
-                    provider: "livekit".to_string(),
-                    purposes: vec!["partner-audio".to_string()],
-                    transport: "webrtc-room".to_string(),
-                    credentials: json!({"enabled": true, "url": state.config.livekit.url, "token": token, "identity": identity}),
-                },
-                AudioSinkPlan {
-                    id: "speechmatics-transcription".to_string(),
-                    provider: "speechmatics".to_string(),
-                    purposes: vec!["transcription".to_string()],
-                    transport: "websocket-stt".to_string(),
-                    credentials: json!({
-                        "enabled": true,
-                        "realtime_url": state.config.speechmatics.realtime_url,
-                        "temporary_key": key,
-                        "language": state.config.transcription.language,
-                        "model": state.config.transcription.model,
-                        "max_delay": state.config.speechmatics.max_delay,
-                        "enable_partials": state.config.speechmatics.enable_partials,
-                        "end_of_utterance_silence_trigger": state.config.speechmatics.end_of_utterance_silence_trigger,
-                        "ttl_seconds": state.config.speechmatics.temporary_key_ttl_seconds,
-                    }),
-                },
-            ],
-        }));
-    }
-    Ok(Json(AudioSessionPlanResponse {
-        enabled: true,
-        capture: json!({"audio": true}),
-        sinks: vec![AudioSinkPlan {
-            id: "livekit-combined".to_string(),
-            provider: "livekit".to_string(),
-            purposes: vec!["partner-audio".to_string(), "transcription".to_string()],
-            transport: "webrtc-room".to_string(),
-            credentials: json!({"enabled": true, "url": state.config.livekit.url, "token": token, "identity": identity}),
-        }],
-    }))
+    Ok(Json(planned.response))
 }
 
 async fn add_transcript<A: GameAdapter>(
@@ -1436,21 +1450,15 @@ async fn websocket_loop<A: GameAdapter>(
     .await;
     let bus = state.room_bus(&room_id).await;
     let mut receiver = bus.subscribe();
-    if let Ok(response) =
-        room_response(&state, &room_id, &participant_session_id, role, vec![]).await
-    {
-        let _ = bus.send(ServerMessage {
-            room_id: Some(room_id.clone()),
-            participant_session_id: Some(participant_session_id.clone()),
-            role: Some(role.as_str().to_string()),
-            observation: response.observation,
-            available_actions: response.available_actions,
-            events: response.events,
-            conversation: response.conversation,
-            ..ServerMessage::new("roleAssigned")
-        });
+    if let Some(message) = presence_message(&state, &room_id).await {
+        let _ = bus.send(message);
     }
-    maybe_start_room_agents(state.clone(), &room_id).await;
+    let _ = bus.send(voice_message(&state, &room_id).await);
+    if room_has_started(&state, &room_id).await {
+        send_role_assignment(&state, &room_id, &participant_session_id, role).await;
+    } else {
+        maybe_start_game(state.clone(), &room_id).await;
+    }
     let (mut sender, mut incoming) = socket.split();
     let outbound_participant_session_id = participant_session_id.clone();
     let send_task = tokio::spawn(async move {
@@ -1660,13 +1668,12 @@ where
             .rooms
             .get_mut(room_id)
             .ok_or_else(|| anyhow!("Room not found."))?;
-        let connected_roles = room
-            .participants
-            .values()
-            .filter(|p| p.connected)
-            .map(|p| p.role.player_role())
-            .collect::<HashSet<_>>();
-        if connected_roles != HashSet::from([PlayerRole::A, PlayerRole::B]) {
+        if !room_ready_for_game::<A>(&state.config, room) {
+            if speechmatics_readiness_required(&state.config) {
+                return Err(anyhow!(
+                    "Room is waiting for speech transcription to initialize."
+                ));
+            }
             return Err(anyhow!("Room is waiting for both players to connect."));
         }
         let before = room.state.clone();
@@ -1781,15 +1788,11 @@ where
         memory
             .rooms
             .get(room_id)
+            .filter(|room| room_ready_for_game::<A>(&state.config, room))
             .map(|room| {
                 room.participants
                     .values()
-                    .filter(|participant| {
-                        memory
-                            .participants
-                            .get(&participant.participant_session_id)
-                            .is_some_and(|session| session.source == "agent")
-                    })
+                    .filter(|participant| participant.source == "agent")
                     .map(|participant| {
                         (participant.participant_session_id.clone(), participant.role)
                     })
@@ -1827,7 +1830,7 @@ async fn speak_agent_message<A: GameAdapter>(
     match provider.synthesize(&message.text, &message.id).await {
         Ok(chunks) => {
             let mut saw_audio = false;
-            for chunk in chunks {
+            for chunk in &chunks {
                 if !chunk.data.is_empty() && !saw_audio {
                     saw_audio = true;
                     persist_tts_diagnostic(
@@ -1855,6 +1858,41 @@ async fn speak_agent_message<A: GameAdapter>(
                     }),
                 )
                 .await;
+            }
+            if let Some(publisher) = state.audio_publisher.clone() {
+                persist_tts_diagnostic(
+                    state,
+                    room_id,
+                    "tts_publish_started",
+                    json!({"message_id": message.id}),
+                )
+                .await;
+                match publisher.publish(room_id, &message.id, &chunks).await {
+                    Ok(summary) => {
+                        persist_tts_diagnostic(
+                            state,
+                            room_id,
+                            "tts_publish_completed",
+                            json!({
+                                "message_id": message.id,
+                                "chunks": summary.chunks_published,
+                                "bytes": summary.bytes_published,
+                                "sample_rate": summary.sample_rate,
+                                "channels": summary.channels,
+                            }),
+                        )
+                        .await;
+                    }
+                    Err(error) => {
+                        persist_tts_diagnostic(
+                            state,
+                            room_id,
+                            "tts_publish_failed",
+                            json!({"message_id": message.id, "error": error.to_string()}),
+                        )
+                        .await;
+                    }
+                }
             }
             persist_tts_diagnostic(
                 state,
@@ -2173,6 +2211,149 @@ fn next_role<S>(room: &GameRoom<S>) -> Option<Seat> {
     }
 }
 
+/// Returns whether room start must wait for Speechmatics setup to finish.
+fn speechmatics_readiness_required(config: &ExperimentConfig) -> bool {
+    config.transcription.enabled && config.transcription.provider == "speechmatics"
+}
+
+/// Returns whether one room participant can take part in game progression.
+fn participant_ready_for_game<A: GameAdapter>(
+    config: &ExperimentConfig,
+    participant: &RoomParticipant,
+) -> bool {
+    participant.connected
+        && (participant.source == "agent"
+            || participant.source == "worker"
+            || !speechmatics_readiness_required(config)
+            || participant.audio_ready)
+}
+
+/// Returns whether both player roles are connected and past required audio setup.
+fn room_ready_for_game<A: GameAdapter>(
+    config: &ExperimentConfig,
+    room: &GameRoom<A::State>,
+) -> bool {
+    let ready_roles = room
+        .participants
+        .values()
+        .filter(|participant| participant_ready_for_game::<A>(config, participant))
+        .map(|participant| participant.role.player_role())
+        .collect::<HashSet<_>>();
+    ready_roles == HashSet::from([PlayerRole::A, PlayerRole::B])
+}
+
+/// Marks one participant's room-local audio/STT setup as complete.
+async fn mark_participant_audio_ready<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+    room_id: &str,
+    participant_session_id: &str,
+) where
+    A::State: Serialize,
+{
+    let changed = {
+        let mut memory = state.memory.write().await;
+        memory
+            .rooms
+            .get_mut(room_id)
+            .and_then(|room| room.participants.get_mut(participant_session_id))
+            .map(|participant| {
+                let changed = !participant.audio_ready;
+                participant.audio_ready = true;
+                participant.updated_at = now_iso();
+                changed
+            })
+            .unwrap_or(false)
+    };
+    if changed {
+        persist_session_event(
+            state,
+            room_id,
+            Some(participant_session_id),
+            "voice_diagnostic",
+            json!({"event": "stt_initialized"}),
+            None,
+        )
+        .await;
+    }
+}
+
+/// Starts a room once all humans/agents and required audio setup are ready.
+async fn maybe_start_game<A: GameAdapter>(state: Arc<AppState<A>>, room_id: &str)
+where
+    A::State: Serialize,
+{
+    let should_start = {
+        let mut memory = state.memory.write().await;
+        let Some(room) = memory.rooms.get_mut(room_id) else {
+            return;
+        };
+        if room.status != "waiting" || !room_ready_for_game::<A>(&state.config, room) {
+            false
+        } else {
+            room.status = "playing".to_string();
+            room.updated_at = now_iso();
+            true
+        }
+    };
+    if !should_start {
+        return;
+    }
+
+    let participants = {
+        let memory = state.memory.read().await;
+        memory
+            .rooms
+            .get(room_id)
+            .map(|room| {
+                room.participants
+                    .values()
+                    .map(|participant| {
+                        (participant.participant_session_id.clone(), participant.role)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    for (participant_session_id, role) in participants {
+        send_role_assignment(&state, room_id, &participant_session_id, role).await;
+    }
+    maybe_start_room_agents(state, room_id).await;
+}
+
+/// Returns whether a room has already left the waiting-room phase.
+async fn room_has_started<A: GameAdapter>(state: &Arc<AppState<A>>, room_id: &str) -> bool {
+    let memory = state.memory.read().await;
+    memory
+        .rooms
+        .get(room_id)
+        .is_some_and(|room| room.status != "waiting")
+}
+
+/// Sends the targeted game-start payload for one participant.
+async fn send_role_assignment<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+    room_id: &str,
+    participant_session_id: &str,
+    role: Seat,
+) where
+    A::State: Serialize,
+{
+    if let Ok(response) = room_response(state, room_id, participant_session_id, role, vec![]).await
+    {
+        let bus = state.room_bus(room_id).await;
+        let _ = bus.send(ServerMessage {
+            room_id: Some(room_id.to_string()),
+            participant_session_id: Some(participant_session_id.to_string()),
+            role: Some(role.as_str().to_string()),
+            observation: response.observation,
+            available_actions: response.available_actions,
+            events: response.events,
+            conversation: response.conversation,
+            ..ServerMessage::new("roleAssigned")
+        });
+    }
+}
+
 async fn presence_message<A: GameAdapter>(
     state: &Arc<AppState<A>>,
     room_id: &str,
@@ -2190,6 +2371,7 @@ async fn presence_message<A: GameAdapter>(
                     json!({
                         "participantSessionId": participant.participant_session_id,
                         "connected": participant.connected,
+                        "audioReady": participant.audio_ready,
                     }),
                 )
             })
@@ -2199,20 +2381,38 @@ async fn presence_message<A: GameAdapter>(
 }
 
 async fn voice_message<A: GameAdapter>(state: &Arc<AppState<A>>, room_id: &str) -> ServerMessage {
-    let active_players = state
+    let (audio_ready, game_ready) = state
         .memory
         .read()
         .await
         .rooms
         .get(room_id)
-        .map(|room| room.participants.values().count())
-        .unwrap_or(0);
+        .map(|room| {
+            let connected_roles = room
+                .participants
+                .values()
+                .filter(|participant| participant.connected)
+                .map(|participant| participant.role.player_role())
+                .collect::<HashSet<_>>();
+            (
+                connected_roles == HashSet::from([PlayerRole::A, PlayerRole::B]),
+                room_ready_for_game::<A>(&state.config, room),
+            )
+        })
+        .unwrap_or((false, false));
+    let transcription_ready = !state.config.transcription.enabled || game_ready;
     ServerMessage {
         room_id: Some(room_id.to_string()),
         voice: Some(json!({
-            "audioReady": active_players == 2,
-            "transcriptionReady": true,
-            "transcriptionStatus": if state.config.transcription.enabled { "Waiting for audio" } else { "Disabled" },
+            "audioReady": audio_ready,
+            "transcriptionReady": transcription_ready,
+            "transcriptionStatus": if !state.config.transcription.enabled {
+                "Disabled"
+            } else if transcription_ready {
+                "Ready"
+            } else {
+                "Initializing"
+            },
         })),
         ..ServerMessage::new("voiceStatusChanged")
     }
@@ -2243,6 +2443,7 @@ mod tests {
     use serde_json::{json, Value};
     use std::{
         collections::VecDeque,
+        fs,
         sync::{
             atomic::{AtomicUsize, Ordering},
             Mutex,
@@ -2400,6 +2601,10 @@ mod tests {
         fail_first: bool,
     }
 
+    struct MockAudioPublisher {
+        calls: AtomicUsize,
+    }
+
     #[async_trait]
     impl StreamingTtsProvider for MockTtsProvider {
         async fn synthesize(
@@ -2425,6 +2630,24 @@ mod tests {
                     final_chunk: true,
                 },
             ])
+        }
+    }
+
+    #[async_trait]
+    impl crate::audio_publisher::AgentAudioPublisher for MockAudioPublisher {
+        async fn publish(
+            &self,
+            _room_id: &str,
+            _message_id: &str,
+            chunks: &[crate::tts::AudioChunk],
+        ) -> Result<crate::audio_publisher::AudioPublishSummary> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(crate::audio_publisher::AudioPublishSummary {
+                chunks_published: chunks.iter().filter(|chunk| !chunk.data.is_empty()).count(),
+                bytes_published: chunks.iter().map(|chunk| chunk.data.len()).sum(),
+                sample_rate: 24000,
+                channels: 1,
+            })
         }
     }
 
@@ -2638,6 +2861,37 @@ mod tests {
         (status, value)
     }
 
+    // Sends a request and returns the raw response body for static-file assertions.
+    async fn raw_request(
+        router: Router,
+        method: http::Method,
+        path: &str,
+        body: Body,
+    ) -> (StatusCode, String, Option<String>) {
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            String::from_utf8_lossy(&bytes).to_string(),
+            content_type,
+        )
+    }
+
     async fn create_direct_participant(router: Router, name: &str) -> String {
         let (status, response) = json_request(
             router,
@@ -2680,6 +2934,23 @@ mod tests {
         let router = Router::new().route(
             "/",
             axum::routing::post(move || async move { Json(json!({"key_value": key})) }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    // Starts a Speechmatics management mock that intentionally delays key minting.
+    async fn spawn_delayed_speechmatics_key_server(key: &'static str, delay: Duration) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = Router::new().route(
+            "/",
+            axum::routing::post(move || async move {
+                tokio::time::sleep(delay).await;
+                Json(json!({"key_value": key}))
+            }),
         );
         tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
@@ -2906,6 +3177,73 @@ mod tests {
         assert_eq!(public_config["transcription"]["enabled"], true);
         assert_eq!(public_config["tts"]["voice_name"], "Agent Voice");
         assert_eq!(public_config["conversation"]["enabled"], true);
+    }
+
+    #[tokio::test]
+    async fn static_serving_returns_assets_spa_fallback_and_preserves_api_prefixes() {
+        let temp = tempfile::tempdir().unwrap();
+        let dist = temp.path().join("dist");
+        fs::create_dir_all(dist.join("assets")).unwrap();
+        fs::write(dist.join("index.html"), "<main>Parlando client</main>").unwrap();
+        fs::write(dist.join("assets/app.js"), "console.log('asset');").unwrap();
+        fs::write(temp.path().join("secret.txt"), "do not serve me").unwrap();
+
+        let mut config = step_five_config();
+        config.server.client_dist_path = Some(dist.display().to_string());
+        let router = build_router(TinyAdapter, config, ServeOptions::default())
+            .await
+            .unwrap();
+
+        let (root_status, root_body, root_type) =
+            raw_request(router.clone(), http::Method::GET, "/", Body::empty()).await;
+        assert_eq!(root_status, StatusCode::OK);
+        assert!(root_body.contains("Parlando client"));
+        assert!(root_type
+            .as_deref()
+            .is_some_and(|value| value.contains("text/html")));
+
+        let (asset_status, asset_body, asset_type) = raw_request(
+            router.clone(),
+            http::Method::GET,
+            "/assets/app.js",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(asset_status, StatusCode::OK);
+        assert_eq!(asset_body, "console.log('asset');");
+        assert!(asset_type
+            .as_deref()
+            .is_some_and(|value| value.contains("javascript")));
+
+        let (fallback_status, fallback_body, _) = raw_request(
+            router.clone(),
+            http::Method::GET,
+            "/room/abc",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(fallback_status, StatusCode::OK);
+        assert!(fallback_body.contains("Parlando client"));
+
+        let (api_status, api_body, _) = raw_request(
+            router.clone(),
+            http::Method::GET,
+            "/api/config",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(api_status, StatusCode::OK);
+        assert!(api_body.contains("study_name"));
+        assert!(!api_body.contains("Parlando client"));
+
+        let (_traversal_status, traversal_body, _) = raw_request(
+            router,
+            http::Method::GET,
+            "/assets/../secret.txt",
+            Body::empty(),
+        )
+        .await;
+        assert!(!traversal_body.contains("do not serve me"));
     }
 
     #[tokio::test]
@@ -3422,15 +3760,16 @@ mod tests {
         ))
         .await
         .unwrap();
-        let assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
-        assert_eq!(assigned_a["participant_session_id"], a);
-        assert_eq!(assigned_a["role"], "A");
+        assert_no_ws_type(&mut socket_a, "roleAssigned").await;
 
         let (mut socket_b, _) = connect_async(format!(
             "ws://{host}/ws/game/{room_id}?participantSessionId={b}"
         ))
         .await
         .unwrap();
+        let assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
+        assert_eq!(assigned_a["participant_session_id"], a);
+        assert_eq!(assigned_a["role"], "A");
         let assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await;
         assert_eq!(assigned_b["participant_session_id"], b);
         assert_eq!(assigned_b["role"], "B");
@@ -3451,7 +3790,6 @@ mod tests {
         ))
         .await
         .unwrap();
-        let _assigned = read_ws_type(&mut socket_a, "roleAssigned").await;
 
         send_ws_json(
             &mut socket_a,
@@ -3478,6 +3816,122 @@ mod tests {
                         .unwrap()
                         .contains("waiting for both players")
             }));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn human_human_game_accepts_actions_after_second_human_connects() {
+        let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+            .await
+            .unwrap();
+        let (a, b, room_id) = create_joined_room(router.clone()).await;
+        let (base_url, server) = spawn_test_server(router).await;
+        let host = base_url.trim_start_matches("http://");
+        let (mut socket_a, _) = connect_async(format!(
+            "ws://{host}/ws/game/{room_id}?participantSessionId={a}"
+        ))
+        .await
+        .unwrap();
+        assert_no_ws_type(&mut socket_a, "roleAssigned").await;
+
+        send_ws_json(
+            &mut socket_a,
+            json!({"type": "submitAction", "action": {"finish": false}}),
+        )
+        .await;
+        let waiting_error = read_ws_type(&mut socket_a, "error").await;
+        assert!(waiting_error["message"]
+            .as_str()
+            .unwrap()
+            .contains("waiting for both players"));
+
+        let (mut socket_b, _) = connect_async(format!(
+            "ws://{host}/ws/game/{room_id}?participantSessionId={b}"
+        ))
+        .await
+        .unwrap();
+        let _assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
+        let _assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await;
+        send_ws_json(
+            &mut socket_a,
+            json!({"type": "submitAction", "action": {"finish": true}}),
+        )
+        .await;
+        let completed = read_ws_type(&mut socket_a, "completed").await;
+        assert_eq!(completed["summary"]["done"], true);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn human_agent_waits_for_speechmatics_audio_session_before_agent_start() {
+        let mut config = human_vs_agent_config();
+        config.livekit.enabled = true;
+        config.livekit.url = "wss://livekit.example.test".to_string();
+        config.livekit.api_key = "livekit-key".to_string();
+        config.livekit.api_secret = "livekit-secret".to_string();
+        config.transcription.enabled = true;
+        config.transcription.provider = "speechmatics".to_string();
+        config.speechmatics.enabled = true;
+        config.speechmatics.api_key = "permanent-key".to_string();
+        config.speechmatics.management_url =
+            spawn_delayed_speechmatics_key_server("temporary-key", Duration::from_millis(500))
+                .await;
+        config.speechmatics.realtime_url = "wss://speechmatics.example.test/v2".to_string();
+
+        let factory = Arc::new(ScriptedAgentFactory::new(vec![vec![AgentResult::Message(
+            "agent starts after stt".to_string(),
+        )]]));
+        let router = build_router(
+            TinyAdapter,
+            config,
+            ServeOptions {
+                agent_factory: Some(factory),
+                ..ServeOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (human, room_id) = create_human_vs_agent_room(router.clone(), "Human").await;
+        let (base_url, server) = spawn_test_server(router.clone()).await;
+        let host = base_url.trim_start_matches("http://");
+        let (mut socket, _) = connect_async(format!(
+            "ws://{host}/ws/game/{room_id}?participantSessionId={human}"
+        ))
+        .await
+        .unwrap();
+        assert_no_ws_type(&mut socket, "roleAssigned").await;
+        assert_no_ws_type(&mut socket, "conversationMessageAdded").await;
+
+        let client = reqwest::Client::new();
+        let audio_base_url = base_url.clone();
+        let audio_room_id = room_id.clone();
+        let audio_human = human.clone();
+        let audio_session = tokio::spawn(async move {
+            client
+                .post(format!(
+                    "{audio_base_url}/api/rooms/{audio_room_id}/audio-session"
+                ))
+                .json(&json!({"participant_session_id": audio_human}))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        });
+        assert_no_ws_type(&mut socket, "conversationMessageAdded").await;
+        let audio = audio_session.await.unwrap();
+        assert_eq!(audio["enabled"], true);
+        let assigned = read_ws_type(&mut socket, "roleAssigned").await;
+        assert_eq!(assigned["role"], "A");
+        let message = read_ws_type(&mut socket, "conversationMessageAdded").await;
+        assert_eq!(message["conversation_message"]["origin"], "agent");
+        assert_eq!(
+            message["conversation_message"]["text"],
+            "agent starts after stt"
+        );
         server.abort();
     }
 
@@ -3665,11 +4119,12 @@ mod tests {
         )
         .await;
         assert_eq!(first_status, StatusCode::OK);
-        assert_eq!(first["status"], "matched");
-        assert_eq!(first["role"], "A");
+        assert_eq!(first["status"], "waiting");
+        assert!(first["room_id"].is_null());
+        assert!(first["role"].is_null());
 
         let (second_status, second) = json_request(
-            router,
+            router.clone(),
             http::Method::POST,
             "/api/matchmaking/join",
             json!({"participant_session_id": b, "queue": "q1"}),
@@ -3678,7 +4133,19 @@ mod tests {
         assert_eq!(second_status, StatusCode::OK);
         assert_eq!(second["status"], "matched");
         assert_eq!(second["role"], "B");
-        assert_eq!(second["room_id"], first["room_id"]);
+        assert!(second["room_id"].as_str().is_some());
+
+        let (poll_status, first_matched) = json_request(
+            router,
+            http::Method::GET,
+            &format!("/api/matchmaking/status/{a}"),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(poll_status, StatusCode::OK);
+        assert_eq!(first_matched["status"], "matched");
+        assert_eq!(first_matched["role"], "A");
+        assert_eq!(first_matched["room_id"], second["room_id"]);
     }
 
     #[tokio::test]
@@ -3938,12 +4405,17 @@ mod tests {
             calls: AtomicUsize::new(0),
             fail_first: false,
         });
+        let audio_publisher = Arc::new(MockAudioPublisher {
+            calls: AtomicUsize::new(0),
+        });
         let router = build_router(
             TinyAdapter,
             human_vs_agent_config(),
             ServeOptions {
                 agent_factory: Some(factory),
                 tts_provider: Some(tts_provider),
+                audio_publisher: Some(audio_publisher.clone()),
+                ..ServeOptions::default()
             },
         )
         .await
@@ -3969,7 +4441,10 @@ mod tests {
         assert!(diagnostics.contains(&"tts_message_started"));
         assert!(diagnostics.contains(&"tts_first_audio"));
         assert!(diagnostics.contains(&"tts_audio_chunk"));
+        assert!(diagnostics.contains(&"tts_publish_started"));
+        assert!(diagnostics.contains(&"tts_publish_completed"));
         assert!(diagnostics.contains(&"tts_message_completed"));
+        assert_eq!(audio_publisher.calls.load(Ordering::SeqCst), 1);
         server.abort();
     }
 
@@ -3989,6 +4464,7 @@ mod tests {
             ServeOptions {
                 agent_factory: Some(factory),
                 tts_provider: Some(tts_provider),
+                ..ServeOptions::default()
             },
         )
         .await

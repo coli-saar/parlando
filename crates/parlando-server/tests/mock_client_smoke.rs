@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -18,14 +18,25 @@ use parlando_server::{
     },
     game::{GameAdapter, PlayerRole},
     protocol::TranscriptSegmentIn,
+    remote_agent::{
+        pb::{
+            agent_service_server::{AgentService, AgentServiceServer},
+            ActRequest, ActResponse, AgentResultKind, CreateAgentRequest, CreateAgentResponse,
+            ShutdownRequest, ShutdownResponse,
+        },
+        RemoteGrpcAgentConfig, RemoteGrpcAgentFactory,
+    },
     tts::{AudioChunk, StreamingTtsProvider},
     ServeOptions,
 };
+use prost_types::{value::Kind, Struct, Value as ProstValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
+use tokio_stream::wrappers::TcpListenerStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tonic::{transport::Server, Request as TonicRequest, Response as TonicResponse, Status};
 
 type TestSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -212,6 +223,57 @@ impl StreamingTtsProvider for RecordingTts {
     }
 }
 
+#[derive(Default)]
+struct MockRemoteAgentState {
+    create_requests: Mutex<Vec<CreateAgentRequest>>,
+    act_requests: Mutex<Vec<ActRequest>>,
+}
+
+#[derive(Clone)]
+struct MockRemoteAgentService {
+    state: Arc<MockRemoteAgentState>,
+}
+
+#[async_trait]
+impl AgentService for MockRemoteAgentService {
+    async fn create_agent(
+        &self,
+        request: TonicRequest<CreateAgentRequest>,
+    ) -> std::result::Result<TonicResponse<CreateAgentResponse>, Status> {
+        self.state
+            .create_requests
+            .lock()
+            .unwrap()
+            .push(request.into_inner());
+        Ok(TonicResponse::new(CreateAgentResponse {
+            agent_id: "remote-agent-1".to_string(),
+        }))
+    }
+
+    async fn act(
+        &self,
+        request: TonicRequest<ActRequest>,
+    ) -> std::result::Result<TonicResponse<ActResponse>, Status> {
+        self.state
+            .act_requests
+            .lock()
+            .unwrap()
+            .push(request.into_inner());
+        Ok(TonicResponse::new(ActResponse {
+            result_kind: AgentResultKind::ActionWithMessage as i32,
+            action: Some(dummy_action_struct(true)),
+            message: "hello from remote grpc".to_string(),
+        }))
+    }
+
+    async fn shutdown(
+        &self,
+        _request: TonicRequest<ShutdownRequest>,
+    ) -> std::result::Result<TonicResponse<ShutdownResponse>, Status> {
+        Ok(TonicResponse::new(ShutdownResponse {}))
+    }
+}
+
 struct TestServer {
     base_url: String,
     ws_base_url: String,
@@ -222,6 +284,58 @@ struct TestServer {
 impl Drop for TestServer {
     fn drop(&mut self) {
         self.task.abort();
+    }
+}
+
+struct MockGrpcServer {
+    endpoint: String,
+    state: Arc<MockRemoteAgentState>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for MockGrpcServer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn spawn_mock_remote_agent() -> Result<MockGrpcServer> {
+    let state = Arc::new(MockRemoteAgentState::default());
+    let service = MockRemoteAgentService {
+        state: state.clone(),
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let task = tokio::spawn(async move {
+        Server::builder()
+            .add_service(AgentServiceServer::new(service))
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await
+            .unwrap();
+    });
+    Ok(MockGrpcServer {
+        endpoint: format!("http://{addr}"),
+        state,
+        task,
+    })
+}
+
+fn dummy_action_struct(finish: bool) -> Struct {
+    Struct {
+        fields: BTreeMap::from([
+            (
+                "type".to_string(),
+                ProstValue {
+                    kind: Some(Kind::StringValue("mark".to_string())),
+                },
+            ),
+            (
+                "finish".to_string(),
+                ProstValue {
+                    kind: Some(Kind::BoolValue(finish)),
+                },
+            ),
+        ]),
     }
 }
 
@@ -411,10 +525,11 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_transcript_audio_and_ex
 
     let room = create_room(&client, &server.base_url, &a).await?;
     assert_eq!(room["role"], "A");
-    assert_eq!(room["available_actions"].as_array().unwrap().len(), 2);
+    assert!(room["available_actions"].is_null());
     let room_id = room["room_id"].as_str().unwrap().to_string();
     let joined = join_room(&client, &server.base_url, &room_id, &b).await?;
     assert_eq!(joined["role"], "B");
+    assert!(joined["available_actions"].is_null());
 
     let audio = client
         .post(format!(
@@ -436,6 +551,7 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_transcript_audio_and_ex
     let assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await?;
     assert_eq!(assigned_a["role"], "A");
     assert_eq!(assigned_b["role"], "B");
+    assert_eq!(assigned_a["available_actions"].as_array().unwrap().len(), 2);
     send_ws(&mut socket_a, json!({"type": "ready"})).await?;
     send_ws(&mut socket_b, json!({"type": "ready"})).await?;
 
@@ -520,6 +636,7 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
         ServeOptions {
             agent_factory: Some(factory),
             tts_provider: Some(tts.clone()),
+            ..ServeOptions::default()
         },
     )
     .await?;
@@ -570,5 +687,101 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
     assert!(events
         .iter()
         .any(|event| event["event_type"] == "tts_diagnostic"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_persistence(
+) -> Result<()> {
+    let remote = spawn_mock_remote_agent().await?;
+    let mut remote_config = RemoteGrpcAgentConfig::new(&remote.endpoint, "mock-python-agent");
+    remote_config.agent_version = "test-1".to_string();
+    remote_config.request_timeout = Duration::from_secs(2);
+    let factory = Arc::new(RemoteGrpcAgentFactory::<DummyAdapter>::new(remote_config));
+    let server = spawn_server(
+        config(AgentsMode::HumanVsAgent),
+        ServeOptions {
+            agent_factory: Some(factory),
+            ..ServeOptions::default()
+        },
+    )
+    .await?;
+    let client = reqwest::Client::new();
+    let human = create_participant(&client, &server.base_url, "Human").await?;
+    consent(&client, &server.base_url, &human).await?;
+    let matched = join_matchmaking(&client, &server.base_url, &human).await?;
+    let room_id = matched["room_id"].as_str().unwrap();
+
+    let mut socket = ws_connect(&server.ws_base_url, room_id, &human).await?;
+    let assigned = read_ws_type(&mut socket, "roleAssigned").await?;
+    assert_eq!(assigned["role"], "A");
+    let message = read_ws_type(&mut socket, "conversationMessageAdded").await?;
+    assert_eq!(message["conversation_message"]["origin"], "agent");
+    assert_eq!(
+        message["conversation_message"]["text"],
+        "hello from remote grpc"
+    );
+    let completed = read_ws_type(&mut socket, "completed").await?;
+    assert_eq!(completed["summary"]["done"], true);
+
+    let create_requests = remote.state.create_requests.lock().unwrap().clone();
+    assert_eq!(create_requests.len(), 1);
+    assert_eq!(create_requests[0].protocol_version, "parlando-agent-v1");
+    assert_eq!(create_requests[0].agent_name, "mock-python-agent");
+    assert_eq!(create_requests[0].agent_version, "test-1");
+    assert_eq!(create_requests[0].role, "B");
+
+    let act_requests = remote.state.act_requests.lock().unwrap().clone();
+    assert_eq!(act_requests.len(), 1);
+    assert_eq!(act_requests[0].agent_id, "remote-agent-1");
+    assert_eq!(act_requests[0].role, "B");
+    assert!(act_requests[0].available_actions_provided);
+    assert_eq!(act_requests[0].available_actions.len(), 2);
+    assert_eq!(
+        act_requests[0]
+            .observation
+            .as_ref()
+            .unwrap()
+            .fields
+            .get("role")
+            .and_then(|value| value.kind.as_ref()),
+        Some(&Kind::StringValue("B".to_string()))
+    );
+
+    let export = client
+        .get(format!("{}/api/admin/export", server.base_url))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Value>()
+        .await?;
+    let events = export["session_events"].as_array().unwrap();
+    let remote_participant = export["participants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|participant| participant["participant_kind"] == "agent")
+        .expect("remote agent participant is exported");
+    assert_eq!(remote_participant["identity_provider"], "remote_grpc");
+    assert_eq!(
+        remote_participant["external_id"],
+        "mock-python-agent@test-1"
+    );
+    assert_eq!(
+        remote_participant["metadata"]["protocol_version"],
+        "parlando-agent-v1"
+    );
+    assert!(events.iter().any(|event| {
+        event["event_type"] == "conversation_message" && event["payload"]["origin"] == "agent"
+    }));
+    assert!(events
+        .iter()
+        .any(|event| event["event_type"] == "agent_action"));
+    assert!(events
+        .iter()
+        .any(|event| event["event_type"] == "game_action_accepted"));
+    assert!(events
+        .iter()
+        .any(|event| event["event_type"] == "session_completed"));
     Ok(())
 }

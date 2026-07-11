@@ -1,6 +1,5 @@
 /target/
+/.git/
 /config/*.private.yaml
 /config/*.private.yml
-**/__pycache__/
-*.pyc
 **/.DS_Store

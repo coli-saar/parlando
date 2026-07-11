@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: parlando-space-game
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    disk:
+      name: parlando-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: RUST_LOG
+        value: info
+      - key: PARLANDO_EXPERIMENT_ID
+        sync: false
+      - key: PARLANDO_PUBLIC_BASE_URL
+        sync: false
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: SPEECHMATICS_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_VOICE_ID
+        sync: false
+      - key: ELEVENLABS_VOICE_NAME
+        sync: false
