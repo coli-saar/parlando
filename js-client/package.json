@@ -1,0 +1,52 @@
+{
+  "name": "@parlando/client",
+  "version": "0.1.0",
+  "type": "module",
+  "private": false,
+  "description": "Reusable browser client SDK for Parlando experiment games.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./livekit": {
+      "types": "./dist/livekit.d.ts",
+      "import": "./dist/livekit.js"
+    },
+    "./speechmatics": {
+      "types": "./dist/speechmatics.d.ts",
+      "import": "./dist/speechmatics.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run src",
+    "prepack": "npm run build",
+    "yalc": "npm run build && yalc publish"
+  },
+  "peerDependencies": {
+    "livekit-client": "^2.20.1",
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "livekit-client": "^2.20.1",
+    "react": "^19.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.0.0"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "parlando-space-game-client",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc && vite build",
+    "watch": "vite build --watch",
+    "test": "vitest run",
+    "yalc:add-client": "yalc add @parlando/client",
+    "yalc:update-client": "yalc update @parlando/client"
+  },
+  "dependencies": {
+    "@parlando/client": "^0.1.0",
+    "livekit-client": "^2.20.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "^5.8.0",
+    "vite": "^7.0.0",
+    "vitest": "^3.0.0"
+  },
+  "description": "Demo Space Game browser client for Parlando."
+}
