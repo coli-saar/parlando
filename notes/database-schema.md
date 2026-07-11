@@ -75,7 +75,7 @@ connection_status text not null
 primary key (experiment_id, session_id, participant_id)
 ```
 
-Roles such as `A`, `B`, `spectator`, and `worker` are session-local. They do not belong on `participants`.
+Roles such as `A`, `B`, and `worker` are session-local. They do not belong on `participants`. Additional player joins are rejected once `A` and `B` are occupied.
 
 `participant_session_id` is a client/reconnect handle. It is not durable identity.
 

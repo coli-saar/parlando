@@ -38,12 +38,15 @@ pub trait AgentFactory<A: GameAdapter>: Send + Sync + 'static {
 }
 ```
 
-- Keep YAML-driven agent selection, but reinterpret `agents.human_vs_agent.factory` as a game-local selector string rather than a Python import path.
+- Keep YAML-driven agent selection. `agents.human_vs_agent.factory` may select either an in-process Rust game factory or a remote gRPC agent backend.
 - Implement `parlando-space-game::agents::factory_from_config(&ExperimentConfig)`:
   - returns `Ok(None)` unless `agents.mode == human_vs_agent`
   - validates `agents.human_vs_agent`
   - maps known selector strings such as `space_game.back_and_forth` to concrete Rust factories
+  - maps remote selectors such as `remote_grpc` to a reusable `RemoteGrpcAgentFactory`
   - fails clearly on unknown selectors
+- Define a language-neutral gRPC remote-agent protocol for agent init, act requests, act results, errors, and cleanup. Game-specific observations/actions cross the network as protobuf `Struct`/JSON-compatible values; inside the Rust binary they remain typed.
+- Provide a Python SDK/server wrapper so Python agent authors implement a clean async `act(observation, available_actions, context)` API rather than hand-writing protocol code.
 - The reusable server owns agent lifecycle behavior:
   - create an agent participant in role `B`
   - call the factory once per agent participant
@@ -53,6 +56,7 @@ pub trait AgentFactory<A: GameAdapter>: Send + Sync + 'static {
   - submit returned actions through normal room action handling
   - record returned messages as `origin: "agent"`
   - persist agent actions, messages, errors, and lifecycle events
+  - treat local Rust and remote gRPC agents identically after factory creation
 
 ## Config And Runtime Behavior
 

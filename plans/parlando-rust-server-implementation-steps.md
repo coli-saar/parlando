@@ -28,18 +28,18 @@ Implement Parlando as a fresh Rust workspace with two crates: `parlando-server` 
 - Keep game state generic inside the server and convert to JSON only at protocol/storage boundaries.
 - Acceptance: a tiny test adapter can instantiate the reusable server state.
 
-### 4. Storage Interface And SQLite v1
+### 4. Evaluation Storage Interface And SQLite v1
 
-- Define a general async storage trait for participants, rooms, room participants, lifecycle events, game actions, state snapshots, consents, transcripts, voice diagnostics, conversation messages, agent events, TTS diagnostics, and completions.
+- Define a general async storage trait for experiments, durable participants, sessions, session participants, consent declarations, and ordered session events.
 - Implement SQLite first using `database.url = sqlite:///...`; fail clearly for unsupported schemes.
 - Add in-memory storage only for focused unit tests.
 - Persist timestamps for every stored record.
-- Acceptance: DB-backed tests prove all major event categories are inserted and exported.
+- Acceptance: DB-backed tests prove evaluation entities, unusual participant/session shapes, consent declarations, and session events are inserted and exported.
 
 ### 5. Participants, Rooms, Consent, And Matchmaking
 
 - Implement `/health`, `/api/config`, participant creation, direct start/enter/wait, consent, room create/join, matchmaking join/status.
-- Preserve roles `A`, `B`, then `spectator`; reconnecting participants keep their existing role.
+- Preserve roles `A` and `B`; reconnecting participants keep their existing role and additional player joins are rejected.
 - In human-vs-agent mode, create a human room with role `A` and an agent participant with role `B`.
 - Acceptance: HTTP integration tests cover human-vs-human and human-vs-agent room creation.
 
@@ -80,9 +80,14 @@ Implement Parlando as a fresh Rust workspace with two crates: `parlando-server` 
 ### 10. Agent Runtime
 
 - In `parlando-server`, create fresh agents from `Option<Arc<dyn AgentFactory<A>>>` per agent participant.
+- Add a transport-agnostic remote agent backend using gRPC as the first network protocol, so agents can be implemented in Python or other languages without changing the Rust-side agent runtime.
+- Define a `parlando-agent-protocol.proto` contract for agent initialization, action requests, action results, errors, and optional shutdown/cleanup. Use protobuf `Struct`/JSON-compatible fields at the process boundary for game-specific observations, available actions, and returned actions.
+- Implement a `RemoteGrpcAgentFactory` that satisfies the same Rust-side `AgentFactory<A>`/`GameAgent<A>` interface as in-process agents. The server runtime should not know whether an agent is local Rust or remote gRPC.
+- Provide a Python agent SDK/server wrapper that hides gRPC details behind a clean Python API where authors implement an async `act(observation, available_actions, context)` method.
 - Run the agent loop with readiness waiting, act timeout, invalid action limit, last error tracking, completion awareness, conversation history, and normal room action submission.
 - Persist agent lifecycle, actions, messages, and errors.
-- Acceptance: tests prove one fresh agent per room, messages become conversation entries, actions go through validation, and invalid agents stop cleanly.
+- Persist remote-agent identity as `participant_kind = agent`, `identity_provider = remote_grpc`, and `external_id = <agent_name>@<agent_version>`; store protocol version and config hash in metadata, but never secrets.
+- Acceptance: tests prove one fresh local or remote agent per room, gRPC request/response behavior with a mocked service, messages become conversation entries, actions go through Rust validation, timeouts/errors are persisted, and invalid agents stop cleanly.
 
 ### 11. ElevenLabs TTS
 

@@ -21,7 +21,7 @@ impl PlayerRole {
     }
 }
 
-/// Identifies a participant's seat in a room, including non-playing spectators.
+/// Identifies a participant's active player seat in a room.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Seat {
@@ -31,8 +31,6 @@ pub enum Seat {
     /// The second active player seat.
     #[serde(rename = "B")]
     B,
-    /// A non-playing observer seat.
-    Spectator,
 }
 
 impl Seat {
@@ -41,16 +39,14 @@ impl Seat {
         match self {
             Self::A => "A",
             Self::B => "B",
-            Self::Spectator => "spectator",
         }
     }
 
-    /// Converts an active seat into a player role and returns `None` for spectators.
+    /// Converts a seat into the equivalent player role.
     pub fn player_role(self) -> Option<PlayerRole> {
         match self {
             Self::A => Some(PlayerRole::A),
             Self::B => Some(PlayerRole::B),
-            Self::Spectator => None,
         }
     }
 }

@@ -1,8 +1,8 @@
-# Steps 1-4 Foundation Decisions
+# Steps 1-5 Foundation Decisions
 
 ## Context
 
-The first Parlando implementation checkpoint covers the Rust workspace skeleton, protocol/config foundation, core server traits/app state, and the first storage backend. The server and game crate are linked into one binary, so game internals should stay typed and only serialize at HTTP, WebSocket, and persistence boundaries.
+The first Parlando implementation checkpoint covers the Rust workspace skeleton, protocol/config foundation, core server traits/app state, the first storage backend, and participant/session room creation flows. The server and game crate are linked into one binary, so game internals should stay typed and only serialize at HTTP, WebSocket, and persistence boundaries.
 
 ## Chosen Approach
 
@@ -13,6 +13,8 @@ The first Parlando implementation checkpoint covers the Rust workspace skeleton,
 - Use a general `ExperimentStore` trait for durable evaluation data, with SQLite as the first implementation.
 - Model experiments, durable participant identities, sessions, session-local participants, consent declarations, and ordered session events relationally.
 - Keep `MemoryState` only as an active-game runtime cache for WebSockets, broadcasts, and in-progress game execution.
+- Preserve client-facing `room_id` and `participant_session_id` while storing evaluation-facing `experiment_id`, integer `session_id`, and integer `participant_id`.
+- Cover human-vs-human and human-vs-agent room creation through router-level HTTP tests rather than only unit-level helpers.
 
 ## Tradeoffs
 
@@ -20,6 +22,7 @@ The first Parlando implementation checkpoint covers the Rust workspace skeleton,
 - The evaluation schema is more specific than a generic event log, but it gives researchers stable keys for experiment/session exports.
 - A single `session_events` table stores session activity once. It avoids redundant category/audit tables while still supporting ordered reconstruction and event-type filtering.
 - The config loader accepts legacy Python fields instead of rejecting them so existing YAML files remain usable during migration.
+- Step-5 tests use the Axum router directly, which keeps them fast while still exercising real routes and JSON shapes.
 
 ## Risks And Follow-Up
 

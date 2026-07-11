@@ -1239,7 +1239,7 @@ mod tests {
             .create_session(SessionRecord {
                 experiment_id: "exp_returning".to_string(),
                 room_id: "ROOM_B".to_string(),
-                mode: "spectator_replay".to_string(),
+                mode: "role_swap_replay".to_string(),
                 status: "playing".to_string(),
             })
             .await
@@ -1261,8 +1261,8 @@ mod tests {
                 experiment_id: "exp_returning".to_string(),
                 session_id: second_session,
                 participant_id,
-                participant_session_id: "ps_repeat_spectator".to_string(),
-                role: "spectator".to_string(),
+                participant_session_id: "ps_repeat_b".to_string(),
+                role: "B".to_string(),
                 connection_status: "connected".to_string(),
             })
             .await
@@ -1276,7 +1276,7 @@ mod tests {
         );
         assert!(experiment["participants"][0].get("role").is_none());
         assert_eq!(experiment["session_participants"][0]["role"], "A");
-        assert_eq!(experiment["session_participants"][1]["role"], "spectator");
+        assert_eq!(experiment["session_participants"][1]["role"], "B");
 
         let second = store
             .export_session("exp_returning", second_session)
@@ -1285,7 +1285,7 @@ mod tests {
         assert_eq!(second["participants"].as_array().unwrap().len(), 1);
         assert_eq!(
             second["session_participants"][0]["participant_session_id"],
-            "ps_repeat_spectator"
+            "ps_repeat_b"
         );
     }
 
@@ -1298,7 +1298,7 @@ mod tests {
             .ensure_experiment(ExperimentRecord {
                 experiment_id: "exp_weird".to_string(),
                 config: json!({
-                    "conditions": ["voice", "agent", "spectator"],
+                    "conditions": ["voice", "agent", "worker"],
                     "nested": {"levels": [{"id": 1}, {"id": 2}]}
                 }),
                 server_version: Some("test".to_string()),
@@ -1363,7 +1363,7 @@ mod tests {
             .create_session(SessionRecord {
                 experiment_id: "exp_weird".to_string(),
                 room_id: "ROOM_WEIRD".to_string(),
-                mode: "human_agent_with_observer".to_string(),
+                mode: "human_agent_with_worker".to_string(),
                 status: "playing".to_string(),
             })
             .await
@@ -1372,7 +1372,6 @@ mod tests {
         for (participant_id, handle, role) in [
             (prolific, "ps_prolific", "A"),
             (agent, "ps_agent", "B"),
-            (direct_one, "ps_direct_spectator", "spectator"),
             (worker, "worker-transcriber-1", "worker"),
         ] {
             store
@@ -1452,10 +1451,10 @@ mod tests {
         }
 
         let exported = store.export_session("exp_weird", session_id).await.unwrap();
-        assert_eq!(exported["participants"].as_array().unwrap().len(), 4);
+        assert_eq!(exported["participants"].as_array().unwrap().len(), 3);
         assert_eq!(
             exported["session_participants"].as_array().unwrap().len(),
-            4
+            3
         );
         assert_eq!(
             exported["consent_declarations"].as_array().unwrap().len(),
