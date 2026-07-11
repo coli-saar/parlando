@@ -347,3 +347,28 @@ This is not a generic "STT service" trait because that would blur transport and 
 
 - Decide whether `transcription.enabled = false` should continue labeling `livekit-combined` with the `transcription` purpose for legacy client compatibility, or whether new clients should receive partner-audio only.
 - Add an explicit readiness signal for LiveKit worker transcription before reintroducing worker-based STT in production.
+
+# JavaScript Client Package Split
+
+## Context
+
+Game clients will often be developed on machines without local checkouts of the Rust server. The reusable browser runtime therefore needs to be a real package boundary rather than a workspace-only folder or a `file:` dependency from one demo game.
+
+## Chosen Approach
+
+- Move the reusable browser runtime into a sibling `../js-client` project named `@parlando/client`.
+- Keep `../js-client` game-agnostic: HTTP API helpers, WebSocket helpers, protocol types, audio-session orchestration, LiveKit/Speechmatics sink implementations, and optional React helpers live there.
+- Move the Space Game browser app into sibling `../space-game` as a demo client that depends on `@parlando/client` by package name.
+- Use GitHub Packages as the planned release channel for versioned SDK builds.
+- Use `yalc` for unpublished local debug loops so demo clients can test a package-shaped artifact without publishing every intermediate build.
+- Leave the Rust Space Game server crate in the Rust workspace for now.
+
+## Tradeoffs
+
+This creates three top-level project areas instead of keeping everything under the Rust workspace, but it matches the intended dependency direction: games consume the SDK, and the SDK does not consume games. `yalc` adds one local-development tool, but it avoids committing a `file:` dependency that would break on machines without the sibling SDK checkout.
+
+## Follow-Up
+
+- Add package repository metadata once the GitHub owner/repo path is finalized.
+- Add CI to build, test, and publish `@parlando/client` to GitHub Packages on version tags.
+- Update Render/Docker packaging once the final production build context includes both the Rust binary and the Space Game client build.
