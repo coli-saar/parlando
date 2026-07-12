@@ -226,6 +226,16 @@ impl Default for HumanVsAgentConfig {
     }
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AgentOptionConfig {
+    pub selector: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub requires_config: bool,
+    pub default_config: Value,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentsMode {
@@ -244,6 +254,7 @@ impl Default for AgentsMode {
 pub struct AgentsConfig {
     pub mode: AgentsMode,
     pub human_vs_agent: Option<HumanVsAgentConfig>,
+    pub available: Vec<AgentOptionConfig>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

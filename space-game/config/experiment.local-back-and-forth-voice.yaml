@@ -27,6 +27,20 @@ direct:
 
 agents:
   mode: human_vs_agent
+  available:
+    - selector: space_game.back_and_forth
+      label: Back-and-forth agent
+      description: Built-in deterministic Space Game movement agent.
+      requires_config: false
+      default_config: {}
+    - selector: remote_grpc
+      label: Remote gRPC agent
+      description: External agent service using the Parlando agent protocol.
+      requires_config: true
+      default_config:
+        endpoint: http://127.0.0.1:50051
+        agent_name: space-game-remote-agent
+        agent_version:
   human_vs_agent:
     factory: space_game.back_and_forth
     act_timeout_seconds: 5

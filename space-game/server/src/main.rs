@@ -6,7 +6,10 @@ use std::{
 use anyhow::Result;
 use clap::Parser;
 use parlando_server::{serve, ExperimentConfig, LiveKitAgentAudioPublisher, ServeOptions};
-use parlando_space_game::{agents::factory_from_config, SpaceGameAdapter};
+use parlando_space_game::{
+    agents::{available_agent_options, factory_from_config},
+    SpaceGameAdapter,
+};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -60,6 +63,7 @@ async fn main() -> Result<()> {
             agent_factory,
             audio_publisher,
             game_version_manifest: Some(space_game_version_manifest()),
+            admin_agent_options: available_agent_options(),
             ..ServeOptions::default()
         },
     )

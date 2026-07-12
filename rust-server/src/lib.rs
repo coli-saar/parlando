@@ -17,6 +17,6 @@ pub use agents::{
 };
 pub use app::{build_router, serve, AppState, ServeOptions};
 pub use audio_publisher::{AgentAudioPublisher, AudioPublishSummary, LiveKitAgentAudioPublisher};
-pub use config::ExperimentConfig;
+pub use config::{AgentOptionConfig as AdminAgentOption, ExperimentConfig};
 pub use game::{GameAdapter, PlayerRole, Seat};
 pub use remote_agent::{RemoteGrpcAgentConfig, RemoteGrpcAgentFactory};

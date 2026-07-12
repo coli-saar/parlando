@@ -31,7 +31,7 @@ use crate::{
     agents::{AgentFactory, AgentInitContext, AgentResult, SharedAgentFactory},
     audio_publisher::AgentAudioPublisher,
     audio_session::{AudioSessionContext, DefaultAudioSessionPlanner, TranscriptionReadiness},
-    config::{AgentsMode, ExperimentConfig},
+    config::{AgentOptionConfig, AgentsMode, ExperimentConfig},
     game::{GameAdapter, PlayerRole, Seat},
     identity::{new_id, room_code},
     livekit::{create_livekit_token, livekit_identity},
@@ -56,6 +56,8 @@ pub struct ServeOptions<A: GameAdapter> {
     pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
     /// Game/client version metadata supplied by the game-specific binary.
     pub game_version_manifest: Option<Value>,
+    /// Agent factory selectors the game binary knows how to instantiate.
+    pub admin_agent_options: Vec<AgentOptionConfig>,
 }
 
 impl<A: GameAdapter> Default for ServeOptions<A> {
@@ -66,6 +68,7 @@ impl<A: GameAdapter> Default for ServeOptions<A> {
             tts_provider: None,
             audio_publisher: None,
             game_version_manifest: None,
+            admin_agent_options: vec![],
         }
     }
 }
@@ -83,6 +86,7 @@ pub struct AppState<A: GameAdapter> {
     pub tts_provider: Option<Arc<dyn StreamingTtsProvider>>,
     pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
     pub version_manifest: Value,
+    pub admin_agent_options: Vec<AgentOptionConfig>,
 }
 
 impl<A: GameAdapter> AppState<A> {
@@ -333,6 +337,7 @@ where
         tts_provider,
         audio_publisher: options.audio_publisher,
         version_manifest,
+        admin_agent_options: options.admin_agent_options,
     });
 
     let api = Router::new()
@@ -1438,8 +1443,18 @@ struct AdminExperimentsQuery {
 
 #[derive(Clone, Debug, Deserialize)]
 struct AdminCreateExperimentRequest {
+    source_experiment_id: Option<String>,
     experiment_id: Option<String>,
+    study_name: Option<String>,
     status: Option<String>,
+    agents_mode: Option<AgentsMode>,
+    agent_factory: Option<String>,
+    agent_seed: Option<u64>,
+    agent_act_timeout_seconds: Option<f64>,
+    agent_invalid_action_limit: Option<usize>,
+    agent_config: Option<Value>,
+    waiting_room_timeout_seconds: Option<i64>,
+    reconnect_grace_seconds: Option<i64>,
     notes: Option<String>,
 }
 
@@ -1471,9 +1486,16 @@ async fn admin_experiments<A: GameAdapter>(
         .store
         .list_experiments(query.limit.unwrap_or(100))
         .await?;
+    let agent_options = if state.config.agents.available.is_empty() {
+        state.admin_agent_options.clone()
+    } else {
+        state.config.agents.available.clone()
+    };
     Ok(Json(json!({
         "active_experiment_id": state.experiment_id,
         "version_manifest": state.version_manifest,
+        "agent_options": agent_options,
+        "default_agents": state.config.agents,
         "experiments": experiments,
     })))
 }
@@ -1489,11 +1511,83 @@ async fn admin_create_experiment<A: GameAdapter>(
         .experiment_id
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(generated_experiment_id);
+    let mut config = if let Some(source_experiment_id) = request
+        .source_experiment_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let exported = state.store.export_experiment(source_experiment_id).await?;
+        let source_config = exported
+            .get("experiment")
+            .and_then(|experiment| experiment.get("config"))
+            .cloned()
+            .ok_or_else(|| AppError::not_found("Source experiment not found."))?;
+        serde_json::from_value::<ExperimentConfig>(source_config)
+            .map_err(|error| AppError::bad_request(error.to_string()))?
+    } else {
+        state.config.clone()
+    };
+    config.experiment.id = Some(experiment_id.clone());
+    if let Some(study_name) = request.study_name.filter(|value| !value.trim().is_empty()) {
+        config.study.name = study_name.trim().to_string();
+    }
+    if let Some(timeout) = request.waiting_room_timeout_seconds {
+        if timeout <= 0 {
+            return Err(AppError::bad_request(
+                "waiting_room_timeout_seconds must be positive",
+            ));
+        }
+        config.study.waiting_room_timeout_seconds = timeout;
+    }
+    if let Some(grace) = request.reconnect_grace_seconds {
+        if grace < 0 {
+            return Err(AppError::bad_request(
+                "reconnect_grace_seconds must be non-negative",
+            ));
+        }
+        config.study.reconnect_grace_seconds = grace;
+    }
+    let agents_mode = request.agents_mode.unwrap_or(config.agents.mode);
+    config.agents.mode = agents_mode.clone();
+    if agents_mode == AgentsMode::HumanVsAgent {
+        let mut human_vs_agent = config.agents.human_vs_agent.unwrap_or_default();
+        if let Some(factory) = request
+            .agent_factory
+            .filter(|value| !value.trim().is_empty())
+        {
+            human_vs_agent.factory = Some(factory.trim().to_string());
+        }
+        if let Some(seed) = request.agent_seed {
+            human_vs_agent.seed = Some(seed);
+        }
+        if let Some(timeout) = request.agent_act_timeout_seconds {
+            if timeout <= 0.0 {
+                return Err(AppError::bad_request(
+                    "agent_act_timeout_seconds must be positive",
+                ));
+            }
+            human_vs_agent.act_timeout_seconds = timeout;
+        }
+        if let Some(limit) = request.agent_invalid_action_limit {
+            if limit == 0 {
+                return Err(AppError::bad_request(
+                    "agent_invalid_action_limit must be positive",
+                ));
+            }
+            human_vs_agent.invalid_action_limit = limit;
+        }
+        if let Some(agent_config) = request.agent_config {
+            human_vs_agent.config = agent_config;
+        }
+        config.agents.human_vs_agent = Some(human_vs_agent);
+    } else {
+        config.agents.human_vs_agent = None;
+    }
     state
         .store
         .ensure_experiment(ExperimentRecord {
             experiment_id: experiment_id.clone(),
-            config: serde_json::to_value(&state.config).map_err(|error| {
+            config: serde_json::to_value(&config).map_err(|error| {
                 AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
             })?,
             server_version: Some(env!("CARGO_PKG_VERSION").to_string()),
@@ -2446,12 +2540,21 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
     h2 { font-size: 18px; margin: 0 0 12px; }
     .muted { color: #65717c; }
     .small { font-size: 12px; }
-    .refresh, .primary, select, input { border: 1px solid #c9d2da; background: #fff; border-radius: 6px; padding: 7px 10px; }
+    .refresh, .primary, .secondary, select, input, textarea { border: 1px solid #c9d2da; background: #fff; border-radius: 6px; padding: 7px 10px; }
     .refresh, .primary { cursor: pointer; }
     .primary { background: #185f8f; border-color: #185f8f; color: #fff; font-weight: 700; }
-    .refresh:hover, .primary:hover { filter: brightness(0.97); }
+    .secondary { color: #31404c; cursor: pointer; font-weight: 650; }
+    textarea { min-height: 80px; resize: vertical; }
+    .refresh:hover, .primary:hover, .secondary:hover { filter: brightness(0.97); }
     .control-grid { display: grid; gap: 8px; }
     .control-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+    .form-grid { display: grid; gap: 12px; }
+    .form-grid label { display: grid; gap: 5px; }
+    .form-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+    .modal-backdrop[hidden] { display: none; }
+    .modal-backdrop { align-items: start; background: rgba(18, 29, 38, 0.38); bottom: 0; display: flex; justify-content: center; left: 0; overflow: auto; padding: 72px 16px 20px; position: fixed; right: 0; top: 0; z-index: 20; }
+    .modal { background: #fff; border: 1px solid #dce2e8; border-radius: 8px; box-shadow: 0 18px 60px rgba(20, 34, 45, 0.24); max-width: 620px; padding: 18px; width: min(100%, 620px); }
+    .modal .topline { margin-bottom: 12px; }
     .toggle-row { align-items: center; color: #4e5b66; display: inline-flex; font-size: 13px; gap: 8px; white-space: nowrap; }
     .toggle-row input { height: 16px; width: 16px; }
     .experiment-list { display: grid; gap: 8px; }
@@ -2531,6 +2634,10 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
       .session .meta { gap: 5px; margin-top: 6px; }
       .grid, .participants { grid-template-columns: 1fr; }
       .control-row { grid-template-columns: 1fr; }
+      .modal-backdrop { align-items: stretch; padding: 64px 10px 12px; }
+      .modal { padding: 14px; }
+      .form-actions { justify-content: stretch; }
+      .form-actions button { flex: 1 1 auto; }
       .main { padding: 10px 14px 14px; }
       .workspace-header { align-items: stretch; display: grid; }
       .workspace-title h2 { font-size: 19px; }
@@ -2577,7 +2684,6 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
         <button class="primary" id="createExperiment" title="Create draft experiment">New Experiment</button>
       </div>
       <section class="control-grid" aria-label="Experiments">
-        <input id="newExperimentId" placeholder="Optional experiment id">
         <div id="experimentList" class="experiment-list"><div class="empty">Loading experiments...</div></div>
       </section>
     </aside>
@@ -2654,8 +2760,93 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
       </section>
     </main>
   </div>
+  <div id="experimentFormBackdrop" class="modal-backdrop" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="experimentFormTitle">
+      <div class="topline">
+        <div>
+          <h2 id="experimentFormTitle">New Experiment</h2>
+          <div class="muted small">Create a configured draft record for this game.</div>
+        </div>
+        <button class="secondary" id="cancelExperimentTop" type="button" title="Close">Close</button>
+      </div>
+      <form id="experimentForm" class="form-grid">
+        <label>
+          <span class="label">Study name</span>
+          <input id="experimentStudyName" name="study_name" placeholder="e.g. Back-and-forth pilot 2" required>
+        </label>
+        <label>
+          <span class="label">Experiment id</span>
+          <input id="experimentId" name="experiment_id" placeholder="Generated if left blank">
+        </label>
+        <label>
+          <span class="label">Copy settings from</span>
+          <select id="experimentSource" name="source_experiment_id">
+            <option value="">Current server config</option>
+          </select>
+        </label>
+        <label>
+          <span class="label">Status</span>
+          <select id="experimentStatus" name="status">
+            <option value="draft">Draft</option>
+            <option value="active">Active</option>
+            <option value="completed">Completed</option>
+          </select>
+        </label>
+        <label>
+          <span class="label">Participants</span>
+          <select id="experimentAgentsMode" name="agents_mode">
+            <option value="human_vs_human">Human-human</option>
+            <option value="human_vs_agent">Human-agent</option>
+          </select>
+        </label>
+        <section id="agentConfigFields" class="form-grid" hidden>
+          <label>
+            <span class="label">Agent</span>
+            <select id="experimentAgentFactory" name="agent_factory"></select>
+          </label>
+          <div class="control-row">
+            <label>
+              <span class="label">Agent seed</span>
+              <input id="experimentAgentSeed" name="agent_seed" type="number" min="0" step="1" placeholder="Optional">
+            </label>
+            <label>
+              <span class="label">Action timeout, seconds</span>
+              <input id="experimentAgentTimeout" name="agent_act_timeout_seconds" type="number" min="0.1" step="0.1" placeholder="Use current config">
+            </label>
+          </div>
+          <label>
+            <span class="label">Invalid action limit</span>
+            <input id="experimentAgentInvalidLimit" name="agent_invalid_action_limit" type="number" min="1" step="1" placeholder="Use current config">
+          </label>
+          <label>
+            <span class="label">Agent config JSON</span>
+            <textarea id="experimentAgentConfig" name="agent_config" placeholder='{"endpoint":"http://127.0.0.1:50051","agent_name":"my-agent","agent_version":"v1"}'></textarea>
+          </label>
+        </section>
+        <div class="control-row">
+          <label>
+            <span class="label">Waiting room timeout, seconds</span>
+            <input id="experimentWaitingTimeout" name="waiting_room_timeout_seconds" type="number" min="1" step="1" placeholder="Use current config">
+          </label>
+          <label>
+            <span class="label">Reconnect grace, seconds</span>
+            <input id="experimentReconnectGrace" name="reconnect_grace_seconds" type="number" min="0" step="1" placeholder="Use current config">
+          </label>
+        </div>
+        <label>
+          <span class="label">Notes</span>
+          <textarea id="experimentNotes" name="notes" placeholder="Protocol notes, recruitment batch, condition, exclusions..."></textarea>
+        </label>
+        <div id="experimentFormError" class="warning" hidden></div>
+        <div class="form-actions">
+          <button class="secondary" id="cancelExperiment" type="button">Cancel</button>
+          <button class="primary" type="submit">Create Experiment</button>
+        </div>
+      </form>
+    </section>
+  </div>
   <script>
-    const state = { experiments: [], activeExperimentId: null, sessions: [], selected: null, selectedSession: null, events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, activeTab: 'sessions' };
+    const state = { experiments: [], activeExperimentId: null, sessions: [], selected: null, selectedSession: null, events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, agentOptions: [], defaultAgents: null, activeTab: 'sessions' };
     const experimentList = document.getElementById('experimentList');
     const menuButton = document.getElementById('menuButton');
     const experimentHeader = document.getElementById('experimentHeader');
@@ -2670,6 +2861,14 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
     const activeExperimentLabel = document.getElementById('activeExperimentLabel');
     const sessionStatusFilter = document.getElementById('sessionStatusFilter');
     const showHousekeeping = document.getElementById('showHousekeeping');
+    const experimentFormBackdrop = document.getElementById('experimentFormBackdrop');
+    const experimentForm = document.getElementById('experimentForm');
+    const experimentFormError = document.getElementById('experimentFormError');
+    const experimentSource = document.getElementById('experimentSource');
+    const experimentAgentsMode = document.getElementById('experimentAgentsMode');
+    const agentConfigFields = document.getElementById('agentConfigFields');
+    const experimentAgentFactory = document.getElementById('experimentAgentFactory');
+    const experimentAgentConfig = document.getElementById('experimentAgentConfig');
     const tabButtons = Array.from(document.querySelectorAll('.tab'));
     const tabPanels = {
       sessions: document.getElementById('sessionsPanel'),
@@ -2810,6 +3009,8 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
       const data = await response.json();
       state.experiments = data.experiments || [];
       state.versionManifest = data.version_manifest || null;
+      state.agentOptions = data.agent_options || [];
+      state.defaultAgents = data.default_agents || null;
       state.activeExperimentId = state.activeExperimentId || data.active_experiment_id || state.experiments[0]?.experiment_id || null;
       renderExperiments();
       renderExperimentHeader();
@@ -2851,6 +3052,164 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
       const open = !document.body.classList.contains('sidebar-open');
       document.body.classList.toggle('sidebar-open', open);
       menuButton.setAttribute('aria-expanded', String(open));
+    }
+
+    function activeExperiment() {
+      return state.experiments.find(item => item.experiment_id === state.activeExperimentId);
+    }
+
+    function openExperimentForm() {
+      experimentForm.reset();
+      experimentFormError.hidden = true;
+      renderExperimentSourceOptions();
+      applyExperimentConfigDefaults({
+        study: {},
+        agents: state.defaultAgents || {}
+      }, null);
+      experimentSource.value = '';
+      document.getElementById('experimentStatus').value = 'draft';
+      experimentFormBackdrop.hidden = false;
+      document.getElementById('experimentStudyName').focus();
+    }
+
+    function closeExperimentForm() {
+      experimentFormBackdrop.hidden = true;
+      experimentFormError.hidden = true;
+    }
+
+    function optionalNumber(id) {
+      const value = document.getElementById(id).value.trim();
+      return value === '' ? null : Number(value);
+    }
+
+    function optionalInteger(id) {
+      const value = document.getElementById(id).value.trim();
+      return value === '' ? null : Number(value);
+    }
+
+    function renderExperimentSourceOptions() {
+      experimentSource.innerHTML = '<option value="">Current server config</option>' + state.experiments.map(experiment => `
+        <option value="${escapeHtml(experiment.experiment_id)}">${escapeHtml(experiment.study_name || experiment.experiment_id)}</option>
+      `).join('');
+    }
+
+    function applyExperimentConfigDefaults(config, experiment) {
+      const agents = config?.agents || state.defaultAgents || {};
+      const humanVsAgent = agents.human_vs_agent || {};
+      document.getElementById('experimentStudyName').value = config?.study?.name || experiment?.study_name || '';
+      document.getElementById('experimentWaitingTimeout').value = config?.study?.waiting_room_timeout_seconds ?? '';
+      document.getElementById('experimentReconnectGrace').value = config?.study?.reconnect_grace_seconds ?? '';
+      document.getElementById('experimentNotes').value = experiment?.notes || '';
+      experimentAgentsMode.value = agents.mode || 'human_vs_human';
+      renderAgentOptions();
+      if (humanVsAgent.factory && Array.from(experimentAgentFactory.options).some(option => option.value === humanVsAgent.factory)) {
+        experimentAgentFactory.value = humanVsAgent.factory;
+      }
+      document.getElementById('experimentAgentSeed').value = humanVsAgent.seed ?? '';
+      document.getElementById('experimentAgentTimeout').value = humanVsAgent.act_timeout_seconds ?? '';
+      document.getElementById('experimentAgentInvalidLimit').value = humanVsAgent.invalid_action_limit ?? '';
+      experimentAgentConfig.value = humanVsAgent.config && Object.keys(humanVsAgent.config).length ? JSON.stringify(humanVsAgent.config, null, 2) : '';
+      updateAgentConfigVisibility(false);
+    }
+
+    async function loadExperimentSourceConfig() {
+      experimentFormError.hidden = true;
+      const sourceId = experimentSource.value;
+      if (!sourceId) {
+        applyExperimentConfigDefaults({ study: {}, agents: state.defaultAgents || {} }, null);
+        return;
+      }
+      const response = await fetch(`/api/admin/export?experiment_id=${encodeURIComponent(sourceId)}`);
+      if (!response.ok) {
+        experimentFormError.textContent = await response.text();
+        experimentFormError.hidden = false;
+        return;
+      }
+      const exported = await response.json();
+      const experiment = state.experiments.find(item => item.experiment_id === sourceId);
+      applyExperimentConfigDefaults(exported.experiment?.config || {}, experiment);
+    }
+
+    function selectedAgentOption() {
+      return state.agentOptions.find(option => option.selector === experimentAgentFactory.value);
+    }
+
+    function renderAgentOptions() {
+      const options = state.agentOptions.length ? state.agentOptions : [{
+        selector: 'remote_grpc',
+        label: 'Remote gRPC agent',
+        description: 'External agent service',
+        default_config: { endpoint: 'http://127.0.0.1:50051', agent_name: 'space-game-remote-agent' }
+      }];
+      experimentAgentFactory.innerHTML = options.map(option => `
+        <option value="${escapeHtml(option.selector)}">${escapeHtml(option.label || option.selector)}</option>
+      `).join('');
+    }
+
+    function updateAgentConfigVisibility(resetConfig = true) {
+      const enabled = experimentAgentsMode.value === 'human_vs_agent';
+      agentConfigFields.hidden = !enabled;
+      if (!enabled) return;
+      const currentFactory = experimentAgentFactory.value;
+      renderAgentOptions();
+      if (currentFactory && Array.from(experimentAgentFactory.options).some(option => option.value === currentFactory)) {
+        experimentAgentFactory.value = currentFactory;
+      }
+      const selected = selectedAgentOption();
+      const config = selected?.default_config || {};
+      if (resetConfig) {
+        experimentAgentConfig.value = Object.keys(config).length ? JSON.stringify(config, null, 2) : '';
+      }
+    }
+
+    function optionalJson(id) {
+      const value = document.getElementById(id).value.trim();
+      if (!value) return null;
+      return JSON.parse(value);
+    }
+
+    async function submitExperimentForm(event) {
+      event.preventDefault();
+      experimentFormError.hidden = true;
+      let body;
+      try {
+        body = {
+          source_experiment_id: experimentSource.value || null,
+          experiment_id: document.getElementById('experimentId').value.trim() || null,
+          study_name: document.getElementById('experimentStudyName').value.trim() || null,
+          status: document.getElementById('experimentStatus').value,
+          agents_mode: experimentAgentsMode.value,
+          agent_factory: experimentAgentsMode.value === 'human_vs_agent' ? experimentAgentFactory.value : null,
+          agent_seed: optionalInteger('experimentAgentSeed'),
+          agent_act_timeout_seconds: optionalNumber('experimentAgentTimeout'),
+          agent_invalid_action_limit: optionalInteger('experimentAgentInvalidLimit'),
+          agent_config: experimentAgentsMode.value === 'human_vs_agent' ? optionalJson('experimentAgentConfig') : null,
+          waiting_room_timeout_seconds: optionalNumber('experimentWaitingTimeout'),
+          reconnect_grace_seconds: optionalNumber('experimentReconnectGrace'),
+          notes: document.getElementById('experimentNotes').value.trim() || null
+        };
+      } catch (error) {
+        experimentFormError.textContent = `Agent config JSON is invalid: ${error.message}`;
+        experimentFormError.hidden = false;
+        return;
+      }
+      const response = await fetch('/api/admin/experiments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!response.ok) {
+        experimentFormError.textContent = await response.text();
+        experimentFormError.hidden = false;
+        return;
+      }
+      const data = await response.json();
+      state.activeExperimentId = data.experiment_id;
+      state.selected = null;
+      state.selectedSession = null;
+      closeExperimentForm();
+      await loadExperiments();
+      await loadSessions();
     }
 
     function renderSummary(session, participantRows) {
@@ -3039,6 +3398,10 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
     showHousekeeping.addEventListener('change', renderEventBundles);
     menuButton.addEventListener('click', toggleExperimentMenu);
     document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && !experimentFormBackdrop.hidden) {
+        closeExperimentForm();
+        return;
+      }
       if (event.key === 'Escape') closeExperimentMenu();
     });
     document.addEventListener('click', event => {
@@ -3058,22 +3421,15 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
       sessionDetail.hidden = true;
       loadSessions();
     });
-    document.getElementById('createExperiment').addEventListener('click', async () => {
-      const input = document.getElementById('newExperimentId');
-      const body = { status: 'draft', experiment_id: input.value.trim() || null };
-      const response = await fetch('/api/admin/experiments', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-      if (!response.ok) throw new Error(await response.text());
-      const data = await response.json();
-      input.value = '';
-      state.activeExperimentId = data.experiment_id;
-      state.selected = null;
-      state.selectedSession = null;
-      await loadExperiments();
-      await loadSessions();
+    document.getElementById('createExperiment').addEventListener('click', openExperimentForm);
+    document.getElementById('cancelExperiment').addEventListener('click', closeExperimentForm);
+    document.getElementById('cancelExperimentTop').addEventListener('click', closeExperimentForm);
+    experimentForm.addEventListener('submit', submitExperimentForm);
+    experimentSource.addEventListener('change', loadExperimentSourceConfig);
+    experimentAgentsMode.addEventListener('change', updateAgentConfigVisibility);
+    experimentAgentFactory.addEventListener('change', () => updateAgentConfigVisibility(true));
+    experimentFormBackdrop.addEventListener('click', event => {
+      if (event.target === experimentFormBackdrop) closeExperimentForm();
     });
     document.getElementById('downloadExport').addEventListener('click', () => {
       if (!state.activeExperimentId) return;
@@ -4183,7 +4539,8 @@ mod tests {
 
     use crate::agents::{AgentInitContext, GameAgent};
     use crate::config::{
-        AgentsConfig, AgentsMode, DatabaseConfig, DirectConfig, ExperimentIdentityConfig,
+        AgentOptionConfig, AgentsConfig, AgentsMode, DatabaseConfig, DirectConfig,
+        ExperimentIdentityConfig,
     };
     use crate::game::PlayerRole;
 
@@ -4210,6 +4567,13 @@ mod tests {
         assert!(ADMIN_GAMES_HTML.contains("app-header"));
         assert!(ADMIN_GAMES_HTML.contains("gameName"));
         assert!(ADMIN_GAMES_HTML.contains("New Experiment"));
+        assert!(ADMIN_GAMES_HTML.contains("experimentForm"));
+        assert!(ADMIN_GAMES_HTML.contains("experimentStudyName"));
+        assert!(ADMIN_GAMES_HTML.contains("experimentSource"));
+        assert!(ADMIN_GAMES_HTML.contains("experimentAgentsMode"));
+        assert!(ADMIN_GAMES_HTML.contains("experimentAgentFactory"));
+        assert!(ADMIN_GAMES_HTML.contains("agent_options"));
+        assert!(ADMIN_GAMES_HTML.contains("waiting_room_timeout_seconds"));
         assert!(ADMIN_GAMES_HTML.contains("Experiment Details"));
         assert!(ADMIN_GAMES_HTML.contains("data-tab=\"sessions\""));
         assert!(ADMIN_GAMES_HTML.contains("data-tab=\"export\""));
@@ -4241,6 +4605,172 @@ mod tests {
             .and_then(|html| html.split("id=\"exportPanel\"").next())
             .unwrap();
         assert!(!sessions_panel.contains("<h2>Players</h2>"));
+    }
+
+    #[tokio::test]
+    async fn admin_create_experiment_persists_form_configuration() {
+        let (mut config, _tmp) = sqlite_config();
+        config.experiment.id = Some("bootstrap".to_string());
+        config.study.name = "Bootstrap Study".to_string();
+        config.agents.available = vec![
+            AgentOptionConfig {
+                selector: "remote_grpc".to_string(),
+                label: "Configured remote".to_string(),
+                default_config: json!({"endpoint": "http://127.0.0.1:50051"}),
+                ..AgentOptionConfig::default()
+            },
+            AgentOptionConfig {
+                selector: "scripted".to_string(),
+                label: "Configured scripted".to_string(),
+                default_config: json!({"script": "baseline"}),
+                ..AgentOptionConfig::default()
+            },
+        ];
+        let router = build_router(TinyAdapter, config, ServeOptions::default())
+            .await
+            .unwrap();
+
+        let (status, created) = json_request(
+            router.clone(),
+            http::Method::POST,
+            "/api/admin/experiments",
+            json!({
+                "experiment_id": "pilot-two",
+                "study_name": "Pilot Two",
+                "status": "draft",
+                "agents_mode": "human_vs_agent",
+                "agent_factory": "remote_grpc",
+                "agent_seed": 123,
+                "agent_act_timeout_seconds": 1.5,
+                "agent_invalid_action_limit": 4,
+                "agent_config": {
+                    "endpoint": "http://127.0.0.1:50051",
+                    "agent_name": "pilot-agent",
+                    "agent_version": "v2"
+                },
+                "waiting_room_timeout_seconds": 42,
+                "reconnect_grace_seconds": 7,
+                "notes": "counterbalanced condition B"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(created["experiment_id"], "pilot-two");
+
+        let (status, listed) = json_request(
+            router.clone(),
+            http::Method::GET,
+            "/api/admin/experiments?limit=10",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let agent_selectors = listed["agent_options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|option| option["selector"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(agent_selectors, vec!["remote_grpc", "scripted"]);
+        let experiment = listed["experiments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|experiment| experiment["experiment_id"] == "pilot-two")
+            .unwrap();
+        assert_eq!(experiment["study_name"], "Pilot Two");
+        assert_eq!(experiment["status"], "draft");
+        assert_eq!(experiment["notes"], "counterbalanced condition B");
+
+        let (status, exported) = json_request(
+            router.clone(),
+            http::Method::GET,
+            "/api/admin/export?experiment_id=pilot-two",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            exported["experiment"]["config"]["experiment"]["id"],
+            "pilot-two"
+        );
+        assert_eq!(
+            exported["experiment"]["config"]["study"]["name"],
+            "Pilot Two"
+        );
+        assert_eq!(
+            exported["experiment"]["config"]["agents"]["mode"],
+            "human_vs_agent"
+        );
+        assert_eq!(
+            exported["experiment"]["config"]["agents"]["human_vs_agent"]["factory"],
+            "remote_grpc"
+        );
+        assert_eq!(
+            exported["experiment"]["config"]["agents"]["human_vs_agent"]["seed"],
+            123
+        );
+        assert_eq!(
+            exported["experiment"]["config"]["agents"]["human_vs_agent"]["act_timeout_seconds"],
+            1.5
+        );
+        assert_eq!(
+            exported["experiment"]["config"]["agents"]["human_vs_agent"]["invalid_action_limit"],
+            4
+        );
+        assert_eq!(
+            exported["experiment"]["config"]["agents"]["human_vs_agent"]["config"]["agent_name"],
+            "pilot-agent"
+        );
+        assert_eq!(
+            exported["experiment"]["config"]["study"]["waiting_room_timeout_seconds"],
+            42
+        );
+        assert_eq!(
+            exported["experiment"]["config"]["study"]["reconnect_grace_seconds"],
+            7
+        );
+
+        let (status, cloned) = json_request(
+            router.clone(),
+            http::Method::POST,
+            "/api/admin/experiments",
+            json!({
+                "source_experiment_id": "pilot-two",
+                "experiment_id": "pilot-two-copy",
+                "study_name": "Pilot Two Copy",
+                "status": "draft"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(cloned["experiment_id"], "pilot-two-copy");
+
+        let (status, cloned_export) = json_request(
+            router,
+            http::Method::GET,
+            "/api/admin/export?experiment_id=pilot-two-copy",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            cloned_export["experiment"]["config"]["experiment"]["id"],
+            "pilot-two-copy"
+        );
+        assert_eq!(
+            cloned_export["experiment"]["config"]["study"]["name"],
+            "Pilot Two Copy"
+        );
+        assert_eq!(
+            cloned_export["experiment"]["config"]["agents"]["human_vs_agent"]["factory"],
+            "remote_grpc"
+        );
+        assert_eq!(
+            cloned_export["experiment"]["config"]["agents"]["human_vs_agent"]["config"]
+                ["agent_name"],
+            "pilot-agent"
+        );
     }
 
     #[test]
@@ -4866,6 +5396,7 @@ mod tests {
                 invalid_action_limit: 2,
                 ..Default::default()
             }),
+            ..AgentsConfig::default()
         };
         config
     }
@@ -6286,6 +6817,7 @@ mod tests {
         config.agents = AgentsConfig {
             mode: AgentsMode::HumanVsAgent,
             human_vs_agent: Some(Default::default()),
+            ..AgentsConfig::default()
         };
         let router = build_router(
             TinyAdapter,

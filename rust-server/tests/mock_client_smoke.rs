@@ -405,6 +405,7 @@ fn config(mode: AgentsMode) -> ExperimentConfig {
                 invalid_action_limit: 2,
                 ..HumanVsAgentConfig::default()
             }),
+            ..AgentsConfig::default()
         },
         ..ExperimentConfig::default()
     }

@@ -6,8 +6,8 @@ use std::{
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use parlando_server::{
-    AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResult, ExperimentConfig,
-    GameAgent, RemoteGrpcAgentConfig, RemoteGrpcAgentFactory,
+    AdminAgentOption, AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResult,
+    ExperimentConfig, GameAgent, RemoteGrpcAgentConfig, RemoteGrpcAgentFactory,
 };
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::Deserialize;
@@ -50,6 +50,32 @@ pub fn factory_from_config(
         }
         other => bail!("unknown Space Game agent factory selector: {other}"),
     }
+}
+
+/// Returns the Space Game agent selectors supported by `factory_from_config`.
+pub fn available_agent_options() -> Vec<AdminAgentOption> {
+    vec![
+        AdminAgentOption {
+            selector: "space_game.back_and_forth".to_string(),
+            label: "Back-and-forth agent".to_string(),
+            description: Some("Built-in deterministic Space Game movement agent.".to_string()),
+            requires_config: false,
+            default_config: serde_json::json!({}),
+        },
+        AdminAgentOption {
+            selector: "remote_grpc".to_string(),
+            label: "Remote gRPC agent".to_string(),
+            description: Some(
+                "External agent service using the Parlando agent protocol.".to_string(),
+            ),
+            requires_config: true,
+            default_config: serde_json::json!({
+                "endpoint": "http://127.0.0.1:50051",
+                "agent_name": "space-game-remote-agent",
+                "agent_version": null
+            }),
+        },
+    ]
 }
 
 #[derive(Debug, Deserialize)]
@@ -230,6 +256,7 @@ mod tests {
                     factory: selector.map(str::to_string),
                     ..HumanVsAgentConfig::default()
                 }),
+                ..AgentsConfig::default()
             };
 
             assert!(factory_from_config(&config).unwrap().is_some());
@@ -251,9 +278,20 @@ mod tests {
                 }),
                 ..HumanVsAgentConfig::default()
             }),
+            ..AgentsConfig::default()
         };
 
         assert!(factory_from_config(&config).unwrap().is_some());
+    }
+
+    #[test]
+    fn available_agent_options_include_supported_selectors() {
+        let selectors = available_agent_options()
+            .into_iter()
+            .map(|option| option.selector)
+            .collect::<Vec<_>>();
+        assert!(selectors.contains(&"space_game.back_and_forth".to_string()));
+        assert!(selectors.contains(&"remote_grpc".to_string()));
     }
 
     #[test]
@@ -265,6 +303,7 @@ mod tests {
                 factory: Some("python.module:factory".to_string()),
                 ..HumanVsAgentConfig::default()
             }),
+            ..AgentsConfig::default()
         };
 
         assert!(factory_from_config(&config).is_err());
