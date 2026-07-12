@@ -141,3 +141,14 @@ export function VoicePreparationControls({
     </>
   );
 }
+
+export {
+  ParlandoStartupGate,
+  createDefaultAudioController,
+  isVoiceEnabled,
+  normalizePresence,
+  voiceStatusUpdate,
+  type ActiveParlandoSession,
+  type ParlandoStartupGateProps,
+  type ParlandoStartupLabels
+} from "./startup";

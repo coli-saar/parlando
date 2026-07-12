@@ -24,7 +24,7 @@ Steps 5-11 are complete at the Rust server-library level, but the server still n
 
 - Submit near-simultaneous actions from roles `A` and `B` and verify only valid state transitions are accepted.
 - Attempt duplicate joins for the same participant session under concurrent requests.
-- Attempt concurrent room creation or matchmaking joins and verify session IDs remain unique within each experiment.
+- Attempt concurrent room creation and joins and verify session IDs remain unique within each experiment.
 - Verify event indices remain gap-free and ordered under concurrent activity.
 
 ## Export And Evaluation Tests

@@ -21,7 +21,6 @@ database:
 direct:
   enabled: true
   allow_room_codes: true
-  allow_matchmaking: true
   require_consent: false
   consents: []
 

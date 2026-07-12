@@ -43,7 +43,6 @@ pub struct ConsentItemConfig {
 pub struct DirectConfig {
     pub enabled: bool,
     pub allow_room_codes: bool,
-    pub allow_matchmaking: bool,
     pub require_consent: bool,
     pub consents: Vec<ConsentItemConfig>,
 }
@@ -53,7 +52,6 @@ impl Default for DirectConfig {
         Self {
             enabled: true,
             allow_room_codes: true,
-            allow_matchmaking: true,
             require_consent: false,
             consents: vec![],
         }

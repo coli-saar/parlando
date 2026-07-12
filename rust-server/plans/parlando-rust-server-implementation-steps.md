@@ -43,9 +43,9 @@ Implement Parlando as a fresh Rust workspace with two crates: `parlando-server` 
 - Persist timestamps for every stored record.
 - Acceptance: DB-backed tests prove evaluation entities, unusual participant/session shapes, consent declarations, and session events are inserted and exported.
 
-### 5. Participants, Rooms, Consent, And Matchmaking
+### 5. Participants, Rooms, Consent, And Joins
 
-- Implement `/health`, `/api/config`, participant creation, direct start/enter/wait, consent, room create/join, matchmaking join/status.
+- Implement `/health`, `/api/config`, participant creation, direct start, consent, and room create/join.
 - Preserve roles `A` and `B`; reconnecting participants keep their existing role and additional player joins are rejected.
 - In human-vs-agent mode, create a human room with role `A` and an agent participant with role `B`.
 - Acceptance: HTTP integration tests cover human-vs-human and human-vs-agent room creation.

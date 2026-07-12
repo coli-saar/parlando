@@ -17,7 +17,7 @@ When voice, transcription, or TTS is requested, tell the user exactly where the 
 - `study`: study name and waiting/reconnect timing.
 - `server`: public base URL, CORS origins, optional `client_dist_path`.
 - `database`: SQLite URL.
-- `direct`: direct room-code and matchmaking settings, including consent text.
+- `direct`: room-code and consent settings.
 - `agents`: human-vs-human or human-vs-agent mode and agent selection.
 - `livekit`: realtime audio room settings.
 - `speechmatics`: browser STT credentials and realtime options.
@@ -48,7 +48,6 @@ database:
 direct:
   enabled: true
   allow_room_codes: true
-  allow_matchmaking: true
   require_consent: false
   consents: []
 
@@ -81,7 +80,6 @@ Use:
 direct:
   enabled: true
   allow_room_codes: true
-  allow_matchmaking: true
   require_consent: true
   consents:
     - id: study

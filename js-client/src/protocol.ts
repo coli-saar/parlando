@@ -30,6 +30,10 @@ export interface PublicConfigResponse {
     enabled?: boolean;
     max_history_messages?: number;
   };
+  agents?: {
+    mode?: "human_vs_human" | "human_vs_agent" | string;
+    human_vs_agent?: boolean;
+  };
 }
 
 export interface ConsentItem {
@@ -43,6 +47,7 @@ export interface RoomResponse<TState = unknown, TObservation = TState, TAction =
   room_id: string;
   participant_session_id: string;
   role: "A" | "B" | "spectator" | string;
+  presence?: Record<string, unknown>;
   state?: TState | null;
   observation?: TObservation | null;
   available_actions?: TAction[];
@@ -51,19 +56,6 @@ export interface RoomResponse<TState = unknown, TObservation = TState, TAction =
 }
 
 export type RoomMode = "direct" | string;
-
-export interface MatchmakingResponse<TState = unknown, TObservation = TState, TAction = unknown, TEvent = unknown> {
-  status: "waiting" | "matched";
-  participant_session_id: string;
-  source?: "direct" | "prolific" | "admin" | "test" | "agent" | null;
-  room_id?: string | null;
-  role?: "A" | "B" | "spectator" | string | null;
-  state?: TState | null;
-  observation?: TObservation | null;
-  available_actions?: TAction[];
-  events?: TEvent[];
-  conversation?: ConversationMessage[];
-}
 
 export interface LiveKitTokenResponse {
   enabled: boolean;
@@ -194,18 +186,6 @@ export class ExperimentApiClient {
     participantSessionId: string
   ): Promise<RoomResponse<TState, TObservation, TAction, TEvent>> {
     return this.post(`/api/rooms/${roomId}/join`, { participant_session_id: participantSessionId });
-  }
-
-  enterMatchmaking<TState = unknown, TObservation = TState, TAction = unknown, TEvent = unknown>(
-    participantSessionId: string
-  ): Promise<MatchmakingResponse<TState, TObservation, TAction, TEvent>> {
-    return this.post("/api/matchmaking/join", { participant_session_id: participantSessionId });
-  }
-
-  waitForMatch<TState = unknown, TObservation = TState, TAction = unknown, TEvent = unknown>(
-    participantSessionId: string
-  ): Promise<MatchmakingResponse<TState, TObservation, TAction, TEvent>> {
-    return this.get(`/api/matchmaking/status/${participantSessionId}`);
   }
 
   getLiveKitToken(roomId: string, participantSessionId: string): Promise<LiveKitTokenResponse> {

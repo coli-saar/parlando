@@ -163,7 +163,7 @@ The browser must handle:
 
 - setup screen with display name, consent items, and microphone preparation when voice is enabled
 - room-backed waiting room readiness board with visible rows/cards for Player A, Player B/agent, and STT/voice when voice is enabled; missing participants must be shown as waiting/not connected
-- direct room create/join before the waiting room for voice-enabled human-vs-human games, so the first player has a `roomId` while waiting for the second player
+- room create/join before the waiting room for all games, so the first player has a `roomId` while waiting for another human or for the server-supplied agent
 - immediate audio-session/STT initialization from the waiting room as soon as the first player has `roomId` and `participantSessionId`; do not wait for Player B and do not wait for the game screen
 - game screen only after role assignment and required readiness gates
 - `roleAssigned`
@@ -181,7 +181,7 @@ Generate `config/experiment.local.yaml` with:
 
 - local experiment id
 - `direct.enabled: true`
-- direct room create/join for voice-enabled games; room codes and/or matchmaking only when appropriate for the requested study flow
+- room create/join for generated games; human-agent studies receive the agent from the server after room creation
 - `server.public_base_url: http://localhost:8000`
 - `server.client_dist_path: client/dist`
 - local SQLite under `.local/`
@@ -235,5 +235,5 @@ End with:
 - deployment notes for the requested target
 - agent run commands when generating a Rust or Python gRPC agent
 - confirmation that the client follows setup screen -> waiting room -> game
-- confirmation that voice-enabled clients create/join a room before the waiting room, never treat a no-room matchmaking queue as the waiting room, and start Speechmatics/STT immediately after room creation/join
+- confirmation that voice-enabled clients create/join a room before the waiting room and start Speechmatics/STT immediately after room creation/join
 - assumptions made about the game design or package layout

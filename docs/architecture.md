@@ -14,7 +14,7 @@ Configuration files may bootstrap a game run, but durable experiment metadata sh
 
 The reusable Rust server owns:
 
-- participant creation, consent records, room creation, matchmaking, joins, reconnects, and readiness.
+- participant creation, consent records, room creation, joins, reconnects, and readiness.
 - WebSocket delivery and participant-specific observations.
 - action validation flow, action persistence, state-change persistence, completion records, transcripts, conversation messages, agent events, and diagnostics.
 - optional LiveKit, Speechmatics, and ElevenLabs integration.
@@ -49,7 +49,7 @@ This boundary keeps the reusable server generic without forcing game logic into 
 A typical human-vs-human session follows this path:
 
 1. A participant is created and, when required, records consent.
-2. The participant enters direct-room or matchmaking flow.
+2. The participant creates or joins a waiting room.
 3. The server creates or joins a room and assigns roles `A` and `B`.
 4. Browser clients connect to `/ws/game/{room_id}` with their participant-session ids.
 5. The server waits until required participants and audio setup are ready.

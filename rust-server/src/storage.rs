@@ -1559,7 +1559,6 @@ pub struct TranscriptSegment {
 pub struct MemoryState<S> {
     pub participants: HashMap<String, ParticipantSession>,
     pub rooms: HashMap<String, GameRoom<S>>,
-    pub matchmaking_queues: HashMap<String, Vec<String>>,
 }
 
 impl<S> Default for MemoryState<S> {
@@ -1567,7 +1566,6 @@ impl<S> Default for MemoryState<S> {
         Self {
             participants: HashMap::new(),
             rooms: HashMap::new(),
-            matchmaking_queues: HashMap::new(),
         }
     }
 }
@@ -1942,7 +1940,7 @@ mod tests {
                 consent_item_id: "screening".to_string(),
                 accepted: true,
                 consent_text_hash: Some("hash-screening".to_string()),
-                metadata: json!({"before_matchmaking": true}),
+                metadata: json!({"before_room": true}),
             })
             .await
             .unwrap();

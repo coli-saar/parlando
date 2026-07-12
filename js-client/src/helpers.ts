@@ -2,8 +2,8 @@ import type { ConsentItem, PublicConfigResponse } from "./protocol";
 import type { VoiceStatus } from "./audio/types";
 
 export interface PresenceState {
-  A?: { participantSessionId?: string; connected?: boolean };
-  B?: { participantSessionId?: string; connected?: boolean };
+  A?: { participantSessionId?: string; connected?: boolean; audioReady?: boolean };
+  B?: { participantSessionId?: string; connected?: boolean; audioReady?: boolean };
 }
 
 export function requiredConsentsAccepted(

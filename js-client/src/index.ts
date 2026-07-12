@@ -25,7 +25,6 @@ export {
   type ConversationMessage,
   type ConversationOrigin,
   type LiveKitTokenResponse,
-  type MatchmakingResponse,
   type ParticipantCreateResponse,
   type PublicConfigResponse,
   type RoomMode,

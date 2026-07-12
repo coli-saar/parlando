@@ -470,21 +470,6 @@ async fn join_room(
         .await?)
 }
 
-async fn join_matchmaking(
-    client: &reqwest::Client,
-    base_url: &str,
-    participant: &str,
-) -> Result<Value> {
-    Ok(client
-        .post(format!("{base_url}/api/matchmaking/join"))
-        .json(&json!({"participant_session_id": participant}))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?)
-}
-
 async fn ws_connect(ws_base_url: &str, room_id: &str, participant: &str) -> Result<TestSocket> {
     let (socket, _) = connect_async(format!(
         "{ws_base_url}/ws/game/{room_id}?participantSessionId={participant}"
@@ -647,10 +632,9 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
     let client = reqwest::Client::new();
     let human = create_participant(&client, &server.base_url, "Human").await?;
     consent(&client, &server.base_url, &human).await?;
-    let matched = join_matchmaking(&client, &server.base_url, &human).await?;
-    assert_eq!(matched["status"], "matched");
-    assert_eq!(matched["role"], "A");
-    let room_id = matched["room_id"].as_str().unwrap();
+    let room = create_room(&client, &server.base_url, &human).await?;
+    assert_eq!(room["role"], "A");
+    let room_id = room["room_id"].as_str().unwrap();
 
     let mut socket = ws_connect(&server.ws_base_url, room_id, &human).await?;
     let assigned = read_ws_type(&mut socket, "roleAssigned").await?;
@@ -713,8 +697,8 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
     let client = reqwest::Client::new();
     let human = create_participant(&client, &server.base_url, "Human").await?;
     consent(&client, &server.base_url, &human).await?;
-    let matched = join_matchmaking(&client, &server.base_url, &human).await?;
-    let room_id = matched["room_id"].as_str().unwrap();
+    let room = create_room(&client, &server.base_url, &human).await?;
+    let room_id = room["room_id"].as_str().unwrap();
 
     let mut socket = ws_connect(&server.ws_base_url, room_id, &human).await?;
     let assigned = read_ws_type(&mut socket, "roleAssigned").await?;

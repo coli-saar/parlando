@@ -345,19 +345,9 @@ where
         .route("/api/config", get(public_config::<A>))
         .route("/api/participants", post(create_participant::<A>))
         .route("/api/direct/start", post(direct_start::<A>))
-        .route("/api/direct/enter", post(direct_enter::<A>))
-        .route(
-            "/api/direct/wait/:participant_session_id",
-            get(direct_wait::<A>),
-        )
         .route("/api/consent", post(consent::<A>))
         .route("/api/rooms", post(create_room::<A>))
         .route("/api/rooms/:room_id/join", post(join_room::<A>))
-        .route("/api/matchmaking/join", post(join_matchmaking::<A>))
-        .route(
-            "/api/matchmaking/status/:participant_session_id",
-            get(matchmaking_status::<A>),
-        )
         .route(
             "/api/rooms/:room_id/livekit-token",
             post(livekit_token::<A>),
@@ -455,6 +445,10 @@ async fn public_config<A: GameAdapter>(
             "enabled": config.conversation.enabled,
             "max_history_messages": config.conversation.max_history_messages,
         }),
+        agents: json!({
+            "mode": config.agents.mode,
+            "human_vs_agent": config.agents.human_vs_agent.is_some(),
+        }),
     })
 }
 
@@ -522,41 +516,6 @@ async fn create_participant_inner<A: GameAdapter>(
         source: participant.source,
         display_name: participant.display_name,
     })
-}
-
-async fn direct_enter<A: GameAdapter>(
-    State(state): State<Arc<AppState<A>>>,
-    Json(request): Json<DirectEnterRequest>,
-) -> Result<Json<DirectEnterResponse>, AppError>
-where
-    A::State: Serialize,
-{
-    let participant = create_participant_inner(
-        state.clone(),
-        ParticipantCreateRequest {
-            source: "direct".to_string(),
-            display_name: request.display_name,
-            study_id: request.study_id.clone(),
-            external_id: request.external_id,
-            metadata: request.metadata,
-        },
-    )
-    .await?;
-    enter_matchmaking(state, participant.participant_session_id, request.study_id)
-        .await
-        .map(Json)
-}
-
-async fn direct_wait<A: GameAdapter>(
-    State(state): State<Arc<AppState<A>>>,
-    Path(participant_session_id): Path<String>,
-) -> Result<Json<DirectEnterResponse>, AppError>
-where
-    A::State: Serialize,
-{
-    matchmaking_status_inner(state, &participant_session_id)
-        .await
-        .map(Json)
 }
 
 async fn consent<A: GameAdapter>(
@@ -650,6 +609,10 @@ where
         None,
     )
     .await;
+    if state.config.agents.mode == AgentsMode::HumanVsAgent {
+        add_agent_to_room(&state, &room_id).await?;
+        maybe_start_room_agents(state.clone(), &room_id).await;
+    }
     let response = room_response(
         &state,
         &room_id,
@@ -659,6 +622,92 @@ where
     )
     .await?;
     Ok(Json(response))
+}
+
+async fn add_agent_to_room<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+    room_id: &str,
+) -> Result<String, AppError> {
+    let factory_identity = state
+        .agent_factory
+        .as_ref()
+        .map(|factory| factory.participant_identity())
+        .unwrap_or_default();
+    let configured_agent = state.config.agents.human_vs_agent.as_ref();
+    let external_id = factory_identity.external_id.clone().or_else(|| {
+        configured_agent
+            .and_then(|config| config.factory.clone())
+            .or_else(|| Some("agent".to_string()))
+    });
+    let metadata = if factory_identity.metadata.is_null() {
+        configured_agent
+            .map(|config| config.config.clone())
+            .unwrap_or(Value::Null)
+    } else {
+        factory_identity.metadata.clone()
+    };
+    let agent_metadata = metadata.clone();
+    let agent_participant_db_id = state
+        .store
+        .upsert_participant(ParticipantRecord {
+            participant_kind: "agent".to_string(),
+            identity_provider: factory_identity.identity_provider,
+            external_id,
+            display_name: Some("Agent".to_string()),
+            metadata,
+        })
+        .await?;
+    let agent_participant_id = {
+        let mut memory = state.memory.write().await;
+        if let Some(existing_agent) = memory
+            .rooms
+            .get(room_id)
+            .and_then(|room| room.participants.values().find(|participant| participant.source == "agent"))
+            .map(|participant| participant.participant_session_id.clone())
+        {
+            return Ok(existing_agent);
+        }
+        let agent = memory.create_participant(
+            agent_participant_db_id,
+            "agent".to_string(),
+            Some("Agent".to_string()),
+            Some(state.config.study.name.clone()),
+        );
+        let room = memory
+            .rooms
+            .get_mut(room_id)
+            .ok_or_else(|| AppError::not_found("Room not found."))?;
+        room.participants.insert(
+            agent.id.clone(),
+            RoomParticipant {
+                participant_session_id: agent.id.clone(),
+                participant_id: agent.participant_id,
+                source: "agent".to_string(),
+                role: Seat::B,
+                connected: true,
+                audio_ready: true,
+                consent_decisions: HashMap::new(),
+                joined_at: now_iso(),
+                updated_at: now_iso(),
+            },
+        );
+        agent.id
+    };
+    persist_session_participant(state, room_id, &agent_participant_id).await?;
+    persist_session_event(
+        state,
+        room_id,
+        Some(&agent_participant_id),
+        "participant_joined",
+        json!({
+            "role": "B",
+            "kind": "agent",
+            "agent": agent_event_metadata(&agent_metadata),
+        }),
+        None,
+    )
+    .await;
+    Ok(agent_participant_id)
 }
 
 async fn join_room<A: GameAdapter>(
@@ -740,256 +789,6 @@ where
     ))
 }
 
-async fn join_matchmaking<A: GameAdapter>(
-    State(state): State<Arc<AppState<A>>>,
-    Json(request): Json<MatchmakingJoinRequest>,
-) -> Result<Json<MatchmakingJoinResponse>, AppError>
-where
-    A::State: Serialize,
-{
-    enter_matchmaking(
-        state,
-        request.participant_session_id,
-        request.queue.or(request.study_id),
-    )
-    .await
-    .map(Json)
-}
-
-async fn matchmaking_status<A: GameAdapter>(
-    State(state): State<Arc<AppState<A>>>,
-    Path(participant_session_id): Path<String>,
-) -> Result<Json<MatchmakingJoinResponse>, AppError>
-where
-    A::State: Serialize,
-{
-    matchmaking_status_inner(state, &participant_session_id)
-        .await
-        .map(Json)
-}
-
-async fn enter_matchmaking<A: GameAdapter>(
-    state: Arc<AppState<A>>,
-    participant_session_id: String,
-    queue: Option<String>,
-) -> Result<MatchmakingJoinResponse, AppError>
-where
-    A::State: Serialize,
-{
-    require_consent(&state, &participant_session_id).await?;
-    let matched = matchmaking_status_inner(state.clone(), &participant_session_id).await?;
-    if matched.status == "matched" {
-        return Ok(matched);
-    }
-
-    if state.config.agents.mode == AgentsMode::HumanVsAgent {
-        let factory_identity = state
-            .agent_factory
-            .as_ref()
-            .map(|factory| factory.participant_identity())
-            .unwrap_or_default();
-        let configured_agent = state.config.agents.human_vs_agent.as_ref();
-        let external_id = factory_identity.external_id.clone().or_else(|| {
-            configured_agent
-                .and_then(|config| config.factory.clone())
-                .or_else(|| Some("agent".to_string()))
-        });
-        let metadata = if factory_identity.metadata.is_null() {
-            configured_agent
-                .map(|config| config.config.clone())
-                .unwrap_or(Value::Null)
-        } else {
-            factory_identity.metadata.clone()
-        };
-        let agent_metadata = metadata.clone();
-        let agent_participant_db_id = state
-            .store
-            .upsert_participant(ParticipantRecord {
-                participant_kind: "agent".to_string(),
-                identity_provider: factory_identity.identity_provider,
-                external_id,
-                display_name: Some("Agent".to_string()),
-                metadata,
-            })
-            .await?;
-        let (room_id, role, agent_participant_id) = {
-            let mut memory = state.memory.write().await;
-            let (room_id, role) = create_room_locked(
-                &state,
-                &mut memory,
-                participant_session_id.clone(),
-                "direct".to_string(),
-                Seat::A,
-                Some(queue.unwrap_or_else(|| state.config.study.name.clone())),
-            )?;
-            let agent = memory.create_participant(
-                agent_participant_db_id,
-                "agent".to_string(),
-                Some("Agent".to_string()),
-                Some(state.config.study.name.clone()),
-            );
-            let room = memory.rooms.get_mut(&room_id).expect("room exists");
-            room.participants.insert(
-                agent.id.clone(),
-                RoomParticipant {
-                    participant_session_id: agent.id.clone(),
-                    participant_id: agent.participant_id,
-                    source: "agent".to_string(),
-                    role: Seat::B,
-                    connected: true,
-                    audio_ready: true,
-                    consent_decisions: HashMap::new(),
-                    joined_at: now_iso(),
-                    updated_at: now_iso(),
-                },
-            );
-            (room_id, role, agent.id)
-        };
-        persist_created_session(&state, &room_id).await?;
-        persist_session_participant(&state, &room_id, &participant_session_id).await?;
-        persist_session_participant(&state, &room_id, &agent_participant_id).await?;
-        persist_session_event(
-            &state,
-            &room_id,
-            Some(&participant_session_id),
-            "participant_joined",
-            json!({"role": role.as_str()}),
-            None,
-        )
-        .await;
-        persist_session_event(
-            &state,
-            &room_id,
-            Some(&agent_participant_id),
-            "participant_joined",
-            json!({
-                "role": "B",
-                "kind": "agent",
-                "agent": agent_event_metadata(&agent_metadata),
-            }),
-            None,
-        )
-        .await;
-        maybe_start_room_agents(state.clone(), &room_id).await;
-        return matched_response(&state, &room_id, &participant_session_id, role).await;
-    }
-
-    let queue_name = {
-        let memory = state.memory.read().await;
-        let participant = memory
-            .participants
-            .get(&participant_session_id)
-            .ok_or_else(|| AppError::not_found("Participant session not found."))?;
-        queue
-            .or_else(|| participant.study_id.clone())
-            .unwrap_or_else(|| state.config.study.name.clone())
-    };
-
-    let maybe_first = {
-        let mut memory = state.memory.write().await;
-        let queue = memory
-            .matchmaking_queues
-            .entry(queue_name.clone())
-            .or_default();
-        if queue.contains(&participant_session_id) {
-            None
-        } else if queue.is_empty() {
-            queue.push(participant_session_id.clone());
-            let (room_id, role) = create_room_locked(
-                &state,
-                &mut memory,
-                participant_session_id.clone(),
-                "direct".to_string(),
-                Seat::A,
-                Some(queue_name),
-            )?;
-            drop(memory);
-            persist_created_session(&state, &room_id).await?;
-            persist_session_participant(&state, &room_id, &participant_session_id).await?;
-            persist_session_event(
-                &state,
-                &room_id,
-                Some(&participant_session_id),
-                "participant_joined",
-                json!({"role": role.as_str()}),
-                None,
-            )
-            .await;
-            let source = state
-                .memory
-                .read()
-                .await
-                .participants
-                .get(&participant_session_id)
-                .map(|p| p.source.clone());
-            return Ok(MatchmakingJoinResponse {
-                status: "waiting".to_string(),
-                participant_session_id,
-                source,
-                room_id: None,
-                role: None,
-                state: None,
-                observation: None,
-                available_actions: None,
-                events: vec![],
-                conversation: vec![],
-            });
-        } else {
-            Some(queue.remove(0))
-        }
-    };
-
-    let first = maybe_first.expect("second participant has first");
-    let (room_id, role, created_room) = {
-        let mut memory = state.memory.write().await;
-        let (room_id, created_room) = if let Some(room) = memory.room_for_participant(&first) {
-            (room.id.clone(), false)
-        } else {
-            let room = create_room_locked(
-                &state,
-                &mut memory,
-                first.clone(),
-                "direct".to_string(),
-                Seat::A,
-                Some(queue_name),
-            )?;
-            (room.0, true)
-        };
-        let second_participant_id = memory.participants[&participant_session_id].participant_id;
-        let room = memory.rooms.get_mut(&room_id).expect("room exists");
-        room.participants.insert(
-            participant_session_id.clone(),
-            RoomParticipant {
-                participant_session_id: participant_session_id.clone(),
-                participant_id: second_participant_id,
-                source: "direct".to_string(),
-                role: Seat::B,
-                connected: false,
-                audio_ready: !speechmatics_readiness_required(&state.config),
-                consent_decisions: HashMap::new(),
-                joined_at: now_iso(),
-                updated_at: now_iso(),
-            },
-        );
-        (room_id, Seat::B, created_room)
-    };
-    if created_room {
-        persist_created_session(&state, &room_id).await?;
-        persist_session_participant(&state, &room_id, &first).await?;
-    }
-    persist_session_participant(&state, &room_id, &participant_session_id).await?;
-    persist_session_event(
-        &state,
-        &room_id,
-        Some(&participant_session_id),
-        "participant_joined",
-        json!({"role": "B"}),
-        None,
-    )
-    .await;
-    matched_response(&state, &room_id, &participant_session_id, role).await
-}
-
 fn create_room_locked<A: GameAdapter>(
     state: &AppState<A>,
     memory: &mut MemoryState<A::State>,
@@ -1040,111 +839,6 @@ fn create_room_locked<A: GameAdapter>(
     Ok((room_id, role))
 }
 
-async fn matchmaking_status_inner<A: GameAdapter>(
-    state: Arc<AppState<A>>,
-    participant_session_id: &str,
-) -> Result<MatchmakingJoinResponse, AppError>
-where
-    A::State: Serialize,
-{
-    let existing = {
-        let memory = state.memory.read().await;
-        let participant = memory
-            .participants
-            .get(participant_session_id)
-            .ok_or_else(|| AppError::not_found("Participant session not found."))?;
-        if let Some(room) = memory.room_for_participant(participant_session_id) {
-            let role = room.participants[participant_session_id].role;
-            let matched = room.participants.values().any(|p| p.role == Seat::A)
-                && room.participants.values().any(|p| p.role == Seat::B);
-            Some((room.id.clone(), role, participant.source.clone(), matched))
-        } else {
-            None
-        }
-    };
-    if let Some((room_id, role, source, matched)) = existing {
-        if !matched {
-            return Ok(MatchmakingJoinResponse {
-                status: "waiting".to_string(),
-                participant_session_id: participant_session_id.to_string(),
-                source: Some(source),
-                room_id: None,
-                role: None,
-                state: None,
-                observation: None,
-                available_actions: None,
-                events: vec![],
-                conversation: vec![],
-            });
-        }
-        let response =
-            room_response(&state, &room_id, participant_session_id, role, vec![]).await?;
-        Ok(MatchmakingJoinResponse {
-            status: "matched".to_string(),
-            participant_session_id: participant_session_id.to_string(),
-            source: Some(source),
-            room_id: Some(response.room_id),
-            role: Some(response.role),
-            state: response.state,
-            observation: response.observation,
-            available_actions: response.available_actions,
-            events: response.events,
-            conversation: response.conversation,
-        })
-    } else {
-        let source = state
-            .memory
-            .read()
-            .await
-            .participants
-            .get(participant_session_id)
-            .map(|p| p.source.clone());
-        Ok(MatchmakingJoinResponse {
-            status: "waiting".to_string(),
-            participant_session_id: participant_session_id.to_string(),
-            source,
-            room_id: None,
-            role: None,
-            state: None,
-            observation: None,
-            available_actions: None,
-            events: vec![],
-            conversation: vec![],
-        })
-    }
-}
-
-async fn matched_response<A: GameAdapter>(
-    state: &Arc<AppState<A>>,
-    room_id: &str,
-    participant_session_id: &str,
-    role: Seat,
-) -> Result<MatchmakingJoinResponse, AppError>
-where
-    A::State: Serialize,
-{
-    let source = state
-        .memory
-        .read()
-        .await
-        .participants
-        .get(participant_session_id)
-        .map(|p| p.source.clone());
-    let response = room_response(state, room_id, participant_session_id, role, vec![]).await?;
-    Ok(MatchmakingJoinResponse {
-        status: "matched".to_string(),
-        participant_session_id: participant_session_id.to_string(),
-        source,
-        room_id: Some(response.room_id),
-        role: Some(response.role),
-        state: response.state,
-        observation: response.observation,
-        available_actions: response.available_actions,
-        events: response.events,
-        conversation: response.conversation,
-    })
-}
-
 async fn room_response<A: GameAdapter>(
     state: &Arc<AppState<A>>,
     room_id: &str,
@@ -1155,17 +849,19 @@ async fn room_response<A: GameAdapter>(
 where
     A::State: Serialize,
 {
-    let (observation, available_actions, events) = {
+    let (presence, observation, available_actions, events) = {
         let memory = state.memory.read().await;
         let room = memory
             .rooms
             .get(room_id)
             .ok_or_else(|| AppError::not_found("Room not found."))?;
+        let presence = room_presence(room);
         if room.status == "waiting" {
             return Ok(RoomResponse {
                 room_id: room_id.to_string(),
                 participant_session_id: participant_session_id.to_string(),
                 role: role.as_str().to_string(),
+                presence: Some(presence),
                 state: None,
                 observation: None,
                 available_actions: None,
@@ -1175,6 +871,7 @@ where
         }
         let player = role.player_role();
         (
+            Some(presence),
             Some(protocol_json(
                 &state.adapter.observe_state(&room.state, player),
             )?),
@@ -1195,6 +892,7 @@ where
         room_id: room_id.to_string(),
         participant_session_id: participant_session_id.to_string(),
         role: role.as_str().to_string(),
+        presence,
         state: None,
         observation,
         available_actions,
@@ -4446,22 +4144,26 @@ async fn presence_message<A: GameAdapter>(
     let room = memory.rooms.get(room_id)?;
     Some(ServerMessage {
         room_id: Some(room_id.to_string()),
-        presence: Some(json!(room
-            .participants
-            .values()
-            .map(|participant| {
-                (
-                    participant.role.as_str().to_string(),
-                    json!({
-                        "participantSessionId": participant.participant_session_id,
-                        "connected": participant.connected,
-                        "audioReady": participant.audio_ready,
-                    }),
-                )
-            })
-            .collect::<serde_json::Map<_, _>>())),
+        presence: Some(room_presence(room)),
         ..ServerMessage::new("presenceChanged")
     })
+}
+
+fn room_presence<S>(room: &GameRoom<S>) -> Value {
+    json!(room
+        .participants
+        .values()
+        .map(|participant| {
+            (
+                participant.role.as_str().to_string(),
+                json!({
+                    "participantSessionId": participant.participant_session_id,
+                    "connected": participant.connected,
+                    "audioReady": participant.audio_ready,
+                }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>())
 }
 
 async fn voice_message<A: GameAdapter>(state: &Arc<AppState<A>>, room_id: &str) -> ServerMessage {
@@ -5355,7 +5057,6 @@ mod tests {
             direct: DirectConfig {
                 enabled: true,
                 allow_room_codes: true,
-                allow_matchmaking: true,
                 require_consent: true,
                 consents: vec![crate::config::ConsentItemConfig {
                     id: "study".to_string(),
@@ -5624,25 +5325,25 @@ mod tests {
         )
     }
 
-    // Creates one human-vs-agent room through matchmaking and returns the human and room ids.
+    // Creates one human-vs-agent waiting room and returns the human and room ids.
     async fn create_human_vs_agent_room(router: Router, name: &str) -> (String, String) {
         let human = create_direct_participant(router.clone(), name).await;
         consent_participant(router.clone(), &human).await;
-        let (status, matched) = json_request(
+        let (status, created) = json_request(
             router,
             http::Method::POST,
-            "/api/matchmaking/join",
+            "/api/rooms",
             json!({"participant_session_id": human}),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(matched["role"], "A");
+        assert_eq!(created["role"], "A");
         (
-            matched["participant_session_id"]
+            created["participant_session_id"]
                 .as_str()
                 .unwrap()
                 .to_string(),
-            matched["room_id"].as_str().unwrap().to_string(),
+            created["room_id"].as_str().unwrap().to_string(),
         )
     }
 
@@ -5745,6 +5446,8 @@ mod tests {
         assert_eq!(public_config["transcription"]["enabled"], true);
         assert_eq!(public_config["tts"]["voice_name"], "Agent Voice");
         assert_eq!(public_config["conversation"]["enabled"], true);
+        assert_eq!(public_config["agents"]["mode"], "human_vs_human");
+        assert_eq!(public_config["agents"]["human_vs_agent"], false);
     }
 
     #[tokio::test]
@@ -5995,6 +5698,14 @@ mod tests {
         .await;
 
         assert_ne!(first, second);
+        let (room_status, _room) = json_request(
+            router.clone(),
+            http::Method::POST,
+            "/api/rooms",
+            json!({"participant_session_id": first}),
+        )
+        .await;
+        assert_eq!(room_status, StatusCode::OK);
         let (export_status, export) =
             json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
         assert_eq!(export_status, StatusCode::OK);
@@ -6765,63 +6476,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn matchmaking_pairs_two_humans_into_one_room() {
-        let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
-            .await
-            .unwrap();
-        let a = create_direct_participant(router.clone(), "A").await;
-        let b = create_direct_participant(router.clone(), "B").await;
-        consent_participant(router.clone(), &a).await;
-        consent_participant(router.clone(), &b).await;
-
-        let (first_status, first) = json_request(
-            router.clone(),
-            http::Method::POST,
-            "/api/matchmaking/join",
-            json!({"participant_session_id": a, "queue": "q1"}),
-        )
-        .await;
-        assert_eq!(first_status, StatusCode::OK);
-        assert_eq!(first["status"], "waiting");
-        assert!(first["room_id"].is_null());
-        assert!(first["role"].is_null());
-
-        let (second_status, second) = json_request(
-            router.clone(),
-            http::Method::POST,
-            "/api/matchmaking/join",
-            json!({"participant_session_id": b, "queue": "q1"}),
-        )
-        .await;
-        assert_eq!(second_status, StatusCode::OK);
-        assert_eq!(second["status"], "matched");
-        assert_eq!(second["role"], "B");
-        assert!(second["room_id"].as_str().is_some());
-
-        let (poll_status, first_matched) = json_request(
-            router,
-            http::Method::GET,
-            &format!("/api/matchmaking/status/{a}"),
-            Value::Null,
-        )
-        .await;
-        assert_eq!(poll_status, StatusCode::OK);
-        assert_eq!(first_matched["status"], "matched");
-        assert_eq!(first_matched["role"], "A");
-        assert_eq!(first_matched["room_id"], second["room_id"]);
-    }
-
-    #[tokio::test]
-    async fn human_vs_agent_matchmaking_creates_agent_role_b() {
-        let mut config = step_five_config();
-        config.agents = AgentsConfig {
-            mode: AgentsMode::HumanVsAgent,
-            human_vs_agent: Some(Default::default()),
-            ..AgentsConfig::default()
-        };
+    async fn human_vs_agent_direct_room_supplies_agent_role_b_immediately() {
         let router = build_router(
             TinyAdapter,
-            config,
+            human_vs_agent_config(),
             ServeOptions {
                 agent_factory: Some(Arc::new(NoopAgentFactory)),
                 ..ServeOptions::default()
@@ -6832,16 +6490,17 @@ mod tests {
         let human = create_direct_participant(router.clone(), "Human").await;
         consent_participant(router.clone(), &human).await;
 
-        let (status, matched) = json_request(
+        let (status, created) = json_request(
             router.clone(),
             http::Method::POST,
-            "/api/matchmaking/join",
+            "/api/rooms",
             json!({"participant_session_id": human}),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(matched["status"], "matched");
-        assert_eq!(matched["role"], "A");
+        assert_eq!(created["role"], "A");
+        assert_eq!(created["presence"]["B"]["connected"], true);
+        assert_eq!(created["presence"]["B"]["audioReady"], true);
 
         let (export_status, export) =
             json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;

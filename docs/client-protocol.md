@@ -69,7 +69,7 @@ A typical browser flow is:
 1. `GET /api/config` to read public study settings, consent text, and enabled audio/conversation features.
 2. `POST /api/participants` or `POST /api/direct/start` to create a participant session.
 3. `POST /api/consent` if consent is required.
-4. `POST /api/rooms` plus `POST /api/rooms/{room_id}/join`, or `POST /api/matchmaking/join`.
+4. `POST /api/rooms` plus `POST /api/rooms/{room_id}/join`.
 5. `POST /api/rooms/{room_id}/audio-session` if voice is enabled.
 6. Connect to `/ws/game/{room_id}?participantSessionId=...`.
 7. Wait for `roleAssigned` before showing active game controls.
@@ -78,7 +78,7 @@ The reusable JavaScript client wraps these HTTP calls, but the game UI still dec
 
 ## HTTP Room Payloads
 
-Room creation, joining, direct-entry, and matchmaking responses include game-specific payloads:
+Room creation and joining responses include game-specific payloads:
 
 ```ts
 interface RoomResponse<TState, TObservation, TAction, TEvent> {
@@ -95,7 +95,7 @@ interface RoomResponse<TState, TObservation, TAction, TEvent> {
 
 Use `observation` for rendering the participant view. `state` may be present for compatibility or admin-like flows, but a participant UI should not rely on hidden information being absent from `state`; privacy should be enforced by rendering from `observation`.
 
-For waiting-room flows, the first participant may receive `status: "waiting"` without game payloads. The game starts when the WebSocket receives `roleAssigned`.
+For waiting-room flows, room responses omit game payloads while the room is still waiting. The game starts when the WebSocket receives `roleAssigned`.
 
 `available_actions` has three different states:
 
@@ -261,7 +261,7 @@ Do not duplicate authoritative validation in the browser and assume it is enough
 For a new game client, implement:
 
 1. TypeScript mirror types for `Action`, `Observation`, `Event`, and `Summary`.
-2. Participant setup screens that call `/api/config`, `/api/participants`, consent if required, and room or matchmaking entry.
+2. Participant setup screens that call `/api/config`, `/api/participants`, consent if required, and room creation or join.
 3. A WebSocket connection to `/ws/game/{room_id}?participantSessionId=...`.
 4. Handling for `roleAssigned`, `stateChanged`, `conversationMessageAdded`, `completed`, `presenceChanged`, `voiceStatusChanged`, and `error`.
 5. Rendering from `observation`, not from hidden server state.

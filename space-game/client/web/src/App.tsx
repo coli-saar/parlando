@@ -1,27 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  AudioSessionController,
-  ExperimentApiClient,
-  MicrophoneSource,
-  initialVoicePreflight,
-  initialVoiceStatus,
-  type ConversationMessage,
-  type MatchmakingResponse,
-  type PublicConfigResponse,
-  type RoomResponse,
-  type ServerMessage,
-  type VoicePreflight,
-  type VoiceStatus
-} from "@coli-saar/parlando-client";
-import { LiveKitPartnerAudioSink } from "@coli-saar/parlando-client/livekit";
-import { SpeechmaticsTranscriptionSink } from "@coli-saar/parlando-client/speechmatics";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { type ConversationMessage, type VoicePreflight, type VoiceStatus } from "@coli-saar/parlando-client";
 import {
   MicLevelMeter,
-  TranscriptionProgress,
+  ParlandoStartupGate,
   TranscriptionStatusChip,
   VoiceJoinButton,
-  VoicePreparationControls,
-  VoiceStatusChip
+  type ActiveParlandoSession
 } from "@coli-saar/parlando-client/react";
 import {
   cells,
@@ -48,326 +32,51 @@ const movementKeys: Record<string, Direction> = {
   arrowright: "right"
 };
 
-type GameRoomResponse = RoomResponse<StationState, StationObservation, GameAction, ObservationEvent>;
-type GameMatchmakingResponse = MatchmakingResponse<StationState, StationObservation, GameAction, ObservationEvent>;
-type GameServerMessage = ServerMessage<StationState, StationObservation, GameAction, ObservationEvent>;
+type SpaceGameSession = ActiveParlandoSession<StationState, StationObservation, GameAction, ObservationEvent>;
 
 export function App() {
-  const [session, setSession] = useState<OnlineSession | null>(null);
-  const [waitingParticipantId, setWaitingParticipantId] = useState<string | null>(null);
-  const [displayName, setDisplayName] = useState("");
-  const [publicConfig, setPublicConfig] = useState<PublicConfigResponse | null>(null);
-  const [consentDecisions, setConsentDecisions] = useState<Record<string, boolean>>({});
-  const [onlineError, setOnlineError] = useState("");
+  return (
+    <main className="app-shell">
+      <ParlandoStartupGate<StationState, StationObservation, GameAction, ObservationEvent>
+        labels={{
+          eyebrow: "Cooperative Experiment",
+          setupHeading: "Waiting Room",
+          setupBody: "Review consent if required, enter your name, and prepare voice if this study uses audio.",
+          waitingBody: "The station unlocks when all required participants and services are ready.",
+          gameHint: "Use arrow keys to move your assigned character. Press Enter to use a device.",
+          enterWaitingRoomLabel: "Enter waiting room"
+        }}
+        renderGame={(session) => <ActiveSpaceGame session={session} />}
+      />
+    </main>
+  );
+}
+
+function ActiveSpaceGame({ session }: { session: SpaceGameSession }) {
   const [preview, setPreview] = useState<ActionPreview | null>(null);
   const [chatDraft, setChatDraft] = useState("");
-  const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
-  const [selectedAudioInputId, setSelectedAudioInputId] = useState("");
-  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>(initialVoiceStatus);
-  const [voicePreflight, setVoicePreflight] = useState<VoicePreflight>(initialVoicePreflight);
-  const audioControllerRef = useRef<AudioSessionController | null>(null);
-  if (!audioControllerRef.current) {
-    audioControllerRef.current = new AudioSessionController({
-      microphone: new MicrophoneSource(),
-      sinks: [new LiveKitPartnerAudioSink(), new SpeechmaticsTranscriptionSink()]
-    });
-  }
-  const audioController = audioControllerRef.current;
-  const apiClient = useMemo(() => new ExperimentApiClient(), []);
   const state = session?.observation ?? session?.state ?? initialState;
   const systems = useMemo(() => deriveSystems(state), [state]);
   const serverAvailableActions = session?.availableActions ?? [];
-  const eventLog = session?.eventLog ?? [];
+  const eventLog = session?.events ?? [];
   const assignedRole = session?.role === "A" || session?.role === "B" ? session.role : null;
-  const audioStudy = Boolean(publicConfig?.livekit?.enabled);
-  const onlineReady = Boolean(
-    publicConfig && session && bothPlayersConnected(session.presence) && (!audioStudy || voiceStatus.transcriptionReady)
-  );
-  const requiredConsentsAccepted = useMemo(() => {
-    if (!publicConfig?.require_consent) return true;
-    return publicConfig.consents.every((consent) => !consent.required || consentDecisions[consent.id] === true);
-  }, [consentDecisions, publicConfig]);
+  const audioStudy = Boolean(session.publicConfig.livekit?.enabled);
+  const voiceStatus = session.voiceStatus;
+  const voicePreflight = session.voicePreflight;
+  const onlineReady = true;
   const dispatch = useCallback(
     (action: GameAction) => {
-      if (session) {
-        apiClient.sendAction(session.socket, action);
-      }
+      session.sendAction(action);
     },
-    [apiClient, session]
+    [session]
   );
-
-  const refreshAudioInputs = useCallback(async () => {
-    if (!navigator.mediaDevices?.enumerateDevices) return;
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const inputs = devices.filter((device) => device.kind === "audioinput");
-    setAudioInputs(inputs);
-    setSelectedAudioInputId((current) => current || inputs.find((device) => device.deviceId === "default")?.deviceId || inputs[0]?.deviceId || "");
-  }, []);
-
-  const connectRoom = useCallback((room: GameRoomResponse) => {
-    const socket = new WebSocket(apiClient.socketUrl(room.room_id, room.participant_session_id));
-    setSession({
-      participantSessionId: room.participant_session_id,
-      roomId: room.room_id,
-      role: room.role as PlayerId | "spectator",
-      state: room.state ?? null,
-      observation: room.observation ?? room.state ?? initialState,
-      availableActions: room.available_actions ?? [],
-      eventLog: room.events ?? [],
-      socket,
-      connected: false,
-      completed: false,
-      presence: {},
-      conversation: room.conversation ?? []
-    });
-    socket.addEventListener("open", () => {
-      socket.send(JSON.stringify({ type: "ready" }));
-      setSession((current) => (current?.socket === socket ? { ...current, connected: true } : current));
-    });
-    socket.addEventListener("message", (event) => {
-      const message = JSON.parse(event.data) as GameServerMessage;
-      if (message.type === "roleAssigned") {
-        setSession((current) =>
-          current?.socket === socket
-            ? {
-                ...current,
-                role: message.role as PlayerId | "spectator",
-                state: message.state ?? null,
-                observation: message.observation ?? message.state ?? current.observation,
-                availableActions: message.available_actions ?? [],
-                eventLog: [...(message.events ?? []), ...current.eventLog].slice(0, 10),
-                conversation: message.conversation ?? current.conversation,
-                connected: true
-              }
-            : current
-        );
-      }
-      if (message.type === "stateChanged") {
-        setSession((current) =>
-          current?.socket === socket
-            ? {
-                ...current,
-                state: message.state ?? null,
-                observation: message.observation ?? message.state ?? current.observation,
-                availableActions: message.available_actions ?? [],
-                eventLog: [...(message.events ?? []), ...current.eventLog].slice(0, 10),
-                conversation: message.conversation ?? current.conversation
-              }
-            : current
-        );
-      }
-      if (message.type === "presenceChanged") {
-        setSession((current) =>
-          current?.socket === socket ? { ...current, presence: normalizePresence(message.presence) } : current
-        );
-      }
-      if (message.type === "completed") {
-        setSession((current) => (current?.socket === socket ? { ...current, completed: true } : current));
-      }
-      if (message.type === "conversationMessageAdded") {
-        setSession((current) =>
-          current?.socket === socket
-            ? { ...current, conversation: appendConversation(current.conversation, message.conversation_message) }
-            : current
-        );
-      }
-      if (message.type === "voiceStatusChanged") {
-        const transcriptionMessage = message.voice?.transcriptionStatus;
-        const voiceUpdate: Partial<VoiceStatus> = {};
-        if (transcriptionMessage) {
-          voiceUpdate.transcriptionMessage = transcriptionMessage;
-        }
-        if (typeof message.voice?.transcriptionReady === "boolean") {
-          voiceUpdate.transcriptionReady = message.voice.transcriptionReady;
-        }
-        audioController.updateVoiceStatus(voiceUpdate);
-      }
-      if (message.type === "error") {
-        setOnlineError(message.message ?? "Server rejected the last action.");
-      }
-    });
-    socket.addEventListener("close", () => {
-      setSession((current) => (current?.socket === socket ? { ...current, connected: false } : current));
-    });
-  }, [apiClient, audioController]);
-
-  const connectMatchedDirect = useCallback(
-    (match: GameMatchmakingResponse) => {
-      if (!match.room_id || !match.role) {
-        throw new Error("Matched response did not include a room assignment.");
-      }
-      connectRoom({
-        room_id: match.room_id,
-        participant_session_id: match.participant_session_id,
-        role: match.role,
-        state: match.state ?? null,
-        observation: match.observation ?? match.state ?? initialState,
-        available_actions: match.available_actions ?? [],
-        events: match.events ?? [],
-        conversation: match.conversation ?? []
-      });
-      setWaitingParticipantId(null);
-    },
-    [connectRoom]
-  );
-
-  const startOnlineRoom = useCallback(async () => {
-    try {
-      setOnlineError("");
-      if (!requiredConsentsAccepted) {
-        setOnlineError("Please accept all required consents before entering the waiting room.");
-        return;
-      }
-      const participant = await apiClient.createParticipant(displayName);
-      if (publicConfig?.require_consent) {
-        await apiClient.submitConsent(participant.participant_session_id, consentDecisions);
-      }
-      const match = await apiClient.enterMatchmaking<StationState, StationObservation, GameAction, ObservationEvent>(
-        participant.participant_session_id
-      );
-      if (match.status === "matched") {
-        connectMatchedDirect(match);
-      } else {
-        setWaitingParticipantId(match.participant_session_id);
-      }
-    } catch (error) {
-      setOnlineError(error instanceof Error ? error.message : "Could not enter the waiting room.");
-    }
-  }, [apiClient, connectMatchedDirect, consentDecisions, displayName, publicConfig, requiredConsentsAccepted]);
-
-  useEffect(() => {
-    let cancelled = false;
-    apiClient.getPublicConfig()
-      .then((config) => {
-        if (!cancelled) setPublicConfig(config);
-      })
-      .catch((error) => {
-        if (!cancelled) setOnlineError(error instanceof Error ? error.message : "Could not load experiment config.");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [apiClient]);
-
-  useEffect(() => {
-    void refreshAudioInputs();
-    if (!navigator.mediaDevices?.addEventListener) return;
-    const onDeviceChange = () => {
-      void refreshAudioInputs();
-    };
-    navigator.mediaDevices.addEventListener("devicechange", onDeviceChange);
-    return () => navigator.mediaDevices.removeEventListener("devicechange", onDeviceChange);
-  }, [refreshAudioInputs]);
-
-  useEffect(
-    () => () => {
-      void audioController.disconnect(true);
-    },
-    [audioController]
-  );
-
-  const leaveOnlineRoom = useCallback(() => {
-    void audioController.disconnect(true);
-    session?.socket.close();
-    setSession(null);
-    setWaitingParticipantId(null);
-    setOnlineError("");
-  }, [audioController, session]);
-
-  const prepareVoice = useCallback(async () => {
-    if (!publicConfig?.livekit?.enabled) return;
-    setOnlineError("");
-    try {
-      await audioController.prepare(selectedAudioInputId, selectedAudioInputLabel(audioInputs, selectedAudioInputId));
-      await refreshAudioInputs();
-    } catch (error) {
-      setOnlineError(error instanceof Error ? error.message : "Microphone permission was not granted.");
-    }
-  }, [audioController, audioInputs, publicConfig, refreshAudioInputs, selectedAudioInputId]);
-
-  const toggleVoice = useCallback(async () => {
-    if (!session) return;
-    const selectedAudioInput = audioInputs.find((device) => device.deviceId === selectedAudioInputId);
-    const logVoice = (event: string, metadata: Record<string, unknown> = {}) => {
-      apiClient.postVoiceDiagnostic(session.roomId, session.participantSessionId, event, {
-        role: session.role,
-        selected_audio_input_id: selectedAudioInputId || null,
-        selected_audio_input_label: selectedAudioInput?.label || null,
-        ...metadata
-      });
-    };
-    try {
-      setOnlineError("");
-      await audioController.toggle({
-        roomId: session.roomId,
-        participantSessionId: session.participantSessionId,
-        role: session.role,
-        selectedAudioInputId,
-        selectedAudioInputLabel: selectedAudioInput?.label || null,
-        getAudioSession: () => apiClient.getAudioSession(session.roomId, session.participantSessionId),
-        getLiveKitToken: () => apiClient.getLiveKitToken(session.roomId, session.participantSessionId),
-        postTranscriptSegment: (segment) => apiClient.postTranscriptSegment(session.roomId, segment),
-        logVoice,
-        onVoiceStatus: (status) => audioController.updateVoiceStatus(status)
-      }, selectedAudioInputId, selectedAudioInputLabel(audioInputs, selectedAudioInputId));
-    } catch (error) {
-      setOnlineError(error instanceof Error ? error.message : "Could not start voice chat.");
-    }
-  }, [
-    audioController,
-    apiClient,
-    audioInputs,
-    selectedAudioInputId,
-    session
-  ]);
-
-  useEffect(() => {
-    return audioController.subscribe((snapshot) => {
-      setVoiceStatus(snapshot.voiceStatus);
-      setVoicePreflight(snapshot.voicePreflight);
-    });
-  }, [audioController]);
 
   const submitChat = useCallback(() => {
     const text = chatDraft.trim();
     if (!text || !session) return;
-    apiClient.sendChatMessage(session.socket, text);
+    session.sendChatMessage(text);
     setChatDraft("");
-  }, [apiClient, chatDraft, session]);
-
-  useEffect(() => {
-    if (
-      !session ||
-      !publicConfig?.livekit?.enabled ||
-      !voicePreflight.ready ||
-      voiceStatus.connected ||
-      voiceStatus.connecting
-    ) {
-      return;
-    }
-    void toggleVoice();
-  }, [publicConfig, session, toggleVoice, voicePreflight.ready, voiceStatus.connected, voiceStatus.connecting]);
-
-  useEffect(() => {
-    if (!waitingParticipantId || session) return;
-    let cancelled = false;
-    const timer = window.setInterval(async () => {
-      try {
-        const match = await apiClient.waitForMatch<StationState, StationObservation, GameAction, ObservationEvent>(
-          waitingParticipantId
-        );
-        if (!cancelled && match.status === "matched") {
-          connectMatchedDirect(match);
-        }
-      } catch (error) {
-        if (!cancelled) setOnlineError(error instanceof Error ? error.message : "Waiting room check failed.");
-      }
-    }, 1200);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [apiClient, connectMatchedDirect, session, waitingParticipantId]);
+  }, [chatDraft, session]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -394,339 +103,69 @@ export function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [assignedRole, dispatch, onlineReady, session, state]);
 
-  const preGamePanel = waitingParticipantId ? (
-    <QueueWaitingPanel
-      audioInputs={audioInputs}
-      liveKitEnabled={Boolean(publicConfig?.livekit?.enabled)}
-      onLeave={() => setWaitingParticipantId(null)}
-      onPrepareVoice={prepareVoice}
-      onSelectedAudioInputChange={setSelectedAudioInputId}
-      selectedAudioInputId={selectedAudioInputId}
-      voicePreflight={voicePreflight}
-    />
-  ) : session && !onlineReady ? (
-    <WaitingRoom
-      liveKitEnabled={audioStudy}
-      onLeave={leaveOnlineRoom}
-      onToggleVoice={toggleVoice}
-      session={session}
-      voiceStatus={voiceStatus}
-    />
-  ) : !session ? (
-      <LobbyPanel
-        audioInputs={audioInputs}
-        displayName={displayName}
-        consentDecisions={consentDecisions}
-        requiredConsentsAccepted={requiredConsentsAccepted}
-        publicConfig={publicConfig}
-        onDisplayNameChange={setDisplayName}
-        onEnter={startOnlineRoom}
-        onPrepareVoice={prepareVoice}
-        onSelectedAudioInputChange={setSelectedAudioInputId}
-        onConsentChange={(consentId, granted) =>
-          setConsentDecisions((current) => ({ ...current, [consentId]: granted }))
-        }
-        onlineError={onlineError}
-        selectedAudioInputId={selectedAudioInputId}
-        voicePreflight={voicePreflight}
-      />
-  ) : null;
-
   return (
-    <main className="app-shell">
-      {session && onlineReady && (
-        <section className="status-band" aria-label="Station systems">
-          <div>
-            <p className="eyebrow">Evacuation Beacon</p>
-            <h1>{state.beaconLaunched ? "Carrier Lock Achieved" : "Station Repair"}</h1>
-          </div>
-          <SystemPill label="Power" online={systems.powerStable} />
-          <SystemPill label="Oxygen" online={systems.oxygenStable} />
-          <SystemPill label="Door" online={systems.doorAccess} />
-          <SystemPill label="Signal" online={systems.signalRouted} />
-          <SystemPill label="Cooling" online={systems.coolingRestored} />
-        </section>
-      )}
-
-      {session && onlineReady && (
-        <section className="session-band" aria-label="Online session controls">
-          <div>
-            <p className="eyebrow">Online direct room</p>
-            <strong>{session.roomId}</strong>
-            <span>
-              {session.connected ? "Connected" : "Disconnected"} · You are Player {session.role}
-              {session.completed && " · Complete"}
-            </span>
-          </div>
-          <button onClick={leaveOnlineRoom}>Leave game</button>
-          {onlineError && <p className="online-error">{onlineError}</p>}
-        </section>
-      )}
-
-      {preGamePanel ?? (
-        <section className={`game-layout ${assignedRole ? `game-layout-${assignedRole.toLowerCase()}` : ""}`}>
-          {assignedRole === "A" && (
-            <PlayerPanel
-              canControl={onlineReady}
-              player="A"
-              state={state}
-              actions={serverAvailableActions}
-              dispatch={dispatch}
-              setPreview={setPreview}
-            />
-          )}
-          <section className="playfield-zone" aria-label="Top-down station playfield">
-            <StationPlayfield preview={preview} state={state} systems={systems} />
-            <SharedConsole preview={preview} state={state} systems={systems} eventLog={eventLog} />
-            <CommunicationPanel
-              chatDraft={chatDraft}
-              conversation={session?.conversation ?? []}
-              liveKitEnabled={audioStudy}
-              onChatDraftChange={setChatDraft}
-              onSubmitChat={submitChat}
-              onToggleVoice={toggleVoice}
-              voicePreflight={voicePreflight}
-              voiceStatus={voiceStatus}
-            />
-          </section>
-          {assignedRole === "B" && (
-            <PlayerPanel
-              canControl={onlineReady}
-              player="B"
-              state={state}
-              actions={serverAvailableActions}
-              dispatch={dispatch}
-              setPreview={setPreview}
-            />
-          )}
-        </section>
-      )}
-    </main>
-  );
-}
-
-function LobbyPanel({
-  audioInputs,
-  displayName,
-  consentDecisions,
-  requiredConsentsAccepted,
-  publicConfig,
-  onDisplayNameChange,
-  onConsentChange,
-  onEnter,
-  onPrepareVoice,
-  onSelectedAudioInputChange,
-  onlineError,
-  selectedAudioInputId,
-  voicePreflight
-}: {
-  audioInputs: MediaDeviceInfo[];
-  displayName: string;
-  consentDecisions: Record<string, boolean>;
-  requiredConsentsAccepted: boolean;
-  publicConfig: PublicConfigResponse | null;
-  onDisplayNameChange: (value: string) => void;
-  onConsentChange: (consentId: string, granted: boolean) => void;
-  onEnter: () => void;
-  onPrepareVoice: () => void;
-  onSelectedAudioInputChange: (value: string) => void;
-  onlineError: string;
-  selectedAudioInputId: string;
-  voicePreflight: VoicePreflight;
-}) {
-  const liveKitEnabled = Boolean(publicConfig?.livekit?.enabled);
-  return (
-    <section className="lobby-panel">
-      <div className="lobby-heading">
-        <p className="eyebrow">Cooperative Experiment</p>
-        <h1>Station Repair</h1>
-      </div>
-      <div className="lobby-copy">
-        <h2>Waiting Room</h2>
-        <p>Review the consent statement, enter your name, and you will be paired automatically with the next player.</p>
-        <p>When the game starts, use the arrow keys to move your character and Enter to use a device.</p>
-      </div>
-      <div className="lobby-actions">
-        <input
-          aria-label="Display name"
-          onChange={(event) => onDisplayNameChange(event.target.value)}
-          placeholder="Display name"
-          value={displayName}
-        />
-        <button disabled={!requiredConsentsAccepted} onClick={onEnter}>
-          Enter waiting room
-        </button>
-      </div>
-      {publicConfig?.require_consent && (
-        <div className="consent-list">
-          {publicConfig.consents.map((consent) => (
-            <label className="consent-row" key={consent.id}>
-              <input
-                checked={Boolean(consentDecisions[consent.id])}
-                onChange={(event) => onConsentChange(consent.id, event.target.checked)}
-                type="checkbox"
-              />
-              <span>
-                <strong>
-                  {consent.title}
-                  {consent.required && " (required)"}
-                </strong>
-                <span dangerouslySetInnerHTML={{ __html: consent.body_html }} />
-              </span>
-            </label>
-          ))}
-        </div>
-      )}
-      <VoicePreparationPanel
-        audioInputs={audioInputs}
-        liveKitEnabled={liveKitEnabled}
-        onPrepareVoice={onPrepareVoice}
-        onSelectedAudioInputChange={onSelectedAudioInputChange}
-        selectedAudioInputId={selectedAudioInputId}
-        voicePreflight={voicePreflight}
-      />
-      {onlineError && <p className="online-error">{onlineError}</p>}
-    </section>
-  );
-}
-
-function QueueWaitingPanel({
-  audioInputs,
-  liveKitEnabled,
-  onLeave,
-  onPrepareVoice,
-  onSelectedAudioInputChange,
-  selectedAudioInputId,
-  voicePreflight
-}: {
-  audioInputs: MediaDeviceInfo[];
-  liveKitEnabled: boolean;
-  onLeave: () => void;
-  onPrepareVoice: () => void;
-  onSelectedAudioInputChange: (value: string) => void;
-  selectedAudioInputId: string;
-  voicePreflight: VoicePreflight;
-}) {
-  return (
-    <section className="lobby-panel">
-      <div className="lobby-heading">
-        <p className="eyebrow">Cooperative Experiment</p>
-        <h1>Station Repair</h1>
-      </div>
-      <div className="lobby-copy">
-        <h2>Waiting for another player</h2>
-        <p>Keep this tab open. The next player who arrives will be paired with you automatically.</p>
-        <p>You will control only your own character. Use arrow keys to move and Enter to interact.</p>
-      </div>
-      <VoicePreparationPanel
-        audioInputs={audioInputs}
-        liveKitEnabled={liveKitEnabled}
-        onPrepareVoice={onPrepareVoice}
-        onSelectedAudioInputChange={onSelectedAudioInputChange}
-        selectedAudioInputId={selectedAudioInputId}
-        voicePreflight={voicePreflight}
-      />
-      <div className="lobby-actions">
-        <button onClick={onLeave}>Leave waiting room</button>
-      </div>
-    </section>
-  );
-}
-
-function VoicePreparationPanel({
-  audioInputs,
-  liveKitEnabled,
-  onPrepareVoice,
-  onSelectedAudioInputChange,
-  selectedAudioInputId,
-  voicePreflight
-}: {
-  audioInputs: MediaDeviceInfo[];
-  liveKitEnabled: boolean;
-  onPrepareVoice: () => void;
-  onSelectedAudioInputChange: (value: string) => void;
-  selectedAudioInputId: string;
-  voicePreflight: VoicePreflight;
-}) {
-  return (
-    <div className="voice-preflight">
-      <div>
-        <strong>Voice chat</strong>
-        <span>{liveKitEnabled ? voicePreflight.message : "Voice is disabled for this study"}</span>
-        <span className="mic-device-label">{voicePreflight.deviceLabel}</span>
-      </div>
-      <VoicePreparationControls
-        audioInputs={audioInputs}
-        liveKitEnabled={liveKitEnabled}
-        onPrepareVoice={onPrepareVoice}
-        onSelectedAudioInputChange={onSelectedAudioInputChange}
-        selectedAudioInputId={selectedAudioInputId}
-        voicePreflight={voicePreflight}
-      />
-    </div>
-  );
-}
-
-function WaitingRoom({
-  liveKitEnabled,
-  onLeave,
-  onToggleVoice,
-  session,
-  voiceStatus
-}: {
-  liveKitEnabled: boolean;
-  onLeave: () => void;
-  onToggleVoice: () => void;
-  session: OnlineSession;
-  voiceStatus: VoiceStatus;
-}) {
-  const aConnected = Boolean(session.presence.A?.connected);
-  const bConnected = Boolean(session.presence.B?.connected);
-  const playersConnected = aConnected && bConnected;
-  const waitingForTranscription = liveKitEnabled && playersConnected && !voiceStatus.transcriptionReady;
-  return (
-    <section className="lobby-panel">
-      <div className="lobby-heading">
-        <p className="eyebrow">Cooperative Experiment</p>
-        <h1>Station Repair</h1>
-      </div>
-      <div className="lobby-copy">
-        <h2>{waitingForTranscription ? "Waiting for transcription service" : "Starting game"}</h2>
-        <p>
-          {liveKitEnabled
-            ? "The game board unlocks when both players and the transcription service are ready."
-            : "The game board unlocks when both players are connected."}
-        </p>
-        <p>Use arrow keys to move your assigned character. Press Enter to use a device.</p>
-      </div>
-      <div className="seat-grid">
-        <div className={aConnected ? "seat-ready" : ""}>
-          <strong>Player A</strong>
-          <span>{aConnected ? "Connected" : "Waiting"}</span>
-        </div>
-        <div className={bConnected ? "seat-ready" : ""}>
-          <strong>Player B</strong>
-          <span>{bConnected ? "Connected" : "Waiting"}</span>
-        </div>
-        {liveKitEnabled && (
-          <div className={voiceStatus.transcriptionReady ? "seat-ready" : ""}>
-            <strong>Transcription Service</strong>
-            <span>{voiceStatus.transcriptionReady ? "Ready" : voiceStatus.transcriptionMessage}</span>
-          </div>
-        )}
-      </div>
-      {liveKitEnabled && <TranscriptionProgress voiceStatus={voiceStatus} />}
-      <div className="voice-preflight">
+    <>
+      <section className="status-band" aria-label="Station systems">
         <div>
-          <strong>Voice chat</strong>
-          <VoiceStatusChip liveKitEnabled={liveKitEnabled} voiceStatus={voiceStatus} />
+          <p className="eyebrow">Evacuation Beacon</p>
+          <h1>{state.beaconLaunched ? "Carrier Lock Achieved" : "Station Repair"}</h1>
         </div>
-        <VoiceJoinButton liveKitEnabled={liveKitEnabled} onToggleVoice={onToggleVoice} voiceStatus={voiceStatus} />
-      </div>
-      <div className="lobby-actions">
-        <button onClick={onLeave}>Leave waiting room</button>
-      </div>
-    </section>
+        <SystemPill label="Power" online={systems.powerStable} />
+        <SystemPill label="Oxygen" online={systems.oxygenStable} />
+        <SystemPill label="Door" online={systems.doorAccess} />
+        <SystemPill label="Signal" online={systems.signalRouted} />
+        <SystemPill label="Cooling" online={systems.coolingRestored} />
+      </section>
+
+      <section className="session-band" aria-label="Online session controls">
+        <div>
+          <p className="eyebrow">Online room</p>
+          <strong>{session.roomId}</strong>
+          <span>
+            {session.connected ? "Connected" : "Disconnected"} · You are Player {session.role}
+            {session.completed && " · Complete"}
+          </span>
+        </div>
+        <button onClick={session.leave}>Leave game</button>
+      </section>
+
+      <section className={`game-layout ${assignedRole ? `game-layout-${assignedRole.toLowerCase()}` : ""}`}>
+        {assignedRole === "A" && (
+          <PlayerPanel
+            canControl={onlineReady}
+            player="A"
+            state={state}
+            actions={serverAvailableActions}
+            dispatch={dispatch}
+            setPreview={setPreview}
+          />
+        )}
+        <section className="playfield-zone" aria-label="Top-down station playfield">
+          <StationPlayfield preview={preview} state={state} systems={systems} />
+          <SharedConsole preview={preview} state={state} systems={systems} eventLog={eventLog} />
+          <CommunicationPanel
+            chatDraft={chatDraft}
+            conversation={session.conversation}
+            liveKitEnabled={audioStudy}
+            onChatDraftChange={setChatDraft}
+            onSubmitChat={submitChat}
+            onToggleVoice={() => void session.toggleVoice()}
+            voicePreflight={voicePreflight}
+            voiceStatus={voiceStatus}
+          />
+        </section>
+        {assignedRole === "B" && (
+          <PlayerPanel
+            canControl={onlineReady}
+            player="B"
+            state={state}
+            actions={serverAvailableActions}
+            dispatch={dispatch}
+            setPreview={setPreview}
+          />
+        )}
+      </section>
+    </>
   );
 }
 

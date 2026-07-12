@@ -26,15 +26,6 @@ pub struct DirectStartRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct DirectEnterRequest {
-    pub display_name: Option<String>,
-    pub study_id: Option<String>,
-    pub external_id: Option<String>,
-    #[serde(default)]
-    pub metadata: Value,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ParticipantCreateResponse {
     pub participant_session_id: String,
     pub source: String,
@@ -60,6 +51,7 @@ pub struct PublicConfigResponse {
     pub transcription: Value,
     pub tts: Value,
     pub conversation: Value,
+    pub agents: Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -85,17 +77,12 @@ pub struct JoinRoomRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct MatchmakingJoinRequest {
-    pub participant_session_id: String,
-    pub study_id: Option<String>,
-    pub queue: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RoomResponse {
     pub room_id: String,
     pub participant_session_id: String,
     pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presence: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,27 +97,6 @@ pub struct RoomResponse {
 
 pub type CreateRoomResponse = RoomResponse;
 pub type JoinRoomResponse = RoomResponse;
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct MatchmakingJoinResponse {
-    pub status: String,
-    pub participant_session_id: String,
-    pub source: Option<String>,
-    pub room_id: Option<String>,
-    pub role: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub observation: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub available_actions: Option<Vec<Value>>,
-    #[serde(default)]
-    pub events: Vec<Value>,
-    #[serde(default)]
-    pub conversation: Vec<ConversationMessageResponse>,
-}
-
-pub type DirectEnterResponse = MatchmakingJoinResponse;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LiveKitTokenRequest {

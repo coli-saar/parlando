@@ -78,7 +78,7 @@ The early HTTP request structs exposed a caller-controlled role override for tes
 
 ## Risks And Follow-Up
 
-- If future experiment designs need asymmetric assignment controls, introduce an explicit server-side matchmaking policy rather than a caller-controlled role override.
+- If future experiment designs need asymmetric assignment controls, introduce an explicit server-side room-assignment policy rather than a caller-controlled role override.
 
 # Targeted WebSocket Delivery
 
@@ -310,7 +310,7 @@ The client-facing sequence is deliberately explicit:
 2. Waiting-room responses and waiting-room WebSocket messages may expose presence and voice readiness, but they do not include game observations or available actions.
 3. `roleAssigned` is the game-start payload. It is sent only after the room-readiness predicate is satisfied, and it carries the participant-specific observation and optional available actions. Reconnecting participants in an already-started room receive the same targeted payload.
 
-For human-human matchmaking, the first participant receives `status: "waiting"` even though the server may already have created an internal room/session handle. The second participant creates the visible match, and the first participant can poll status to obtain the client-facing `room_id` and role once the room is actually paired.
+Human-human studies use room creation plus room join. Human-agent studies use the same room creation path; the server supplies the agent as role B immediately, but the room remains in the waiting phase until readiness gates pass.
 
 ## Tradeoffs
 

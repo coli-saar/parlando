@@ -2,7 +2,7 @@
 
 This page covers local development, experiment configuration, frontend serving, Docker, Render, and hosted remote agents.
 
-Parlando is also expected to include infrastructure for Prolific-driven experiments. The local and Render setup below still applies: Prolific entry points should create or recover participant sessions, route participants into the same room/matchmaking flow, and persist the same evaluation records.
+Parlando is also expected to include infrastructure for Prolific-driven experiments. The local and Render setup below still applies: Prolific entry points should create or recover participant sessions, route participants into the same waiting-room flow, and persist the same evaluation records.
 
 ## Local Development
 
@@ -46,7 +46,7 @@ The main sections are:
 - `study`: study name and waiting/reconnect timing.
 - `server`: public base URL, CORS origins, optional `client_dist_path`.
 - `database`: SQLite URL.
-- `direct`: direct room-code and matchmaking settings, including consent text.
+- `direct`: room-code and consent settings.
 - `agents`: human-vs-human or human-vs-agent mode and agent selection.
 - `livekit`: realtime audio room settings.
 - `speechmatics`: browser STT credentials and realtime options.

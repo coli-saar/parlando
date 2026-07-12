@@ -90,7 +90,7 @@ pub trait AgentFactory<A: GameAdapter>: Send + Sync + 'static {
 ## Game, Audio, And TTS
 
 - Port the Space Game engine into `parlando-space-game`, preserving existing state shape, observations, available actions, event payloads, and completion behavior.
-- Implement human-vs-human and human-vs-agent matchmaking. In agent mode, the Space Game crate supplies the selected Rust agent factory directly.
+- Implement room creation/join for human-vs-human and human-vs-agent studies. In agent mode, the server supplies the selected Rust agent as role B when the room is created.
 - Implement LiveKit token signing and audio-session responses with the existing client-compatible shapes.
 - Implement Speechmatics temporary-key minting, transcript ingestion, voice diagnostics, and transcript-to-conversation conversion through the session event stream.
 - Implement ElevenLabs streaming TTS for `origin: "agent"` messages directly when the agent runtime emits them; do not poll conversation history.
@@ -99,7 +99,7 @@ pub trait AgentFactory<A: GameAdapter>: Send + Sync + 'static {
 ## Test Plan
 
 - Add unit tests for config loading, protocol serialization, agent factory selection, per-room agent instantiation, LiveKit tokens, Speechmatics key parsing, storage trait behavior, SQLite persistence, Space Game state parity, and removal of reusable move-count assumptions.
-- Add integration tests for participants, consents, rooms, matchmaking, WebSockets, action submission, completion, transcript posting, conversation, export, reconnect behavior, and human-vs-agent lifecycle.
+- Add integration tests for participants, consents, rooms, joins, WebSockets, action submission, completion, transcript posting, conversation, export, reconnect behavior, and human-vs-agent lifecycle.
 - Add DB-backed tests asserting that every accepted user/server/agent/game/audio event is persisted with timestamps and can be exported.
 - Add mocked external-service tests for Speechmatics and ElevenLabs.
 - Add ignored/manual live tests for real Speechmatics, LiveKit client audio, and LiveKit agent audio publishing.
