@@ -11,7 +11,7 @@ SPACE_GAME_DIR := $(PARLANDO_DIR)/space-game
 HOST ?= 127.0.0.1
 PORT ?= 8000
 
-.PHONY: all install-local install-rust-server install-js-client build-space-game run-space-game run-space-game-solo-voice clean-space-game
+.PHONY: all install-local install-rust-server install-js-client build-space-game run-space-game run-space-game-solo-voice clean-space-game publish-local package-rust-server-local publish-js-client-local publish-dry-run publish-rust-server-dry-run publish-rust-server
 
 all: install-local build-space-game
 
@@ -35,3 +35,19 @@ run-space-game-solo-voice: install-local
 
 clean-space-game:
 	cd "$(SPACE_GAME_DIR)" && make clean-client
+
+publish-local: package-rust-server-local publish-js-client-local
+
+package-rust-server-local:
+	cd "$(RUST_SERVER_DIR)" && cargo package -p parlando-server --allow-dirty
+
+publish-js-client-local:
+	cd "$(JS_CLIENT_DIR)" && npm run yalc
+
+publish-dry-run: publish-rust-server-dry-run
+
+publish-rust-server-dry-run:
+	cd "$(RUST_SERVER_DIR)" && cargo publish -p parlando-server --dry-run --allow-dirty
+
+publish-rust-server:
+	cd "$(RUST_SERVER_DIR)" && cargo publish -p parlando-server

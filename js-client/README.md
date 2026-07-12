@@ -72,14 +72,14 @@ npm install
 
 Committed consumer manifests should normally depend on a version, for example `"@parlando/client": "^0.1.0"`, not on `file:` paths.
 
-## Publishing
+## Local publishing
 
-The package is configured for GitHub Packages via `publishConfig.registry`. Publish stable versions from CI or manually with a GitHub Packages token:
+The JavaScript SDK is published locally with yalc rather than to an online npm registry:
 
 ```bash
 npm install
 npm test
-npm publish
+npm run yalc
 ```
 
-Before the first real publish, add the final repository metadata and ensure the GitHub package scope matches the organization that will host the package.
+The package is marked `private` to avoid accidental npm or GitHub Packages publishing.

@@ -1,0 +1,3 @@
+display_name: Generate Parlando Game
+short_description: Scaffold complete Parlando dialogue games.
+default_prompt: Generate a complete Parlando game from my study idea, including Rust server adapter, browser client, config, build files, tests, and run/deploy instructions.

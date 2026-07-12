@@ -10,5 +10,6 @@ Read the pages in this order if you are starting a new experiment:
 4. [Agents](agents.md): how to add in-process Rust agents or connect Python agents over gRPC.
 5. [Running And Deployment](running-and-deployment.md): local development, configuration, frontend serving, Docker, Render, and remote-agent deployment.
 6. [Data And Monitoring](data-and-monitoring.md): persisted evaluation data, operator monitoring, and export.
+7. [Publishing Packages](publishing-packages.md): local package smoke tests and online publishing for `parlando-server` and `@parlando/client`.
 
 The demo game in `crates/parlando-space-game` is a complete example of a game adapter, game state engine, and agent selector. Treat it as a worked example, not as the center of the platform.

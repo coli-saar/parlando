@@ -3,6 +3,11 @@ name = "parlando-server"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
+description = "Reusable Rust server runtime for Parlando dialogue-game experiments."
+repository = "https://github.com/coli-saar/parlando"
+readme = "../../../README.md"
+keywords = ["dialogue", "experiments", "games"]
+categories = ["web-programming::http-server"]
 
 [dependencies]
 anyhow.workspace = true
