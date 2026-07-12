@@ -15,6 +15,7 @@ Reusable browser SDK for Parlando game clients. This package owns shared experim
 - Game-specific state, actions, observations, validation, rendering, assets, maps, levels, or scoring.
 - Demo app layout or Space Game-specific CSS.
 - Local checkout assumptions such as `file:../js-client` dependencies in consumers.
+- Private LiveKit, Speechmatics, or TTS service configuration. The server is the source of truth for speech configuration and sends only public capability metadata or short-lived room credentials to the browser.
 
 ## Package entrypoints
 
@@ -26,6 +27,10 @@ import { VoiceStatusChip } from "@parlando/client/react";
 ```
 
 The root entrypoint contains protocol types, API helpers, WebSocket helpers, audio-session controller classes, microphone helpers, and non-React utility functions. Optional integration-specific code is exported from subpaths so consumers can import only the pieces they need.
+
+## Speech configuration
+
+The SDK does not configure LiveKit, Speechmatics, or TTS services directly. A game client reads public capability information from `/api/config`, then requests room-specific audio credentials from `/api/rooms/{room_id}/audio-session`. The Rust server owns provider selection, private API keys, token minting, temporary Speechmatics keys, and TTS voice settings.
 
 ## Widgets
 

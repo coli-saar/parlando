@@ -1,5 +1,7 @@
 node_modules/
 dist/
 .yalc/
+.local/
 yalc.lock
+package-lock.json
 .DS_Store

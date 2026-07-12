@@ -1,0 +1,11 @@
+.local/
+**/node_modules/
+**/dist/
+**/.yalc/
+**/yalc.lock
+**/package-lock.json
+**/.DS_Store
+rust-server/target/
+rust-server/config/*.private.yaml
+rust-server/config/*.private.yml
+space-game/.local/

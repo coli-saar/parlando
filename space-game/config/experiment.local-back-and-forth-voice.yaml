@@ -1,0 +1,39 @@
+experiment:
+  id: local-space-game-back-and-forth-voice
+
+includes:
+  - ../../rust-server/config/experiment.livekit.private.yaml
+
+study:
+  name: Parlando Space Game Back And Forth Voice
+  enabled_sources: [direct]
+  waiting_room_timeout_seconds: 300
+  reconnect_grace_seconds: 90
+
+server:
+  public_base_url: http://localhost:8000
+  allowed_origins: []
+  client_dist_path: dist
+
+database:
+  url: sqlite:///.local/parlando-back-and-forth-voice.sqlite
+
+direct:
+  enabled: true
+  allow_room_codes: true
+  allow_matchmaking: true
+  require_consent: false
+  consents: []
+
+agents:
+  mode: human_vs_agent
+  human_vs_agent:
+    factory: space_game.back_and_forth
+    act_timeout_seconds: 5
+    invalid_action_limit: 3
+    seed: 1
+    config: {}
+
+conversation:
+  enabled: true
+  max_history_messages: 50

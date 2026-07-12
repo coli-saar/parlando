@@ -1,67 +1,107 @@
 # Parlando Space Game Client
 
-Demo browser client for the Parlando Space Game. This project is a consumer of the reusable `@parlando/client` SDK; it should not import SDK source by relative path or rely on a local checkout of the Rust server.
+Demo browser client for the Parlando Space Game. This project is a consumer of the reusable `@parlando/client` SDK and an installed `parlando-space-game` server binary. It should not import SDK or server source by relative path.
 
 ## Project role
 
-The Parlando JavaScript split has two parts:
+The local Parlando checkout has three parts:
 
-- `../js-client` is the reusable SDK package published as `@parlando/client`.
-- `../space-game` is this demo game client, with Space Game-specific UI, assets, state interpretation, controls, and tests.
+- `rust-server` builds and installs the `parlando-space-game` server binary.
+- `js-client` builds and publishes the reusable SDK package as `@parlando/client` into the local yalc store.
+- `space-game` is this demo game client, with Space Game-specific UI, assets, state interpretation, controls, and tests.
 
-The dependency direction is one-way: this app depends on the SDK. The SDK must not depend on this app.
+The dependency direction is one-way: this app consumes installed artifacts. It does not assume the SDK or server source directories exist.
 
-## Normal install
+## Start the game
 
-Once `@parlando/client` is published to GitHub Packages, install this app like a normal client project:
-
-```bash
-npm install
-npm run build
-```
-
-Developers need npm/GitHub Packages auth configured for the package scope. A typical `.npmrc` entry is:
-
-```ini
-@parlando:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
-```
-
-Adjust the scope if the package is published under a different GitHub organization.
-
-## Testing unpublished SDK changes
-
-Use `yalc` for local SDK debugging instead of changing this app to `file:../js-client`.
-
-Build and publish the SDK locally:
+For the normal two-human local game, run from the Parlando top-level directory:
 
 ```bash
-cd ../js-client
-npm run yalc
+cd /Users/koller/Documents/workspace/parlando
+make run-space-game
 ```
 
-Attach it to this app:
+For the single-browser back-and-forth voice test, run:
 
 ```bash
-cd ../space-game
-yalc add @parlando/client
-npm install
-npm run build
+cd /Users/koller/Documents/workspace/parlando
+make run-space-game-solo-voice
 ```
 
-After SDK edits, push the new local package from `../js-client`:
+Both commands install or refresh shared local artifacts before starting the server. They are convenient after source changes, but they can take a while because they may run `cargo install`, publish `@parlando/client` to yalc, reinstall client dependencies, and rebuild the browser app.
+
+After dependencies are already installed and you only want to restart the game, use the game-local command instead:
 
 ```bash
-npm run build
-yalc push
+cd /Users/koller/Documents/workspace/parlando/space-game
+PATH="/Users/koller/Documents/workspace/parlando/.local/bin:$PATH" make run-solo-voice
 ```
 
-To return to the published dependency:
+For the non-voice local config, use:
 
 ```bash
-yalc remove @parlando/client
-npm install
+cd /Users/koller/Documents/workspace/parlando/space-game
+PATH="/Users/koller/Documents/workspace/parlando/.local/bin:$PATH" make run
 ```
+
+Open the game at `http://127.0.0.1:8000/`. Stop it with `Ctrl-C` in the terminal running `make`.
+
+## Top-level local install
+
+From the Parlando top-level directory, install local dependencies first:
+
+```bash
+make install-local
+```
+
+That command installs the Rust server binary into `.local/bin` and publishes `@parlando/client` into the local yalc store.
+
+Then build or run the demo:
+
+```bash
+make build-space-game
+make run-space-game
+```
+
+## Game-local Makefile
+
+This directory also has a source-agnostic Makefile. It expects:
+
+- `parlando-space-game` on `PATH`, or `SERVER_BIN=/path/to/parlando-space-game`.
+- `@parlando/client@0.1.0` already published in the local yalc store.
+
+Run from this directory:
+
+```bash
+make build
+make run
+```
+
+The Makefile installs the SDK package from yalc with `npm install --no-save`, so the committed dependency stays versioned as `"@parlando/client": "^0.1.0"`.
+
+## Solo voice test
+
+For a single-browser test against the deterministic back-and-forth agent, run from the top-level directory:
+
+```bash
+make run-space-game-solo-voice
+```
+
+Or from this directory, after local dependencies are installed:
+
+```bash
+make run-solo-voice
+```
+
+The solo voice config enables:
+
+- `agents.mode = human_vs_agent`
+- `space_game.back_and_forth`
+- LiveKit browser room audio
+- Speechmatics browser transcription
+- ElevenLabs agent TTS publishing
+
+It asks the Rust server to include the local private service configuration from `../rust-server/config/experiment.livekit.private.yaml`. That file supplies the LiveKit, Speechmatics, and ElevenLabs settings for local voice testing. The browser app does not own those settings; it only receives public capability metadata from `/api/config` and room-specific credentials from `/api/rooms/{room_id}/audio-session`.
 
 ## Using SDK widgets
 

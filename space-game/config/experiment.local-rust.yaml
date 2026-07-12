@@ -1,0 +1,47 @@
+experiment:
+  id: local-space-game
+
+study:
+  name: Parlando Space Game
+  enabled_sources: [direct]
+  waiting_room_timeout_seconds: 300
+  reconnect_grace_seconds: 90
+
+server:
+  public_base_url: http://localhost:8000
+  allowed_origins: []
+  client_dist_path: dist
+
+database:
+  url: sqlite:///.local/parlando.sqlite
+
+direct:
+  enabled: true
+  allow_room_codes: true
+  allow_matchmaking: true
+  require_consent: false
+  consents: []
+
+agents:
+  mode: human_vs_human
+  human_vs_agent:
+    factory: space_game.back_and_forth
+    act_timeout_seconds: 5
+    invalid_action_limit: 3
+    config: {}
+
+livekit:
+  enabled: false
+
+speechmatics:
+  enabled: false
+
+transcription:
+  enabled: false
+
+tts:
+  enabled: false
+
+conversation:
+  enabled: true
+  max_history_messages: 50

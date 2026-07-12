@@ -193,7 +193,7 @@ export function App() {
 
   const connectMatchedDirect = useCallback(
     (match: GameMatchmakingResponse) => {
-      if (!match.room_id || !match.role || !match.observation) {
+      if (!match.room_id || !match.role) {
         throw new Error("Matched response did not include a room assignment.");
       }
       connectRoom({
@@ -201,7 +201,7 @@ export function App() {
         participant_session_id: match.participant_session_id,
         role: match.role,
         state: match.state ?? null,
-        observation: match.observation,
+        observation: match.observation ?? match.state ?? initialState,
         available_actions: match.available_actions ?? [],
         events: match.events ?? [],
         conversation: match.conversation ?? []

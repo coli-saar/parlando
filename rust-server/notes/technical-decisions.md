@@ -372,3 +372,98 @@ This creates three top-level project areas instead of keeping everything under t
 - Add package repository metadata once the GitHub owner/repo path is finalized.
 - Add CI to build, test, and publish `@parlando/client` to GitHub Packages on version tags.
 - Update Render/Docker packaging once the final production build context includes both the Rust binary and the Space Game client build.
+
+# Local Install Boundary For Demo Games
+
+## Context
+
+The Space Game demo should model how third-party games consume Parlando. A game developer may have only installed artifacts available, not local source checkouts of the Rust server or JavaScript SDK.
+
+## Chosen Approach
+
+- Add a top-level Parlando Makefile that knows local source layout and installs shared artifacts.
+- Install the Rust Space Game server binary into a local prefix with `cargo install`.
+- Publish `@parlando/client` into the local yalc store from the top-level install step.
+- Keep the Space Game Makefile source-agnostic: it expects `parlando-space-game` on `PATH` and `@parlando/client` in the yalc store.
+- Add a Space Game solo voice config that uses `agents.mode = human_vs_agent`, the `space_game.back_and_forth` agent, and includes the local private LiveKit, Speechmatics, and ElevenLabs config from the Rust-server checkout.
+
+## Tradeoffs
+
+The top-level Makefile is now the local development convenience layer for this checkout. Individual games remain closer to external-consumer behavior, but the top-level `run` target rebuilds/reinstalls shared artifacts before launching, which is simple and conservative rather than maximally fast.
+
+## Follow-Up
+
+- Add a faster top-level run target that skips reinstalling shared artifacts when the developer knows they are current.
+- Decide whether local private service config should live under the top-level Parlando directory once the Git root moves up.
+
+# Database-Backed Game Monitor
+
+## Context
+
+Operators need a simple way to inspect recent games over HTTP: recent sessions, session metadata, participant roles, player actions, and transcription results. This should work from durable records and should not depend on active in-memory rooms, the game WebSocket, or a game-specific client bundle.
+
+## Chosen Approach
+
+- Add DB-oriented storage queries for recent session summaries and session participants.
+- Add HTTP admin endpoints under `/api/admin/games` that read session metadata and ordered events from the experiment store.
+- Serve a self-contained `/admin/games` page from the Rust server. The page polls the DB-backed event endpoint with `after=<event_index>` so it stays current without attaching to the live game socket.
+- Summarize important event rows into a stable, game-agnostic timeline focused on actions, conversation messages, and transcript segments.
+- Keep timeline rows succinct by default and reveal full event JSON only when the operator expands a row.
+- Use compact A/B/SYS badges in the monitor instead of repeating role labels inside event titles and summaries.
+
+## Tradeoffs
+
+Polling is simpler and keeps the monitor decoupled from runtime room buses, but it is less immediate than a pushed event stream. The event summaries intentionally omit full game state snapshots to keep the UI readable; raw export remains available from `/api/admin/export` when full forensic detail is needed.
+
+## Follow-Up
+
+- Add authentication or deployment-level access controls before exposing the admin monitor outside trusted environments.
+- Consider replacing polling with server-sent events if the monitor needs lower latency or many simultaneous viewers.
+
+# Topic-Based Experiment Documentation
+
+## Context
+
+Parlando now needs documentation for researchers who want to use the platform to build dialogue game experiments. The documentation has two audiences that overlap but have different reading modes: a quick evaluator who wants to understand what Parlando can do, and an experiment builder who needs architecture, game-modeling, agent, local workflow, deployment, and data-export details.
+
+## Chosen Approach
+
+- Add a root `README.md` that explains Parlando's capabilities, shows the core adapter idea, includes a small Python remote-agent example, and points to the docs index and demo implementation.
+- Put GitHub-rendered technical docs under `docs/`.
+- Split the implementation documentation by topic: architecture, building games, agents, running/deployment, and data/monitoring.
+- Keep the README mostly product-facing and keep longer implementation details out of the root page.
+- Avoid screenshot references for now because this Rust workspace does not contain verified browser screenshots. Add screenshots later only when they are checked into a stable path.
+
+## Tradeoffs
+
+This creates several small docs pages instead of one long guide. The split makes individual topics easier to link from GitHub and keeps the README from becoming too dense for first-time readers. The deployment page deliberately documents the current workspace boundary: the Rust server can serve a built client directory, but this Docker context does not build a frontend that lives outside the Rust workspace.
+
+## Follow-Up
+
+- Add verified screenshots or short demo clips once the Space Game client build assets have a durable location.
+- Update the docs after the JavaScript client package and production Docker build context are finalized.
+
+# README Positioning And Client Protocol Documentation
+
+## Context
+
+The root README should present Parlando primarily as a dialogue experiment platform. Agents are important, but they should not dominate the first impression. Experiment builders also need enough implementation detail to connect Rust game types to the JavaScript client; saying that Rust structs serialize to JSON is not sufficient because the browser has to consume exact field names, enum tags, WebSocket messages, and action payloads.
+
+## Chosen Approach
+
+- Reframe the README around dialogue experiments, role-specific observations, browser protocol, voice/conversation data, persistence, and deployment.
+- Keep agents in the README as an important optional capability rather than the central product claim.
+- Add a measured comparison to adjacent platforms: Slurk, Empirica, oTree, Dallinger, jsPsych, and lab.js.
+- Describe Prolific-oriented automation as part of Parlando's scope rather than as a limitation compared with recruitment-heavy platforms.
+- Position Slurk as typed-chat-first with optional JavaScript task components, while Parlando is JavaScript-game-first with voice designed to stay out of the way.
+- Mention the planned Parlando LLM skill so readers understand that deep Rust or JavaScript knowledge should not be required for normal game development.
+- Add `docs/client-protocol.md` with concrete Rust-to-JSON naming rules, HTTP room payloads, WebSocket messages, action submission, chat messages, and TypeScript mirror-type guidance.
+
+## Tradeoffs
+
+The README comparison is necessarily selective. It points to established systems and explains fit rather than claiming universal superiority. The protocol document repeats some type information from the JavaScript package, but that duplication is useful for experiment authors who are reading GitHub-rendered docs rather than browsing source files.
+
+## Follow-Up
+
+- Keep the platform comparison current as Parlando's deployment and frontend packaging story stabilizes.
+- Update `docs/client-protocol.md` when the `@parlando/client` package API changes.

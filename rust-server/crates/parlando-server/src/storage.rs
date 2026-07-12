@@ -101,6 +101,38 @@ pub struct StoredSessionEvent {
     pub created_at: String,
 }
 
+/// Durable session summary returned by recent-game database queries.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StoredSessionSummary {
+    pub experiment_id: String,
+    pub session_id: i64,
+    pub room_id: String,
+    pub mode: String,
+    pub status: String,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub completion: Option<Value>,
+    pub participant_count: i64,
+    pub event_count: i64,
+    pub last_event_at: Option<String>,
+}
+
+/// Durable participant metadata for one session-local game appearance.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StoredSessionParticipant {
+    pub experiment_id: String,
+    pub session_id: i64,
+    pub participant_id: i64,
+    pub participant_session_id: String,
+    pub role: String,
+    pub joined_at: String,
+    pub left_at: Option<String>,
+    pub connection_status: String,
+    pub participant_kind: Option<String>,
+    pub display_name: Option<String>,
+}
+
 /// Backend-neutral storage interface centered on experiment evaluation.
 #[async_trait]
 pub trait ExperimentStore: Send + Sync {
@@ -131,6 +163,18 @@ pub trait ExperimentStore: Send + Sync {
         session_id: i64,
         event_type: Option<&str>,
     ) -> Result<Vec<StoredSessionEvent>>;
+    /// Returns recent sessions with compact aggregate metadata for inspection UIs.
+    async fn recent_sessions(
+        &self,
+        experiment_id: &str,
+        limit: i64,
+    ) -> Result<Vec<StoredSessionSummary>>;
+    /// Returns session-local participant metadata joined to durable participant records.
+    async fn session_participants(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+    ) -> Result<Vec<StoredSessionParticipant>>;
     /// Marks a session complete with an optional completion payload.
     async fn complete_session(
         &self,
@@ -339,6 +383,111 @@ impl ExperimentStore for MemoryExperimentStore {
             .collect::<Vec<_>>();
         events.sort_by_key(|event| event.event_index);
         Ok(events)
+    }
+
+    async fn recent_sessions(
+        &self,
+        experiment_id: &str,
+        limit: i64,
+    ) -> Result<Vec<StoredSessionSummary>> {
+        let inner = self.inner.read().await;
+        let mut sessions = inner
+            .sessions
+            .iter()
+            .filter(|row| row["experiment_id"].as_str() == Some(experiment_id))
+            .map(|row| {
+                let session_id = row["session_id"].as_i64().unwrap_or_default();
+                let participant_count = inner
+                    .session_participants
+                    .iter()
+                    .filter(|participant| {
+                        participant["experiment_id"].as_str() == Some(experiment_id)
+                            && participant["session_id"].as_i64() == Some(session_id)
+                    })
+                    .count() as i64;
+                let matching_events = inner
+                    .session_events
+                    .iter()
+                    .filter(|event| {
+                        event["experiment_id"].as_str() == Some(experiment_id)
+                            && event["session_id"].as_i64() == Some(session_id)
+                    })
+                    .collect::<Vec<_>>();
+                StoredSessionSummary {
+                    experiment_id: experiment_id.to_string(),
+                    session_id,
+                    room_id: row["room_id"].as_str().unwrap_or_default().to_string(),
+                    mode: row["mode"].as_str().unwrap_or_default().to_string(),
+                    status: row["status"].as_str().unwrap_or_default().to_string(),
+                    created_at: row["created_at"].as_str().unwrap_or_default().to_string(),
+                    started_at: row["started_at"].as_str().map(str::to_string),
+                    completed_at: row["completed_at"].as_str().map(str::to_string),
+                    completion: row
+                        .get("completion")
+                        .cloned()
+                        .filter(|value| !value.is_null()),
+                    participant_count,
+                    event_count: matching_events.len() as i64,
+                    last_event_at: matching_events
+                        .iter()
+                        .filter_map(|event| event["created_at"].as_str())
+                        .max()
+                        .map(str::to_string),
+                }
+            })
+            .collect::<Vec<_>>();
+        sessions.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| right.session_id.cmp(&left.session_id))
+        });
+        sessions.truncate(limit.max(0) as usize);
+        Ok(sessions)
+    }
+
+    async fn session_participants(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+    ) -> Result<Vec<StoredSessionParticipant>> {
+        let inner = self.inner.read().await;
+        let mut participants = inner
+            .session_participants
+            .iter()
+            .filter(|row| row["experiment_id"].as_str() == Some(experiment_id))
+            .filter(|row| row["session_id"].as_i64() == Some(session_id))
+            .map(|row| {
+                let participant_id = row["participant_id"].as_i64().unwrap_or_default();
+                let participant = inner.participants.iter().find(|participant| {
+                    participant["participant_id"].as_i64() == Some(participant_id)
+                });
+                StoredSessionParticipant {
+                    experiment_id: experiment_id.to_string(),
+                    session_id,
+                    participant_id,
+                    participant_session_id: row["participant_session_id"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    role: row["role"].as_str().unwrap_or_default().to_string(),
+                    joined_at: row["joined_at"].as_str().unwrap_or_default().to_string(),
+                    left_at: row["left_at"].as_str().map(str::to_string),
+                    connection_status: row["connection_status"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    participant_kind: participant
+                        .and_then(|participant| participant["participant_kind"].as_str())
+                        .map(str::to_string),
+                    display_name: participant
+                        .and_then(|participant| participant["display_name"].as_str())
+                        .map(str::to_string),
+                }
+            })
+            .collect::<Vec<_>>();
+        participants.sort_by(|left, right| left.role.cmp(&right.role));
+        Ok(participants)
     }
 
     async fn complete_session(
@@ -743,6 +892,125 @@ impl ExperimentStore for SqliteExperimentStore {
             .into_iter()
             .map(stored_event_from_sql_row)
             .collect()
+    }
+
+    async fn recent_sessions(
+        &self,
+        experiment_id: &str,
+        limit: i64,
+    ) -> Result<Vec<StoredSessionSummary>> {
+        let limit = limit.clamp(1, 500);
+        let sessions = sqlx::query_as::<
+            _,
+            (
+                String,
+                i64,
+                String,
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                i64,
+                i64,
+                Option<String>,
+            ),
+        >(
+            r#"
+            select s.experiment_id, s.session_id, s.room_id, s.mode, s.status,
+                   s.created_at, s.started_at, s.completed_at, s.completion_json,
+                   count(distinct sp.participant_id) as participant_count,
+                   count(distinct se.event_id) as event_count,
+                   max(se.created_at) as last_event_at
+            from sessions s
+            left join session_participants sp
+                on sp.experiment_id = s.experiment_id and sp.session_id = s.session_id
+            left join session_events se
+                on se.experiment_id = s.experiment_id and se.session_id = s.session_id
+            where s.experiment_id = ?
+            group by s.experiment_id, s.session_id
+            order by s.created_at desc, s.session_id desc
+            limit ?
+            "#,
+        )
+        .bind(experiment_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(|row| {
+            Ok(StoredSessionSummary {
+                experiment_id: row.0,
+                session_id: row.1,
+                room_id: row.2,
+                mode: row.3,
+                status: row.4,
+                created_at: row.5,
+                started_at: row.6,
+                completed_at: row.7,
+                completion: row
+                    .8
+                    .map(|raw| serde_json::from_str::<Value>(&raw))
+                    .transpose()?,
+                participant_count: row.9,
+                event_count: row.10,
+                last_event_at: row.11,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+        Ok(sessions)
+    }
+
+    async fn session_participants(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+    ) -> Result<Vec<StoredSessionParticipant>> {
+        let participants = sqlx::query_as::<
+            _,
+            (
+                String,
+                i64,
+                i64,
+                String,
+                String,
+                String,
+                Option<String>,
+                String,
+                Option<String>,
+                Option<String>,
+            ),
+        >(
+            r#"
+            select sp.experiment_id, sp.session_id, sp.participant_id,
+                   sp.participant_session_id, sp.role, sp.joined_at, sp.left_at,
+                   sp.connection_status, p.participant_kind, p.display_name
+            from session_participants sp
+            left join participants p on p.participant_id = sp.participant_id
+            where sp.experiment_id = ? and sp.session_id = ?
+            order by sp.role, sp.joined_at
+            "#,
+        )
+        .bind(experiment_id)
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(|row| StoredSessionParticipant {
+            experiment_id: row.0,
+            session_id: row.1,
+            participant_id: row.2,
+            participant_session_id: row.3,
+            role: row.4,
+            joined_at: row.5,
+            left_at: row.6,
+            connection_status: row.7,
+            participant_kind: row.8,
+            display_name: row.9,
+        })
+        .collect::<Vec<_>>();
+        Ok(participants)
     }
 
     async fn complete_session(

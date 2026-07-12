@@ -14,12 +14,12 @@ use axum::{
         Path, Query, State, WebSocketUpgrade,
     },
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use futures_util::{SinkExt, StreamExt as FuturesStreamExt};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, RwLock};
 use tower_http::{
@@ -361,6 +361,13 @@ where
         .route(
             "/api/rooms/:room_id/voice-diagnostics",
             post(add_voice_diagnostic::<A>),
+        )
+        .route("/admin/games", get(admin_games_page))
+        .route("/api/admin/games", get(admin_recent_games::<A>))
+        .route("/api/admin/games/:session_id", get(admin_game_detail::<A>))
+        .route(
+            "/api/admin/games/:session_id/events",
+            get(admin_game_events::<A>),
         )
         .route("/api/admin/export", get(admin_export::<A>))
         .route("/ws/game/:room_id", get(game_socket::<A>))
@@ -1382,6 +1389,223 @@ async fn add_conversation<A: GameAdapter>(
     Ok(Json(message))
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct AdminGamesQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct AdminEventsQuery {
+    after: Option<i64>,
+}
+
+/// Serves the database-backed game inspection UI.
+async fn admin_games_page() -> Html<&'static str> {
+    Html(ADMIN_GAMES_HTML)
+}
+
+/// Returns recent database sessions for the game inspection UI.
+async fn admin_recent_games<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Query(query): Query<AdminGamesQuery>,
+) -> Result<Json<Value>, AppError> {
+    let games = state
+        .store
+        .recent_sessions(&state.experiment_id, query.limit.unwrap_or(50))
+        .await?;
+    Ok(Json(json!({
+        "experiment_id": state.experiment_id,
+        "games": games,
+    })))
+}
+
+/// Returns one database session's metadata and important event timeline.
+async fn admin_game_detail<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Path(session_id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let exported = state
+        .store
+        .export_session(&state.experiment_id, session_id)
+        .await?;
+    let session = exported["sessions"]
+        .as_array()
+        .and_then(|sessions| sessions.first())
+        .cloned()
+        .ok_or_else(|| AppError::not_found("Game session not found."))?;
+    let participants = state
+        .store
+        .session_participants(&state.experiment_id, session_id)
+        .await?;
+    let events = important_admin_events(
+        state
+            .store
+            .session_events(&state.experiment_id, session_id, None)
+            .await?,
+    );
+    Ok(Json(json!({
+        "experiment_id": state.experiment_id,
+        "session": session,
+        "participants": participants,
+        "events": events,
+    })))
+}
+
+/// Returns important database events after an optional event index.
+async fn admin_game_events<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Path(session_id): Path<i64>,
+    Query(query): Query<AdminEventsQuery>,
+) -> Result<Json<Value>, AppError> {
+    let after = query.after.unwrap_or(0);
+    let events = state
+        .store
+        .session_events(&state.experiment_id, session_id, None)
+        .await?
+        .into_iter()
+        .filter(|event| event.event_index > after)
+        .collect::<Vec<_>>();
+    Ok(Json(json!({
+        "experiment_id": state.experiment_id,
+        "session_id": session_id,
+        "events": important_admin_events(events),
+    })))
+}
+
+/// Builds a compact timeline from durable events that matter during monitoring.
+fn important_admin_events(events: Vec<crate::storage::StoredSessionEvent>) -> Vec<Value> {
+    events
+        .into_iter()
+        .filter(is_important_admin_event)
+        .map(admin_event_summary)
+        .collect()
+}
+
+/// Returns whether a stored event should appear in the admin game monitor.
+fn is_important_admin_event(event: &crate::storage::StoredSessionEvent) -> bool {
+    matches!(
+        event.event_type.as_str(),
+        "agent_action"
+            | "conversation_message"
+            | "game_action_accepted"
+            | "game_action_rejected"
+            | "game_action_submitted"
+            | "participant_connected"
+            | "participant_disconnected"
+            | "participant_joined"
+            | "ready"
+            | "session_completed"
+            | "session_created"
+            | "transcript_segment"
+            | "voice_diagnostic"
+    )
+}
+
+/// Converts one durable event row into UI-oriented metadata without game-specific types.
+fn admin_event_summary(event: crate::storage::StoredSessionEvent) -> Value {
+    let payload = event.payload.clone();
+    let title = admin_event_title(&event.event_type, &payload);
+    let text = admin_event_text(&event.event_type, &payload);
+    let detail = admin_event_detail(&event.event_type, &payload);
+    let raw = json!({
+        "event_id": event.event_id,
+        "experiment_id": event.experiment_id,
+        "session_id": event.session_id,
+        "event_index": event.event_index,
+        "event_type": event.event_type,
+        "actor_participant_id": event.actor_participant_id,
+        "actor_role": event.actor_role,
+        "payload": payload,
+        "game_state": event.game_state,
+        "created_at": event.created_at,
+    });
+    json!({
+        "event_id": raw["event_id"],
+        "event_index": raw["event_index"],
+        "event_type": raw["event_type"],
+        "actor_participant_id": raw["actor_participant_id"],
+        "actor_role": raw["actor_role"],
+        "created_at": raw["created_at"],
+        "title": title,
+        "text": text,
+        "detail": detail,
+        "raw": raw,
+    })
+}
+
+/// Produces a human-readable title for one admin timeline event.
+fn admin_event_title(event_type: &str, payload: &Value) -> &'static str {
+    match event_type {
+        "agent_action" => "Agent action",
+        "conversation_message" => match payload.get("origin").and_then(Value::as_str) {
+            Some("voice_transcript") => "Transcription result",
+            Some("agent") => "Agent message",
+            _ => "Conversation message",
+        },
+        "game_action_accepted" => "Action accepted",
+        "game_action_rejected" => "Action rejected",
+        "game_action_submitted" => "Action submitted",
+        "participant_connected" => "Participant connected",
+        "participant_disconnected" => "Participant disconnected",
+        "participant_joined" => "Participant joined",
+        "ready" => "Participant ready",
+        "session_completed" => "Session completed",
+        "session_created" => "Session created",
+        "transcript_segment" => "Transcript segment",
+        "voice_diagnostic" => "Voice diagnostic",
+        _ => "Event",
+    }
+}
+
+/// Extracts the primary readable text from one admin timeline event.
+fn admin_event_text(event_type: &str, payload: &Value) -> Option<String> {
+    match event_type {
+        "conversation_message" | "transcript_segment" => payload
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "game_action_accepted" | "game_action_submitted" | "agent_action" => payload
+            .get("action")
+            .map(compact_json)
+            .or_else(|| Some(compact_json(payload))),
+        "game_action_rejected" => payload
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
+/// Keeps compact structured details for one admin timeline event.
+fn admin_event_detail(event_type: &str, payload: &Value) -> Value {
+    match event_type {
+        "conversation_message" => json!({
+            "origin": payload.get("origin"),
+            "sender_role": payload.get("sender_role"),
+            "metadata": payload.get("metadata"),
+        }),
+        "transcript_segment" => json!({
+            "player": payload.get("player"),
+            "start_time_ms": payload.get("start_time_ms"),
+            "end_time_ms": payload.get("end_time_ms"),
+            "metadata": payload.get("metadata"),
+        }),
+        "game_action_accepted" => json!({
+            "action": payload.get("action"),
+            "events": payload.get("events"),
+        }),
+        "game_action_submitted" | "agent_action" => json!({
+            "action": payload.get("action"),
+        }),
+        _ => payload.clone(),
+    }
+}
+
+/// Serializes JSON into a stable one-line string for timeline labels.
+fn compact_json(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
+}
+
 async fn admin_export<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
 ) -> Result<Json<Value>, AppError>
@@ -1392,6 +1616,267 @@ where
         state.store.export_experiment(&state.experiment_id).await?,
     ))
 }
+
+const ADMIN_GAMES_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Parlando Games</title>
+  <style>
+    :root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #182026; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; }
+    button { font: inherit; }
+    .shell { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); min-height: 100vh; }
+    .sidebar { border-right: 1px solid #dde2e7; background: #fff; padding: 18px; overflow: auto; }
+    .main { padding: 24px; overflow: auto; }
+    .topline { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+    h1 { font-size: 22px; line-height: 1.2; margin: 0; }
+    h2 { font-size: 18px; margin: 0 0 12px; }
+    .muted { color: #65717c; }
+    .small { font-size: 12px; }
+    .refresh { border: 1px solid #c9d2da; background: #fff; border-radius: 6px; padding: 7px 10px; cursor: pointer; }
+    .refresh:hover { background: #f0f4f7; }
+    .game-list { display: grid; gap: 8px; }
+    .game { width: 100%; text-align: left; border: 1px solid #d9e0e6; border-radius: 8px; background: #fff; padding: 12px; cursor: pointer; }
+    .game:hover, .game.active { border-color: #2773a8; background: #f2f8fc; }
+    .game strong { display: block; color: #151b20; margin-bottom: 4px; overflow-wrap: anywhere; }
+    .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .pill { border: 1px solid #d7dee5; border-radius: 999px; padding: 3px 8px; background: #fff; color: #44515c; font-size: 12px; }
+    .panel { background: #fff; border: 1px solid #dce2e8; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .label { font-size: 12px; color: #66737f; margin-bottom: 4px; }
+    .value { font-weight: 650; overflow-wrap: anywhere; }
+    .participants { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .participant { border: 1px solid #dde4ea; border-radius: 8px; padding: 12px; background: #fbfcfd; display: flex; align-items: center; gap: 12px; }
+    .participant-body { min-width: 0; }
+    .timeline { display: grid; gap: 8px; }
+    .event { border-left: 4px solid #9bb6c8; background: #fff; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 0 rgba(20, 34, 45, 0.05); }
+    .event.action { border-left-color: #287a5c; }
+    .event.transcript { border-left-color: #8b5a20; }
+    .event.error { border-left-color: #b42318; }
+    .event-line { display: grid; grid-template-columns: auto minmax(140px, 1fr) minmax(0, 2fr) auto; align-items: center; gap: 10px; }
+    .role-badge { align-items: center; border-radius: 6px; display: inline-flex; font-weight: 800; height: 28px; justify-content: center; min-width: 28px; padding: 0 8px; }
+    .role-a { background: #dceef8; color: #135276; }
+    .role-b { background: #faead1; color: #73480d; }
+    .role-system { background: #e8edf2; color: #4c5964; font-size: 11px; letter-spacing: 0.02em; }
+    .event-main { min-width: 0; }
+    .event-meta { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 210px; }
+    .event-title { font-weight: 700; }
+    .event-text { color: #252f38; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .event-text:empty { display: none; }
+    .expand { border: 1px solid #c9d2da; background: #fff; border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 12px; line-height: 1.2; }
+    .expand:hover { background: #f0f4f7; }
+    .event-json { white-space: pre-wrap; overflow-wrap: anywhere; background: #f5f7f9; border-radius: 6px; padding: 10px; margin: 10px 0 0; font-size: 12px; }
+    .event-json[hidden] { display: none; }
+    .empty { padding: 28px; text-align: center; color: #66737f; }
+    @media (max-width: 860px) {
+      .shell { grid-template-columns: 1fr; }
+      .sidebar { border-right: 0; border-bottom: 1px solid #dde2e7; max-height: 44vh; }
+      .grid, .participants { grid-template-columns: 1fr; }
+      .event-line { grid-template-columns: auto minmax(0, 1fr) auto; }
+      .event-text { grid-column: 2 / -1; }
+      .event-meta { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="topline">
+        <h1>Recent Games</h1>
+        <button class="refresh" id="refreshGames" title="Refresh games">Refresh</button>
+      </div>
+      <div id="gameList" class="game-list"><div class="empty">Loading games...</div></div>
+    </aside>
+    <main class="main">
+      <section class="panel" id="summary"><div class="empty">Select a game to inspect metadata and events.</div></section>
+      <section class="panel">
+        <h2>Players</h2>
+        <div id="participants" class="participants"><div class="muted">No game selected.</div></div>
+      </section>
+      <section>
+        <div class="topline">
+          <h2>Important Events</h2>
+          <span id="liveStatus" class="muted small">Idle</span>
+        </div>
+        <div id="timeline" class="timeline"></div>
+      </section>
+    </main>
+  </div>
+  <script>
+    const state = { games: [], selected: null, lastEventIndex: 0, timer: null };
+    const gameList = document.getElementById('gameList');
+    const summary = document.getElementById('summary');
+    const participants = document.getElementById('participants');
+    const timeline = document.getElementById('timeline');
+    const liveStatus = document.getElementById('liveStatus');
+
+    function fmtTime(value) {
+      if (!value) return '-';
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+
+    function renderGames() {
+      if (!state.games.length) {
+        gameList.innerHTML = '<div class="empty">No games in this experiment yet.</div>';
+        return;
+      }
+      gameList.innerHTML = state.games.map(game => `
+        <button class="game ${state.selected === game.session_id ? 'active' : ''}" data-session="${game.session_id}">
+          <strong>#${game.session_id} ${escapeHtml(game.room_id)}</strong>
+          <span class="muted small">${escapeHtml(fmtTime(game.created_at))}</span>
+          <span class="meta">
+            <span class="pill">${escapeHtml(game.status)}</span>
+            <span class="pill">${game.participant_count} players</span>
+            <span class="pill">${game.event_count} events</span>
+          </span>
+        </button>
+      `).join('');
+      gameList.querySelectorAll('.game').forEach(button => {
+        button.addEventListener('click', () => selectGame(Number(button.dataset.session)));
+      });
+    }
+
+    async function loadGames() {
+      const response = await fetch('/api/admin/games?limit=80');
+      const data = await response.json();
+      state.games = data.games || [];
+      renderGames();
+      if (!state.selected && state.games[0]) selectGame(state.games[0].session_id);
+    }
+
+    async function selectGame(sessionId) {
+      state.selected = sessionId;
+      state.lastEventIndex = 0;
+      renderGames();
+      clearInterval(state.timer);
+      liveStatus.textContent = 'Loading';
+      const response = await fetch(`/api/admin/games/${sessionId}`);
+      const data = await response.json();
+      renderSummary(data.session);
+      renderParticipants(data.participants || []);
+      timeline.innerHTML = '';
+      appendEvents(data.events || []);
+      state.timer = setInterval(refreshEvents, 1500);
+      liveStatus.textContent = 'Live refresh on';
+    }
+
+    function renderSummary(session) {
+      summary.innerHTML = `
+        <h2>Game #${escapeHtml(session.session_id)}</h2>
+        <div class="grid">
+          <div><div class="label">Room</div><div class="value">${escapeHtml(session.room_id)}</div></div>
+          <div><div class="label">Mode</div><div class="value">${escapeHtml(session.mode)}</div></div>
+          <div><div class="label">Status</div><div class="value">${escapeHtml(session.status)}</div></div>
+          <div><div class="label">Created</div><div class="value">${escapeHtml(fmtTime(session.created_at))}</div></div>
+        </div>
+      `;
+    }
+
+    function renderParticipants(rows) {
+      participants.innerHTML = rows.length ? rows.map(row => `
+        <div class="participant">
+          ${roleBadge(row.role)}
+          <div class="participant-body">
+            <div class="value">${escapeHtml(row.display_name || row.participant_session_id)}</div>
+            <div class="meta">
+              <span class="pill">${escapeHtml(row.connection_status)}</span>
+              <span class="pill">${escapeHtml(row.participant_kind || 'participant')}</span>
+            </div>
+          </div>
+        </div>
+      `).join('') : '<div class="muted">No players recorded.</div>';
+    }
+
+    function eventClass(event) {
+      if (event.event_type.includes('rejected')) return 'error';
+      if (event.event_type.includes('action')) return 'action';
+      if (event.event_type.includes('transcript') || event.detail?.origin === 'voice_transcript') return 'transcript';
+      return '';
+    }
+
+    // Returns the event's participant role when the durable row exposes one.
+    function eventRole(event) {
+      return event.actor_role || event.detail?.player || event.detail?.sender_role || event.detail?.role || '';
+    }
+
+    // Renders compact participant role markers for rows and event timeline entries.
+    function roleBadge(role) {
+      const normalized = role === 'A' || role === 'B' ? role : '';
+      if (!normalized) return '<span class="role-badge role-system">SYS</span>';
+      return `<span class="role-badge role-${normalized.toLowerCase()}">${escapeHtml(normalized)}</span>`;
+    }
+
+    // Returns only extra event text that is not already implied by the title and badge.
+    function eventSummary(event) {
+      if (event.text) return event.text;
+      if (event.event_type === 'voice_diagnostic' && event.detail?.event) return event.detail.event;
+      if (event.event_type.includes('action') && event.detail?.action) return JSON.stringify(event.detail.action);
+      return '';
+    }
+
+    function appendEvents(events) {
+      for (const event of events) {
+        state.lastEventIndex = Math.max(state.lastEventIndex, event.event_index);
+        const jsonId = `event-json-${event.event_id}-${event.event_index}`;
+        const rawJson = JSON.stringify(event.raw || event, null, 2);
+        const summary = eventSummary(event);
+        timeline.insertAdjacentHTML('beforeend', `
+          <article class="event ${eventClass(event)}">
+            <div class="event-line">
+              ${roleBadge(eventRole(event))}
+              <div class="event-main">
+                <span class="event-title">${escapeHtml(event.title)}</span>
+                <span class="muted small">#${event.event_index}</span>
+              </div>
+              <div class="event-text">${escapeHtml(summary)}</div>
+              <div class="event-meta">
+                <span class="muted small">${escapeHtml(fmtTime(event.created_at))}</span>
+                <button class="expand" type="button" aria-expanded="false" aria-controls="${jsonId}" data-target="${jsonId}">JSON</button>
+              </div>
+            </div> 
+            <pre class="event-json" id="${jsonId}" hidden>${escapeHtml(rawJson)}</pre>
+          </article>
+        `);
+      }
+      if (!timeline.children.length) timeline.innerHTML = '<div class="empty">No important events recorded yet.</div>';
+    }
+
+    async function refreshEvents() {
+      if (!state.selected) return;
+      const response = await fetch(`/api/admin/games/${state.selected}/events?after=${state.lastEventIndex}`);
+      const data = await response.json();
+      const empty = timeline.querySelector('.empty');
+      if (empty && data.events?.length) empty.remove();
+      appendEvents(data.events || []);
+      liveStatus.textContent = `Last checked ${new Date().toLocaleTimeString()}`;
+    }
+
+    document.getElementById('refreshGames').addEventListener('click', loadGames);
+    timeline.addEventListener('click', event => {
+      const button = event.target.closest('.expand');
+      if (!button) return;
+      const panel = document.getElementById(button.dataset.target);
+      if (!panel) return;
+      const expanded = button.getAttribute('aria-expanded') === 'true';
+      button.setAttribute('aria-expanded', String(!expanded));
+      button.textContent = expanded ? 'JSON' : 'Hide';
+      panel.hidden = expanded;
+    });
+    loadGames().catch(error => {
+      gameList.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+    });
+  </script>
+</body>
+</html>
+"#;
 
 async fn game_socket<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
@@ -4099,6 +4584,101 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event["event_type"] == "voice_diagnostic"));
+    }
+
+    #[tokio::test]
+    async fn admin_games_api_reads_actions_and_transcripts_from_database() {
+        let (config, _temp) = sqlite_config();
+        let router = build_router(TinyAdapter, config, ServeOptions::default())
+            .await
+            .unwrap();
+        let (a, b, room_id) = create_joined_room(router.clone()).await;
+        let (base_url, server) = spawn_test_server(router.clone()).await;
+        let host = base_url.trim_start_matches("http://");
+        let (mut socket_a, _) = connect_async(format!(
+            "ws://{host}/ws/game/{room_id}?participantSessionId={a}"
+        ))
+        .await
+        .unwrap();
+        let (mut socket_b, _) = connect_async(format!(
+            "ws://{host}/ws/game/{room_id}?participantSessionId={b}"
+        ))
+        .await
+        .unwrap();
+        let _assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
+        let _assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await;
+
+        send_ws_json(
+            &mut socket_a,
+            json!({"type": "submitAction", "action": {"finish": false}}),
+        )
+        .await;
+        let _state_a = read_ws_type(&mut socket_a, "stateChanged").await;
+        let _state_b = read_ws_type(&mut socket_b, "stateChanged").await;
+        let (transcript_status, _transcript) = json_request(
+            router.clone(),
+            http::Method::POST,
+            &format!("/api/rooms/{room_id}/transcripts"),
+            json!({
+                "participant_session_id": a,
+                "player": "A",
+                "start_time_ms": 10,
+                "end_time_ms": 40,
+                "text": "admin-visible transcript",
+                "metadata": {"confidence": 0.95}
+            }),
+        )
+        .await;
+        assert_eq!(transcript_status, StatusCode::OK);
+
+        let (games_status, games) = json_request(
+            router.clone(),
+            http::Method::GET,
+            "/api/admin/games",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(games_status, StatusCode::OK);
+        let session_id = games["games"][0]["session_id"].as_i64().unwrap();
+        assert!(games["games"][0]["event_count"].as_i64().unwrap() >= 8);
+
+        let (detail_status, detail) = json_request(
+            router.clone(),
+            http::Method::GET,
+            &format!("/api/admin/games/{session_id}"),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(detail_status, StatusCode::OK);
+        assert_eq!(detail["participants"].as_array().unwrap().len(), 2);
+        let events = detail["events"].as_array().unwrap();
+        assert!(events.iter().any(|event| {
+            event["event_type"] == "game_action_accepted"
+                && event["text"].as_str().unwrap().contains("\"finish\":false")
+        }));
+        assert!(events.iter().any(|event| {
+            event["event_type"] == "transcript_segment"
+                && event["text"] == "admin-visible transcript"
+        }));
+
+        let after_action = events
+            .iter()
+            .find(|event| event["event_type"] == "game_action_accepted")
+            .and_then(|event| event["event_index"].as_i64())
+            .unwrap();
+        let (poll_status, poll) = json_request(
+            router,
+            http::Method::GET,
+            &format!("/api/admin/games/{session_id}/events?after={after_action}"),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(poll_status, StatusCode::OK);
+        assert!(poll["events"].as_array().unwrap().iter().any(|event| {
+            event["event_type"] == "transcript_segment"
+                && event["text"] == "admin-visible transcript"
+        }));
+        server.abort();
     }
 
     #[tokio::test]
