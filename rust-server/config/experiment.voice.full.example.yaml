@@ -1,0 +1,43 @@
+# Full voice-service example for Parlando games.
+#
+# Copy the relevant values into a generated game's private voice overlay, for
+# example `config/experiment.voice.private.yaml`, or into the deployment secret
+# file. Do not commit real credentials.
+#
+# This file intentionally documents configuration only. The Parlando Rust server
+# and browser SDK own the LiveKit, Speechmatics, and ElevenLabs runtime behavior.
+
+livekit:
+  enabled: true
+  # LiveKit Cloud project URL, for example: wss://example.livekit.cloud
+  url: ${LIVEKIT_URL}
+  api_key: ${LIVEKIT_API_KEY}
+  api_secret: ${LIVEKIT_API_SECRET}
+
+speechmatics:
+  enabled: true
+  api_key: ${SPEECHMATICS_API_KEY}
+  realtime_url: wss://eu.rt.speechmatics.com/v2
+  management_url: https://mp.speechmatics.com/v1/api_keys
+  temporary_key_ttl_seconds: 60
+  max_delay: 2.0
+  enable_partials: true
+  end_of_utterance_silence_trigger: 1.2
+
+transcription:
+  enabled: true
+  provider: speechmatics
+  model: enhanced
+  language: en
+  worker_autostart: true
+  store_audio: false
+
+tts:
+  enabled: true
+  provider: elevenlabs
+  model: eleven_flash_v2_5
+  voice_id: ${ELEVENLABS_VOICE_ID}
+  voice_name: Agent Voice
+  api_key: ${ELEVENLABS_API_KEY}
+  output_format: pcm_16000
+  worker_autostart: true

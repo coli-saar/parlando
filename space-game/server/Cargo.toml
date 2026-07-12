@@ -8,10 +8,10 @@ version = "0.1.0"
 anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
-# Default for this monorepo demo: use the checked-out Parlando server crate.
-parlando-server = { path = "../../rust-server" }
-# External games normally use the released registry package instead:
-# parlando-server = "0.1.0"
+# Default for this registry smoke test: use the released Parlando server crate.
+parlando-server = "0.1.0"
+# Monorepo demos can use the checked-out Parlando server crate instead:
+# parlando-server = { path = "../../rust-server" }
 # To debug a local Parlando checkout from another game repo, temporarily use
 # an absolute local path and do not commit it:
 # parlando-server = { path = "/absolute/path/to/parlando/rust-server" }

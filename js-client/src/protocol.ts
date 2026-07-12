@@ -50,6 +50,8 @@ export interface RoomResponse<TState = unknown, TObservation = TState, TAction =
   conversation?: ConversationMessage[];
 }
 
+export type RoomMode = "direct" | string;
+
 export interface MatchmakingResponse<TState = unknown, TObservation = TState, TAction = unknown, TEvent = unknown> {
   status: "waiting" | "matched";
   participant_session_id: string;
@@ -178,6 +180,20 @@ export class ExperimentApiClient {
 
   submitConsent(participantSessionId: string, decisions: Record<string, boolean>): Promise<void> {
     return this.post("/api/consent", { participant_session_id: participantSessionId, decisions });
+  }
+
+  createRoom<TState = unknown, TObservation = TState, TAction = unknown, TEvent = unknown>(
+    participantSessionId: string,
+    mode: RoomMode = "direct"
+  ): Promise<RoomResponse<TState, TObservation, TAction, TEvent>> {
+    return this.post("/api/rooms", { participant_session_id: participantSessionId, mode });
+  }
+
+  joinRoom<TState = unknown, TObservation = TState, TAction = unknown, TEvent = unknown>(
+    roomId: string,
+    participantSessionId: string
+  ): Promise<RoomResponse<TState, TObservation, TAction, TEvent>> {
+    return this.post(`/api/rooms/${roomId}/join`, { participant_session_id: participantSessionId });
   }
 
   enterMatchmaking<TState = unknown, TObservation = TState, TAction = unknown, TEvent = unknown>(

@@ -28,6 +28,8 @@ import { VoiceStatusChip } from "@coli-saar/parlando-client/react";
 
 The root entrypoint contains protocol types, API helpers, WebSocket helpers, audio-session controller classes, microphone helpers, and non-React utility functions. Optional integration-specific code is exported from subpaths so consumers can import only the pieces they need.
 
+For voice-enabled games, create or join a room before rendering the readiness waiting room. `ExperimentApiClient.createRoom(...)` returns a `room_id` for Player A immediately, and `ExperimentApiClient.joinRoom(...)` adds Player B to that existing room. Once the client has `room_id` and `participant_session_id`, it can open the room WebSocket and request `/api/rooms/{room_id}/audio-session` while the UI still shows Player A, Player B, and STT readiness. Plain matchmaking can return `status: "waiting"` without a `room_id`, so do not use that no-room queue state as the voice waiting room.
+
 ## Speech configuration
 
 The SDK does not configure LiveKit, Speechmatics, or TTS services directly. A game client reads public capability information from `/api/config`, then requests room-specific audio credentials from `/api/rooms/{room_id}/audio-session`. The Rust server owns provider selection, private API keys, token minting, temporary Speechmatics keys, and TTS voice settings.

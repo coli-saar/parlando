@@ -28,6 +28,7 @@ export {
   type MatchmakingResponse,
   type ParticipantCreateResponse,
   type PublicConfigResponse,
+  type RoomMode,
   type RoomResponse,
   type ServerMessage,
   type TranscriptSegmentInput,

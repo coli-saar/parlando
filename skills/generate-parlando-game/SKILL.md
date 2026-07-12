@@ -1,27 +1,30 @@
 ---
 name: generate-parlando-game
-description: Generate complete Parlando dialogue games from a study/game description, including the Rust GameAdapter crate, JavaScript or React browser client, config files, build files, tests, and run/deploy instructions. Use when a user wants to create, scaffold, port, or iterate on a Parlando game using the rust-server and js-client packages.
+description: Generate complete Parlando dialogue games from a study/game description, including the Rust GameAdapter crate, JavaScript or React browser client, config files, build files, tests, and run/deploy instructions. Use when a user wants to create, scaffold, port, or iterate on a Parlando game using the published parlando-server and @coli-saar/parlando-client packages.
 ---
 
 # Generate Parlando Game
 
-Use this skill to turn a game or experiment idea into a working Parlando game. Assume normal generated game projects depend on released registry packages: `parlando-server` from crates.io and `@coli-saar/parlando-client` from npm. Do not make generated game projects depend on sibling `rust-server` or `js-client` source directories unless the user is explicitly working inside the Parlando monorepo or asks for a temporary local debug override. Prefer the user's target repository layout, but generate a complete, runnable project when no layout exists.
-
-Global docs may be referenced at:
-
-- https://github.com/coli-saar/parlando
-- https://github.com/coli-saar/parlando/tree/main/docs
-
-If the local Parlando docs are present, prefer them over GitHub because they match the checked-out package versions.
+Use this skill to turn a game or experiment idea into a working Parlando game. Generated game projects depend on the published registry packages: `parlando-server` from crates.io and `@coli-saar/parlando-client` from npm. Prefer the user's target repository layout, but generate a complete, runnable project when no layout exists.
 
 ## Reference Scan
 
-Before generating code in a Parlando checkout, read the relevant local files:
+Before generating code, read the bundled references that match the requested game:
 
-- `docs/building-games.md` for the adapter contract and game design checklist
-- `docs/client-protocol.md` for browser JSON and WebSocket message shapes
-- `docs/running-and-deployment.md` for config, local run, Docker, and Render conventions
-- `space-game/server/` and `space-game/` for a complete example, when present
+- `references/server-adapter.md` for the Rust `GameAdapter`, server binary, manifest, and test shape.
+- `references/browser-client.md` for JSON naming, HTTP flow, WebSocket messages, actions, and React client wiring.
+- `references/config-deployment.md` for experiment YAML, local run, Docker, and Render conventions.
+- `references/agents.md` only when the game needs human-vs-agent, an in-process Rust agent, or remote gRPC agents.
+
+These references are intended to be sufficient for normal game generation. Do not browse or search GitHub documentation for Parlando game-generation details; if the bundled references do not cover something needed for a game, stop and report the missing topic so the skill can be updated.
+
+## Package Versions
+
+Use the latest published Parlando package versions when generating manifests:
+
+- Query crates.io with `cargo info parlando-server` or an equivalent registry lookup, then set `parlando-server = "<latest-version>"`.
+- Query npm with `npm view @coli-saar/parlando-client version` or an equivalent registry lookup, then set `"@coli-saar/parlando-client": "^<latest-version>"`.
+- If network access is unavailable, fall back to `parlando-server = "0.1.0"` and `"@coli-saar/parlando-client": "^0.1.0"`, and say in the final response that the latest versions could not be checked.
 
 ## First Questions
 
@@ -78,20 +81,11 @@ Generate both halves of the game and all build/run files:
                 `-- stateEngine.test.ts
 ```
 
-If contributing inside the Parlando monorepo, instead mirror the existing demo shape:
-
-- add a Rust crate under `<game-slug>/server`
-- depend on the reusable server crate with an appropriate local path to `rust-server`
-- add a browser app under `<game-slug>/client`
-- include game-local `Makefile`, `config/`, and client source
-
-Outside the monorepo, treat the generated game as a registry-package consumer:
+Treat the generated game as a registry-package consumer:
 
 - install the generated Rust game server binary with `cargo install --path server --root .local` or an equivalent Cargo install command
 - put `.local/bin` on `PATH` when running locally
-- depend on `parlando-server` and `@coli-saar/parlando-client` by released package version
-- avoid `../rust-server` and `../js-client` path assumptions
-- document temporary absolute local path overrides only for debugging Parlando itself
+- depend on the latest published `parlando-server` and `@coli-saar/parlando-client` versions
 
 ## Rust Contract
 
@@ -167,8 +161,11 @@ Use `@coli-saar/parlando-client` for setup, WebSocket, actions, audio-session st
 
 The browser must handle:
 
-- initial setup/direct entry or room creation
-- waiting for partner/role assignment
+- setup screen with display name, consent items, and microphone preparation when voice is enabled
+- room-backed waiting room readiness board with visible rows/cards for Player A, Player B/agent, and STT/voice when voice is enabled; missing participants must be shown as waiting/not connected
+- direct room create/join before the waiting room for voice-enabled human-vs-human games, so the first player has a `roomId` while waiting for the second player
+- immediate audio-session/STT initialization from the waiting room as soon as the first player has `roomId` and `participantSessionId`; do not wait for Player B and do not wait for the game screen
+- game screen only after role assignment and required readiness gates
 - `roleAssigned`
 - `stateChanged`
 - `conversationMessageAdded`
@@ -184,11 +181,13 @@ Generate `config/experiment.local.yaml` with:
 
 - local experiment id
 - `direct.enabled: true`
-- room codes and/or matchmaking
+- direct room create/join for voice-enabled games; room codes and/or matchmaking only when appropriate for the requested study flow
 - `server.public_base_url: http://localhost:8000`
 - `server.client_dist_path: client/dist`
 - local SQLite under `.local/`
 - voice, transcription, and TTS disabled unless requested
+- when voice is requested, full-stack LiveKit, Speechmatics, and ElevenLabs fields via a private overlay
+- consent items under `direct.require_consent` and `direct.consents`, and make the setup UI display them
 - conversation enabled by default
 
 Generate `config/experiment.render.example.yaml` with:
@@ -202,8 +201,8 @@ Generate `config/experiment.render.example.yaml` with:
 
 Generate:
 
-- Rust `Cargo.toml` using the released Parlando server crate version, plus `anyhow`, `clap`, `serde`, `serde_json`, `tokio`, `tracing-subscriber`, and optional `async-trait`/`rand`. Use a workspace path only when generating inside the Parlando monorepo. If the user asks for local Parlando debugging, show an absolute-path replacement as a temporary non-release edit.
-- client `package.json` using `@coli-saar/parlando-client`, React, Vite, TypeScript, and Vitest. Keep the dependency version normal. If the user asks for local Parlando debugging, document `npm install --no-save file:/absolute/path/to/parlando/js-client` after building `js-client`.
+- Rust `Cargo.toml` using the latest published `parlando-server` crate version, plus `anyhow`, `clap`, `serde`, `serde_json`, `tokio`, `tracing-subscriber`, and optional `async-trait`/`rand`.
+- client `package.json` using the latest published `@coli-saar/parlando-client` npm package version, React, Vite, TypeScript, and Vitest.
 - client-local `vite.config.ts`, `tsconfig.json`, and `index.html`
 - `Makefile` targets for `check-client-package`, `install-client-deps`, `install-server`, `build-client`, `build`, `test`, `run`, and `clean`
 - Dockerfile and Render config when the user asks for deployable output, or when deployment is part of the prompt
@@ -232,5 +231,9 @@ End with:
 - files/directories created or changed
 - commands run and whether they passed
 - exact local run command
+- exact config YAML path to edit for local settings, and if voice/TTS/transcription is enabled, the private YAML/secret path that should hold LiveKit, Speechmatics, and ElevenLabs values
 - deployment notes for the requested target
+- agent run commands when generating a Rust or Python gRPC agent
+- confirmation that the client follows setup screen -> waiting room -> game
+- confirmation that voice-enabled clients create/join a room before the waiting room, never treat a no-room matchmaking queue as the waiting room, and start Speechmatics/STT immediately after room creation/join
 - assumptions made about the game design or package layout
