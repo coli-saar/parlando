@@ -7,6 +7,7 @@ use anyhow::Result;
 use clap::Parser;
 use parlando_server::{serve, ExperimentConfig, LiveKitAgentAudioPublisher, ServeOptions};
 use parlando_space_game::{agents::factory_from_config, SpaceGameAdapter};
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 #[derive(Debug, Parser)]
@@ -58,8 +59,56 @@ async fn main() -> Result<()> {
         ServeOptions {
             agent_factory,
             audio_publisher,
+            game_version_manifest: Some(space_game_version_manifest()),
             ..ServeOptions::default()
         },
     )
     .await
+}
+
+fn space_game_version_manifest() -> Value {
+    let cargo_toml = include_str!("../Cargo.toml");
+    let client_package = include_str!("../../client/package.json");
+    let local_warnings = local_dependency_warnings(env!("CARGO_MANIFEST_DIR"), cargo_toml);
+    let client_package_json: Value = serde_json::from_str(client_package).unwrap_or(Value::Null);
+    json!({
+        "name": env!("CARGO_PKG_NAME"),
+        "version": env!("CARGO_PKG_VERSION"),
+        "build_time": option_env!("PARLANDO_SPACE_GAME_BUILD_TIME"),
+        "git_sha": option_env!("PARLANDO_SPACE_GAME_GIT_SHA"),
+        "git_dirty": option_env!("PARLANDO_SPACE_GAME_GIT_DIRTY").unwrap_or("unknown"),
+        "client": {
+            "name": client_package_json.get("name").and_then(Value::as_str).unwrap_or("parlando-space-game-client"),
+            "version": client_package_json.get("version").and_then(Value::as_str).unwrap_or("unknown"),
+            "build_time": option_env!("PARLANDO_SPACE_GAME_BUILD_TIME"),
+            "git_sha": option_env!("PARLANDO_SPACE_GAME_GIT_SHA"),
+            "git_dirty": option_env!("PARLANDO_SPACE_GAME_GIT_DIRTY").unwrap_or("unknown"),
+            "package": "@coli-saar/parlando-client",
+            "package_version": client_package_json
+                .get("dependencies")
+                .and_then(|deps| deps.get("@coli-saar/parlando-client"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+        },
+        "local_dependency_warnings": local_warnings,
+        "warnings": local_warnings,
+    })
+}
+
+fn local_dependency_warnings(manifest_dir: &str, cargo_toml: &str) -> Vec<Value> {
+    cargo_toml
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.starts_with('#') && trimmed.contains("path") && trimmed.contains('=')
+        })
+        .map(|line| {
+            json!({
+                "level": "warning",
+                "message": "Game is linked against a local development dependency; use a published package or pinned Git revision for reproducibility.",
+                "manifest_dir": manifest_dir,
+                "dependency": line.trim(),
+            })
+        })
+        .collect()
 }

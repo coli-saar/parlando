@@ -36,7 +36,7 @@ Use the generate-parlando-game skill to scaffold a Parlando negotiation game wit
 
 - Parlando's Rust server support is installed with Cargo.
 - The generated game server is installed locally with Cargo, for example into `.local/bin`.
-- `js-client` has been published into the local yalc store as `@parlando/client`.
+- `@coli-saar/parlando-client` is available from npm, or the local `js-client` checkout has been built for a temporary path-based debug install.
 - Local Parlando docs may be present in `docs/`; otherwise the skill can reference the GitHub docs at https://github.com/coli-saar/parlando.
 
 The generated game should include local run instructions and deployment notes for the target you request.

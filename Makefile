@@ -4,6 +4,7 @@ PARLANDO_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
 RUST_SERVER_DIR := $(PARLANDO_DIR)/rust-server
 JS_CLIENT_DIR := $(PARLANDO_DIR)/js-client
+NPM_CACHE ?= $(PARLANDO_DIR)/.local/npm-cache
 
 .PHONY: all install-local install-js-client package-local package-rust-server-local package-js-client-local publish-dry-run publish-rust-server-dry-run publish-js-client-dry-run publish-rust-server publish-js-client
 
@@ -13,10 +14,10 @@ all: install-local
 # Install all top-level local dependencies.
 install-local: install-js-client
 
-# Install JavaScript client dependencies and link the client locally with yalc.
+# Install JavaScript client dependencies and build the local package output.
 install-js-client:
-	cd "$(JS_CLIENT_DIR)" && npm install
-	cd "$(JS_CLIENT_DIR)" && npm run yalc
+	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" install
+	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" run build
 
 # Prepare local Rust and JavaScript packages without publishing to remote registries.
 package-local: package-rust-server-local package-js-client-local
@@ -25,9 +26,9 @@ package-local: package-rust-server-local package-js-client-local
 package-rust-server-local:
 	cd "$(RUST_SERVER_DIR)" && cargo package --allow-dirty
 
-# Package/link the JavaScript client into the local yalc store.
+# Verify the JavaScript client package shape without publishing it.
 package-js-client-local:
-	cd "$(JS_CLIENT_DIR)" && npm run yalc
+	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" pack --dry-run
 
 # Run publishing checks without uploading packages.
 publish-dry-run: publish-rust-server-dry-run publish-js-client-dry-run
@@ -38,7 +39,7 @@ publish-rust-server-dry-run:
 
 # Validate the JavaScript client package against npm's publish checks without uploading it.
 publish-js-client-dry-run:
-	cd "$(JS_CLIENT_DIR)" && npm publish --dry-run
+	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" publish --dry-run
 
 # Publish the Rust server crate to the configured Cargo registry.
 publish-rust-server:
@@ -46,4 +47,4 @@ publish-rust-server:
 
 # Publish the JavaScript client package to the configured npm registry.
 publish-js-client:
-	cd "$(JS_CLIENT_DIR)" && npm publish
+	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" publish

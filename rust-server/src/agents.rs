@@ -30,6 +30,21 @@ impl Default for AgentParticipantIdentity {
     }
 }
 
+impl AgentParticipantIdentity {
+    /// Returns the configured agent type when the factory supplied one.
+    pub fn agent_type(&self) -> Option<&str> {
+        self.metadata
+            .get("agent_type")
+            .or_else(|| self.metadata.get("agent_name"))
+            .and_then(Value::as_str)
+    }
+
+    /// Returns the configured agent version when the factory supplied one.
+    pub fn agent_version(&self) -> Option<&str> {
+        self.metadata.get("agent_version").and_then(Value::as_str)
+    }
+}
+
 /// Context passed to an agent factory when a new agent participant is created.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AgentInitContext {

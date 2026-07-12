@@ -7,7 +7,7 @@ The browser client receives the game-specific Rust values as JSON. A game author
 - TypeScript types should mirror the JSON shape, not necessarily the Rust field names.
 - The React or plain JavaScript UI renders observations and sends action JSON back to the server.
 
-The reusable `@parlando/client` package supplies HTTP helpers, WebSocket helpers, audio-session helpers, and generic protocol types. The game client supplies game-specific types and rendering.
+The reusable `@coli-saar/parlando-client` package supplies HTTP helpers, WebSocket helpers, audio-session helpers, and generic protocol types. The game client supplies game-specific types and rendering.
 
 ## Rust To JSON Naming
 
@@ -198,7 +198,7 @@ The browser submits a game action over the room socket:
 }
 ```
 
-With `@parlando/client`:
+With `@coli-saar/parlando-client`:
 
 ```ts
 apiClient.sendAction(socket, {

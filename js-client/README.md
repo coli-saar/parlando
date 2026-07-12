@@ -1,4 +1,4 @@
-# @parlando/client
+# @coli-saar/parlando-client
 
 Reusable browser SDK for Parlando game clients. This package owns shared experiment-client infrastructure and must not depend on a concrete game. Game clients depend on this package; this package does not import game state engines, assets, routes, copy, or UI screens.
 
@@ -8,22 +8,22 @@ Reusable browser SDK for Parlando game clients. This package owns shared experim
 - `ExperimentApiClient`, URL helpers, checked JSON helpers, and socket helpers.
 - Voice-session orchestration for microphone setup and sink lifecycle.
 - Browser-side LiveKit and Speechmatics sink implementations.
-- Reusable platform widgets and hooks under `@parlando/client/react`, such as microphone level, voice status, and transcription status components.
+- Reusable platform widgets and hooks under `@coli-saar/parlando-client/react`, such as microphone level, voice status, and transcription status components.
 
 ## What does not belong here
 
 - Game-specific state, actions, observations, validation, rendering, assets, maps, levels, or scoring.
 - Demo app layout or Space Game-specific CSS.
-- Local checkout assumptions such as `file:../js-client` dependencies in consumers.
+- Committed local checkout assumptions such as `file:../js-client` dependencies in consumers.
 - Private LiveKit, Speechmatics, or TTS service configuration. The server is the source of truth for speech configuration and sends only public capability metadata or short-lived room credentials to the browser.
 
 ## Package entrypoints
 
 ```ts
-import { ExperimentApiClient, socketUrl } from "@parlando/client";
-import { LiveKitPartnerAudioSink } from "@parlando/client/livekit";
-import { SpeechmaticsTranscriptionSink } from "@parlando/client/speechmatics";
-import { VoiceStatusChip } from "@parlando/client/react";
+import { ExperimentApiClient, socketUrl } from "@coli-saar/parlando-client";
+import { LiveKitPartnerAudioSink } from "@coli-saar/parlando-client/livekit";
+import { SpeechmaticsTranscriptionSink } from "@coli-saar/parlando-client/speechmatics";
+import { VoiceStatusChip } from "@coli-saar/parlando-client/react";
 ```
 
 The root entrypoint contains protocol types, API helpers, WebSocket helpers, audio-session controller classes, microphone helpers, and non-React utility functions. Optional integration-specific code is exported from subpaths so consumers can import only the pieces they need.
@@ -38,48 +38,52 @@ The SDK may include reusable platform widgets when they describe Parlando runtim
 
 These widgets should stay generic. They should accept state and callbacks from the game app, avoid direct knowledge of a game's state model, and use CSS classes or explicit props so each game can style them. If default SDK styling is added later, it should be opt-in through a separate CSS export.
 
-## Local development with yalc
+## Local development from a game checkout
 
-Use `yalc` when testing unpublished SDK changes from a separate game client checkout. This gives the consumer a package-shaped dependency without publishing every debug build to GitHub Packages.
+Normal game clients should depend on the released npm package:
+
+```json
+"@coli-saar/parlando-client": "^0.1.0"
+```
+
+When debugging SDK changes from a separate local Parlando checkout, temporarily install that checkout by absolute path:
 
 From this directory:
 
 ```bash
 npm install
-npm run yalc
+npm run build
 ```
 
 From a game client checkout:
 
 ```bash
-yalc add @parlando/client
-npm install
+npm install --no-save file:/absolute/path/to/parlando/js-client
 ```
 
-After SDK edits:
+After SDK edits, rebuild the SDK and reinstall or rebuild the game client as needed:
 
 ```bash
 npm run build
-yalc push
 ```
 
-A consumer can remove the local yalc override with:
+Because `package.json` cannot contain comments, keep the normal registry dependency committed and use the `file:` dependency only as a temporary local edit or install command. Before committing a game release, restore the registry dependency and refresh `package-lock.json`.
 
-```bash
-yalc remove @parlando/client
-npm install
-```
+Committed consumer manifests should normally depend on a version, for example `"@coli-saar/parlando-client": "^0.1.0"`, not on `file:` paths.
 
-Committed consumer manifests should normally depend on a version, for example `"@parlando/client": "^0.1.0"`, not on `file:` paths.
+## Publishing
 
-## Local publishing
-
-The JavaScript SDK is published locally with yalc rather than to an online npm registry:
+Before publishing, test and build the package:
 
 ```bash
 npm install
 npm test
-npm run yalc
+npm run build
 ```
 
-The package is marked `private` to avoid accidental npm or GitHub Packages publishing.
+For an online package release, run the repository-level publishing dry run and publish target:
+
+```bash
+make publish-js-client-dry-run
+make publish-js-client
+```

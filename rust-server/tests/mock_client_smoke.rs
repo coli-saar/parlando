@@ -371,6 +371,9 @@ fn config(mode: AgentsMode) -> ExperimentConfig {
         experiment: ExperimentIdentityConfig {
             id: Some("mock-client-smoke".to_string()),
         },
+        database: DatabaseConfig {
+            url: "sqlite:///:memory:".to_string(),
+        },
         direct: DirectConfig {
             require_consent: true,
             ..DirectConfig::default()
@@ -695,7 +698,7 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
 ) -> Result<()> {
     let remote = spawn_mock_remote_agent().await?;
     let mut remote_config = RemoteGrpcAgentConfig::new(&remote.endpoint, "mock-python-agent");
-    remote_config.agent_version = "test-1".to_string();
+    remote_config.agent_version = Some("test-1".to_string());
     remote_config.request_timeout = Duration::from_secs(2);
     let factory = Arc::new(RemoteGrpcAgentFactory::<DummyAdapter>::new(remote_config));
     let server = spawn_server(
@@ -771,6 +774,8 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
         remote_participant["metadata"]["protocol_version"],
         "parlando-agent-v1"
     );
+    assert_eq!(remote_participant["metadata"]["agent_type"], "remote_grpc");
+    assert_eq!(remote_participant["metadata"]["agent_version"], "test-1");
     assert!(events.iter().any(|event| {
         event["event_type"] == "conversation_message" && event["payload"]["origin"] == "agent"
     }));

@@ -1,13 +1,13 @@
 # Parlando Space Game
 
-Demo browser client and Rust game server for the Parlando Space Game. The browser app consumes the reusable `@parlando/client` SDK; the Rust crate in `server/` links the reusable `parlando-server` crate to Space Game-specific state, adapter, and agent code.
+Demo browser client and Rust game server for the Parlando Space Game. The browser app consumes the reusable `@coli-saar/parlando-client` SDK; the Rust crate in `server/` links the reusable `parlando-server` crate to Space Game-specific state, adapter, and agent code.
 
 ## Project role
 
 The local Parlando checkout has three parts:
 
 - `rust-server` provides the reusable Rust server crate.
-- `js-client` builds and publishes the reusable SDK package as `@parlando/client` into the local yalc store.
+- `js-client` builds the reusable SDK package `@coli-saar/parlando-client`.
 - `space-game` owns the demo game's Rust server crate, browser UI, assets, state interpretation, controls, configs, and tests.
 
 The browser dependency direction is one-way: this app consumes the SDK as an installed package. The Rust game server is source-local in `server/` and depends on the reusable `rust-server` crate.
@@ -28,7 +28,7 @@ cd /Users/koller/Documents/workspace/parlando/space-game
 make run-solo-voice
 ```
 
-Both commands install or refresh shared local artifacts before starting the server. They are convenient after source changes, but they can take a while because they may run `cargo install`, package/link `@parlando/client` with yalc, reinstall client dependencies, and rebuild the browser app.
+Both commands install or refresh shared local artifacts before starting the server. They are convenient after source changes, but they can take a while because they may run `cargo install`, build `@coli-saar/parlando-client`, reinstall client dependencies, and rebuild the browser app.
 
 Open the game at `http://127.0.0.1:8000/`. Stop it with `Ctrl-C` in the terminal running `make`.
 
@@ -41,7 +41,7 @@ cd /Users/koller/Documents/workspace/parlando/space-game
 make install-local
 ```
 
-That command installs the Rust server binary into `.local/bin` and prepares `@parlando/client` in the local yalc store.
+That command installs the Rust server binary into `.local/bin` and builds the local `@coli-saar/parlando-client` checkout.
 
 Then build or run the demo:
 
@@ -55,7 +55,7 @@ make run
 This directory has the Space Game Makefile. It can prepare its own local dependencies, and it also accepts externally prepared artifacts:
 
 - the default `.local/bin/parlando-space-game`, or `SERVER_BIN=/path/to/parlando-space-game`.
-- `@parlando/client@0.1.0` already available in the local yalc store.
+- the local `js-client` checkout already built with `npm run build`.
 
 Run from this directory:
 
@@ -64,7 +64,7 @@ make build
 make run
 ```
 
-The Makefile installs the SDK package from yalc with `npm install --no-save`, so the committed dependency stays versioned as `"@parlando/client": "^0.1.0"`.
+The Makefile installs the SDK from the local checkout with `npm install --no-save file:...`, so the committed dependency stays versioned as `"@coli-saar/parlando-client": "^0.1.0"`.
 
 ## Solo voice test
 
@@ -96,7 +96,7 @@ It asks the Rust server to include the local private service configuration from 
 This app can use SDK widgets for Parlando platform state, such as microphone readiness and transcription progress:
 
 ```tsx
-import { VoiceStatusChip, TranscriptionStatusChip } from "@parlando/client/react";
+import { VoiceStatusChip, TranscriptionStatusChip } from "@coli-saar/parlando-client/react";
 ```
 
 Game-specific UI should stay here. For example, the station map, inventory/action controls, game status panels, and Space Game copy belong in this project, not in the SDK.

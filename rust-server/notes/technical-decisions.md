@@ -356,21 +356,21 @@ Game clients will often be developed on machines without local checkouts of the 
 
 ## Chosen Approach
 
-- Move the reusable browser runtime into a sibling `../js-client` project named `@parlando/client`.
+- Move the reusable browser runtime into a sibling `../js-client` project named `@coli-saar/parlando-client`.
 - Keep `../js-client` game-agnostic: HTTP API helpers, WebSocket helpers, protocol types, audio-session orchestration, LiveKit/Speechmatics sink implementations, and optional React helpers live there.
-- Move the Space Game browser app into sibling `../space-game` as a demo client that depends on `@parlando/client` by package name.
-- Use GitHub Packages as the planned release channel for versioned SDK builds.
-- Use `yalc` for unpublished local debug loops so demo clients can test a package-shaped artifact without publishing every intermediate build.
+- Move the Space Game browser app into sibling `../space-game` as a demo client that depends on `@coli-saar/parlando-client` by package name.
+- Use npm as the planned release channel for versioned SDK builds.
+- Use explicit `file:` dependencies only as temporary local debug overrides when a game needs to test an unpublished SDK checkout.
 - Keep the Rust Space Game server crate source-local while the repo layout settles.
 
 ## Tradeoffs
 
-This creates three top-level project areas instead of keeping everything under the Rust workspace, but it matches the intended dependency direction: games consume the SDK, and the SDK does not consume games. `yalc` adds one local-development tool, but it avoids committing a `file:` dependency that would break on machines without the sibling SDK checkout.
+This creates three top-level project areas instead of keeping everything under the Rust workspace, but it matches the intended dependency direction: games consume the SDK, and the SDK does not consume games. Registry dependencies stay committed for normal use; local paths are explicit, temporary provenance markers during bugfix work.
 
 ## Follow-Up
 
 - Add package repository metadata once the GitHub owner/repo path is finalized.
-- Add CI to build, test, and publish `@parlando/client` to GitHub Packages on version tags.
+- Add CI to build, test, and publish `@coli-saar/parlando-client` to npm on version tags.
 - Update Render/Docker packaging once the final production build context includes both the Rust binary and the Space Game client build.
 
 # Local Install Boundary For Demo Games
@@ -383,8 +383,8 @@ The Space Game demo should model how third-party games consume Parlando. A game 
 
 - Add a top-level Parlando Makefile that knows local source layout and installs shared artifacts.
 - Install the Rust Space Game server binary into a local prefix with `cargo install`.
-- Publish `@parlando/client` into the local yalc store from the top-level install step.
-- Keep the Space Game Makefile source-agnostic: it expects `parlando-space-game` on `PATH` and `@parlando/client` in the yalc store.
+- Build the local `@coli-saar/parlando-client` checkout from the top-level install step.
+- Keep the Space Game Makefile explicit about local provenance: it expects `parlando-space-game` on `PATH` and can install `@coli-saar/parlando-client` from the local checkout with `file:`.
 - Add a Space Game solo voice config that uses `agents.mode = human_vs_agent`, the `space_game.back_and_forth` agent, and includes the local private LiveKit, Speechmatics, and ElevenLabs config from the Rust-server checkout.
 
 ## Tradeoffs
@@ -466,7 +466,7 @@ The README comparison is necessarily selective. It points to established systems
 ## Follow-Up
 
 - Keep the platform comparison current as Parlando's deployment and frontend packaging story stabilizes.
-- Update `docs/client-protocol.md` when the `@parlando/client` package API changes.
+- Update `docs/client-protocol.md` when the `@coli-saar/parlando-client` package API changes.
 
 # Space Game Server Ownership
 

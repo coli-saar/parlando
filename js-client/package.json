@@ -1,5 +1,5 @@
 {
-  "name": "@parlando/client",
+  "name": "@coli-saar/parlando-client",
   "version": "0.1.0",
   "type": "module",
   "description": "Reusable browser client SDK for Parlando experiment games.",
@@ -32,8 +32,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run src",
-    "prepack": "npm run build",
-    "yalc": "yalc publish --private"
+    "prepack": "npm run build"
   },
   "peerDependencies": {
     "livekit-client": "^2.20.1",

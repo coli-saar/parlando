@@ -29,7 +29,7 @@ pub struct RemoteGrpcAgentConfig {
     /// Stable human-readable agent name stored in initialization requests.
     pub agent_name: String,
     /// Stable agent version or fingerprint stored in initialization requests.
-    pub agent_version: String,
+    pub agent_version: Option<String>,
     /// Remote-agent protocol version expected by this server.
     pub protocol_version: String,
     /// Per-request timeout for create and act calls.
@@ -42,7 +42,7 @@ impl RemoteGrpcAgentConfig {
         Self {
             endpoint: endpoint.into(),
             agent_name: agent_name.into(),
-            agent_version: "dev".to_string(),
+            agent_version: None,
             protocol_version: "parlando-agent-v1".to_string(),
             request_timeout: Duration::from_secs(5),
         }
@@ -79,17 +79,24 @@ impl<A: GameAdapter> AgentFactory<A> for RemoteGrpcAgentFactory<A> {
 
     /// Returns durable identity metadata for remote gRPC agents.
     fn participant_identity(&self) -> AgentParticipantIdentity {
+        let mut metadata = serde_json::json!({
+            "agent_type": "remote_grpc",
+            "protocol_version": self.config.protocol_version,
+            "agent_name": self.config.agent_name,
+        });
+        if let Some(agent_version) = self.config.agent_version.as_deref() {
+            metadata["agent_version"] = serde_json::json!(agent_version);
+        }
         AgentParticipantIdentity {
             identity_provider: "remote_grpc".to_string(),
-            external_id: Some(format!(
-                "{}@{}",
-                self.config.agent_name, self.config.agent_version
-            )),
-            metadata: serde_json::json!({
-                "protocol_version": self.config.protocol_version,
-                "agent_name": self.config.agent_name,
-                "agent_version": self.config.agent_version,
-            }),
+            external_id: Some(
+                self.config
+                    .agent_version
+                    .as_ref()
+                    .map(|version| format!("{}@{}", self.config.agent_name, version))
+                    .unwrap_or_else(|| self.config.agent_name.clone()),
+            ),
+            metadata,
         }
     }
 }
@@ -121,7 +128,7 @@ where
         let request = CreateAgentRequest {
             protocol_version: self.config.protocol_version.clone(),
             agent_name: self.config.agent_name.clone(),
-            agent_version: self.config.agent_version.clone(),
+            agent_version: self.config.agent_version.clone().unwrap_or_default(),
             role: self.init_context.role.clone(),
             seed: self.init_context.seed,
             config: Some(json_to_struct(self.init_context.config.clone())?),
@@ -289,6 +296,56 @@ fn prost_to_json(value: ProstValue) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::{GameAdapter, PlayerRole};
+
+    struct TestAdapter;
+
+    impl GameAdapter for TestAdapter {
+        type State = Value;
+        type Action = Value;
+        type Observation = Value;
+        type Event = Value;
+        type Summary = Value;
+
+        fn initial_state(&self) -> Self::State {
+            Value::Null
+        }
+
+        fn validate_action(
+            &self,
+            _state: &Self::State,
+            _action: &Self::Action,
+            _player: PlayerRole,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn apply_action(&self, state: &Self::State, _action: &Self::Action) -> Result<Self::State> {
+            Ok(state.clone())
+        }
+
+        fn observe_state(&self, state: &Self::State, _player: PlayerRole) -> Self::Observation {
+            state.clone()
+        }
+
+        fn events_for_action(
+            &self,
+            _before: &Self::State,
+            _after: &Self::State,
+            _action: &Self::Action,
+            _player: PlayerRole,
+        ) -> Vec<Self::Event> {
+            vec![]
+        }
+
+        fn is_complete(&self, _state: &Self::State) -> bool {
+            false
+        }
+
+        fn completion_summary(&self, state: &Self::State) -> Self::Summary {
+            state.clone()
+        }
+    }
 
     #[test]
     fn json_struct_conversion_preserves_nested_values() {
@@ -300,5 +357,19 @@ mod tests {
         });
         let converted = struct_to_json(json_to_struct(original.clone()).unwrap());
         assert_eq!(converted, original);
+    }
+
+    #[test]
+    fn remote_identity_does_not_invent_missing_agent_version() {
+        let factory = RemoteGrpcAgentFactory::<TestAdapter>::new(RemoteGrpcAgentConfig::new(
+            "http://127.0.0.1:50051",
+            "python-agent",
+        ));
+        let identity = factory.participant_identity();
+
+        assert_eq!(identity.metadata["agent_type"], "remote_grpc");
+        assert_eq!(identity.metadata["agent_name"], "python-agent");
+        assert!(identity.metadata.get("agent_version").is_none());
+        assert_eq!(identity.external_id.as_deref(), Some("python-agent"));
     }
 }

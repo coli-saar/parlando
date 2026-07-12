@@ -6,8 +6,8 @@ use std::{
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use parlando_server::{
-    AgentFactory, AgentInitContext, AgentResult, ExperimentConfig, GameAgent,
-    RemoteGrpcAgentConfig, RemoteGrpcAgentFactory,
+    AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResult, ExperimentConfig,
+    GameAgent, RemoteGrpcAgentConfig, RemoteGrpcAgentFactory,
 };
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::Deserialize;
@@ -57,8 +57,7 @@ struct RemoteAgentSelectorConfig {
     endpoint: String,
     #[serde(default = "default_remote_agent_name")]
     agent_name: String,
-    #[serde(default = "default_remote_agent_version")]
-    agent_version: String,
+    agent_version: Option<String>,
     #[serde(default = "default_remote_agent_protocol")]
     protocol_version: String,
 }
@@ -77,10 +76,6 @@ impl RemoteAgentSelectorConfig {
 
 fn default_remote_agent_name() -> String {
     "space-game-remote-agent".to_string()
-}
-
-fn default_remote_agent_version() -> String {
-    "dev".to_string()
 }
 
 fn default_remote_agent_protocol() -> String {
@@ -104,6 +99,22 @@ impl AgentFactory<SpaceGameAdapter> for BackAndForthAgentFactory {
             seed,
             self.config.clone(),
         )))
+    }
+
+    fn participant_identity(&self) -> AgentParticipantIdentity {
+        AgentParticipantIdentity {
+            identity_provider: "space_game".to_string(),
+            external_id: Some(format!(
+                "space_game.back_and_forth@{}",
+                env!("CARGO_PKG_VERSION")
+            )),
+            metadata: serde_json::json!({
+                "agent_type": "space_game.back_and_forth",
+                "agent_name": "BackAndForthAgent",
+                "agent_version": env!("CARGO_PKG_VERSION"),
+                "agent_version_source": "space-game crate version",
+            }),
+        }
     }
 }
 

@@ -54,6 +54,8 @@ pub struct ServeOptions<A: GameAdapter> {
     pub tts_provider: Option<Arc<dyn StreamingTtsProvider>>,
     /// Optional publisher used to send synthesized agent audio into RTC.
     pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
+    /// Game/client version metadata supplied by the game-specific binary.
+    pub game_version_manifest: Option<Value>,
 }
 
 impl<A: GameAdapter> Default for ServeOptions<A> {
@@ -63,6 +65,7 @@ impl<A: GameAdapter> Default for ServeOptions<A> {
             agent_factory: None,
             tts_provider: None,
             audio_publisher: None,
+            game_version_manifest: None,
         }
     }
 }
@@ -79,6 +82,7 @@ pub struct AppState<A: GameAdapter> {
     pub started_agents: RwLock<HashSet<String>>,
     pub tts_provider: Option<Arc<dyn StreamingTtsProvider>>,
     pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
+    pub version_manifest: Value,
 }
 
 impl<A: GameAdapter> AppState<A> {
@@ -295,11 +299,14 @@ where
         .id
         .clone()
         .unwrap_or_else(generated_experiment_id);
+    let version_manifest = version_manifest(options.game_version_manifest.clone());
     store
         .ensure_experiment(ExperimentRecord {
             experiment_id: experiment_id.clone(),
             config: serde_json::to_value(&config)?,
             server_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            version_manifest: Some(version_manifest.clone()),
+            status: "active".to_string(),
             notes: None,
         })
         .await?;
@@ -325,6 +332,7 @@ where
         started_agents: RwLock::new(HashSet::new()),
         tts_provider,
         audio_publisher: options.audio_publisher,
+        version_manifest,
     });
 
     let api = Router::new()
@@ -363,10 +371,26 @@ where
             post(add_voice_diagnostic::<A>),
         )
         .route("/admin/games", get(admin_games_page))
+        .route("/admin/experiments", get(admin_games_page))
+        .route("/api/admin/experiments", get(admin_experiments::<A>))
+        .route("/api/admin/experiments", post(admin_create_experiment::<A>))
+        .route(
+            "/api/admin/experiments/:experiment_id/status",
+            post(admin_update_experiment_status::<A>),
+        )
         .route("/api/admin/games", get(admin_recent_games::<A>))
         .route("/api/admin/games/:session_id", get(admin_game_detail::<A>))
         .route(
             "/api/admin/games/:session_id/events",
+            get(admin_game_events::<A>),
+        )
+        .route("/api/admin/sessions", get(admin_recent_games::<A>))
+        .route(
+            "/api/admin/sessions/:session_id",
+            get(admin_game_detail::<A>),
+        )
+        .route(
+            "/api/admin/sessions/:session_id/events",
             get(admin_game_events::<A>),
         )
         .route("/api/admin/export", get(admin_export::<A>))
@@ -772,6 +796,7 @@ where
         } else {
             factory_identity.metadata.clone()
         };
+        let agent_metadata = metadata.clone();
         let agent_participant_db_id = state
             .store
             .upsert_participant(ParticipantRecord {
@@ -832,7 +857,11 @@ where
             &room_id,
             Some(&agent_participant_id),
             "participant_joined",
-            json!({"role": "B", "kind": "agent"}),
+            json!({
+                "role": "B",
+                "kind": "agent",
+                "agent": agent_event_metadata(&agent_metadata),
+            }),
             None,
         )
         .await;
@@ -1392,30 +1421,131 @@ async fn add_conversation<A: GameAdapter>(
 #[derive(Clone, Debug, Deserialize)]
 struct AdminGamesQuery {
     limit: Option<i64>,
+    experiment_id: Option<String>,
+    status: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 struct AdminEventsQuery {
     after: Option<i64>,
+    experiment_id: Option<String>,
 }
 
-/// Serves the database-backed game inspection UI.
+#[derive(Clone, Debug, Deserialize)]
+struct AdminExperimentsQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct AdminCreateExperimentRequest {
+    experiment_id: Option<String>,
+    status: Option<String>,
+    notes: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct AdminUpdateExperimentStatusRequest {
+    status: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct AdminExportQuery {
+    experiment_id: Option<String>,
+    session_id: Option<i64>,
+    status: Option<String>,
+    event_type: Option<String>,
+    format: Option<String>,
+}
+
+/// Serves the database-backed experiment/session dashboard.
 async fn admin_games_page() -> Html<&'static str> {
     Html(ADMIN_GAMES_HTML)
 }
 
-/// Returns recent database sessions for the game inspection UI.
+/// Returns all known experiments with dashboard aggregates.
+async fn admin_experiments<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Query(query): Query<AdminExperimentsQuery>,
+) -> Result<Json<Value>, AppError> {
+    let experiments = state
+        .store
+        .list_experiments(query.limit.unwrap_or(100))
+        .await?;
+    Ok(Json(json!({
+        "active_experiment_id": state.experiment_id,
+        "version_manifest": state.version_manifest,
+        "experiments": experiments,
+    })))
+}
+
+/// Creates a durable draft experiment row using the current server/game manifest.
+async fn admin_create_experiment<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Json(request): Json<AdminCreateExperimentRequest>,
+) -> Result<Json<Value>, AppError> {
+    let status = request.status.unwrap_or_else(|| "draft".to_string());
+    validate_experiment_status(&status)?;
+    let experiment_id = request
+        .experiment_id
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(generated_experiment_id);
+    state
+        .store
+        .ensure_experiment(ExperimentRecord {
+            experiment_id: experiment_id.clone(),
+            config: serde_json::to_value(&state.config).map_err(|error| {
+                AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            })?,
+            server_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            version_manifest: Some(state.version_manifest.clone()),
+            status,
+            notes: request.notes,
+        })
+        .await?;
+    Ok(Json(json!({ "experiment_id": experiment_id })))
+}
+
+/// Updates a durable experiment lifecycle status.
+async fn admin_update_experiment_status<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Path(experiment_id): Path<String>,
+    Json(request): Json<AdminUpdateExperimentStatusRequest>,
+) -> Result<Json<Value>, AppError> {
+    validate_experiment_status(&request.status)?;
+    state
+        .store
+        .update_experiment_status(&experiment_id, &request.status)
+        .await?;
+    Ok(Json(
+        json!({ "experiment_id": experiment_id, "status": request.status }),
+    ))
+}
+
+/// Returns recent database sessions for the experiment dashboard.
 async fn admin_recent_games<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
     Query(query): Query<AdminGamesQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let games = state
+    let experiment_id = query
+        .experiment_id
+        .unwrap_or_else(|| state.experiment_id.clone());
+    let sessions = state
         .store
-        .recent_sessions(&state.experiment_id, query.limit.unwrap_or(50))
+        .recent_sessions(&experiment_id, query.limit.unwrap_or(50))
         .await?;
+    let sessions = sessions
+        .into_iter()
+        .filter(|session| {
+            query
+                .status
+                .as_ref()
+                .is_none_or(|status| &session.status == status)
+        })
+        .collect::<Vec<_>>();
     Ok(Json(json!({
-        "experiment_id": state.experiment_id,
-        "games": games,
+        "experiment_id": experiment_id,
+        "games": sessions.clone(),
+        "sessions": sessions,
     })))
 }
 
@@ -1423,31 +1553,37 @@ async fn admin_recent_games<A: GameAdapter>(
 async fn admin_game_detail<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
     Path(session_id): Path<i64>,
+    Query(query): Query<AdminGamesQuery>,
 ) -> Result<Json<Value>, AppError> {
+    let experiment_id = query
+        .experiment_id
+        .unwrap_or_else(|| state.experiment_id.clone());
     let exported = state
         .store
-        .export_session(&state.experiment_id, session_id)
+        .export_session(&experiment_id, session_id)
         .await?;
     let session = exported["sessions"]
         .as_array()
         .and_then(|sessions| sessions.first())
         .cloned()
-        .ok_or_else(|| AppError::not_found("Game session not found."))?;
+        .ok_or_else(|| AppError::not_found("Session not found."))?;
     let participants = state
         .store
-        .session_participants(&state.experiment_id, session_id)
+        .session_participants(&experiment_id, session_id)
         .await?;
     let events = important_admin_events(
         state
             .store
-            .session_events(&state.experiment_id, session_id, None)
+            .session_events(&experiment_id, session_id, None)
             .await?,
     );
+    let event_bundles = admin_event_bundles(&events);
     Ok(Json(json!({
-        "experiment_id": state.experiment_id,
+        "experiment_id": experiment_id,
         "session": session,
         "participants": participants,
         "events": events,
+        "event_bundles": event_bundles,
     })))
 }
 
@@ -1458,17 +1594,25 @@ async fn admin_game_events<A: GameAdapter>(
     Query(query): Query<AdminEventsQuery>,
 ) -> Result<Json<Value>, AppError> {
     let after = query.after.unwrap_or(0);
-    let events = state
+    let experiment_id = query
+        .experiment_id
+        .unwrap_or_else(|| state.experiment_id.clone());
+    let all_events = state
         .store
-        .session_events(&state.experiment_id, session_id, None)
-        .await?
+        .session_events(&experiment_id, session_id, None)
+        .await?;
+    let events = all_events
+        .clone()
         .into_iter()
         .filter(|event| event.event_index > after)
         .collect::<Vec<_>>();
+    let visible_events = important_admin_events(events);
+    let event_bundles = admin_event_bundles(&important_admin_events(all_events));
     Ok(Json(json!({
-        "experiment_id": state.experiment_id,
+        "experiment_id": experiment_id,
         "session_id": session_id,
-        "events": important_admin_events(events),
+        "events": visible_events,
+        "event_bundles": event_bundles,
     })))
 }
 
@@ -1481,7 +1625,466 @@ fn important_admin_events(events: Vec<crate::storage::StoredSessionEvent>) -> Ve
         .collect()
 }
 
-/// Returns whether a stored event should appear in the admin game monitor.
+/// Groups durable admin events into display rows for the experiment dashboard.
+fn admin_event_bundles(events: &[Value]) -> Vec<Value> {
+    let mut bundles = Vec::<AdminEventBundle>::new();
+    let mut open_bundles = HashMap::<String, usize>::new();
+    let mut terminal_event_seen = false;
+    for event in events
+        .iter()
+        .filter(|event| show_admin_event_in_timeline(event))
+    {
+        let kind = admin_bundle_kind(event);
+        let role = admin_event_role(event);
+        let key = admin_bundle_key(event, &kind, &role);
+        let existing_index = open_bundles.get(&key).copied();
+        if let Some(index) = existing_index {
+            if can_append_admin_bundle(&bundles[index], event, &kind, &role) {
+                bundles[index].events.push(event.clone());
+                bundles[index].after_terminal_event =
+                    bundles[index].after_terminal_event || terminal_event_seen;
+                if admin_bundle_is_closed(&bundles[index]) {
+                    open_bundles.remove(&key);
+                }
+                if admin_event_is_terminal_boundary(event) {
+                    terminal_event_seen = true;
+                }
+                continue;
+            }
+        }
+
+        let bundle = AdminEventBundle {
+            kind: kind.clone(),
+            role: role.clone(),
+            key: key.clone(),
+            events: vec![event.clone()],
+            after_terminal_event: terminal_event_seen,
+        };
+        bundles.push(bundle);
+        let index = bundles.len() - 1;
+        if !admin_bundle_is_closed(&bundles[index]) {
+            open_bundles.insert(key, index);
+        }
+        if admin_event_is_terminal_boundary(event) {
+            terminal_event_seen = true;
+        }
+    }
+    bundles.into_iter().map(admin_bundle_json).collect()
+}
+
+#[derive(Clone, Debug)]
+struct AdminEventBundle {
+    kind: String,
+    role: Option<String>,
+    key: String,
+    events: Vec<Value>,
+    after_terminal_event: bool,
+}
+
+fn admin_event_is_terminal_boundary(event: &Value) -> bool {
+    matches!(
+        admin_event_type(event).as_str(),
+        "session_completed" | "participant_disconnected"
+    )
+}
+
+fn admin_event_is_action_request(event: &Value) -> bool {
+    matches!(
+        admin_event_type(event).as_str(),
+        "agent_action" | "game_action_submitted"
+    )
+}
+
+fn show_admin_event_in_timeline(event: &Value) -> bool {
+    if admin_event_type(event) != "voice_diagnostic" {
+        return true;
+    }
+    let text = admin_event_text_value(event);
+    text.contains("voice_connect_requested")
+        || text.contains("stt_initialized")
+        || text.contains("transcription_stream_connecting")
+        || text.contains("transcription_stream_started")
+        || text.to_ascii_lowercase().contains("fail")
+        || text.to_ascii_lowercase().contains("error")
+        || text.to_ascii_lowercase().contains("disconnect")
+}
+
+fn admin_bundle_kind(event: &Value) -> String {
+    match admin_event_type(event).as_str() {
+        "agent_action"
+        | "game_action_accepted"
+        | "game_action_rejected"
+        | "game_action_submitted" => "action".to_string(),
+        "participant_joined" | "participant_connected" | "participant_disconnected" | "ready" => {
+            "participant".to_string()
+        }
+        "voice_diagnostic" => "voice".to_string(),
+        "transcript_segment" => "transcript".to_string(),
+        "conversation_message"
+            if event
+                .get("detail")
+                .and_then(|detail| detail.get("origin"))
+                .and_then(Value::as_str)
+                == Some("voice_transcript") =>
+        {
+            "transcript".to_string()
+        }
+        "conversation_message" => "conversation".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn admin_bundle_key(event: &Value, kind: &str, role: &Option<String>) -> String {
+    let role = role.as_deref().unwrap_or("system");
+    match kind {
+        "action" => format!(
+            "action:{role}:{}",
+            event
+                .get("detail")
+                .and_then(|detail| detail.get("action"))
+                .map(compact_json)
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        "participant" | "voice" => format!("{kind}:{role}"),
+        "transcript" => format!("{kind}:{role}:{}", normalized_transcript_text(event)),
+        _ => format!("{kind}:{role}:{}", admin_event_index(event)),
+    }
+}
+
+fn can_append_admin_bundle(
+    bundle: &AdminEventBundle,
+    event: &Value,
+    kind: &str,
+    role: &Option<String>,
+) -> bool {
+    if bundle.kind != kind {
+        return false;
+    }
+    if (bundle.role.is_some() || role.is_some()) && bundle.role != *role {
+        return false;
+    }
+    match kind {
+        "action" => {
+            !admin_bundle_is_closed(bundle)
+                && bundle.events.first().and_then(admin_event_action) == admin_event_action(event)
+                && !(bundle.events.iter().any(admin_event_is_action_request)
+                    && admin_event_is_action_request(event))
+        }
+        "transcript" => {
+            bundle
+                .events
+                .first()
+                .map(normalized_transcript_text)
+                .unwrap_or_default()
+                == normalized_transcript_text(event)
+        }
+        "participant" | "voice" => true,
+        _ => false,
+    }
+}
+
+fn admin_bundle_is_closed(bundle: &AdminEventBundle) -> bool {
+    match bundle.kind.as_str() {
+        "action" => bundle.events.iter().any(|event| {
+            matches!(
+                admin_event_type(event).as_str(),
+                "game_action_accepted" | "game_action_rejected"
+            )
+        }),
+        "participant" => bundle.events.iter().any(|event| {
+            matches!(
+                admin_event_type(event).as_str(),
+                "ready" | "participant_disconnected"
+            )
+        }),
+        "voice" => bundle.events.iter().any(|event| {
+            let text = admin_event_text_value(event).to_ascii_lowercase();
+            text.contains("transcription_stream_started")
+                || text.contains("ready")
+                || text.contains("fail")
+                || text.contains("error")
+                || text.contains("disconnect")
+        }),
+        _ => false,
+    }
+}
+
+fn admin_bundle_json(bundle: AdminEventBundle) -> Value {
+    let first = bundle.events.first().cloned().unwrap_or_else(|| json!({}));
+    let last = bundle.events.last().cloned().unwrap_or_else(|| json!({}));
+    let steps = if bundle.events.len() > 1 {
+        bundle
+            .events
+            .iter()
+            .map(readable_admin_event_step)
+            .collect::<Vec<_>>()
+            .join(" -> ")
+    } else {
+        String::new()
+    };
+    let problem_reason = admin_bundle_problem_reason(&bundle);
+    let problem = problem_reason.is_some();
+    let action = if bundle.kind == "action" {
+        bundle.events.iter().find_map(admin_event_action)
+    } else {
+        None
+    };
+    json!({
+        "kind": bundle.kind,
+        "key": bundle.key,
+        "role": bundle.role,
+        "first_index": admin_event_index(&first),
+        "last_index": admin_event_index(&last),
+        "created_at": last.get("created_at").cloned().unwrap_or(Value::Null),
+        "title": admin_bundle_title(&bundle),
+        "problem": problem,
+        "problem_reason": problem_reason,
+        "housekeeping": admin_bundle_is_housekeeping(&bundle),
+        "steps": steps,
+        "text": admin_bundle_text(&bundle),
+        "action": action,
+        "events": bundle.events,
+    })
+}
+
+fn admin_bundle_is_housekeeping(bundle: &AdminEventBundle) -> bool {
+    matches!(
+        bundle.kind.as_str(),
+        "participant" | "voice" | "session_created" | "session_completed"
+    )
+}
+
+fn admin_bundle_problem_reason(bundle: &AdminEventBundle) -> Option<String> {
+    if bundle
+        .events
+        .iter()
+        .any(|event| admin_event_type(event).contains("rejected"))
+    {
+        return Some(admin_rejection_reason(bundle));
+    }
+    if let Some(text) = bundle.events.iter().find_map(|event| {
+        let text = admin_event_text_value(event).to_ascii_lowercase();
+        (text.contains("fail")
+            || text.contains("error")
+            || text.contains("reject")
+            || (!bundle.after_terminal_event && text.contains("disconnect")))
+        .then(|| admin_event_text_value(event))
+    }) {
+        return Some(text);
+    }
+    match bundle.kind.as_str() {
+        "action" => (!bundle.after_terminal_event
+            && !bundle.events.iter().any(|event| {
+                matches!(
+                    admin_event_type(event).as_str(),
+                    "game_action_accepted" | "game_action_rejected"
+                )
+            }))
+        .then(|| "Action was sent but no accepted/rejected result was logged.".to_string()),
+        "voice" => (!bundle.after_terminal_event
+            && !bundle.events.iter().any(|event| {
+                let text = admin_event_text_value(event).to_ascii_lowercase();
+                text.contains("stt_initialized")
+                    || text.contains("transcription_stream_started")
+                    || text.contains("transcription_ready")
+                    || text.contains("ready")
+            }))
+        .then(|| "Voice setup did not log a ready/started event.".to_string()),
+        "participant" => (bundle
+            .events
+            .iter()
+            .any(|event| admin_event_type(event) == "participant_disconnected")
+            && !bundle.after_terminal_event)
+            .then(|| "Participant disconnected.".to_string()),
+        _ => None,
+    }
+}
+
+fn admin_rejection_reason(bundle: &AdminEventBundle) -> String {
+    bundle
+        .events
+        .iter()
+        .find_map(|event| {
+            event
+                .get("detail")
+                .and_then(|detail| detail.get("error"))
+                .and_then(Value::as_str)
+                .or_else(|| event.get("text").and_then(Value::as_str))
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "Action was rejected.".to_string())
+}
+
+fn admin_bundle_title(bundle: &AdminEventBundle) -> String {
+    match bundle.kind.as_str() {
+        "action" => "Action".to_string(),
+        "participant" => "Participant".to_string(),
+        "voice" => "Voice".to_string(),
+        "transcript" => "Voice Message".to_string(),
+        "conversation" => "Message".to_string(),
+        "session_created" | "session_completed" => "Session".to_string(),
+        _ => bundle
+            .events
+            .first()
+            .and_then(|event| event.get("title"))
+            .and_then(Value::as_str)
+            .unwrap_or("Event")
+            .to_string(),
+    }
+}
+
+fn admin_bundle_text(bundle: &AdminEventBundle) -> String {
+    if matches!(
+        bundle.kind.as_str(),
+        "action" | "participant" | "session_created"
+    ) {
+        return String::new();
+    }
+    bundle
+        .events
+        .iter()
+        .filter_map(|event| {
+            let text = admin_event_text_value(event);
+            (!text.is_empty()).then_some(text)
+        })
+        .fold(Vec::<String>::new(), |mut texts, text| {
+            let normalized = normalize_display_text(&text);
+            if !texts
+                .iter()
+                .any(|existing| normalize_display_text(existing) == normalized)
+            {
+                texts.push(text);
+            }
+            texts
+        })
+        .into_iter()
+        .rev()
+        .take(2)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+fn normalize_display_text(text: &str) -> String {
+    text.trim()
+        .trim_end_matches(['.', '!', '?'])
+        .to_ascii_lowercase()
+}
+
+fn readable_admin_event_step(event: &Value) -> String {
+    match admin_event_type(event).as_str() {
+        "participant_joined" => "Joined".to_string(),
+        "participant_connected" => "Connected".to_string(),
+        "participant_disconnected" => "Disconnected".to_string(),
+        "ready" => "Ready".to_string(),
+        "transcript_segment" => "Transcript saved".to_string(),
+        "conversation_message"
+            if event
+                .get("detail")
+                .and_then(|detail| detail.get("origin"))
+                .and_then(Value::as_str)
+                == Some("voice_transcript") =>
+        {
+            "Transcript displayed".to_string()
+        }
+        "voice_diagnostic" => admin_event_text_value(event),
+        _ => event
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| admin_event_type(event)),
+    }
+}
+
+fn admin_event_type(event: &Value) -> String {
+    event
+        .get("event_type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn admin_event_role(event: &Value) -> Option<String> {
+    event
+        .get("actor_role")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            event
+                .get("detail")
+                .and_then(|detail| detail.get("player"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            event
+                .get("detail")
+                .and_then(|detail| detail.get("sender_role"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            event
+                .get("detail")
+                .and_then(|detail| detail.get("role"))
+                .and_then(Value::as_str)
+        })
+        .map(str::to_string)
+}
+
+fn admin_event_index(event: &Value) -> i64 {
+    event
+        .get("event_index")
+        .and_then(Value::as_i64)
+        .unwrap_or_default()
+}
+
+fn admin_event_text_value(event: &Value) -> String {
+    event
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            event
+                .get("detail")
+                .and_then(|detail| detail.get("event"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| admin_event_type(event))
+}
+
+fn normalized_transcript_text(event: &Value) -> String {
+    event
+        .get("text")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            event
+                .get("raw")
+                .and_then(|raw| raw.get("payload"))
+                .and_then(|payload| payload.get("text"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches(['.', '!', '?'])
+        .to_ascii_lowercase()
+}
+
+fn admin_event_action(event: &Value) -> Option<Value> {
+    event
+        .get("detail")
+        .and_then(|detail| detail.get("action"))
+        .cloned()
+        .or_else(|| {
+            event
+                .get("raw")
+                .and_then(|raw| raw.get("payload"))
+                .and_then(|payload| payload.get("action"))
+                .cloned()
+        })
+}
+
+/// Returns whether a stored event should appear in the admin session monitor.
 fn is_important_admin_event(event: &crate::storage::StoredSessionEvent) -> bool {
     matches!(
         event.event_type.as_str(),
@@ -1606,23 +2209,212 @@ fn compact_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
 }
 
+fn agent_event_metadata(metadata: &Value) -> Value {
+    let agent_type = metadata
+        .get("agent_type")
+        .or_else(|| metadata.get("agent_name"))
+        .and_then(Value::as_str);
+    let agent_version = metadata.get("agent_version").and_then(Value::as_str);
+    json!({
+        "agent_type": agent_type,
+        "agent_version": agent_version,
+        "agent_version_missing": agent_version.is_none(),
+        "metadata": metadata,
+    })
+}
+
 async fn admin_export<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
-) -> Result<Json<Value>, AppError>
+    Query(query): Query<AdminExportQuery>,
+) -> Result<Response, AppError>
 where
     A::State: Serialize,
 {
-    Ok(Json(
-        state.store.export_experiment(&state.experiment_id).await?,
-    ))
+    let value = filtered_export(&state, &query).await?;
+    match query.format.as_deref().unwrap_or("json") {
+        "json" => Ok(Json(value).into_response()),
+        "yaml" | "yml" => Ok((
+            [("content-type", "application/yaml; charset=utf-8")],
+            serde_yaml::to_string(&value).map_err(|error| {
+                AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            })?,
+        )
+            .into_response()),
+        "csv" => Ok((
+            [("content-type", "text/csv; charset=utf-8")],
+            export_csv(&value),
+        )
+            .into_response()),
+        other => Err(AppError::bad_request(format!(
+            "Unsupported export format {other:?}."
+        ))),
+    }
 }
 
-const ADMIN_GAMES_HTML: &str = r#"<!doctype html>
+fn validate_experiment_status(status: &str) -> Result<(), AppError> {
+    if matches!(status, "draft" | "active" | "completed") {
+        Ok(())
+    } else {
+        Err(AppError::bad_request(
+            "Experiment status must be draft, active, or completed.",
+        ))
+    }
+}
+
+fn version_manifest(game_manifest: Option<Value>) -> Value {
+    let server_warnings =
+        local_dependency_warnings(env!("CARGO_MANIFEST_DIR"), include_str!("../Cargo.toml"));
+    let mut warnings = server_warnings.clone();
+    if let Some(game_warnings) = game_manifest
+        .as_ref()
+        .and_then(|manifest| manifest.get("warnings"))
+        .and_then(Value::as_array)
+    {
+        warnings.extend(game_warnings.iter().cloned());
+    }
+    json!({
+        "server": {
+            "name": env!("CARGO_PKG_NAME"),
+            "version": env!("CARGO_PKG_VERSION"),
+            "build_time": option_env!("PARLANDO_SERVER_BUILD_TIME"),
+            "git_sha": option_env!("PARLANDO_SERVER_GIT_SHA"),
+            "git_dirty": option_env!("PARLANDO_SERVER_GIT_DIRTY").unwrap_or("unknown"),
+            "repository": option_env!("CARGO_PKG_REPOSITORY"),
+            "local_dependency_warnings": server_warnings,
+        },
+        "game": game_manifest,
+        "warnings": warnings,
+    })
+}
+
+fn local_dependency_warnings(manifest_dir: &str, cargo_toml: &str) -> Vec<Value> {
+    cargo_toml
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.starts_with('#') && trimmed.contains("path") && trimmed.contains('=')
+        })
+        .map(|line| {
+            json!({
+                "level": "warning",
+                "message": "Local path dependency linked into this build; use a published version or pinned Git revision for reproducibility.",
+                "manifest_dir": manifest_dir,
+                "dependency": line.trim(),
+            })
+        })
+        .collect()
+}
+
+async fn filtered_export<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+    query: &AdminExportQuery,
+) -> Result<Value, AppError>
+where
+    A::State: Serialize,
+{
+    let experiment_id = query
+        .experiment_id
+        .as_deref()
+        .unwrap_or(&state.experiment_id);
+    let mut exported = if let Some(session_id) = query.session_id {
+        state
+            .store
+            .export_session(experiment_id, session_id)
+            .await?
+    } else {
+        state.store.export_experiment(experiment_id).await?
+    };
+    if let Some(status) = query.status.as_deref() {
+        filter_array_by_string(&mut exported, "sessions", "status", status);
+        filter_scoped_tables_to_sessions(&mut exported);
+    }
+    if let Some(event_type) = query.event_type.as_deref() {
+        filter_array_by_string(&mut exported, "session_events", "event_type", event_type);
+    }
+    Ok(exported)
+}
+
+fn filter_array_by_string(exported: &mut Value, table: &str, field: &str, expected: &str) {
+    if let Some(rows) = exported.get_mut(table).and_then(Value::as_array_mut) {
+        rows.retain(|row| row.get(field).and_then(Value::as_str) == Some(expected));
+    }
+}
+
+fn filter_scoped_tables_to_sessions(exported: &mut Value) {
+    let session_ids = exported
+        .get("sessions")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.get("session_id").and_then(Value::as_i64))
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+    for table in [
+        "session_participants",
+        "consent_declarations",
+        "session_events",
+    ] {
+        if let Some(rows) = exported.get_mut(table).and_then(Value::as_array_mut) {
+            rows.retain(|row| {
+                row.get("session_id")
+                    .and_then(Value::as_i64)
+                    .is_some_and(|id| session_ids.contains(&id))
+            });
+        }
+    }
+}
+
+fn export_csv(exported: &Value) -> String {
+    let mut output = String::from("table,row_json\n");
+    for table in [
+        "experiment",
+        "participants",
+        "sessions",
+        "session_participants",
+        "consent_declarations",
+        "session_events",
+    ] {
+        let Some(value) = exported.get(table) else {
+            continue;
+        };
+        if let Some(rows) = value.as_array() {
+            for row in rows {
+                push_csv_row(&mut output, table, row);
+            }
+        } else if !value.is_null() {
+            push_csv_row(&mut output, table, value);
+        }
+    }
+    output
+}
+
+fn push_csv_row(output: &mut String, table: &str, row: &Value) {
+    output.push_str(&csv_escape(table));
+    output.push(',');
+    output.push_str(&csv_escape(
+        &serde_json::to_string(row).unwrap_or_else(|_| "null".to_string()),
+    ));
+    output.push('\n');
+}
+
+fn csv_escape(value: &str) -> String {
+    if value
+        .chars()
+        .any(|ch| matches!(ch, ',' | '"' | '\n' | '\r'))
+    {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Parlando Games</title>
+  <title>Parlando Experimenter Dashboard</title>
   <style>
     :root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #182026; }
     * { box-sizing: border-box; }
@@ -1632,18 +2424,30 @@ const ADMIN_GAMES_HTML: &str = r#"<!doctype html>
     .sidebar { border-right: 1px solid #dde2e7; background: #fff; padding: 18px; overflow: auto; }
     .main { padding: 24px; overflow: auto; }
     .topline { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+    .section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 18px 0 10px; }
     h1 { font-size: 22px; line-height: 1.2; margin: 0; }
     h2 { font-size: 18px; margin: 0 0 12px; }
     .muted { color: #65717c; }
     .small { font-size: 12px; }
-    .refresh { border: 1px solid #c9d2da; background: #fff; border-radius: 6px; padding: 7px 10px; cursor: pointer; }
-    .refresh:hover { background: #f0f4f7; }
-    .game-list { display: grid; gap: 8px; }
-    .game { width: 100%; text-align: left; border: 1px solid #d9e0e6; border-radius: 8px; background: #fff; padding: 12px; cursor: pointer; }
-    .game:hover, .game.active { border-color: #2773a8; background: #f2f8fc; }
-    .game strong { display: block; color: #151b20; margin-bottom: 4px; overflow-wrap: anywhere; }
+    .refresh, .primary, select, input { border: 1px solid #c9d2da; background: #fff; border-radius: 6px; padding: 7px 10px; }
+    .refresh, .primary { cursor: pointer; }
+    .primary { background: #185f8f; border-color: #185f8f; color: #fff; font-weight: 700; }
+    .refresh:hover, .primary:hover { filter: brightness(0.97); }
+    .control-grid { display: grid; gap: 8px; }
+    .control-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+    .toggle-row { align-items: center; color: #4e5b66; display: inline-flex; font-size: 13px; gap: 8px; white-space: nowrap; }
+    .toggle-row input { height: 16px; width: 16px; }
+    .experiment-list { display: grid; gap: 8px; }
+    .experiment { width: 100%; text-align: left; border: 1px solid #d9e0e6; border-radius: 8px; background: #fff; padding: 12px; cursor: pointer; }
+    .experiment:hover, .experiment.active { border-color: #185f8f; background: #f1f7fb; }
+    .warning { border: 1px solid #f2c36b; background: #fff8e8; color: #694500; border-radius: 8px; padding: 10px; margin-top: 10px; }
+    .session-list { display: grid; gap: 8px; }
+    .session { width: 100%; text-align: left; border: 1px solid #d9e0e6; border-radius: 8px; background: #fff; padding: 12px; cursor: pointer; }
+    .session:hover, .session.active { border-color: #2773a8; background: #f2f8fc; }
+    .session strong { display: block; color: #151b20; margin-bottom: 4px; overflow-wrap: anywhere; }
     .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
     .pill { border: 1px solid #d7dee5; border-radius: 999px; padding: 3px 8px; background: #fff; color: #44515c; font-size: 12px; }
+    .pill.warning-pill { border-color: #e5b35a; background: #fff8e8; color: #6f4700; }
     .panel { background: #fff; border: 1px solid #dce2e8; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
     .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
     .label { font-size: 12px; color: #66737f; margin-bottom: 4px; }
@@ -1656,6 +2460,7 @@ const ADMIN_GAMES_HTML: &str = r#"<!doctype html>
     .event.action { border-left-color: #287a5c; }
     .event.transcript { border-left-color: #8b5a20; }
     .event.error { border-left-color: #b42318; }
+    .event.problem { border-color: #b42318; background: #fff8f7; }
     .event-line { display: grid; grid-template-columns: auto minmax(140px, 1fr) minmax(0, 2fr) auto; align-items: center; gap: 10px; }
     .role-badge { align-items: center; border-radius: 6px; display: inline-flex; font-weight: 800; height: 28px; justify-content: center; min-width: 28px; padding: 0 8px; }
     .role-a { background: #dceef8; color: #135276; }
@@ -1664,20 +2469,36 @@ const ADMIN_GAMES_HTML: &str = r#"<!doctype html>
     .event-main { min-width: 0; }
     .event-meta { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 210px; }
     .event-title { font-weight: 700; }
-    .event-text { color: #252f38; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .event-text { color: #252f38; overflow: hidden; text-overflow: ellipsis; white-space: normal; }
     .event-text:empty { display: none; }
+    .problem-badge { background: #b42318; border-radius: 999px; color: #fff; display: inline-flex; font-size: 11px; font-weight: 800; margin-left: 6px; padding: 2px 7px; text-transform: uppercase; }
+    .problem-reason { color: #9f1d16; font-size: 12px; font-weight: 650; margin-top: 5px; overflow-wrap: anywhere; }
+    .bundle-steps { color: #66737f; font-size: 12px; margin-top: 4px; }
+    .structured-action { display: grid; gap: 3px; min-width: 0; }
+    .action-type { color: #151b20; font-weight: 850; margin-bottom: 2px; }
+    .action-row { display: grid; grid-template-columns: minmax(76px, auto) minmax(0, 1fr); gap: 8px; }
+    .action-key { color: #185f8f; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; font-weight: 800; }
+    .action-value { color: #27323a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
+    .event-json-block { border-top: 1px solid #dce2e8; padding-top: 10px; margin-top: 10px; }
+    .event-json-title { color: #4e5b66; font-size: 12px; font-weight: 800; margin-bottom: 6px; }
     .expand { border: 1px solid #c9d2da; background: #fff; border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 12px; line-height: 1.2; }
     .expand:hover { background: #f0f4f7; }
     .event-json { white-space: pre-wrap; overflow-wrap: anywhere; background: #f5f7f9; border-radius: 6px; padding: 10px; margin: 10px 0 0; font-size: 12px; }
+    .event-json pre { margin: 0; white-space: pre-wrap; }
     .event-json[hidden] { display: none; }
     .empty { padding: 28px; text-align: center; color: #66737f; }
     @media (max-width: 860px) {
       .shell { grid-template-columns: 1fr; }
       .sidebar { border-right: 0; border-bottom: 1px solid #dde2e7; max-height: 44vh; }
       .grid, .participants { grid-template-columns: 1fr; }
-      .event-line { grid-template-columns: auto minmax(0, 1fr) auto; }
-      .event-text { grid-column: 2 / -1; }
-      .event-meta { min-width: 0; }
+      .control-row { grid-template-columns: 1fr; }
+      .main { padding: 14px; }
+      .event-line { grid-template-columns: 34px minmax(0, 1fr); align-items: start; gap: 9px; }
+      .role-badge { grid-column: 1; width: 28px; min-width: 28px; padding: 0; }
+      .event-main { grid-column: 2; }
+      .event-title { display: block; line-height: 1.18; }
+      .event-text { grid-column: 2; white-space: normal; overflow-wrap: anywhere; }
+      .event-meta { grid-column: 2; justify-content: space-between; min-width: 0; width: 100%; }
     }
   </style>
 </head>
@@ -1685,13 +2506,54 @@ const ADMIN_GAMES_HTML: &str = r#"<!doctype html>
   <div class="shell">
     <aside class="sidebar">
       <div class="topline">
-        <h1>Recent Games</h1>
-        <button class="refresh" id="refreshGames" title="Refresh games">Refresh</button>
+        <h1>Experimenter Dashboard</h1>
+        <button class="refresh" id="refreshSessions" title="Refresh sessions">Refresh</button>
       </div>
-      <div id="gameList" class="game-list"><div class="empty">Loading games...</div></div>
+      <section class="control-grid" aria-label="Experiments">
+        <div class="section-title">
+          <h2>Experiments</h2>
+          <button class="primary" id="createExperiment" title="Create draft experiment">New</button>
+        </div>
+        <input id="newExperimentId" placeholder="Optional experiment id">
+        <div id="experimentList" class="experiment-list"><div class="empty">Loading experiments...</div></div>
+      </section>
+      <div class="section-title">
+        <h2>Sessions</h2>
+        <select id="sessionStatusFilter" title="Filter sessions by status">
+          <option value="">All</option>
+          <option value="waiting">Waiting</option>
+          <option value="playing">Active</option>
+          <option value="completed">Completed</option>
+        </select>
+      </div>
+      <div id="sessionList" class="session-list"><div class="empty">Loading sessions...</div></div>
     </aside>
     <main class="main">
-      <section class="panel" id="summary"><div class="empty">Select a game to inspect metadata and events.</div></section>
+      <section class="panel">
+        <div class="topline">
+          <h2>Export</h2>
+          <span id="activeExperimentLabel" class="muted small">No experiment selected.</span>
+        </div>
+        <div class="control-grid">
+          <div class="control-row">
+            <select id="exportScope" title="Export scope">
+              <option value="experiment">Selected experiment</option>
+              <option value="session">Selected session</option>
+            </select>
+            <select id="exportFormat" title="Export format">
+              <option value="json">JSON</option>
+              <option value="yaml">YAML</option>
+              <option value="csv">CSV</option>
+            </select>
+          </div>
+          <div class="control-row">
+            <input id="eventTypeFilter" placeholder="Optional event type filter">
+            <button class="primary" id="downloadExport">Export</button>
+          </div>
+        </div>
+      </section>
+      <section class="panel" id="reproducibility"><div class="empty">Loading version manifest...</div></section>
+      <section class="panel" id="summary"><div class="empty">Select a session to inspect metadata and events.</div></section>
       <section class="panel">
         <h2>Players</h2>
         <div id="participants" class="participants"><div class="muted">No game selected.</div></div>
@@ -1699,6 +2561,10 @@ const ADMIN_GAMES_HTML: &str = r#"<!doctype html>
       <section>
         <div class="topline">
           <h2>Important Events</h2>
+          <label class="toggle-row" title="Show participant, session, and voice setup events">
+            <input id="showHousekeeping" type="checkbox">
+            <span>Show setup</span>
+          </label>
           <span id="liveStatus" class="muted small">Idle</span>
         </div>
         <div id="timeline" class="timeline"></div>
@@ -1706,12 +2572,17 @@ const ADMIN_GAMES_HTML: &str = r#"<!doctype html>
     </main>
   </div>
   <script>
-    const state = { games: [], selected: null, lastEventIndex: 0, timer: null };
-    const gameList = document.getElementById('gameList');
+    const state = { experiments: [], activeExperimentId: null, sessions: [], selected: null, events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null };
+    const experimentList = document.getElementById('experimentList');
+    const sessionList = document.getElementById('sessionList');
     const summary = document.getElementById('summary');
     const participants = document.getElementById('participants');
     const timeline = document.getElementById('timeline');
     const liveStatus = document.getElementById('liveStatus');
+    const reproducibility = document.getElementById('reproducibility');
+    const activeExperimentLabel = document.getElementById('activeExperimentLabel');
+    const sessionStatusFilter = document.getElementById('sessionStatusFilter');
+    const showHousekeeping = document.getElementById('showHousekeeping');
 
     function fmtTime(value) {
       if (!value) return '-';
@@ -1723,54 +2594,123 @@ const ADMIN_GAMES_HTML: &str = r#"<!doctype html>
       return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
     }
 
-    function renderGames() {
-      if (!state.games.length) {
-        gameList.innerHTML = '<div class="empty">No games in this experiment yet.</div>';
+    function renderExperiments() {
+      if (!state.experiments.length) {
+        experimentList.innerHTML = '<div class="empty">No experiments yet.</div>';
         return;
       }
-      gameList.innerHTML = state.games.map(game => `
-        <button class="game ${state.selected === game.session_id ? 'active' : ''}" data-session="${game.session_id}">
-          <strong>#${game.session_id} ${escapeHtml(game.room_id)}</strong>
-          <span class="muted small">${escapeHtml(fmtTime(game.created_at))}</span>
+      experimentList.innerHTML = state.experiments.map(experiment => `
+        <button class="experiment ${state.activeExperimentId === experiment.experiment_id ? 'active' : ''}" data-experiment="${escapeHtml(experiment.experiment_id)}">
+          <strong>${escapeHtml(experiment.study_name || experiment.experiment_id)}</strong>
+          ${experiment.study_name ? `<span class="muted small">${escapeHtml(experiment.experiment_id)}</span>` : ''}
           <span class="meta">
-            <span class="pill">${escapeHtml(game.status)}</span>
-            <span class="pill">${game.participant_count} players</span>
-            <span class="pill">${game.event_count} events</span>
+            <span class="pill">${escapeHtml(experiment.status)}</span>
+            <span class="pill">${experiment.session_count} sessions</span>
+            <span class="pill">${experiment.completed_session_count} completed</span>
           </span>
         </button>
       `).join('');
-      gameList.querySelectorAll('.game').forEach(button => {
-        button.addEventListener('click', () => selectGame(Number(button.dataset.session)));
+      experimentList.querySelectorAll('.experiment').forEach(button => {
+        button.addEventListener('click', () => {
+          state.activeExperimentId = button.dataset.experiment;
+          state.selected = null;
+          renderExperiments();
+          renderReproducibility();
+          loadSessions();
+        });
       });
     }
 
-    async function loadGames() {
-      const response = await fetch('/api/admin/games?limit=80');
-      const data = await response.json();
-      state.games = data.games || [];
-      renderGames();
-      if (!state.selected && state.games[0]) selectGame(state.games[0].session_id);
+    function renderReproducibility() {
+      const experiment = state.experiments.find(item => item.experiment_id === state.activeExperimentId);
+      const manifest = experiment?.version_manifest || state.versionManifest || {};
+      const warnings = manifest.warnings || [];
+      activeExperimentLabel.textContent = state.activeExperimentId ? `Experiment ${state.activeExperimentId}` : 'No experiment selected.';
+      reproducibility.innerHTML = `
+        <h2>Reproducibility</h2>
+        <div class="grid">
+          <div><div class="label">Server</div><div class="value">${escapeHtml(manifest.server?.version || experiment?.server_version || '-')}</div></div>
+          <div><div class="label">Server Git</div><div class="value">${escapeHtml(shortSha(manifest.server?.git_sha))}</div></div>
+          <div><div class="label">Game</div><div class="value">${escapeHtml(manifest.game?.version || '-')}</div></div>
+          <div><div class="label">Game Git</div><div class="value">${escapeHtml(shortSha(manifest.game?.git_sha))}</div></div>
+          <div><div class="label">Client</div><div class="value">${escapeHtml(manifest.game?.client?.version || '-')}</div></div>
+          <div><div class="label">Client SDK</div><div class="value">${escapeHtml(manifest.game?.client?.package_version || '-')}</div></div>
+        </div>
+        ${warnings.length ? warnings.map(warning => `<div class="warning">${escapeHtml(warning.message || warning.dependency || JSON.stringify(warning))}</div>`).join('') : '<p class="muted small">No local development dependency warnings recorded.</p>'}
+      `;
     }
 
-    async function selectGame(sessionId) {
+    function shortSha(value) {
+      if (!value) return '-';
+      return String(value).slice(0, 12);
+    }
+
+    function renderSessions() {
+      if (!state.sessions.length) {
+        sessionList.innerHTML = '<div class="empty">No sessions in this experiment yet.</div>';
+        return;
+      }
+      sessionList.innerHTML = state.sessions.map(session => `
+        <button class="session ${state.selected === session.session_id ? 'active' : ''}" data-session="${session.session_id}">
+          <strong>Session #${session.session_id}</strong>
+          <span class="muted small">Room ${escapeHtml(session.room_id)} · ${escapeHtml(fmtTime(session.created_at))}</span>
+          <span class="meta">
+            <span class="pill">${escapeHtml(session.status)}</span>
+            <span class="pill">${session.participant_count} players</span>
+            <span class="pill">${session.event_count} events</span>
+          </span>
+        </button>
+      `).join('');
+      sessionList.querySelectorAll('.session').forEach(button => {
+        button.addEventListener('click', () => selectSession(Number(button.dataset.session)));
+      });
+    }
+
+    async function loadSessions() {
+      const params = new URLSearchParams({ limit: '80' });
+      if (state.activeExperimentId) params.set('experiment_id', state.activeExperimentId);
+      if (sessionStatusFilter.value) params.set('status', sessionStatusFilter.value);
+      const response = await fetch(`/api/admin/sessions?${params}`);
+      const data = await response.json();
+      state.sessions = data.sessions || data.games || [];
+      state.activeExperimentId = data.experiment_id || state.activeExperimentId;
+      renderSessions();
+      if (!state.selected && state.sessions[0]) selectSession(state.sessions[0].session_id);
+    }
+
+    async function loadExperiments() {
+      const response = await fetch('/api/admin/experiments?limit=100');
+      const data = await response.json();
+      state.experiments = data.experiments || [];
+      state.versionManifest = data.version_manifest || null;
+      state.activeExperimentId = state.activeExperimentId || data.active_experiment_id || state.experiments[0]?.experiment_id || null;
+      renderExperiments();
+      renderReproducibility();
+    }
+
+    async function selectSession(sessionId) {
       state.selected = sessionId;
       state.lastEventIndex = 0;
-      renderGames();
+      renderSessions();
       clearInterval(state.timer);
       liveStatus.textContent = 'Loading';
-      const response = await fetch(`/api/admin/games/${sessionId}`);
+      const detailParams = new URLSearchParams();
+      if (state.activeExperimentId) detailParams.set('experiment_id', state.activeExperimentId);
+      const response = await fetch(`/api/admin/sessions/${sessionId}?${detailParams}`);
       const data = await response.json();
       renderSummary(data.session);
       renderParticipants(data.participants || []);
-      timeline.innerHTML = '';
-      appendEvents(data.events || []);
+      state.events = [];
+      state.eventBundles = data.event_bundles || [];
+      mergeEvents(data.events || []);
+      renderEventBundles();
       state.timer = setInterval(refreshEvents, 1500);
       liveStatus.textContent = 'Live refresh on';
     }
 
     function renderSummary(session) {
       summary.innerHTML = `
-        <h2>Game #${escapeHtml(session.session_id)}</h2>
+        <h2>Session #${escapeHtml(session.session_id)}</h2>
         <div class="grid">
           <div><div class="label">Room</div><div class="value">${escapeHtml(session.room_id)}</div></div>
           <div><div class="label">Mode</div><div class="value">${escapeHtml(session.mode)}</div></div>
@@ -1789,16 +2729,28 @@ const ADMIN_GAMES_HTML: &str = r#"<!doctype html>
             <div class="meta">
               <span class="pill">${escapeHtml(row.connection_status)}</span>
               <span class="pill">${escapeHtml(row.participant_kind || 'participant')}</span>
+              ${agentParticipantPills(row)}
             </div>
           </div>
         </div>
       `).join('') : '<div class="muted">No players recorded.</div>';
     }
 
-    function eventClass(event) {
-      if (event.event_type.includes('rejected')) return 'error';
-      if (event.event_type.includes('action')) return 'action';
-      if (event.event_type.includes('transcript') || event.detail?.origin === 'voice_transcript') return 'transcript';
+    function agentParticipantPills(row) {
+      if (row.participant_kind !== 'agent') return '';
+      const metadata = row.metadata || {};
+      const type = metadata.agent_type || metadata.agent_name;
+      const version = metadata.agent_version;
+      return `
+        <span class="pill ${type ? '' : 'warning-pill'}">Agent: ${escapeHtml(type || 'type missing')}</span>
+        <span class="pill ${version ? '' : 'warning-pill'}">Version: ${escapeHtml(version || 'missing')}</span>
+      `;
+    }
+
+    function eventClass(bundle) {
+      if (bundle.problem) return 'problem';
+      if (bundle.kind === 'action') return 'action';
+      if (bundle.kind === 'voice' || bundle.kind === 'transcript') return 'transcript';
       return '';
     }
 
@@ -1815,51 +2767,125 @@ const ADMIN_GAMES_HTML: &str = r#"<!doctype html>
     }
 
     // Returns only extra event text that is not already implied by the title and badge.
-    function eventSummary(event) {
-      if (event.text) return event.text;
-      if (event.event_type === 'voice_diagnostic' && event.detail?.event) return event.detail.event;
-      if (event.event_type.includes('action') && event.detail?.action) return JSON.stringify(event.detail.action);
-      return '';
+    function mergeEvents(events) {
+      const known = new Set(state.events.map(event => `${event.event_id}:${event.event_index}`));
+      for (const event of events) {
+        const key = `${event.event_id}:${event.event_index}`;
+        if (known.has(key)) continue;
+        known.add(key);
+        state.events.push(event);
+        state.lastEventIndex = Math.max(state.lastEventIndex, event.event_index);
+      }
+      state.events.sort((left, right) => left.event_index - right.event_index);
     }
 
-    function appendEvents(events) {
-      for (const event of events) {
-        state.lastEventIndex = Math.max(state.lastEventIndex, event.event_index);
-        const jsonId = `event-json-${event.event_id}-${event.event_index}`;
-        const rawJson = JSON.stringify(event.raw || event, null, 2);
-        const summary = eventSummary(event);
+    function renderEventBundles() {
+      const bundles = (state.eventBundles || []).filter(bundle => showHousekeeping.checked || !bundle.housekeeping);
+      timeline.innerHTML = '';
+      for (const bundle of bundles) {
+        const jsonId = `event-bundle-${bundle.first_index}-${bundle.last_index}`;
+        const rawHtml = bundle.events.map(event => `
+          <div class="event-json-block">
+            <div class="event-json-title">#${event.event_index} ${escapeHtml(event.title || event.event_type)} · ${escapeHtml(fmtTime(event.created_at))}</div>
+            ${actionFromEvent(event) ? `<div class="structured-action">${prettyAction(actionFromEvent(event), eventRole(event))}</div>` : ''}
+            <pre>${escapeHtml(JSON.stringify(event.raw || event, null, 2))}</pre>
+          </div>
+        `).join('');
         timeline.insertAdjacentHTML('beforeend', `
-          <article class="event ${eventClass(event)}">
+          <article class="event ${eventClass(bundle)}">
             <div class="event-line">
-              ${roleBadge(eventRole(event))}
+              ${roleBadge(bundle.role)}
               <div class="event-main">
-                <span class="event-title">${escapeHtml(event.title)}</span>
-                <span class="muted small">#${event.event_index}</span>
+                <span class="event-title">${escapeHtml(bundle.title)}${bundle.problem ? '<span class="problem-badge">Problem</span>' : ''}</span>
+                <span class="muted small">#${bundle.first_index}${bundle.first_index === bundle.last_index ? '' : `-${bundle.last_index}`}</span>
+                ${bundle.steps ? `<div class="bundle-steps">${escapeHtml(bundle.steps)}</div>` : ''}
+                ${bundle.problem_reason ? `<div class="problem-reason">${escapeHtml(bundle.problem_reason)}</div>` : ''}
               </div>
-              <div class="event-text">${escapeHtml(summary)}</div>
+              <div class="event-text">${bundle.action ? `<div class="structured-action">${prettyAction(bundle.action, bundle.role)}</div>` : escapeHtml(bundle.text || '')}</div>
               <div class="event-meta">
-                <span class="muted small">${escapeHtml(fmtTime(event.created_at))}</span>
+                <span class="muted small">${escapeHtml(fmtTime(bundle.created_at))}</span>
                 <button class="expand" type="button" aria-expanded="false" aria-controls="${jsonId}" data-target="${jsonId}">JSON</button>
               </div>
             </div> 
-            <pre class="event-json" id="${jsonId}" hidden>${escapeHtml(rawJson)}</pre>
+            <div class="event-json" id="${jsonId}" hidden>${rawHtml}</div>
           </article>
         `);
       }
-      if (!timeline.children.length) timeline.innerHTML = '<div class="empty">No important events recorded yet.</div>';
+      if (!timeline.children.length) timeline.innerHTML = '<div class="empty">No action or message events recorded yet.</div>';
+    }
+
+    function actionFromEvent(event) {
+      return event.detail?.action || event.raw?.payload?.action || event.payload?.action || null;
+    }
+
+    function prettyAction(action, role) {
+      if (!action || typeof action !== 'object') return escapeHtml(String(action ?? ''));
+      const type = action.type;
+      const rows = Object.entries(action).filter(([key, value]) => {
+        if (key === 'type') return false;
+        if (key === 'player' && role && value === role) return false;
+        return true;
+      }).map(([key, value]) => `
+        <div class="action-row">
+          <span class="action-key">${escapeHtml(key)}</span>
+          <span class="action-value">${escapeHtml(formatActionValue(value))}</span>
+        </div>
+      `).join('');
+      return `${type ? `<strong class="action-type">${escapeHtml(type)}</strong>` : ''}${rows}`;
+    }
+
+    function formatActionValue(value) {
+      if (value === null) return 'null';
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+      return JSON.stringify(value);
     }
 
     async function refreshEvents() {
       if (!state.selected) return;
-      const response = await fetch(`/api/admin/games/${state.selected}/events?after=${state.lastEventIndex}`);
+      const params = new URLSearchParams({ after: String(state.lastEventIndex) });
+      if (state.activeExperimentId) params.set('experiment_id', state.activeExperimentId);
+      const response = await fetch(`/api/admin/sessions/${state.selected}/events?${params}`);
       const data = await response.json();
-      const empty = timeline.querySelector('.empty');
-      if (empty && data.events?.length) empty.remove();
-      appendEvents(data.events || []);
+      state.eventBundles = data.event_bundles || state.eventBundles;
+      mergeEvents(data.events || []);
+      renderEventBundles();
       liveStatus.textContent = `Last checked ${new Date().toLocaleTimeString()}`;
     }
 
-    document.getElementById('refreshGames').addEventListener('click', loadGames);
+    document.getElementById('refreshSessions').addEventListener('click', loadSessions);
+    showHousekeeping.addEventListener('change', renderEventBundles);
+    sessionStatusFilter.addEventListener('change', () => {
+      state.selected = null;
+      loadSessions();
+    });
+    document.getElementById('createExperiment').addEventListener('click', async () => {
+      const input = document.getElementById('newExperimentId');
+      const body = { status: 'draft', experiment_id: input.value.trim() || null };
+      const response = await fetch('/api/admin/experiments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const data = await response.json();
+      input.value = '';
+      state.activeExperimentId = data.experiment_id;
+      await loadExperiments();
+      await loadSessions();
+    });
+    document.getElementById('downloadExport').addEventListener('click', () => {
+      if (!state.activeExperimentId) return;
+      const params = new URLSearchParams({
+        experiment_id: state.activeExperimentId,
+        format: document.getElementById('exportFormat').value
+      });
+      if (document.getElementById('exportScope').value === 'session' && state.selected) {
+        params.set('session_id', String(state.selected));
+      }
+      const eventType = document.getElementById('eventTypeFilter').value.trim();
+      if (eventType) params.set('event_type', eventType);
+      window.location.href = `/api/admin/export?${params}`;
+    });
     timeline.addEventListener('click', event => {
       const button = event.target.closest('.expand');
       if (!button) return;
@@ -1870,13 +2896,13 @@ const ADMIN_GAMES_HTML: &str = r#"<!doctype html>
       button.textContent = expanded ? 'JSON' : 'Hide';
       panel.hidden = expanded;
     });
-    loadGames().catch(error => {
-      gameList.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+    loadExperiments().then(loadSessions).catch(error => {
+      sessionList.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
     });
   </script>
 </body>
 </html>
-"#;
+"##;
 
 async fn game_socket<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
@@ -2438,6 +3464,8 @@ async fn maybe_start_agent<A: GameAdapter>(
     }
     tokio::spawn(async move {
         let role_name = role.as_str().to_string();
+        let agent_identity = factory.participant_identity();
+        let agent_metadata = agent_identity.metadata.clone();
         {
             let mut memory = state.memory.write().await;
             if let Some(room) = memory.rooms.get_mut(&room_id) {
@@ -2461,7 +3489,10 @@ async fn maybe_start_agent<A: GameAdapter>(
             &room_id,
             Some(&participant_session_id),
             "participant_connected",
-            json!({"source": "agent"}),
+            json!({
+                "source": "agent",
+                "agent": agent_event_metadata(&agent_metadata),
+            }),
             None,
         )
         .await;
@@ -2489,7 +3520,10 @@ async fn maybe_start_agent<A: GameAdapter>(
             &room_id,
             Some(&participant_session_id),
             "agent_started",
-            json!({"role": role_name}),
+            json!({
+                "role": role_name,
+                "agent": agent_event_metadata(&agent_metadata),
+            }),
             None,
         )
         .await;
@@ -2939,10 +3973,276 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::agents::{AgentInitContext, GameAgent};
-    use crate::config::{AgentsConfig, AgentsMode, DirectConfig, ExperimentIdentityConfig};
+    use crate::config::{
+        AgentsConfig, AgentsMode, DatabaseConfig, DirectConfig, ExperimentIdentityConfig,
+    };
     use crate::game::PlayerRole;
 
     use super::*;
+
+    fn admin_test_event(index: i64, event_type: &str, role: Option<&str>, payload: Value) -> Value {
+        let stored = crate::storage::StoredSessionEvent {
+            event_id: index,
+            experiment_id: "experiment".to_string(),
+            session_id: 1,
+            event_index: index,
+            event_type: event_type.to_string(),
+            actor_participant_id: None,
+            actor_role: role.map(str::to_string),
+            payload,
+            game_state: None,
+            created_at: format!("2026-07-11T20:15:{index:02}.000000+00:00"),
+        };
+        admin_event_summary(stored)
+    }
+
+    #[test]
+    fn admin_event_bundles_close_ready_before_later_disconnect() {
+        let events = vec![
+            admin_test_event(1, "session_created", None, json!({"room_id": "571EBA"})),
+            admin_test_event(2, "participant_joined", Some("A"), json!({"role": "A"})),
+            admin_test_event(3, "participant_joined", Some("B"), json!({"role": "B"})),
+            admin_test_event(4, "participant_connected", Some("A"), Value::Null),
+            admin_test_event(5, "ready", Some("A"), Value::Null),
+            admin_test_event(
+                8,
+                "participant_connected",
+                Some("B"),
+                json!({"source": "agent"}),
+            ),
+            admin_test_event(133, "participant_disconnected", Some("A"), Value::Null),
+        ];
+
+        let bundles = admin_event_bundles(&events);
+
+        let a_ready = bundles
+            .iter()
+            .find(|bundle| {
+                bundle["kind"] == "participant"
+                    && bundle["role"] == "A"
+                    && bundle["first_index"] == 2
+            })
+            .unwrap();
+        assert_eq!(a_ready["first_index"], 2);
+        assert_eq!(a_ready["last_index"], 5);
+        assert_eq!(a_ready["problem"], false);
+        assert_eq!(a_ready["housekeeping"], true);
+
+        let a_disconnect = bundles
+            .iter()
+            .find(|bundle| {
+                bundle["kind"] == "participant"
+                    && bundle["role"] == "A"
+                    && bundle["first_index"] == 133
+            })
+            .unwrap();
+        assert_eq!(a_disconnect["first_index"], 133);
+        assert_eq!(a_disconnect["last_index"], 133);
+        assert_eq!(a_disconnect["problem"], true);
+        assert_eq!(a_disconnect["title"], "Participant");
+    }
+
+    #[test]
+    fn admin_event_bundles_merge_interleaved_action_events_by_action() {
+        let action = json!({"type": "moveStep", "player": "B", "direction": "down"});
+        let events = vec![
+            admin_test_event(70, "agent_action", Some("B"), json!({"action": action})),
+            admin_test_event(
+                71,
+                "game_action_accepted",
+                Some("B"),
+                json!({"action": {"type": "moveStep", "player": "B", "direction": "down"}}),
+            ),
+            admin_test_event(
+                72,
+                "conversation_message",
+                Some("A"),
+                json!({"origin": "voice_transcript", "sender_role": "A", "text": "Guten Abend."}),
+            ),
+        ];
+
+        let bundles = admin_event_bundles(&events);
+
+        let accepted = bundles
+            .iter()
+            .find(|bundle| bundle["title"] == "Action" && bundle["role"] == "B")
+            .unwrap();
+        assert_eq!(accepted["first_index"], 70);
+        assert_eq!(accepted["last_index"], 71);
+        assert_eq!(accepted["problem"], false);
+        assert_eq!(accepted["housekeeping"], false);
+        assert_eq!(accepted["action"]["type"], "moveStep");
+        assert_eq!(accepted["action"]["direction"], "down");
+    }
+
+    #[test]
+    fn admin_event_bundles_hide_routine_voice_rows_but_keep_setup_status() {
+        let events = vec![
+            admin_test_event(
+                6,
+                "voice_diagnostic",
+                Some("A"),
+                json!({"event": "voice_connect_requested"}),
+            ),
+            admin_test_event(
+                7,
+                "voice_diagnostic",
+                Some("A"),
+                json!({"event": "stt_initialized"}),
+            ),
+            admin_test_event(
+                10,
+                "voice_diagnostic",
+                Some("A"),
+                json!({"event": "voice_token_received"}),
+            ),
+            admin_test_event(
+                11,
+                "voice_diagnostic",
+                Some("A"),
+                json!({"event": "transcription_stream_connecting"}),
+            ),
+            admin_test_event(
+                15,
+                "voice_diagnostic",
+                Some("A"),
+                json!({"event": "transcription_stream_started"}),
+            ),
+            admin_test_event(
+                18,
+                "voice_diagnostic",
+                Some("A"),
+                json!({"event": "local_track_published"}),
+            ),
+        ];
+
+        let bundles = admin_event_bundles(&events);
+
+        assert!(bundles.iter().all(|bundle| !bundle["steps"]
+            .as_str()
+            .unwrap_or("")
+            .contains("voice_token_received")));
+        assert!(bundles.iter().all(|bundle| !bundle["steps"]
+            .as_str()
+            .unwrap_or("")
+            .contains("local_track_published")));
+        let voice_bundles = bundles
+            .iter()
+            .filter(|bundle| bundle["kind"] == "voice" && bundle["role"] == "A")
+            .collect::<Vec<_>>();
+        assert_eq!(voice_bundles.len(), 1);
+        let stream_bundle = voice_bundles[0];
+        assert_eq!(stream_bundle["first_index"], 6);
+        assert_eq!(stream_bundle["last_index"], 15);
+        assert_eq!(stream_bundle["title"], "Voice");
+        assert_eq!(stream_bundle["problem"], false);
+        assert_eq!(stream_bundle["problem_reason"], Value::Null);
+        assert_eq!(stream_bundle["housekeeping"], true);
+    }
+
+    #[test]
+    fn admin_event_bundles_keep_late_teardown_after_completion_non_problematic() {
+        let events = vec![
+            admin_test_event(131, "session_completed", Some("B"), json!({"done": true})),
+            admin_test_event(133, "participant_disconnected", Some("A"), Value::Null),
+            admin_test_event(
+                134,
+                "voice_diagnostic",
+                Some("A"),
+                json!({"event": "transcription_stream_disconnected"}),
+            ),
+            admin_test_event(
+                135,
+                "voice_diagnostic",
+                Some("A"),
+                json!({"event": "livekit_disconnected"}),
+            ),
+        ];
+
+        let bundles = admin_event_bundles(&events);
+
+        let participant_teardown = bundles
+            .iter()
+            .find(|bundle| bundle["kind"] == "participant" && bundle["first_index"] == 133)
+            .unwrap();
+        assert_eq!(participant_teardown["problem"], false);
+        assert_eq!(participant_teardown["problem_reason"], Value::Null);
+
+        let voice_teardown = bundles
+            .iter()
+            .find(|bundle| bundle["kind"] == "voice" && bundle["first_index"] == 134)
+            .unwrap();
+        assert_eq!(voice_teardown["problem"], false);
+        assert_eq!(voice_teardown["problem_reason"], Value::Null);
+    }
+
+    #[test]
+    fn admin_event_bundles_do_not_flag_pending_agent_actions_after_disconnect() {
+        let events = vec![
+            admin_test_event(133, "participant_disconnected", Some("A"), Value::Null),
+            admin_test_event(
+                136,
+                "agent_action",
+                Some("B"),
+                json!({"action": {"type": "moveStep", "player": "B", "direction": "down"}}),
+            ),
+            admin_test_event(
+                137,
+                "agent_action",
+                Some("B"),
+                json!({"action": {"type": "moveStep", "player": "B", "direction": "up"}}),
+            ),
+            admin_test_event(
+                138,
+                "agent_action",
+                Some("B"),
+                json!({"action": {"type": "moveStep", "player": "B", "direction": "down"}}),
+            ),
+        ];
+
+        let bundles = admin_event_bundles(&events);
+
+        let disconnect = bundles
+            .iter()
+            .find(|bundle| bundle["first_index"] == 133)
+            .unwrap();
+        assert_eq!(disconnect["problem"], true);
+
+        let late_actions = bundles
+            .iter()
+            .filter(|bundle| bundle["kind"] == "action")
+            .collect::<Vec<_>>();
+        assert_eq!(late_actions.len(), 3);
+        assert!(late_actions
+            .iter()
+            .all(|bundle| bundle["problem"] == false && bundle["problem_reason"] == Value::Null));
+    }
+
+    #[test]
+    fn admin_event_bundles_merge_transcript_storage_and_display_rows() {
+        let events = vec![
+            admin_test_event(
+                73,
+                "transcript_segment",
+                Some("A"),
+                json!({"player": "A", "text": "Guten Abend."}),
+            ),
+            admin_test_event(
+                74,
+                "conversation_message",
+                Some("A"),
+                json!({"origin": "voice_transcript", "sender_role": "A", "text": "Guten Abend"}),
+            ),
+        ];
+
+        let bundles = admin_event_bundles(&events);
+
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0]["title"], "Voice Message");
+        assert_eq!(bundles[0]["first_index"], 73);
+        assert_eq!(bundles[0]["last_index"], 74);
+        assert_eq!(bundles[0]["text"], "Guten Abend.");
+    }
 
     #[derive(Clone, Debug, Deserialize, Serialize)]
     struct TinyState {
@@ -3253,9 +4553,11 @@ mod tests {
 
     #[tokio::test]
     async fn reusable_router_builds_with_typed_adapter() {
+        let mut config = ExperimentConfig::default();
+        config.database.url = "sqlite:///:memory:".to_string();
         let _router = build_router(
             TinyAdapter,
-            ExperimentConfig::default(),
+            config,
             ServeOptions {
                 agent_factory: None,
                 ..ServeOptions::default()
@@ -3269,6 +4571,9 @@ mod tests {
         ExperimentConfig {
             experiment: ExperimentIdentityConfig {
                 id: Some("step5".to_string()),
+            },
+            database: DatabaseConfig {
+                url: "sqlite:///:memory:".to_string(),
             },
             direct: DirectConfig {
                 enabled: true,

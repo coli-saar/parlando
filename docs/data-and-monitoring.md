@@ -2,6 +2,12 @@
 
 Parlando records study data as durable session events in SQLite. The event stream is intended to support later analysis without relying on active runtime memory or browser-local state.
 
+## Terms
+
+- **Game** means the binary/client/adapter/agent implementation being run.
+- **Experiment** means one data-collection campaign using that game.
+- **Session** means one play-through inside an experiment.
+
 ## Persisted Data
 
 Parlando stores durable study data through the reusable `ExperimentStore` abstraction. The current implementation uses SQLite.
@@ -21,9 +27,9 @@ Room ids and participant-session ids are useful during live play. Evaluation dat
 
 ## Operator Monitor
 
-Use `/admin/games` for quick inspection during a study run. The monitor reads from the database, lists recent sessions, and shows a compact timeline of actions, conversation messages, and transcripts.
+Use `/admin/experiments` for quick inspection during a study run. The dashboard reads from the database, lists experiments and their sessions, and shows a compact session timeline of actions, conversation messages, and transcripts. The older `/admin/games` route remains as a compatibility alias.
 
-The monitor intentionally summarizes event rows. Use export when you need full structured payloads.
+The dashboard intentionally summarizes event rows. Use export when you need full structured payloads.
 
 ## Export
 

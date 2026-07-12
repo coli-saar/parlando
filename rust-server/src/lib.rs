@@ -12,7 +12,9 @@ pub mod speechmatics;
 pub mod storage;
 pub mod tts;
 
-pub use agents::{AgentFactory, AgentInitContext, AgentResult, GameAgent};
+pub use agents::{
+    AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResult, GameAgent,
+};
 pub use app::{build_router, serve, AppState, ServeOptions};
 pub use audio_publisher::{AgentAudioPublisher, AudioPublishSummary, LiveKitAgentAudioPublisher};
 pub use config::ExperimentConfig;

@@ -12,9 +12,9 @@ import {
   type ServerMessage,
   type VoicePreflight,
   type VoiceStatus
-} from "@parlando/client";
-import { LiveKitPartnerAudioSink } from "@parlando/client/livekit";
-import { SpeechmaticsTranscriptionSink } from "@parlando/client/speechmatics";
+} from "@coli-saar/parlando-client";
+import { LiveKitPartnerAudioSink } from "@coli-saar/parlando-client/livekit";
+import { SpeechmaticsTranscriptionSink } from "@coli-saar/parlando-client/speechmatics";
 import {
   MicLevelMeter,
   TranscriptionProgress,
@@ -22,7 +22,7 @@ import {
   VoiceJoinButton,
   VoicePreparationControls,
   VoiceStatusChip
-} from "@parlando/client/react";
+} from "@coli-saar/parlando-client/react";
 import {
   cells,
   devices,

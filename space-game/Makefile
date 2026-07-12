@@ -6,32 +6,32 @@ CLIENT_DIR := $(SPACE_GAME_DIR)/client
 JS_CLIENT_DIR := $(PARLANDO_DIR)/js-client
 LOCAL_PREFIX ?= $(PARLANDO_DIR)/.local
 LOCAL_BIN := $(LOCAL_PREFIX)/bin
+NPM_CACHE ?= $(PARLANDO_DIR)/.local/npm-cache
 
 HOST ?= 127.0.0.1
 PORT ?= 8000
 CONFIG ?= $(SPACE_GAME_DIR)/config/experiment.local-rust.yaml
 SERVER_BIN ?= $(LOCAL_BIN)/parlando-space-game
-CLIENT_PACKAGE ?= @parlando/client
+CLIENT_PACKAGE ?= @coli-saar/parlando-client
 CLIENT_VERSION ?= 0.1.0
-YALC_STORE := $(shell yalc dir 2>/dev/null)
-LOCAL_CLIENT_PACKAGE := $(YALC_STORE)/packages/@parlando/client/$(CLIENT_VERSION)
+LOCAL_CLIENT_PACKAGE := $(JS_CLIENT_DIR)
 
-.PHONY: all install-local install-server package-client-local check-server check-client-package install-client-deps build-client build run run-solo-voice clean-client clean
+.PHONY: all install-local install-server prepare-client-local check-server check-client-package install-client-deps build-client build run run-solo-voice clean-client clean
 
 # Default workflow: build the Space Game browser client and verify the server binary.
 all: build
 
 # Install the Space Game server binary and prepare the shared browser client locally.
-install-local: install-server package-client-local
+install-local: install-server prepare-client-local
 
 # Build and install the Space Game Rust server binary into the repository-local .local/bin.
 install-server:
 	cd "$(PARLANDO_DIR)" && cargo install --path space-game/server --root "$(LOCAL_PREFIX)" --force
 
-# Install and yalc-link the shared JavaScript client package used by the Space Game client.
-package-client-local:
-	cd "$(JS_CLIENT_DIR)" && npm install
-	cd "$(JS_CLIENT_DIR)" && npm run yalc
+# Build the shared JavaScript client package used by the Space Game client.
+prepare-client-local:
+	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" install
+	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" run build
 
 # Verify that the configured Space Game server binary is available.
 check-server:
@@ -40,20 +40,20 @@ check-server:
 		exit 1; \
 	}
 
-# Verify that the shared JavaScript client is available in the local yalc store.
+# Verify that the shared JavaScript client checkout has been built.
 check-client-package:
-	@test -f "$(LOCAL_CLIENT_PACKAGE)/package.json" || { \
-		echo "Missing local yalc package $(CLIENT_PACKAGE)@$(CLIENT_VERSION). Run 'make package-client-local' from this directory."; \
+	@test -f "$(LOCAL_CLIENT_PACKAGE)/package.json" && test -f "$(LOCAL_CLIENT_PACKAGE)/dist/index.js" || { \
+		echo "Missing built local package $(CLIENT_PACKAGE)@$(CLIENT_VERSION). Run 'make prepare-client-local' from this directory."; \
 		exit 1; \
 	}
 
-# Install the local yalc copy of @parlando/client into the Space Game browser app.
+# Install the local path copy of @coli-saar/parlando-client into the Space Game browser app.
 install-client-deps: check-client-package
-	cd "$(CLIENT_DIR)" && npm install --no-save "$(LOCAL_CLIENT_PACKAGE)"
+	cd "$(CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" install --no-save "file:$(LOCAL_CLIENT_PACKAGE)"
 
 # Build the Space Game browser client.
 build-client: install-client-deps
-	cd "$(CLIENT_DIR)" && npm run build
+	cd "$(CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" run build
 
 # Prepare local dependencies, build the browser client, and verify the server binary.
 build: install-local build-client check-server
@@ -69,7 +69,7 @@ run-solo-voice:
 
 # Remove generated browser-client dependencies and build output.
 clean-client:
-	cd "$(CLIENT_DIR)" && rm -rf dist node_modules .yalc yalc.lock package-lock.json
+	cd "$(CLIENT_DIR)" && rm -rf dist node_modules package-lock.json
 
 # Remove generated Space Game artifacts.
 clean: clean-client

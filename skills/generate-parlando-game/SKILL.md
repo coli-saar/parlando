@@ -5,7 +5,7 @@ description: Generate complete Parlando dialogue games from a study/game descrip
 
 # Generate Parlando Game
 
-Use this skill to turn a game or experiment idea into a working Parlando game. Assume Parlando's Rust server support is installed through Cargo and the JavaScript client is installed through yalc as `@parlando/client`. Do not make generated game projects depend on sibling `rust-server` or `js-client` source directories unless the user is explicitly working inside the Parlando monorepo. Prefer the user's target repository layout, but generate a complete, runnable project when no layout exists.
+Use this skill to turn a game or experiment idea into a working Parlando game. Assume normal generated game projects depend on released registry packages: `parlando-server` from crates.io and `@coli-saar/parlando-client` from npm. Do not make generated game projects depend on sibling `rust-server` or `js-client` source directories unless the user is explicitly working inside the Parlando monorepo or asks for a temporary local debug override. Prefer the user's target repository layout, but generate a complete, runnable project when no layout exists.
 
 Global docs may be referenced at:
 
@@ -85,12 +85,13 @@ If contributing inside the Parlando monorepo, instead mirror the existing demo s
 - add a browser app under `<game-slug>/client`
 - include game-local `Makefile`, `config/`, and client source
 
-Outside the monorepo, treat the generated game as a consumer of installed local artifacts:
+Outside the monorepo, treat the generated game as a registry-package consumer:
 
 - install the generated Rust game server binary with `cargo install --path server --root .local` or an equivalent Cargo install command
 - put `.local/bin` on `PATH` when running locally
-- install `@parlando/client` from the local yalc store during client setup
+- depend on `parlando-server` and `@coli-saar/parlando-client` by released package version
 - avoid `../rust-server` and `../js-client` path assumptions
+- document temporary absolute local path overrides only for debugging Parlando itself
 
 ## Rust Contract
 
@@ -162,7 +163,7 @@ Generate:
 - a client-side pure `stateEngine.ts` only if it helps UI previews/tests; the server remains authoritative
 - tests for action generation, derived UI state, and any client-side reducer logic
 
-Use `@parlando/client` for setup, WebSocket, actions, audio-session status, and reusable React widgets when available. Game-specific rendering, controls, task text, maps, boards, and logs belong in the generated app.
+Use `@coli-saar/parlando-client` for setup, WebSocket, actions, audio-session status, and reusable React widgets when available. Game-specific rendering, controls, task text, maps, boards, and logs belong in the generated app.
 
 The browser must handle:
 
@@ -201,13 +202,13 @@ Generate `config/experiment.render.example.yaml` with:
 
 Generate:
 
-- Rust `Cargo.toml` using the installed/package Parlando server crate version, plus `anyhow`, `clap`, `serde`, `serde_json`, `tokio`, `tracing-subscriber`, and optional `async-trait`/`rand`. Use a workspace path only when generating inside the Parlando monorepo.
-- client `package.json` using `@parlando/client`, React, Vite, TypeScript, and Vitest. Keep the dependency version normal, then have the Makefile install or update the package from yalc for local development.
+- Rust `Cargo.toml` using the released Parlando server crate version, plus `anyhow`, `clap`, `serde`, `serde_json`, `tokio`, `tracing-subscriber`, and optional `async-trait`/`rand`. Use a workspace path only when generating inside the Parlando monorepo. If the user asks for local Parlando debugging, show an absolute-path replacement as a temporary non-release edit.
+- client `package.json` using `@coli-saar/parlando-client`, React, Vite, TypeScript, and Vitest. Keep the dependency version normal. If the user asks for local Parlando debugging, document `npm install --no-save file:/absolute/path/to/parlando/js-client` after building `js-client`.
 - client-local `vite.config.ts`, `tsconfig.json`, and `index.html`
 - `Makefile` targets for `check-client-package`, `install-client-deps`, `install-server`, `build-client`, `build`, `test`, `run`, and `clean`
 - Dockerfile and Render config when the user asks for deployable output, or when deployment is part of the prompt
 
-The local Makefile should fail clearly if the yalc package for `@parlando/client` is missing, telling the user to publish/install the Parlando JS client into yalc first. It should install the generated server binary with Cargo, then run that installed binary.
+The local Makefile should install dependencies from the registries by default. It should install the generated server binary with Cargo, build the browser client with npm, and run that installed binary.
 
 The production image should build the client, copy the client `dist` to `/app/client-dist`, build/install the generated server binary with Cargo, and start the binary with `--host 0.0.0.0 --config /app/config/experiment.yaml`.
 

@@ -29,7 +29,24 @@ pub struct ExperimentRecord {
     pub experiment_id: String,
     pub config: Value,
     pub server_version: Option<String>,
+    pub version_manifest: Option<Value>,
+    pub status: String,
     pub notes: Option<String>,
+}
+
+/// Durable experiment metadata returned by the experimenter dashboard.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StoredExperimentSummary {
+    pub experiment_id: String,
+    pub study_name: Option<String>,
+    pub created_at: String,
+    pub status: String,
+    pub server_version: Option<String>,
+    pub version_manifest: Option<Value>,
+    pub notes: Option<String>,
+    pub session_count: i64,
+    pub completed_session_count: i64,
+    pub last_session_at: Option<String>,
 }
 
 /// Input for upserting a durable participant identity.
@@ -131,6 +148,7 @@ pub struct StoredSessionParticipant {
     pub connection_status: String,
     pub participant_kind: Option<String>,
     pub display_name: Option<String>,
+    pub metadata: Option<Value>,
 }
 
 /// Backend-neutral storage interface centered on experiment evaluation.
@@ -138,6 +156,10 @@ pub struct StoredSessionParticipant {
 pub trait ExperimentStore: Send + Sync {
     /// Ensures that one experiment row exists for this server run.
     async fn ensure_experiment(&self, experiment: ExperimentRecord) -> Result<()>;
+    /// Returns durable experiment rows with compact session aggregates.
+    async fn list_experiments(&self, limit: i64) -> Result<Vec<StoredExperimentSummary>>;
+    /// Updates the lifecycle status for one experiment row.
+    async fn update_experiment_status(&self, experiment_id: &str, status: &str) -> Result<()>;
     /// Creates or reuses a durable participant identity and returns `participant_id`.
     async fn upsert_participant(&self, participant: ParticipantRecord) -> Result<i64>;
     /// Creates a session for a client-facing room id and returns its per-experiment `session_id`.
@@ -219,9 +241,64 @@ impl ExperimentStore for MemoryExperimentStore {
                 "created_at": now_iso(),
                 "config": experiment.config,
                 "server_version": experiment.server_version,
+                "version_manifest": experiment.version_manifest,
+                "status": experiment.status,
                 "notes": experiment.notes,
             }),
         );
+        Ok(())
+    }
+
+    async fn list_experiments(&self, limit: i64) -> Result<Vec<StoredExperimentSummary>> {
+        let inner = self.inner.read().await;
+        let mut experiments = inner
+            .experiments
+            .values()
+            .map(|row| {
+                let experiment_id = row["experiment_id"].as_str().unwrap_or_default();
+                let matching_sessions = inner
+                    .sessions
+                    .iter()
+                    .filter(|session| session["experiment_id"].as_str() == Some(experiment_id))
+                    .collect::<Vec<_>>();
+                StoredExperimentSummary {
+                    experiment_id: experiment_id.to_string(),
+                    study_name: row
+                        .get("config")
+                        .and_then(|config| config.get("study"))
+                        .and_then(|study| study.get("name"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    created_at: row["created_at"].as_str().unwrap_or_default().to_string(),
+                    status: row["status"].as_str().unwrap_or("draft").to_string(),
+                    server_version: row["server_version"].as_str().map(str::to_string),
+                    version_manifest: row
+                        .get("version_manifest")
+                        .cloned()
+                        .filter(|value| !value.is_null()),
+                    notes: row["notes"].as_str().map(str::to_string),
+                    session_count: matching_sessions.len() as i64,
+                    completed_session_count: matching_sessions
+                        .iter()
+                        .filter(|session| session["status"].as_str() == Some("completed"))
+                        .count() as i64,
+                    last_session_at: matching_sessions
+                        .iter()
+                        .filter_map(|session| session["created_at"].as_str())
+                        .max()
+                        .map(str::to_string),
+                }
+            })
+            .collect::<Vec<_>>();
+        experiments.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        experiments.truncate(limit.max(0) as usize);
+        Ok(experiments)
+    }
+
+    async fn update_experiment_status(&self, experiment_id: &str, status: &str) -> Result<()> {
+        if let Some(row) = self.inner.write().await.experiments.get_mut(experiment_id) {
+            row["status"] = json!(status);
+        }
         Ok(())
     }
 
@@ -483,6 +560,10 @@ impl ExperimentStore for MemoryExperimentStore {
                     display_name: participant
                         .and_then(|participant| participant["display_name"].as_str())
                         .map(str::to_string),
+                    metadata: participant
+                        .and_then(|participant| participant.get("metadata"))
+                        .cloned()
+                        .filter(|value| !value.is_null()),
                 }
             })
             .collect::<Vec<_>>();
@@ -578,6 +659,8 @@ impl SqliteExperimentStore {
                 created_at text not null,
                 config_json text not null,
                 server_version text,
+                version_manifest_json text,
+                status text not null default 'draft',
                 notes text
             )
             "#,
@@ -664,6 +747,26 @@ impl SqliteExperimentStore {
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
         }
+        self.ensure_column("experiments", "version_manifest_json", "text")
+            .await?;
+        self.ensure_column("experiments", "status", "text not null default 'draft'")
+            .await?;
+        Ok(())
+    }
+
+    async fn ensure_column(&self, table: &str, column: &str, definition: &str) -> Result<()> {
+        let pragma = format!("pragma table_info({table})");
+        let columns = sqlx::query_as::<_, (i64, String, String, i64, Option<String>, i64)>(&pragma)
+            .fetch_all(&self.pool)
+            .await?;
+        if columns.iter().any(|row| row.1 == column) {
+            return Ok(());
+        }
+        sqlx::query(&format!(
+            "alter table {table} add column {column} {definition}"
+        ))
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -683,11 +786,13 @@ impl ExperimentStore for SqliteExperimentStore {
     async fn ensure_experiment(&self, experiment: ExperimentRecord) -> Result<()> {
         sqlx::query(
             r#"
-            insert into experiments (experiment_id, created_at, config_json, server_version, notes)
-            values (?, ?, ?, ?, ?)
+            insert into experiments (experiment_id, created_at, config_json, server_version, version_manifest_json, status, notes)
+            values (?, ?, ?, ?, ?, ?, ?)
             on conflict(experiment_id) do update set
                 config_json = excluded.config_json,
                 server_version = excluded.server_version,
+                version_manifest_json = excluded.version_manifest_json,
+                status = excluded.status,
                 notes = excluded.notes
             "#,
         )
@@ -695,9 +800,86 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(now_iso())
         .bind(serde_json::to_string(&experiment.config)?)
         .bind(experiment.server_version)
+        .bind(
+            experiment
+                .version_manifest
+                .map(|value| serde_json::to_string(&value))
+                .transpose()?,
+        )
+        .bind(experiment.status)
         .bind(experiment.notes)
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    async fn list_experiments(&self, limit: i64) -> Result<Vec<StoredExperimentSummary>> {
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                String,
+                Option<String>,
+                i64,
+                i64,
+                Option<String>,
+            ),
+        >(
+            r#"
+            select e.experiment_id, e.created_at, e.config_json, e.server_version,
+                   e.version_manifest_json, e.status, e.notes,
+                   count(s.session_id) as session_count,
+                   sum(case when s.status = 'completed' then 1 else 0 end) as completed_session_count,
+                   max(s.created_at) as last_session_at
+            from experiments e
+            left join sessions s on s.experiment_id = e.experiment_id
+            group by e.experiment_id
+            order by e.created_at desc
+            limit ?
+            "#,
+        )
+        .bind(limit.clamp(1, 500))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(StoredExperimentSummary {
+                    experiment_id: row.0,
+                    study_name: serde_json::from_str::<Value>(&row.2)
+                        .ok()
+                        .and_then(|config| {
+                            config
+                                .get("study")
+                                .and_then(|study| study.get("name"))
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                        }),
+                    created_at: row.1,
+                    server_version: row.3,
+                    version_manifest: row
+                        .4
+                        .map(|raw| serde_json::from_str::<Value>(&raw))
+                        .transpose()?,
+                    status: row.5,
+                    notes: row.6,
+                    session_count: row.7,
+                    completed_session_count: row.8,
+                    last_session_at: row.9,
+                })
+            })
+            .collect()
+    }
+
+    async fn update_experiment_status(&self, experiment_id: &str, status: &str) -> Result<()> {
+        sqlx::query("update experiments set status = ? where experiment_id = ?")
+            .bind(status)
+            .bind(experiment_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -980,12 +1162,13 @@ impl ExperimentStore for SqliteExperimentStore {
                 String,
                 Option<String>,
                 Option<String>,
+                Option<String>,
             ),
         >(
             r#"
             select sp.experiment_id, sp.session_id, sp.participant_id,
                    sp.participant_session_id, sp.role, sp.joined_at, sp.left_at,
-                   sp.connection_status, p.participant_kind, p.display_name
+                   sp.connection_status, p.participant_kind, p.display_name, p.metadata_json
             from session_participants sp
             left join participants p on p.participant_id = sp.participant_id
             where sp.experiment_id = ? and sp.session_id = ?
@@ -997,19 +1180,25 @@ impl ExperimentStore for SqliteExperimentStore {
         .fetch_all(&self.pool)
         .await?
         .into_iter()
-        .map(|row| StoredSessionParticipant {
-            experiment_id: row.0,
-            session_id: row.1,
-            participant_id: row.2,
-            participant_session_id: row.3,
-            role: row.4,
-            joined_at: row.5,
-            left_at: row.6,
-            connection_status: row.7,
-            participant_kind: row.8,
-            display_name: row.9,
+        .map(|row| {
+            Ok(StoredSessionParticipant {
+                experiment_id: row.0,
+                session_id: row.1,
+                participant_id: row.2,
+                participant_session_id: row.3,
+                role: row.4,
+                joined_at: row.5,
+                left_at: row.6,
+                connection_status: row.7,
+                participant_kind: row.8,
+                display_name: row.9,
+                metadata: row
+                    .10
+                    .map(|raw| serde_json::from_str::<Value>(&raw))
+                    .transpose()?,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
         Ok(participants)
     }
 
@@ -1043,7 +1232,9 @@ impl ExperimentStore for SqliteExperimentStore {
 /// Creates the configured experiment store from `database.url`.
 pub async fn experiment_store_from_url(database_url: &str) -> Result<SharedExperimentStore> {
     if database_url.is_empty() {
-        Ok(Arc::new(MemoryExperimentStore::default()))
+        bail!(
+            "database.url is required; use sqlite:///:memory: only in tests or a sqlite:///... file for actual runs"
+        )
     } else {
         Ok(Arc::new(
             SqliteExperimentStore::connect(database_url).await?,
@@ -1088,18 +1279,20 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
     let experiment = if experiment_id.is_empty() {
         json!(null)
     } else {
-        let row = sqlx::query_as::<_, (String, String, String, Option<String>, Option<String>)>(
-            "select experiment_id, created_at, config_json, server_version, notes from experiments where experiment_id = ?",
+        let row = sqlx::query_as::<_, (String, String, String, Option<String>, Option<String>, String, Option<String>)>(
+            "select experiment_id, created_at, config_json, server_version, version_manifest_json, status, notes from experiments where experiment_id = ?",
         )
         .bind(experiment_id)
         .fetch_optional(pool)
         .await?;
         json!(row.map(
-            |(id, created_at, config_json, server_version, notes)| json!({
+            |(id, created_at, config_json, server_version, version_manifest_json, status, notes)| json!({
                 "experiment_id": id,
                 "created_at": created_at,
                 "config": serde_json::from_str::<Value>(&config_json).unwrap_or(Value::Null),
                 "server_version": server_version,
+                "version_manifest": version_manifest_json.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
+                "status": status,
                 "notes": notes,
             })
         ))
@@ -1450,6 +1643,8 @@ mod tests {
                 experiment_id: "exp_eval".to_string(),
                 config: json!({"study": "demo"}),
                 server_version: Some("test".to_string()),
+                version_manifest: None,
+                status: "active".to_string(),
                 notes: None,
             })
             .await
@@ -1560,6 +1755,8 @@ mod tests {
                 experiment_id: "exp_returning".to_string(),
                 config: json!({"condition": "repeat-play"}),
                 server_version: None,
+                version_manifest: None,
+                status: "active".to_string(),
                 notes: Some("same Prolific participant appears twice".to_string()),
             })
             .await
@@ -1650,6 +1847,8 @@ mod tests {
                     "nested": {"levels": [{"id": 1}, {"id": 2}]}
                 }),
                 server_version: Some("test".to_string()),
+                version_manifest: None,
+                status: "active".to_string(),
                 notes: None,
             })
             .await
@@ -1834,5 +2033,15 @@ mod tests {
         assert!(error
             .to_string()
             .contains("unsupported database url scheme"));
+    }
+
+    #[tokio::test]
+    async fn empty_database_url_is_rejected() {
+        let error = match experiment_store_from_url("").await {
+            Ok(_) => panic!("empty database url should fail"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("database.url is required"));
     }
 }

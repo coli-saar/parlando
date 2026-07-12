@@ -2,6 +2,14 @@
 
 Parlando separates reusable experiment infrastructure from the game-specific mechanics of a particular study. A game author writes a typed Rust game adapter and a browser experience; the reusable server handles the surrounding work needed to run the experiment. The planned Parlando LLM skill is intended to generate and revise much of this adapter/client code from a game description, so the architecture is explicit and regular rather than hidden behind a large framework.
 
+## Terminology
+
+- **Game**: the runnable binary plus its linked game adapter, browser client, agents, and runtime configuration template. The game has build-time provenance: crate/package versions, Git revision, build time, and local dependency warnings.
+- **Experiment**: one data-collection campaign using a game. It has a durable id, display name, lifecycle status, consent text, condition labels, selected agent identities, and a captured game/server/client version manifest.
+- **Session**: one play-through within an experiment. A session has a room id, one or two participants or agents, role assignments, events, transcripts, actions, and completion data.
+
+Configuration files may bootstrap a game run, but durable experiment metadata should be stored with the experiment record once data collection starts.
+
 ## Components
 
 The reusable Rust server owns:
