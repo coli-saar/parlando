@@ -100,7 +100,7 @@ Only configure Parlando's voice services; do not explain or reimplement how Parl
 
 When the user asks to enable voice, generate the full voice package: LiveKit, Speechmatics, and ElevenLabs. Do not create partial voice configs unless the user explicitly asks for a reduced setup. Use `rust-server/config/experiment.voice.full.example.yaml` as the canonical source template when working in this repository.
 
-With `transcription.provider: speechmatics`, the server waits for each human participant's audio/STT setup before starting the game. The generated client must request the room audio session and initialize STT from the waiting room as soon as `roomId` and `participantSessionId` are known.
+When voice or transcription is enabled, generated clients should delegate browser startup behavior to `ParlandoStartupGate` in `@coli-saar/parlando-client/react`.
 
 Checked-in local config should include the private overlay as optional and keep services disabled by default if the overlay is absent:
 
@@ -274,4 +274,4 @@ database:
   url: sqlite:////data/parlando.sqlite
 ```
 
-The browser client should receive public capability metadata from `/api/config` and room-scoped audio credentials from `/api/rooms/{room_id}/audio-session`; do not bake voice service credentials into frontend environment variables.
+The browser client should receive public capability metadata and room-scoped audio credentials through `@coli-saar/parlando-client`; do not bake voice service credentials into frontend environment variables.

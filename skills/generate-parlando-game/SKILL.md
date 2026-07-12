@@ -1,6 +1,6 @@
 ---
 name: generate-parlando-game
-description: Generate complete Parlando dialogue games from a study/game description, including the Rust GameAdapter crate, JavaScript or React browser client, config files, build files, tests, and run/deploy instructions. Use when a user wants to create, scaffold, port, or iterate on a Parlando game using the published parlando-server and @coli-saar/parlando-client packages.
+description: Generate Parlando dialogue games using the published parlando-server runtime and @coli-saar/parlando-client React startup gate. Use when creating, porting, or iterating on a Parlando game.
 ---
 
 # Generate Parlando Game
@@ -24,7 +24,7 @@ Use the latest published Parlando package versions when generating manifests:
 
 - Query crates.io with `cargo info parlando-server` or an equivalent registry lookup, then set `parlando-server = "<latest-version>"`.
 - Query npm with `npm view @coli-saar/parlando-client version` or an equivalent registry lookup, then set `"@coli-saar/parlando-client": "^<latest-version>"`.
-- If network access is unavailable, fall back to `parlando-server = "0.1.0"` and `"@coli-saar/parlando-client": "^0.1.0"`, and say in the final response that the latest versions could not be checked.
+- If network access is unavailable, fall back to `parlando-server = "0.1.1"` and `"@coli-saar/parlando-client": "^0.1.1"`, and say in the final response that the latest versions could not be checked.
 
 ## First Questions
 
@@ -157,23 +157,7 @@ Generate:
 - a client-side pure `stateEngine.ts` only if it helps UI previews/tests; the server remains authoritative
 - tests for action generation, derived UI state, and any client-side reducer logic
 
-Use `@coli-saar/parlando-client` for setup, WebSocket, actions, audio-session status, and reusable React widgets when available. Game-specific rendering, controls, task text, maps, boards, and logs belong in the generated app.
-
-The browser must handle:
-
-- setup screen with display name, consent items, and microphone preparation when voice is enabled
-- room-backed waiting room readiness board with visible rows/cards for Player A, Player B/agent, and STT/voice when voice is enabled; missing participants must be shown as waiting/not connected
-- room create/join before the waiting room for all games, so the first player has a `roomId` while waiting for another human or for the server-supplied agent
-- immediate audio-session/STT initialization from the waiting room as soon as the first player has `roomId` and `participantSessionId`; do not wait for Player B and do not wait for the game screen
-- game screen only after role assignment and required readiness gates
-- `roleAssigned`
-- `stateChanged`
-- `conversationMessageAdded`
-- `completed`
-- `presenceChanged`
-- `voiceStatusChanged`
-- `error`
-- reconnection-friendly state replacement from server messages
+Use `@coli-saar/parlando-client/react` for the generated app entrypoint. Wrap the game in `ParlandoStartupGate` and render the active game from the `ActiveParlandoSession` passed to `renderGame`; do not generate custom startup lifecycle code. Game-specific rendering, controls, task text, maps, boards, logs, action creation, and derived UI state belong in the generated app.
 
 ## Config Files
 
@@ -181,13 +165,12 @@ Generate `config/experiment.local.yaml` with:
 
 - local experiment id
 - `direct.enabled: true`
-- room create/join for generated games; human-agent studies receive the agent from the server after room creation
 - `server.public_base_url: http://localhost:8000`
 - `server.client_dist_path: client/dist`
 - local SQLite under `.local/`
 - voice, transcription, and TTS disabled unless requested
 - when voice is requested, full-stack LiveKit, Speechmatics, and ElevenLabs fields via a private overlay
-- consent items under `direct.require_consent` and `direct.consents`, and make the setup UI display them
+- consent items under `direct.require_consent` and `direct.consents`
 - conversation enabled by default
 
 Generate `config/experiment.render.example.yaml` with:
@@ -234,6 +217,5 @@ End with:
 - exact config YAML path to edit for local settings, and if voice/TTS/transcription is enabled, the private YAML/secret path that should hold LiveKit, Speechmatics, and ElevenLabs values
 - deployment notes for the requested target
 - agent run commands when generating a Rust or Python gRPC agent
-- confirmation that the client follows setup screen -> waiting room -> game
-- confirmation that voice-enabled clients create/join a room before the waiting room and start Speechmatics/STT immediately after room creation/join
+- confirmation that the browser client delegates startup to `ParlandoStartupGate` from `@coli-saar/parlando-client/react`
 - assumptions made about the game design or package layout
