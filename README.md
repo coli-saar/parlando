@@ -107,7 +107,7 @@ Point an experiment config at that service with `agents.human_vs_agent.factory: 
 - `rust-server`: reusable Rust runtime for config, rooms, WebSockets, persistence, audio-session planning, TTS, agent execution, remote gRPC agents, admin views, and export.
 - `space-game`: demo Space Game browser app, Rust server binary, adapter, configs, and deployment files.
 - `rust-server/python/parlando-agent-sdk`: Python wrapper for remote gRPC agents.
-- `space-game/config/experiment.render.example.yaml`: deployable example experiment config that reads secrets from environment variables.
+- `space-game/config/experiment.render.example.yaml`: deployable example experiment config with an optional Render secret-file overlay.
 - `space-game/render.yaml`: Render web-service example.
 - `docs/`: GitHub-rendered technical documentation for architecture, games, browser protocol, agents, deployment, and data export.
 

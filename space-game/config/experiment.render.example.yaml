@@ -1,11 +1,19 @@
 # Safe example configuration for deploying Parlando on Render.
 #
-# This file is intended for version control. Secrets are read from environment
-# variables supplied by the deployment platform.
+# This file is intended for version control. Deployment-specific settings and
+# service credentials should live in a Render secret file named
+# `parlando-render.yaml`, which Render mounts at `/etc/secrets/parlando-render.yaml`.
+#
+# The secret include is optional so the Docker image remains runnable before the
+# Render secret file has been created. The secret file deep-merges over this
+# base config.
+
+include:
+  - path: /etc/secrets/parlando-render.yaml
+    optional: true
 
 experiment:
-  # Override per deployment or run with --experiment-id for a fresh evaluation id.
-  id: ${PARLANDO_EXPERIMENT_ID}
+  id: render-space-game
 
 study:
   name: Parlando Space Game
@@ -14,7 +22,6 @@ study:
   reconnect_grace_seconds: 90
 
 server:
-  public_base_url: ${PARLANDO_PUBLIC_BASE_URL}
   allowed_origins: []
   # If the frontend build is copied into the image at this path, the Rust server
   # serves it with SPA fallback. If the path is absent, API/WebSocket routes
@@ -45,14 +52,10 @@ agents:
     config: {}
 
 livekit:
-  enabled: true
-  url: ${LIVEKIT_URL}
-  api_key: ${LIVEKIT_API_KEY}
-  api_secret: ${LIVEKIT_API_SECRET}
+  enabled: false
 
 speechmatics:
-  enabled: true
-  api_key: ${SPEECHMATICS_API_KEY}
+  enabled: false
   realtime_url: wss://eu.rt.speechmatics.com/v2
   temporary_key_ttl_seconds: 60
   max_delay: 2.0
@@ -60,7 +63,7 @@ speechmatics:
   end_of_utterance_silence_trigger: 1.2
 
 transcription:
-  enabled: true
+  enabled: false
   provider: speechmatics
   model: enhanced
   language: en
@@ -68,12 +71,9 @@ transcription:
   store_audio: false
 
 tts:
-  enabled: true
+  enabled: false
   provider: elevenlabs
   model: eleven_flash_v2_5
-  voice_id: ${ELEVENLABS_VOICE_ID}
-  voice_name: ${ELEVENLABS_VOICE_NAME}
-  api_key: ${ELEVENLABS_API_KEY}
   output_format: pcm_16000
   worker_autostart: true
 

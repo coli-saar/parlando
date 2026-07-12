@@ -2,7 +2,6 @@
   "name": "@parlando/client",
   "version": "0.1.0",
   "type": "module",
-  "private": true,
   "description": "Reusable browser client SDK for Parlando experiment games.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -27,6 +26,9 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run src",
