@@ -15,7 +15,7 @@ Implement Parlando as a fresh Rust workspace with two crates: `parlando-server` 
 
 ### 1. Workspace Skeleton
 
-- Create root `Cargo.toml` workspace with `crates/parlando-server` and `crates/parlando-space-game`.
+- Create root `Cargo.toml` workspace with `rust-server` and `space-game/server`.
 - Add baseline dependencies: `tokio`, `axum`, `serde`, `serde_json`, `serde_yaml`, `clap`, `thiserror`, `anyhow`, `async-trait`, `uuid`, `chrono` or `time`, `sqlx`, `reqwest`, `tokio-tungstenite`, `tower-http`.
 - Add minimal library exports and a `parlando-space-game` binary that parses `--config`, `--host`, and `--port`.
 - Acceptance: `cargo check` passes for empty server and binary.

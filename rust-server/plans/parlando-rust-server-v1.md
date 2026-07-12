@@ -11,8 +11,8 @@ Use the existing YAML config files as the starting point and adapt them for Rust
 ## Crates And Architecture
 
 - Create a Rust workspace with:
-  - `crates/parlando-server`: reusable server library with HTTP/WebSocket protocol, config, storage interface, room runtime, LiveKit, Speechmatics, conversation, agent runtime, TTS, export, and static serving.
-  - `crates/parlando-space-game`: Space Game-specific crate with binary entrypoint, game state engine, adapter, game-specific agent factories, and game-specific agent implementations.
+  - `rust-server`: reusable server library with HTTP/WebSocket protocol, config, storage interface, room runtime, LiveKit, Speechmatics, conversation, agent runtime, TTS, export, and static serving.
+  - `space-game/server`: Space Game-specific crate with binary entrypoint, game state engine, adapter, game-specific agent factories, and game-specific agent implementations.
 - The Space Game binary constructs `SpaceGameAdapter`, loads `ExperimentConfig`, resolves the configured Space Game agent factory, and passes both to `parlando-server`.
 - The reusable server receives `Option<Arc<dyn AgentFactory<SpaceGameAdapter>>>`, not an agent instance. It creates a fresh `GameAgent` per agent participant/room.
 - Do not support Python dynamic imports, `game.adapter`, `game.module_paths`, or a generic configured-app entrypoint.

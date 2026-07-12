@@ -21,7 +21,7 @@ Before generating code in a Parlando checkout, read the relevant local files:
 - `docs/building-games.md` for the adapter contract and game design checklist
 - `docs/client-protocol.md` for browser JSON and WebSocket message shapes
 - `docs/running-and-deployment.md` for config, local run, Docker, and Render conventions
-- `rust-server/crates/parlando-space-game/` and `space-game/` for a complete example, when present
+- `space-game/server/` and `space-game/` for a complete example, when present
 
 ## First Questions
 
@@ -79,8 +79,8 @@ Generate both halves of the game and all build/run files:
 
 If contributing inside the Parlando monorepo, instead mirror the existing demo shape:
 
-- add a Rust crate under `rust-server/crates/parlando-<game-slug>`
-- add it to `rust-server/Cargo.toml` workspace members
+- add a Rust crate under `<game-slug>/server`
+- depend on the reusable server crate with an appropriate local path to `rust-server`
 - add a browser app under `<game-slug>/`
 - include game-local `Makefile`, `package.json`, `config/`, and client source
 

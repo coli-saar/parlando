@@ -3,9 +3,9 @@
 FROM rust:1-bookworm AS builder
 
 WORKDIR /app
-COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
-RUN cargo build --release -p parlando-space-game
+COPY rust-server ./rust-server
+COPY space-game/server ./space-game/server
+RUN cargo build --release --manifest-path space-game/server/Cargo.toml
 
 FROM debian:bookworm-slim AS runtime
 
@@ -14,8 +14,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /app/target/release/parlando-space-game /usr/local/bin/parlando-space-game
-COPY config/experiment.render.example.yaml /app/config/experiment.yaml
+COPY --from=builder /app/space-game/server/target/release/parlando-space-game /usr/local/bin/parlando-space-game
+COPY space-game/config/experiment.render.example.yaml /app/config/experiment.yaml
 
 ENV RUST_LOG=info
 EXPOSE 8000

@@ -31,7 +31,7 @@ impl GameAgent<MyAdapter> for MyAgent {
 
 The server creates one mutable agent instance per agent participant. If an agent needs memory, store it in that agent instance. The server intentionally does not pass room ids, participant-session ids, conversation history, invalid-action counts, or completion flags into `act`.
 
-The demo game's factory selector lives in `crates/parlando-space-game/src/agents.rs`. It currently supports:
+The demo game's factory selector lives in `space-game/server/src/agents.rs`. It currently supports:
 
 - `space_game.back_and_forth`: deterministic in-process demo agent.
 - `remote_grpc` or `parlando.remote_grpc`: remote gRPC bridge for Python or another language.
@@ -113,8 +113,8 @@ Record the agent name and version in config. Parlando persists remote-agent part
 
 ## Reference Files
 
-- `crates/parlando-server/src/agents.rs`: local agent traits.
-- `crates/parlando-server/src/remote_agent.rs`: Rust gRPC bridge.
-- `crates/parlando-server/proto/parlando_agent_v1.proto`: remote-agent protocol.
-- `crates/parlando-space-game/src/agents.rs`: demo local and remote agent selection.
+- `rust-server/src/agents.rs`: local agent traits.
+- `rust-server/src/remote_agent.rs`: Rust gRPC bridge.
+- `rust-server/proto/parlando_agent_v1.proto`: remote-agent protocol.
+- `space-game/server/src/agents.rs`: demo local and remote agent selection.
 - `python/parlando-agent-sdk`: Python agent SDK.

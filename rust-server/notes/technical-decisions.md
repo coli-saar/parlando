@@ -217,7 +217,7 @@ Parlando needs agents that can be written in Python or other languages while the
 
 The reusable server now includes a tonic/protobuf gRPC bridge:
 
-- `crates/parlando-server/proto/parlando_agent_v1.proto` defines the language-neutral service.
+- `rust-server/proto/parlando_agent_v1.proto` defines the language-neutral service.
 - `RemoteGrpcAgentFactory<A>` implements the same `AgentFactory<A>` trait used by in-process agents.
 - `RemoteGrpcAgent` sends `CreateAgent` once per room agent and `Act` calls afterward.
 - Observations, available actions, and returned actions cross the process boundary as protobuf `Struct` values.
@@ -361,7 +361,7 @@ Game clients will often be developed on machines without local checkouts of the 
 - Move the Space Game browser app into sibling `../space-game` as a demo client that depends on `@parlando/client` by package name.
 - Use GitHub Packages as the planned release channel for versioned SDK builds.
 - Use `yalc` for unpublished local debug loops so demo clients can test a package-shaped artifact without publishing every intermediate build.
-- Leave the Rust Space Game server crate in the Rust workspace for now.
+- Keep the Rust Space Game server crate source-local while the repo layout settles.
 
 ## Tradeoffs
 
@@ -467,3 +467,25 @@ The README comparison is necessarily selective. It points to established systems
 
 - Keep the platform comparison current as Parlando's deployment and frontend packaging story stabilizes.
 - Update `docs/client-protocol.md` when the `@parlando/client` package API changes.
+
+# Space Game Server Ownership
+
+## Context
+
+The Space Game Rust crate originally lived inside the reusable Rust server workspace. That made the `rust-server` directory carry both reusable platform code and one concrete demo game, while the sibling `space-game` directory held only the browser app and game configs.
+
+## Chosen Approach
+
+- Make `rust-server` the `parlando-server` crate directly, with `src/`, `proto/`, `tests/`, and `Cargo.toml` at the directory root.
+- Move the Space Game Rust crate to `space-game/server` so the game owns its browser client, server adapter, agents, configs, Dockerfile, and Render blueprint together.
+- Keep the installed binary name `parlando-space-game` for local scripts and deployment commands.
+- Use a local path dependency from `space-game/server` to `../../rust-server` inside this monorepo; published external games should depend on the released `parlando-server` crate instead.
+
+## Tradeoffs
+
+The Space Game server now has a direct relative path to the reusable server crate during monorepo development. That is clearer for this checkout and mirrors how new game projects should be organized, but it means the demo game is no longer part of a single Cargo workspace command from `rust-server`.
+
+## Follow-Up
+
+- If more first-party games are added, keep each game self-contained under its own top-level directory with a `server/` crate and browser app.
+- Consider adding a root-level convenience script if contributors need one command to test every Rust crate in the repository.

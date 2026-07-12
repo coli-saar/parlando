@@ -1,16 +1,16 @@
-# Parlando Space Game Client
+# Parlando Space Game
 
-Demo browser client for the Parlando Space Game. This project is a consumer of the reusable `@parlando/client` SDK and an installed `parlando-space-game` server binary. It should not import SDK or server source by relative path.
+Demo browser client and Rust game server for the Parlando Space Game. The browser app consumes the reusable `@parlando/client` SDK; the Rust crate in `server/` links the reusable `parlando-server` crate to Space Game-specific state, adapter, and agent code.
 
 ## Project role
 
 The local Parlando checkout has three parts:
 
-- `rust-server` builds and installs the `parlando-space-game` server binary.
+- `rust-server` provides the reusable Rust server crate.
 - `js-client` builds and publishes the reusable SDK package as `@parlando/client` into the local yalc store.
-- `space-game` is this demo game client, with Space Game-specific UI, assets, state interpretation, controls, and tests.
+- `space-game` owns the demo game's Rust server crate, browser UI, assets, state interpretation, controls, configs, and tests.
 
-The dependency direction is one-way: this app consumes installed artifacts. It does not assume the SDK or server source directories exist.
+The browser dependency direction is one-way: this app consumes the SDK as an installed package. The Rust game server is source-local in `server/` and depends on the reusable `rust-server` crate.
 
 ## Start the game
 

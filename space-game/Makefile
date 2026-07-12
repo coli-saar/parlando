@@ -17,7 +17,7 @@ all: build
 
 check-server:
 	@command -v "$(SERVER_BIN)" >/dev/null || { \
-		echo "Missing $(SERVER_BIN). Run 'make install-rust-server' from the Parlando top-level directory, or set SERVER_BIN=/path/to/parlando-space-game."; \
+		echo "Missing $(SERVER_BIN). Run 'make install-space-game-server' from the Parlando top-level directory, or set SERVER_BIN=/path/to/parlando-space-game."; \
 		exit 1; \
 	}
 

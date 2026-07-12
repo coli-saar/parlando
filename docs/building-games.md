@@ -4,7 +4,7 @@ A Parlando game is a Rust adapter around your experiment mechanics. The adapter 
 
 ## Adapter Contract
 
-Every game implements `GameAdapter` from `crates/parlando-server/src/game.rs`.
+Every game implements `GameAdapter` from `rust-server/src/game.rs`.
 
 ```rust
 pub trait GameAdapter {
@@ -119,7 +119,7 @@ A typical new game crate needs:
 4. Add any in-process agents and a game-specific `factory_from_config`.
 5. Define matching TypeScript types for the JSON form of your action, observation, event, and summary values.
 6. Build a browser client using the Parlando JS client package and your game-specific rendering and controls.
-7. Create a binary like `crates/parlando-space-game/src/main.rs` that loads config and calls `serve`.
+7. Create a binary like `space-game/server/src/main.rs` that loads config and calls `serve`.
 8. Add integration tests that create rooms, connect sockets, submit actions, and inspect exports.
 
 ## Game Design Checklist
@@ -139,8 +139,8 @@ This checklist is also the natural prompt shape for the planned Parlando LLM ski
 
 ## Reference Files
 
-- `crates/parlando-server/src/game.rs`: game adapter trait.
+- `rust-server/src/game.rs`: game adapter trait.
 - `docs/client-protocol.md`: browser JSON contract.
-- `crates/parlando-space-game/src/game/state_engine.rs`: demo typed game model.
-- `crates/parlando-space-game/src/game/adapter.rs`: demo adapter.
-- `crates/parlando-space-game/src/main.rs`: demo binary.
+- `space-game/server/src/game/state_engine.rs`: demo typed game model.
+- `space-game/server/src/game/adapter.rs`: demo adapter.
+- `space-game/server/src/main.rs`: demo binary.

@@ -9,22 +9,24 @@ Parlando is also expected to include infrastructure for Prolific-driven experime
 Run Rust tests:
 
 ```sh
+cd rust-server
 cargo test
+cd ..
 ```
 
 Run the demo server with defaults:
 
 ```sh
-cargo run -p parlando-space-game -- --host 127.0.0.1 --port 8000
+cargo run --manifest-path space-game/server/Cargo.toml -- --host 127.0.0.1 --port 8000
 ```
 
 Run with a config:
 
 ```sh
-cargo run -p parlando-space-game -- \
+cargo run --manifest-path space-game/server/Cargo.toml -- \
   --host 127.0.0.1 \
   --port 8000 \
-  --config config/experiment.render.example.yaml
+  --config space-game/config/experiment.render.example.yaml
 ```
 
 Useful routes:
@@ -65,20 +67,20 @@ server:
 
 The server serves `/`, `/assets/*`, and SPA fallback paths from that directory while preserving `/api/*` and `/ws/*`.
 
-The current Rust workspace does not contain the TypeScript frontend source. The server can serve a built client directory, but the provided Dockerfile does not build a frontend that is outside this Docker context.
+The Space Game frontend lives beside the Rust game server under `space-game`. The server can serve a built client directory, but the provided Dockerfile currently builds only the Rust game server; add a frontend build stage or copy a verified `dist` directory to `/app/client-dist` when bundling the UI into the same image.
 
 ## Render Deployment
 
-The repository includes Docker and Render examples for the demo server.
+The repository includes Docker and Render examples for the demo server under `space-game/`.
 
 1. Create a Render web service from the repository.
-2. Use `render.yaml` or configure a Docker service manually.
+2. Use `space-game/render.yaml` or configure a Docker service manually with `space-game/Dockerfile`.
 3. Attach a persistent disk mounted at `/data`.
 4. Set `PARLANDO_EXPERIMENT_ID` and `PARLANDO_PUBLIC_BASE_URL`.
 5. Set LiveKit, Speechmatics, and ElevenLabs secrets if voice features are enabled.
 6. Deploy.
 
-The included `Dockerfile` builds `parlando-space-game` and starts:
+The included `space-game/Dockerfile` builds `parlando-space-game` and starts:
 
 ```sh
 parlando-space-game --host 0.0.0.0 --config /app/config/experiment.yaml
@@ -95,7 +97,7 @@ If you want the Rust service to serve the browser app, include a built client at
 
 ## Reference Files
 
-- `config/experiment.render.example.yaml`: deployment config template.
-- `render.yaml`: Render service template.
-- `Dockerfile`: production image for the demo server.
-- `crates/parlando-space-game/src/main.rs`: server entry point.
+- `space-game/config/experiment.render.example.yaml`: deployment config template.
+- `space-game/render.yaml`: Render service template.
+- `space-game/Dockerfile`: production image for the demo server.
+- `space-game/server/src/main.rs`: server entry point.

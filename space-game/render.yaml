@@ -3,7 +3,7 @@ services:
     name: parlando-space-game
     runtime: docker
     plan: starter
-    dockerfilePath: ./Dockerfile
+    dockerfilePath: ./space-game/Dockerfile
     disk:
       name: parlando-data
       mountPath: /data

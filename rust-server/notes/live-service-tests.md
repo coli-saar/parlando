@@ -18,37 +18,37 @@ All live tests are marked `#[ignore]` and also require `PARLANDO_RUN_LIVE_TESTS=
 Use the default private config:
 
 ```bash
-PARLANDO_RUN_LIVE_TESTS=1 cargo test -p parlando-server --test live_services -- --ignored
+PARLANDO_RUN_LIVE_TESTS=1 cargo test --test live_services -- --ignored
 ```
 
 Use a specific private config:
 
 ```bash
-PARLANDO_RUN_LIVE_TESTS=1 PARLANDO_LIVE_CONFIG=config/experiment.livekit.private.yaml cargo test -p parlando-server --test live_services -- --ignored
+PARLANDO_RUN_LIVE_TESTS=1 PARLANDO_LIVE_CONFIG=config/experiment.livekit.private.yaml cargo test --test live_services -- --ignored
 ```
 
 Run one expensive test by name:
 
 ```bash
-PARLANDO_RUN_LIVE_TESTS=1 cargo test -p parlando-server --test live_services speechmatics_transcribes_elevenlabs_generated_audio -- --ignored
+PARLANDO_RUN_LIVE_TESTS=1 cargo test --test live_services speechmatics_transcribes_elevenlabs_generated_audio -- --ignored
 ```
 
 Check ElevenLabs can generate PCM audio, writing only to a temporary file:
 
 ```bash
-PARLANDO_RUN_LIVE_TESTS=1 cargo test -p parlando-server --test live_services elevenlabs_generates_temp_audio_file -- --ignored
+PARLANDO_RUN_LIVE_TESTS=1 cargo test --test live_services elevenlabs_generates_temp_audio_file -- --ignored
 ```
 
 Run Speechmatics STT against the saved resource without calling ElevenLabs:
 
 ```bash
-PARLANDO_RUN_LIVE_TESTS=1 cargo test -p parlando-server --test live_services speechmatics_transcribes_saved_test_resource -- --ignored
+PARLANDO_RUN_LIVE_TESTS=1 cargo test --test live_services speechmatics_transcribes_saved_test_resource -- --ignored
 ```
 
 The default audio resource path is:
 
 ```text
-crates/parlando-server/tests/resources/elevenlabs-speechmatics-test.pcm
+rust-server/tests/resources/elevenlabs-speechmatics-test.pcm
 ```
 
 Override it with `PARLANDO_LIVE_AUDIO_PCM=/path/to/audio.pcm`. The ElevenLabs test does not update this resource.
@@ -56,7 +56,7 @@ Override it with `PARLANDO_LIVE_AUDIO_PCM=/path/to/audio.pcm`. The ElevenLabs te
 Run the LiveKit RTC PCM conversation test:
 
 ```bash
-PARLANDO_RUN_LIVE_TESTS=1 PARLANDO_ALLOW_MACOS_LIVEKIT_RTC=1 cargo test -p parlando-server --test live_services livekit_streams_saved_pcm_between_participants_and_speechmatics_transcribes_it -- --ignored --nocapture
+PARLANDO_RUN_LIVE_TESTS=1 PARLANDO_ALLOW_MACOS_LIVEKIT_RTC=1 cargo test --test live_services livekit_streams_saved_pcm_between_participants_and_speechmatics_transcribes_it -- --ignored --nocapture
 ```
 
 This test connects two LiveKit participants, streams the saved PCM resource through LiveKit, receives decoded PCM as the other participant, and submits that received audio to Speechmatics. On macOS it is skipped by default because it exercises native WebRTC and paid external services; set `PARLANDO_ALLOW_MACOS_LIVEKIT_RTC=1` when intentionally validating the macOS path.
@@ -64,7 +64,7 @@ This test connects two LiveKit participants, streams the saved PCM resource thro
 Run the LiveKit game-room agent-voice test:
 
 ```bash
-PARLANDO_RUN_LIVE_TESTS=1 PARLANDO_ALLOW_MACOS_LIVEKIT_RTC=1 cargo test -p parlando-server --test live_services livekit_audio_session_and_agent_voice_work_through_parlando_game_room -- --ignored --nocapture
+PARLANDO_RUN_LIVE_TESTS=1 PARLANDO_ALLOW_MACOS_LIVEKIT_RTC=1 cargo test --test live_services livekit_audio_session_and_agent_voice_work_through_parlando_game_room -- --ignored --nocapture
 ```
 
 This test starts a real Parlando server with a test-only game adapter, creates and joins a room through the public HTTP API, requests the same `/api/rooms/{room_id}/audio-session` plan used by the browser client, connects a LiveKit participant with the returned sink credentials, publishes saved PCM through the production `LiveKitAgentAudioPublisher` as `agent-voice`, receives the audio from LiveKit, and submits the received audio to Speechmatics.

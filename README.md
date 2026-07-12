@@ -19,7 +19,7 @@ Parlando is currently aimed at research teams that want to prototype and deploy 
 - Serve a bundled browser client when a built frontend is available, while keeping API and WebSocket routes usable for separately deployed clients.
 - Expose a simple DB-backed operator monitor at `/admin/games` and JSON export at `/api/admin/export`.
 - Connect custom agents when needed, either inside the Rust game crate or as Python services over gRPC.
-- Deploy as a Docker web service, with `render.yaml` and a Render-safe example config included.
+- Deploy as a Docker web service, with `space-game/render.yaml` and a Render-safe example config included.
 
 ## The Core Idea
 
@@ -104,31 +104,33 @@ Point an experiment config at that service with `agents.human_vs_agent.factory: 
 
 ## Repository Layout
 
-- `crates/parlando-server`: reusable Rust runtime for config, rooms, WebSockets, persistence, audio-session planning, TTS, agent execution, remote gRPC agents, admin views, and export.
-- `crates/parlando-space-game`: demo game server binary and adapter.
-- `python/parlando-agent-sdk`: Python wrapper for remote gRPC agents.
-- `config/experiment.render.example.yaml`: deployable example experiment config that reads secrets from environment variables.
-- `render.yaml`: Render web-service example.
+- `rust-server`: reusable Rust runtime for config, rooms, WebSockets, persistence, audio-session planning, TTS, agent execution, remote gRPC agents, admin views, and export.
+- `space-game`: demo Space Game browser app, Rust server binary, adapter, configs, and deployment files.
+- `rust-server/python/parlando-agent-sdk`: Python wrapper for remote gRPC agents.
+- `space-game/config/experiment.render.example.yaml`: deployable example experiment config that reads secrets from environment variables.
+- `space-game/render.yaml`: Render web-service example.
 - `docs/`: GitHub-rendered technical documentation for architecture, games, browser protocol, agents, deployment, and data export.
 
 The TypeScript browser runtime and demo client are treated as existing sibling packages in the current project layout. The Rust server can serve a built client directory through `server.client_dist_path`.
 
 ## Run The Demo Server
 
-Build and test the Rust workspace:
+Build and test the reusable Rust server crate:
 
 ```sh
+cd rust-server
 cargo test
-cargo run -p parlando-space-game -- --host 127.0.0.1 --port 8000
+cd ..
+cargo run --manifest-path space-game/server/Cargo.toml -- --host 127.0.0.1 --port 8000
 ```
 
 With no config file, the server starts with conservative defaults and API routes enabled. For a configured study, pass a YAML file:
 
 ```sh
-cargo run -p parlando-space-game -- \
+cargo run --manifest-path space-game/server/Cargo.toml -- \
   --host 127.0.0.1 \
   --port 8000 \
-  --config config/experiment.render.example.yaml
+  --config space-game/config/experiment.render.example.yaml
 ```
 
 The main service endpoints are:
@@ -143,4 +145,4 @@ The main service endpoints are:
 
 ## Learn More
 
-Start with [the documentation index](docs/README.md) for architecture, game design, browser protocol, custom agents, local development, Render deployment, and data export. The demo implementation in `crates/parlando-space-game` shows a complete game adapter and agent selector.
+Start with [the documentation index](docs/README.md) for architecture, game design, browser protocol, custom agents, local development, Render deployment, and data export. The demo implementation in `space-game/server` shows a complete game adapter and agent selector.

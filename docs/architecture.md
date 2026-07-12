@@ -55,7 +55,7 @@ Human-vs-agent sessions use the same room and action path. The agent participant
 
 Use these files as the concrete reference:
 
-- `crates/parlando-space-game/src/game/state_engine.rs`: typed demo state, actions, observations, events, summary, and transition helpers.
-- `crates/parlando-space-game/src/game/adapter.rs`: the `GameAdapter` implementation.
-- `crates/parlando-space-game/src/agents.rs`: in-process and remote-agent selection.
-- `crates/parlando-space-game/src/main.rs`: binary entry point that loads config and starts the reusable server.
+- `space-game/server/src/game/state_engine.rs`: typed demo state, actions, observations, events, summary, and transition helpers.
+- `space-game/server/src/game/adapter.rs`: the `GameAdapter` implementation.
+- `space-game/server/src/agents.rs`: in-process and remote-agent selection.
+- `space-game/server/src/main.rs`: binary entry point that loads config and starts the reusable server.

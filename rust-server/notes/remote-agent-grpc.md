@@ -15,7 +15,7 @@ The intended backends are:
 
 ## Protocol Shape
 
-The protobuf contract lives at `crates/parlando-server/proto/parlando_agent_v1.proto` and defines messages for:
+The protobuf contract lives at `rust-server/proto/parlando_agent_v1.proto` and defines messages for:
 
 - agent initialization, including role, seed, protocol version, agent name/version, and config.
 - act requests, including the role-specific observation and the same optional role-specific available actions that a human UI would receive.

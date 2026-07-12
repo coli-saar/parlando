@@ -8,7 +8,7 @@ Steps 5-11 of the implementation plan are complete at the Rust server-library le
 
 ## Current Automated Coverage
 
-- `cargo test` passes for the full workspace.
+- `cargo test` passes for the reusable `parlando-server` crate, and the Space Game crate has its own tests under `space-game/server`.
 - Server tests cover participant creation, consent, rooms, matchmaking, waiting-room readiness, Speechmatics readiness gating, SQLite persistence, WebSocket gameplay, transcripts, diagnostics, export, LiveKit token shape, Speechmatics temporary-key shape, in-process agents, remote gRPC metadata, and TTS/audio-publisher diagnostics.
 - Server integration tests include a mock browser client over HTTP/WebSocket with a test-only dummy game adapter. This covers two-human gameplay, human-vs-agent gameplay, typed chat, transcript POST, audio-session shape, in-process agent messages/actions, mock remote gRPC agent messages/actions, TTS diagnostics, and export without depending on `parlando-space-game`.
 - Ignored live-service tests have been run successfully against local private credentials for LiveKit token minting, Speechmatics temporary-key minting, Speechmatics realtime transcription from a bundled PCM resource, ElevenLabs PCM generation to a temporary file, and the combined ElevenLabs-to-Speechmatics path.

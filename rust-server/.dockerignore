@@ -1,5 +1,0 @@
-/target/
-/.git/
-/config/*.private.yaml
-/config/*.private.yml
-**/.DS_Store

@@ -2,7 +2,7 @@
 
 This page is for publishing the reusable Parlando packages:
 
-- `parlando-server`: Rust library crate under `rust-server/crates/parlando-server`, published to crates.io.
+- `parlando-server`: Rust library crate under `rust-server`, published to crates.io.
 - `@parlando/client`: browser SDK under `js-client`, published locally with yalc.
 
 The demo `parlando-space-game` crate and `space-game` browser app are examples, not packages we publish as part of the reusable platform release.
@@ -11,7 +11,7 @@ The demo `parlando-space-game` crate and `space-game` browser app are examples, 
 
 Use one version for both reusable packages unless there is a deliberate reason not to. Today the version is set in:
 
-- `rust-server/Cargo.toml` under `[workspace.package].version`
+- `rust-server/Cargo.toml` under `package.version`
 - `js-client/package.json`
 
 Before an online publish:
@@ -34,7 +34,7 @@ make publish-local
 This runs:
 
 ```bash
-cd rust-server && cargo package -p parlando-server --allow-dirty
+cd rust-server && cargo package --allow-dirty
 cd js-client && npm run yalc
 ```
 
@@ -58,7 +58,7 @@ make publish-dry-run
 This runs:
 
 ```bash
-cd rust-server && cargo publish -p parlando-server --dry-run --allow-dirty
+cd rust-server && cargo publish --dry-run --allow-dirty
 ```
 
 The dry run catches missing manifest metadata, files excluded from the package, and registry/authentication assumptions before pushing a real Rust version. It allows a dirty tree so you can run it while preparing a release branch; the real publish command keeps Cargo's normal clean-tree guard.
@@ -85,7 +85,7 @@ parlando-server = "0.1.0"
 During local development, use a path dependency:
 
 ```toml
-parlando-server = { path = "../parlando-server" }
+parlando-server = { path = "../../rust-server" }
 ```
 
 Browser clients can keep a versioned dependency for package-shaped local development:
