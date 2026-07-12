@@ -2420,9 +2420,26 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; }
     button { font: inherit; }
-    .shell { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); min-height: 100vh; }
+    .app-header { align-items: center; background: #fff; border-bottom: 1px solid #dde2e7; display: flex; justify-content: space-between; min-height: 64px; padding: 12px 24px; }
+    .menu-button { align-items: center; background: #fff; border: 1px solid #c9d2da; border-radius: 6px; cursor: pointer; display: none; font-weight: 800; height: 36px; justify-content: center; width: 40px; }
+    .shell { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); min-height: calc(100vh - 64px); }
     .sidebar { border-right: 1px solid #dde2e7; background: #fff; padding: 18px; overflow: auto; }
     .main { padding: 24px; overflow: auto; }
+    .brand { display: grid; gap: 3px; }
+    .brand .game-name { font-size: 20px; font-weight: 800; line-height: 1.15; }
+    .brand .dashboard-name { color: #65717c; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .workspace-header { align-items: end; display: flex; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+    .workspace-title { display: grid; gap: 6px; min-width: 0; }
+    .workspace-title h2 { font-size: 26px; margin: 0; overflow-wrap: anywhere; }
+    .workspace-stats { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+    .tabs { border-bottom: 1px solid #dce2e8; display: flex; gap: 4px; margin-bottom: 16px; }
+    .tab { background: transparent; border: 0; border-bottom: 3px solid transparent; color: #5b6873; cursor: pointer; font-weight: 750; padding: 10px 12px; }
+    .tab.active { border-bottom-color: #185f8f; color: #14202a; }
+    .tab-panel[hidden] { display: none; }
+    .sessions-layout { align-items: start; display: grid; gap: 16px; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); }
+    .session-picker { background: #eef3f7; border-color: #cfd9e2; box-shadow: inset 0 1px 0 rgba(255,255,255,0.72); margin-bottom: 0; max-width: 100%; position: sticky; top: 16px; }
+    .session-toolbar { align-items: center; display: flex; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .session-detail { min-width: 0; }
     .topline { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
     .section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 18px 0 10px; }
     h1 { font-size: 22px; line-height: 1.2; margin: 0; }
@@ -2441,20 +2458,30 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
     .experiment { width: 100%; text-align: left; border: 1px solid #d9e0e6; border-radius: 8px; background: #fff; padding: 12px; cursor: pointer; }
     .experiment:hover, .experiment.active { border-color: #185f8f; background: #f1f7fb; }
     .warning { border: 1px solid #f2c36b; background: #fff8e8; color: #694500; border-radius: 8px; padding: 10px; margin-top: 10px; }
-    .session-list { display: grid; gap: 8px; }
-    .session { width: 100%; text-align: left; border: 1px solid #d9e0e6; border-radius: 8px; background: #fff; padding: 12px; cursor: pointer; }
-    .session:hover, .session.active { border-color: #2773a8; background: #f2f8fc; }
+    .session-list { display: grid; gap: 6px; max-height: calc(100vh - 230px); overflow: auto; padding-right: 2px; }
+    .session { width: 100%; text-align: left; border: 1px solid #d5dee6; border-radius: 6px; background: rgba(255,255,255,0.72); padding: 9px; cursor: pointer; }
+    .session:hover, .session.active { border-color: #2773a8; background: #fff; }
     .session strong { display: block; color: #151b20; margin-bottom: 4px; overflow-wrap: anywhere; }
     .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
     .pill { border: 1px solid #d7dee5; border-radius: 999px; padding: 3px 8px; background: #fff; color: #44515c; font-size: 12px; }
     .pill.warning-pill { border-color: #e5b35a; background: #fff8e8; color: #6f4700; }
     .panel { background: #fff; border: 1px solid #dce2e8; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
     .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .summary-line { display: none; }
+    .summary-head { align-items: start; display: flex; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .summary-head h2 { margin: 0; }
+    .session-participants { border-top: 1px solid #e3e8ed; margin-top: 12px; padding-top: 12px; }
     .label { font-size: 12px; color: #66737f; margin-bottom: 4px; }
     .value { font-weight: 650; overflow-wrap: anywhere; }
     .participants { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .participant { border: 1px solid #dde4ea; border-radius: 8px; padding: 12px; background: #fbfcfd; display: flex; align-items: center; gap: 12px; }
     .participant-body { min-width: 0; }
+    .participant-collapse summary { align-items: center; cursor: pointer; display: flex; flex-wrap: wrap; gap: 8px 12px; list-style: none; }
+    .participant-collapse summary::-webkit-details-marker { display: none; }
+    .participant-collapse summary::after { color: #65717c; content: "Details"; font-size: 12px; font-weight: 700; margin-left: auto; }
+    .participant-collapse[open] summary::after { content: "Hide details"; }
+    .participant-summary-list { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+    .participant-details { margin-top: 12px; }
     .timeline { display: grid; gap: 8px; }
     .event { border-left: 4px solid #9bb6c8; background: #fff; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 0 rgba(20, 34, 45, 0.05); }
     .event.action { border-left-color: #287a5c; }
@@ -2488,11 +2515,44 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
     .event-json[hidden] { display: none; }
     .empty { padding: 28px; text-align: center; color: #66737f; }
     @media (max-width: 860px) {
+      .app-header { align-items: center; padding: 10px 14px; }
+      .menu-button { display: inline-flex; }
+      .brand .game-name { font-size: 17px; }
+      .brand .dashboard-name { font-size: 11px; }
       .shell { grid-template-columns: 1fr; }
-      .sidebar { border-right: 0; border-bottom: 1px solid #dde2e7; max-height: 44vh; }
+      .sidebar { border-right: 1px solid #dde2e7; border-bottom: 0; bottom: 0; box-shadow: 0 16px 50px rgba(20, 34, 45, 0.22); left: 0; max-height: none; max-width: 86vw; position: fixed; top: 57px; transform: translateX(-102%); transition: transform 160ms ease; width: 340px; z-index: 10; }
+      body.sidebar-open .sidebar { transform: translateX(0); }
+      .sessions-layout { display: flex; flex-direction: column; gap: 10px; }
+      .session-picker { position: static; }
+      .session-toolbar { margin-bottom: 8px; }
+      .session-list { display: flex; gap: 8px; max-height: none; overflow-x: auto; padding: 0 0 4px; }
+      .session { flex: 0 0 168px; padding: 8px; }
+      .session strong { margin-bottom: 2px; }
+      .session .meta { gap: 5px; margin-top: 6px; }
       .grid, .participants { grid-template-columns: 1fr; }
       .control-row { grid-template-columns: 1fr; }
-      .main { padding: 14px; }
+      .main { padding: 10px 14px 14px; }
+      .workspace-header { align-items: stretch; display: grid; }
+      .workspace-title h2 { font-size: 19px; }
+      .workspace-stats { justify-content: flex-start; }
+      .tabs { margin-bottom: 10px; overflow-x: auto; }
+      .tab { padding: 9px 10px; white-space: nowrap; }
+      .panel { padding: 12px; margin-bottom: 10px; }
+      .session-detail { margin-top: 0; }
+      .summary-grid { display: none; }
+      .summary-head { display: grid; gap: 8px; margin-bottom: 8px; }
+      .summary-line { color: #4e5b66; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+      .summary-line .pill { background: #f8fafc; }
+      .participants { gap: 8px; }
+      .participant { align-items: center; padding: 10px; }
+      .participant .meta { gap: 6px; margin-top: 4px; }
+      .participant .pill { padding: 2px 7px; }
+      .participant-collapse summary { align-items: flex-start; display: grid; gap: 8px; }
+      .participant-collapse summary::after { margin-left: 0; }
+      .events-header { align-items: center; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
+      .events-header h2 { margin: 0; }
+      .events-header .toggle-row span { display: none; }
+      .events-header .small { white-space: nowrap; }
       .event-line { grid-template-columns: 34px minmax(0, 1fr); align-items: start; gap: 9px; }
       .role-badge { grid-column: 1; width: 28px; min-width: 28px; padding: 0; }
       .event-main { grid-column: 2; }
@@ -2503,86 +2563,119 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
   </style>
 </head>
 <body>
+  <header class="app-header">
+    <button id="menuButton" class="menu-button" type="button" aria-expanded="false" aria-controls="experimentSidebar" title="Experiments">☰</button>
+    <div class="brand">
+      <div id="gameName" class="game-name">Game</div>
+      <div class="dashboard-name">Experimenter Dashboard</div>
+    </div>
+  </header>
   <div class="shell">
-    <aside class="sidebar">
+    <aside id="experimentSidebar" class="sidebar">
       <div class="topline">
-        <h1>Experimenter Dashboard</h1>
-        <button class="refresh" id="refreshSessions" title="Refresh sessions">Refresh</button>
+        <h1>Experiments</h1>
+        <button class="primary" id="createExperiment" title="Create draft experiment">New Experiment</button>
       </div>
       <section class="control-grid" aria-label="Experiments">
-        <div class="section-title">
-          <h2>Experiments</h2>
-          <button class="primary" id="createExperiment" title="Create draft experiment">New</button>
-        </div>
         <input id="newExperimentId" placeholder="Optional experiment id">
         <div id="experimentList" class="experiment-list"><div class="empty">Loading experiments...</div></div>
       </section>
-      <div class="section-title">
-        <h2>Sessions</h2>
-        <select id="sessionStatusFilter" title="Filter sessions by status">
-          <option value="">All</option>
-          <option value="waiting">Waiting</option>
-          <option value="playing">Active</option>
-          <option value="completed">Completed</option>
-        </select>
-      </div>
-      <div id="sessionList" class="session-list"><div class="empty">Loading sessions...</div></div>
     </aside>
     <main class="main">
-      <section class="panel">
-        <div class="topline">
-          <h2>Export</h2>
-          <span id="activeExperimentLabel" class="muted small">No experiment selected.</span>
+      <section class="workspace-header">
+        <div id="experimentHeader" class="workspace-title">
+          <span class="muted small">No experiment selected.</span>
+          <h2>Select an experiment</h2>
         </div>
-        <div class="control-grid">
-          <div class="control-row">
-            <select id="exportScope" title="Export scope">
-              <option value="experiment">Selected experiment</option>
-              <option value="session">Selected session</option>
-            </select>
-            <select id="exportFormat" title="Export format">
-              <option value="json">JSON</option>
-              <option value="yaml">YAML</option>
-              <option value="csv">CSV</option>
-            </select>
-          </div>
-          <div class="control-row">
-            <input id="eventTypeFilter" placeholder="Optional event type filter">
-            <button class="primary" id="downloadExport">Export</button>
+        <div id="experimentStats" class="workspace-stats"></div>
+      </section>
+      <nav class="tabs" aria-label="Experiment workspace">
+        <button class="tab active" type="button" data-tab="sessions">Sessions</button>
+        <button class="tab" type="button" data-tab="export">Export</button>
+        <button class="tab" type="button" data-tab="details">Experiment Details</button>
+      </nav>
+      <section id="sessionsPanel" class="tab-panel">
+        <div class="sessions-layout">
+          <aside class="panel session-picker">
+            <div class="session-toolbar">
+              <h2>Sessions</h2>
+              <select id="sessionStatusFilter" title="Filter sessions by status">
+                <option value="">All</option>
+                <option value="waiting">Waiting</option>
+                <option value="playing">Active</option>
+                <option value="completed">Completed</option>
+              </select>
+            </div>
+            <div id="sessionList" class="session-list"><div class="empty">Loading sessions...</div></div>
+          </aside>
+          <div id="sessionDetail" class="session-detail" hidden>
+            <section class="panel" id="summary"><div class="empty">Select a session to inspect metadata and events.</div></section>
+            <section>
+              <div class="topline events-header">
+                <h2>Important Events</h2>
+                <label class="toggle-row" title="Show participant, session, and voice setup events">
+                  <input id="showHousekeeping" type="checkbox">
+                  <span>Show setup</span>
+                </label>
+                <span id="liveStatus" class="muted small">Idle</span>
+              </div>
+              <div id="timeline" class="timeline"></div>
+            </section>
           </div>
         </div>
       </section>
-      <section class="panel" id="reproducibility"><div class="empty">Loading version manifest...</div></section>
-      <section class="panel" id="summary"><div class="empty">Select a session to inspect metadata and events.</div></section>
-      <section class="panel">
-        <h2>Players</h2>
-        <div id="participants" class="participants"><div class="muted">No game selected.</div></div>
+      <section id="exportPanel" class="tab-panel" hidden>
+        <section class="panel">
+          <div class="topline">
+            <h2>Export</h2>
+            <span id="activeExperimentLabel" class="muted small">No experiment selected.</span>
+          </div>
+          <div class="control-grid">
+            <div class="control-row">
+              <select id="exportScope" title="Export scope">
+                <option value="experiment">Selected experiment</option>
+                <option value="session">Selected session</option>
+              </select>
+              <select id="exportFormat" title="Export format">
+                <option value="json">JSON</option>
+                <option value="yaml">YAML</option>
+                <option value="csv">CSV</option>
+              </select>
+            </div>
+            <div class="control-row">
+              <input id="eventTypeFilter" placeholder="Optional event type filter">
+              <button class="primary" id="downloadExport">Download export</button>
+            </div>
+          </div>
+        </section>
       </section>
-      <section>
-        <div class="topline">
-          <h2>Important Events</h2>
-          <label class="toggle-row" title="Show participant, session, and voice setup events">
-            <input id="showHousekeeping" type="checkbox">
-            <span>Show setup</span>
-          </label>
-          <span id="liveStatus" class="muted small">Idle</span>
-        </div>
-        <div id="timeline" class="timeline"></div>
+      <section id="detailsPanel" class="tab-panel" hidden>
+        <section class="panel" id="reproducibility"><div class="empty">Loading experiment details...</div></section>
       </section>
     </main>
   </div>
   <script>
-    const state = { experiments: [], activeExperimentId: null, sessions: [], selected: null, events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null };
+    const state = { experiments: [], activeExperimentId: null, sessions: [], selected: null, selectedSession: null, events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, activeTab: 'sessions' };
     const experimentList = document.getElementById('experimentList');
+    const menuButton = document.getElementById('menuButton');
+    const experimentHeader = document.getElementById('experimentHeader');
+    const experimentStats = document.getElementById('experimentStats');
     const sessionList = document.getElementById('sessionList');
+    const sessionDetail = document.getElementById('sessionDetail');
     const summary = document.getElementById('summary');
-    const participants = document.getElementById('participants');
     const timeline = document.getElementById('timeline');
     const liveStatus = document.getElementById('liveStatus');
     const reproducibility = document.getElementById('reproducibility');
+    const gameName = document.getElementById('gameName');
     const activeExperimentLabel = document.getElementById('activeExperimentLabel');
     const sessionStatusFilter = document.getElementById('sessionStatusFilter');
     const showHousekeeping = document.getElementById('showHousekeeping');
+    const tabButtons = Array.from(document.querySelectorAll('.tab'));
+    const tabPanels = {
+      sessions: document.getElementById('sessionsPanel'),
+      export: document.getElementById('exportPanel'),
+      details: document.getElementById('detailsPanel')
+    };
 
     function fmtTime(value) {
       if (!value) return '-';
@@ -2614,20 +2707,44 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
         button.addEventListener('click', () => {
           state.activeExperimentId = button.dataset.experiment;
           state.selected = null;
+          state.selectedSession = null;
+          sessionDetail.hidden = true;
+          closeExperimentMenu();
           renderExperiments();
-          renderReproducibility();
+          renderExperimentHeader();
+          renderExperimentDetails();
           loadSessions();
         });
       });
     }
 
-    function renderReproducibility() {
+    function renderExperimentHeader() {
+      const experiment = state.experiments.find(item => item.experiment_id === state.activeExperimentId);
+      if (!experiment) {
+        experimentHeader.innerHTML = '<span class="muted small">No experiment selected.</span><h2>Select an experiment</h2>';
+        experimentStats.innerHTML = '';
+        return;
+      }
+      experimentHeader.innerHTML = `
+        <span class="muted small">Experiment</span>
+        <h2>${escapeHtml(experiment.study_name || experiment.experiment_id)}</h2>
+        ${experiment.study_name ? `<span class="muted small">${escapeHtml(experiment.experiment_id)}</span>` : ''}
+      `;
+      experimentStats.innerHTML = `
+        <span class="pill">${escapeHtml(experiment.status)}</span>
+        <span class="pill">${experiment.session_count} sessions</span>
+        <span class="pill">${experiment.completed_session_count} completed</span>
+      `;
+    }
+
+    function renderExperimentDetails() {
       const experiment = state.experiments.find(item => item.experiment_id === state.activeExperimentId);
       const manifest = experiment?.version_manifest || state.versionManifest || {};
       const warnings = manifest.warnings || [];
+      gameName.textContent = displayGameName(manifest.game);
       activeExperimentLabel.textContent = state.activeExperimentId ? `Experiment ${state.activeExperimentId}` : 'No experiment selected.';
       reproducibility.innerHTML = `
-        <h2>Reproducibility</h2>
+        <h2>Experiment Details</h2>
         <div class="grid">
           <div><div class="label">Server</div><div class="value">${escapeHtml(manifest.server?.version || experiment?.server_version || '-')}</div></div>
           <div><div class="label">Server Git</div><div class="value">${escapeHtml(shortSha(manifest.server?.git_sha))}</div></div>
@@ -2645,6 +2762,11 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
       return String(value).slice(0, 12);
     }
 
+    function displayGameName(game) {
+      const name = game?.display_name || game?.name || 'Game';
+      return String(name).replace(/^parlando-/, '').replace(/-/g, ' ');
+    }
+
     function renderSessions() {
       if (!state.sessions.length) {
         sessionList.innerHTML = '<div class="empty">No sessions in this experiment yet.</div>';
@@ -2652,8 +2774,8 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
       }
       sessionList.innerHTML = state.sessions.map(session => `
         <button class="session ${state.selected === session.session_id ? 'active' : ''}" data-session="${session.session_id}">
-          <strong>Session #${session.session_id}</strong>
-          <span class="muted small">Room ${escapeHtml(session.room_id)} · ${escapeHtml(fmtTime(session.created_at))}</span>
+          <strong>#${session.session_id}</strong>
+          <span class="muted small">${escapeHtml(session.room_id)} · ${escapeHtml(fmtTime(session.created_at))}</span>
           <span class="meta">
             <span class="pill">${escapeHtml(session.status)}</span>
             <span class="pill">${session.participant_count} players</span>
@@ -2674,6 +2796,11 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
       const data = await response.json();
       state.sessions = data.sessions || data.games || [];
       state.activeExperimentId = data.experiment_id || state.activeExperimentId;
+      if (state.selected && !state.sessions.some(session => session.session_id === state.selected)) {
+        state.selected = null;
+        state.selectedSession = null;
+        sessionDetail.hidden = true;
+      }
       renderSessions();
       if (!state.selected && state.sessions[0]) selectSession(state.sessions[0].session_id);
     }
@@ -2685,47 +2812,89 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
       state.versionManifest = data.version_manifest || null;
       state.activeExperimentId = state.activeExperimentId || data.active_experiment_id || state.experiments[0]?.experiment_id || null;
       renderExperiments();
-      renderReproducibility();
+      renderExperimentHeader();
+      renderExperimentDetails();
     }
 
     async function selectSession(sessionId) {
       state.selected = sessionId;
       state.lastEventIndex = 0;
       renderSessions();
-      clearInterval(state.timer);
       liveStatus.textContent = 'Loading';
       const detailParams = new URLSearchParams();
       if (state.activeExperimentId) detailParams.set('experiment_id', state.activeExperimentId);
       const response = await fetch(`/api/admin/sessions/${sessionId}?${detailParams}`);
       const data = await response.json();
-      renderSummary(data.session);
-      renderParticipants(data.participants || []);
+      state.selectedSession = data.session;
+      renderSummary(data.session, data.participants || []);
+      sessionDetail.hidden = false;
       state.events = [];
       state.eventBundles = data.event_bundles || [];
       mergeEvents(data.events || []);
       renderEventBundles();
-      state.timer = setInterval(refreshEvents, 1500);
-      liveStatus.textContent = 'Live refresh on';
+      liveStatus.textContent = 'Live';
     }
 
-    function renderSummary(session) {
+    function renderTabs() {
+      tabButtons.forEach(button => button.classList.toggle('active', button.dataset.tab === state.activeTab));
+      Object.entries(tabPanels).forEach(([name, panel]) => {
+        panel.hidden = name !== state.activeTab;
+      });
+    }
+
+    function closeExperimentMenu() {
+      document.body.classList.remove('sidebar-open');
+      menuButton.setAttribute('aria-expanded', 'false');
+    }
+
+    function toggleExperimentMenu() {
+      const open = !document.body.classList.contains('sidebar-open');
+      document.body.classList.toggle('sidebar-open', open);
+      menuButton.setAttribute('aria-expanded', String(open));
+    }
+
+    function renderSummary(session, participantRows) {
       summary.innerHTML = `
-        <h2>Session #${escapeHtml(session.session_id)}</h2>
-        <div class="grid">
+        <div class="summary-head">
+          <h2>Session #${escapeHtml(session.session_id)}</h2>
+          ${participantSummaryInline(participantRows)}
+        </div>
+        <div class="summary-line">
+          <span class="pill">Room ${escapeHtml(session.room_id)}</span>
+          <span class="pill">${escapeHtml(session.mode)}</span>
+          <span class="pill">${escapeHtml(session.status)}</span>
+          <span class="pill">${escapeHtml(fmtTime(session.created_at))}</span>
+        </div>
+        <div class="grid summary-grid">
           <div><div class="label">Room</div><div class="value">${escapeHtml(session.room_id)}</div></div>
           <div><div class="label">Mode</div><div class="value">${escapeHtml(session.mode)}</div></div>
           <div><div class="label">Status</div><div class="value">${escapeHtml(session.status)}</div></div>
           <div><div class="label">Created</div><div class="value">${escapeHtml(fmtTime(session.created_at))}</div></div>
         </div>
+        ${participantDetailsInline(participantRows)}
       `;
     }
 
-    function renderParticipants(rows) {
-      participants.innerHTML = rows.length ? rows.map(row => `
+    function participantLabel(row) {
+      const metadata = row.metadata || {};
+      return row.display_name || metadata.agent_name || metadata.agent_type || row.participant_kind || row.participant_session_id || 'Participant';
+    }
+
+    function participantSummary(rows) {
+      return rows.map(row => `<span class="pill">${escapeHtml(row.role || 'SYS')} ${escapeHtml(participantLabel(row))}</span>`).join('');
+    }
+
+    function participantSummaryInline(rows) {
+      if (!rows.length) return '<span class="muted small">No players recorded.</span>';
+      return `<span class="participant-summary-list">${participantSummary(rows)}</span>`;
+    }
+
+    function participantCards(rows) {
+      return rows.map(row => `
         <div class="participant">
           ${roleBadge(row.role)}
           <div class="participant-body">
-            <div class="value">${escapeHtml(row.display_name || row.participant_session_id)}</div>
+            <div class="value">${escapeHtml(participantLabel(row))}</div>
             <div class="meta">
               <span class="pill">${escapeHtml(row.connection_status)}</span>
               <span class="pill">${escapeHtml(row.participant_kind || 'participant')}</span>
@@ -2733,7 +2902,22 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
             </div>
           </div>
         </div>
-      `).join('') : '<div class="muted">No players recorded.</div>';
+      `).join('');
+    }
+
+    function participantDetailsInline(rows) {
+      if (!rows.length) {
+        return '';
+      }
+      const cards = participantCards(rows);
+      return `
+        <details class="participant-collapse session-participants">
+          <summary>
+            <span class="muted small">Player details</span>
+          </summary>
+          <div class="participants participant-details">${cards}</div>
+        </details>
+      `;
     }
 
     function agentParticipantPills(row) {
@@ -2852,10 +3036,26 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
       liveStatus.textContent = `Last checked ${new Date().toLocaleTimeString()}`;
     }
 
-    document.getElementById('refreshSessions').addEventListener('click', loadSessions);
     showHousekeeping.addEventListener('change', renderEventBundles);
+    menuButton.addEventListener('click', toggleExperimentMenu);
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') closeExperimentMenu();
+    });
+    document.addEventListener('click', event => {
+      if (!document.body.classList.contains('sidebar-open')) return;
+      if (event.target.closest('#experimentSidebar') || event.target.closest('#menuButton')) return;
+      closeExperimentMenu();
+    });
+    tabButtons.forEach(button => {
+      button.addEventListener('click', () => {
+        state.activeTab = button.dataset.tab;
+        renderTabs();
+      });
+    });
     sessionStatusFilter.addEventListener('change', () => {
       state.selected = null;
+      state.selectedSession = null;
+      sessionDetail.hidden = true;
       loadSessions();
     });
     document.getElementById('createExperiment').addEventListener('click', async () => {
@@ -2870,6 +3070,8 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
       const data = await response.json();
       input.value = '';
       state.activeExperimentId = data.experiment_id;
+      state.selected = null;
+      state.selectedSession = null;
       await loadExperiments();
       await loadSessions();
     });
@@ -2899,6 +3101,13 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
     loadExperiments().then(loadSessions).catch(error => {
       sessionList.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
     });
+    renderTabs();
+    setInterval(() => {
+      loadExperiments().then(loadSessions).catch(error => {
+        liveStatus.textContent = error.message;
+      });
+    }, 5000);
+    state.timer = setInterval(refreshEvents, 1500);
   </script>
 </body>
 </html>
@@ -3994,6 +4203,44 @@ mod tests {
             created_at: format!("2026-07-11T20:15:{index:02}.000000+00:00"),
         };
         admin_event_summary(stored)
+    }
+
+    #[test]
+    fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
+        assert!(ADMIN_GAMES_HTML.contains("app-header"));
+        assert!(ADMIN_GAMES_HTML.contains("gameName"));
+        assert!(ADMIN_GAMES_HTML.contains("New Experiment"));
+        assert!(ADMIN_GAMES_HTML.contains("Experiment Details"));
+        assert!(ADMIN_GAMES_HTML.contains("data-tab=\"sessions\""));
+        assert!(ADMIN_GAMES_HTML.contains("data-tab=\"export\""));
+        assert!(ADMIN_GAMES_HTML.contains("data-tab=\"details\""));
+        assert!(ADMIN_GAMES_HTML.contains("id=\"sessionsPanel\""));
+        assert!(ADMIN_GAMES_HTML.contains("id=\"exportPanel\""));
+        assert!(ADMIN_GAMES_HTML.contains("id=\"detailsPanel\""));
+        assert!(ADMIN_GAMES_HTML.contains("id=\"sessionDetail\""));
+        assert!(ADMIN_GAMES_HTML.contains("sessions-layout"));
+        assert!(ADMIN_GAMES_HTML.contains("session-picker"));
+        assert!(ADMIN_GAMES_HTML.contains("participant-collapse"));
+        assert!(ADMIN_GAMES_HTML.contains("participant-summary-list"));
+        assert!(ADMIN_GAMES_HTML.contains("session-participants"));
+        assert!(ADMIN_GAMES_HTML.contains("id=\"menuButton\""));
+        assert!(ADMIN_GAMES_HTML.contains("sidebar-open"));
+        assert!(ADMIN_GAMES_HTML.contains("summary-line"));
+        assert!(ADMIN_GAMES_HTML.contains("events-header"));
+        assert!(!ADMIN_GAMES_HTML.contains("refreshSessions"));
+        assert!(!ADMIN_GAMES_HTML.contains(">Reproducibility<"));
+        let sidebar = ADMIN_GAMES_HTML
+            .split("id=\"experimentSidebar\"")
+            .nth(1)
+            .and_then(|html| html.split("</aside>").next())
+            .unwrap();
+        assert!(!sidebar.contains("<h2>Sessions</h2>"));
+        let sessions_panel = ADMIN_GAMES_HTML
+            .split("id=\"sessionsPanel\"")
+            .nth(1)
+            .and_then(|html| html.split("id=\"exportPanel\"").next())
+            .unwrap();
+        assert!(!sessions_panel.contains("<h2>Players</h2>"));
     }
 
     #[test]
