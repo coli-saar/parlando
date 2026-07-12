@@ -111,7 +111,7 @@ Point an experiment config at that service with `agents.human_vs_agent.factory: 
 - `space-game/render.yaml`: Render web-service example.
 - `docs/`: GitHub-rendered technical documentation for architecture, games, browser protocol, agents, deployment, and data export.
 
-The TypeScript browser runtime and demo client are treated as existing sibling packages in the current project layout. The Rust server can serve a built client directory through `server.client_dist_path`.
+The reusable TypeScript browser runtime lives in `js-client`; the Space Game browser app lives in `space-game/client`. The Rust server can serve a built client directory through `server.client_dist_path`.
 
 ## Run The Demo Server
 

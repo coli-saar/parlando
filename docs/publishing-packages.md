@@ -3,7 +3,7 @@
 This page is for publishing the reusable Parlando packages:
 
 - `parlando-server`: Rust library crate under `rust-server`, published to crates.io.
-- `@parlando/client`: browser SDK under `js-client`, published locally with yalc.
+- `@parlando/client`: browser SDK under `js-client`, prepared locally with yalc.
 
 The demo `parlando-space-game` crate and `space-game` browser app are examples, not packages we publish as part of the reusable platform release.
 
@@ -28,7 +28,7 @@ Publish the Rust crate from a clean tree after tests and package dry runs pass. 
 Use this when checking the package shape before involving crates.io:
 
 ```bash
-make publish-local
+make package-local
 ```
 
 This runs:
@@ -38,13 +38,13 @@ cd rust-server && cargo package --allow-dirty
 cd js-client && npm run yalc
 ```
 
-`cargo package` validates the Rust crate contents and writes a local `.crate` archive under `rust-server/target/package/`. `npm run yalc` builds `@parlando/client` and publishes it to the local yalc store so sibling game clients can install the package-shaped SDK without using GitHub Packages.
+`cargo package` validates the Rust crate contents and writes a local `.crate` archive under `rust-server/target/package/`. `npm run yalc` builds `@parlando/client` and makes it available in the local yalc store so sibling game clients can install the package-shaped SDK without using GitHub Packages.
 
 For only one package:
 
 ```bash
 make package-rust-server-local
-make publish-js-client-local
+make package-js-client-local
 ```
 
 ## Rust Online Dry Run
@@ -72,7 +72,7 @@ cargo login
 make publish-rust-server
 ```
 
-There is intentionally no online publish command for `@parlando/client`. The JS side is local-only through `make publish-js-client-local` / `npm run yalc`.
+There is intentionally no online publish command for `@parlando/client`. The JS side is local-only through `make package-js-client-local` / `npm run yalc`.
 
 ## Consumer Versions
 
@@ -98,5 +98,5 @@ Use yalc only for local unpublished testing:
 
 ```bash
 cd js-client && npm run yalc
-cd ../space-game && yalc add @parlando/client && npm install
+cd ../space-game/client && yalc add @parlando/client && npm install
 ```

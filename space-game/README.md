@@ -14,61 +14,48 @@ The browser dependency direction is one-way: this app consumes the SDK as an ins
 
 ## Start the game
 
-For the normal two-human local game, run from the Parlando top-level directory:
+For the normal two-human local game, run from this directory:
 
 ```bash
-cd /Users/koller/Documents/workspace/parlando
-make run-space-game
+cd /Users/koller/Documents/workspace/parlando/space-game
+make run
 ```
 
 For the single-browser back-and-forth voice test, run:
 
 ```bash
-cd /Users/koller/Documents/workspace/parlando
-make run-space-game-solo-voice
-```
-
-Both commands install or refresh shared local artifacts before starting the server. They are convenient after source changes, but they can take a while because they may run `cargo install`, publish `@parlando/client` to yalc, reinstall client dependencies, and rebuild the browser app.
-
-After dependencies are already installed and you only want to restart the game, use the game-local command instead:
-
-```bash
 cd /Users/koller/Documents/workspace/parlando/space-game
-PATH="/Users/koller/Documents/workspace/parlando/.local/bin:$PATH" make run-solo-voice
+make run-solo-voice
 ```
 
-For the non-voice local config, use:
-
-```bash
-cd /Users/koller/Documents/workspace/parlando/space-game
-PATH="/Users/koller/Documents/workspace/parlando/.local/bin:$PATH" make run
-```
+Both commands install or refresh shared local artifacts before starting the server. They are convenient after source changes, but they can take a while because they may run `cargo install`, package/link `@parlando/client` with yalc, reinstall client dependencies, and rebuild the browser app.
 
 Open the game at `http://127.0.0.1:8000/`. Stop it with `Ctrl-C` in the terminal running `make`.
 
-## Top-level local install
+## Local install
 
-From the Parlando top-level directory, install local dependencies first:
+From this directory, install local Space Game dependencies first:
 
 ```bash
+cd /Users/koller/Documents/workspace/parlando/space-game
 make install-local
 ```
 
-That command installs the Rust server binary into `.local/bin` and publishes `@parlando/client` into the local yalc store.
+That command installs the Rust server binary into `.local/bin` and prepares `@parlando/client` in the local yalc store.
 
 Then build or run the demo:
 
 ```bash
-make build-space-game
-make run-space-game
+make build
+make run
 ```
 
 ## Game-local Makefile
 
-This directory also has a source-agnostic Makefile. It expects:
+This directory has the Space Game Makefile. It can prepare its own local dependencies, and it also accepts externally prepared artifacts:
 
-- `parlando-space-game` on `PATH`, or `SERVER_BIN=/path/to/parlando-space-game`.
-- `@parlando/client@0.1.0` already published in the local yalc store.
+- the default `.local/bin/parlando-space-game`, or `SERVER_BIN=/path/to/parlando-space-game`.
+- `@parlando/client@0.1.0` already available in the local yalc store.
 
 Run from this directory:
 
@@ -81,13 +68,14 @@ The Makefile installs the SDK package from yalc with `npm install --no-save`, so
 
 ## Solo voice test
 
-For a single-browser test against the deterministic back-and-forth agent, run from the top-level directory:
+For a single-browser test against the deterministic back-and-forth agent, run from this directory:
 
 ```bash
-make run-space-game-solo-voice
+cd /Users/koller/Documents/workspace/parlando/space-game
+make run-solo-voice
 ```
 
-Or from this directory, after local dependencies are installed:
+Or, after local dependencies are installed:
 
 ```bash
 make run-solo-voice
@@ -115,4 +103,4 @@ Game-specific UI should stay here. For example, the station map, inventory/actio
 
 ## Runtime expectation
 
-The client expects a Parlando-compatible server that exposes the documented `/api/*` and `/ws/game/*` routes. In production-like deployments, the Rust server can serve this app's built `dist` directory through `server.client_dist_path`.
+The client expects a Parlando-compatible server that exposes the documented `/api/*` and `/ws/game/*` routes. In local runs, the Rust server serves this app's built `client/dist` directory through `server.client_dist_path`.

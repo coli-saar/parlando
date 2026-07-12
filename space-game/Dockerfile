@@ -7,6 +7,19 @@ COPY rust-server ./rust-server
 COPY space-game/server ./space-game/server
 RUN cargo build --release --manifest-path space-game/server/Cargo.toml
 
+FROM node:22-bookworm-slim AS client-builder
+
+WORKDIR /app
+COPY js-client ./js-client
+COPY space-game/client ./space-game/client
+RUN cd js-client \
+    && npm install \
+    && npm run build \
+    && npm pack --pack-destination /tmp
+RUN cd space-game/client \
+    && npm install --no-save /tmp/parlando-client-0.1.0.tgz \
+    && npm run build
+
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update \
@@ -15,6 +28,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY --from=builder /app/space-game/server/target/release/parlando-space-game /usr/local/bin/parlando-space-game
+COPY --from=client-builder /app/space-game/client/dist /app/client-dist
 COPY space-game/config/experiment.render.example.yaml /app/config/experiment.yaml
 
 ENV RUST_LOG=info

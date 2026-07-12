@@ -472,20 +472,22 @@ The README comparison is necessarily selective. It points to established systems
 
 ## Context
 
-The Space Game Rust crate originally lived inside the reusable Rust server workspace. That made the `rust-server` directory carry both reusable platform code and one concrete demo game, while the sibling `space-game` directory held only the browser app and game configs.
+The Space Game Rust crate originally lived inside the reusable Rust server workspace. That made the `rust-server` directory carry both reusable platform code and one concrete demo game, while the sibling `space-game` directory held the browser app and game configs. After moving the Rust game crate under `space-game/server`, the browser app still sat at the `space-game` root, mixing app source with game-level build, config, and deployment files.
 
 ## Chosen Approach
 
 - Make `rust-server` the `parlando-server` crate directly, with `src/`, `proto/`, `tests/`, and `Cargo.toml` at the directory root.
 - Move the Space Game Rust crate to `space-game/server` so the game owns its browser client, server adapter, agents, configs, Dockerfile, and Render blueprint together.
+- Move the Space Game browser app to `space-game/client`, leaving `space-game` as the game-level project root for Makefile, config, deployment, server, and client subprojects.
+- Point local configs at `client/dist`, and have the production Dockerfile build the client and copy its output to `/app/client-dist`.
 - Keep the installed binary name `parlando-space-game` for local scripts and deployment commands.
 - Use a local path dependency from `space-game/server` to `../../rust-server` inside this monorepo; published external games should depend on the released `parlando-server` crate instead.
 
 ## Tradeoffs
 
-The Space Game server now has a direct relative path to the reusable server crate during monorepo development. That is clearer for this checkout and mirrors how new game projects should be organized, but it means the demo game is no longer part of a single Cargo workspace command from `rust-server`.
+The Space Game server now has a direct relative path to the reusable server crate during monorepo development. That is clearer for this checkout and mirrors how new game projects should be organized, but it means the demo game is no longer part of a single Cargo workspace command from `rust-server`. The client also has one more path component, but the game root is cleaner and deployment paths are explicit.
 
 ## Follow-Up
 
-- If more first-party games are added, keep each game self-contained under its own top-level directory with a `server/` crate and browser app.
+- If more first-party games are added, keep each game self-contained under its own top-level directory with `server/` and `client/` subprojects.
 - Consider adding a root-level convenience script if contributors need one command to test every Rust crate in the repository.

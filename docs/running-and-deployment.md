@@ -67,7 +67,7 @@ server:
 
 The server serves `/`, `/assets/*`, and SPA fallback paths from that directory while preserving `/api/*` and `/ws/*`.
 
-The Space Game frontend lives beside the Rust game server under `space-game`. The server can serve a built client directory, but the provided Dockerfile currently builds only the Rust game server; add a frontend build stage or copy a verified `dist` directory to `/app/client-dist` when bundling the UI into the same image.
+The Space Game frontend lives under `space-game/client`. Local configs point the server at `client/dist`; the production Dockerfile builds that client and copies it to `/app/client-dist`.
 
 ## Render Deployment
 
@@ -93,7 +93,7 @@ database:
   url: sqlite:////data/parlando.sqlite
 ```
 
-If you want the Rust service to serve the browser app, include a built client at `/app/client-dist` in the production image or adjust `server.client_dist_path` to the deployed path.
+The production image serves the browser app from `/app/client-dist`. If you deploy the frontend separately, remove or adjust `server.client_dist_path`.
 
 ## Reference Files
 

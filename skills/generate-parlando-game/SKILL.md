@@ -49,14 +49,10 @@ Generate both halves of the game and all build/run files:
 <game-slug>/
 |-- README.md
 |-- Makefile
-|-- package.json
-|-- tsconfig.json
-|-- vite.config.ts
-|-- index.html
 |-- config/
 |   |-- experiment.local.yaml
 |   `-- experiment.render.example.yaml
-|-- rust/
+|-- server/
 |   |-- Cargo.toml
 |   `-- src/
 |       |-- main.rs
@@ -66,27 +62,32 @@ Generate both halves of the game and all build/run files:
 |           |-- mod.rs
 |           |-- state_engine.rs
 |           `-- adapter.rs
-`-- web/
-    `-- src/
-        |-- App.tsx
-        |-- main.tsx
-        |-- styles.css
-        `-- game/
-            |-- types.ts
-            |-- stateEngine.ts
-            `-- stateEngine.test.ts
+`-- client/
+    |-- package.json
+    |-- tsconfig.json
+    |-- vite.config.ts
+    |-- index.html
+    `-- web/
+        `-- src/
+            |-- App.tsx
+            |-- main.tsx
+            |-- styles.css
+            `-- game/
+                |-- types.ts
+                |-- stateEngine.ts
+                `-- stateEngine.test.ts
 ```
 
 If contributing inside the Parlando monorepo, instead mirror the existing demo shape:
 
 - add a Rust crate under `<game-slug>/server`
 - depend on the reusable server crate with an appropriate local path to `rust-server`
-- add a browser app under `<game-slug>/`
-- include game-local `Makefile`, `package.json`, `config/`, and client source
+- add a browser app under `<game-slug>/client`
+- include game-local `Makefile`, `config/`, and client source
 
 Outside the monorepo, treat the generated game as a consumer of installed local artifacts:
 
-- install the generated Rust game server binary with `cargo install --path rust --root .local` or an equivalent Cargo install command
+- install the generated Rust game server binary with `cargo install --path server --root .local` or an equivalent Cargo install command
 - put `.local/bin` on `PATH` when running locally
 - install `@parlando/client` from the local yalc store during client setup
 - avoid `../rust-server` and `../js-client` path assumptions
@@ -184,7 +185,7 @@ Generate `config/experiment.local.yaml` with:
 - `direct.enabled: true`
 - room codes and/or matchmaking
 - `server.public_base_url: http://localhost:8000`
-- `server.client_dist_path: dist`
+- `server.client_dist_path: client/dist`
 - local SQLite under `.local/`
 - voice, transcription, and TTS disabled unless requested
 - conversation enabled by default
@@ -202,7 +203,7 @@ Generate:
 
 - Rust `Cargo.toml` using the installed/package Parlando server crate version, plus `anyhow`, `clap`, `serde`, `serde_json`, `tokio`, `tracing-subscriber`, and optional `async-trait`/`rand`. Use a workspace path only when generating inside the Parlando monorepo.
 - client `package.json` using `@parlando/client`, React, Vite, TypeScript, and Vitest. Keep the dependency version normal, then have the Makefile install or update the package from yalc for local development.
-- `vite.config.ts`, `tsconfig.json`, and `index.html`
+- client-local `vite.config.ts`, `tsconfig.json`, and `index.html`
 - `Makefile` targets for `check-client-package`, `install-client-deps`, `install-server`, `build-client`, `build`, `test`, `run`, and `clean`
 - Dockerfile and Render config when the user asks for deployable output, or when deployment is part of the prompt
 

@@ -1,55 +1,41 @@
 SHELL := /bin/bash
 
 PARLANDO_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
-LOCAL_PREFIX ?= $(PARLANDO_DIR)/.local
-LOCAL_BIN := $(LOCAL_PREFIX)/bin
 
 RUST_SERVER_DIR := $(PARLANDO_DIR)/rust-server
 JS_CLIENT_DIR := $(PARLANDO_DIR)/js-client
-SPACE_GAME_DIR := $(PARLANDO_DIR)/space-game
 
-HOST ?= 127.0.0.1
-PORT ?= 8000
+.PHONY: all install-local install-js-client package-local package-rust-server-local package-js-client-local publish-dry-run publish-rust-server-dry-run publish-rust-server
 
-.PHONY: all install-local install-space-game-server install-rust-server install-js-client build-space-game run-space-game run-space-game-solo-voice clean-space-game publish-local package-rust-server-local publish-js-client-local publish-dry-run publish-rust-server-dry-run publish-rust-server
+# Default workflow: prepare the reusable JavaScript client for local development.
+all: install-local
 
-all: install-local build-space-game
+# Install all top-level local dependencies.
+install-local: install-js-client
 
-install-local: install-space-game-server install-js-client
-
-install-space-game-server:
-	cd "$(PARLANDO_DIR)" && cargo install --path space-game/server --root "$(LOCAL_PREFIX)" --force
-
-install-rust-server: install-space-game-server
-
+# Install JavaScript client dependencies and link the client locally with yalc.
 install-js-client:
 	cd "$(JS_CLIENT_DIR)" && npm install
 	cd "$(JS_CLIENT_DIR)" && npm run yalc
 
-build-space-game: install-local
-	cd "$(SPACE_GAME_DIR)" && PATH="$(LOCAL_BIN):$$PATH" make build
+# Prepare local Rust and JavaScript packages without publishing to remote registries.
+package-local: package-rust-server-local package-js-client-local
 
-run-space-game: install-local
-	cd "$(SPACE_GAME_DIR)" && PATH="$(LOCAL_BIN):$$PATH" make run HOST="$(HOST)" PORT="$(PORT)"
-
-run-space-game-solo-voice: install-local
-	cd "$(SPACE_GAME_DIR)" && PATH="$(LOCAL_BIN):$$PATH" make run-solo-voice HOST="$(HOST)" PORT="$(PORT)"
-
-clean-space-game:
-	cd "$(SPACE_GAME_DIR)" && make clean-client
-
-publish-local: package-rust-server-local publish-js-client-local
-
+# Create a local Cargo package for the Rust server, allowing uncommitted changes.
 package-rust-server-local:
 	cd "$(RUST_SERVER_DIR)" && cargo package --allow-dirty
 
-publish-js-client-local:
+# Package/link the JavaScript client into the local yalc store.
+package-js-client-local:
 	cd "$(JS_CLIENT_DIR)" && npm run yalc
 
+# Run publishing checks without uploading packages.
 publish-dry-run: publish-rust-server-dry-run
 
+# Validate the Rust server crate against Cargo's publish checks without uploading it.
 publish-rust-server-dry-run:
 	cd "$(RUST_SERVER_DIR)" && cargo publish --dry-run --allow-dirty
 
+# Publish the Rust server crate to the configured Cargo registry.
 publish-rust-server:
 	cd "$(RUST_SERVER_DIR)" && cargo publish

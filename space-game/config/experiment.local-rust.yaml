@@ -10,7 +10,7 @@ study:
 server:
   public_base_url: http://localhost:8000
   allowed_origins: []
-  client_dist_path: dist
+  client_dist_path: client/dist
 
 database:
   url: sqlite:///.local/parlando.sqlite

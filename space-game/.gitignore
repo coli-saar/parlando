@@ -1,5 +1,8 @@
-node_modules/
-dist/
+client/node_modules/
+client/dist/
+client/.yalc/
+client/yalc.lock
+client/package-lock.json
 server/target/
 .yalc/
 .local/
