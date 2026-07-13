@@ -2,7 +2,7 @@
 
 This page covers local development, experiment configuration, frontend serving, Docker, Render, and hosted remote agents.
 
-Parlando is also expected to include infrastructure for Prolific-driven experiments. The local and Render setup below still applies: Prolific entry points should create or recover participant sessions, route participants into the same waiting-room flow, and persist the same evaluation records.
+The same server shape applies to direct links, matched participant sessions, human-vs-agent studies, and Prolific-oriented flows: create or recover participant sessions, route participants into the waiting-room flow, and persist the same evaluation records.
 
 ## Local Development
 
@@ -33,12 +33,16 @@ Useful routes:
 
 - `GET /health`
 - `GET /api/config`
-- `GET /admin/games`
+- `GET /admin/experiments`
 - `GET /api/admin/export`
+
+`/admin/games` remains available as a compatibility alias for older deployments.
 
 ## Configuration
 
 Experiment configuration is YAML loaded by `ExperimentConfig::from_yaml`. It supports includes, environment-variable substitution, and relative path resolution.
+
+Keep one checked-in base config for public, repeatable settings. Put deployment-specific secrets, service credentials, and private URLs in an ignored include file or a platform secret file.
 
 The main sections are:
 
@@ -68,6 +72,8 @@ server:
 The server serves `/`, `/assets/*`, and SPA fallback paths from that directory while preserving `/api/*` and `/ws/*`.
 
 The Space Game frontend lives under `space-game/client`. Local configs point the server at `client/dist`; the production Dockerfile builds that client and copies it to `/app/client-dist`.
+
+If you serve the frontend separately, keep `server.public_base_url` and CORS origins aligned with the deployed browser origin, and leave API/WebSocket routes on the Parlando server.
 
 ## Render Deployment
 

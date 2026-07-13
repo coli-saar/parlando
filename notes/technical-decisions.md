@@ -1,5 +1,15 @@
 # Technical Decisions
 
+## 2026-07-13: Documentation starts from researcher workflows
+
+Context: The README and user-facing docs were technically accurate but led with runtime infrastructure before making the research workflow explicit. New researchers need to see quickly whether Parlando fits their study, while the docs still need precise implementation contracts.
+
+Decision: Reframed the README around study fit, examples, and provided capabilities before adapter details. Updated the docs index and technical pages to introduce workflows, current route names, analysis-oriented completion summaries, and deployment boundaries without changing implementation contracts.
+
+Tradeoffs: The overview now repeats a small amount of information from the technical pages, but that duplication helps first-time readers decide where to go next. The detailed docs remain the source of truth for protocol and deployment specifics.
+
+Follow-up risks: As Prolific automation and the planned generation skill mature, the README and docs index should be revisited so the entry path reflects the actual supported workflow rather than future intent.
+
 ## 2026-07-13: Agent action responses apply before speech
 
 Context: An agent response can contain both an action and a message. The runtime previously persisted and spoke the message before submitting the action. With TTS enabled, that meant the visible game action could be delayed until after speech synthesis and playback, making the UI feel out of order.

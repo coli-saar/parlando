@@ -2,6 +2,8 @@
 
 Parlando supports agents as first-class participants. An agent observes role-specific state, accepted actions, and conversation messages as they happen. After each observation, the runtime asks whether the agent wants to respond. Any returned action goes through the normal server validation path.
 
+Use agents when you want to compare human partners with automated partners, run controlled partner policies, prototype human-AI interaction, or keep a scripted participant available during development. You do not need an agent for a human-vs-human study.
+
 Agents can run in two ways:
 
 - in process, written in Rust and linked into the game binary.
@@ -67,7 +69,7 @@ Remote agents let researchers write policies in Python while keeping the Rust se
 Install the SDK dependencies in your Python environment, generate protobuf modules from a checkout, and run an agent service:
 
 ```sh
-cd python/parlando-agent-sdk
+cd rust-server/python/parlando-agent-sdk
 python -m pip install -e .
 python -m parlando_agent_sdk.generate_protos
 python my_agent.py
@@ -134,10 +136,12 @@ For hosted deployments, the gRPC endpoint must be reachable from the Rust servic
 
 Record the agent name and version in config. Parlando persists remote-agent participant metadata as `identity_provider = remote_grpc` and `external_id = <agent_name>@<agent_version>`, which helps later analysis distinguish policies.
 
+If the agent uses an LLM or another hosted model, keep provider credentials in the agent process or server-side configuration. Do not put model credentials in browser code or public config.
+
 ## Reference Files
 
 - `rust-server/src/agents.rs`: local agent traits.
 - `rust-server/src/remote_agent.rs`: Rust gRPC bridge.
 - `rust-server/proto/parlando_agent_v1.proto`: remote-agent protocol.
 - `space-game/server/src/agents.rs`: demo local and remote agent selection.
-- `python/parlando-agent-sdk`: Python agent SDK.
+- `rust-server/python/parlando-agent-sdk`: Python agent SDK.

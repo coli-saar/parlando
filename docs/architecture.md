@@ -1,6 +1,10 @@
 # Architecture
 
-Parlando separates reusable experiment infrastructure from the game-specific mechanics of a particular study. A game author writes a typed Rust game adapter and a browser experience; the reusable server handles the surrounding work needed to run the experiment. The planned Parlando LLM skill is intended to generate and revise much of this adapter/client code from a game description, so the architecture is explicit and regular rather than hidden behind a large framework.
+Parlando separates reusable experiment infrastructure from the game-specific mechanics of a particular study. A game author writes a typed Rust game adapter and a browser experience; the reusable server handles the surrounding work needed to run the experiment.
+
+The design goal is a clear research boundary: your study defines the world, roles, legal actions, private information, UI, agents, and analysis summary. Parlando provides the room lifecycle, communication channels, storage, monitoring, export, and deployment shape around that study.
+
+The planned Parlando LLM skill is intended to generate and revise much of the adapter and client code from a game description, so the architecture is explicit and regular rather than hidden behind a large framework.
 
 ## Terminology
 
@@ -33,6 +37,8 @@ The game crate owns:
 
 The browser client owns the participant experience: screens, controls, rendering, audio setup, and WebSocket interaction. The server remains authoritative even when the client computes controls locally.
 
+The data store owns the durable record for later analysis. Browser-local state and in-memory rooms are useful during play, but exported study data should come from persisted experiment, session, participant, action, conversation, transcript, agent, and diagnostic records.
+
 ## Runtime Boundaries
 
 Inside the linked Rust binary, game logic stays typed. JSON appears at boundaries:
@@ -61,9 +67,10 @@ Human-vs-agent sessions use the same room and action path. The agent participant
 
 ## Example Implementation
 
-Use these files as the concrete reference:
+Use these files as concrete references:
 
 - `space-game/server/src/game/state_engine.rs`: typed demo state, actions, observations, events, summary, and transition helpers.
 - `space-game/server/src/game/adapter.rs`: the `GameAdapter` implementation.
 - `space-game/server/src/agents.rs`: in-process and remote-agent selection.
 - `space-game/server/src/main.rs`: binary entry point that loads config and starts the reusable server.
+- `space-game/client`: demo participant UI using the reusable JavaScript client.

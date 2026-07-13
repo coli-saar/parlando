@@ -2,6 +2,8 @@
 
 A Parlando game is a Rust adapter around your experiment mechanics. The adapter tells the reusable server how to create state, parse and validate actions, produce role-specific observations, emit events, and decide when the game is complete. The browser client then renders the JSON form of those observations and sends the JSON form of your actions back to the server.
 
+Start with the research design before writing code. Identify what each role knows, what each role can do, what counts as progress, how the session ends, and what summary fields you need for analysis. Those choices map directly to Parlando's `State`, `Action`, `Observation`, `Event`, and `Summary` types.
+
 ## Adapter Contract
 
 Every game implements `GameAdapter` from `rust-server/src/game.rs`.
@@ -74,6 +76,8 @@ impl GameAdapter for MyGameAdapter {
 
 This makes most of the game testable without starting the HTTP server.
 
+Keep browser convenience logic separate from authority. The UI can gray out controls, suggest likely actions, or animate possible moves, but the Rust adapter should still reject illegal or out-of-turn actions.
+
 ## Action Flow
 
 The normal action path is:
@@ -114,11 +118,11 @@ This is useful for experiments where an agent or UI can choose from a controlled
 A typical new game crate needs:
 
 1. Define `State`, `Action`, `Observation`, `Event`, and `Summary`.
-2. Write pure transition helpers: initial state, validation, apply, observation, events, completion.
-3. Implement `GameAdapter`.
+2. Write pure transition helpers for initial state, validation, state updates, observations, events, completion, and summary generation.
+3. Implement `GameAdapter` by delegating to those helpers.
 4. Add any in-process agents and a game-specific `factory_from_config`.
 5. Define matching TypeScript types for the JSON form of your action, observation, event, and summary values.
-6. Build a browser client using the Parlando JS client package and your game-specific rendering and controls.
+6. Build a browser client using the Parlando JavaScript client package and your game-specific rendering and controls.
 7. Create a binary like `space-game/server/src/main.rs` that loads config and calls `serve`.
 8. Add integration tests that create rooms, connect sockets, submit actions, and inspect exports.
 
@@ -126,14 +130,15 @@ A typical new game crate needs:
 
 Before implementing, write down:
 
-- roles: currently active player roles are `A` and `B`.
-- participant-visible observation fields for each role.
-- private fields that must never be sent to the other role.
-- action schema and validation rules.
-- whether the UI should use server-provided `available_actions` or compute controls from the observation.
-- transition events that should appear in the participant log.
-- completion condition and summary fields needed for analysis.
-- fields that should be exported for downstream analysis.
+- Roles: currently active player roles are `A` and `B`.
+- Participant-visible observation fields for each role.
+- Private fields that must never be sent to the other role.
+- Action schema and validation rules.
+- Whether the UI should use server-provided `available_actions` or compute controls from the observation.
+- Transition events that should appear in the participant log.
+- Terminal conditions, including success, failure, timeout, or abandonment cases.
+- Completion summary fields needed for analysis.
+- Fields that should be exported for downstream analysis.
 
 This checklist is also the natural prompt shape for the planned Parlando LLM skill: describe the game in these terms, generate a first adapter/client, then iterate.
 
@@ -144,3 +149,4 @@ This checklist is also the natural prompt shape for the planned Parlando LLM ski
 - `space-game/server/src/game/state_engine.rs`: demo typed game model.
 - `space-game/server/src/game/adapter.rs`: demo adapter.
 - `space-game/server/src/main.rs`: demo binary.
+- `space-game/client`: demo browser client.

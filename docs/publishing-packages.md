@@ -1,6 +1,6 @@
 # Publishing Packages
 
-This page documents how Parlando packages are published and how games should depend on them.
+This page is for maintainers publishing Parlando packages and for game authors deciding how to depend on them. Most game projects should use released registry packages; local paths are only for temporary debugging.
 
 Parlando has two reusable packages:
 

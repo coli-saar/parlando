@@ -9,6 +9,8 @@ The browser client receives the game-specific Rust values as JSON. A game author
 
 The reusable `@coli-saar/parlando-client` package supplies HTTP helpers, WebSocket helpers, audio-session helpers, and generic protocol types. The game client supplies game-specific types and rendering.
 
+The safest mental model is: render participant UI from `observation`, send proposed actions through the socket, and let the server decide whether those actions are legal. The client can improve ergonomics, but it should not become the authority for game rules or hidden information.
+
 ## Rust To JSON Naming
 
 Rust structs commonly use snake_case fields. The JSON wire format follows serde rules:
@@ -76,6 +78,8 @@ A typical browser flow is:
 
 The reusable JavaScript client wraps these HTTP calls, but the game UI still decides how to arrange screens and when to move from setup to waiting to active play.
 
+Direct-study flows may use `/api/direct/start` and `/api/direct/enter` instead of manually creating participants and rooms. Those routes still produce participant-session and room state that connect to the same WebSocket protocol.
+
 ## HTTP Room Payloads
 
 Room creation and joining responses include game-specific payloads:
@@ -93,7 +97,7 @@ interface RoomResponse<TState, TObservation, TAction, TEvent> {
 }
 ```
 
-Use `observation` for rendering the participant view. `state` may be present for compatibility or admin-like flows, but a participant UI should not rely on hidden information being absent from `state`; privacy should be enforced by rendering from `observation`.
+Use `observation` for rendering the participant view. `state` may be present for compatibility or admin-like flows, but a participant UI should not rely on hidden information being absent from `state`; privacy should be enforced by rendering from `observation` and by keeping private fields out of role-specific observations.
 
 For waiting-room flows, room responses omit game payloads while the room is still waiting. The game starts when the WebSocket receives `roleAssigned`.
 
@@ -107,7 +111,7 @@ The server still validates every submitted action, including actions selected fr
 
 ## WebSocket Messages
 
-Open a room socket with:
+After setup, open a room socket with:
 
 ```ts
 const socket = new WebSocket(
