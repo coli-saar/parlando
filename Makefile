@@ -41,6 +41,8 @@ publish-rust-server-dry-run:
 publish-js-client-dry-run:
 	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" publish --dry-run
 
+publish: publish-rust-server publish-js-client
+
 # Publish the Rust server crate to the configured Cargo registry.
 publish-rust-server:
 	cd "$(RUST_SERVER_DIR)" && cargo publish
