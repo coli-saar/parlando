@@ -12,6 +12,7 @@ name = "<game-slug>-server"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+build = "build.rs"
 
 [dependencies]
 anyhow = "1"
@@ -25,6 +26,26 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ```
 
 Add `rand = "0.8"` only when a generated in-process agent needs seeded randomness.
+
+## macOS Objective-C Link Flag
+
+Every generated Rust server crate must include `server/build.rs` and set `build = "build.rs"` in `server/Cargo.toml`.
+
+```rust
+/// Configures final binary link flags for native LiveKit/WebRTC support on macOS.
+fn main() {
+    #[cfg(target_os = "macos")]
+    {
+        // LiveKit's WebRTC static archive contains Objective-C categories that
+        // Apple's runtime discovers dynamically. The final game binary must
+        // retain them, or LiveKit/WebRTC can abort with an unrecognized selector
+        // such as an NSString StdString/AbslStringView category method.
+        println!("cargo:rustc-link-arg-bins=-ObjC");
+    }
+}
+```
+
+This flag must be emitted by the final-linking game server crate. Do not treat dependency-crate build scripts, `.cargo/config.toml`, shell `RUSTFLAGS`, README instructions, or conditional generation only for currently voice-enabled configs as sufficient. Generated projects may later enable LiveKit/TTS without regenerating server scaffolding, so the macOS final-link protection belongs in every generated server binary.
 
 ## GameAdapter Contract
 

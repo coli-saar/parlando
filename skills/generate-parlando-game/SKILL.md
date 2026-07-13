@@ -14,7 +14,7 @@ Before generating code, read the bundled references that match the requested gam
 - `references/server-adapter.md` for the Rust `GameAdapter`, server binary, manifest, and test shape.
 - `references/browser-client.md` for JSON naming, HTTP flow, WebSocket messages, actions, and React client wiring.
 - `references/config-deployment.md` for experiment YAML, local run, Docker, and Render conventions.
-- `references/agents.md` only when the game needs human-vs-agent, an in-process Rust agent, or remote gRPC agents.
+- `references/agents.md` only when the generated project needs server-side agent support, an in-process Rust agent, or remote gRPC agents.
 
 These references are intended to be sufficient for normal game generation. Do not browse or search GitHub documentation for Parlando game-generation details; if the bundled references do not cover something needed for a game, stop and report the missing topic so the skill can be updated.
 
@@ -41,8 +41,16 @@ Capture:
 - events/log messages participants should see
 - summary/export fields needed for analysis
 - local-only, Docker, Render, or other deployment target
-- human-vs-human, human-vs-agent, or both
+- whether the generated project should include server-side agent support
 - text chat, voice, transcription, and TTS requirements
+
+## Game Runtime Assumptions
+
+Generated games must be agnostic to the participant mix. A browser instance renders one human player's UI from its role-specific observation, sends that human player's actions, and receives accepted actions/events from the other player through Parlando. The game UI must not need to know whether the other participant is a human using another browser, an in-process agent, or a remote agent.
+
+Generated games also must not decide whether voice is enabled. If the server/session exposes voice capability and asks the client to allow it, the game must allow the SDK-provided voice controls/status to work. If the server/session does not expose voice capability, the game should simply omit or disable voice controls based on session state. Voice service setup, credentials, startup, and policy live in Parlando config/server/client SDK code, not in game-specific logic.
+
+When TTS is enabled, agent utterances should be returned through `AgentResult::Message` or `AgentResult::ActionWithMessage` so `parlando-server` can create an agent-origin conversation message, synthesize it, and publish it through the configured audio transport. Generated browser code must not call TTS providers directly or duplicate the server-side agent speech pipeline.
 
 ## Output Shape
 
@@ -57,6 +65,7 @@ Generate both halves of the game and all build/run files:
 |   `-- experiment.render.example.yaml
 |-- server/
 |   |-- Cargo.toml
+|   |-- build.rs
 |   `-- src/
 |       |-- main.rs
 |       |-- lib.rs
@@ -129,15 +138,15 @@ Generate a `main.rs` that follows the Parlando server pattern:
 - parse `--config`, `--host`, `--port`, and optional `--experiment-id`
 - load `ExperimentConfig::from_yaml` or defaults
 - create the game adapter
-- create an agent factory from config if human-vs-agent is supported
+- create an agent factory from config when the generated project includes agent support
 - call `parlando_server::serve`
 - read `PORT` from the environment when `--port` is absent
 
-For voice games, include `LiveKitAgentAudioPublisher` only when both `livekit.enabled` and `tts.enabled` are true.
+Include `LiveKitAgentAudioPublisher` when both `livekit.enabled` and `tts.enabled` are true. This is server configuration behavior; the game adapter and browser game UI do not decide whether voice is enabled.
 
 ## Agents
 
-If the user asks for human-vs-agent or a demo agent, generate `agents.rs`.
+If the user asks for human-vs-agent mode, server-side agent support, or a demo agent, generate `agents.rs`.
 
 Support:
 
@@ -146,6 +155,10 @@ Support:
 - `remote_grpc` when custom Python or external agents are expected
 
 Returned agent actions must be normal typed `Action` values and still pass game validation.
+
+Do not fork game semantics or browser UI around human-vs-human versus human-vs-agent. Agents and humans are both participants that submit the same typed actions and receive the same role-specific observations.
+
+When TTS is enabled in config, agents should vocalize participant-facing utterances by returning `AgentResult::Message(text)` or `AgentResult::ActionWithMessage { action, message: text }`. The server records the text as an agent conversation message and, when configured, routes it through the TTS provider and `LiveKitAgentAudioPublisher`. Do not add frontend TTS calls, browser speech synthesis, or game-specific audio publishing for agent messages.
 
 ## TypeScript Contract
 
@@ -158,6 +171,25 @@ Generate:
 - tests for action generation, derived UI state, and any client-side reducer logic
 
 Use `@coli-saar/parlando-client/react` for the generated app entrypoint. Wrap the game in `ParlandoStartupGate` and render the active game from the `ActiveParlandoSession` passed to `renderGame`; do not generate custom startup lifecycle code. Game-specific rendering, controls, task text, maps, boards, logs, action creation, and derived UI state belong in the generated app.
+
+The generated app should treat `ActiveParlandoSession` as the source of participant capabilities. It may render chat and voice controls from session state, but it must not infer capabilities from the game type, deployment mode, or whether the peer is expected to be a human or an agent.
+
+If transcription/STT is enabled by `session.publicConfig.transcription?.enabled`, the active game screen should show a compact microphone-level widget with an ASR status pill. Prefer the predefined React exports from `@coli-saar/parlando-client/react`: compose `MicLevelMeter` with `session.voicePreflight.micLevel` / `session.voicePreflight.micProbeActive` and `TranscriptionStatusChip` with `session.voiceStatus`. Use `TranscriptionProgress` when a fuller progress display is useful. Style the exported widgets in `web/src/styles.css`.
+
+## Browser Styling
+
+Generated clients must style both the active game screen and the shared startup screens rendered by `ParlandoStartupGate`. The SDK supplies uniform startup markup and lifecycle behavior, but the generated app owns the CSS that makes those screens look integrated with the game.
+
+In `web/src/styles.css`, include polished, responsive styles for the startup classes emitted by the SDK:
+
+- `lobby-panel`, `lobby-heading`, `lobby-copy`, `eyebrow`, `online-error`
+- `lobby-actions`, including buttons, inputs, and selects
+- `consent-list` and `consent-row`
+- `seat-grid` and `seat-ready`
+- `voice-preflight`, `mic-device-label`, `mic-meter`, and `mic-meter-track`
+- `transcription-progress` and `transcription-progress-track`
+
+Keep the startup screen visually consistent with the generated game's theme, but preserve the SDK's class names and accessibility attributes. Startup controls must be readable and usable on mobile and desktop, with stable spacing, clear disabled states, visible focus states, and no overlapping text.
 
 ## Config Files
 
@@ -185,6 +217,7 @@ Generate `config/experiment.render.example.yaml` with:
 Generate:
 
 - Rust `Cargo.toml` using the latest published `parlando-server` crate version, plus `anyhow`, `clap`, `serde`, `serde_json`, `tokio`, `tracing-subscriber`, and optional `async-trait`/`rand`.
+- Rust `build.rs` in the generated server crate that emits `cargo:rustc-link-arg-bins=-ObjC` on macOS. This is required for final binaries that transitively link LiveKit/WebRTC; do not rely on dependency build scripts, `.cargo/config.toml`, ad-hoc `RUSTFLAGS`, or notes in the README as a substitute.
 - client `package.json` using the latest published `@coli-saar/parlando-client` npm package version, React, Vite, TypeScript, and Vitest.
 - client-local `vite.config.ts`, `tsconfig.json`, and `index.html`
 - `Makefile` targets for `check-client-package`, `install-client-deps`, `install-server`, `build-client`, `build`, `test`, `run`, and `clean`
@@ -200,6 +233,7 @@ After generating code, run the strongest feasible checks:
 
 - `cargo fmt`
 - `cargo test` or package-specific Rust tests
+- confirm `server/Cargo.toml` has `build = "build.rs"` and `server/build.rs` emits `cargo:rustc-link-arg-bins=-ObjC` for macOS final binaries
 - `npm install` when dependencies are available
 - `npm run build`
 - `npm test`
@@ -218,4 +252,5 @@ End with:
 - deployment notes for the requested target
 - agent run commands when generating a Rust or Python gRPC agent
 - confirmation that the browser client delegates startup to `ParlandoStartupGate` from `@coli-saar/parlando-client/react`
+- confirmation that the generated Rust server crate includes the macOS final-link `-ObjC` build script
 - assumptions made about the game design or package layout

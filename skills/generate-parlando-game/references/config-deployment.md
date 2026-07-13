@@ -27,6 +27,10 @@ When voice, transcription, or TTS is requested, tell the user exactly where the 
 
 For local non-voice studies, keep `livekit.enabled`, `speechmatics.enabled`, `transcription.enabled`, and `tts.enabled` false. For voice studies, enable the full stack: LiveKit, Speechmatics transcription, and ElevenLabs TTS. Keep service credentials in a private YAML include or secret file, not in checked-in config or frontend build variables.
 
+Voice enablement is a server/config decision. The generated game adapter and game-specific browser UI must not decide whether voice is enabled; they should consume the capability metadata and controls exposed by `parlando-server` and `@coli-saar/parlando-client`.
+
+TTS enablement is also a server/config decision. When `tts.enabled` is true, generated agents should return participant-facing utterances as `AgentResult::Message` or `AgentResult::ActionWithMessage`; `parlando-server` handles synthesis, diagnostics, and audio publishing. Browser clients should display the conversation message as usual and must not call TTS providers directly.
+
 ## Local Config Template
 
 ```yaml
@@ -98,9 +102,13 @@ Generated games should include reasonable placeholder consent text when the user
 
 Only configure Parlando's voice services; do not explain or reimplement how Parlando uses LiveKit, Speechmatics, or ElevenLabs internally. A generated game should set YAML keys, keep credentials private, and let `parlando-server` and `@coli-saar/parlando-client` handle voice runtime behavior.
 
+If the server/session exposes voice capability, the game must allow that capability through the SDK-provided session controls/status. If voice capability is absent, the game should omit or disable voice UI from session state rather than from game-specific policy.
+
 When the user asks to enable voice, generate the full voice package: LiveKit, Speechmatics, and ElevenLabs. Do not create partial voice configs unless the user explicitly asks for a reduced setup. Use `rust-server/config/experiment.voice.full.example.yaml` as the canonical source template when working in this repository.
 
 When voice or transcription is enabled, generated clients should delegate browser startup behavior to `ParlandoStartupGate` in `@coli-saar/parlando-client/react`.
+
+When transcription/STT is enabled, active game screens should display SDK voice status from the `ActiveParlandoSession`, including a microphone level meter and ASR status pill using `MicLevelMeter` and `TranscriptionStatusChip` from `@coli-saar/parlando-client/react`.
 
 Checked-in local config should include the private overlay as optional and keep services disabled by default if the overlay is absent:
 
@@ -197,6 +205,8 @@ agents:
     invalid_action_limit: 3
     config: {}
 ```
+
+This setting controls how the server fills participant slots. It must not change the game contract or browser UI model: each browser instance still represents one human participant, and the other participant's actions arrive through the same server event/action path whether they came from a human or an agent.
 
 ## Local Build And Run
 

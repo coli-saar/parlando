@@ -1,8 +1,10 @@
 # Parlando Agents Reference
 
-Use this reference only when the game needs human-vs-agent support, a demo agent, or remote gRPC agents.
+Use this reference only when the generated project needs server-side agent support, a demo agent, or remote gRPC agents.
 
 Agents are first-class participants. They receive the same role-specific observation and optional available-action list that a human UI receives. Returned actions go through the normal server parsing, validation, persistence, and broadcast path.
+
+Do not make game semantics or browser UI depend on whether a participant is human or agent-controlled. The game contract is role, observation, action, event, and summary. A browser instance offers controls for its one human participant and receives the other participant's accepted actions/events through Parlando, regardless of whether that peer is human or agent-controlled.
 
 ## In-Process Rust Agents
 
@@ -74,9 +76,11 @@ Create one mutable agent instance per agent participant. If the policy needs mem
 - `AgentResult::Action(action)`
 - `AgentResult::ActionWithMessage { action, message }`
 
+When TTS is enabled in config, participant-facing agent speech must flow through `AgentResult::Message` or `AgentResult::ActionWithMessage`. The server persists the returned text as an agent-origin conversation message, then synthesizes and publishes it through the configured TTS provider and audio publisher. Do not implement separate browser TTS, Web Speech API calls, or custom game-level audio publication for agent messages.
+
 ## Agent Config
 
-Human-vs-agent YAML:
+Human-vs-agent server YAML:
 
 ```yaml
 agents:
@@ -95,6 +99,8 @@ The generated `factory_from_config` should:
 - validate that `agents.human_vs_agent` is present when needed.
 - support a game-specific demo selector.
 - support `remote_grpc` if remote agents are requested.
+
+This config selects how the server supplies an agent participant. It should not introduce separate action schemas, observations, UI branches, or game rules for agent opponents.
 
 ## Remote gRPC Agents
 

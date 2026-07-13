@@ -4,6 +4,8 @@ Generated browser clients consume the published `@coli-saar/parlando-client` pac
 
 This reference documents only what a game client must supply: game-specific JSON types, UI state, rendering, and action dispatch. Treat startup, consent, audio, transcription, WebSocket lifecycle, HTTP error handling, and reusable widgets as SDK responsibilities.
 
+A generated browser client is participant-mix agnostic. Each browser instance offers UI for exactly one human player, renders that player's role-specific observation, sends that player's actions, and receives accepted actions/events from the other participant through the SDK. The UI must not need to know whether the other participant is another browser user, an in-process agent, or a remote agent.
+
 ## Package Manifest
 
 Use the latest published client version discovered by the skill:
@@ -101,6 +103,47 @@ Use these session fields in game UI as needed:
 - `sendAction(action)` for game actions.
 - `completed`, `connected`, and `leave` for game-screen status and controls.
 
+Treat these fields as the active capability surface. Do not infer chat or voice availability from the game slug, deployment mode, participant mix, or local assumptions about whether an agent is present.
+
+## Voice And Transcription Widgets
+
+For active game screens that expose voice or STT state, prefer the reusable exports from `@coli-saar/parlando-client/react`:
+
+```tsx
+import {
+  MicLevelMeter,
+  TranscriptionStatusChip,
+  VoiceJoinButton
+} from "@coli-saar/parlando-client/react";
+
+function VoiceStrip({ session }: { session: GameSession }) {
+  const transcriptionEnabled = Boolean(session.publicConfig.transcription?.enabled);
+  return (
+    <div className="voice-strip">
+      <VoiceJoinButton
+        liveKitEnabled={Boolean(session.publicConfig.livekit?.enabled)}
+        onToggleVoice={session.toggleVoice}
+        voiceStatus={session.voiceStatus}
+      />
+      {transcriptionEnabled && (
+        <>
+          <MicLevelMeter
+            active={session.voicePreflight.micProbeActive}
+            label="Mic"
+            level={session.voicePreflight.micLevel}
+          />
+          <TranscriptionStatusChip voiceStatus={session.voiceStatus} />
+        </>
+      )}
+    </div>
+  );
+}
+```
+
+Use `TranscriptionProgress` from the same package when the UI needs a larger ASR progress display. Generated clients own the CSS for `voice-strip`, `mic-meter`, `mic-meter-track`, and `transcription-chip`, so style them in `web/src/styles.css`.
+
+When TTS is enabled, do not synthesize agent speech in the browser. Agent utterances should arrive as normal agent-origin conversation messages and, if the server is configured with TTS and audio publishing, the server will vocalize them through the voice transport.
+
 ## Actions And Chat
 
 Submit game actions with:
@@ -115,9 +158,9 @@ Submit text chat, when conversation is enabled, with:
 session.sendChatMessage(text);
 ```
 
-The server still validates every action. Client-side disabled buttons or filtered controls are only ergonomic hints.
+The server still validates every action. Client-side disabled buttons or filtered controls are only ergonomic hints. This is the same for actions that originated from a human UI and actions that originated from an agent.
 
-For voice studies, enable the full voice stack in config and keep provider credentials in server config/secrets, never in frontend build variables. The active game screen may display voice state or a mute/unmute control from the session, but should not implement startup audio plumbing.
+For voice studies, enable the full voice stack in config and keep provider credentials in server config/secrets, never in frontend build variables. The active game screen may display voice state or a mute/unmute control from the session, but should not implement startup audio plumbing. It is not the game's job to decide whether voice is enabled: if the server/session exposes voice and asks the client to allow it, the game must allow the SDK-provided voice behavior; otherwise it should omit or disable voice UI according to session state.
 
 ## Source Layout
 
@@ -127,14 +170,21 @@ Recommended client files:
 - `web/src/game/stateEngine.ts`: optional pure helpers for labels, previews, visual derivations, or UI-only controls.
 - `web/src/game/stateEngine.test.ts`: tests for helper logic.
 - `web/src/App.tsx`: `ParlandoStartupGate` wrapper, game rendering, and action dispatch.
-- `web/src/styles.css`: app styling.
+- `web/src/styles.css`: active game styling plus startup-screen styling for SDK classes such as `lobby-panel`, `lobby-actions`, `consent-row`, `seat-grid`, `voice-preflight`, `transcription-progress`, `online-error`, and `mic-meter`.
+
+## Startup Styling
+
+`ParlandoStartupGate` provides reusable startup behavior and consistent markup, but generated clients own the stylesheet. Style the SDK startup classes in `web/src/styles.css` so the loading, consent, waiting-room, voice-preflight, transcription-progress, and error states feel native to the generated game instead of appearing unstyled.
+
+Startup styling should include responsive layout, readable form controls, clear disabled and focus states, comfortable consent text, readiness cards, microphone and transcription progress indicators, and mobile-safe spacing. Preserve SDK class names and accessibility attributes.
 
 ## Browser Checklist
 
 Implement:
 
 - `ParlandoStartupGate` wrapper.
+- startup-screen styles for the classes rendered by `ParlandoStartupGate`.
 - rendering from role-specific observation.
 - action controls that send game actions.
 - chat controls if conversation is enabled.
-- voice controls/status in the active game only if useful.
+- voice controls/status in the active game only when exposed by session state and useful.
