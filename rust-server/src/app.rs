@@ -177,53 +177,6 @@ async fn persist_session_event<A: GameAdapter>(
     .await;
 }
 
-/// Creates the durable session row and stores its integer id in the active room cache.
-async fn persist_created_session<A: GameAdapter>(
-    state: &Arc<AppState<A>>,
-    room_id: &str,
-) -> Result<i64>
-where
-    A::State: Serialize,
-{
-    let (experiment_id, mode, status) = {
-        let memory = state.memory.read().await;
-        let room = memory
-            .rooms
-            .get(room_id)
-            .ok_or_else(|| anyhow!("Room not found."))?;
-        (
-            room.experiment_id.clone(),
-            room.mode.clone(),
-            room.status.clone(),
-        )
-    };
-    let session_id = state
-        .store
-        .create_session(SessionRecord {
-            experiment_id,
-            room_id: room_id.to_string(),
-            mode,
-            status,
-        })
-        .await?;
-    {
-        let mut memory = state.memory.write().await;
-        if let Some(room) = memory.rooms.get_mut(room_id) {
-            room.session_id = session_id;
-        }
-    }
-    persist_session_event(
-        state,
-        room_id,
-        None,
-        "session_created",
-        json!({"room_id": room_id}),
-        None,
-    )
-    .await;
-    Ok(session_id)
-}
-
 /// Persists one participant's session-local role and connection status.
 async fn persist_session_participant<A: GameAdapter>(
     state: &Arc<AppState<A>>,
@@ -608,18 +561,95 @@ where
     A::State: Serialize,
 {
     require_consent(&state, &request.participant_session_id).await?;
-    let (room_id, role) = {
+    let requested_mode = request.mode.clone();
+    let paired_or_created: Result<(String, Seat, bool), AppError> = {
         let mut memory = state.memory.write().await;
-        create_room_locked(
+        if state.config.agents.mode == AgentsMode::HumanVsHuman {
+            if let Some(room_id) = open_human_room_for_pairing(
+                &memory,
+                &requested_mode,
+                Some(state.config.study.name.as_str()),
+            ) {
+                let role = add_human_participant_to_room_locked(
+                    &state,
+                    &mut memory,
+                    &room_id,
+                    &request.participant_session_id,
+                )?;
+                Ok((room_id, role, false))
+            } else {
+                let (room_id, role) = create_room_locked(
+                    &state,
+                    &mut memory,
+                    request.participant_session_id.clone(),
+                    requested_mode.clone(),
+                    Seat::A,
+                    Some(state.config.study.name.clone()),
+                )?;
+                let session_id = match state
+                    .store
+                    .create_session(SessionRecord {
+                        experiment_id: state.experiment_id.clone(),
+                        room_id: room_id.clone(),
+                        mode: requested_mode.clone(),
+                        status: "waiting".to_string(),
+                    })
+                    .await
+                {
+                    Ok(session_id) => session_id,
+                    Err(error) => {
+                        memory.rooms.remove(&room_id);
+                        return Err(AppError::from(error));
+                    }
+                };
+                if let Some(room) = memory.rooms.get_mut(&room_id) {
+                    room.session_id = session_id;
+                }
+                Ok((room_id, role, true))
+            }
+        } else {
+            let (room_id, role) = create_room_locked(
+                &state,
+                &mut memory,
+                request.participant_session_id.clone(),
+                requested_mode.clone(),
+                Seat::A,
+                Some(state.config.study.name.clone()),
+            )?;
+            let session_id = match state
+                .store
+                .create_session(SessionRecord {
+                    experiment_id: state.experiment_id.clone(),
+                    room_id: room_id.clone(),
+                    mode: requested_mode.clone(),
+                    status: "waiting".to_string(),
+                })
+                .await
+            {
+                Ok(session_id) => session_id,
+                Err(error) => {
+                    memory.rooms.remove(&room_id);
+                    return Err(AppError::from(error));
+                }
+            };
+            if let Some(room) = memory.rooms.get_mut(&room_id) {
+                room.session_id = session_id;
+            }
+            Ok((room_id, role, true))
+        }
+    };
+    let (room_id, role, created_room) = paired_or_created?;
+    if created_room {
+        persist_session_event(
             &state,
-            &mut memory,
-            request.participant_session_id.clone(),
-            request.mode,
-            Seat::A,
-            Some(state.config.study.name.clone()),
+            &room_id,
+            None,
+            "session_created",
+            json!({"room_id": room_id}),
+            None,
         )
-    }?;
-    persist_created_session(&state, &room_id).await?;
+        .await;
+    }
     persist_session_participant(&state, &room_id, &request.participant_session_id).await?;
     persist_session_event(
         &state,
@@ -812,6 +842,66 @@ where
         )
         .await?,
     ))
+}
+
+/// Finds an existing human-human waiting room that can accept one more human.
+fn open_human_room_for_pairing<S>(
+    memory: &MemoryState<S>,
+    mode: &str,
+    study_id: Option<&str>,
+) -> Option<String> {
+    memory
+        .rooms
+        .iter()
+        .find(|(_, room)| {
+            room.status == "waiting"
+                && room.mode == mode
+                && room.study_id.as_deref() == study_id
+                && next_role(room) == Some(Seat::B)
+                && room
+                    .participants
+                    .values()
+                    .all(|participant| participant.source != "agent")
+        })
+        .map(|(room_id, _)| room_id.clone())
+}
+
+/// Adds a direct human participant to an existing room and returns its assigned seat.
+fn add_human_participant_to_room_locked<A: GameAdapter>(
+    state: &AppState<A>,
+    memory: &mut MemoryState<A::State>,
+    room_id: &str,
+    participant_session_id: &str,
+) -> Result<Seat, AppError> {
+    let participant = memory
+        .participants
+        .get(participant_session_id)
+        .ok_or_else(|| AppError::not_found("Participant session not found."))?
+        .clone();
+    let room = memory
+        .rooms
+        .get_mut(room_id)
+        .ok_or_else(|| AppError::not_found("Room not found."))?;
+    if let Some(existing) = room.participants.get(participant_session_id) {
+        return Ok(existing.role);
+    }
+    let role =
+        next_role(room).ok_or_else(|| AppError::forbidden("Room already has two players."))?;
+    room.participants.insert(
+        participant_session_id.to_string(),
+        RoomParticipant {
+            participant_session_id: participant_session_id.to_string(),
+            participant_id: participant.participant_id,
+            source: "direct".to_string(),
+            role,
+            connected: false,
+            audio_ready: !speechmatics_readiness_required(&state.config),
+            consent_decisions: participant.consent_decisions,
+            joined_at: now_iso(),
+            updated_at: now_iso(),
+        },
+    );
+    Ok(role)
 }
 
 fn create_room_locked<A: GameAdapter>(
@@ -6291,6 +6381,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn two_independent_waiting_room_entries_pair_into_one_room() {
+        let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+            .await
+            .unwrap();
+        let first = create_direct_participant(router.clone(), "First tab").await;
+        let second = create_direct_participant(router.clone(), "Second tab").await;
+        consent_participant(router.clone(), &first).await;
+        consent_participant(router.clone(), &second).await;
+
+        let (first_status, first_room) = json_request(
+            router.clone(),
+            http::Method::POST,
+            "/api/rooms",
+            json!({"participant_session_id": first}),
+        )
+        .await;
+        let (second_status, second_room) = json_request(
+            router.clone(),
+            http::Method::POST,
+            "/api/rooms",
+            json!({"participant_session_id": second}),
+        )
+        .await;
+
+        assert_eq!(first_status, StatusCode::OK);
+        assert_eq!(second_status, StatusCode::OK);
+        assert_eq!(first_room["role"], "A");
+        assert_eq!(second_room["role"], "B");
+        assert_eq!(first_room["room_id"], second_room["room_id"]);
+        assert!(first_room["presence"]["A"]["participantSessionId"].is_string());
+        assert!(first_room["presence"].get("B").is_none());
+        assert_eq!(second_room["presence"]["A"]["participantSessionId"], first);
+        assert_eq!(second_room["presence"]["B"]["participantSessionId"], second);
+
+        let (export_status, export) =
+            json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
+        assert_eq!(export_status, StatusCode::OK);
+        assert_eq!(export["sessions"].as_array().unwrap().len(), 1);
+        assert_eq!(export["session_participants"].as_array().unwrap().len(), 2);
+        assert!(export["session_participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["participant_session_id"] == first && row["role"] == "A"));
+        assert!(export["session_participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["participant_session_id"] == second && row["role"] == "B"));
+    }
+
+    #[tokio::test]
     async fn adversarial_sqlite_rejoin_does_not_duplicate_session_participants() {
         let (config, _temp) = sqlite_config();
         let router = build_router(TinyAdapter, config, ServeOptions::default())
@@ -6426,14 +6568,16 @@ mod tests {
             json!({"participant_session_id": a}),
         )
         .await;
+        assert_eq!(created["role"], "A");
         let room_id = created["room_id"].as_str().unwrap().to_string();
-        let (_, _joined) = json_request(
+        let (_, joined) = json_request(
             router.clone(),
             http::Method::POST,
             &format!("/api/rooms/{room_id}/join"),
             json!({"participant_session_id": b}),
         )
         .await;
+        assert_eq!(joined["role"], "B");
 
         let (export_status, export) =
             json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
@@ -6441,6 +6585,16 @@ mod tests {
         assert_eq!(export["sessions"].as_array().unwrap().len(), 1);
         assert_eq!(export["sessions"][0]["room_id"], room_id);
         assert_eq!(export["session_participants"].as_array().unwrap().len(), 2);
+        assert!(export["session_participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["participant_session_id"] == a && row["role"] == "A"));
+        assert!(export["session_participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["participant_session_id"] == b && row["role"] == "B"));
         let event_types = export["session_events"]
             .as_array()
             .unwrap()

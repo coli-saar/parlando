@@ -1,5 +1,25 @@
 # Technical Decisions
 
+## 2026-07-13: README records native build toolchain floors
+
+Context: A contributor hit a `make install-server` failure while compiling a Parlando game server on macOS, and the fix was updating Apple Command Line Tools for Xcode to 16.0.0. The README previously described how to run the server but did not state the native compiler, SDK, Node, or Make requirements up front.
+
+Decision: Added a root README system requirements section that documents current stable Rust, the Node versions required by the Vite 7 browser build, GNU Make, macOS Command Line Tools for Xcode 16.0.0 or newer, and the Linux native-toolchain expectation.
+
+Tradeoffs: The Rust requirement remains "current stable" rather than a pinned MSRV because the repository does not yet carry a `rust-toolchain` or `rust-version` contract. The macOS toolchain requirement is explicit because LiveKit/WebRTC native dependencies make stale Apple SDKs a real build hazard.
+
+Follow-up risks: If the project later pins Rust, changes Vite major versions, or removes native LiveKit/WebRTC linkage from normal server builds, update this requirements section at the same time.
+
+## 2026-07-13: Startup gate does not expose manual room selection
+
+Context: A proposed fix for duplicate Player A reports added a generic Room ID field to the reusable React startup gate. That made room pairing a participant-facing manual step in every generated client, even though room routing is study-specific and should not leak into the default SDK startup UI.
+
+Decision: Keep `ParlandoStartupGate` focused on participant setup, consent, voice preflight, and waiting-room readiness. Do not add a generic Room ID selector, Room ID prop, or URL-query room selection behavior to the reusable startup gate. Human-human default entry is paired on the server: `POST /api/rooms` fills an existing compatible waiting room before creating a new Player A room. Study-specific code can still call `ExperimentApiClient.joinRoom` directly when it intentionally owns a room-sharing workflow.
+
+Tradeoffs: The SDK remains less convenient for ad hoc manual joining, but generated clients avoid exposing an implementation detail to participants. Server-side first-open-room pairing is intentionally simple; future studies that need cohorts, treatments, counterbalancing, or private invite links should add an explicit pairing policy rather than putting room ids into the generic startup UI.
+
+Follow-up risks: The duplicate Player A class of bug should stay covered by tests that exercise two independent default waiting-room entries. If pairing policy grows more complex, preserve that default behavior or make the replacement policy explicit in configuration.
+
 ## 2026-07-13: Documentation starts from researcher workflows
 
 Context: The README and user-facing docs were technically accurate but led with runtime infrastructure before making the research workflow explicit. New researchers need to see quickly whether Parlando fits their study, while the docs still need precise implementation contracts.

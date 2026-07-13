@@ -126,6 +126,16 @@ Point an experiment config at that service with `agents.human_vs_agent.factory: 
 
 The Space Game browser app lives in `space-game/client`. The Rust server can serve a built client directory through `server.client_dist_path`.
 
+## System Requirements
+
+Parlando builds a Rust server and a TypeScript browser client. Install these tools before running the demo or packaging a game:
+
+- Rust stable toolchain with Cargo. The repository does not pin a `rust-toolchain` file, so use a current stable Rust installation from `rustup`.
+- Node.js `20.19.0` or newer, or Node.js `22.12.0` or newer. The Space Game browser build uses Vite 7, whose published engine requirement excludes older Node 20 and early Node 22 releases. Use the matching `npm` that ships with that Node version.
+- GNU Make. The top-level and Space Game workflows are documented as `make` targets.
+- macOS only: Apple Command Line Tools for Xcode `16.0.0` or newer. Check the selected compiler with `xcrun clang --version`; it should report Apple clang `16.0.0` or newer. For a Command Line Tools-only install, `pkgutil --pkg-info=com.apple.pkg.CLTools_Executables` also reports the installed CLT package version. If the selected developer directory is stale, update the Command Line Tools in System Settings or install a current Xcode, then run `sudo xcode-select --switch /Library/Developer/CommandLineTools` or select the matching Xcode developer directory. This requirement matters for `make install-server`, because the Rust server links native LiveKit/WebRTC dependencies through Apple's compiler and SDK.
+- Linux only: a standard C/C++ build toolchain and system libraries sufficient for Rust crates with native dependencies. The included Dockerfile uses Debian Bookworm as the reference Linux build environment.
+
 ## Run The Demo Server
 
 Build and test the reusable Rust server crate:
