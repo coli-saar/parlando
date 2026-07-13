@@ -64,7 +64,7 @@ make build
 make run
 ```
 
-The Makefile installs the SDK from the local checkout with `npm install --no-save file:...`, so the committed dependency stays versioned as `"@coli-saar/parlando-client": "^0.1.0"`.
+The Makefile installs the SDK from the local checkout with `npm install --no-save file:...`, so the committed dependency stays versioned as `"@coli-saar/parlando-client": "^0.1.3"`.
 
 ## Solo voice test
 

@@ -1,6 +1,6 @@
 {
   "name": "@coli-saar/parlando-client",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "Reusable browser client SDK for Parlando experiment games.",
   "main": "./dist/index.js",

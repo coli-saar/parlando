@@ -45,7 +45,7 @@ These widgets should stay generic. They should accept state and callbacks from t
 Normal game clients should depend on the released npm package:
 
 ```json
-"@coli-saar/parlando-client": "^0.1.0"
+"@coli-saar/parlando-client": "^0.1.3"
 ```
 
 When debugging SDK changes from a separate local Parlando checkout, temporarily install that checkout by absolute path:
@@ -71,7 +71,7 @@ npm run build
 
 Because `package.json` cannot contain comments, keep the normal registry dependency committed and use the `file:` dependency only as a temporary local edit or install command. Before committing a game release, restore the registry dependency and refresh `package-lock.json`.
 
-Committed consumer manifests should normally depend on a version, for example `"@coli-saar/parlando-client": "^0.1.0"`, not on `file:` paths.
+Committed consumer manifests should normally depend on a version, for example `"@coli-saar/parlando-client": "^0.1.3"`, not on `file:` paths.
 
 ## Publishing
 

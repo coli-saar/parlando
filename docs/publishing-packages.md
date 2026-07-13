@@ -20,7 +20,7 @@ The intended dependency model is deliberately simple:
 Rust libraries are distributed as crates. `parlando-server` is published to crates.io, the default Cargo registry. A game normally writes:
 
 ```toml
-parlando-server = "0.1.0"
+parlando-server = "0.1.3"
 ```
 
 Cargo resolves that version from crates.io and records the exact selected version in `Cargo.lock`. `cargo publish --dry-run` checks the crate contents, builds the packaged crate, and verifies what would be uploaded. `cargo publish` uploads the crate. crates.io versions are immutable, so a version cannot be overwritten after publishing.
@@ -30,7 +30,7 @@ Cargo resolves that version from crates.io and records the exact selected versio
 Browser SDK packages are distributed through npm. `@coli-saar/parlando-client` is published to the public npm registry under the `coli-saar` scope. A game normally writes:
 
 ```json
-"@coli-saar/parlando-client": "^0.1.0"
+"@coli-saar/parlando-client": "^0.1.3"
 ```
 
 npm resolves that dependency from the configured npm registry, normally `https://registry.npmjs.org/`, and records the exact package tarball and integrity in `package-lock.json`. `npm publish --dry-run` runs the package `prepack` script, builds the SDK, creates the tarball, and reports what would be uploaded. `npm publish` uploads the package. Published npm versions are effectively immutable for normal release workflow, so bump the package version before each release.
@@ -50,11 +50,11 @@ That makes the scoped npm package public when it is published.
 Use released registry packages in normal game repositories:
 
 ```toml
-parlando-server = "0.1.0"
+parlando-server = "0.1.3"
 ```
 
 ```json
-"@coli-saar/parlando-client": "^0.1.0"
+"@coli-saar/parlando-client": "^0.1.3"
 ```
 
 This is the only dependency style that should be committed for a game release or deployment. It gives clean provenance through the package manifests and lockfiles:
@@ -175,11 +175,11 @@ npm config set registry https://registry.npmjs.org/
 Before committing a game release, remove temporary local dependencies:
 
 ```toml
-parlando-server = "0.1.0"
+parlando-server = "0.1.3"
 ```
 
 ```json
-"@coli-saar/parlando-client": "^0.1.0"
+"@coli-saar/parlando-client": "^0.1.3"
 ```
 
 Then refresh and verify:

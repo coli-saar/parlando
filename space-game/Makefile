@@ -13,7 +13,7 @@ PORT ?= 8000
 CONFIG ?= $(SPACE_GAME_DIR)/config/experiment.local-rust.yaml
 SERVER_BIN ?= $(LOCAL_BIN)/parlando-space-game
 CLIENT_PACKAGE ?= @coli-saar/parlando-client
-CLIENT_VERSION ?= 0.1.0
+CLIENT_VERSION ?= 0.1.3
 LOCAL_CLIENT_PACKAGE := $(JS_CLIENT_DIR)
 
 .PHONY: all install-local install-server prepare-client-local check-server check-client-package install-client-deps build-client build run run-solo-voice clean-client clean

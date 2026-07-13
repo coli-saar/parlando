@@ -24,7 +24,7 @@ Use the latest published Parlando package versions when generating manifests:
 
 - Query crates.io with `cargo info parlando-server` or an equivalent registry lookup, then set `parlando-server = "<latest-version>"`.
 - Query npm with `npm view @coli-saar/parlando-client version` or an equivalent registry lookup, then set `"@coli-saar/parlando-client": "^<latest-version>"`.
-- If network access is unavailable, fall back to `parlando-server = "0.1.2"` and `"@coli-saar/parlando-client": "^0.1.2"`, and say in the final response that the latest versions could not be checked.
+- If network access is unavailable, fall back to `parlando-server = "0.1.3"` and `"@coli-saar/parlando-client": "^0.1.3"`, and say in the final response that the latest versions could not be checked.
 
 ## First Questions
 

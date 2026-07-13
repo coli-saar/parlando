@@ -17,7 +17,7 @@ RUN cd js-client \
     && npm run build \
     && npm pack --pack-destination /tmp
 RUN cd space-game/client \
-    && npm install --no-save /tmp/coli-saar-parlando-client-0.1.0.tgz \
+    && npm install --no-save /tmp/coli-saar-parlando-client-0.1.3.tgz \
     && npm run build
 
 FROM debian:bookworm-slim AS runtime

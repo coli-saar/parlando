@@ -4,6 +4,21 @@ All notable changes to Parlando releases are tracked in this file.
 
 The format is based on Keep a Changelog, and this project uses semantic versioning for the published Rust server crate and JavaScript client package.
 
+## [0.1.3]
+
+### Added
+
+- Added generated-game guidance for explicit terminal outcomes, agent message observation, SDK voice-status widgets, and reliable microphone meter styling.
+- Added generated-server guidance for retaining WebRTC Objective-C categories in final macOS game binaries.
+
+### Changed
+
+- Improved the default human-human startup flow by keeping room pairing server-owned instead of exposing generic room selection in the shared startup gate.
+- Treat browser tab/window teardown like the in-game leave action so room presence updates when participants close the game.
+- Made agent action/message responses apply game actions before speech, and made follow-up decisions wait for the next delivered observation.
+- Kept LiveKit agent audio tracks alive for the computed PCM playback duration so longer TTS messages are not truncated.
+- Updated researcher-facing documentation around workflows, build requirements, route names, analysis summaries, and deployment boundaries.
+
 ## [0.1.2]
 
 ### Changed
