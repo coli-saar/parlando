@@ -1,6 +1,6 @@
 # Agents
 
-Parlando supports agents as first-class participants. An agent receives the same role-specific observation and optional available-action list that a human UI receives, and any returned action goes through the normal server validation path.
+Parlando supports agents as first-class participants. An agent observes role-specific state, accepted actions, and conversation messages as they happen. After each observation, the runtime asks whether the agent wants to respond. Any returned action goes through the normal server validation path.
 
 Agents can run in two ways:
 
@@ -14,22 +14,46 @@ In-process Rust agents implement `GameAgent<A>` and are created by an `AgentFact
 ```rust
 #[async_trait::async_trait]
 impl GameAgent<MyAdapter> for MyAgent {
-    async fn act(
+    async fn observe_action(
         &mut self,
-        observation: MyObservation,
+        actor: PlayerRole,
+        action: MyAction,
+        resulting_observation: MyObservation,
+    ) -> anyhow::Result<()> {
+        self.last_observation = Some(resulting_observation);
+        self.last_actor = Some(actor);
+        self.last_action = Some(action);
+        Ok(())
+    }
+
+    async fn observe_message(
+        &mut self,
+        speaker: PlayerRole,
+        kind: AgentUtteranceKind,
+        text: String,
+    ) -> anyhow::Result<()> {
+        self.messages.push((speaker, kind, text));
+        Ok(())
+    }
+
+    async fn maybe_act(
+        &mut self,
         available_actions: Option<Vec<MyAction>>,
-    ) -> anyhow::Result<AgentResult<MyAction>> {
+    ) -> anyhow::Result<Option<AgentResponse<MyAction>>> {
         if let Some(actions) = available_actions {
             if let Some(action) = actions.into_iter().next() {
-                return Ok(AgentResult::Action(action));
+                return Ok(Some(AgentResponse {
+                    message: None,
+                    action: Some(action),
+                }));
             }
         }
-        Ok(AgentResult::None)
+        Ok(None)
     }
 }
 ```
 
-The server creates one mutable agent instance per agent participant. If an agent needs memory, store it in that agent instance. The server intentionally does not pass room ids, participant-session ids, conversation history, invalid-action counts, or completion flags into `act`.
+The server creates one mutable agent instance per agent participant. If an agent needs memory, store it in that agent instance. The server intentionally does not pass room ids, participant-session ids, conversation history, invalid-action counts, or completion flags into the agent callbacks.
 
 The demo game's factory selector lives in `space-game/server/src/agents.rs`. It currently supports:
 
@@ -52,13 +76,13 @@ python my_agent.py
 Minimal `my_agent.py`:
 
 ```python
-from parlando_agent_sdk import AgentResult, GameAgent, serve_agent
+from parlando_agent_sdk import AgentResponse, GameAgent, serve_agent
 
 class FirstActionAgent(GameAgent):
-    async def act(self, observation, available_actions):
+    async def maybe_act(self, available_actions):
         if available_actions:
-            return AgentResult.action(available_actions[0])
-        return AgentResult.none()
+            return AgentResponse.action(available_actions[0])
+        return None
 
 serve_agent(FirstActionAgent, host="127.0.0.1", port=50051)
 ```
@@ -76,22 +100,21 @@ agents:
       endpoint: http://127.0.0.1:50051
       agent_name: first-action-agent
       agent_version: dev
-      protocol_version: parlando-agent-v1
+      protocol_version: parlando-agent-v2
 ```
 
-The gRPC request contains:
+The gRPC create request contains:
 
 - the role controlled by the agent.
 - the seed and agent config from YAML.
-- the role-specific observation.
-- optional role-specific available actions.
 
-The gRPC response may be:
+The observation RPCs contain:
 
-- `none`
-- `message`
-- `action`
-- `action_with_message`
+- role-specific state snapshots.
+- accepted actions with actor role and resulting observation.
+- conversation messages with speaker role, modality, and text.
+
+Decision RPCs contain optional role-specific available actions. The response contains optional `message` and optional `action`; at least one must be present when a response is returned.
 
 Returned actions must be JSON-compatible dictionaries matching the game action schema. In the demo game, a movement action looks like:
 

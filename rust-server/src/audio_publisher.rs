@@ -67,6 +67,9 @@ impl AgentAudioPublisher for LiveKitAgentAudioPublisher {
         };
         let sample_rate = first_audio.sample_rate;
         let channels = first_audio.channels;
+        if sample_rate == 0 {
+            bail!("cannot publish agent audio with zero sample rate");
+        }
         if channels == 0 {
             bail!("cannot publish agent audio with zero channels");
         }
@@ -106,16 +109,18 @@ impl AgentAudioPublisher for LiveKitAgentAudioPublisher {
 
         let mut chunks_published = 0usize;
         let mut bytes_published = 0usize;
+        let mut audio_duration = Duration::ZERO;
         for chunk in chunks.iter().filter(|chunk| !chunk.data.is_empty()) {
             if chunk.sample_rate != sample_rate || chunk.channels != channels {
                 bail!("all agent audio chunks must share one sample rate and channel count");
             }
+            audio_duration += pcm_chunk_duration(chunk)?;
             publish_pcm_chunk(&source, chunk).await?;
             chunks_published += 1;
             bytes_published += chunk.data.len();
         }
 
-        sleep(Duration::from_millis(250)).await;
+        sleep(audio_duration + Duration::from_millis(350)).await;
         room.local_participant()
             .unpublish_track(&track.sid())
             .await
@@ -128,6 +133,28 @@ impl AgentAudioPublisher for LiveKitAgentAudioPublisher {
             channels,
         })
     }
+}
+
+/// Computes the playback duration represented by one signed 16-bit PCM chunk.
+fn pcm_chunk_duration(chunk: &AudioChunk) -> Result<Duration> {
+    if chunk.sample_rate == 0 {
+        bail!("cannot publish agent audio with zero sample rate");
+    }
+    if chunk.channels == 0 {
+        bail!("cannot publish agent audio with zero channels");
+    }
+    if chunk.data.len() % 2 != 0 {
+        bail!("PCM byte length must be even");
+    }
+    let sample_count = chunk.data.len() / 2;
+    let channels = chunk.channels as usize;
+    if sample_count % channels != 0 {
+        bail!("PCM sample count is not divisible by channel count");
+    }
+    let samples_per_channel = sample_count / channels;
+    Ok(Duration::from_secs_f64(
+        samples_per_channel as f64 / chunk.sample_rate as f64,
+    ))
 }
 
 /// Waits until LiveKit confirms that at least one remote participant subscribed to the track.
@@ -189,5 +216,54 @@ mod tests {
     fn pcm_bytes_to_i16_samples_decodes_little_endian_values() {
         let samples = pcm_bytes_to_i16_samples(&[0, 0, 255, 127, 0, 128]).unwrap();
         assert_eq!(samples, vec![0, 32767, -32768]);
+    }
+
+    #[test]
+    fn pcm_chunk_duration_counts_mono_samples() {
+        let chunk = AudioChunk {
+            data: vec![0; 320],
+            sample_rate: 16_000,
+            channels: 1,
+            final_chunk: true,
+        };
+
+        assert_eq!(
+            pcm_chunk_duration(&chunk).unwrap(),
+            Duration::from_millis(10)
+        );
+    }
+
+    #[test]
+    fn pcm_chunk_duration_counts_stereo_samples_per_channel() {
+        let chunk = AudioChunk {
+            data: vec![0; 960],
+            sample_rate: 48_000,
+            channels: 2,
+            final_chunk: true,
+        };
+
+        assert_eq!(
+            pcm_chunk_duration(&chunk).unwrap(),
+            Duration::from_millis(5)
+        );
+    }
+
+    #[test]
+    fn pcm_chunk_duration_rejects_invalid_pcm_shape() {
+        let odd_bytes = AudioChunk {
+            data: vec![0; 3],
+            sample_rate: 16_000,
+            channels: 1,
+            final_chunk: true,
+        };
+        assert!(pcm_chunk_duration(&odd_bytes).is_err());
+
+        let partial_frame = AudioChunk {
+            data: vec![0; 6],
+            sample_rate: 16_000,
+            channels: 2,
+            final_chunk: true,
+        };
+        assert!(pcm_chunk_duration(&partial_frame).is_err());
     }
 }

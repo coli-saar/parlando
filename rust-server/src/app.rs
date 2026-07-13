@@ -21,14 +21,17 @@ use axum::{
 use futures_util::{SinkExt, StreamExt as FuturesStreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tower_http::{
     cors::CorsLayer,
     services::{ServeDir, ServeFile},
 };
 
 use crate::{
-    agents::{AgentFactory, AgentInitContext, AgentResult, SharedAgentFactory},
+    agents::{
+        AgentFactory, AgentInitContext, AgentResponse, AgentUtteranceKind, GameAgent,
+        SharedAgentFactory,
+    },
     audio_publisher::AgentAudioPublisher,
     audio_session::{AudioSessionContext, DefaultAudioSessionPlanner, TranscriptionReadiness},
     config::{AgentOptionConfig, AgentsMode, ExperimentConfig},
@@ -83,10 +86,27 @@ pub struct AppState<A: GameAdapter> {
     pub room_buses: RwLock<HashMap<String, broadcast::Sender<ServerMessage>>>,
     pub agent_factory: Option<SharedAgentFactory<A>>,
     pub started_agents: RwLock<HashSet<String>>,
+    agent_inboxes: RwLock<HashMap<String, mpsc::Sender<AgentObservation<A>>>>,
     pub tts_provider: Option<Arc<dyn StreamingTtsProvider>>,
     pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
     pub version_manifest: Value,
     pub admin_agent_options: Vec<AgentOptionConfig>,
+}
+
+/// Event delivered to one started agent instance.
+enum AgentObservation<A: GameAdapter> {
+    /// Accepted action plus role-specific state snapshot after the action.
+    Action {
+        actor: PlayerRole,
+        action: A::Action,
+        resulting_observation: A::Observation,
+    },
+    /// Conversation utterance with known speaker role and modality.
+    Message {
+        speaker: PlayerRole,
+        kind: AgentUtteranceKind,
+        text: String,
+    },
 }
 
 impl<A: GameAdapter> AppState<A> {
@@ -334,6 +354,7 @@ where
         room_buses: RwLock::new(HashMap::new()),
         agent_factory: options.agent_factory,
         started_agents: RwLock::new(HashSet::new()),
+        agent_inboxes: RwLock::new(HashMap::new()),
         tts_provider,
         audio_publisher: options.audio_publisher,
         version_manifest,
@@ -662,7 +683,11 @@ async fn add_agent_to_room<A: GameAdapter>(
         if let Some(existing_agent) = memory
             .rooms
             .get(room_id)
-            .and_then(|room| room.participants.values().find(|participant| participant.source == "agent"))
+            .and_then(|room| {
+                room.participants
+                    .values()
+                    .find(|participant| participant.source == "agent")
+            })
             .map(|participant| participant.participant_session_id.clone())
         {
             return Ok(existing_agent);
@@ -1041,6 +1066,16 @@ async fn add_transcript<A: GameAdapter>(
         room_id: Some(room_id.clone()),
         ..ServerMessage::new("conversationMessageAdded")
     });
+    if let Some(speaker) = player_role_from_str(&stored.player) {
+        notify_agents_of_message(
+            &state,
+            &room_id,
+            speaker,
+            AgentUtteranceKind::Spoken,
+            stored.text.clone(),
+        )
+        .await;
+    }
     Ok(Json(stored))
 }
 
@@ -1114,10 +1149,24 @@ async fn add_conversation<A: GameAdapter>(
     )
     .await;
     let _ = state.room_bus(&room_id).await.send(ServerMessage {
-        room_id: Some(room_id),
+        room_id: Some(room_id.clone()),
         conversation_message: Some(message.clone()),
         ..ServerMessage::new("conversationMessageAdded")
     });
+    if let Some(speaker) = message
+        .sender_role
+        .as_deref()
+        .and_then(player_role_from_str)
+    {
+        notify_agents_of_message(
+            &state,
+            &room_id,
+            speaker,
+            utterance_kind_from_origin(&message.origin),
+            message.text.clone(),
+        )
+        .await;
+    }
     Ok(Json(message))
 }
 
@@ -3489,6 +3538,7 @@ where
         Some(protocol_json(&after)?),
     )
     .await;
+    notify_agents_of_action(&state, room_id, player, action.clone()).await;
     let summary = summary.map(|summary| protocol_json(&summary)).transpose()?;
     if completed {
         let session_id = {
@@ -3583,6 +3633,215 @@ where
         )
         .await;
     }
+}
+
+/// Builds the stable map key used for one room-local agent instance.
+fn agent_key(room_id: &str, participant_session_id: &str) -> String {
+    format!("{room_id}:{participant_session_id}")
+}
+
+/// Converts a wire-format role string into a player role.
+fn player_role_from_str(value: &str) -> Option<PlayerRole> {
+    match value {
+        "A" => Some(PlayerRole::A),
+        "B" => Some(PlayerRole::B),
+        _ => None,
+    }
+}
+
+/// Converts a persisted conversation origin into the agent utterance kind.
+fn utterance_kind_from_origin(origin: &str) -> AgentUtteranceKind {
+    match origin {
+        "voice_transcript" => AgentUtteranceKind::Spoken,
+        "agent" => AgentUtteranceKind::Agent,
+        _ => AgentUtteranceKind::Typed,
+    }
+}
+
+/// Returns the currently available actions for an agent role in a room.
+async fn agent_available_actions<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+    room_id: &str,
+    role: Seat,
+) -> Result<Option<Vec<A::Action>>> {
+    let memory = state.memory.read().await;
+    let room = memory
+        .rooms
+        .get(room_id)
+        .ok_or_else(|| anyhow!("Room not found."))?;
+    Ok(state
+        .adapter
+        .available_actions(&room.state, role.player_role()))
+}
+
+/// Sends an accepted-action observation to every started agent in the room.
+async fn notify_agents_of_action<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+    room_id: &str,
+    actor: PlayerRole,
+    action: A::Action,
+) where
+    A::State: Serialize,
+{
+    let observations = {
+        let memory = state.memory.read().await;
+        let Some(room) = memory.rooms.get(room_id) else {
+            return;
+        };
+        room.participants
+            .values()
+            .filter(|participant| participant.source == "agent")
+            .map(|participant| {
+                (
+                    agent_key(room_id, &participant.participant_session_id),
+                    AgentObservation::Action {
+                        actor,
+                        action: action.clone(),
+                        resulting_observation: state
+                            .adapter
+                            .observe_state(&room.state, participant.role.player_role()),
+                    },
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let inboxes = state.agent_inboxes.read().await;
+    for (key, observation) in observations {
+        if let Some(sender) = inboxes.get(&key) {
+            let _ = sender.send(observation).await;
+        }
+    }
+}
+
+/// Sends a conversation-message observation to every started agent in the room.
+async fn notify_agents_of_message<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+    room_id: &str,
+    speaker: PlayerRole,
+    kind: AgentUtteranceKind,
+    text: String,
+) {
+    let keys = {
+        let memory = state.memory.read().await;
+        let Some(room) = memory.rooms.get(room_id) else {
+            return;
+        };
+        room.participants
+            .values()
+            .filter(|participant| participant.source == "agent")
+            .map(|participant| agent_key(room_id, &participant.participant_session_id))
+            .collect::<Vec<_>>()
+    };
+    let inboxes = state.agent_inboxes.read().await;
+    for key in keys {
+        if let Some(sender) = inboxes.get(&key) {
+            let _ = sender
+                .send(AgentObservation::Message {
+                    speaker,
+                    kind: kind.clone(),
+                    text: text.clone(),
+                })
+                .await;
+        }
+    }
+}
+
+/// Returns an error if an agent response contains no visible effect.
+fn validate_agent_response<Action>(response: &AgentResponse<Action>) -> Result<()> {
+    if response.is_empty() {
+        anyhow::bail!("agent returned an empty response");
+    }
+    Ok(())
+}
+
+/// Converts an agent timeout result into a normal anyhow result.
+fn flatten_agent_timeout<T>(
+    result: std::result::Result<Result<T>, tokio::time::error::Elapsed>,
+    timeout_message: &str,
+) -> Result<T> {
+    match result {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!("{timeout_message}"),
+    }
+}
+
+/// Persists and applies one validated agent response.
+async fn handle_agent_response<A: GameAdapter>(
+    state: Arc<AppState<A>>,
+    room_id: &str,
+    participant_session_id: &str,
+    role: Seat,
+    response: AgentResponse<A::Action>,
+) -> Result<(bool, Option<Value>)>
+where
+    A::State: Serialize,
+{
+    validate_agent_response(&response)?;
+    let AgentResponse { message, action } = response;
+    let mut outcome = (false, None);
+    if let Some(action) = action {
+        persist_session_event(
+            &state,
+            room_id,
+            Some(participant_session_id),
+            "agent_action",
+            json!({"action": protocol_json(&action).unwrap_or(Value::Null)}),
+            None,
+        )
+        .await;
+        outcome =
+            submit_action(state.clone(), room_id, participant_session_id, role, action).await?;
+        broadcast_player_views(state.clone(), room_id).await;
+    }
+    if let Some(text) = message {
+        if let Ok(Json(message)) = add_conversation(
+            State(state.clone()),
+            Path(room_id.to_string()),
+            Json(ConversationMessageIn {
+                text,
+                origin: "agent".to_string(),
+                source_message_id: None,
+                metadata: json!({"sender_participant_session_id": participant_session_id}),
+            }),
+        )
+        .await
+        {
+            speak_agent_message(&state, room_id, &message).await;
+        }
+    }
+    Ok(outcome)
+}
+
+/// Asks one agent for an optional response and applies it when present.
+async fn request_agent_decision<A: GameAdapter>(
+    state: Arc<AppState<A>>,
+    agent: &mut Box<dyn GameAgent<A> + Send>,
+    room_id: &str,
+    participant_session_id: &str,
+    role: Seat,
+    timeout: f64,
+) -> Result<Option<(bool, Option<Value>)>>
+where
+    A::State: Serialize,
+{
+    let available_actions = agent_available_actions(&state, room_id, role).await?;
+    let result = tokio::time::timeout(
+        Duration::from_secs_f64(timeout),
+        agent.maybe_act(available_actions),
+    )
+    .await;
+    let Some(response) = flatten_agent_timeout(result, "agent maybe_act timeout")? else {
+        return Ok(None);
+    };
+    let outcome = handle_agent_response(
+        state.clone(),
+        room_id,
+        participant_session_id,
+        role,
+        response,
+    )
+    .await?;
+    Ok(Some(outcome))
 }
 
 // Converts one agent message to speech immediately after the agent emits it.
@@ -3778,6 +4037,12 @@ async fn maybe_start_agent<A: GameAdapter>(
         let Ok(mut agent) = factory.create(context) else {
             return;
         };
+        let (sender, mut receiver) = mpsc::channel(64);
+        state
+            .agent_inboxes
+            .write()
+            .await
+            .insert(agent_key(&room_id, &participant_session_id), sender);
         persist_session_event(
             &state,
             &room_id,
@@ -3792,107 +4057,32 @@ async fn maybe_start_agent<A: GameAdapter>(
         .await;
         let mut invalid_actions = 0usize;
         let mut last_error = None;
-        loop {
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            let (observation, available_actions, completed) = {
-                let memory = state.memory.read().await;
-                let Some(room) = memory.rooms.get(&room_id) else {
-                    break;
-                };
-                let player = role.player_role();
-                (
-                    state.adapter.observe_state(&room.state, player),
-                    state.adapter.available_actions(&room.state, player),
-                    state.adapter.is_complete(&room.state),
-                )
-            };
-            if completed {
-                break;
-            }
-            let timeout = state
-                .config
-                .agents
-                .human_vs_agent
-                .as_ref()
-                .map(|c| c.act_timeout_seconds)
-                .unwrap_or(10.0);
-            let result = tokio::time::timeout(
+        let timeout = state
+            .config
+            .agents
+            .human_vs_agent
+            .as_ref()
+            .map(|c| c.act_timeout_seconds)
+            .unwrap_or(10.0);
+        let initial_observation = {
+            let memory = state.memory.read().await;
+            memory
+                .rooms
+                .get(&room_id)
+                .map(|room| state.adapter.observe_state(&room.state, role.player_role()))
+        };
+        if let Some(initial_observation) = initial_observation {
+            let observed = tokio::time::timeout(
                 Duration::from_secs_f64(timeout),
-                agent.act(observation, available_actions),
+                agent.observe_state(initial_observation),
             )
             .await;
-            let result = match result {
-                Ok(Ok(result)) => result,
-                Ok(Err(error)) => {
-                    last_error = Some(error.to_string());
-                    invalid_actions += 1;
-                    continue;
-                }
-                Err(_) => {
-                    last_error = Some("agent act timeout".to_string());
-                    invalid_actions += 1;
-                    continue;
-                }
-            };
-            let (message, action) = match result {
-                AgentResult::None => (None, None),
-                AgentResult::Action(action) => (None, Some(action)),
-                AgentResult::Message(message) => (Some(message), None),
-                AgentResult::ActionWithMessage { action, message } => (Some(message), Some(action)),
-            };
-            if let Some(text) = message {
-                if let Ok(Json(message)) = add_conversation(
-                    State(state.clone()),
-                    Path(room_id.clone()),
-                    Json(ConversationMessageIn {
-                        text,
-                        origin: "agent".to_string(),
-                        source_message_id: None,
-                        metadata: json!({"sender_participant_session_id": participant_session_id}),
-                    }),
-                )
-                .await
-                {
-                    speak_agent_message(&state, &room_id, &message).await;
-                }
+            if let Err(error) = flatten_agent_timeout(observed, "agent observe_state timeout") {
+                last_error = Some(error.to_string());
+                invalid_actions += 1;
             }
-            if let Some(action) = action {
-                persist_session_event(
-                    &state,
-                    &room_id,
-                    Some(&participant_session_id),
-                    "agent_action",
-                    json!({"action": protocol_json(&action).unwrap_or(Value::Null)}),
-                    None,
-                )
-                .await;
-                match submit_action(
-                    state.clone(),
-                    &room_id,
-                    &participant_session_id,
-                    role,
-                    action,
-                )
-                .await
-                {
-                    Ok((completed, summary)) => {
-                        broadcast_player_views(state.clone(), &room_id).await;
-                        if completed {
-                            let _ = state.room_bus(&room_id).await.send(ServerMessage {
-                                room_id: Some(room_id.clone()),
-                                participant_session_id: None,
-                                summary,
-                                ..ServerMessage::new("completed")
-                            });
-                            break;
-                        }
-                    }
-                    Err(error) => {
-                        invalid_actions += 1;
-                        last_error = Some(error.to_string());
-                    }
-                }
-            }
+        }
+        'agent_loop: loop {
             let limit = state
                 .config
                 .agents
@@ -3900,6 +4090,36 @@ async fn maybe_start_agent<A: GameAdapter>(
                 .as_ref()
                 .map(|c| c.invalid_action_limit)
                 .unwrap_or(3);
+            match request_agent_decision(
+                state.clone(),
+                &mut agent,
+                &room_id,
+                &participant_session_id,
+                role,
+                timeout,
+            )
+            .await
+            {
+                Ok(Some((completed, summary))) => {
+                    if completed {
+                        let _ = state.room_bus(&room_id).await.send(ServerMessage {
+                            room_id: Some(room_id.clone()),
+                            participant_session_id: None,
+                            summary,
+                            ..ServerMessage::new("completed")
+                        });
+                        break;
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                    invalid_actions += 1;
+                    if invalid_actions < limit {
+                        continue;
+                    }
+                }
+            }
             if invalid_actions >= limit {
                 persist_session_event(
                     &state,
@@ -3912,7 +4132,67 @@ async fn maybe_start_agent<A: GameAdapter>(
                 .await;
                 break;
             }
+
+            let Some(observation) = receiver.recv().await else {
+                break;
+            };
+            let observed = match observation {
+                AgentObservation::Action {
+                    actor,
+                    action,
+                    resulting_observation,
+                } => {
+                    tokio::time::timeout(
+                        Duration::from_secs_f64(timeout),
+                        agent.observe_action(actor, action, resulting_observation),
+                    )
+                    .await
+                }
+                AgentObservation::Message {
+                    speaker,
+                    kind,
+                    text,
+                } => {
+                    tokio::time::timeout(
+                        Duration::from_secs_f64(timeout),
+                        agent.observe_message(speaker, kind, text),
+                    )
+                    .await
+                }
+            };
+            if let Err(error) = flatten_agent_timeout(observed, "agent observe timeout") {
+                last_error = Some(error.to_string());
+                invalid_actions += 1;
+            }
+            if invalid_actions >= limit {
+                persist_session_event(
+                    &state,
+                    &room_id,
+                    Some(&participant_session_id),
+                    "agent_error",
+                    json!({"last_error": last_error}),
+                    None,
+                )
+                .await;
+                break;
+            }
+            let completed = {
+                let memory = state.memory.read().await;
+                memory
+                    .rooms
+                    .get(&room_id)
+                    .is_none_or(|room| state.adapter.is_complete(&room.state))
+            };
+            if completed {
+                break;
+            }
+            continue 'agent_loop;
         }
+        state
+            .agent_inboxes
+            .write()
+            .await
+            .remove(&agent_key(&room_id, &participant_session_id));
     });
 }
 
@@ -4239,7 +4519,7 @@ mod tests {
     use tokio_tungstenite::{connect_async, tungstenite::Message as TungsteniteMessage};
     use tower::ServiceExt;
 
-    use crate::agents::{AgentInitContext, GameAgent};
+    use crate::agents::{AgentInitContext, AgentResponse, AgentUtteranceKind, GameAgent};
     use crate::config::{
         AgentOptionConfig, AgentsConfig, AgentsMode, DatabaseConfig, DirectConfig,
         ExperimentIdentityConfig,
@@ -4761,12 +5041,11 @@ mod tests {
 
     #[async_trait]
     impl GameAgent<TinyAdapter> for NoopAgent {
-        async fn act(
+        async fn maybe_act(
             &mut self,
-            _observation: TinyObservation,
             _available_actions: Option<Vec<TinyAction>>,
-        ) -> Result<AgentResult<TinyAction>> {
-            Ok(AgentResult::None)
+        ) -> Result<Option<AgentResponse<TinyAction>>> {
+            Ok(None)
         }
     }
 
@@ -4782,28 +5061,27 @@ mod tests {
     }
 
     struct ScriptedAgent {
-        script: VecDeque<AgentResult<TinyAction>>,
+        script: VecDeque<Option<AgentResponse<TinyAction>>>,
     }
 
     #[async_trait]
     impl GameAgent<TinyAdapter> for ScriptedAgent {
-        async fn act(
+        async fn maybe_act(
             &mut self,
-            _observation: TinyObservation,
             _available_actions: Option<Vec<TinyAction>>,
-        ) -> Result<AgentResult<TinyAction>> {
-            Ok(self.script.pop_front().unwrap_or(AgentResult::None))
+        ) -> Result<Option<AgentResponse<TinyAction>>> {
+            Ok(self.script.pop_front().unwrap_or(None))
         }
     }
 
     struct ScriptedAgentFactory {
         created: AtomicUsize,
-        scripts: Mutex<VecDeque<Vec<AgentResult<TinyAction>>>>,
+        scripts: Mutex<VecDeque<Vec<Option<AgentResponse<TinyAction>>>>>,
     }
 
     impl ScriptedAgentFactory {
         // Creates a factory that hands one script to each fresh agent instance.
-        fn new(scripts: Vec<Vec<AgentResult<TinyAction>>>) -> Self {
+        fn new(scripts: Vec<Vec<Option<AgentResponse<TinyAction>>>>) -> Self {
             Self {
                 created: AtomicUsize::new(0),
                 scripts: Mutex::new(scripts.into()),
@@ -4814,6 +5092,17 @@ mod tests {
         fn created_count(&self) -> usize {
             self.created.load(Ordering::SeqCst)
         }
+    }
+
+    // Creates a scripted optional response.
+    fn scripted_response(
+        message: Option<&str>,
+        action: Option<TinyAction>,
+    ) -> Option<AgentResponse<TinyAction>> {
+        Some(AgentResponse {
+            message: message.map(str::to_string),
+            action,
+        })
     }
 
     impl AgentFactory<TinyAdapter> for ScriptedAgentFactory {
@@ -4835,13 +5124,12 @@ mod tests {
 
     #[async_trait]
     impl GameAgent<TinyAdapter> for RecordingActionsAgent {
-        async fn act(
+        async fn maybe_act(
             &mut self,
-            _observation: TinyObservation,
             available_actions: Option<Vec<TinyAction>>,
-        ) -> Result<AgentResult<TinyAction>> {
+        ) -> Result<Option<AgentResponse<TinyAction>>> {
             self.seen_actions.lock().unwrap().push(available_actions);
-            Ok(AgentResult::None)
+            Ok(None)
         }
     }
 
@@ -4856,6 +5144,129 @@ mod tests {
         ) -> Result<Box<dyn GameAgent<TinyAdapter> + Send>> {
             Ok(Box::new(RecordingActionsAgent {
                 seen_actions: self.seen_actions.clone(),
+            }))
+        }
+    }
+
+    struct RecordingObservationsAgent {
+        observations: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl GameAgent<TinyAdapter> for RecordingObservationsAgent {
+        async fn observe_state(&mut self, current_observation: TinyObservation) -> Result<()> {
+            self.observations.lock().unwrap().push(format!(
+                "state:{}:{}",
+                current_observation.role, current_observation.done
+            ));
+            Ok(())
+        }
+
+        async fn observe_action(
+            &mut self,
+            actor: PlayerRole,
+            action: TinyAction,
+            resulting_observation: TinyObservation,
+        ) -> Result<()> {
+            self.observations.lock().unwrap().push(format!(
+                "action:{}:{}:{}",
+                actor.as_str(),
+                action.finish,
+                resulting_observation.done
+            ));
+            Ok(())
+        }
+
+        async fn observe_message(
+            &mut self,
+            speaker: PlayerRole,
+            kind: AgentUtteranceKind,
+            text: String,
+        ) -> Result<()> {
+            self.observations
+                .lock()
+                .unwrap()
+                .push(format!("message:{}:{kind:?}:{text}", speaker.as_str()));
+            Ok(())
+        }
+
+        async fn maybe_act(
+            &mut self,
+            _available_actions: Option<Vec<TinyAction>>,
+        ) -> Result<Option<AgentResponse<TinyAction>>> {
+            Ok(None)
+        }
+    }
+
+    struct RecordingObservationsAgentFactory {
+        observations: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl AgentFactory<TinyAdapter> for RecordingObservationsAgentFactory {
+        fn create(
+            &self,
+            _context: AgentInitContext,
+        ) -> Result<Box<dyn GameAgent<TinyAdapter> + Send>> {
+            Ok(Box::new(RecordingObservationsAgent {
+                observations: self.observations.clone(),
+            }))
+        }
+    }
+
+    struct SequencedDecisionAgent {
+        log: Arc<Mutex<Vec<String>>>,
+        decisions: usize,
+    }
+
+    #[async_trait]
+    impl GameAgent<TinyAdapter> for SequencedDecisionAgent {
+        async fn observe_action(
+            &mut self,
+            actor: PlayerRole,
+            _action: TinyAction,
+            _resulting_observation: TinyObservation,
+        ) -> Result<()> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("observe_action:{}", actor.as_str()));
+            Ok(())
+        }
+
+        async fn maybe_act(
+            &mut self,
+            _available_actions: Option<Vec<TinyAction>>,
+        ) -> Result<Option<AgentResponse<TinyAction>>> {
+            self.decisions += 1;
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("maybe_act:{}", self.decisions));
+            if self.decisions == 1 {
+                return Ok(scripted_response(
+                    None,
+                    Some(TinyAction {
+                        finish: false,
+                        invalid: false,
+                    }),
+                ));
+            }
+            Ok(None)
+        }
+    }
+
+    struct SequencedDecisionAgentFactory {
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl AgentFactory<TinyAdapter> for SequencedDecisionAgentFactory {
+        fn create(
+            &self,
+            _context: AgentInitContext,
+        ) -> Result<Box<dyn GameAgent<TinyAdapter> + Send>> {
+            Ok(Box::new(SequencedDecisionAgent {
+                log: self.log.clone(),
+                decisions: 0,
             }))
         }
     }
@@ -5248,6 +5659,26 @@ mod tests {
             if value["type"] == message_type {
                 return value;
             }
+        }
+    }
+
+    // Reads the next JSON WebSocket server message without filtering by type.
+    async fn read_next_ws_value<S>(socket: &mut S) -> Value
+    where
+        S: futures_util::Stream<
+                Item = Result<TungsteniteMessage, tokio_tungstenite::tungstenite::Error>,
+            > + Unpin,
+    {
+        loop {
+            let message = tokio::time::timeout(Duration::from_secs(2), socket.next())
+                .await
+                .expect("timed out waiting for WebSocket message")
+                .expect("WebSocket closed before next message")
+                .expect("WebSocket read failed");
+            let TungsteniteMessage::Text(text) = message else {
+                continue;
+            };
+            return serde_json::from_str(&text).unwrap();
         }
     }
 
@@ -6032,7 +6463,7 @@ mod tests {
             .await
             .unwrap();
         let (a, b, room_id) = create_joined_room(router.clone()).await;
-        let (base_url, server) = spawn_test_server(router).await;
+        let (base_url, server) = spawn_test_server(router.clone()).await;
         let host = base_url.trim_start_matches("http://");
         let (mut socket_a, _) = connect_async(format!(
             "ws://{host}/ws/game/{room_id}?participantSessionId={a}"
@@ -6104,7 +6535,7 @@ mod tests {
             .await
             .unwrap();
         let (a, b, room_id) = create_joined_room(router.clone()).await;
-        let (base_url, server) = spawn_test_server(router).await;
+        let (base_url, server) = spawn_test_server(router.clone()).await;
         let host = base_url.trim_start_matches("http://");
         let (mut socket_a, _) = connect_async(format!(
             "ws://{host}/ws/game/{room_id}?participantSessionId={a}"
@@ -6157,8 +6588,9 @@ mod tests {
                 .await;
         config.speechmatics.realtime_url = "wss://speechmatics.example.test/v2".to_string();
 
-        let factory = Arc::new(ScriptedAgentFactory::new(vec![vec![AgentResult::Message(
-            "agent starts after stt".to_string(),
+        let factory = Arc::new(ScriptedAgentFactory::new(vec![vec![scripted_response(
+            Some("agent starts after stt"),
+            None,
         )]]));
         let router = build_router(
             TinyAdapter,
@@ -6609,16 +7041,121 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_runtime_persists_messages_and_validated_actions() {
-        let factory = Arc::new(ScriptedAgentFactory::new(vec![vec![
-            AgentResult::ActionWithMessage {
-                action: TinyAction {
-                    finish: true,
-                    invalid: false,
-                },
-                message: "agent says hello".to_string(),
+    async fn agent_runtime_observes_messages_with_speaker_and_modality() {
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let router = build_router(
+            TinyAdapter,
+            human_vs_agent_config(),
+            ServeOptions {
+                agent_factory: Some(Arc::new(RecordingObservationsAgentFactory {
+                    observations: observations.clone(),
+                })),
+                ..ServeOptions::default()
             },
-        ]]));
+        )
+        .await
+        .unwrap();
+        let (human, room_id) = create_human_vs_agent_room(router.clone(), "Human").await;
+        let (base_url, server) = spawn_test_server(router.clone()).await;
+        let host = base_url.trim_start_matches("http://");
+        let (mut socket, _) = connect_async(format!(
+            "ws://{host}/ws/game/{room_id}?participantSessionId={human}"
+        ))
+        .await
+        .unwrap();
+        let _ = read_ws_type(&mut socket, "roleAssigned").await;
+        let _ = wait_for_export_event(router.clone(), "agent_started").await;
+
+        send_ws_json(
+            &mut socket,
+            json!({"type": "sendChatMessage", "text": "typed hello"}),
+        )
+        .await;
+        let _ = read_ws_type(&mut socket, "conversationMessageAdded").await;
+        let (status, _) = json_request(
+            router,
+            http::Method::POST,
+            &format!("/api/rooms/{room_id}/transcripts"),
+            json!({
+                "participant_session_id": human,
+                "player": "A",
+                "start_time_ms": 0,
+                "end_time_ms": 10,
+                "text": "spoken hello",
+                "metadata": {}
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        for _ in 0..20 {
+            let captured = observations.lock().unwrap().clone();
+            if captured.contains(&"message:A:Typed:typed hello".to_string())
+                && captured.contains(&"message:A:Spoken:spoken hello".to_string())
+            {
+                server.abort();
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        server.abort();
+        panic!("expected agent to observe typed and spoken messages");
+    }
+
+    #[tokio::test]
+    async fn agent_runtime_observes_actions_with_resulting_observation() {
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let router = build_router(
+            TinyAdapter,
+            human_vs_agent_config(),
+            ServeOptions {
+                agent_factory: Some(Arc::new(RecordingObservationsAgentFactory {
+                    observations: observations.clone(),
+                })),
+                ..ServeOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (human, room_id) = create_human_vs_agent_room(router.clone(), "Human").await;
+        let (base_url, server) = spawn_test_server(router.clone()).await;
+        let host = base_url.trim_start_matches("http://");
+        let (mut socket, _) = connect_async(format!(
+            "ws://{host}/ws/game/{room_id}?participantSessionId={human}"
+        ))
+        .await
+        .unwrap();
+        let _ = read_ws_type(&mut socket, "roleAssigned").await;
+        let _ = wait_for_export_event(router.clone(), "agent_started").await;
+
+        send_ws_json(
+            &mut socket,
+            json!({"type": "submitAction", "action": {"finish": false}}),
+        )
+        .await;
+        let _ = read_ws_type(&mut socket, "stateChanged").await;
+
+        for _ in 0..20 {
+            let captured = observations.lock().unwrap().clone();
+            if captured.contains(&"action:A:false:false".to_string()) {
+                server.abort();
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        server.abort();
+        panic!("expected agent to observe accepted action");
+    }
+
+    #[tokio::test]
+    async fn agent_runtime_persists_messages_and_validated_actions() {
+        let factory = Arc::new(ScriptedAgentFactory::new(vec![vec![scripted_response(
+            Some("agent says hello"),
+            Some(TinyAction {
+                finish: true,
+                invalid: false,
+            }),
+        )]]));
         let router = build_router(
             TinyAdapter,
             human_vs_agent_config(),
@@ -6638,6 +7175,8 @@ mod tests {
         .await
         .unwrap();
         let _ = read_ws_type(&mut socket, "roleAssigned").await;
+        let first_update = read_next_ws_value(&mut socket).await;
+        assert_eq!(first_update["type"], "stateChanged");
         let message = read_ws_type(&mut socket, "conversationMessageAdded").await;
         assert_eq!(message["conversation_message"]["origin"], "agent");
         assert_eq!(message["conversation_message"]["text"], "agent says hello");
@@ -6662,20 +7201,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_runtime_observes_accepted_action_before_next_decision() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let router = build_router(
+            TinyAdapter,
+            human_vs_agent_config(),
+            ServeOptions {
+                agent_factory: Some(Arc::new(SequencedDecisionAgentFactory { log: log.clone() })),
+                ..ServeOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (human, room_id) = create_human_vs_agent_room(router.clone(), "Human").await;
+        let (base_url, server) = spawn_test_server(router).await;
+        let host = base_url.trim_start_matches("http://");
+        let (mut socket, _) = connect_async(format!(
+            "ws://{host}/ws/game/{room_id}?participantSessionId={human}"
+        ))
+        .await
+        .unwrap();
+        let _ = read_ws_type(&mut socket, "roleAssigned").await;
+
+        for _ in 0..20 {
+            let snapshot = log.lock().unwrap().clone();
+            if snapshot.iter().any(|entry| entry == "maybe_act:2") {
+                assert_eq!(
+                    snapshot,
+                    vec!["maybe_act:1", "observe_action:B", "maybe_act:2"]
+                );
+                server.abort();
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        server.abort();
+        panic!("timed out waiting for the second agent decision");
+    }
+
+    #[tokio::test]
     async fn agent_runtime_stops_invalid_agents_cleanly() {
         let factory = Arc::new(ScriptedAgentFactory::new(vec![vec![
-            AgentResult::Action(TinyAction {
-                finish: false,
-                invalid: true,
-            }),
-            AgentResult::Action(TinyAction {
-                finish: false,
-                invalid: true,
-            }),
-            AgentResult::Action(TinyAction {
-                finish: false,
-                invalid: false,
-            }),
+            scripted_response(
+                None,
+                Some(TinyAction {
+                    finish: false,
+                    invalid: true,
+                }),
+            ),
+            scripted_response(
+                None,
+                Some(TinyAction {
+                    finish: false,
+                    invalid: true,
+                }),
+            ),
+            scripted_response(
+                None,
+                Some(TinyAction {
+                    finish: false,
+                    invalid: false,
+                }),
+            ),
         ]]));
         let router = build_router(
             TinyAdapter,
@@ -6720,9 +7307,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_runtime_rejects_empty_responses() {
+        let empty_response = Some(AgentResponse {
+            message: None,
+            action: None,
+        });
+        let factory = Arc::new(ScriptedAgentFactory::new(vec![vec![
+            empty_response.clone(),
+            empty_response,
+        ]]));
+        let router = build_router(
+            TinyAdapter,
+            human_vs_agent_config(),
+            ServeOptions {
+                agent_factory: Some(factory),
+                ..ServeOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (human, room_id) = create_human_vs_agent_room(router.clone(), "Human").await;
+        let (base_url, server) = spawn_test_server(router.clone()).await;
+        let host = base_url.trim_start_matches("http://");
+        let (mut socket, _) = connect_async(format!(
+            "ws://{host}/ws/game/{room_id}?participantSessionId={human}"
+        ))
+        .await
+        .unwrap();
+        let _ = read_ws_type(&mut socket, "roleAssigned").await;
+
+        let export = wait_for_export_event(router, "agent_error").await;
+        assert!(export["session_events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event["event_type"] == "agent_error"
+                    && event["payload"]["last_error"]
+                        .as_str()
+                        .unwrap()
+                        .contains("empty response")
+            }));
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn agent_tts_records_diagnostics_for_agent_messages() {
-        let factory = Arc::new(ScriptedAgentFactory::new(vec![vec![AgentResult::Message(
-            "speak this".to_string(),
+        let factory = Arc::new(ScriptedAgentFactory::new(vec![vec![scripted_response(
+            Some("speak this"),
+            None,
         )]]));
         let tts_provider = Arc::new(MockTtsProvider {
             calls: AtomicUsize::new(0),
@@ -6774,8 +7407,8 @@ mod tests {
     #[tokio::test]
     async fn agent_tts_continues_after_provider_failure() {
         let factory = Arc::new(ScriptedAgentFactory::new(vec![vec![
-            AgentResult::Message("first fails".to_string()),
-            AgentResult::Message("second succeeds".to_string()),
+            scripted_response(Some("first fails"), None),
+            scripted_response(Some("second succeeds"), None),
         ]]));
         let tts_provider = Arc::new(MockTtsProvider {
             calls: AtomicUsize::new(0),

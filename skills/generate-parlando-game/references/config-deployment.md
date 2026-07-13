@@ -29,7 +29,7 @@ For local non-voice studies, keep `livekit.enabled`, `speechmatics.enabled`, `tr
 
 Voice enablement is a server/config decision. The generated game adapter and game-specific browser UI must not decide whether voice is enabled; they should consume the capability metadata and controls exposed by `parlando-server` and `@coli-saar/parlando-client`.
 
-TTS enablement is also a server/config decision. When `tts.enabled` is true, generated agents should return participant-facing utterances as `AgentResult::Message` or `AgentResult::ActionWithMessage`; `parlando-server` handles synthesis, diagnostics, and audio publishing. Browser clients should display the conversation message as usual and must not call TTS providers directly.
+TTS enablement is also a server/config decision. When `tts.enabled` is true, generated agents should return participant-facing utterances in `AgentResponse.message`; `parlando-server` handles synthesis, diagnostics, and audio publishing. Browser clients should display the conversation message as usual and must not call TTS providers directly.
 
 ## Local Config Template
 

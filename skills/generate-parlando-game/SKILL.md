@@ -50,7 +50,7 @@ Generated games must be agnostic to the participant mix. A browser instance rend
 
 Generated games also must not decide whether voice is enabled. If the server/session exposes voice capability and asks the client to allow it, the game must allow the SDK-provided voice controls/status to work. If the server/session does not expose voice capability, the game should simply omit or disable voice controls based on session state. Voice service setup, credentials, startup, and policy live in Parlando config/server/client SDK code, not in game-specific logic.
 
-When TTS is enabled, agent utterances should be returned through `AgentResult::Message` or `AgentResult::ActionWithMessage` so `parlando-server` can create an agent-origin conversation message, synthesize it, and publish it through the configured audio transport. Generated browser code must not call TTS providers directly or duplicate the server-side agent speech pipeline.
+When TTS is enabled, agent utterances should be returned through `AgentResponse.message` so `parlando-server` can create an agent-origin conversation message, synthesize it, and publish it through the configured audio transport. Generated browser code must not call TTS providers directly or duplicate the server-side agent speech pipeline.
 
 ## Output Shape
 
@@ -158,7 +158,7 @@ Returned agent actions must be normal typed `Action` values and still pass game 
 
 Do not fork game semantics or browser UI around human-vs-human versus human-vs-agent. Agents and humans are both participants that submit the same typed actions and receive the same role-specific observations.
 
-When TTS is enabled in config, agents should vocalize participant-facing utterances by returning `AgentResult::Message(text)` or `AgentResult::ActionWithMessage { action, message: text }`. The server records the text as an agent conversation message and, when configured, routes it through the TTS provider and `LiveKitAgentAudioPublisher`. Do not add frontend TTS calls, browser speech synthesis, or game-specific audio publishing for agent messages.
+When TTS is enabled in config, agents should vocalize participant-facing utterances by returning an `AgentResponse` with `message: Some(text)`. The server records the text as an agent conversation message and, when configured, routes it through the TTS provider and `LiveKitAgentAudioPublisher`. Do not add frontend TTS calls, browser speech synthesis, or game-specific audio publishing for agent messages.
 
 ## TypeScript Contract
 

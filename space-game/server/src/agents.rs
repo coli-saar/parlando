@@ -6,8 +6,8 @@ use std::{
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use parlando_server::{
-    AdminAgentOption, AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResult,
-    ExperimentConfig, GameAgent, RemoteGrpcAgentConfig, RemoteGrpcAgentFactory,
+    AdminAgentOption, AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResponse,
+    ExperimentConfig, GameAgent, PlayerRole, RemoteGrpcAgentConfig, RemoteGrpcAgentFactory,
 };
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::Deserialize;
@@ -105,7 +105,7 @@ fn default_remote_agent_name() -> String {
 }
 
 fn default_remote_agent_protocol() -> String {
-    "parlando-agent-v1".to_string()
+    "parlando-agent-v2".to_string()
 }
 
 /// Factory for the simple deterministic Space Game back-and-forth agent.
@@ -151,6 +151,8 @@ pub struct BackAndForthAgent {
     step_index: usize,
     last_step_at: Instant,
     last_other_position: Option<(i64, i64)>,
+    pending_step: bool,
+    other_player_moved: bool,
     utterances: Vec<&'static str>,
 }
 
@@ -163,6 +165,8 @@ impl BackAndForthAgent {
             step_index: 0,
             last_step_at: Instant::now() - Duration::from_secs(60),
             last_other_position: None,
+            pending_step: true,
+            other_player_moved: false,
             utterances: vec![
                 "Ich habe deine Bewegung gesehen.",
                 "Okay, ich reagiere auf deinen Schritt.",
@@ -176,15 +180,37 @@ impl BackAndForthAgent {
 
 #[async_trait]
 impl GameAgent<SpaceGameAdapter> for BackAndForthAgent {
-    async fn act(
+    async fn observe_state(&mut self, current_observation: SpaceObservation) -> Result<()> {
+        self.update_other_player_position(&current_observation);
+        Ok(())
+    }
+
+    async fn observe_action(
         &mut self,
-        observation: SpaceObservation,
+        actor: PlayerRole,
+        _action: SpaceAction,
+        resulting_observation: SpaceObservation,
+    ) -> Result<()> {
+        if actor.as_str() != self.role {
+            self.pending_step = true;
+            self.other_player_moved = true;
+        }
+        self.update_other_player_position(&resulting_observation);
+        Ok(())
+    }
+
+    async fn maybe_act(
+        &mut self,
         _available_actions: Option<Vec<SpaceAction>>,
-    ) -> Result<AgentResult<SpaceAction>> {
+    ) -> Result<Option<AgentResponse<SpaceAction>>> {
+        if !self.pending_step {
+            return Ok(None);
+        }
         if self.last_step_at.elapsed() < Duration::from_secs(1) {
-            return Ok(AgentResult::None);
+            return Ok(None);
         }
         self.last_step_at = Instant::now();
+        self.pending_step = false;
         let directions: &[&str] = if self.role == "A" {
             &["left", "right"]
         } else {
@@ -196,36 +222,35 @@ impl GameAgent<SpaceGameAdapter> for BackAndForthAgent {
             player: self.role.clone(),
             direction: direction.to_string(),
         };
-        if self.other_player_moved(&observation) {
-            let message = self.utterances[self.rng.gen_range(0..self.utterances.len())].to_string();
-            Ok(AgentResult::ActionWithMessage { action, message })
+        let message = if self.other_player_moved {
+            self.other_player_moved = false;
+            Some(self.utterances[self.rng.gen_range(0..self.utterances.len())].to_string())
         } else {
-            Ok(AgentResult::Action(action))
-        }
+            None
+        };
+        Ok(Some(AgentResponse {
+            message,
+            action: Some(action),
+        }))
     }
 }
 
 impl BackAndForthAgent {
-    // Detects whether the other player moved since the previous agent turn.
-    fn other_player_moved(&mut self, observation: &SpaceObservation) -> bool {
+    // Stores the other player's current position for future observations.
+    fn update_other_player_position(&mut self, observation: &SpaceObservation) {
         let position = if self.role == "A" {
             observation.players.b.position
         } else {
             observation.players.a.position
         };
-        let current = (position.x, position.y);
-        let moved = self
-            .last_other_position
-            .is_some_and(|previous| previous != current);
-        self.last_other_position = Some(current);
-        moved
+        self.last_other_position = Some((position.x, position.y));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use parlando_server::config::{AgentsConfig, AgentsMode, HumanVsAgentConfig};
-    use parlando_server::{AgentInitContext, AgentResult, GameAdapter, PlayerRole};
+    use parlando_server::{AgentInitContext, GameAdapter, PlayerRole};
 
     use crate::game::state_engine::initial_state;
 
@@ -319,17 +344,19 @@ mod tests {
         let observation = adapter.observe_state(&initial_state(), PlayerRole::A);
         let mut first = factory.create(init_context("A")).unwrap();
         let mut second = factory.create(init_context("A")).unwrap();
+        first.observe_state(observation.clone()).await.unwrap();
+        second.observe_state(observation).await.unwrap();
 
-        let first_result = first.act(observation.clone(), Some(vec![])).await.unwrap();
-        let second_result = second.act(observation, Some(vec![])).await.unwrap();
+        let first_result = first.act(Some(vec![])).await.unwrap();
+        let second_result = second.act(Some(vec![])).await.unwrap();
 
         assert!(matches!(
-            first_result,
-            AgentResult::Action(SpaceAction::MoveStep { direction, .. }) if direction == "left"
+            first_result.action,
+            Some(SpaceAction::MoveStep { direction, .. }) if direction == "left"
         ));
         assert!(matches!(
-            second_result,
-            AgentResult::Action(SpaceAction::MoveStep { direction, .. }) if direction == "left"
+            second_result.action,
+            Some(SpaceAction::MoveStep { direction, .. }) if direction == "left"
         ));
     }
 
@@ -338,20 +365,54 @@ mod tests {
         let adapter = SpaceGameAdapter::new();
         let mut agent = BackAndForthAgent::new("B".to_string(), 1, Value::Null);
         let first_observation = adapter.observe_state(&initial_state(), PlayerRole::B);
-        let _ = agent.act(first_observation, Some(vec![])).await.unwrap();
+        agent.observe_state(first_observation).await.unwrap();
+        let _ = agent.act(Some(vec![])).await.unwrap();
         agent.last_step_at = Instant::now() - Duration::from_secs(60);
         let mut moved_state = initial_state();
         moved_state.players.a.position.x += 1;
         let second_observation = adapter.observe_state(&moved_state, PlayerRole::B);
+        agent
+            .observe_action(
+                PlayerRole::A,
+                SpaceAction::MoveStep {
+                    player: "A".to_string(),
+                    direction: "right".to_string(),
+                },
+                second_observation,
+            )
+            .await
+            .unwrap();
 
-        let result = agent.act(second_observation, Some(vec![])).await.unwrap();
+        let result = agent.act(Some(vec![])).await.unwrap();
 
         assert!(matches!(
-            result,
-            AgentResult::ActionWithMessage {
-                action: SpaceAction::MoveStep { direction, .. },
-                message
-            } if direction == "down" && !message.is_empty()
+            result.action,
+            Some(SpaceAction::MoveStep { direction, .. }) if direction == "down"
         ));
+        assert!(result.message.is_some_and(|message| !message.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn back_and_forth_agent_does_not_chain_after_its_own_move() {
+        let adapter = SpaceGameAdapter::new();
+        let mut agent = BackAndForthAgent::new("B".to_string(), 1, Value::Null);
+        let observation = adapter.observe_state(&initial_state(), PlayerRole::B);
+        agent.observe_state(observation.clone()).await.unwrap();
+        let first_result = agent.act(Some(vec![])).await.unwrap();
+        assert!(first_result.action.is_some());
+        agent.last_step_at = Instant::now() - Duration::from_secs(60);
+        agent
+            .observe_action(
+                PlayerRole::B,
+                SpaceAction::MoveStep {
+                    player: "B".to_string(),
+                    direction: "up".to_string(),
+                },
+                observation,
+            )
+            .await
+            .unwrap();
+
+        assert!(agent.maybe_act(Some(vec![])).await.unwrap().is_none());
     }
 }

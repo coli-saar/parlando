@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use parlando_server::{
-    agents::{AgentFactory, AgentInitContext, AgentResult, GameAgent},
+    agents::{AgentFactory, AgentInitContext, AgentResponse, GameAgent},
     build_router,
     config::{
         AgentsConfig, AgentsMode, ConversationConfig, DatabaseConfig, DirectConfig,
@@ -21,8 +21,9 @@ use parlando_server::{
     remote_agent::{
         pb::{
             agent_service_server::{AgentService, AgentServiceServer},
-            ActRequest, ActResponse, AgentResultKind, CreateAgentRequest, CreateAgentResponse,
-            ShutdownRequest, ShutdownResponse,
+            AgentResponse as PbAgentResponse, CreateAgentRequest, CreateAgentResponse,
+            DecisionRequest, MaybeActResponse, ObserveActionRequest, ObserveMessageRequest,
+            ObserveResponse, ObserveStateRequest, ShutdownRequest, ShutdownResponse,
         },
         RemoteGrpcAgentConfig, RemoteGrpcAgentFactory,
     },
@@ -154,17 +155,20 @@ impl GameAdapter for DummyAdapter {
 }
 
 struct ScriptedAgent {
-    script: VecDeque<AgentResult<DummyAction>>,
+    script: VecDeque<Option<AgentResponse<DummyAction>>>,
 }
 
 #[async_trait]
 impl GameAgent<DummyAdapter> for ScriptedAgent {
-    async fn act(
-        &mut self,
-        observation: DummyObservation,
-        available_actions: Option<Vec<DummyAction>>,
-    ) -> Result<AgentResult<DummyAction>> {
+    async fn observe_state(&mut self, observation: DummyObservation) -> Result<()> {
         assert_eq!(observation.role, "B");
+        Ok(())
+    }
+
+    async fn maybe_act(
+        &mut self,
+        available_actions: Option<Vec<DummyAction>>,
+    ) -> Result<Option<AgentResponse<DummyAction>>> {
         assert_eq!(
             available_actions,
             Some(vec![
@@ -172,16 +176,16 @@ impl GameAgent<DummyAdapter> for ScriptedAgent {
                 DummyAction::Mark { finish: true }
             ])
         );
-        Ok(self.script.pop_front().unwrap_or(AgentResult::None))
+        Ok(self.script.pop_front().unwrap_or(None))
     }
 }
 
 struct ScriptedAgentFactory {
-    scripts: Mutex<VecDeque<Vec<AgentResult<DummyAction>>>>,
+    scripts: Mutex<VecDeque<Vec<Option<AgentResponse<DummyAction>>>>>,
 }
 
 impl ScriptedAgentFactory {
-    fn new(script: Vec<AgentResult<DummyAction>>) -> Self {
+    fn new(script: Vec<Option<AgentResponse<DummyAction>>>) -> Self {
         Self {
             scripts: Mutex::new(VecDeque::from([script])),
         }
@@ -226,7 +230,8 @@ impl StreamingTtsProvider for RecordingTts {
 #[derive(Default)]
 struct MockRemoteAgentState {
     create_requests: Mutex<Vec<CreateAgentRequest>>,
-    act_requests: Mutex<Vec<ActRequest>>,
+    observe_state_requests: Mutex<Vec<ObserveStateRequest>>,
+    maybe_act_requests: Mutex<Vec<DecisionRequest>>,
 }
 
 #[derive(Clone)]
@@ -250,19 +255,56 @@ impl AgentService for MockRemoteAgentService {
         }))
     }
 
-    async fn act(
+    async fn observe_state(
         &self,
-        request: TonicRequest<ActRequest>,
-    ) -> std::result::Result<TonicResponse<ActResponse>, Status> {
+        request: TonicRequest<ObserveStateRequest>,
+    ) -> std::result::Result<TonicResponse<ObserveResponse>, Status> {
         self.state
-            .act_requests
+            .observe_state_requests
             .lock()
             .unwrap()
             .push(request.into_inner());
-        Ok(TonicResponse::new(ActResponse {
-            result_kind: AgentResultKind::ActionWithMessage as i32,
+        Ok(TonicResponse::new(ObserveResponse {}))
+    }
+
+    async fn observe_action(
+        &self,
+        _request: TonicRequest<ObserveActionRequest>,
+    ) -> std::result::Result<TonicResponse<ObserveResponse>, Status> {
+        Ok(TonicResponse::new(ObserveResponse {}))
+    }
+
+    async fn observe_message(
+        &self,
+        _request: TonicRequest<ObserveMessageRequest>,
+    ) -> std::result::Result<TonicResponse<ObserveResponse>, Status> {
+        Ok(TonicResponse::new(ObserveResponse {}))
+    }
+
+    async fn maybe_act(
+        &self,
+        request: TonicRequest<DecisionRequest>,
+    ) -> std::result::Result<TonicResponse<MaybeActResponse>, Status> {
+        self.state
+            .maybe_act_requests
+            .lock()
+            .unwrap()
+            .push(request.into_inner());
+        Ok(TonicResponse::new(MaybeActResponse {
+            response: Some(PbAgentResponse {
+                message: Some("hello from remote grpc".to_string()),
+                action: Some(dummy_action_struct(true)),
+            }),
+        }))
+    }
+
+    async fn act(
+        &self,
+        _request: TonicRequest<DecisionRequest>,
+    ) -> std::result::Result<TonicResponse<PbAgentResponse>, Status> {
+        Ok(TonicResponse::new(PbAgentResponse {
+            message: Some("hello from remote grpc".to_string()),
             action: Some(dummy_action_struct(true)),
-            message: "hello from remote grpc".to_string(),
         }))
     }
 
@@ -614,12 +656,10 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
     let tts = Arc::new(RecordingTts {
         messages: Mutex::new(vec![]),
     });
-    let factory = Arc::new(ScriptedAgentFactory::new(vec![
-        AgentResult::ActionWithMessage {
-            action: DummyAction::Mark { finish: true },
-            message: "agent says hello".to_string(),
-        },
-    ]));
+    let factory = Arc::new(ScriptedAgentFactory::new(vec![Some(AgentResponse {
+        message: Some("agent says hello".to_string()),
+        action: Some(DummyAction::Mark { finish: true }),
+    })]));
     let server = spawn_server(
         config(AgentsMode::HumanVsAgent),
         ServeOptions {
@@ -714,20 +754,17 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
 
     let create_requests = remote.state.create_requests.lock().unwrap().clone();
     assert_eq!(create_requests.len(), 1);
-    assert_eq!(create_requests[0].protocol_version, "parlando-agent-v1");
+    assert_eq!(create_requests[0].protocol_version, "parlando-agent-v2");
     assert_eq!(create_requests[0].agent_name, "mock-python-agent");
     assert_eq!(create_requests[0].agent_version, "test-1");
     assert_eq!(create_requests[0].role, "B");
 
-    let act_requests = remote.state.act_requests.lock().unwrap().clone();
-    assert_eq!(act_requests.len(), 1);
-    assert_eq!(act_requests[0].agent_id, "remote-agent-1");
-    assert_eq!(act_requests[0].role, "B");
-    assert!(act_requests[0].available_actions_provided);
-    assert_eq!(act_requests[0].available_actions.len(), 2);
+    let observe_state_requests = remote.state.observe_state_requests.lock().unwrap().clone();
+    assert_eq!(observe_state_requests.len(), 1);
+    assert_eq!(observe_state_requests[0].agent_id, "remote-agent-1");
     assert_eq!(
-        act_requests[0]
-            .observation
+        observe_state_requests[0]
+            .current_observation
             .as_ref()
             .unwrap()
             .fields
@@ -735,6 +772,11 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
             .and_then(|value| value.kind.as_ref()),
         Some(&Kind::StringValue("B".to_string()))
     );
+    let maybe_act_requests = remote.state.maybe_act_requests.lock().unwrap().clone();
+    assert_eq!(maybe_act_requests.len(), 1);
+    assert_eq!(maybe_act_requests[0].agent_id, "remote-agent-1");
+    assert!(maybe_act_requests[0].available_actions_provided);
+    assert_eq!(maybe_act_requests[0].available_actions.len(), 2);
 
     let export = client
         .get(format!("{}/api/admin/export", server.base_url))
@@ -757,7 +799,7 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
     );
     assert_eq!(
         remote_participant["metadata"]["protocol_version"],
-        "parlando-agent-v1"
+        "parlando-agent-v2"
     );
     assert_eq!(remote_participant["metadata"]["agent_type"], "remote_grpc");
     assert_eq!(remote_participant["metadata"]["agent_version"], "test-1");

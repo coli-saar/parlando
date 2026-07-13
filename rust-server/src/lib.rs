@@ -13,7 +13,8 @@ pub mod storage;
 pub mod tts;
 
 pub use agents::{
-    AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResult, GameAgent,
+    AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResponse, AgentUtteranceKind,
+    GameAgent,
 };
 pub use app::{build_router, serve, AppState, ServeOptions};
 pub use audio_publisher::{AgentAudioPublisher, AudioPublishSummary, LiveKitAgentAudioPublisher};

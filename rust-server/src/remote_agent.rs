@@ -8,17 +8,21 @@ use serde_json::{Number, Value};
 use tonic::transport::Channel;
 
 use crate::{
-    agents::{AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResult, GameAgent},
-    game::GameAdapter,
+    agents::{
+        AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResponse,
+        AgentUtteranceKind, GameAgent,
+    },
+    game::{GameAdapter, PlayerRole},
 };
 
 /// Generated protobuf types and gRPC service clients for remote agents.
 pub mod pb {
-    tonic::include_proto!("parlando.agent.v1");
+    tonic::include_proto!("parlando.agent.v2");
 }
 
 use pb::{
-    agent_service_client::AgentServiceClient, ActRequest, AgentResultKind, CreateAgentRequest,
+    agent_service_client::AgentServiceClient, CreateAgentRequest, DecisionRequest,
+    ObserveActionRequest, ObserveMessageRequest, ObserveStateRequest, UtteranceKind,
 };
 
 /// Configuration for a remote gRPC agent backend.
@@ -43,7 +47,7 @@ impl RemoteGrpcAgentConfig {
             endpoint: endpoint.into(),
             agent_name: agent_name.into(),
             agent_version: None,
-            protocol_version: "parlando-agent-v1".to_string(),
+            protocol_version: "parlando-agent-v2".to_string(),
             request_timeout: Duration::from_secs(5),
         }
     }
@@ -154,62 +158,165 @@ where
     A: GameAdapter,
     A::Action: DeserializeOwned + Serialize,
 {
-    /// Calls the remote agent service with the same role-specific view used by the UI.
+    /// Sends the current state snapshot to the remote agent.
+    async fn observe_state(&mut self, current_observation: A::Observation) -> Result<()> {
+        self.ensure_created().await?;
+        let agent_id = self.agent_id()?;
+        let request_timeout = self.config.request_timeout;
+        let client = self.client()?;
+        let request = ObserveStateRequest {
+            agent_id,
+            current_observation: Some(json_to_struct(serde_json::to_value(current_observation)?)?),
+        };
+        tokio::time::timeout(request_timeout, client.observe_state(request))
+            .await
+            .context("remote agent observe_state timed out")?
+            .context("remote agent observe_state failed")?;
+        Ok(())
+    }
+
+    /// Sends an accepted action and resulting state snapshot to the remote agent.
+    async fn observe_action(
+        &mut self,
+        actor: PlayerRole,
+        action: A::Action,
+        resulting_observation: A::Observation,
+    ) -> Result<()> {
+        self.ensure_created().await?;
+        let agent_id = self.agent_id()?;
+        let request_timeout = self.config.request_timeout;
+        let client = self.client()?;
+        let request = ObserveActionRequest {
+            agent_id,
+            actor: actor.as_str().to_string(),
+            action: Some(action_to_struct(action)?),
+            resulting_observation: Some(json_to_struct(serde_json::to_value(
+                resulting_observation,
+            )?)?),
+        };
+        tokio::time::timeout(request_timeout, client.observe_action(request))
+            .await
+            .context("remote agent observe_action timed out")?
+            .context("remote agent observe_action failed")?;
+        Ok(())
+    }
+
+    /// Sends a conversation utterance to the remote agent.
+    async fn observe_message(
+        &mut self,
+        speaker: PlayerRole,
+        kind: AgentUtteranceKind,
+        text: String,
+    ) -> Result<()> {
+        self.ensure_created().await?;
+        let agent_id = self.agent_id()?;
+        let request_timeout = self.config.request_timeout;
+        let client = self.client()?;
+        let request = ObserveMessageRequest {
+            agent_id,
+            speaker: speaker.as_str().to_string(),
+            kind: utterance_kind_to_proto(kind) as i32,
+            text,
+        };
+        tokio::time::timeout(request_timeout, client.observe_message(request))
+            .await
+            .context("remote agent observe_message timed out")?
+            .context("remote agent observe_message failed")?;
+        Ok(())
+    }
+
+    /// Optionally asks the remote agent for a response.
+    async fn maybe_act(
+        &mut self,
+        available_actions: Option<Vec<A::Action>>,
+    ) -> Result<Option<AgentResponse<A::Action>>> {
+        self.ensure_created().await?;
+        let request = self.decision_request(available_actions)?;
+        let request_timeout = self.config.request_timeout;
+        let response = tokio::time::timeout(request_timeout, self.client()?.maybe_act(request))
+            .await
+            .context("remote agent maybe_act timed out")?
+            .context("remote agent maybe_act failed")?
+            .into_inner();
+        response.response.map(proto_to_agent_response).transpose()
+    }
+
+    /// Requires the remote agent to return a response.
     async fn act(
         &mut self,
-        observation: A::Observation,
         available_actions: Option<Vec<A::Action>>,
-    ) -> Result<AgentResult<A::Action>> {
+    ) -> Result<AgentResponse<A::Action>> {
         self.ensure_created().await?;
-        let agent_id = self
-            .agent_id
+        let request = self.decision_request(available_actions)?;
+        let request_timeout = self.config.request_timeout;
+        let response = tokio::time::timeout(request_timeout, self.client()?.act(request))
+            .await
+            .context("remote agent act timed out")?
+            .context("remote agent act failed")?
+            .into_inner();
+        proto_to_agent_response(response)
+    }
+}
+
+impl<A> RemoteGrpcAgent<A>
+where
+    A: GameAdapter,
+    A::Action: Serialize,
+{
+    /// Returns the remote agent id after creation.
+    fn agent_id(&self) -> Result<String> {
+        self.agent_id
             .clone()
-            .ok_or_else(|| anyhow!("remote agent was not created"))?;
-        let client = self
-            .client
+            .ok_or_else(|| anyhow!("remote agent was not created"))
+    }
+
+    /// Returns the connected gRPC client after creation.
+    fn client(&mut self) -> Result<&mut AgentServiceClient<Channel>> {
+        self.client
             .as_mut()
-            .ok_or_else(|| anyhow!("remote agent client was not connected"))?;
+            .ok_or_else(|| anyhow!("remote agent client was not connected"))
+    }
+
+    /// Builds a decision request with optional available actions.
+    fn decision_request(
+        &self,
+        available_actions: Option<Vec<A::Action>>,
+    ) -> Result<DecisionRequest> {
         let available_actions_provided = available_actions.is_some();
         let available_actions = available_actions
             .unwrap_or_default()
             .into_iter()
             .map(action_to_struct::<A::Action>)
             .collect::<Result<Vec<_>>>()?;
-        let request = ActRequest {
-            agent_id,
-            role: self.init_context.role.clone(),
-            observation: Some(json_to_struct(serde_json::to_value(observation)?)?),
+        Ok(DecisionRequest {
+            agent_id: self.agent_id()?,
             available_actions_provided,
             available_actions,
-        };
-        let response = tokio::time::timeout(self.config.request_timeout, client.act(request))
-            .await
-            .context("remote agent act timed out")?
-            .context("remote agent act failed")?
-            .into_inner();
-        match AgentResultKind::try_from(response.result_kind)
-            .unwrap_or(AgentResultKind::Unspecified)
-        {
-            AgentResultKind::None => Ok(AgentResult::None),
-            AgentResultKind::Message => Ok(AgentResult::Message(response.message)),
-            AgentResultKind::Action => {
-                let action = response
-                    .action
-                    .ok_or_else(|| anyhow!("remote agent action result omitted action"))?;
-                Ok(AgentResult::Action(struct_to_action(action)?))
-            }
-            AgentResultKind::ActionWithMessage => {
-                let action = response.action.ok_or_else(|| {
-                    anyhow!("remote agent action-with-message result omitted action")
-                })?;
-                Ok(AgentResult::ActionWithMessage {
-                    action: struct_to_action(action)?,
-                    message: response.message,
-                })
-            }
-            AgentResultKind::Unspecified => bail!("remote agent returned unspecified result kind"),
-        }
+        })
     }
+}
+
+/// Converts an utterance kind to its protobuf representation.
+fn utterance_kind_to_proto(kind: AgentUtteranceKind) -> UtteranceKind {
+    match kind {
+        AgentUtteranceKind::Typed => UtteranceKind::Typed,
+        AgentUtteranceKind::Spoken => UtteranceKind::Spoken,
+        AgentUtteranceKind::Agent => UtteranceKind::Agent,
+    }
+}
+
+/// Converts a protobuf agent response into a typed Rust response.
+fn proto_to_agent_response<Action: DeserializeOwned>(
+    response: pb::AgentResponse,
+) -> Result<AgentResponse<Action>> {
+    let response = AgentResponse {
+        message: response.message,
+        action: response.action.map(struct_to_action).transpose()?,
+    };
+    if response.is_empty() {
+        bail!("remote agent returned an empty response");
+    }
+    Ok(response)
 }
 
 /// Serializes a typed action into a protobuf struct for the remote boundary.

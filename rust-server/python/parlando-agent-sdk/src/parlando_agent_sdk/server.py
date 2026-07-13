@@ -34,41 +34,56 @@ def _generated_modules() -> tuple[Any, Any]:
 
 
 @dataclass(frozen=True)
-class AgentResult:
-    """Result returned by a Python agent act call."""
+class AgentResponse:
+    """Non-empty response returned by a Python agent decision call."""
 
-    kind: str
     action: Optional[dict[str, Any]] = None
-    message: str = ""
+    message: Optional[str] = None
 
     @staticmethod
-    def none() -> "AgentResult":
-        """Returns a no-op agent result."""
-        return AgentResult(kind="none")
+    def action(action: dict[str, Any]) -> "AgentResponse":
+        """Creates an action-only agent response."""
+        return AgentResponse(action=action)
 
     @staticmethod
-    def action(action: dict[str, Any]) -> "AgentResult":
-        """Returns an action-only agent result."""
-        return AgentResult(kind="action", action=action)
+    def say(message: str) -> "AgentResponse":
+        """Creates a message-only agent response."""
+        return AgentResponse(message=message)
 
     @staticmethod
-    def message(message: str) -> "AgentResult":
-        """Returns a message-only agent result."""
-        return AgentResult(kind="message", message=message)
-
-    @staticmethod
-    def action_with_message(action: dict[str, Any], message: str) -> "AgentResult":
-        """Returns a combined action and message agent result."""
-        return AgentResult(kind="action_with_message", action=action, message=message)
+    def action_with_message(action: dict[str, Any], message: str) -> "AgentResponse":
+        """Creates a combined action and message agent response."""
+        return AgentResponse(action=action, message=message)
 
 
 class GameAgent:
     """Base class for Python remote agents."""
 
-    async def act(
-        self, observation: dict[str, Any], available_actions: Optional[list[dict[str, Any]]]
-    ) -> AgentResult:
-        """Chooses the agent result from the same player-facing view shown to the UI."""
+    async def observe_state(self, current_observation: dict[str, Any]) -> None:
+        """Observes the current role-specific state snapshot."""
+        return None
+
+    async def observe_action(
+        self,
+        actor: str,
+        action: dict[str, Any],
+        resulting_observation: dict[str, Any],
+    ) -> None:
+        """Observes an accepted action and the resulting role-specific state."""
+        return None
+
+    async def observe_message(self, speaker: str, kind: str, text: str) -> None:
+        """Observes a conversation utterance from a known player role."""
+        return None
+
+    async def maybe_act(
+        self, available_actions: Optional[list[dict[str, Any]]]
+    ) -> Optional[AgentResponse]:
+        """Optionally chooses a message and/or action after prior observations."""
+        return None
+
+    async def act(self, available_actions: Optional[list[dict[str, Any]]]) -> AgentResponse:
+        """Chooses a required non-empty response."""
         raise NotImplementedError
 
     async def close(self) -> None:
@@ -104,19 +119,54 @@ class _AgentService:
         self._agents[agent_id] = agent
         return self._pb2.CreateAgentResponse(agent_id=agent_id)
 
+    async def ObserveState(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
+        """Handles a remote ObserveState request from the Rust server."""
+        agent = self._agents.get(request.agent_id)
+        if agent is None:
+            await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
+        await agent.observe_state(_struct_to_dict(request.current_observation))
+        return self._pb2.ObserveResponse()
+
+    async def ObserveAction(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
+        """Handles a remote ObserveAction request from the Rust server."""
+        agent = self._agents.get(request.agent_id)
+        if agent is None:
+            await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
+        await agent.observe_action(
+            request.actor,
+            _struct_to_dict(request.action),
+            _struct_to_dict(request.resulting_observation),
+        )
+        return self._pb2.ObserveResponse()
+
+    async def ObserveMessage(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
+        """Handles a remote ObserveMessage request from the Rust server."""
+        agent = self._agents.get(request.agent_id)
+        if agent is None:
+            await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
+        await agent.observe_message(
+            request.speaker,
+            _utterance_kind(self._pb2, request.kind),
+            request.text,
+        )
+        return self._pb2.ObserveResponse()
+
+    async def MaybeAct(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
+        """Handles a remote MaybeAct request from the Rust server."""
+        agent = self._agents.get(request.agent_id)
+        if agent is None:
+            await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
+        result = await agent.maybe_act(_available_actions(request))
+        if result is None:
+            return self._pb2.MaybeActResponse()
+        return self._pb2.MaybeActResponse(response=_response_to_proto(self._pb2, result))
+
     async def Act(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote Act request from the Rust server."""
         agent = self._agents.get(request.agent_id)
         if agent is None:
             await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
-        observation = _struct_to_dict(request.observation)
-        available_actions = (
-            [_struct_to_dict(action) for action in request.available_actions]
-            if request.available_actions_provided
-            else None
-        )
-        result = await agent.act(observation, available_actions)
-        return _result_to_response(self._pb2, result)
+        return _response_to_proto(self._pb2, await agent.act(_available_actions(request)))
 
     async def Shutdown(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote Shutdown request from the Rust server."""
@@ -168,24 +218,29 @@ def _dict_to_struct(value: dict[str, Any]) -> Struct:
     return struct
 
 
-def _result_to_response(pb2: Any, result: AgentResult) -> Any:
-    """Converts an AgentResult into the generated protobuf response type."""
-    if result.kind == "none":
-        return pb2.ActResponse(result_kind=pb2.AGENT_RESULT_KIND_NONE)
-    if result.kind == "message":
-        return pb2.ActResponse(
-            result_kind=pb2.AGENT_RESULT_KIND_MESSAGE,
-            message=result.message,
-        )
-    if result.kind == "action":
-        return pb2.ActResponse(
-            result_kind=pb2.AGENT_RESULT_KIND_ACTION,
-            action=_dict_to_struct(result.action or {}),
-        )
-    if result.kind == "action_with_message":
-        return pb2.ActResponse(
-            result_kind=pb2.AGENT_RESULT_KIND_ACTION_WITH_MESSAGE,
-            action=_dict_to_struct(result.action or {}),
-            message=result.message,
-        )
-    raise ValueError(f"unknown AgentResult kind: {result.kind}")
+def _available_actions(request: Any) -> Optional[list[dict[str, Any]]]:
+    """Converts optional protobuf action hints into plain Python dictionaries."""
+    if not request.available_actions_provided:
+        return None
+    return [_struct_to_dict(action) for action in request.available_actions]
+
+
+def _utterance_kind(pb2: Any, value: int) -> str:
+    """Converts a protobuf utterance kind into the Python string API."""
+    if value == pb2.UTTERANCE_KIND_SPOKEN:
+        return "spoken"
+    if value == pb2.UTTERANCE_KIND_AGENT:
+        return "agent"
+    return "typed"
+
+
+def _response_to_proto(pb2: Any, response: AgentResponse) -> Any:
+    """Converts an AgentResponse into the generated protobuf response type."""
+    if response.message is None and response.action is None:
+        raise ValueError("AgentResponse must include a message or action")
+    converted = pb2.AgentResponse()
+    if response.message is not None:
+        converted.message = response.message
+    if response.action is not None:
+        converted.action.CopyFrom(_dict_to_struct(response.action))
+    return converted

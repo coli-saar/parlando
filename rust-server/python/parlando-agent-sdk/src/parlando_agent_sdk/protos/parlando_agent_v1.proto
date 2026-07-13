@@ -1,12 +1,16 @@
 syntax = "proto3";
 
-package parlando.agent.v1;
+package parlando.agent.v2;
 
 import "google/protobuf/struct.proto";
 
 service AgentService {
   rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse);
-  rpc Act(ActRequest) returns (ActResponse);
+  rpc ObserveState(ObserveStateRequest) returns (ObserveResponse);
+  rpc ObserveAction(ObserveActionRequest) returns (ObserveResponse);
+  rpc ObserveMessage(ObserveMessageRequest) returns (ObserveResponse);
+  rpc MaybeAct(DecisionRequest) returns (MaybeActResponse);
+  rpc Act(DecisionRequest) returns (AgentResponse);
   rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
 }
 
@@ -23,26 +27,47 @@ message CreateAgentResponse {
   string agent_id = 1;
 }
 
-message ActRequest {
+message ObserveStateRequest {
   string agent_id = 1;
-  string role = 2;
-  google.protobuf.Struct observation = 3;
-  bool available_actions_provided = 4;
-  repeated google.protobuf.Struct available_actions = 5;
+  google.protobuf.Struct current_observation = 2;
 }
 
-enum AgentResultKind {
-  AGENT_RESULT_KIND_UNSPECIFIED = 0;
-  AGENT_RESULT_KIND_NONE = 1;
-  AGENT_RESULT_KIND_ACTION = 2;
-  AGENT_RESULT_KIND_MESSAGE = 3;
-  AGENT_RESULT_KIND_ACTION_WITH_MESSAGE = 4;
+message ObserveActionRequest {
+  string agent_id = 1;
+  string actor = 2;
+  google.protobuf.Struct action = 3;
+  google.protobuf.Struct resulting_observation = 4;
 }
 
-message ActResponse {
-  AgentResultKind result_kind = 1;
+enum UtteranceKind {
+  UTTERANCE_KIND_UNSPECIFIED = 0;
+  UTTERANCE_KIND_TYPED = 1;
+  UTTERANCE_KIND_SPOKEN = 2;
+  UTTERANCE_KIND_AGENT = 3;
+}
+
+message ObserveMessageRequest {
+  string agent_id = 1;
+  string speaker = 2;
+  UtteranceKind kind = 3;
+  string text = 4;
+}
+
+message ObserveResponse {}
+
+message DecisionRequest {
+  string agent_id = 1;
+  bool available_actions_provided = 2;
+  repeated google.protobuf.Struct available_actions = 3;
+}
+
+message AgentResponse {
+  optional string message = 1;
   optional google.protobuf.Struct action = 2;
-  string message = 3;
+}
+
+message MaybeActResponse {
+  optional AgentResponse response = 1;
 }
 
 message ShutdownRequest {

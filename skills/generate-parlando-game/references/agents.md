@@ -2,7 +2,7 @@
 
 Use this reference only when the generated project needs server-side agent support, a demo agent, or remote gRPC agents.
 
-Agents are first-class participants. They receive the same role-specific observation and optional available-action list that a human UI receives. Returned actions go through the normal server parsing, validation, persistence, and broadcast path.
+Agents are first-class participants. They observe role-specific state, accepted actions, and conversation messages. After each observation, the runtime asks whether the agent wants to respond. Returned actions go through the normal server parsing, validation, persistence, and broadcast path.
 
 Do not make game semantics or browser UI depend on whether a participant is human or agent-controlled. The game contract is role, observation, action, event, and summary. A browser instance offers controls for its one human participant and receives the other participant's accepted actions/events through Parlando, regardless of whether that peer is human or agent-controlled.
 
@@ -16,8 +16,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use parlando_server::{
-    AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResult, ExperimentConfig,
-    GameAgent,
+    AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResponse, ExperimentConfig,
+    GameAgent, PlayerRole,
 };
 
 pub fn factory_from_config(
@@ -33,7 +33,10 @@ pub struct DemoAgentFactory;
 
 impl AgentFactory<MyGameAdapter> for DemoAgentFactory {
     fn create(&self, context: AgentInitContext) -> Result<Box<dyn GameAgent<MyGameAdapter> + Send>> {
-        Ok(Box::new(DemoAgent { role: context.role }))
+        Ok(Box::new(DemoAgent {
+            role: context.role,
+            last_actor: None,
+        }))
     }
 
     fn participant_identity(&self) -> AgentParticipantIdentity {
@@ -47,36 +50,46 @@ impl AgentFactory<MyGameAdapter> for DemoAgentFactory {
 
 pub struct DemoAgent {
     role: String,
+    last_actor: Option<PlayerRole>,
 }
 
 #[async_trait]
 impl GameAgent<MyGameAdapter> for DemoAgent {
-    async fn act(
+    async fn observe_action(
         &mut self,
-        observation: GameObservation,
+        actor: PlayerRole,
+        _action: GameAction,
+        _resulting_observation: GameObservation,
+    ) -> Result<()> {
+        self.last_actor = Some(actor);
+        Ok(())
+    }
+
+    async fn maybe_act(
+        &mut self,
         available_actions: Option<Vec<GameAction>>,
-    ) -> Result<AgentResult<GameAction>> {
+    ) -> Result<Option<AgentResponse<GameAction>>> {
         if let Some(actions) = available_actions {
             if let Some(action) = actions.into_iter().next() {
-                return Ok(AgentResult::Action(action));
+                return Ok(Some(AgentResponse {
+                    message: None,
+                    action: Some(action),
+                }));
             }
         }
-        let _ = observation;
-        Ok(AgentResult::None)
+        Ok(None)
     }
 }
 ```
 
-Create one mutable agent instance per agent participant. If the policy needs memory, store it in the agent struct. Do not assume the server passes room ids, participant-session ids, full conversation history, invalid-action counts, or completion flags into `act`.
+Create one mutable agent instance per agent participant. If the policy needs memory, store it in the agent struct. Do not assume the server passes room ids, participant-session ids, full conversation history, invalid-action counts, or completion flags into callbacks.
 
-`AgentResult` can be:
+`AgentResponse` has optional fields:
 
-- `AgentResult::None`
-- `AgentResult::Message(String)`
-- `AgentResult::Action(action)`
-- `AgentResult::ActionWithMessage { action, message }`
+- `message: Option<String>`
+- `action: Option<Action>`
 
-When TTS is enabled in config, participant-facing agent speech must flow through `AgentResult::Message` or `AgentResult::ActionWithMessage`. The server persists the returned text as an agent-origin conversation message, then synthesizes and publishes it through the configured TTS provider and audio publisher. Do not implement separate browser TTS, Web Speech API calls, or custom game-level audio publication for agent messages.
+When TTS is enabled in config, participant-facing agent speech must flow through `AgentResponse.message`. The server persists the returned text as an agent-origin conversation message, then synthesizes and publishes it through the configured TTS provider and audio publisher. Do not implement separate browser TTS, Web Speech API calls, or custom game-level audio publication for agent messages.
 
 ## Agent Config
 
@@ -166,7 +179,7 @@ fn default_remote_agent_name() -> String {
 }
 
 fn default_remote_agent_protocol() -> String {
-    "parlando-agent-v1".to_string()
+    "parlando-agent-v2".to_string()
 }
 ```
 
@@ -183,16 +196,16 @@ agents:
       endpoint: http://127.0.0.1:50051
       agent_name: first-action-agent
       agent_version: dev
-      protocol_version: parlando-agent-v1
+      protocol_version: parlando-agent-v2
 ```
 
-The gRPC request contains the controlled role, seed/config, role-specific observation, and optional role-specific available actions. The gRPC response may be none, message, action, or action-with-message. Returned actions must be JSON-compatible dictionaries matching the game action schema.
+The gRPC create request contains the controlled role and seed/config. Observation RPCs carry state snapshots, accepted actions, or messages. Decision RPCs carry optional role-specific available actions. Decision responses contain optional `message` and optional JSON `action`; at least one must be present when a response is returned.
 
 For hosted deployment, make sure the Rust service can reach the gRPC endpoint. Common options are a second service on the same private network, an agent process in the same container, or a protected separate host.
 
 ## Python gRPC SDK Agent
 
-When the user asks for a Python agent, generate a small Python package or script that uses `parlando_agent_sdk`. The game-specific code only implements `GameAgent.act(observation, available_actions)` and starts `serve_agent(...)`.
+When the user asks for a Python agent, generate a small Python package or script that uses `parlando_agent_sdk`. The game-specific code implements observation callbacks only when it needs memory, implements `GameAgent.maybe_act(available_actions)`, and starts `serve_agent(...)`.
 
 Install/setup notes for the generated README:
 
@@ -212,18 +225,16 @@ Minimal Python agent:
 ```python
 from typing import Any
 
-from parlando_agent_sdk import AgentResult, GameAgent, serve_agent
+from parlando_agent_sdk import AgentResponse, GameAgent, serve_agent
 
 
 class FirstAvailableActionAgent(GameAgent):
-    async def act(
-        self,
-        observation: dict[str, Any],
-        available_actions: list[dict[str, Any]] | None,
-    ) -> AgentResult:
+    async def maybe_act(
+        self, available_actions: list[dict[str, Any]] | None
+    ) -> AgentResponse | None:
         if available_actions:
-            return AgentResult.action(available_actions[0])
-        return AgentResult.none()
+            return AgentResponse.action(available_actions[0])
+        return None
 
 
 if __name__ == "__main__":
@@ -235,7 +246,7 @@ For a stateful Python policy, use a factory function so each Parlando agent part
 ```python
 from typing import Any
 
-from parlando_agent_sdk import AgentResult, GameAgent, serve_agent
+from parlando_agent_sdk import AgentResponse, GameAgent, serve_agent
 
 
 class ScriptedAgent(GameAgent):
@@ -245,16 +256,17 @@ class ScriptedAgent(GameAgent):
         self.config = config
         self.turn = 0
 
-    async def act(
-        self,
-        observation: dict[str, Any],
-        available_actions: list[dict[str, Any]] | None,
-    ) -> AgentResult:
+    async def observe_message(self, speaker: str, kind: str, text: str) -> None:
+        self.last_message = (speaker, kind, text)
+
+    async def maybe_act(
+        self, available_actions: list[dict[str, Any]] | None
+    ) -> AgentResponse | None:
         self.turn += 1
         if available_actions:
             action = available_actions[0]
-            return AgentResult.action_with_message(action, "I will take the first available action.")
-        return AgentResult.message("I am waiting.")
+            return AgentResponse.action_with_message(action, "I will take the first available action.")
+        return AgentResponse.say("I am waiting.")
 
     async def close(self) -> None:
         return None
@@ -272,12 +284,12 @@ if __name__ == "__main__":
     serve_agent(create_agent, host="127.0.0.1", port=50051)
 ```
 
-Python `AgentResult` options:
+Python response helpers:
 
-- `AgentResult.none()`
-- `AgentResult.message("text")`
-- `AgentResult.action({...})`
-- `AgentResult.action_with_message({...}, "text")`
+- return `None` from `maybe_act` to skip responding.
+- `AgentResponse.say("text")`
+- `AgentResponse.action({...})`
+- `AgentResponse.action_with_message({...}, "text")`
 
 Returned actions must exactly match the game action JSON schema defined in the generated TypeScript/Rust contract. If the game uses server-provided `available_actions`, prefer choosing from that list for simple agents.
 
@@ -294,7 +306,7 @@ agents:
       endpoint: http://127.0.0.1:50051
       agent_name: first-available-action-agent
       agent_version: dev
-      protocol_version: parlando-agent-v1
+      protocol_version: parlando-agent-v2
 ```
 
 Tell the user which processes to run:

@@ -86,16 +86,16 @@ The tradeoff is deliberate. If your study is a conventional survey, reaction-tim
 Agents are important but not required. A Parlando study can be human-vs-human, human-vs-agent, or both across different configurations. Python agents can connect without writing gRPC code:
 
 ```python
-from parlando_agent_sdk import AgentResult, GameAgent, serve_agent
+from parlando_agent_sdk import AgentResponse, GameAgent, serve_agent
 
 class FirstAvailableAction(GameAgent):
-    async def act(self, observation, available_actions):
+    async def maybe_act(self, available_actions):
         if available_actions:
-            return AgentResult.action_with_message(
+            return AgentResponse.action_with_message(
                 available_actions[0],
                 "I will try the first available move.",
             )
-        return AgentResult.none()
+        return None
 
 serve_agent(FirstAvailableAction, host="127.0.0.1", port=50051)
 ```
