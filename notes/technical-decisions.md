@@ -89,3 +89,33 @@ Decision: Updated the game-generation skill and server reference to require ever
 Tradeoffs: This adds a tiny build script to all generated server crates, including projects that may not immediately enable voice. That is preferable to making the fix conditional, because voice/LiveKit can be enabled later by config and the flag must be present in the final binary crate.
 
 Follow-up risks: If LiveKit/WebRTC packaging changes so `-ObjC` is no longer needed, the guidance can be relaxed. Until then, generated games should keep the final-link build script rather than relying on README instructions or environment-specific flags.
+
+## 2026-07-13: Generated games make completion explicit
+
+Context: Parlando marks sessions complete through the game adapter, but the skill only listed `is_complete` and `completion_summary` without explaining that success and failure both need terminal semantics and durable summary data.
+
+Decision: Updated the game-generation skill and references to require explicit terminal state, `is_complete` returning true for every terminal outcome, and `completion_summary` including success/failure or another analysis-friendly outcome. The browser guidance now treats `session.completed` as a server-driven terminal state.
+
+Tradeoffs: This pushes game authors to model endings up front, which takes a little more design work, but avoids generated games that never notify Parlando of completion or only record successful endings.
+
+Follow-up risks: If Parlando later adds richer built-in completion statuses, update the skill to map game outcomes onto those statuses instead of relying solely on summary fields.
+
+## 2026-07-13: Generated agents respond to relevant participant messages
+
+Context: Human-vs-agent games can involve typed chat or speech transcripts, but a generated agent that only reacts to game actions ignores the main participant interaction channel. LLM-backed behavior may be appropriate for some dialogue-heavy games, but credentials must remain server-side.
+
+Decision: Updated the game-generation skill and agent reference to require `observe_message` handling when participant messages matter, and to ask whether the user can provide LLM provider credentials when scripted behavior is too brittle for the requested agent. The guidance keeps LLM credentials in private server/agent configuration, never in browser code.
+
+Tradeoffs: This adds another design question for agent games, but prevents superficially working agents that fail conversational tasks.
+
+Follow-up risks: If Parlando adds richer conversation history or memory APIs, update the guidance so generated agents use those instead of local bounded memory.
+
+## 2026-07-13: Generated mic meters include visible transform targets
+
+Context: The SDK mic meter updates a child element with `transform: scaleX(...)`. If generated CSS omits block layout, full dimensions, or a visible background on that child, audio levels update but the meter appears frozen.
+
+Decision: Updated the browser styling guidance to require `.mic-meter-track span` or equivalent CSS with `display: block`, `width: 100%`, `height: 100%`, `transform-origin: left center`, and a visible background.
+
+Tradeoffs: This is a small CSS constraint on generated themes, but it preserves freedom over colors, dimensions, and surrounding layout while preventing an easy-to-miss visual bug.
+
+Follow-up risks: If the SDK changes the mic meter DOM, update the selector and required styling guidance together.

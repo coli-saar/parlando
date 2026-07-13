@@ -42,6 +42,7 @@ Capture:
 - summary/export fields needed for analysis
 - local-only, Docker, Render, or other deployment target
 - whether the generated project should include server-side agent support
+- if an agent should understand/respond to text chat or speech transcripts, and whether the user can provide LLM provider credentials for an LLM-backed agent when that is appropriate
 - text chat, voice, transcription, and TTS requirements
 
 ## Game Runtime Assumptions
@@ -116,6 +117,8 @@ Implement:
 - `is_complete`
 - `completion_summary`
 
+Every generated game must include explicit completion semantics. Model terminal state in `State` or derived game logic, including whether the terminal outcome is success, failure, timeout, or another game-specific result. `is_complete` is the only signal Parlando needs to mark the room/session complete; it must return true once any terminal success or failure condition has been reached. `completion_summary` must return a serde-serializable `Summary` that includes the terminal outcome and enough durable fields for analysis/export.
+
 Use serde-serializable Rust structs/enums. Prefer:
 
 ```rust
@@ -158,6 +161,8 @@ Returned agent actions must be normal typed `Action` values and still pass game 
 
 Do not fork game semantics or browser UI around human-vs-human versus human-vs-agent. Agents and humans are both participants that submit the same typed actions and receive the same role-specific observations.
 
+If the game design makes chat relevant, generated agents must observe and respond to participant text messages and speech transcripts. Implement `observe_message` to store the latest relevant utterance with its speaker and modality, and make `maybe_act` use that memory when deciding whether to return an `AgentResponse` with a message, action, or both. Do not generate an agent that only reacts to game actions when the participant is expected to instruct, negotiate with, or ask questions of the agent. If a scripted policy is too brittle for the requested dialogue behavior, ask whether the user can provide LLM provider credentials and generate a remote or server-side LLM-backed agent path that keeps credentials out of browser code.
+
 When TTS is enabled in config, agents should vocalize participant-facing utterances by returning an `AgentResponse` with `message: Some(text)`. The server records the text as an agent conversation message and, when configured, routes it through the TTS provider and `LiveKitAgentAudioPublisher`. Do not add frontend TTS calls, browser speech synthesis, or game-specific audio publishing for agent messages.
 
 ## TypeScript Contract
@@ -173,6 +178,8 @@ Generate:
 Use `@coli-saar/parlando-client/react` for the generated app entrypoint. Wrap the game in `ParlandoStartupGate` and render the active game from the `ActiveParlandoSession` passed to `renderGame`; do not generate custom startup lifecycle code. Game-specific rendering, controls, task text, maps, boards, logs, action creation, and derived UI state belong in the generated app.
 
 The generated app should treat `ActiveParlandoSession` as the source of participant capabilities. It may render chat and voice controls from session state, but it must not infer capabilities from the game type, deployment mode, or whether the peer is expected to be a human or an agent.
+
+When `session.completed` is true, the active game UI should render a terminal state instead of normal action controls. Use the latest observation/events plus any game-specific completion fields exposed in observation to show success/failure to the participant. The browser does not call a separate "complete game" API; completion is driven by the server adapter's `is_complete` and broadcast back through the SDK.
 
 If transcription/STT is enabled by `session.publicConfig.transcription?.enabled`, the active game screen should show a compact microphone-level widget with an ASR status pill. Prefer the predefined React exports from `@coli-saar/parlando-client/react`: compose `MicLevelMeter` with `session.voicePreflight.micLevel` / `session.voicePreflight.micProbeActive` and `TranscriptionStatusChip` with `session.voiceStatus`. Use `TranscriptionProgress` when a fuller progress display is useful. Style the exported widgets in `web/src/styles.css`.
 
@@ -190,6 +197,8 @@ In `web/src/styles.css`, include polished, responsive styles for the startup cla
 - `transcription-progress` and `transcription-progress-track`
 
 Keep the startup screen visually consistent with the generated game's theme, but preserve the SDK's class names and accessibility attributes. Startup controls must be readable and usable on mobile and desktop, with stable spacing, clear disabled states, visible focus states, and no overlapping text.
+
+When styling `MicLevelMeter`, ensure the scaled bar is visible. The SDK renders a child element inside `.mic-meter-track` and updates it with `transform: scaleX(...)`; generated CSS must give that child `display: block`, `width: 100%`, `height: 100%`, `transform-origin: left center`, and a visible background color. Without those dimensions, the mic meter can stay invisible even while audio levels update.
 
 ## Config Files
 
@@ -234,9 +243,12 @@ After generating code, run the strongest feasible checks:
 - `cargo fmt`
 - `cargo test` or package-specific Rust tests
 - confirm `server/Cargo.toml` has `build = "build.rs"` and `server/build.rs` emits `cargo:rustc-link-arg-bins=-ObjC` for macOS final binaries
+- confirm the server has tests for every terminal success and failure path, including `is_complete`, `completion_summary`, and the serialized summary shape expected by the client/export
+- if chat with an agent is relevant, confirm the agent observes messages/transcripts and has tests or a smoke path showing it responds to participant utterances
 - `npm install` when dependencies are available
 - `npm run build`
 - `npm test`
+- inspect the CSS for `.mic-meter-track span` or equivalent and confirm the meter bar has `display: block`, `width: 100%`, `height: 100%`, and a visible background so transform-based level updates render
 - start the local server if practical and check `GET /health`
 
 If network access or package installation is blocked, still run local formatting/type checks that do not need the network and clearly say what could not be verified.
@@ -253,4 +265,6 @@ End with:
 - agent run commands when generating a Rust or Python gRPC agent
 - confirmation that the browser client delegates startup to `ParlandoStartupGate` from `@coli-saar/parlando-client/react`
 - confirmation that the generated Rust server crate includes the macOS final-link `-ObjC` build script
+- confirmation that game completion is implemented through `is_complete`/`completion_summary`, including how success and failure are represented
+- confirmation that agent text-message handling is implemented when chat or speech interaction with an agent is part of the game
 - assumptions made about the game design or package layout

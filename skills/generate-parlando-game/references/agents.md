@@ -84,6 +84,10 @@ impl GameAgent<MyGameAdapter> for DemoAgent {
 
 Create one mutable agent instance per agent participant. If the policy needs memory, store it in the agent struct. Do not assume the server passes room ids, participant-session ids, full conversation history, invalid-action counts, or completion flags into callbacks.
 
+If participant messages are relevant to the game, the agent must implement `observe_message` and use that memory in `maybe_act`. Parlando calls `observe_message` for typed messages and voice transcripts with a `speaker`, an `AgentUtteranceKind`, and the text. Store the latest relevant utterance or a bounded conversation summary in the agent instance, then return an `AgentResponse` when the agent should answer, clarify, negotiate, or take an action because of that message.
+
+Do not generate a human-vs-agent game where the participant is expected to talk to the agent but the agent ignores `observe_message`. A purely deterministic demo agent may be enough for smoke tests, but if natural-language understanding is central to the game, ask the user whether they can provide LLM provider credentials. Put those credentials only in server-side config, a private overlay, or the remote agent process environment; never put them in browser code or checked-in YAML.
+
 `AgentResponse` has optional fields:
 
 - `message: Option<String>`
@@ -203,9 +207,13 @@ The gRPC create request contains the controlled role and seed/config. Observatio
 
 For hosted deployment, make sure the Rust service can reach the gRPC endpoint. Common options are a second service on the same private network, an agent process in the same container, or a protected separate host.
 
+If the remote agent uses an LLM, generate explicit server/agent-side environment variables for the provider credentials and model name, document them in the private config or deployment secret instructions, and keep prompts free of game secrets that participants should not see. The Rust game server should still validate every returned action.
+
 ## Python gRPC SDK Agent
 
 When the user asks for a Python agent, generate a small Python package or script that uses `parlando_agent_sdk`. The game-specific code implements observation callbacks only when it needs memory, implements `GameAgent.maybe_act(available_actions)`, and starts `serve_agent(...)`.
+
+For chat-relevant agents, implement `observe_message(self, speaker, kind, text)` in the generated Python agent and store the utterance before `maybe_act` decides. Return `AgentResponse.say(...)` for message-only replies and `AgentResponse.action_with_message(...)` when the reply should accompany a game action.
 
 Install/setup notes for the generated README:
 

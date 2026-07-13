@@ -83,7 +83,7 @@ Define serde-serializable associated types:
 - `Action`: tagged enum or struct submitted by humans and agents.
 - `Observation`: role-specific state sent to a participant.
 - `Event`: role-visible log entries emitted after accepted actions.
-- `Summary`: final completion/export summary.
+- `Summary`: final completion/export summary, including success/failure or another explicit terminal outcome.
 
 Recommended action pattern:
 
@@ -111,6 +111,19 @@ Treat `available_actions` as optional hints:
 - Return `Some(actions)` for role-specific action choices.
 
 Always keep `validate_action` authoritative. Browsers and agents cannot bypass server validation.
+
+## Completion Contract
+
+Games signal completion to Parlando through the adapter, not through a separate API call. After each accepted human action and after agent actions, `parlando-server` evaluates `adapter.is_complete(&state)`. When it returns true, Parlando:
+
+- marks the in-memory room status as `completed`.
+- calls `adapter.completion_summary(&state)`.
+- persists a `session_completed` event and stores the serialized summary on the session record.
+- broadcasts a WebSocket `completed` message with the serialized `summary` to connected clients.
+
+Use `State` to record enough terminal information to distinguish game-specific outcomes such as success, failure, timeout, invalid final answer, or abandoned objective. `is_complete` should return true for every terminal outcome, not only successful outcomes. `completion_summary` should serialize the outcome with analysis-friendly fields, for example `outcome: "success" | "failure"`, `reason`, score, move count, final choices, or other study-specific measures.
+
+Do not rely on React state, hidden client-only flags, final-page buttons, room disconnects, or export post-processing to complete a game. The server adapter is authoritative for completion.
 
 ## Adapter Skeleton
 
@@ -242,7 +255,8 @@ Add pure Rust tests for:
 - initial state invariants.
 - legal and illegal actions.
 - role-specific observations and privacy filtering.
-- completion and summary.
+- every success and failure completion path, including `is_complete`.
+- `completion_summary` serialization, including terminal outcome fields and client/export JSON naming.
 - `available_actions` for both roles when used.
 
-When feasible, add a server smoke test that creates a room, connects sockets, submits an action, and checks the resulting observation or export.
+When feasible, add a server smoke test that creates a room, connects sockets, submits a terminal action, and checks the resulting WebSocket `completed` message and exported `session_completed` summary.

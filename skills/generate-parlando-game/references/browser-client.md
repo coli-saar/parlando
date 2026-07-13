@@ -105,6 +105,12 @@ Use these session fields in game UI as needed:
 
 Treat these fields as the active capability surface. Do not infer chat or voice availability from the game slug, deployment mode, participant mix, or local assumptions about whether an agent is present.
 
+## Completion UI
+
+`session.completed` becomes true after the server adapter's `is_complete` returns true and Parlando broadcasts the `completed` message. The browser must not implement a separate completion API or decide final success/failure from client-only state.
+
+Generated clients should render a terminal view when `session.completed` is true: hide or disable normal action controls, show the participant-facing result from observation/events, and keep chat/leave/status controls only when useful. If participants need to see success versus failure, include that terminal outcome in the role-specific observation or final event text; the durable analysis/export outcome belongs in the server `completion_summary`.
+
 ## Voice And Transcription Widgets
 
 For active game screens that expose voice or STT state, prefer the reusable exports from `@coli-saar/parlando-client/react`:
@@ -141,6 +147,24 @@ function VoiceStrip({ session }: { session: GameSession }) {
 ```
 
 Use `TranscriptionProgress` from the same package when the UI needs a larger ASR progress display. Generated clients own the CSS for `voice-strip`, `mic-meter`, `mic-meter-track`, and `transcription-chip`, so style them in `web/src/styles.css`.
+
+The mic meter relies on a transform-scaled child inside `.mic-meter-track`. Include CSS equivalent to:
+
+```css
+.mic-meter-track {
+  overflow: hidden;
+}
+
+.mic-meter-track span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-origin: left center;
+  background: currentColor;
+}
+```
+
+The exact colors and dimensions should match the game theme, but the child span must have block layout, full dimensions, and a visible background. Otherwise `transform: scaleX(...)` updates can run while the meter appears frozen.
 
 When TTS is enabled, do not synthesize agent speech in the browser. Agent utterances should arrive as normal agent-origin conversation messages and, if the server is configured with TTS and audio publishing, the server will vocalize them through the voice transport.
 
