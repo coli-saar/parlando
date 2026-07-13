@@ -91,6 +91,7 @@ export function ParlandoStartupGate<TState, TObservation = TState, TAction = unk
   const [selectedAudioInputId, setSelectedAudioInputId] = useState("");
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>(initialVoiceStatus);
   const [voicePreflight, setVoicePreflight] = useState<VoicePreflight>(initialVoicePreflight);
+  const sessionRef = useRef<RoomSession<TState, TObservation, TAction, TEvent> | null>(null);
   const consentReady = requiredConsentsAccepted(publicConfig, consentDecisions);
   const voiceEnabled = isVoiceEnabled(publicConfig);
   const canEnter = Boolean(publicConfig && consentReady && (!voiceEnabled || voicePreflight.ready));
@@ -104,14 +105,19 @@ export function ParlandoStartupGate<TState, TObservation = TState, TAction = unk
     setSelectedAudioInputId((current) => current || inputs.find((device) => device.deviceId === "default")?.deviceId || inputs[0]?.deviceId || "");
   }, []);
 
-  const leave = useCallback(() => {
+  const endCurrentSession = useCallback(() => {
     void audioController.disconnect(true);
+    closeSessionSocket(sessionRef.current);
+  }, [audioController]);
+
+  const leave = useCallback(() => {
+    endCurrentSession();
     setSession((current) => {
-      current?.socket.close();
+      closeSessionSocket(current);
       return null;
     });
     setError("");
-  }, [audioController]);
+  }, [endCurrentSession]);
 
   const connectRoom = useCallback(
     (room: RoomResponse<TState, TObservation, TAction, TEvent>) => {
@@ -299,9 +305,23 @@ export function ParlandoStartupGate<TState, TObservation = TState, TAction = unk
     setVoicePreflight(snapshot.voicePreflight);
   }), [audioController]);
 
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
   useEffect(() => () => {
-    void audioController.disconnect(true);
-  }, [audioController]);
+    endCurrentSession();
+  }, [endCurrentSession]);
+
+  useEffect(() => {
+    const onBrowserTeardown = () => endCurrentSession();
+    window.addEventListener("pagehide", onBrowserTeardown);
+    window.addEventListener("beforeunload", onBrowserTeardown);
+    return () => {
+      window.removeEventListener("pagehide", onBrowserTeardown);
+      window.removeEventListener("beforeunload", onBrowserTeardown);
+    };
+  }, [endCurrentSession]);
 
   useEffect(() => {
     if (!session || !voiceEnabled || !voicePreflight.ready || voiceStatus.connected || voiceStatus.connecting) return;
@@ -606,6 +626,13 @@ export function voiceStatusUpdate(voice: { audioReady?: boolean; transcriptionRe
 function appendConversation(current: ConversationMessage[], message: ConversationMessage): ConversationMessage[] {
   if (current.some((candidate) => candidate.id === message.id)) return current;
   return [...current, message].slice(-50);
+}
+
+// Closes the game WebSocket so the server records the same participant_disconnected event as the Leave action.
+function closeSessionSocket(session: { socket: WebSocket } | null): void {
+  if (session?.socket.readyState === WebSocket.OPEN || session?.socket.readyState === WebSocket.CONNECTING) {
+    session.socket.close();
+  }
 }
 
 function selectedAudioInputLabel(audioInputs: MediaDeviceInfo[], selectedAudioInputId: string): string {
