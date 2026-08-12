@@ -179,7 +179,7 @@ Use `@coli-saar/parlando-client/react` for the generated app entrypoint. Wrap th
 
 The generated app should treat `ActiveParlandoSession` as the source of participant capabilities. It may render chat and voice controls from session state, but it must not infer capabilities from the game type, deployment mode, or whether the peer is expected to be a human or an agent.
 
-When `session.completed` is true, the active game UI should render a terminal state instead of normal action controls. Use the latest observation/events plus any game-specific completion fields exposed in observation to show success/failure to the participant. The browser does not call a separate "complete game" API; completion is driven by the server adapter's `is_complete` and broadcast back through the SDK.
+When `session.completed` is true, the active game UI must render a final/terminal screen instead of normal action controls or game chat input. Use `session.completionSummary` for durable outcome and score fields, and combine it with the latest observation/events for participant-facing detail. The browser does not call a separate "complete game" API; completion is driven by the server adapter's `is_complete` and broadcast back through the SDK.
 
 If transcription/STT is enabled by `session.publicConfig.transcription?.enabled`, the active game screen should show a compact microphone-level widget with an ASR status pill. Prefer the predefined React exports from `@coli-saar/parlando-client/react`: compose `MicLevelMeter` with `session.voicePreflight.micLevel` / `session.voicePreflight.micProbeActive` and `TranscriptionStatusChip` with `session.voiceStatus`. Use `TranscriptionProgress` when a fuller progress display is useful. Style the exported widgets in `web/src/styles.css`.
 
@@ -244,6 +244,7 @@ After generating code, run the strongest feasible checks:
 - `cargo test` or package-specific Rust tests
 - confirm `server/Cargo.toml` has `build = "build.rs"` and `server/build.rs` emits `cargo:rustc-link-arg-bins=-ObjC` for macOS final binaries
 - confirm the server has tests for every terminal success and failure path, including `is_complete`, `completion_summary`, and the serialized summary shape expected by the client/export
+- confirm the browser renders a final screen when `session.completed` is true, using `session.completionSummary` for outcome/score fields and hiding or disabling normal action and game chat input
 - if chat with an agent is relevant, confirm the agent observes messages/transcripts and has tests or a smoke path showing it responds to participant utterances
 - `npm install` when dependencies are available
 - `npm run build`
@@ -266,5 +267,6 @@ End with:
 - confirmation that the browser client delegates startup to `ParlandoStartupGate` from `@coli-saar/parlando-client/react`
 - confirmation that the generated Rust server crate includes the macOS final-link `-ObjC` build script
 - confirmation that game completion is implemented through `is_complete`/`completion_summary`, including how success and failure are represented
+- confirmation that the completed game UI renders a final screen from `session.completionSummary` and does not leave normal game controls active
 - confirmation that agent text-message handling is implemented when chat or speech interaction with an agent is part of the game
 - assumptions made about the game design or package layout

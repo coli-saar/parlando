@@ -24,7 +24,13 @@ export interface ParlandoStartupLabels {
   enterWaitingRoomLabel?: string;
 }
 
-export interface ActiveParlandoSession<TState, TObservation, TAction, TEvent> {
+export interface ActiveParlandoSession<
+  TState,
+  TObservation,
+  TAction,
+  TEvent,
+  TSummary = Record<string, unknown>
+> {
   roomId: string;
   participantSessionId: string;
   role: string;
@@ -39,21 +45,28 @@ export interface ActiveParlandoSession<TState, TObservation, TAction, TEvent> {
   publicConfig: PublicConfigResponse;
   connected: boolean;
   completed: boolean;
+  completionSummary: TSummary | null;
   sendAction(action: TAction): void;
   sendChatMessage(text: string): void;
   toggleVoice(): Promise<void>;
   leave(): void;
 }
 
-export interface ParlandoStartupGateProps<TState, TObservation, TAction, TEvent> {
+export interface ParlandoStartupGateProps<
+  TState,
+  TObservation,
+  TAction,
+  TEvent,
+  TSummary = Record<string, unknown>
+> {
   labels: ParlandoStartupLabels;
-  renderGame(session: ActiveParlandoSession<TState, TObservation, TAction, TEvent>): ReactNode;
+  renderGame(session: ActiveParlandoSession<TState, TObservation, TAction, TEvent, TSummary>): ReactNode;
   apiClient?: ExperimentApiClient;
   createAudioController?: () => AudioSessionController;
   initialDisplayName?: string;
 }
 
-interface RoomSession<TState, TObservation, TAction, TEvent> {
+interface RoomSession<TState, TObservation, TAction, TEvent, TSummary = Record<string, unknown>> {
   roomId: string;
   participantSessionId: string;
   role: string;
@@ -65,17 +78,62 @@ interface RoomSession<TState, TObservation, TAction, TEvent> {
   connected: boolean;
   active: boolean;
   completed: boolean;
+  completionSummary: TSummary | null;
   presence: PresenceState;
   conversation: ConversationMessage[];
 }
 
-export function ParlandoStartupGate<TState, TObservation = TState, TAction = unknown, TEvent = unknown>({
+export interface GameInputSession {
+  socket: WebSocket;
+  completed: boolean;
+}
+
+/** Returns the state update applied when the server announces game completion. */
+export function completedSessionPatch<TSummary>(summary: TSummary | undefined): {
+  completed: true;
+  completionSummary: TSummary | null;
+} {
+  return { completed: true, completionSummary: summary ?? null };
+}
+
+/** Returns whether participant game-channel messages should still be sent. */
+export function canSendGameMessage(session: { completed: boolean } | null): boolean {
+  return Boolean(session && !session.completed);
+}
+
+/** Sends an action only while the reusable session is still accepting game input. */
+export function sendActionIfGameActive<TAction>(
+  apiClient: Pick<ExperimentApiClient, "sendAction">,
+  session: GameInputSession | null,
+  action: TAction
+): void {
+  if (!session || session.completed) return;
+  apiClient.sendAction(session.socket, action);
+}
+
+/** Sends a chat message only while the reusable session is still accepting game input. */
+export function sendChatMessageIfGameActive(
+  apiClient: Pick<ExperimentApiClient, "sendChatMessage">,
+  session: GameInputSession | null,
+  text: string
+): void {
+  if (!session || session.completed) return;
+  apiClient.sendChatMessage(session.socket, text);
+}
+
+export function ParlandoStartupGate<
+  TState,
+  TObservation = TState,
+  TAction = unknown,
+  TEvent = unknown,
+  TSummary = Record<string, unknown>
+>({
   labels,
   renderGame,
   apiClient: providedApiClient,
   createAudioController = createDefaultAudioController,
   initialDisplayName = ""
-}: ParlandoStartupGateProps<TState, TObservation, TAction, TEvent>) {
+}: ParlandoStartupGateProps<TState, TObservation, TAction, TEvent, TSummary>) {
   const apiClient = useMemo(() => providedApiClient ?? new ExperimentApiClient(), [providedApiClient]);
   const audioControllerRef = useRef<AudioSessionController | null>(null);
   if (!audioControllerRef.current) audioControllerRef.current = createAudioController();
@@ -85,13 +143,13 @@ export function ParlandoStartupGate<TState, TObservation = TState, TAction = unk
   const [configLoading, setConfigLoading] = useState(true);
   const [displayName, setDisplayName] = useState(initialDisplayName);
   const [consentDecisions, setConsentDecisions] = useState<Record<string, boolean>>({});
-  const [session, setSession] = useState<RoomSession<TState, TObservation, TAction, TEvent> | null>(null);
+  const [session, setSession] = useState<RoomSession<TState, TObservation, TAction, TEvent, TSummary> | null>(null);
   const [error, setError] = useState("");
   const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
   const [selectedAudioInputId, setSelectedAudioInputId] = useState("");
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>(initialVoiceStatus);
   const [voicePreflight, setVoicePreflight] = useState<VoicePreflight>(initialVoicePreflight);
-  const sessionRef = useRef<RoomSession<TState, TObservation, TAction, TEvent> | null>(null);
+  const sessionRef = useRef<RoomSession<TState, TObservation, TAction, TEvent, TSummary> | null>(null);
   const consentReady = requiredConsentsAccepted(publicConfig, consentDecisions);
   const voiceEnabled = isVoiceEnabled(publicConfig);
   const canEnter = Boolean(publicConfig && consentReady && (!voiceEnabled || voicePreflight.ready));
@@ -134,6 +192,7 @@ export function ParlandoStartupGate<TState, TObservation = TState, TAction = unk
         connected: false,
         active: false,
         completed: false,
+        completionSummary: null,
         presence: normalizePresence(room.presence),
         conversation: room.conversation ?? []
       });
@@ -143,7 +202,7 @@ export function ParlandoStartupGate<TState, TObservation = TState, TAction = unk
         setSession((current) => (current?.socket === socket ? { ...current, connected: true } : current));
       });
       socket.addEventListener("message", (event) => {
-        const message = JSON.parse(event.data) as ServerMessage<TState, TObservation, TAction, TEvent>;
+        const message = JSON.parse(event.data) as ServerMessage<TState, TObservation, TAction, TEvent, TSummary>;
         if (message.type === "roleAssigned") {
           setSession((current) =>
             current?.socket === socket
@@ -198,7 +257,9 @@ export function ParlandoStartupGate<TState, TObservation = TState, TAction = unk
           return;
         }
         if (message.type === "completed") {
-          setSession((current) => (current?.socket === socket ? { ...current, completed: true } : current));
+          setSession((current) =>
+            current?.socket === socket ? { ...current, ...completedSessionPatch(message.summary) } : current
+          );
           return;
         }
         if (message.type === "error") {
@@ -265,7 +326,10 @@ export function ParlandoStartupGate<TState, TObservation = TState, TAction = unk
         selectedAudioInputLabel: selectedAudioInput?.label || null,
         getAudioSession: () => apiClient.getAudioSession(session.roomId, session.participantSessionId),
         getLiveKitToken: () => apiClient.getLiveKitToken(session.roomId, session.participantSessionId),
-        postTranscriptSegment: (segment) => apiClient.postTranscriptSegment(session.roomId, segment),
+        postTranscriptSegment: (segment) => {
+          if (sessionRef.current?.completed) return Promise.resolve(null);
+          return apiClient.postTranscriptSegment(session.roomId, segment);
+        },
         logVoice,
         onVoiceStatus: (status) => audioController.updateVoiceStatus(status)
       },
@@ -333,7 +397,7 @@ export function ParlandoStartupGate<TState, TObservation = TState, TAction = unk
   }
 
   if (session?.active) {
-    const activeSession: ActiveParlandoSession<TState, TObservation, TAction, TEvent> = {
+    const activeSession: ActiveParlandoSession<TState, TObservation, TAction, TEvent, TSummary> = {
       roomId: session.roomId,
       participantSessionId: session.participantSessionId,
       role: session.role,
@@ -348,8 +412,9 @@ export function ParlandoStartupGate<TState, TObservation = TState, TAction = unk
       publicConfig,
       connected: session.connected,
       completed: session.completed,
-      sendAction: (action) => apiClient.sendAction(session.socket, action),
-      sendChatMessage: (text) => apiClient.sendChatMessage(session.socket, text),
+      completionSummary: session.completionSummary,
+      sendAction: (action) => sendActionIfGameActive(apiClient, session, action),
+      sendChatMessage: (text) => sendChatMessageIfGameActive(apiClient, session, text),
       toggleVoice,
       leave
     };

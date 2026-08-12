@@ -285,15 +285,15 @@ impl AgentService for MockRemoteAgentService {
         &self,
         request: TonicRequest<DecisionRequest>,
     ) -> std::result::Result<TonicResponse<MaybeActResponse>, Status> {
-        self.state
-            .maybe_act_requests
-            .lock()
-            .unwrap()
-            .push(request.into_inner());
+        let decision_count = {
+            let mut requests = self.state.maybe_act_requests.lock().unwrap();
+            requests.push(request.into_inner());
+            requests.len()
+        };
         Ok(TonicResponse::new(MaybeActResponse {
             response: Some(PbAgentResponse {
-                message: Some("hello from remote grpc".to_string()),
-                action: Some(dummy_action_struct(true)),
+                message: (decision_count == 1).then(|| "hello from remote grpc".to_string()),
+                action: Some(dummy_action_struct(decision_count > 1)),
             }),
         }))
     }
@@ -656,10 +656,16 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
     let tts = Arc::new(RecordingTts {
         messages: Mutex::new(vec![]),
     });
-    let factory = Arc::new(ScriptedAgentFactory::new(vec![Some(AgentResponse {
-        message: Some("agent says hello".to_string()),
-        action: Some(DummyAction::Mark { finish: true }),
-    })]));
+    let factory = Arc::new(ScriptedAgentFactory::new(vec![
+        Some(AgentResponse {
+            message: Some("agent says hello".to_string()),
+            action: Some(DummyAction::Mark { finish: false }),
+        }),
+        Some(AgentResponse {
+            message: None,
+            action: Some(DummyAction::Mark { finish: true }),
+        }),
+    ]));
     let server = spawn_server(
         config(AgentsMode::HumanVsAgent),
         ServeOptions {
@@ -773,7 +779,7 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
         Some(&Kind::StringValue("B".to_string()))
     );
     let maybe_act_requests = remote.state.maybe_act_requests.lock().unwrap().clone();
-    assert_eq!(maybe_act_requests.len(), 1);
+    assert_eq!(maybe_act_requests.len(), 2);
     assert_eq!(maybe_act_requests[0].agent_id, "remote-agent-1");
     assert!(maybe_act_requests[0].available_actions_provided);
     assert_eq!(maybe_act_requests[0].available_actions.len(), 2);

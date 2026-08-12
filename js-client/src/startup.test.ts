@@ -1,5 +1,14 @@
-import { describe, expect, it } from "vitest";
-import { isVoiceEnabled, normalizePresence, resolveStartupTitle, voiceStatusUpdate } from "./startup";
+import { describe, expect, it, vi } from "vitest";
+import {
+  canSendGameMessage,
+  completedSessionPatch,
+  isVoiceEnabled,
+  normalizePresence,
+  resolveStartupTitle,
+  sendActionIfGameActive,
+  sendChatMessageIfGameActive,
+  voiceStatusUpdate
+} from "./startup";
 import type { PublicConfigResponse } from "./protocol";
 
 function publicConfig(overrides: Partial<PublicConfigResponse> = {}): PublicConfigResponse {
@@ -62,5 +71,46 @@ describe("Parlando startup helpers", () => {
       transcriptionMessage: "ASR ready",
       transcriptionReady: true
     });
+  });
+
+  it("stores completion summaries from completed server messages", () => {
+    const patch = completedSessionPatch({
+      outcome: "success",
+      dyadScore: 12,
+      playerScores: { A: 7, B: 5 }
+    });
+
+    expect(patch).toEqual({
+      completed: true,
+      completionSummary: {
+        outcome: "success",
+        dyadScore: 12,
+        playerScores: { A: 7, B: 5 }
+      }
+    });
+  });
+
+  it("guards participant game messages after completion", () => {
+    expect(canSendGameMessage({ completed: false })).toBe(true);
+    expect(canSendGameMessage({ completed: true })).toBe(false);
+    expect(canSendGameMessage(null)).toBe(false);
+  });
+
+  it("does not send actions or chat after completion", () => {
+    const socket = {} as WebSocket;
+    const apiClient = {
+      sendAction: vi.fn(),
+      sendChatMessage: vi.fn()
+    };
+
+    sendActionIfGameActive(apiClient, { socket, completed: true }, { type: "finish" });
+    sendChatMessageIfGameActive(apiClient, { socket, completed: true }, "late hello");
+    expect(apiClient.sendAction).not.toHaveBeenCalled();
+    expect(apiClient.sendChatMessage).not.toHaveBeenCalled();
+
+    sendActionIfGameActive(apiClient, { socket, completed: false }, { type: "finish" });
+    sendChatMessageIfGameActive(apiClient, { socket, completed: false }, "hello");
+    expect(apiClient.sendAction).toHaveBeenCalledWith(socket, { type: "finish" });
+    expect(apiClient.sendChatMessage).toHaveBeenCalledWith(socket, "hello");
   });
 });

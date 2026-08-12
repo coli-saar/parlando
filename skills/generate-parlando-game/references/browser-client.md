@@ -101,7 +101,7 @@ Use these session fields in game UI as needed:
 - `role`, `observation`, `availableActions`, and `events` for role-specific game rendering.
 - `conversation`, `sendChatMessage`, `voiceStatus`, and `toggleVoice` for game-screen communication controls.
 - `sendAction(action)` for game actions.
-- `completed`, `connected`, and `leave` for game-screen status and controls.
+- `completed`, `completionSummary`, `connected`, and `leave` for game-screen status and controls.
 
 Treat these fields as the active capability surface. Do not infer chat or voice availability from the game slug, deployment mode, participant mix, or local assumptions about whether an agent is present.
 
@@ -109,7 +109,7 @@ Treat these fields as the active capability surface. Do not infer chat or voice 
 
 `session.completed` becomes true after the server adapter's `is_complete` returns true and Parlando broadcasts the `completed` message. The browser must not implement a separate completion API or decide final success/failure from client-only state.
 
-Generated clients should render a terminal view when `session.completed` is true: hide or disable normal action controls, show the participant-facing result from observation/events, and keep chat/leave/status controls only when useful. If participants need to see success versus failure, include that terminal outcome in the role-specific observation or final event text; the durable analysis/export outcome belongs in the server `completion_summary`.
+Generated clients must render a final/terminal screen when `session.completed` is true: hide or disable normal action controls and game chat input, show the participant-facing result from observation/events, and use `session.completionSummary` for durable outcome and score fields. If participants need to see success versus failure, include that terminal outcome in `completion_summary` and optionally mirror participant-specific detail in the role-specific observation or final event text.
 
 ## Voice And Transcription Widgets
 

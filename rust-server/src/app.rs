@@ -1106,6 +1106,7 @@ async fn add_transcript<A: GameAdapter>(
     Json(segment): Json<TranscriptSegmentIn>,
 ) -> Result<Json<TranscriptSegment>, AppError> {
     let role = participant_role(&state, &room_id, &segment.participant_session_id).await?;
+    ensure_room_accepts_game_input(&state, &room_id).await?;
     let stored = TranscriptSegment {
         id: new_id("tr"),
         room_id: room_id.clone(),
@@ -1201,6 +1202,7 @@ async fn add_conversation<A: GameAdapter>(
     Json(input): Json<ConversationMessageIn>,
 ) -> Result<Json<ConversationMessageResponse>, AppError> {
     require_room(&state, &room_id).await?;
+    ensure_room_accepts_game_input(&state, &room_id).await?;
     let mut sender_participant_session_id = None;
     let mut sender_role = None;
     if let Some(candidate) = input
@@ -1258,6 +1260,28 @@ async fn add_conversation<A: GameAdapter>(
         .await;
     }
     Ok(Json(message))
+}
+
+/// Rejects participant game-channel input after a room has completed.
+async fn ensure_room_accepts_game_input<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+    room_id: &str,
+) -> Result<(), AppError> {
+    let completed = {
+        let memory = state.memory.read().await;
+        memory
+            .rooms
+            .get(room_id)
+            .ok_or_else(|| AppError::not_found("Room not found."))?
+            .status
+            == "completed"
+    };
+    if completed {
+        return Err(AppError::forbidden(
+            "Room is completed and no longer accepts game messages.",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -3487,8 +3511,11 @@ async fn handle_client_message<A: GameAdapter>(
                 source_message_id: None,
                 metadata: json!({"sender_participant_session_id": participant_session_id}),
             };
-            let _ = add_conversation(State(state.clone()), Path(room_id.to_string()), Json(input))
-                .await;
+            if let Err(error) =
+                add_conversation(State(state.clone()), Path(room_id.to_string()), Json(input)).await
+            {
+                let _ = bus.send(error_message(room_id, &error.message));
+            }
         }
         "submitAction" => {
             let Some(raw_action) = message.action else {
@@ -3581,6 +3608,11 @@ where
             .rooms
             .get_mut(room_id)
             .ok_or_else(|| anyhow!("Room not found."))?;
+        if room.status == "completed" {
+            return Err(anyhow!(
+                "Room is completed and no longer accepts game messages."
+            ));
+        }
         if !room_ready_for_game::<A>(&state.config, room) {
             if speechmatics_readiness_required(&state.config) {
                 return Err(anyhow!(
@@ -4598,7 +4630,7 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use serde_json::{json, Value};
     use std::{
-        collections::VecDeque,
+        collections::{BTreeMap, VecDeque},
         fs,
         sync::{
             atomic::{AtomicUsize, Ordering},
@@ -5119,6 +5151,9 @@ mod tests {
     #[derive(Clone, Debug, Serialize)]
     struct TinySummary {
         done: bool,
+        outcome: String,
+        dyad_score: i64,
+        player_scores: BTreeMap<String, i64>,
     }
 
     #[derive(Clone)]
@@ -5126,6 +5161,9 @@ mod tests {
 
     #[derive(Clone)]
     struct NoAvailableActionsAdapter;
+
+    #[derive(Clone)]
+    struct LossSummaryAdapter;
 
     struct NoopAgent;
 
@@ -5480,7 +5518,15 @@ mod tests {
         }
 
         fn completion_summary(&self, state: &Self::State) -> Self::Summary {
-            TinySummary { done: state.done }
+            TinySummary {
+                done: state.done,
+                outcome: if state.done { "success" } else { "in_progress" }.to_string(),
+                dyad_score: if state.done { 10 } else { 0 },
+                player_scores: BTreeMap::from([
+                    ("A".to_string(), if state.done { 6 } else { 0 }),
+                    ("B".to_string(), if state.done { 4 } else { 0 }),
+                ]),
+            }
         }
     }
 
@@ -5528,6 +5574,69 @@ mod tests {
 
         fn completion_summary(&self, state: &Self::State) -> Self::Summary {
             TinyAdapter.completion_summary(state)
+        }
+    }
+
+    impl GameAdapter for LossSummaryAdapter {
+        type State = TinyState;
+        type Action = TinyAction;
+        type Observation = TinyObservation;
+        type Event = TinyEvent;
+        type Summary = TinySummary;
+
+        fn initial_state(&self) -> Self::State {
+            TinyAdapter.initial_state()
+        }
+
+        fn validate_action(
+            &self,
+            state: &Self::State,
+            action: &Self::Action,
+            player: PlayerRole,
+        ) -> Result<()> {
+            TinyAdapter.validate_action(state, action, player)
+        }
+
+        fn apply_action(&self, state: &Self::State, action: &Self::Action) -> Result<Self::State> {
+            TinyAdapter.apply_action(state, action)
+        }
+
+        fn observe_state(&self, state: &Self::State, player: PlayerRole) -> Self::Observation {
+            TinyAdapter.observe_state(state, player)
+        }
+
+        fn available_actions(
+            &self,
+            state: &Self::State,
+            player: PlayerRole,
+        ) -> Option<Vec<Self::Action>> {
+            TinyAdapter.available_actions(state, player)
+        }
+
+        fn events_for_action(
+            &self,
+            before: &Self::State,
+            after: &Self::State,
+            action: &Self::Action,
+            player: PlayerRole,
+        ) -> Vec<Self::Event> {
+            TinyAdapter.events_for_action(before, after, action, player)
+        }
+
+        fn is_complete(&self, state: &Self::State) -> bool {
+            TinyAdapter.is_complete(state)
+        }
+
+        fn completion_summary(&self, state: &Self::State) -> Self::Summary {
+            let mut summary = TinyAdapter.completion_summary(state);
+            if state.done {
+                summary.outcome = "loss".to_string();
+                summary.dyad_score = 0;
+                summary
+                    .player_scores
+                    .extend([("A".to_string(), 0), ("B".to_string(), 0)]);
+            }
+            summary
         }
     }
 
@@ -6852,7 +6961,12 @@ mod tests {
         let completed_a = read_ws_type(&mut socket_a, "completed").await;
         let completed_b = read_ws_type(&mut socket_b, "completed").await;
         assert_eq!(completed_a["summary"]["done"], true);
+        assert_eq!(completed_a["summary"]["outcome"], "success");
+        assert_eq!(completed_a["summary"]["dyad_score"], 10);
+        assert_eq!(completed_a["summary"]["player_scores"]["A"], 6);
+        assert_eq!(completed_a["summary"]["player_scores"]["B"], 4);
         assert_eq!(completed_b["summary"]["done"], true);
+        assert_eq!(completed_b["summary"], completed_a["summary"]);
 
         let (export_status, export) =
             json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
@@ -6867,6 +6981,154 @@ mod tests {
         assert!(event_types.contains(&"game_action_accepted"));
         assert!(event_types.contains(&"state_changed"));
         assert!(event_types.contains(&"session_completed"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn loss_completion_summary_is_broadcast_and_exported() {
+        let router = build_router(
+            LossSummaryAdapter,
+            step_five_config(),
+            ServeOptions::default(),
+        )
+        .await
+        .unwrap();
+        let (a, b, room_id) = create_joined_room(router.clone()).await;
+        let (base_url, server) = spawn_test_server(router.clone()).await;
+        let host = base_url.trim_start_matches("http://");
+        let (mut socket_a, _) = connect_async(format!(
+            "ws://{host}/ws/game/{room_id}?participantSessionId={a}"
+        ))
+        .await
+        .unwrap();
+        let (mut socket_b, _) = connect_async(format!(
+            "ws://{host}/ws/game/{room_id}?participantSessionId={b}"
+        ))
+        .await
+        .unwrap();
+        let _assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
+        let _assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await;
+
+        send_ws_json(
+            &mut socket_a,
+            json!({"type": "submitAction", "action": {"finish": true}}),
+        )
+        .await;
+        let completed = read_ws_type(&mut socket_a, "completed").await;
+        assert_eq!(completed["summary"]["done"], true);
+        assert_eq!(completed["summary"]["outcome"], "loss");
+        assert_eq!(completed["summary"]["dyad_score"], 0);
+        assert_eq!(completed["summary"]["player_scores"]["A"], 0);
+        assert_eq!(completed["summary"]["player_scores"]["B"], 0);
+
+        let (export_status, export) =
+            json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
+        assert_eq!(export_status, StatusCode::OK);
+        let completed_events = export["session_events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["event_type"] == "session_completed")
+            .collect::<Vec<_>>();
+        assert_eq!(completed_events.len(), 1);
+        assert_eq!(export["sessions"][0]["completion"]["outcome"], "loss");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn completed_rooms_reject_late_game_channel_input() {
+        let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+            .await
+            .unwrap();
+        let (a, b, room_id) = create_joined_room(router.clone()).await;
+        let (base_url, server) = spawn_test_server(router.clone()).await;
+        let host = base_url.trim_start_matches("http://");
+        let (mut socket_a, _) = connect_async(format!(
+            "ws://{host}/ws/game/{room_id}?participantSessionId={a}"
+        ))
+        .await
+        .unwrap();
+        let (mut socket_b, _) = connect_async(format!(
+            "ws://{host}/ws/game/{room_id}?participantSessionId={b}"
+        ))
+        .await
+        .unwrap();
+        let _assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
+        let _assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await;
+
+        send_ws_json(
+            &mut socket_a,
+            json!({"type": "submitAction", "action": {"finish": true}}),
+        )
+        .await;
+        let _completed_a = read_ws_type(&mut socket_a, "completed").await;
+
+        send_ws_json(
+            &mut socket_a,
+            json!({"type": "submitAction", "action": {"finish": false}}),
+        )
+        .await;
+        let action_error = read_ws_type(&mut socket_a, "error").await;
+        assert!(action_error["message"]
+            .as_str()
+            .unwrap()
+            .contains("no longer accepts game messages"));
+
+        send_ws_json(
+            &mut socket_a,
+            json!({"type": "sendChatMessage", "text": "late hello"}),
+        )
+        .await;
+        let chat_error = read_ws_type(&mut socket_a, "error").await;
+        assert!(chat_error["message"]
+            .as_str()
+            .unwrap()
+            .contains("no longer accepts game messages"));
+        assert_no_ws_type(&mut socket_b, "conversationMessageAdded").await;
+
+        let (transcript_status, transcript_response) = json_request(
+            router.clone(),
+            http::Method::POST,
+            &format!("/api/rooms/{room_id}/transcripts"),
+            json!({
+                "participant_session_id": a,
+                "player": "A",
+                "text": "late transcript",
+                "metadata": {}
+            }),
+        )
+        .await;
+        assert_eq!(transcript_status, StatusCode::FORBIDDEN);
+        assert!(transcript_response["raw"]
+            .as_str()
+            .unwrap()
+            .contains("no longer accepts game messages"));
+
+        let (export_status, export) =
+            json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
+        assert_eq!(export_status, StatusCode::OK);
+        let events = export["session_events"].as_array().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event_type"] == "session_completed")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event_type"] == "conversation_message")
+                .count(),
+            0
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event_type"] == "transcript_segment")
+                .count(),
+            0
+        );
         server.abort();
     }
 
@@ -7303,13 +7565,22 @@ mod tests {
 
     #[tokio::test]
     async fn agent_runtime_persists_messages_and_validated_actions() {
-        let factory = Arc::new(ScriptedAgentFactory::new(vec![vec![scripted_response(
-            Some("agent says hello"),
-            Some(TinyAction {
-                finish: true,
-                invalid: false,
-            }),
-        )]]));
+        let factory = Arc::new(ScriptedAgentFactory::new(vec![vec![
+            scripted_response(
+                Some("agent says hello"),
+                Some(TinyAction {
+                    finish: false,
+                    invalid: false,
+                }),
+            ),
+            scripted_response(
+                None,
+                Some(TinyAction {
+                    finish: true,
+                    invalid: false,
+                }),
+            ),
+        ]]));
         let router = build_router(
             TinyAdapter,
             human_vs_agent_config(),

@@ -111,7 +111,13 @@ export interface ConversationMessage {
   created_at: string;
 }
 
-export type ServerMessage<TState = unknown, TObservation = TState, TAction = unknown, TEvent = unknown> =
+export type ServerMessage<
+  TState = unknown,
+  TObservation = TState,
+  TAction = unknown,
+  TEvent = unknown,
+  TSummary = Record<string, unknown>
+> =
   | {
       type: "roleAssigned";
       room_id: string;
@@ -133,7 +139,7 @@ export type ServerMessage<TState = unknown, TObservation = TState, TAction = unk
       conversation?: ConversationMessage[];
     }
   | { type: "conversationMessageAdded"; room_id: string; conversation_message: ConversationMessage }
-  | { type: "completed"; room_id: string; summary: Record<string, unknown> }
+  | { type: "completed"; room_id: string; summary: TSummary }
   | { type: "presenceChanged"; room_id?: string; presence?: Record<string, unknown> }
   | {
       type: "voiceStatusChanged";
