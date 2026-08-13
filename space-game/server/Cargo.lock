@@ -1328,6 +1328,8 @@ dependencies = [
 [[package]]
 name = "parlando-server"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0527af114cb0f532f66371eb58eae54f25a91b8f7ade515ad4102348adb8181"
 dependencies = [
  "anyhow",
  "async-trait",
