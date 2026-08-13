@@ -8,9 +8,10 @@ If you are starting a new experiment, read these pages in order:
 2. [Building A Game](building-games.md): how to model state, actions, observations, validation, transitions, events, and completion.
 3. [Browser Client Protocol](client-protocol.md): what JSON the JavaScript client sends and receives, including role-specific observations and actions.
 4. [Audio Transport](audio-transport.md): server relay, PCM framing, authentication, transcription, TTS playback, buffering, privacy, and scaling.
-5. [Agents](agents.md): how to add in-process Rust agents or connect Python agents over gRPC.
-6. [Running And Deployment](running-and-deployment.md): local development, configuration, frontend serving, Docker, Render, and remote-agent deployment.
-7. [Data And Monitoring](data-and-monitoring.md): persisted evaluation data, operator monitoring, and export.
+5. [Audio Testing](audio-testing.md): fast credential-free checks plus realistic, saturation, and impaired modes in the standalone ten-minute stress dashboard.
+6. [Agents](agents.md): how to add in-process Rust agents or connect Python agents over gRPC.
+7. [Running And Deployment](running-and-deployment.md): local development, configuration, frontend serving, Docker, Render, and remote-agent deployment.
+8. [Data And Monitoring](data-and-monitoring.md): persisted evaluation data, operator monitoring, and export.
 
 Maintenance reference:
 

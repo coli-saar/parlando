@@ -33,6 +33,16 @@ tonic = { version = "0.12", features = ["transport"] }
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
+ratatui = { version = "0.30.2", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+
+[features]
+stress-tui = ["dep:clap", "dep:ratatui"]
+
+[[bin]]
+name = "audio-stress-tui"
+path = "src/bin/audio_stress_tui.rs"
+required-features = ["stress-tui"]
 
 [build-dependencies]
 tonic-build = "0.12"

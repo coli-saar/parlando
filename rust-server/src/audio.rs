@@ -3,6 +3,13 @@ use std::{collections::HashMap, sync::Arc};
 use anyhow::{bail, Result};
 use tokio::sync::{mpsc, RwLock};
 
+/// Maximum number of outbound audio messages buffered for one connected participant.
+///
+/// The relay deliberately uses a bounded queue so a slow browser cannot accumulate
+/// unbounded stale speech or memory. Once this limit is reached, newly relayed audio
+/// is dropped in favor of keeping the room live.
+pub const AUDIO_OUTBOUND_QUEUE_CAPACITY: usize = 64;
+
 /// Wire protocol version for Parlando PCM audio frames.
 pub const AUDIO_PROTOCOL_VERSION: u8 = 1;
 /// Canonical audio sample rate used by browser, relay, STT, and TTS.
@@ -90,7 +97,7 @@ impl AudioRoomRegistry {
         room_id: &str,
         role: &str,
     ) -> (String, mpsc::Receiver<AudioOutbound>) {
-        let (sender, receiver) = mpsc::channel(64);
+        let (sender, receiver) = mpsc::channel(AUDIO_OUTBOUND_QUEUE_CAPACITY);
         let generation = uuid::Uuid::new_v4().to_string();
         self.rooms
             .write()
@@ -123,6 +130,16 @@ impl AudioRoomRegistry {
                 rooms.remove(room_id);
             }
         }
+    }
+
+    /// Reports whether a connection generation still owns its room role.
+    pub async fn is_current(&self, room_id: &str, role: &str, generation: &str) -> bool {
+        self.rooms
+            .read()
+            .await
+            .get(room_id)
+            .and_then(|room| room.peers.get(role))
+            .is_some_and(|peer| peer.generation == generation)
     }
 
     /// Relays a frame to the other human role without waiting on a slow browser.
@@ -215,5 +232,19 @@ mod tests {
         rooms.relay_partner("room", "A", vec![1]).await;
         assert!(matches!(b.recv().await, Some(AudioOutbound::Binary(bytes)) if bytes == vec![1]));
         assert!(a.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn replacement_connection_owns_role_until_its_own_disconnect() {
+        let rooms = AudioRoomRegistry::default();
+        let (old_generation, _old_receiver) = rooms.connect("room", "A").await;
+        let (new_generation, _new_receiver) = rooms.connect("room", "A").await;
+
+        assert!(!rooms.is_current("room", "A", &old_generation).await);
+        assert!(rooms.is_current("room", "A", &new_generation).await);
+        rooms.disconnect("room", "A", &old_generation).await;
+        assert!(rooms.is_current("room", "A", &new_generation).await);
+        rooms.disconnect("room", "A", &new_generation).await;
+        assert!(!rooms.is_current("room", "A", &new_generation).await);
     }
 }

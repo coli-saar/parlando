@@ -44,10 +44,9 @@ export class ParlandoAudioSink implements LocalAudioSink {
     socket.binaryType = "arraybuffer";
     this.socket = socket;
     this.startedAt = performance.now();
-    await new Promise<void>((resolve, reject) => {
-      socket.addEventListener("open", () => { context.logVoice("parlando_audio_connected", { protocol_version: plan.protocol_version }); context.onVoiceStatus({ connected: true, connecting: false, microphoneEnabled: true, message: "Microphone live", transcriptionMessage: "Waiting for transcription service", transcriptionReady: false }); resolve(); }, { once: true });
-      socket.addEventListener("error", () => reject(new Error("Parlando audio WebSocket failed to connect.")), { once: true });
-    });
+    await waitForSocketOpen(socket);
+    context.logVoice("parlando_audio_connected", { protocol_version: plan.protocol_version });
+    context.onVoiceStatus({ connected: true, connecting: false, microphoneEnabled: true, message: "Microphone live", transcriptionMessage: "Waiting for transcription service", transcriptionReady: false });
     this.capture.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
       if (this.enabled && socket.readyState === WebSocket.OPEN) socket.send(encodeFrame(this.sequence++, Math.round(performance.now() - this.startedAt), event.data));
     };
@@ -73,6 +72,23 @@ export class ParlandoAudioSink implements LocalAudioSink {
     this.capture = null; this.playback = null; this.source = null; this.stream = null;
     await this.audioContext?.close().catch(() => undefined); this.audioContext = null;
   }
+}
+
+/// Resolves on WebSocket open and rejects if the transport errors or closes first.
+export function waitForSocketOpen(socket: WebSocket): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      socket.removeEventListener("open", onOpen);
+      socket.removeEventListener("error", onError);
+      socket.removeEventListener("close", onClose);
+    };
+    const onOpen = () => { cleanup(); resolve(); };
+    const onError = () => { cleanup(); reject(new Error("Parlando audio WebSocket failed to connect.")); };
+    const onClose = () => { cleanup(); reject(new Error("Parlando audio WebSocket closed before connecting.")); };
+    socket.addEventListener("open", onOpen, { once: true });
+    socket.addEventListener("error", onError, { once: true });
+    socket.addEventListener("close", onClose, { once: true });
+  });
 }
 
 /// Encodes one versioned PCM WebSocket frame.

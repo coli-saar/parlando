@@ -13,6 +13,7 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 - Routed agent TTS through the same room relay and kept provider credentials out of browser code.
 - Stabilized synthesized speech with absolute server frame deadlines, jitter prebuffering, linear browser resampling, short underrun recovery, and underrun diagnostics.
 - Made playback worklets self-contained for consumer bundlers and prevented waiting-room transport failures from reacquiring an already prepared microphone.
+- Added credential-free provider-contract, token, reconnect, and multi-room tests plus a standalone ten-minute Ratatui stress dashboard with CLI-selectable realistic, saturation, and impaired relay workloads.
 
 ## [0.1.3]
 

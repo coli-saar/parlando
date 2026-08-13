@@ -3499,6 +3499,13 @@ async fn audio_websocket_loop<A: GameAdapter>(
         match message {
             Message::Binary(bytes) => match AudioFrame::decode(&bytes) {
                 Ok(frame) => {
+                    if !state
+                        .audio_rooms
+                        .is_current(&room_id, &role, &generation)
+                        .await
+                    {
+                        break;
+                    }
                     state
                         .audio_rooms
                         .relay_partner(&room_id, &role, bytes)
@@ -6135,6 +6142,25 @@ mod tests {
         }
     }
 
+    // Waits until an audio socket reports its initial transcription state.
+    async fn wait_for_audio_control<S>(socket: &mut S)
+    where
+        S: futures_util::Stream<
+                Item = Result<TungsteniteMessage, tokio_tungstenite::tungstenite::Error>,
+            > + Unpin,
+    {
+        loop {
+            let message = tokio::time::timeout(Duration::from_secs(2), socket.next())
+                .await
+                .expect("timed out waiting for audio control state")
+                .expect("audio WebSocket closed before control state")
+                .expect("audio WebSocket read failed");
+            if matches!(message, TungsteniteMessage::Text(_)) {
+                return;
+            }
+        }
+    }
+
     // Verifies that no binary audio reaches a socket during a short isolation window.
     async fn assert_no_audio_binary<S>(socket: &mut S)
     where
@@ -6571,6 +6597,103 @@ mod tests {
         assert_no_audio_binary(&mut socket_a_one).await;
         assert_no_audio_binary(&mut socket_b_one).await;
 
+        server.abort();
+    }
+
+    /// Ensures a replacement connection cannot leave an older socket injecting room audio.
+    #[tokio::test]
+    async fn replacement_audio_connection_revokes_the_older_socket_generation() {
+        let router = build_router(TinyAdapter, voice_enabled_config(), ServeOptions::default())
+            .await
+            .unwrap();
+        let (a, b, room_id) = create_joined_room(router.clone()).await;
+        let old_a = request_audio_plan(router.clone(), &room_id, &a).await;
+        let plan_b = request_audio_plan(router.clone(), &room_id, &b).await;
+        let new_a = request_audio_plan(router.clone(), &room_id, &a).await;
+        let (base_url, server) = spawn_test_server(router).await;
+        let host = base_url.trim_start_matches("http://");
+        let (mut socket_b, _) = connect_async(format!(
+            "ws://{host}/ws/audio/{room_id}?token={}",
+            plan_b["token"].as_str().unwrap()
+        ))
+        .await
+        .unwrap();
+        let (mut old_socket_a, _) = connect_async(format!(
+            "ws://{host}/ws/audio/{room_id}?token={}",
+            old_a["token"].as_str().unwrap()
+        ))
+        .await
+        .unwrap();
+        wait_for_audio_control(&mut old_socket_a).await;
+        let (mut new_socket_a, _) = connect_async(format!(
+            "ws://{host}/ws/audio/{room_id}?token={}",
+            new_a["token"].as_str().unwrap()
+        ))
+        .await
+        .unwrap();
+        wait_for_audio_control(&mut new_socket_a).await;
+
+        let stale_frame = AudioFrame {
+            sequence: 1,
+            timestamp_ms: 20,
+            pcm: vec![3; crate::audio::AUDIO_FRAME_BYTES],
+        }
+        .encode();
+        old_socket_a
+            .send(TungsteniteMessage::Binary(stale_frame))
+            .await
+            .unwrap();
+        assert_no_audio_binary(&mut socket_b).await;
+
+        let current_frame = AudioFrame {
+            sequence: 2,
+            timestamp_ms: 40,
+            pcm: vec![4; crate::audio::AUDIO_FRAME_BYTES],
+        }
+        .encode();
+        new_socket_a
+            .send(TungsteniteMessage::Binary(current_frame.clone()))
+            .await
+            .unwrap();
+        assert_eq!(read_audio_binary(&mut socket_b).await, current_frame);
+        server.abort();
+    }
+
+    /// Verifies that audio credentials are single-use and cannot cross room boundaries.
+    #[tokio::test]
+    async fn audio_tokens_are_single_use_and_room_bound() {
+        let router = build_router(TinyAdapter, voice_enabled_config(), ServeOptions::default())
+            .await
+            .unwrap();
+        let (a_one, _b_one, room_one) = create_joined_room(router.clone()).await;
+        let (_a_two, _b_two, room_two) = create_joined_room(router.clone()).await;
+        let wrong_room_plan = request_audio_plan(router.clone(), &room_one, &a_one).await;
+        let reusable_plan = request_audio_plan(router.clone(), &room_one, &a_one).await;
+        let (base_url, server) = spawn_test_server(router).await;
+        let host = base_url.trim_start_matches("http://");
+
+        let wrong_room = connect_async(format!(
+            "ws://{host}/ws/audio/{room_two}?token={}",
+            wrong_room_plan["token"].as_str().unwrap()
+        ))
+        .await;
+        assert!(matches!(
+            wrong_room,
+            Err(tokio_tungstenite::tungstenite::Error::Http(response))
+                if response.status() == StatusCode::FORBIDDEN
+        ));
+
+        let url = format!(
+            "ws://{host}/ws/audio/{room_one}?token={}",
+            reusable_plan["token"].as_str().unwrap()
+        );
+        let (_socket, _) = connect_async(url.clone()).await.unwrap();
+        let replay = connect_async(url).await;
+        assert!(matches!(
+            replay,
+            Err(tokio_tungstenite::tungstenite::Error::Http(response))
+                if response.status() == StatusCode::FORBIDDEN
+        ));
         server.abort();
     }
 

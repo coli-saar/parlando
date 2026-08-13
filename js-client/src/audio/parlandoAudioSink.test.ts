@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { encodeFrame } from "./parlandoAudioSink";
+import { encodeFrame, waitForSocketOpen } from "./parlandoAudioSink";
 
 describe("encodeFrame", () => {
   it("encodes the versioned PCM header in network byte order", () => {
@@ -16,5 +16,21 @@ describe("encodeFrame", () => {
 
   it("rejects incomplete PCM frames", () => {
     expect(() => encodeFrame(0, 0, new ArrayBuffer(958))).toThrow("960 bytes");
+  });
+});
+
+describe("waitForSocketOpen", () => {
+  it("resolves when the socket opens", async () => {
+    const socket = new EventTarget() as WebSocket;
+    const connected = waitForSocketOpen(socket);
+    socket.dispatchEvent(new Event("open"));
+    await expect(connected).resolves.toBeUndefined();
+  });
+
+  it("rejects instead of hanging when the socket closes before opening", async () => {
+    const socket = new EventTarget() as WebSocket;
+    const connected = waitForSocketOpen(socket);
+    socket.dispatchEvent(new Event("close"));
+    await expect(connected).rejects.toThrow("closed before connecting");
   });
 });
