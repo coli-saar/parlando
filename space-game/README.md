@@ -85,11 +85,15 @@ The solo voice config enables:
 
 - `agents.mode = human_vs_agent`
 - `space_game.back_and_forth`
-- LiveKit browser room audio
-- Speechmatics browser transcription
+- Parlando server-relayed browser audio
+- server-side Speechmatics transcription
 - ElevenLabs agent TTS publishing
 
-It asks the Rust server to include the local private service configuration from `../rust-server/config/experiment.livekit.private.yaml`. That file supplies the LiveKit, Speechmatics, and ElevenLabs settings for local voice testing. The browser app does not own those settings; it only receives public capability metadata from `/api/config` and room-specific credentials from `/api/rooms/{room_id}/audio-session`.
+The deterministic agent also answers typed or spoken questions about its visible world, including player locations, launch readiness, battery, fuses, breakers, valves, relay state, and its private hints. This makes `make run-solo-voice` an end-to-end microphone → transcription → agent → TTS smoke test without requiring an LLM provider.
+
+It asks the Rust server to include the local private service configuration from `../rust-server/config/experiment.voice.private.yaml`. That file supplies Speechmatics and ElevenLabs settings for local voice testing. The browser only receives public capability metadata and a short-lived credential for Parlando's audio relay.
+
+The shared SDK owns PCM framing, output-rate interpolation, jitter buffering, and underrun recovery; the demo game contains no media transport code. See [`docs/audio-transport.md`](../docs/audio-transport.md) for the protocol and operational model.
 
 ## Using SDK widgets
 

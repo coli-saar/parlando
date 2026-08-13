@@ -5,6 +5,7 @@ import type { AudioSessionContext, LocalAudioSink, MicrophoneInput } from "./typ
 class FakeMicrophoneSource {
   calls = 0;
   prepared = false;
+  stops = 0;
   private listener: ((preflight: any) => void) | null = null;
   private inputValue: MicrophoneInput;
 
@@ -54,7 +55,13 @@ class FakeMicrophoneSource {
     return this.inputValue;
   }
 
+  input() {
+    if (!this.prepared) throw new Error("Microphone has not been prepared.");
+    return this.inputValue;
+  }
+
   stop() {
+    this.stops += 1;
     return undefined;
   }
 
@@ -98,7 +105,16 @@ function context(): AudioSessionContext {
     role: "A",
     selectedAudioInputId: "default",
     selectedAudioInputLabel: "Default microphone",
-    getLiveKitToken: vi.fn(),
+    getAudioSession: vi.fn(async () => ({
+      enabled: true,
+      websocket_url: "ws://example.test/ws/audio/room",
+      token: "token",
+      protocol_version: 1,
+      sample_rate_hz: 24_000,
+      channels: 1,
+      frame_duration_ms: 20,
+      jitter_buffer_ms: 100
+    })),
     logVoice: vi.fn(),
     onVoiceStatus: vi.fn()
   };
@@ -114,51 +130,45 @@ describe("AudioSessionController", () => {
     });
 
     await controller.prepare("default", "Default microphone");
-    await controller.toggle(context(), "default", "Default microphone");
+    await controller.toggle(context());
 
     expect(microphone.calls).toBe(1);
     expect(sink.connectCalls).toBe(1);
     expect(sink.lastInput?.track).toBe(microphone["inputValue"].track);
   });
 
-  it("connects multiple sinks from one prepared microphone input", async () => {
+  it("toggles one transport without reacquiring the microphone", async () => {
     const microphone = new FakeMicrophoneSource();
-    const firstSink = new FakeSink();
-    const secondSink = new FakeSink();
+    const sink = new FakeSink();
     const controller = new AudioSessionController({
       microphone: microphone as any,
-      sinks: [firstSink, secondSink]
+      sink
     });
 
-    await controller.toggle(context(), "default", "Default microphone");
-    await controller.toggle(context(), "default", "Default microphone");
-    await controller.toggle(context(), "default", "Default microphone");
+    await controller.prepare("default", "Default microphone");
+    await controller.toggle(context());
+    await controller.toggle(context());
+    await controller.toggle(context());
 
     expect(microphone.calls).toBe(1);
-    expect(firstSink.connectCalls).toBe(1);
-    expect(secondSink.connectCalls).toBe(1);
-    expect(firstSink.lastInput?.track).toBe(secondSink.lastInput?.track);
-    expect(firstSink.enabled).toEqual([false, true]);
-    expect(secondSink.enabled).toEqual([false, true]);
+    expect(sink.connectCalls).toBe(1);
+    expect(sink.enabled).toEqual([false, true]);
   });
 
-  it("fetches one audio session plan for multiple sinks", async () => {
+  it("preserves the prepared microphone when transport connection fails", async () => {
     const microphone = new FakeMicrophoneSource();
-    const firstSink = new FakeSink();
-    const secondSink = new FakeSink();
-    const audioContext = context();
-    audioContext.getAudioSession = vi.fn(async () => ({
-      enabled: true,
-      capture: { audio: true },
-      sinks: []
-    }));
-    const controller = new AudioSessionController({
-      microphone: microphone as any,
-      sinks: [firstSink, secondSink]
+    const sink = new FakeSink();
+    sink.connect = vi.fn(async () => {
+      throw new Error("worklet failed");
     });
+    const controller = new AudioSessionController({ microphone: microphone as any, sink });
+    await controller.prepare("default", "Default microphone");
 
-    await controller.toggle(audioContext, "default", "Default microphone");
+    await expect(controller.toggle(context())).rejects.toThrow("worklet failed");
 
-    expect(audioContext.getAudioSession).toHaveBeenCalledTimes(1);
+    expect(microphone.calls).toBe(1);
+    expect(microphone.prepared).toBe(true);
+    expect(microphone.stops).toBe(0);
+    expect(controller.snapshot().voicePreflight.ready).toBe(true);
   });
 });

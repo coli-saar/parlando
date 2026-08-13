@@ -272,6 +272,35 @@ For a new game client, implement:
 6. Action controls that send `{ type: "submitAction", action }`.
 7. Chat controls that send `{ type: "sendChatMessage", text }` if conversation is enabled.
 8. Audio-session setup through `/api/rooms/{room_id}/audio-session` if voice is enabled.
+
+## Audio Transport
+
+`POST /api/rooms/{room_id}/audio-session` accepts the authoritative `participant_session_id` and returns a short-lived plan:
+
+```json
+{
+  "enabled": true,
+  "websocket_url": "wss://example.test/ws/audio/room-123",
+  "token": "short-lived-room-token",
+  "protocol_version": 1,
+  "sample_rate_hz": 24000,
+  "channels": 1,
+  "frame_duration_ms": 20,
+  "jitter_buffer_ms": 100
+}
+```
+
+Connect to `websocket_url` with the opaque, one-use `token` as a query parameter. Each binary message is exactly 973 bytes: one version byte (`1`), a big-endian `u32` sequence number, a big-endian `u64` capture timestamp in milliseconds, then 960 bytes of little-endian PCM16 mono audio. The server validates each frame, relays it to the other player, and independently offers it to the configured server-side transcription provider.
+
+The server may send JSON text control messages on the same socket:
+
+```json
+{"type":"transcriptionStatus","ready":true,"message":"ASR listening"}
+```
+
+Audio returned by the socket has the same binary frame format and may originate from the partner or server-generated agent TTS. Provider partials are status-only. Final utterances arrive on the game socket as ordinary `conversationMessageAdded` messages with origin `voice_transcript`; the browser never posts transcript text and never receives an STT credential.
+
+The SDK buffers the configured `jitter_buffer_ms` before initial playback, resamples with linear interpolation, and reports `audio_playback_underrun` diagnostics. Server-generated TTS prebuffers that window and then uses absolute 20 ms send deadlines. Game clients should use `ParlandoStartupGate` and must not implement their own pacing or playback queue. See [Audio Transport](audio-transport.md) for operational and privacy details.
 9. Local UI state for transient display concerns such as selected panels, animations, scroll position, and unsubmitted text.
 
 ## External References

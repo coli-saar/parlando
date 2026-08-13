@@ -13,11 +13,10 @@ use parlando_server::{
     build_router,
     config::{
         AgentsConfig, AgentsMode, ConversationConfig, DatabaseConfig, DirectConfig,
-        ExperimentConfig, ExperimentIdentityConfig, HumanVsAgentConfig, LiveKitConfig,
-        SpeechmaticsConfig, TranscriptionConfig,
+        ExperimentConfig, ExperimentIdentityConfig, HumanVsAgentConfig, SpeechmaticsConfig,
+        TranscriptionConfig, VoiceConfig,
     },
     game::{GameAdapter, PlayerRole},
-    protocol::TranscriptSegmentIn,
     remote_agent::{
         pb::{
             agent_service_server::{AgentService, AgentServiceServer},
@@ -420,19 +419,14 @@ fn config(mode: AgentsMode) -> ExperimentConfig {
             require_consent: true,
             ..DirectConfig::default()
         },
-        livekit: LiveKitConfig {
+        voice: VoiceConfig {
             enabled: true,
-            url: "wss://livekit.example.test".to_string(),
-            api_key: "api-key".to_string(),
-            api_secret: "api-secret".to_string(),
+            ..VoiceConfig::default()
         },
-        speechmatics: SpeechmaticsConfig {
-            enabled: false,
-            ..SpeechmaticsConfig::default()
-        },
+        speechmatics: SpeechmaticsConfig::default(),
         transcription: TranscriptionConfig {
             enabled: false,
-            provider: "livekit".to_string(),
+            provider: "speechmatics".to_string(),
             ..TranscriptionConfig::default()
         },
         conversation: ConversationConfig {
@@ -545,8 +539,7 @@ async fn read_ws_type(socket: &mut TestSocket, expected: &str) -> Result<Value> 
 }
 
 #[tokio::test]
-async fn mock_browser_two_human_flow_covers_http_ws_chat_transcript_audio_and_export() -> Result<()>
-{
+async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> Result<()> {
     let server = spawn_server(config(AgentsMode::HumanVsHuman), ServeOptions::default()).await?;
     let client = reqwest::Client::new();
     let a = create_participant(&client, &server.base_url, "A").await?;
@@ -574,7 +567,11 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_transcript_audio_and_ex
         .json::<Value>()
         .await?;
     assert_eq!(audio["enabled"], true);
-    assert_eq!(audio["sinks"][0]["id"], "livekit-combined");
+    assert_eq!(audio["protocol_version"], 1);
+    assert_eq!(audio["sample_rate_hz"], 24000);
+    assert!(audio["token"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
 
     let mut socket_a = ws_connect(&server.ws_base_url, &room_id, &a).await?;
     let mut socket_b = ws_connect(&server.ws_base_url, &room_id, &b).await?;
@@ -595,31 +592,6 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_transcript_audio_and_ex
     assert_eq!(chat["conversation_message"]["origin"], "typed");
     assert_eq!(chat["conversation_message"]["text"], "browser chat");
 
-    let transcript = client
-        .post(format!(
-            "{}/api/rooms/{room_id}/transcripts",
-            server.base_url
-        ))
-        .json(&TranscriptSegmentIn {
-            participant_session_id: a.clone(),
-            player: "B".to_string(),
-            start_time_ms: 10,
-            end_time_ms: 40,
-            text: "voice transcript".to_string(),
-            metadata: json!({"source": "mock-browser"}),
-        })
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Value>()
-        .await?;
-    assert_eq!(transcript["player"], "A");
-    let voice_message = read_ws_type(&mut socket_b, "conversationMessageAdded").await?;
-    assert_eq!(
-        voice_message["conversation_message"]["origin"],
-        "voice_transcript"
-    );
-
     send_ws(
         &mut socket_a,
         json!({"type": "submitAction", "action": {"type": "mark", "finish": true}}),
@@ -630,13 +602,28 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_transcript_audio_and_ex
     assert_eq!(completed_a["summary"]["done"], true);
     assert_eq!(completed_b["summary"]["done"], true);
 
-    let export = client
-        .get(format!("{}/api/admin/export", server.base_url))
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Value>()
-        .await?;
+    let mut export = Value::Null;
+    for _ in 0..20 {
+        export = client
+            .get(format!("{}/api/admin/export", server.base_url))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
+        if export["session_events"].as_array().is_some_and(|events| {
+            [
+                "conversation_message",
+                "game_action_accepted",
+                "session_completed",
+            ]
+            .iter()
+            .all(|expected| events.iter().any(|event| event["event_type"] == *expected))
+        }) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     let event_types = export["session_events"]
         .as_array()
         .unwrap()
@@ -644,7 +631,6 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_transcript_audio_and_ex
         .map(|event| event["event_type"].as_str().unwrap())
         .collect::<Vec<_>>();
     assert!(event_types.contains(&"conversation_message"));
-    assert!(event_types.contains(&"transcript_segment"));
     assert!(event_types.contains(&"game_action_accepted"));
     assert!(event_types.contains(&"session_completed"));
     Ok(())

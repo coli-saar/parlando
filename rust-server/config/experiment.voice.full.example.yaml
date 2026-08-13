@@ -5,21 +5,17 @@
 # file. Do not commit real credentials.
 #
 # This file intentionally documents configuration only. The Parlando Rust server
-# and browser SDK own the LiveKit, Speechmatics, and ElevenLabs runtime behavior.
+# and browser SDK own the audio relay, Speechmatics, and ElevenLabs runtime behavior.
 
-livekit:
+voice:
   enabled: true
-  # LiveKit Cloud project URL, for example: wss://example.livekit.cloud
-  url: ${LIVEKIT_URL}
-  api_key: ${LIVEKIT_API_KEY}
-  api_secret: ${LIVEKIT_API_SECRET}
+  sample_rate_hz: 24000
+  frame_duration_ms: 20
+  jitter_buffer_ms: 100
 
 speechmatics:
-  enabled: true
   api_key: ${SPEECHMATICS_API_KEY}
   realtime_url: wss://eu.rt.speechmatics.com/v2
-  management_url: https://mp.speechmatics.com/v1/api_keys
-  temporary_key_ttl_seconds: 60
   max_delay: 2.0
   enable_partials: true
   end_of_utterance_silence_trigger: 1.2
@@ -29,7 +25,6 @@ transcription:
   provider: speechmatics
   model: enhanced
   language: en
-  worker_autostart: true
   store_audio: false
 
 tts:
@@ -39,5 +34,5 @@ tts:
   voice_id: ${ELEVENLABS_VOICE_ID}
   voice_name: Agent Voice
   api_key: ${ELEVENLABS_API_KEY}
-  output_format: pcm_16000
+  output_format: pcm_24000
   worker_autostart: true

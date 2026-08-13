@@ -25,6 +25,8 @@ Important event categories include:
 - agent startup, action proposals, and errors.
 - TTS and voice diagnostics.
 
+Browser playback underruns are persisted as `voice_diagnostic` events with event name `audio_playback_underrun`, a cumulative connection-local count, and the remaining buffered source-sample count. These events are useful for deciding whether a deployment needs a larger `voice.jitter_buffer_ms`; do not increase the buffer solely from anecdotal latency reports because it directly delays playback startup.
+
 Room ids and participant-session ids are useful during live play. Evaluation data also has durable experiment, session, and participant identifiers so analysis does not depend on transient browser connections.
 
 Completion summaries are game-specific. Design them deliberately: include success or failure, score or outcome labels, final task state needed for interpretation, and any condition labels required by downstream scripts.

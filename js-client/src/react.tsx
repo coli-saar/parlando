@@ -21,16 +21,16 @@ export function MicLevelMeter({ active, label, level }: { active: boolean; label
 }
 
 export function VoiceJoinButton({
-  liveKitEnabled,
+  voiceEnabled,
   onToggleVoice,
   voiceStatus = initialVoiceStatus
 }: {
-  liveKitEnabled: boolean;
+  voiceEnabled: boolean;
   onToggleVoice: () => void;
   voiceStatus?: VoiceStatus;
 }) {
   return (
-    <button disabled={!liveKitEnabled || voiceStatus.connecting} onClick={onToggleVoice}>
+    <button disabled={!voiceEnabled || voiceStatus.connecting} onClick={onToggleVoice}>
       {voiceButtonLabel(voiceStatus)}
     </button>
   );
@@ -67,11 +67,11 @@ export function DeviceSelect({
   );
 }
 
-export function VoiceStatusChip({ liveKitEnabled, voiceStatus = initialVoiceStatus }: {
-  liveKitEnabled: boolean;
+export function VoiceStatusChip({ voiceEnabled, voiceStatus = initialVoiceStatus }: {
+  voiceEnabled: boolean;
   voiceStatus?: VoiceStatus;
 }) {
-  return <span>{liveKitEnabled ? voiceStatus.message : "Voice is disabled for this study"}</span>;
+  return <span>{voiceEnabled ? voiceStatus.message : "Voice is disabled for this study"}</span>;
 }
 
 export function TranscriptionStatusChip({ voiceStatus = initialVoiceStatus }: { voiceStatus?: VoiceStatus }) {
@@ -110,14 +110,14 @@ export function TranscriptionProgress({ voiceStatus = initialVoiceStatus }: { vo
 
 export function VoicePreparationControls({
   audioInputs,
-  liveKitEnabled,
+  voiceEnabled,
   onPrepareVoice,
   onSelectedAudioInputChange,
   selectedAudioInputId,
   voicePreflight = initialVoicePreflight
 }: {
   audioInputs: MediaDeviceInfo[];
-  liveKitEnabled: boolean;
+  voiceEnabled: boolean;
   onPrepareVoice: () => void;
   onSelectedAudioInputChange: (value: string) => void;
   selectedAudioInputId: string;
@@ -128,14 +128,14 @@ export function VoicePreparationControls({
     <>
       <DeviceSelect
         audioInputs={audioInputs}
-        disabled={!liveKitEnabled || voicePreflight.preparing || voicePreflight.ready}
+        disabled={!voiceEnabled || voicePreflight.preparing || voicePreflight.ready}
         onSelectedAudioInputChange={onSelectedAudioInputChange}
         selectedAudioInputId={selectedAudioInputId}
       />
       {voicePreflight.micProbeActive && (
         <MicLevelMeter active={voicePreflight.micProbeActive} label="Device" level={voicePreflight.micLevel} />
       )}
-      <button disabled={!liveKitEnabled || voicePreflight.preparing || voicePreflight.ready} onClick={onPrepareVoice}>
+      <button disabled={!voiceEnabled || voicePreflight.preparing || voicePreflight.ready} onClick={onPrepareVoice}>
         {label}
       </button>
     </>

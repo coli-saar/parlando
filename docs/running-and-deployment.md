@@ -52,13 +52,13 @@ The main sections are:
 - `database`: SQLite URL.
 - `direct`: room-code and consent settings.
 - `agents`: human-vs-human or human-vs-agent mode and agent selection.
-- `livekit`: realtime audio room settings.
-- `speechmatics`: browser STT credentials and realtime options.
-- `transcription`: transcription mode exposed to the browser.
+- `voice`: Parlando audio-relay format and buffering settings.
+- `speechmatics`: server-side STT credentials and realtime options.
+- `transcription`: provider-neutral transcription settings.
 - `tts`: agent text-to-speech settings.
 - `conversation`: conversation-history settings.
 
-For local development without paid audio services, keep `livekit.enabled`, `speechmatics.enabled`, `transcription.enabled`, and `tts.enabled` false. For voice studies, keep service credentials in a private YAML include rather than in checked-in config or frontend build variables.
+For local development without paid audio services, keep `voice.enabled`, `transcription.enabled`, and `tts.enabled` false. For voice studies, keep Speechmatics and ElevenLabs credentials in a private YAML include rather than in checked-in config or frontend build variables.
 
 ## Serving A Frontend
 
@@ -83,12 +83,14 @@ The repository includes Docker and Render examples for the demo server under `sp
 2. Use `space-game/render.yaml` or configure a Docker service manually with `space-game/Dockerfile`.
 3. Attach a persistent disk mounted at `/data`.
 4. Add a Render Secret File named `parlando-render.yaml`. Render mounts it at `/etc/secrets/parlando-render.yaml` for Docker services.
-5. Paste deployment-specific YAML into that secret file. Start from `space-game/config/experiment.render.secret.example.yaml`, set `experiment.id` and `server.public_base_url`, and add LiveKit, Speechmatics, and ElevenLabs credentials only when voice features are enabled.
+5. Paste deployment-specific YAML into that secret file. Start from `space-game/config/experiment.render.secret.example.yaml`, set `experiment.id` and `server.public_base_url`, and add Speechmatics and ElevenLabs credentials only when their features are enabled.
 6. Deploy.
 
 The committed Render config at `space-game/config/experiment.render.example.yaml` includes `/etc/secrets/parlando-render.yaml` as an optional overlay. The secret file deep-merges over the checked-in base config, so it can override public deployment settings, enable `agents.mode`, or provide private service credentials without expanding the Render environment-variable list.
 
-The browser client should not receive LiveKit, Speechmatics, or TTS settings from build-time environment variables. It receives public capability metadata from `/api/config` and room-scoped audio credentials from `/api/rooms/{room_id}/audio-session`.
+The browser client should not receive Speechmatics or TTS secrets. It receives public capability metadata from `/api/config` and a short-lived credential for Parlando's room audio WebSocket from `/api/rooms/{room_id}/audio-session`.
+
+Audio rooms and their one-use credentials are process-local. A voice deployment must run one Parlando process or use sticky routing that keeps every request and WebSocket for a room on the same instance. Ordinary stateless load balancing is not sufficient. See [Audio Transport](audio-transport.md) for bandwidth, queue, privacy, and monitoring details.
 
 The included `space-game/Dockerfile` builds `parlando-space-game` and starts:
 

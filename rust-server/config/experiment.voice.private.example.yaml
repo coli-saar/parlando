@@ -1,0 +1,29 @@
+# Private voice-service overlay template. Copy to experiment.voice.private.yaml.
+voice:
+  enabled: true
+  sample_rate_hz: 24000
+  frame_duration_ms: 20
+  jitter_buffer_ms: 100
+
+speechmatics:
+  api_key: "YOUR_SPEECHMATICS_API_KEY"
+  realtime_url: "wss://eu.rt.speechmatics.com/v2"
+  max_delay: 2.0
+  enable_partials: true
+  end_of_utterance_silence_trigger: 1.2
+
+transcription:
+  enabled: true
+  provider: speechmatics
+  model: enhanced
+  language: en
+  store_audio: false
+
+tts:
+  enabled: true
+  provider: elevenlabs
+  model: eleven_flash_v2_5
+  voice_id: "YOUR_ELEVENLABS_VOICE_ID"
+  voice_name: "YOUR_VOICE_DISPLAY_NAME"
+  api_key: "YOUR_ELEVENLABS_API_KEY"
+  output_format: pcm_24000

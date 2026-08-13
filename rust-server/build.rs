@@ -1,14 +1,5 @@
-/// Configures protobuf generation and macOS linker flags needed by integration tests.
+/// Configures protobuf generation and reproducible build metadata.
 fn main() {
-    #[cfg(target_os = "macos")]
-    {
-        // LiveKit's prebuilt WebRTC archive contains Objective-C categories that are
-        // referenced dynamically at runtime. The final Parlando binaries/tests must
-        // ask the macOS linker to retain those category object files, otherwise
-        // Room::connect can abort with an unrecognized selector inside WebRTC.
-        println!("cargo:rustc-link-arg-tests=-ObjC");
-    }
-
     let protoc = protoc_bin_vendored::protoc_bin_path().expect("vendored protoc is available");
     std::env::set_var("PROTOC", protoc);
     tonic_build::configure()

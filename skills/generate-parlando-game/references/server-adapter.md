@@ -12,7 +12,6 @@ name = "<game-slug>-server"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-build = "build.rs"
 
 [dependencies]
 anyhow = "1"
@@ -26,26 +25,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ```
 
 Add `rand = "0.8"` only when a generated in-process agent needs seeded randomness.
-
-## macOS Objective-C Link Flag
-
-Every generated Rust server crate must include `server/build.rs` and set `build = "build.rs"` in `server/Cargo.toml`.
-
-```rust
-/// Configures final binary link flags for native LiveKit/WebRTC support on macOS.
-fn main() {
-    #[cfg(target_os = "macos")]
-    {
-        // LiveKit's WebRTC static archive contains Objective-C categories that
-        // Apple's runtime discovers dynamically. The final game binary must
-        // retain them, or LiveKit/WebRTC can abort with an unrecognized selector
-        // such as an NSString StdString/AbslStringView category method.
-        println!("cargo:rustc-link-arg-bins=-ObjC");
-    }
-}
-```
-
-This flag must be emitted by the final-linking game server crate. Do not treat dependency-crate build scripts, `.cargo/config.toml`, shell `RUSTFLAGS`, README instructions, or conditional generation only for currently voice-enabled configs as sufficient. Generated projects may later enable LiveKit/TTS without regenerating server scaffolding, so the macOS final-link protection belongs in every generated server binary.
 
 ## GameAdapter Contract
 
@@ -189,12 +168,11 @@ Generated binaries should load config and call `parlando_server::serve`:
 use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
-    sync::Arc,
 };
 
 use anyhow::Result;
 use clap::Parser;
-use parlando_server::{serve, ExperimentConfig, LiveKitAgentAudioPublisher, ServeOptions};
+use parlando_server::{serve, ExperimentConfig, ServeOptions};
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -227,18 +205,12 @@ async fn main() -> Result<()> {
         .or_else(|| std::env::var("PORT").ok().and_then(|value| value.parse().ok()))
         .unwrap_or(8000);
     let agent_factory = factory_from_config(&config)?;
-    let audio_publisher = if config.livekit.enabled && config.tts.enabled {
-        Some(Arc::new(LiveKitAgentAudioPublisher::new(config.livekit.clone())) as _)
-    } else {
-        None
-    };
     serve(
         MyGameAdapter::new(),
         config,
         SocketAddr::new(cli.host, port),
         ServeOptions {
             agent_factory,
-            audio_publisher,
             ..ServeOptions::default()
         },
     )
@@ -247,6 +219,19 @@ async fn main() -> Result<()> {
 ```
 
 If the game has no agents, implement `factory_from_config` as a small helper returning `Ok(None)`.
+
+## Audio Ownership
+
+Generated server crates do not implement media transport. Do not add audio routes, media SDKs, token minting, PCM framing, browser-transcription endpoints, an `AgentAudioPublisher`, or provider clients to the game binary. When enabled by config, `parlando-server` automatically owns:
+
+- opaque one-use room audio credentials;
+- `/ws/audio/{room_id}`;
+- fixed 24 kHz mono PCM frame validation and partner relay;
+- one server-side `TranscriptionProvider` session per human microphone;
+- final-utterance persistence and `observe_message` delivery;
+- real-time paced agent TTS publication through the room relay.
+
+The game server only supplies `AgentResponse.message` text and role-specific observations. This keeps media behavior identical across generated games and prevents provider secrets from entering game or browser code.
 
 ## Testing
 

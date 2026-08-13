@@ -50,13 +50,14 @@ agents:
     invalid_action_limit: 3
     config: {}
 
-livekit:
+voice:
   enabled: false
+  sample_rate_hz: 24000
+  frame_duration_ms: 20
+  jitter_buffer_ms: 100
 
 speechmatics:
-  enabled: false
   realtime_url: wss://eu.rt.speechmatics.com/v2
-  temporary_key_ttl_seconds: 60
   max_delay: 2.0
   enable_partials: true
   end_of_utterance_silence_trigger: 1.2
@@ -66,14 +67,13 @@ transcription:
   provider: speechmatics
   model: enhanced
   language: en
-  worker_autostart: true
   store_audio: false
 
 tts:
   enabled: false
   provider: elevenlabs
   model: eleven_flash_v2_5
-  output_format: pcm_16000
+  output_format: pcm_24000
   worker_autostart: true
 
 conversation:

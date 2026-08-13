@@ -51,6 +51,8 @@ Generated games must be agnostic to the participant mix. A browser instance rend
 
 Generated games also must not decide whether voice is enabled. If the server/session exposes voice capability and asks the client to allow it, the game must allow the SDK-provided voice controls/status to work. If the server/session does not expose voice capability, the game should simply omit or disable voice controls based on session state. Voice service setup, credentials, startup, and policy live in Parlando config/server/client SDK code, not in game-specific logic.
 
+Parlando voice uses one authenticated browser-to-server audio WebSocket per human participant. The SDK captures fixed 24 kHz mono PCM, applies its jitter buffer and playback resampling, and receives partner or agent audio on the same connection. The server relays microphone frames, independently feeds server-side transcription, and publishes agent TTS with real-time pacing. Generated games must not add WebRTC libraries, peer-to-peer negotiation, custom audio WebSockets, AudioWorklets, jitter buffers, frame pacing, browser STT clients, or transcript POST endpoints.
+
 When TTS is enabled, agent utterances should be returned through `AgentResponse.message` so `parlando-server` can create an agent-origin conversation message, synthesize it, and publish it through the configured audio transport. Generated browser code must not call TTS providers directly or duplicate the server-side agent speech pipeline.
 
 ## Output Shape
@@ -145,7 +147,9 @@ Generate a `main.rs` that follows the Parlando server pattern:
 - call `parlando_server::serve`
 - read `PORT` from the environment when `--port` is absent
 
-Include `LiveKitAgentAudioPublisher` when both `livekit.enabled` and `tts.enabled` are true. This is server configuration behavior; the game adapter and browser game UI do not decide whether voice is enabled.
+Do not construct an audio publisher in the game binary. When `voice.enabled` and `tts.enabled` are true, `parlando-server` publishes agent audio through its room relay automatically.
+
+Do not add transport dependencies or routes to the generated server. `parlando-server` owns `/api/rooms/{room_id}/audio-session`, opaque one-use audio credentials, `/ws/audio/{room_id}`, PCM validation, bounded room queues, server-side transcription sessions, and agent-audio pacing.
 
 ## Agents
 
@@ -163,7 +167,7 @@ Do not fork game semantics or browser UI around human-vs-human versus human-vs-a
 
 If the game design makes chat relevant, generated agents must observe and respond to participant text messages and speech transcripts. Implement `observe_message` to store the latest relevant utterance with its speaker and modality, and make `maybe_act` use that memory when deciding whether to return an `AgentResponse` with a message, action, or both. Do not generate an agent that only reacts to game actions when the participant is expected to instruct, negotiate with, or ask questions of the agent. If a scripted policy is too brittle for the requested dialogue behavior, ask whether the user can provide LLM provider credentials and generate a remote or server-side LLM-backed agent path that keeps credentials out of browser code.
 
-When TTS is enabled in config, agents should vocalize participant-facing utterances by returning an `AgentResponse` with `message: Some(text)`. The server records the text as an agent conversation message and, when configured, routes it through the TTS provider and `LiveKitAgentAudioPublisher`. Do not add frontend TTS calls, browser speech synthesis, or game-specific audio publishing for agent messages.
+When TTS is enabled in config, agents should vocalize participant-facing utterances by returning an `AgentResponse` with `message: Some(text)`. The server records the text as an agent conversation message and routes it through the configured TTS provider and room relay. Do not add frontend TTS calls, browser speech synthesis, or game-specific audio publishing.
 
 ## TypeScript Contract
 
@@ -210,7 +214,7 @@ Generate `config/experiment.local.yaml` with:
 - `server.client_dist_path: client/dist`
 - local SQLite under `.local/`
 - voice, transcription, and TTS disabled unless requested
-- when voice is requested, full-stack LiveKit, Speechmatics, and ElevenLabs fields via a private overlay
+- when voice is requested, `voice`, server-side Speechmatics, and ElevenLabs fields via a private overlay
 - consent items under `direct.require_consent` and `direct.consents`
 - conversation enabled by default
 
@@ -226,7 +230,6 @@ Generate `config/experiment.render.example.yaml` with:
 Generate:
 
 - Rust `Cargo.toml` using the latest published `parlando-server` crate version, plus `anyhow`, `clap`, `serde`, `serde_json`, `tokio`, `tracing-subscriber`, and optional `async-trait`/`rand`.
-- Rust `build.rs` in the generated server crate that emits `cargo:rustc-link-arg-bins=-ObjC` on macOS. This is required for final binaries that transitively link LiveKit/WebRTC; do not rely on dependency build scripts, `.cargo/config.toml`, ad-hoc `RUSTFLAGS`, or notes in the README as a substitute.
 - client `package.json` using the latest published `@coli-saar/parlando-client` npm package version, React, Vite, TypeScript, and Vitest.
 - client-local `vite.config.ts`, `tsconfig.json`, and `index.html`
 - `Makefile` targets for `check-client-package`, `install-client-deps`, `install-server`, `build-client`, `build`, `test`, `run`, and `clean`
@@ -242,10 +245,10 @@ After generating code, run the strongest feasible checks:
 
 - `cargo fmt`
 - `cargo test` or package-specific Rust tests
-- confirm `server/Cargo.toml` has `build = "build.rs"` and `server/build.rs` emits `cargo:rustc-link-arg-bins=-ObjC` for macOS final binaries
 - confirm the server has tests for every terminal success and failure path, including `is_complete`, `completion_summary`, and the serialized summary shape expected by the client/export
 - confirm the browser renders a final screen when `session.completed` is true, using `session.completionSummary` for outcome/score fields and hiding or disabling normal action and game chat input
 - if chat with an agent is relevant, confirm the agent observes messages/transcripts and has tests or a smoke path showing it responds to participant utterances
+- if voice is enabled, confirm generated code delegates audio capture/playback to `ParlandoStartupGate`, contains no custom media transport or browser provider credentials, and config uses 24 kHz PCM with a sensible jitter target such as 100 ms
 - `npm install` when dependencies are available
 - `npm run build`
 - `npm test`
@@ -261,11 +264,10 @@ End with:
 - files/directories created or changed
 - commands run and whether they passed
 - exact local run command
-- exact config YAML path to edit for local settings, and if voice/TTS/transcription is enabled, the private YAML/secret path that should hold LiveKit, Speechmatics, and ElevenLabs values
+- exact config YAML path to edit for local settings, and if voice/TTS/transcription is enabled, the private YAML/secret path that should hold Speechmatics and ElevenLabs values
 - deployment notes for the requested target
 - agent run commands when generating a Rust or Python gRPC agent
 - confirmation that the browser client delegates startup to `ParlandoStartupGate` from `@coli-saar/parlando-client/react`
-- confirmation that the generated Rust server crate includes the macOS final-link `-ObjC` build script
 - confirmation that game completion is implemented through `is_complete`/`completion_summary`, including how success and failure are represented
 - confirmation that the completed game UI renders a final screen from `session.completionSummary` and does not leave normal game controls active
 - confirmation that agent text-message handling is implemented when chat or speech interaction with an agent is part of the game

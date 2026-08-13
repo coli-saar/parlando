@@ -1,4 +1,4 @@
-import type { AudioSessionPlan, LiveKitTokenResponse, TranscriptSegmentInput } from "../protocol";
+import type { AudioSessionPlan } from "../protocol";
 
 export interface VoiceStatus {
   connected: boolean;
@@ -35,9 +35,7 @@ export interface AudioSessionContext {
   role: string;
   selectedAudioInputId: string;
   selectedAudioInputLabel: string | null;
-  getAudioSession?(): Promise<AudioSessionPlan>;
-  getLiveKitToken(): Promise<LiveKitTokenResponse>;
-  postTranscriptSegment?(segment: TranscriptSegmentInput): Promise<unknown>;
+  getAudioSession(): Promise<AudioSessionPlan>;
   logVoice(event: string, metadata?: Record<string, unknown>): void;
   onVoiceStatus(status: Partial<VoiceStatus>): void;
 }

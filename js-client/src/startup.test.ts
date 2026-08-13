@@ -16,8 +16,8 @@ function publicConfig(overrides: Partial<PublicConfigResponse> = {}): PublicConf
     study_name: "Startup Test",
     require_consent: false,
     consents: [],
-    livekit: { enabled: false, url: null },
-    transcription: { enabled: false, provider: "livekit" },
+    voice: { enabled: false },
+    transcription: { enabled: false, provider: "speechmatics" },
     conversation: { enabled: true },
     agents: { mode: "human_vs_human", human_vs_agent: false },
     ...overrides
@@ -31,9 +31,9 @@ describe("Parlando startup helpers", () => {
     expect(resolveStartupTitle({}, null)).toBe("Parlando Experiment");
   });
 
-  it("treats disabled LiveKit as a no-voice startup", () => {
+  it("treats disabled voice as a no-voice startup", () => {
     expect(isVoiceEnabled(publicConfig())).toBe(false);
-    expect(isVoiceEnabled(publicConfig({ livekit: { enabled: true, url: "wss://livekit.test" } }))).toBe(true);
+    expect(isVoiceEnabled(publicConfig({ voice: { enabled: true } }))).toBe(true);
   });
 
   it("normalizes human-human and human-agent presence snapshots", () => {

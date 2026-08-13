@@ -1,38 +1,31 @@
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use async_trait::async_trait;
-use livekit::{
-    options::TrackPublishOptions,
-    prelude::{
-        LocalAudioTrack, LocalTrack, Room, RoomEvent, RoomOptions, RtcAudioSource, TrackSource,
-    },
-    webrtc::{
-        audio_source::native::NativeAudioSource,
-        prelude::{AudioFrame, AudioSourceOptions},
-    },
-};
-use tokio::time::{sleep, timeout};
+use tokio::time::{sleep_until, Instant};
 
-use crate::{config::LiveKitConfig, livekit::create_livekit_token, tts::AudioChunk};
+use crate::{
+    audio::{AudioFrame, SharedAudioRooms, AUDIO_CHANNELS, AUDIO_FRAME_BYTES, AUDIO_SAMPLE_RATE},
+    tts::AudioChunk,
+};
 
 /// Summary returned after publishing one synthesized agent message.
 #[derive(Clone, Debug)]
 pub struct AudioPublishSummary {
-    /// Number of non-empty audio chunks submitted to the RTC source.
+    /// Number of non-empty canonical frames published.
     pub chunks_published: usize,
-    /// Number of PCM bytes submitted to the RTC source.
+    /// Number of PCM bytes published.
     pub bytes_published: usize,
-    /// Sample rate used for the published audio track.
+    /// Canonical sample rate used for playback.
     pub sample_rate: u32,
-    /// Number of audio channels used for the published audio track.
+    /// Canonical channel count used for playback.
     pub channels: u16,
 }
 
 /// Publishes synthesized agent audio into a room-specific audio transport.
 #[async_trait]
 pub trait AgentAudioPublisher: Send + Sync {
-    /// Publishes one synthesized agent message for the given room.
+    /// Publishes one synthesized message to connected human browsers.
     async fn publish(
         &self,
         room_id: &str,
@@ -41,171 +34,69 @@ pub trait AgentAudioPublisher: Send + Sync {
     ) -> Result<AudioPublishSummary>;
 }
 
-/// LiveKit implementation of agent audio publishing.
-pub struct LiveKitAgentAudioPublisher {
-    config: LiveKitConfig,
+/// Agent audio publisher backed by the process-local Parlando audio room registry.
+pub struct RoomAgentAudioPublisher {
+    rooms: SharedAudioRooms,
+    prebuffer_frames: usize,
 }
 
-impl LiveKitAgentAudioPublisher {
-    /// Creates a LiveKit audio publisher from server LiveKit config.
-    pub fn new(config: LiveKitConfig) -> Self {
-        Self { config }
+impl RoomAgentAudioPublisher {
+    /// Creates a publisher using the browser's configured initial jitter-buffer target.
+    pub fn new(rooms: SharedAudioRooms, jitter_buffer_ms: u16) -> Self {
+        Self {
+            rooms,
+            prebuffer_frames: usize::from(jitter_buffer_ms)
+                .div_ceil(usize::from(crate::audio::AUDIO_FRAME_DURATION_MS))
+                .max(1),
+        }
     }
 }
 
 #[async_trait]
-impl AgentAudioPublisher for LiveKitAgentAudioPublisher {
-    /// Publishes PCM chunks into a short-lived `agent-voice` LiveKit track.
+impl AgentAudioPublisher for RoomAgentAudioPublisher {
     async fn publish(
         &self,
         room_id: &str,
-        message_id: &str,
+        _message_id: &str,
         chunks: &[AudioChunk],
     ) -> Result<AudioPublishSummary> {
-        let Some(first_audio) = chunks.iter().find(|chunk| !chunk.data.is_empty()) else {
-            bail!("cannot publish empty agent audio");
-        };
-        let sample_rate = first_audio.sample_rate;
-        let channels = first_audio.channels;
-        if sample_rate == 0 {
-            bail!("cannot publish agent audio with zero sample rate");
-        }
-        if channels == 0 {
-            bail!("cannot publish agent audio with zero channels");
-        }
-        let token = create_livekit_token(
-            &self.config,
-            room_id,
-            "agent-voice",
-            &format!("agent-audio-{message_id}"),
-            300,
-        )?;
-        let (room, mut events) = Room::connect(&self.config.url, &token, RoomOptions::default())
-            .await
-            .context("failed to connect LiveKit agent audio publisher")?;
-        let source = NativeAudioSource::new(
-            AudioSourceOptions::default(),
-            sample_rate,
-            channels as u32,
-            1000,
-        );
-        let track = LocalAudioTrack::create_audio_track(
-            "agent-voice",
-            RtcAudioSource::Native(source.clone()),
-        );
-        room.local_participant()
-            .publish_track(
-                LocalTrack::Audio(track.clone()),
-                TrackPublishOptions {
-                    source: TrackSource::Microphone,
-                    ..TrackPublishOptions::default()
-                },
-            )
-            .await
-            .context("failed to publish LiveKit agent voice track")?;
-        wait_for_subscriber(&mut events)
-            .await
-            .context("failed while waiting for LiveKit subscriber before agent audio publish")?;
-
-        let mut chunks_published = 0usize;
-        let mut bytes_published = 0usize;
-        let mut audio_duration = Duration::ZERO;
+        let mut pcm = vec![];
         for chunk in chunks.iter().filter(|chunk| !chunk.data.is_empty()) {
-            if chunk.sample_rate != sample_rate || chunk.channels != channels {
-                bail!("all agent audio chunks must share one sample rate and channel count");
+            if chunk.sample_rate != AUDIO_SAMPLE_RATE || chunk.channels != AUDIO_CHANNELS {
+                bail!("agent TTS must return 24000 Hz mono PCM");
             }
-            audio_duration += pcm_chunk_duration(chunk)?;
-            publish_pcm_chunk(&source, chunk).await?;
-            chunks_published += 1;
-            bytes_published += chunk.data.len();
+            pcm.extend_from_slice(&chunk.data);
         }
-
-        sleep(audio_duration + Duration::from_millis(350)).await;
-        room.local_participant()
-            .unpublish_track(&track.sid())
-            .await
-            .context("failed to unpublish LiveKit agent voice track")?;
-        let _ = room.close().await;
+        if pcm.is_empty() {
+            bail!("cannot publish empty agent audio");
+        }
+        let mut count = 0usize;
+        let started_at = Instant::now();
+        for (index, payload) in pcm.chunks(AUDIO_FRAME_BYTES).enumerate() {
+            sleep_until(started_at + frame_send_offset(index, self.prebuffer_frames)).await;
+            let mut padded = vec![0; AUDIO_FRAME_BYTES];
+            padded[..payload.len()].copy_from_slice(payload);
+            let frame = AudioFrame {
+                sequence: index as u32,
+                timestamp_ms: index as u64 * 20,
+                pcm: padded,
+            };
+            self.rooms.publish_agent(room_id, frame.encode()).await;
+            count += 1;
+        }
         Ok(AudioPublishSummary {
-            chunks_published,
-            bytes_published,
-            sample_rate,
-            channels,
+            chunks_published: count,
+            bytes_published: pcm.len(),
+            sample_rate: AUDIO_SAMPLE_RATE,
+            channels: AUDIO_CHANNELS,
         })
     }
 }
 
-/// Computes the playback duration represented by one signed 16-bit PCM chunk.
-fn pcm_chunk_duration(chunk: &AudioChunk) -> Result<Duration> {
-    if chunk.sample_rate == 0 {
-        bail!("cannot publish agent audio with zero sample rate");
-    }
-    if chunk.channels == 0 {
-        bail!("cannot publish agent audio with zero channels");
-    }
-    if chunk.data.len() % 2 != 0 {
-        bail!("PCM byte length must be even");
-    }
-    let sample_count = chunk.data.len() / 2;
-    let channels = chunk.channels as usize;
-    if sample_count % channels != 0 {
-        bail!("PCM sample count is not divisible by channel count");
-    }
-    let samples_per_channel = sample_count / channels;
-    Ok(Duration::from_secs_f64(
-        samples_per_channel as f64 / chunk.sample_rate as f64,
-    ))
-}
-
-/// Waits until LiveKit confirms that at least one remote participant subscribed to the track.
-async fn wait_for_subscriber(
-    events: &mut tokio::sync::mpsc::UnboundedReceiver<RoomEvent>,
-) -> Result<()> {
-    timeout(Duration::from_secs(10), async {
-        loop {
-            let event = events
-                .recv()
-                .await
-                .context("LiveKit room event stream closed before subscriber attached")?;
-            match event {
-                RoomEvent::LocalTrackSubscribed { .. } => return Ok(()),
-                RoomEvent::TrackSubscriptionFailed { error, .. } => {
-                    bail!("LiveKit track subscription failed: {error}");
-                }
-                _ => {}
-            }
-        }
-    })
-    .await
-    .context("timed out waiting for LiveKit subscriber")?
-}
-
-/// Submits one raw PCM chunk to a LiveKit native audio source.
-async fn publish_pcm_chunk(source: &NativeAudioSource, chunk: &AudioChunk) -> Result<()> {
-    let samples = pcm_bytes_to_i16_samples(&chunk.data)?;
-    let channels = chunk.channels as u32;
-    if samples.len() % channels as usize != 0 {
-        bail!("PCM sample count is not divisible by channel count");
-    }
-    let frame = AudioFrame {
-        data: samples.as_slice().into(),
-        sample_rate: chunk.sample_rate,
-        num_channels: channels,
-        samples_per_channel: samples.len() as u32 / channels,
-    };
-    source.capture_frame(&frame).await?;
-    Ok(())
-}
-
-/// Converts little-endian signed 16-bit PCM bytes to samples.
-pub fn pcm_bytes_to_i16_samples(bytes: &[u8]) -> Result<Vec<i16>> {
-    if bytes.len() % 2 != 0 {
-        bail!("PCM byte length must be even");
-    }
-    Ok(bytes
-        .chunks_exact(2)
-        .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
-        .collect())
+/// Returns an absolute send offset that maintains a fixed browser playout lead.
+fn frame_send_offset(frame_index: usize, prebuffer_frames: usize) -> Duration {
+    let paced_index = frame_index.saturating_sub(prebuffer_frames.saturating_sub(1));
+    Duration::from_millis(paced_index as u64 * u64::from(crate::audio::AUDIO_FRAME_DURATION_MS))
 }
 
 #[cfg(test)]
@@ -213,57 +104,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pcm_bytes_to_i16_samples_decodes_little_endian_values() {
-        let samples = pcm_bytes_to_i16_samples(&[0, 0, 255, 127, 0, 128]).unwrap();
-        assert_eq!(samples, vec![0, 32767, -32768]);
-    }
+    fn frame_schedule_prebuffers_then_uses_absolute_twenty_ms_deadlines() {
+        let offsets = (0..8)
+            .map(|index| frame_send_offset(index, 5))
+            .collect::<Vec<_>>();
 
-    #[test]
-    fn pcm_chunk_duration_counts_mono_samples() {
-        let chunk = AudioChunk {
-            data: vec![0; 320],
-            sample_rate: 16_000,
-            channels: 1,
-            final_chunk: true,
-        };
-
-        assert_eq!(
-            pcm_chunk_duration(&chunk).unwrap(),
-            Duration::from_millis(10)
-        );
-    }
-
-    #[test]
-    fn pcm_chunk_duration_counts_stereo_samples_per_channel() {
-        let chunk = AudioChunk {
-            data: vec![0; 960],
-            sample_rate: 48_000,
-            channels: 2,
-            final_chunk: true,
-        };
-
-        assert_eq!(
-            pcm_chunk_duration(&chunk).unwrap(),
-            Duration::from_millis(5)
-        );
-    }
-
-    #[test]
-    fn pcm_chunk_duration_rejects_invalid_pcm_shape() {
-        let odd_bytes = AudioChunk {
-            data: vec![0; 3],
-            sample_rate: 16_000,
-            channels: 1,
-            final_chunk: true,
-        };
-        assert!(pcm_chunk_duration(&odd_bytes).is_err());
-
-        let partial_frame = AudioChunk {
-            data: vec![0; 6],
-            sample_rate: 16_000,
-            channels: 2,
-            final_chunk: true,
-        };
-        assert!(pcm_chunk_duration(&partial_frame).is_err());
+        assert_eq!(offsets[..5], [Duration::ZERO; 5]);
+        assert_eq!(offsets[5], Duration::from_millis(20));
+        assert_eq!(offsets[6], Duration::from_millis(40));
+        assert_eq!(offsets[7], Duration::from_millis(60));
     }
 }

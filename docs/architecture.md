@@ -21,7 +21,7 @@ The reusable Rust server owns:
 - participant creation, consent records, room creation, joins, reconnects, and readiness.
 - WebSocket delivery and participant-specific observations.
 - action validation flow, action persistence, state-change persistence, completion records, transcripts, conversation messages, agent events, and diagnostics.
-- optional LiveKit, Speechmatics, and ElevenLabs integration.
+- optional server-owned audio relay, server-side Speechmatics, and ElevenLabs integration.
 - local and remote agent execution.
 - admin monitoring and export.
 
@@ -64,6 +64,8 @@ A typical human-vs-human session follows this path:
 8. The server persists actions and state changes, broadcasts targeted updates, and records completion when the game ends.
 
 Human-vs-agent sessions use the same room and action path. The agent participant is created by the server and acts through the same validation and persistence pipeline as a human.
+
+When voice is enabled, each browser opens one authenticated `/ws/audio/{room_id}` connection. Fixed 24 kHz mono PCM16 frames fan out independently to the partner browser and to a server-side transcription session. Final provider utterances enter the same conversation and agent-observation path as typed messages. Agent TTS returns through the room relay and is not transcribed again. Browser playback starts behind a small jitter buffer; finite TTS streams are scheduled against absolute frame deadlines so timer overhead cannot accumulate into audible gaps. See [Audio Transport](audio-transport.md) for the complete boundary.
 
 ## Example Implementation
 

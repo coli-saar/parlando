@@ -7,7 +7,7 @@ Reusable browser SDK for Parlando game clients. This package owns shared experim
 - Protocol and response types for the Rust server HTTP and WebSocket APIs.
 - `ExperimentApiClient`, URL helpers, checked JSON helpers, and socket helpers.
 - Voice-session orchestration for microphone setup and sink lifecycle.
-- Browser-side LiveKit and Speechmatics sink implementations.
+- A provider-neutral browser audio sink for Parlando's server relay.
 - Reusable platform widgets and hooks under `@coli-saar/parlando-client/react`, such as microphone level, voice status, and transcription status components.
 
 ## What does not belong here
@@ -15,24 +15,25 @@ Reusable browser SDK for Parlando game clients. This package owns shared experim
 - Game-specific state, actions, observations, validation, rendering, assets, maps, levels, or scoring.
 - Demo app layout or Space Game-specific CSS.
 - Committed local checkout assumptions such as `file:../js-client` dependencies in consumers.
-- Private LiveKit, Speechmatics, or TTS service configuration. The server is the source of truth for speech configuration and sends only public capability metadata or short-lived room credentials to the browser.
+- Private Speechmatics or TTS service configuration. The server is the source of truth and sends only public capability metadata and a short-lived room-audio credential to the browser.
 
 ## Package entrypoints
 
 ```ts
 import { ExperimentApiClient, socketUrl } from "@coli-saar/parlando-client";
-import { LiveKitPartnerAudioSink } from "@coli-saar/parlando-client/livekit";
-import { SpeechmaticsTranscriptionSink } from "@coli-saar/parlando-client/speechmatics";
+import { ParlandoAudioSink } from "@coli-saar/parlando-client";
 import { VoiceStatusChip } from "@coli-saar/parlando-client/react";
 ```
 
-The root entrypoint contains protocol types, API helpers, WebSocket helpers, audio-session controller classes, microphone helpers, and non-React utility functions. Optional integration-specific code is exported from subpaths so consumers can import only the pieces they need.
+The root entrypoint contains protocol types, API helpers, WebSocket helpers, the audio-session controller and sink, microphone helpers, and non-React utility functions.
 
 For voice-enabled games, create or join a room before rendering the readiness waiting room. `ExperimentApiClient.createRoom(...)` returns a `room_id` for Player A immediately, and `ExperimentApiClient.joinRoom(...)` adds Player B to that existing room. In human-agent mode, the server supplies Player B when the room is created. Once the client has `room_id` and `participant_session_id`, it can open the room WebSocket and request `/api/rooms/{room_id}/audio-session` while the UI still shows Player A, Player B/agent, and STT readiness.
 
 ## Speech configuration
 
-The SDK does not configure LiveKit, Speechmatics, or TTS services directly. A game client reads public capability information from `/api/config`, then requests room-specific audio credentials from `/api/rooms/{room_id}/audio-session`. The Rust server owns provider selection, private API keys, token minting, temporary Speechmatics keys, and TTS voice settings.
+The SDK does not configure Speechmatics or TTS services directly. A game client reads public capability information from `/api/config`, then requests a room-specific Parlando audio credential from `/api/rooms/{room_id}/audio-session`. The Rust server owns provider selection, private API keys, transcription sessions, and TTS voice settings.
+
+`ParlandoAudioSink` captures and sends fixed 24 kHz PCM frames and plays partner or agent audio through an AudioWorklet. Playback uses the server-provided jitter target, linear device-rate interpolation, bounded stale-audio trimming, short underrun recovery, and diagnostic reporting. Game clients should normally let `ParlandoStartupGate` construct this sink rather than creating audio nodes or WebSockets themselves.
 
 ## Widgets
 

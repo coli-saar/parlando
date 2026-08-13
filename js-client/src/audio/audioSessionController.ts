@@ -12,14 +12,15 @@ type Listener = (snapshot: AudioSessionSnapshot) => void;
 
 export class AudioSessionController {
   private microphone: MicrophoneSource;
-  private sinks: LocalAudioSink[];
+  private sink: LocalAudioSink;
   private voiceStatus: VoiceStatus = initialVoiceStatus;
   private voicePreflight: VoicePreflight = initialVoicePreflight;
   private listeners = new Set<Listener>();
 
-  constructor({ microphone, sink, sinks }: { microphone: MicrophoneSource; sink?: LocalAudioSink; sinks?: LocalAudioSink[] }) {
+  /** Creates a controller for Parlando's single provider-neutral audio transport. */
+  constructor({ microphone, sink }: { microphone: MicrophoneSource; sink: LocalAudioSink }) {
     this.microphone = microphone;
-    this.sinks = sinks ?? (sink ? [sink] : []);
+    this.sink = sink;
     this.microphone.subscribe((preflight) => {
       this.voicePreflight = preflight;
       this.emit();
@@ -51,11 +52,12 @@ export class AudioSessionController {
     }
   }
 
-  async toggle(context: AudioSessionContext, deviceId: string, fallbackLabel = "Default microphone"): Promise<void> {
+  /** Toggles mute for a connected session or connects the already prepared microphone. */
+  async toggle(context: AudioSessionContext): Promise<void> {
     if (this.voiceStatus.connected) {
       const nextEnabled = !this.voiceStatus.microphoneEnabled;
       context.logVoice("microphone_toggle_requested", { enabled: nextEnabled });
-      await Promise.all(this.sinks.map((sink) => sink.setInputEnabled(nextEnabled)));
+      await this.sink.setInputEnabled(nextEnabled);
       context.logVoice("microphone_toggle_succeeded", { enabled: nextEnabled });
       this.updateVoiceStatus({
         microphoneEnabled: nextEnabled,
@@ -70,38 +72,32 @@ export class AudioSessionController {
     });
     this.updateVoiceStatus({ connecting: true, message: "Connecting voice..." });
     try {
-      const input = await this.microphone.prepare(deviceId, fallbackLabel);
-      let plannedContext = context;
-      if (context.getAudioSession && this.sinks.length > 1) {
-        const plan = await context.getAudioSession();
-        plannedContext = {
-          ...context,
-          getAudioSession: async () => plan
-        };
-      }
-      await Promise.all(
-        this.sinks.map((sink) =>
-          sink.connect(input, {
-            ...plannedContext,
-            onVoiceStatus: (status) => this.updateVoiceStatus(status)
-          })
-        )
-      );
+      const input = this.microphone.input();
+      await this.sink.connect(input, {
+        ...context,
+        onVoiceStatus: (status) => this.updateVoiceStatus(status)
+      });
     } catch (error) {
       context.logVoice("voice_connect_failed", { error: error instanceof Error ? error.message : String(error) });
-      await this.disconnect();
+      await this.disconnectTransport();
       throw error;
     }
   }
 
   async disconnect(resetPreflight = false): Promise<void> {
-    await Promise.all(this.sinks.map((sink) => sink.disconnect()));
-    this.voiceStatus = initialVoiceStatus;
+    await this.disconnectTransport();
     if (resetPreflight) {
       this.microphone.reset();
     } else {
       this.microphone.stop();
     }
+    this.emit();
+  }
+
+  /** Tears down only the room transport while preserving the prepared microphone input. */
+  private async disconnectTransport(): Promise<void> {
+    await this.sink.disconnect();
+    this.voiceStatus = initialVoiceStatus;
     this.emit();
   }
 

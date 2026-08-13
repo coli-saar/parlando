@@ -95,23 +95,36 @@ pub struct ExperimentIdentityConfig {
     pub id: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
-pub struct LiveKitConfig {
+pub struct VoiceConfig {
+    /// Enables Parlando's authenticated browser-to-server audio WebSocket.
     pub enabled: bool,
-    pub url: String,
-    pub api_key: String,
-    pub api_secret: String,
+    /// Canonical PCM sample rate; protocol version 1 requires 24 kHz.
+    pub sample_rate_hz: u32,
+    /// Canonical binary frame duration; protocol version 1 requires 20 ms.
+    pub frame_duration_ms: u16,
+    /// Browser playback buffer target before audio starts or resumes.
+    pub jitter_buffer_ms: u16,
+}
+
+impl Default for VoiceConfig {
+    /// Uses the single wire format implemented by protocol version 1.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sample_rate_hz: 24_000,
+            frame_duration_ms: 20,
+            jitter_buffer_ms: 100,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SpeechmaticsConfig {
-    pub enabled: bool,
     pub api_key: String,
     pub realtime_url: String,
-    pub temporary_key_ttl_seconds: i64,
-    pub management_url: String,
     pub max_delay: f64,
     pub enable_partials: bool,
     pub end_of_utterance_silence_trigger: f64,
@@ -120,11 +133,8 @@ pub struct SpeechmaticsConfig {
 impl Default for SpeechmaticsConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             api_key: String::new(),
             realtime_url: "wss://eu.rt.speechmatics.com/v2".to_string(),
-            temporary_key_ttl_seconds: 60,
-            management_url: "https://mp.speechmatics.com/v1/api_keys".to_string(),
             max_delay: 2.0,
             enable_partials: true,
             end_of_utterance_silence_trigger: 1.2,
@@ -139,7 +149,6 @@ pub struct TranscriptionConfig {
     pub provider: String,
     pub model: String,
     pub language: String,
-    pub worker_autostart: bool,
     pub store_audio: bool,
 }
 
@@ -147,10 +156,9 @@ impl Default for TranscriptionConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            provider: "livekit".to_string(),
-            model: "deepgram/nova-3".to_string(),
+            provider: "speechmatics".to_string(),
+            model: "enhanced".to_string(),
             language: "en-US".to_string(),
-            worker_autostart: true,
             store_audio: false,
         }
     }
@@ -264,7 +272,7 @@ pub struct ExperimentConfig {
     pub direct: DirectConfig,
     pub server: ServerConfig,
     pub database: DatabaseConfig,
-    pub livekit: LiveKitConfig,
+    pub voice: VoiceConfig,
     pub speechmatics: SpeechmaticsConfig,
     pub transcription: TranscriptionConfig,
     pub tts: TtsConfig,
@@ -286,7 +294,7 @@ impl Default for ExperimentConfig {
             direct: DirectConfig::default(),
             server: ServerConfig::default(),
             database: DatabaseConfig::default(),
-            livekit: LiveKitConfig::default(),
+            voice: VoiceConfig::default(),
             speechmatics: SpeechmaticsConfig::default(),
             transcription: TranscriptionConfig::default(),
             tts: TtsConfig::default(),
@@ -321,18 +329,18 @@ impl ExperimentConfig {
                 bail!("tts.api_key is required when TTS is enabled");
             }
         }
-        if self.livekit.enabled
-            && (self.livekit.url.is_empty()
-                || self.livekit.api_key.is_empty()
-                || self.livekit.api_secret.is_empty())
+        if self.voice.enabled
+            && (self.voice.sample_rate_hz != 24_000 || self.voice.frame_duration_ms != 20)
         {
-            bail!("livekit.url, livekit.api_key, and livekit.api_secret are required when LiveKit is enabled");
+            bail!(
+                "voice protocol version 1 requires sample_rate_hz 24000 and frame_duration_ms 20"
+            );
         }
         if self.transcription.enabled
             && self.transcription.provider == "speechmatics"
-            && (!self.speechmatics.enabled || self.speechmatics.api_key.is_empty())
+            && self.speechmatics.api_key.is_empty()
         {
-            bail!("speechmatics.enabled and speechmatics.api_key are required for Speechmatics transcription");
+            bail!("speechmatics.api_key is required for Speechmatics transcription");
         }
         Ok(())
     }

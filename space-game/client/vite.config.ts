@@ -8,7 +8,6 @@ export default defineConfig({
     alias: {
       react: fileURLToPath(new URL("./node_modules/react", import.meta.url)),
       "react/jsx-runtime": fileURLToPath(new URL("./node_modules/react/jsx-runtime.js", import.meta.url)),
-      "livekit-client": fileURLToPath(new URL("./node_modules/livekit-client/dist/livekit-client.esm.mjs", import.meta.url))
     }
   },
   test: {

@@ -43,10 +43,7 @@ agents:
     invalid_action_limit: 3
     config: {}
 
-livekit:
-  enabled: false
-
-speechmatics:
+voice:
   enabled: false
 
 transcription:

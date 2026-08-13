@@ -7,7 +7,8 @@ use anyhow::{bail, Result};
 use async_trait::async_trait;
 use parlando_server::{
     AdminAgentOption, AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResponse,
-    ExperimentConfig, GameAgent, PlayerRole, RemoteGrpcAgentConfig, RemoteGrpcAgentFactory,
+    AgentUtteranceKind, ExperimentConfig, GameAgent, PlayerRole, RemoteGrpcAgentConfig,
+    RemoteGrpcAgentFactory,
 };
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::Deserialize;
@@ -144,7 +145,7 @@ impl AgentFactory<SpaceGameAdapter> for BackAndForthAgentFactory {
     }
 }
 
-/// Space Game agent that alternates movement and comments when the human moves.
+/// Deterministic Space Game agent that moves, comments, and answers visible-world questions.
 pub struct BackAndForthAgent {
     role: String,
     rng: StdRng,
@@ -154,6 +155,8 @@ pub struct BackAndForthAgent {
     pending_step: bool,
     other_player_moved: bool,
     utterances: Vec<&'static str>,
+    current_observation: Option<SpaceObservation>,
+    pending_question: Option<(PlayerRole, String)>,
 }
 
 impl BackAndForthAgent {
@@ -174,17 +177,159 @@ impl BackAndForthAgent {
                 "Alles klar, ich habe dich gesehen.",
                 "Verstanden, ich mache weiter.",
             ],
+            current_observation: None,
+            pending_question: None,
         }
+    }
+
+    /// Answers one participant question using only the agent's visible world observation.
+    fn answer_world_question(&self, speaker: PlayerRole, question: &str) -> String {
+        let Some(world) = &self.current_observation else {
+            return "Ich habe noch keine Weltinformationen erhalten.".to_string();
+        };
+        let normalized = question.to_lowercase();
+        let agent = if self.role == "A" {
+            &world.players.a
+        } else {
+            &world.players.b
+        };
+        let human = if speaker == PlayerRole::A {
+            &world.players.a
+        } else {
+            &world.players.b
+        };
+        if normalized.contains("wo bist du") || normalized.contains("deine position") {
+            return format!(
+                "Ich bin im Raum {} bei Position {}, {}.",
+                agent.room, agent.position.x, agent.position.y
+            );
+        }
+        if normalized.contains("wo bin ich") || normalized.contains("meine position") {
+            return format!(
+                "Du bist im Raum {} bei Position {}, {}.",
+                human.room, human.position.x, human.position.y
+            );
+        }
+        if normalized.contains("spieler a") || normalized.contains("player a") {
+            return format!(
+                "Spieler A ist im Raum {} bei Position {}, {}.",
+                world.players.a.room, world.players.a.position.x, world.players.a.position.y
+            );
+        }
+        if normalized.contains("spieler b") || normalized.contains("player b") {
+            return format!(
+                "Spieler B ist im Raum {} bei Position {}, {}.",
+                world.players.b.room, world.players.b.position.x, world.players.b.position.y
+            );
+        }
+        if normalized.contains("start")
+            || normalized.contains("launch")
+            || normalized.contains("bereit")
+        {
+            let mut missing = Vec::new();
+            if !world.systems.power_stable {
+                missing.push("stabile Energie");
+            }
+            if !world.systems.oxygen_stable {
+                missing.push("stabiler Sauerstoff");
+            }
+            if !world.systems.door_access {
+                missing.push("Türzugang");
+            }
+            if !world.systems.signal_routed {
+                missing.push("Signal zur Antenne");
+            }
+            return if missing.is_empty() {
+                "Alle sichtbaren Systeme sind bereit. Das Leuchtfeuer kann gestartet werden."
+                    .to_string()
+            } else {
+                format!("Noch nicht startbereit. Es fehlen: {}.", missing.join(", "))
+            };
+        }
+        if normalized.contains("batter") {
+            return format!(
+                "Die Batterie ist bei {}, {} und {}.",
+                world.battery.location,
+                if world.battery.charged {
+                    "geladen"
+                } else {
+                    "nicht geladen"
+                },
+                if world.battery.spent {
+                    "verbraucht"
+                } else {
+                    "noch verwendbar"
+                }
+            );
+        }
+        if normalized.contains("sicherung") || normalized.contains("fuse") {
+            return format!(
+                "Sicherungen: blau {}, gelb {}, rot {}.",
+                on_off(world.fuses.blue),
+                on_off(world.fuses.yellow),
+                on_off(world.fuses.red)
+            );
+        }
+        if normalized.contains("schalter") || normalized.contains("breaker") {
+            return format!(
+                "Schutzschalter: main {}, aux {}.",
+                on_off(world.breakers.main),
+                on_off(world.breakers.aux)
+            );
+        }
+        if normalized.contains("ventil") || normalized.contains("valve") {
+            return format!(
+                "Ventile: A {}, C {}, Fluttor {}.",
+                open_closed(world.valves.a),
+                open_closed(world.valves.c),
+                open_closed(world.valves.floodgate)
+            );
+        }
+        if normalized.contains("relais")
+            || normalized.contains("relay")
+            || normalized.contains("signal")
+        {
+            return format!(
+                "Das Relais steht auf {}. Das Signal ist {}geroutet.",
+                world.relay,
+                if world.systems.signal_routed {
+                    ""
+                } else {
+                    "nicht "
+                }
+            );
+        }
+        if normalized.contains("weißt")
+            || normalized.contains("weisst")
+            || normalized.contains("hinweis")
+            || normalized.contains("wissen")
+        {
+            return if world.private_knowledge.is_empty() {
+                "Ich habe keine privaten Hinweise entdeckt.".to_string()
+            } else {
+                format!("Ich weiß Folgendes: {}", world.private_knowledge.join(" "))
+            };
+        }
+        format!(
+            "Ich sehe: Energie {}, Sauerstoff {}, Türzugang {}, Signal {}. Frag mich auch nach Positionen, Batterie, Sicherungen, Ventilen oder Hinweisen.",
+            ready_not(world.systems.power_stable),
+            ready_not(world.systems.oxygen_stable),
+            ready_not(world.systems.door_access),
+            ready_not(world.systems.signal_routed),
+        )
     }
 }
 
 #[async_trait]
 impl GameAgent<SpaceGameAdapter> for BackAndForthAgent {
+    /// Stores the latest role-safe world snapshot used to answer questions.
     async fn observe_state(&mut self, current_observation: SpaceObservation) -> Result<()> {
         self.update_other_player_position(&current_observation);
+        self.current_observation = Some(current_observation);
         Ok(())
     }
 
+    /// Updates movement behavior and the latest role-safe world snapshot after an action.
     async fn observe_action(
         &mut self,
         actor: PlayerRole,
@@ -196,13 +341,34 @@ impl GameAgent<SpaceGameAdapter> for BackAndForthAgent {
             self.other_player_moved = true;
         }
         self.update_other_player_position(&resulting_observation);
+        self.current_observation = Some(resulting_observation);
         Ok(())
     }
 
+    /// Queues a typed or spoken participant utterance for a message-only response.
+    async fn observe_message(
+        &mut self,
+        speaker: PlayerRole,
+        _kind: AgentUtteranceKind,
+        text: String,
+    ) -> Result<()> {
+        if speaker.as_str() != self.role && !text.trim().is_empty() {
+            self.pending_question = Some((speaker, text));
+        }
+        Ok(())
+    }
+
+    /// Answers a pending question before considering the agent's next movement.
     async fn maybe_act(
         &mut self,
         _available_actions: Option<Vec<SpaceAction>>,
     ) -> Result<Option<AgentResponse<SpaceAction>>> {
+        if let Some((speaker, question)) = self.pending_question.take() {
+            return Ok(Some(AgentResponse {
+                message: Some(self.answer_world_question(speaker, &question)),
+                action: None,
+            }));
+        }
         if !self.pending_step {
             return Ok(None);
         }
@@ -232,6 +398,33 @@ impl GameAgent<SpaceGameAdapter> for BackAndForthAgent {
             message,
             action: Some(action),
         }))
+    }
+}
+
+/// Formats a binary component state for a spoken German status response.
+fn on_off(value: bool) -> &'static str {
+    if value {
+        "an"
+    } else {
+        "aus"
+    }
+}
+
+/// Formats a valve state for a spoken German status response.
+fn open_closed(value: bool) -> &'static str {
+    if value {
+        "offen"
+    } else {
+        "geschlossen"
+    }
+}
+
+/// Formats whether one derived system has reached its required state.
+fn ready_not(value: bool) -> &'static str {
+    if value {
+        "bereit"
+    } else {
+        "nicht bereit"
     }
 }
 
@@ -414,5 +607,53 @@ mod tests {
             .unwrap();
 
         assert!(agent.maybe_act(Some(vec![])).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn back_and_forth_agent_answers_spoken_world_questions_without_moving() {
+        let adapter = SpaceGameAdapter::new();
+        let mut agent = BackAndForthAgent::new("B".to_string(), 1, Value::Null);
+        let observation = adapter.observe_state(&initial_state(), PlayerRole::B);
+        agent.observe_state(observation).await.unwrap();
+        let _ = agent.act(Some(vec![])).await.unwrap();
+        agent
+            .observe_message(
+                PlayerRole::A,
+                AgentUtteranceKind::Spoken,
+                "Wo bist du?".to_string(),
+            )
+            .await
+            .unwrap();
+
+        let response = agent.maybe_act(Some(vec![])).await.unwrap().unwrap();
+
+        assert!(response.action.is_none());
+        assert_eq!(
+            response.message.as_deref(),
+            Some("Ich bin im Raum valve bei Position 9, 6.")
+        );
+    }
+
+    #[tokio::test]
+    async fn back_and_forth_agent_reports_visible_launch_blockers() {
+        let adapter = SpaceGameAdapter::new();
+        let mut agent = BackAndForthAgent::new("B".to_string(), 1, Value::Null);
+        let observation = adapter.observe_state(&initial_state(), PlayerRole::B);
+        agent.observe_state(observation).await.unwrap();
+        agent
+            .observe_message(
+                PlayerRole::A,
+                AgentUtteranceKind::Typed,
+                "Sind wir startbereit?".to_string(),
+            )
+            .await
+            .unwrap();
+
+        let response = agent.maybe_act(Some(vec![])).await.unwrap().unwrap();
+        let message = response.message.unwrap();
+
+        assert!(message.contains("Noch nicht startbereit"));
+        assert!(message.contains("stabile Energie"));
+        assert!(message.contains("stabiler Sauerstoff"));
     }
 }

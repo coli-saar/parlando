@@ -32,18 +32,24 @@ use crate::{
         AgentFactory, AgentInitContext, AgentResponse, AgentUtteranceKind, GameAgent,
         SharedAgentFactory,
     },
-    audio_publisher::AgentAudioPublisher,
-    audio_session::{AudioSessionContext, DefaultAudioSessionPlanner, TranscriptionReadiness},
+    audio::{
+        AudioFrame, AudioOutbound, AudioRoomRegistry, SharedAudioRooms, AUDIO_CHANNELS,
+        AUDIO_FRAME_DURATION_MS, AUDIO_PROTOCOL_VERSION, AUDIO_SAMPLE_RATE,
+    },
+    audio_publisher::{AgentAudioPublisher, RoomAgentAudioPublisher},
     config::{AgentOptionConfig, AgentsMode, ExperimentConfig},
     game::{GameAdapter, PlayerRole, Seat},
     identity::{new_id, room_code},
-    livekit::{create_livekit_token, livekit_identity},
     protocol::*,
     storage::{
         experiment_store_from_url, generated_experiment_id, now_iso, ConsentDeclarationRecord,
         ExperimentRecord, GameRoom, MemoryState, ParticipantRecord, RoomParticipant,
         SessionEventRecord, SessionParticipantRecord, SessionRecord, SharedExperimentStore,
         TranscriptSegment,
+    },
+    transcription::{
+        FinalTranscriptUtterance, SpeechmaticsTranscriptionProvider, TranscriptionEvent,
+        TranscriptionInput, TranscriptionProvider, TranscriptionSessionContext,
     },
     tts::{ElevenLabsStreamingTtsProvider, StreamingTtsProvider},
 };
@@ -55,8 +61,10 @@ pub struct ServeOptions<A: GameAdapter> {
     pub agent_factory: Option<Arc<dyn AgentFactory<A>>>,
     /// Streaming TTS provider used for agent-origin conversation messages.
     pub tts_provider: Option<Arc<dyn StreamingTtsProvider>>,
-    /// Optional publisher used to send synthesized agent audio into RTC.
+    /// Optional publisher used to send synthesized agent audio into the room relay.
     pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
+    /// Optional server-side STT provider override used by tests or local deployments.
+    pub transcription_provider: Option<Arc<dyn TranscriptionProvider>>,
     /// Game/client version metadata supplied by the game-specific binary.
     pub game_version_manifest: Option<Value>,
     /// Agent factory selectors the game binary knows how to instantiate.
@@ -70,6 +78,7 @@ impl<A: GameAdapter> Default for ServeOptions<A> {
             agent_factory: None,
             tts_provider: None,
             audio_publisher: None,
+            transcription_provider: None,
             game_version_manifest: None,
             admin_agent_options: vec![],
         }
@@ -89,6 +98,10 @@ pub struct AppState<A: GameAdapter> {
     agent_inboxes: RwLock<HashMap<String, mpsc::Sender<AgentObservation<A>>>>,
     pub tts_provider: Option<Arc<dyn StreamingTtsProvider>>,
     pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
+    pub audio_rooms: SharedAudioRooms,
+    pub transcription_provider: Option<Arc<dyn TranscriptionProvider>>,
+    committed_transcripts: RwLock<HashSet<String>>,
+    audio_tokens: RwLock<HashMap<String, AudioTokenClaims>>,
     pub version_manifest: Value,
     pub admin_agent_options: Vec<AgentOptionConfig>,
 }
@@ -298,6 +311,26 @@ where
     } else {
         None
     };
+    let audio_rooms = Arc::new(AudioRoomRegistry::default());
+    let transcription_provider = if options.transcription_provider.is_some() {
+        options.transcription_provider
+    } else if config.transcription.enabled && config.transcription.provider == "speechmatics" {
+        Some(Arc::new(SpeechmaticsTranscriptionProvider::new(
+            config.speechmatics.clone(),
+        )?) as Arc<dyn TranscriptionProvider>)
+    } else {
+        None
+    };
+    let audio_publisher = if options.audio_publisher.is_some() {
+        options.audio_publisher
+    } else if config.tts.enabled && config.voice.enabled {
+        Some(Arc::new(RoomAgentAudioPublisher::new(
+            audio_rooms.clone(),
+            config.voice.jitter_buffer_ms,
+        )) as Arc<dyn AgentAudioPublisher>)
+    } else {
+        None
+    };
     let state = Arc::new(AppState {
         adapter,
         config,
@@ -309,7 +342,11 @@ where
         started_agents: RwLock::new(HashSet::new()),
         agent_inboxes: RwLock::new(HashMap::new()),
         tts_provider,
-        audio_publisher: options.audio_publisher,
+        audio_publisher,
+        audio_rooms,
+        transcription_provider,
+        committed_transcripts: RwLock::new(HashSet::new()),
+        audio_tokens: RwLock::new(HashMap::new()),
         version_manifest,
         admin_agent_options: options.admin_agent_options,
     });
@@ -323,18 +360,9 @@ where
         .route("/api/rooms", post(create_room::<A>))
         .route("/api/rooms/:room_id/join", post(join_room::<A>))
         .route(
-            "/api/rooms/:room_id/livekit-token",
-            post(livekit_token::<A>),
-        )
-        .route(
-            "/api/rooms/:room_id/livekit-worker-token",
-            post(livekit_worker_token::<A>),
-        )
-        .route(
             "/api/rooms/:room_id/audio-session",
             post(audio_session::<A>),
         )
-        .route("/api/rooms/:room_id/transcripts", post(add_transcript::<A>))
         .route(
             "/api/rooms/:room_id/voice-diagnostics",
             post(add_voice_diagnostic::<A>),
@@ -364,6 +392,7 @@ where
         )
         .route("/api/admin/export", get(admin_export::<A>))
         .route("/ws/game/:room_id", get(game_socket::<A>))
+        .route("/ws/audio/:room_id", get(audio_socket::<A>))
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
@@ -399,19 +428,20 @@ async fn public_config<A: GameAdapter>(
                 required: item.required,
             })
             .collect(),
-        livekit: json!({"enabled": config.livekit.enabled, "url": if config.livekit.enabled { Some(config.livekit.url.clone()) } else { None }}),
+        voice: json!({
+            "enabled": config.voice.enabled,
+            "transport": "websocket",
+            "sample_rate_hz": config.voice.sample_rate_hz,
+            "frame_duration_ms": config.voice.frame_duration_ms,
+            "jitter_buffer_ms": config.voice.jitter_buffer_ms,
+        }),
         transcription: json!({
             "enabled": config.transcription.enabled,
-            "provider": config.transcription.provider,
-            "model": config.transcription.model,
             "language": config.transcription.language,
-            "worker_autostart": config.transcription.worker_autostart,
             "store_audio": config.transcription.store_audio,
         }),
         tts: json!({
             "enabled": config.tts.enabled,
-            "provider": config.tts.provider,
-            "model": config.tts.model,
             "voice_name": if config.tts.voice_name.is_empty() { None } else { Some(config.tts.voice_name.clone()) },
             "worker_autostart": config.tts.worker_autostart,
         }),
@@ -1016,111 +1046,86 @@ where
     })
 }
 
-async fn livekit_token<A: GameAdapter>(
-    State(state): State<Arc<AppState<A>>>,
-    Path(room_id): Path<String>,
-    Json(request): Json<LiveKitTokenRequest>,
-) -> Result<Json<LiveKitTokenResponse>, AppError> {
-    let role = participant_role(&state, &room_id, &request.participant_session_id).await?;
-    if !state.config.livekit.enabled {
-        return Ok(Json(LiveKitTokenResponse::disabled()));
-    }
-    let token = create_livekit_token(
-        &state.config.livekit,
-        &room_id,
-        role.as_str(),
-        &request.participant_session_id,
-        3600,
-    )
-    .map_err(|error| AppError::bad_request(error.to_string()))?;
-    Ok(Json(LiveKitTokenResponse {
-        enabled: true,
-        url: Some(state.config.livekit.url.clone()),
-        token: Some(token),
-        identity: Some(livekit_identity(
-            &room_id,
-            role.as_str(),
-            &request.participant_session_id,
-        )),
-    }))
-}
-
-async fn livekit_worker_token<A: GameAdapter>(
-    State(state): State<Arc<AppState<A>>>,
-    Path(room_id): Path<String>,
-    Json(request): Json<LiveKitWorkerTokenRequest>,
-) -> Result<Json<LiveKitTokenResponse>, AppError> {
-    require_room(&state, &room_id).await?;
-    if !state.config.livekit.enabled {
-        return Ok(Json(LiveKitTokenResponse::disabled()));
-    }
-    let participant_session_id = format!("worker-{}", request.role);
-    let token = create_livekit_token(
-        &state.config.livekit,
-        &room_id,
-        &request.role,
-        &participant_session_id,
-        3600,
-    )
-    .map_err(|error| AppError::bad_request(error.to_string()))?;
-    Ok(Json(LiveKitTokenResponse {
-        enabled: true,
-        url: Some(state.config.livekit.url.clone()),
-        token: Some(token),
-        identity: Some(livekit_identity(
-            &room_id,
-            &request.role,
-            &participant_session_id,
-        )),
-    }))
-}
-
 async fn audio_session<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
     Path(room_id): Path<String>,
     Json(request): Json<AudioSessionRequest>,
 ) -> Result<Json<AudioSessionPlanResponse>, AppError> {
     let role = participant_role(&state, &room_id, &request.participant_session_id).await?;
-    let planned = DefaultAudioSessionPlanner::plan(AudioSessionContext {
-        config: &state.config,
-        room_id: &room_id,
-        role: role.as_str(),
-        participant_session_id: &request.participant_session_id,
-        token_ttl_seconds: 3600,
-    })
-    .await?;
-    if planned.transcription_readiness == TranscriptionReadiness::SatisfiedByPlan {
-        mark_participant_audio_ready(&state, &room_id, &request.participant_session_id).await;
-        let _ = state
-            .room_bus(&room_id)
-            .await
-            .send(voice_message(&state, &room_id).await);
-        maybe_start_game(state.clone(), &room_id).await;
+    if !state.config.voice.enabled {
+        return Ok(Json(AudioSessionPlanResponse::disabled()));
     }
-    Ok(Json(planned.response))
+    let claims = AudioTokenClaims {
+        room_id: room_id.clone(),
+        participant_session_id: request.participant_session_id,
+        role: role.as_str().to_string(),
+        exp: chrono::Utc::now().timestamp() + 300,
+    };
+    let token = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp();
+    let mut tokens = state.audio_tokens.write().await;
+    tokens.retain(|_, existing| existing.exp > now);
+    tokens.insert(token.clone(), claims);
+    drop(tokens);
+    let websocket_base = state
+        .config
+        .server
+        .public_base_url
+        .trim_end_matches('/')
+        .replacen("https://", "wss://", 1)
+        .replacen("http://", "ws://", 1);
+    Ok(Json(AudioSessionPlanResponse {
+        enabled: true,
+        websocket_url: Some(format!("{websocket_base}/ws/audio/{room_id}")),
+        token: Some(token),
+        protocol_version: AUDIO_PROTOCOL_VERSION,
+        sample_rate_hz: AUDIO_SAMPLE_RATE,
+        channels: AUDIO_CHANNELS,
+        frame_duration_ms: AUDIO_FRAME_DURATION_MS,
+        jitter_buffer_ms: state.config.voice.jitter_buffer_ms,
+    }))
 }
 
-async fn add_transcript<A: GameAdapter>(
-    State(state): State<Arc<AppState<A>>>,
-    Path(room_id): Path<String>,
-    Json(segment): Json<TranscriptSegmentIn>,
-) -> Result<Json<TranscriptSegment>, AppError> {
-    let role = participant_role(&state, &room_id, &segment.participant_session_id).await?;
-    ensure_room_accepts_game_input(&state, &room_id).await?;
+/// Commits one final provider utterance to storage, conversation, and agents.
+async fn commit_final_transcript<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+    room_id: &str,
+    participant_session_id: &str,
+    utterance: FinalTranscriptUtterance,
+) -> Result<Option<TranscriptSegment>, AppError> {
+    let role = participant_role(state, room_id, participant_session_id).await?;
+    ensure_room_accepts_game_input(state, room_id).await?;
+    let provider_identity = if utterance.result_ids.is_empty() {
+        format!(
+            "{}:{}:{}",
+            utterance.start_time_ms, utterance.end_time_ms, utterance.text
+        )
+    } else {
+        utterance.result_ids.join(",")
+    };
+    let idempotency_key = format!("{room_id}:{participant_session_id}:{provider_identity}");
+    if !state
+        .committed_transcripts
+        .write()
+        .await
+        .insert(idempotency_key)
+    {
+        return Ok(None);
+    }
     let stored = TranscriptSegment {
         id: new_id("tr"),
-        room_id: room_id.clone(),
-        participant_session_id: segment.participant_session_id.clone(),
+        room_id: room_id.to_string(),
+        participant_session_id: participant_session_id.to_string(),
         player: role.as_str().to_string(),
-        start_time_ms: segment.start_time_ms,
-        end_time_ms: segment.end_time_ms,
-        text: segment.text.clone(),
-        metadata: segment.metadata.clone(),
+        start_time_ms: utterance.start_time_ms,
+        end_time_ms: utterance.end_time_ms,
+        text: utterance.text,
+        metadata: json!({"provider":state.config.transcription.provider,"result_ids":utterance.result_ids}),
         created_at: now_iso(),
     };
     let message = ConversationMessageResponse {
         id: new_id("msg"),
-        room_id: room_id.clone(),
+        room_id: room_id.to_string(),
         sender_participant_session_id: Some(stored.participant_session_id.clone()),
         sender_role: Some(stored.player.clone()),
         text: stored.text.clone(),
@@ -1135,8 +1140,8 @@ async fn add_transcript<A: GameAdapter>(
         created_at: now_iso(),
     };
     persist_session_event(
-        &state,
-        &room_id,
+        state,
+        room_id,
         Some(&stored.participant_session_id),
         "transcript_segment",
         serde_json::to_value(&stored).unwrap(),
@@ -1144,30 +1149,30 @@ async fn add_transcript<A: GameAdapter>(
     )
     .await;
     persist_session_event(
-        &state,
-        &room_id,
+        state,
+        room_id,
         message.sender_participant_session_id.as_deref(),
         "conversation_message",
         serde_json::to_value(&message).unwrap(),
         None,
     )
     .await;
-    let _ = state.room_bus(&room_id).await.send(ServerMessage {
+    let _ = state.room_bus(room_id).await.send(ServerMessage {
         conversation_message: Some(message),
-        room_id: Some(room_id.clone()),
+        room_id: Some(room_id.to_string()),
         ..ServerMessage::new("conversationMessageAdded")
     });
     if let Some(speaker) = player_role_from_str(&stored.player) {
         notify_agents_of_message(
-            &state,
-            &room_id,
+            state,
+            room_id,
             speaker,
             AgentUtteranceKind::Spoken,
             stored.text.clone(),
         )
         .await;
     }
-    Ok(Json(stored))
+    Ok(Some(stored))
 }
 
 async fn add_voice_diagnostic<A: GameAdapter>(
@@ -3349,6 +3354,182 @@ where
     }))
 }
 
+#[derive(Clone, Debug)]
+struct AudioTokenClaims {
+    room_id: String,
+    participant_session_id: String,
+    role: String,
+    exp: i64,
+}
+
+#[derive(Deserialize)]
+struct AudioSocketQuery {
+    token: String,
+}
+
+/// Authenticates and upgrades one participant-owned audio transport.
+async fn audio_socket<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Path(room_id): Path<String>,
+    Query(query): Query<AudioSocketQuery>,
+    ws: WebSocketUpgrade,
+) -> Result<Response, AppError>
+where
+    A::State: Serialize,
+{
+    let claims = state
+        .audio_tokens
+        .write()
+        .await
+        .remove(&query.token)
+        .filter(|claims| claims.exp > chrono::Utc::now().timestamp())
+        .ok_or_else(|| AppError::forbidden("Invalid or expired audio token"))?;
+    if claims.room_id != room_id {
+        return Err(AppError::forbidden("Audio token belongs to another room"));
+    }
+    let role = participant_role(&state, &room_id, &claims.participant_session_id).await?;
+    if role.as_str() != claims.role {
+        return Err(AppError::forbidden(
+            "Audio token role no longer matches participant",
+        ));
+    }
+    Ok(ws.on_upgrade(move |socket| audio_websocket_loop(state, socket, claims)))
+}
+
+/// Relays browser PCM and consumes normalized server-side transcription events.
+async fn audio_websocket_loop<A: GameAdapter>(
+    state: Arc<AppState<A>>,
+    socket: WebSocket,
+    claims: AudioTokenClaims,
+) where
+    A::State: Serialize,
+{
+    let room_id = claims.room_id.clone();
+    let role = claims.role.clone();
+    let participant_session_id = claims.participant_session_id.clone();
+    let (generation, mut outbound) = state.audio_rooms.connect(&room_id, &role).await;
+    let (mut sender, mut incoming) = socket.split();
+    let send_task = tokio::spawn(async move {
+        while let Some(outbound) = outbound.recv().await {
+            let message = match outbound {
+                AudioOutbound::Binary(bytes) => Message::Binary(bytes),
+                AudioOutbound::Text(text) => Message::Text(text),
+            };
+            if sender.send(message).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let transcription = if let Some(provider) = state.transcription_provider.clone() {
+        match provider
+            .start_session(TranscriptionSessionContext {
+                room_id: room_id.clone(),
+                participant_session_id: participant_session_id.clone(),
+                role: role.clone(),
+                language: state.config.transcription.language.clone(),
+                model: state.config.transcription.model.clone(),
+            })
+            .await
+        {
+            Ok(session) => Some(session),
+            Err(error) => {
+                tracing::warn!(%error, %room_id, "could not start transcription session");
+                state
+                    .audio_rooms
+                    .send_control(
+                        &room_id,
+                        &role,
+                        json!({"type":"transcriptionStatus","ready":false,"message":"ASR unavailable"}).to_string(),
+                    )
+                    .await;
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let transcription_input = transcription.as_ref().map(|session| session.input.clone());
+    let event_task = transcription.map(|mut session| {
+        let state = state.clone();
+        let room_id = room_id.clone();
+        let role = role.clone();
+        let participant_session_id = participant_session_id.clone();
+        tokio::spawn(async move {
+            while let Some(event) = session.events.recv().await {
+                match event {
+                    TranscriptionEvent::Ready => {
+                        state.audio_rooms.send_control(&room_id, &role, json!({"type":"transcriptionStatus","ready":true,"message":"ASR listening"}).to_string()).await;
+                        mark_participant_audio_ready(&state, &room_id, &participant_session_id).await;
+                        let _ = state.room_bus(&room_id).await.send(voice_message(&state, &room_id).await);
+                        maybe_start_game(state.clone(), &room_id).await;
+                    }
+                    TranscriptionEvent::FinalUtterance(utterance) => {
+                        if let Err(error) = commit_final_transcript(&state, &room_id, &participant_session_id, utterance).await {
+                            tracing::warn!(error = %error.message, %room_id, "failed to commit final transcript");
+                        }
+                    }
+                    TranscriptionEvent::Partial(_) => {}
+                    TranscriptionEvent::Failed(error) => {
+                        state.audio_rooms.send_control(&room_id, &role, json!({"type":"transcriptionStatus","ready":false,"message":"ASR error"}).to_string()).await;
+                        tracing::warn!(%error, %room_id, "transcription session failed");
+                    }
+                }
+            }
+        })
+    });
+    if transcription_input.is_none() && !state.config.transcription.enabled {
+        state
+            .audio_rooms
+            .send_control(
+                &room_id,
+                &role,
+                json!({"type":"transcriptionStatus","ready":true,"message":"ASR idle"}).to_string(),
+            )
+            .await;
+        mark_participant_audio_ready(&state, &room_id, &participant_session_id).await;
+        let _ = state
+            .room_bus(&room_id)
+            .await
+            .send(voice_message(&state, &room_id).await);
+        maybe_start_game(state.clone(), &room_id).await;
+    }
+
+    while let Some(Ok(message)) = incoming.next().await {
+        match message {
+            Message::Binary(bytes) => match AudioFrame::decode(&bytes) {
+                Ok(frame) => {
+                    state
+                        .audio_rooms
+                        .relay_partner(&room_id, &role, bytes)
+                        .await;
+                    if let Some(input) = &transcription_input {
+                        if input.try_send(TranscriptionInput::Audio(frame)).is_err() {
+                            state.audio_rooms.send_control(&room_id, &role, json!({"type":"transcriptionStatus","ready":false,"message":"ASR is falling behind"}).to_string()).await;
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, %room_id, "rejected invalid browser audio frame")
+                }
+            },
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+    if let Some(input) = transcription_input {
+        let _ = input.send(TranscriptionInput::Finish).await;
+    }
+    state
+        .audio_rooms
+        .disconnect(&room_id, &role, &generation)
+        .await;
+    send_task.abort();
+    if let Some(task) = event_task {
+        let _ = task.await;
+    }
+}
+
 async fn websocket_loop<A: GameAdapter>(
     state: Arc<AppState<A>>,
     socket: WebSocket,
@@ -5036,7 +5217,7 @@ mod tests {
                 135,
                 "voice_diagnostic",
                 Some("A"),
-                json!({"event": "livekit_disconnected"}),
+                json!({"event": "audio_transport_disconnected"}),
             ),
         ];
 
@@ -5689,12 +5870,9 @@ mod tests {
         (config, temp)
     }
 
-    fn livekit_enabled_config() -> ExperimentConfig {
+    fn voice_enabled_config() -> ExperimentConfig {
         let mut config = step_five_config();
-        config.livekit.enabled = true;
-        config.livekit.url = "wss://livekit.example.test".to_string();
-        config.livekit.api_key = "livekit-key".to_string();
-        config.livekit.api_secret = "livekit-secret".to_string();
+        config.voice.enabled = true;
         config
     }
 
@@ -5804,37 +5982,6 @@ mod tests {
             axum::serve(listener, router).await.unwrap();
         });
         (format!("http://{addr}"), handle)
-    }
-
-    // Starts a local Speechmatics management mock that returns one temporary key.
-    async fn spawn_speechmatics_key_server(key: &'static str) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let router = Router::new().route(
-            "/",
-            axum::routing::post(move || async move { Json(json!({"key_value": key})) }),
-        );
-        tokio::spawn(async move {
-            axum::serve(listener, router).await.unwrap();
-        });
-        format!("http://{addr}")
-    }
-
-    // Starts a Speechmatics management mock that intentionally delays key minting.
-    async fn spawn_delayed_speechmatics_key_server(key: &'static str, delay: Duration) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let router = Router::new().route(
-            "/",
-            axum::routing::post(move || async move {
-                tokio::time::sleep(delay).await;
-                Json(json!({"key_value": key}))
-            }),
-        );
-        tokio::spawn(async move {
-            axum::serve(listener, router).await.unwrap();
-        });
-        format!("http://{addr}")
     }
 
     // Reads WebSocket messages until the requested server-message type appears.
@@ -5955,6 +6102,62 @@ mod tests {
         )
     }
 
+    // Requests one participant-bound audio plan and verifies that it is enabled.
+    async fn request_audio_plan(router: Router, room_id: &str, participant_id: &str) -> Value {
+        let (status, plan) = json_request(
+            router,
+            http::Method::POST,
+            &format!("/api/rooms/{room_id}/audio-session"),
+            json!({"participant_session_id": participant_id}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(plan["enabled"], true);
+        plan
+    }
+
+    // Reads past control messages until the next binary audio frame arrives.
+    async fn read_audio_binary<S>(socket: &mut S) -> Vec<u8>
+    where
+        S: futures_util::Stream<
+                Item = Result<TungsteniteMessage, tokio_tungstenite::tungstenite::Error>,
+            > + Unpin,
+    {
+        loop {
+            let message = tokio::time::timeout(Duration::from_secs(2), socket.next())
+                .await
+                .expect("timed out waiting for binary audio")
+                .expect("audio WebSocket closed before binary audio")
+                .expect("audio WebSocket read failed");
+            if let TungsteniteMessage::Binary(bytes) = message {
+                return bytes.to_vec();
+            }
+        }
+    }
+
+    // Verifies that no binary audio reaches a socket during a short isolation window.
+    async fn assert_no_audio_binary<S>(socket: &mut S)
+    where
+        S: futures_util::Stream<
+                Item = Result<TungsteniteMessage, tokio_tungstenite::tungstenite::Error>,
+            > + Unpin,
+    {
+        let received = tokio::time::timeout(Duration::from_millis(200), async {
+            loop {
+                let Some(message) = socket.next().await else {
+                    return false;
+                };
+                match message {
+                    Ok(TungsteniteMessage::Binary(_)) => return true,
+                    Ok(_) => continue,
+                    Err(_) => return false,
+                }
+            }
+        })
+        .await;
+        assert!(!matches!(received, Ok(true)), "audio leaked across rooms");
+    }
+
     // Creates one human-vs-agent waiting room and returns the human and room ids.
     async fn create_human_vs_agent_room(router: Router, name: &str) -> (String, String) {
         let human = create_direct_participant(router.clone(), name).await;
@@ -6046,9 +6249,9 @@ mod tests {
     async fn health_and_public_config_expose_client_bootstrap_shape() {
         let mut config = step_five_config();
         config.study.name = "Bootstrap Study".to_string();
-        config.livekit.enabled = true;
-        config.livekit.url = "wss://livekit.example.test".to_string();
+        config.voice.enabled = true;
         config.transcription.enabled = true;
+        config.speechmatics.api_key = "test-key".to_string();
         config.tts.enabled = true;
         config.tts.voice_id = "voice-1".to_string();
         config.tts.api_key = "tts-secret".to_string();
@@ -6068,11 +6271,8 @@ mod tests {
         assert_eq!(public_config["study_name"], "Bootstrap Study");
         assert_eq!(public_config["require_consent"], true);
         assert_eq!(public_config["consents"][0]["id"], "study");
-        assert_eq!(public_config["livekit"]["enabled"], true);
-        assert_eq!(
-            public_config["livekit"]["url"],
-            "wss://livekit.example.test"
-        );
+        assert_eq!(public_config["voice"]["enabled"], true);
+        assert_eq!(public_config["voice"]["transport"], "websocket");
         assert_eq!(public_config["transcription"]["enabled"], true);
         assert_eq!(public_config["tts"]["voice_name"], "Agent Voice");
         assert_eq!(public_config["conversation"]["enabled"], true);
@@ -6148,22 +6348,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn audio_session_and_livekit_token_are_disabled_when_livekit_is_disabled() {
+    async fn audio_session_is_disabled_when_voice_is_disabled() {
         let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
             .await
             .unwrap();
         let (a, _b, room_id) = create_joined_room(router.clone()).await;
-
-        let (token_status, token) = json_request(
-            router.clone(),
-            http::Method::POST,
-            &format!("/api/rooms/{room_id}/livekit-token"),
-            json!({"participant_session_id": a}),
-        )
-        .await;
-        assert_eq!(token_status, StatusCode::OK);
-        assert_eq!(token["enabled"], false);
-        assert!(token["token"].is_null());
 
         let (audio_status, audio) = json_request(
             router,
@@ -6174,80 +6363,12 @@ mod tests {
         .await;
         assert_eq!(audio_status, StatusCode::OK);
         assert_eq!(audio["enabled"], false);
-        assert!(audio["sinks"].as_array().unwrap().is_empty());
+        assert!(audio["token"].is_null());
     }
 
     #[tokio::test]
-    async fn livekit_token_worker_token_and_combined_audio_session_match_client_shape() {
-        let router = build_router(
-            TinyAdapter,
-            livekit_enabled_config(),
-            ServeOptions::default(),
-        )
-        .await
-        .unwrap();
-        let (a, _b, room_id) = create_joined_room(router.clone()).await;
-
-        let (token_status, token) = json_request(
-            router.clone(),
-            http::Method::POST,
-            &format!("/api/rooms/{room_id}/livekit-token"),
-            json!({"participant_session_id": a}),
-        )
-        .await;
-        assert_eq!(token_status, StatusCode::OK);
-        assert_eq!(token["enabled"], true);
-        assert_eq!(token["url"], "wss://livekit.example.test");
-        assert_eq!(token["identity"], format!("{room_id}:A:{a}"));
-        assert!(token["token"]
-            .as_str()
-            .is_some_and(|value| !value.is_empty()));
-
-        let (worker_status, worker) = json_request(
-            router.clone(),
-            http::Method::POST,
-            &format!("/api/rooms/{room_id}/livekit-worker-token"),
-            json!({"role": "transcription-worker"}),
-        )
-        .await;
-        assert_eq!(worker_status, StatusCode::OK);
-        assert_eq!(
-            worker["identity"],
-            format!("{room_id}:transcription-worker:worker-transcription-worker")
-        );
-
-        let (audio_status, audio) = json_request(
-            router,
-            http::Method::POST,
-            &format!("/api/rooms/{room_id}/audio-session"),
-            json!({"participant_session_id": a}),
-        )
-        .await;
-        assert_eq!(audio_status, StatusCode::OK);
-        assert_eq!(audio["enabled"], true);
-        assert_eq!(audio["sinks"].as_array().unwrap().len(), 1);
-        assert_eq!(audio["sinks"][0]["id"], "livekit-combined");
-        assert_eq!(audio["sinks"][0]["provider"], "livekit");
-        assert_eq!(audio["sinks"][0]["transport"], "webrtc-room");
-        assert_eq!(
-            audio["sinks"][0]["purposes"],
-            json!(["partner-audio", "transcription"])
-        );
-    }
-
-    #[tokio::test]
-    async fn speechmatics_audio_session_uses_split_livekit_and_temporary_key_sinks() {
-        let mut config = livekit_enabled_config();
-        config.transcription.enabled = true;
-        config.transcription.provider = "speechmatics".to_string();
-        config.transcription.language = "de".to_string();
-        config.transcription.model = "test-model".to_string();
-        config.speechmatics.enabled = true;
-        config.speechmatics.api_key = "permanent-key".to_string();
-        config.speechmatics.management_url = spawn_speechmatics_key_server("temporary-key").await;
-        config.speechmatics.realtime_url = "wss://speechmatics.example.test/v2".to_string();
-        config.speechmatics.temporary_key_ttl_seconds = 321;
-        let router = build_router(TinyAdapter, config, ServeOptions::default())
+    async fn enabled_audio_session_returns_parlando_websocket_contract() {
+        let router = build_router(TinyAdapter, voice_enabled_config(), ServeOptions::default())
             .await
             .unwrap();
         let (a, _b, room_id) = create_joined_room(router.clone()).await;
@@ -6259,26 +6380,198 @@ mod tests {
             json!({"participant_session_id": a}),
         )
         .await;
-
         assert_eq!(audio_status, StatusCode::OK);
         assert_eq!(audio["enabled"], true);
-        assert_eq!(audio["sinks"].as_array().unwrap().len(), 2);
-        assert_eq!(audio["sinks"][0]["id"], "livekit-partner");
-        assert_eq!(audio["sinks"][0]["purposes"], json!(["partner-audio"]));
-        assert_eq!(audio["sinks"][1]["id"], "speechmatics-transcription");
-        assert_eq!(audio["sinks"][1]["provider"], "speechmatics");
-        assert_eq!(audio["sinks"][1]["transport"], "websocket-stt");
+        assert_eq!(audio["protocol_version"], 1);
+        assert_eq!(audio["sample_rate_hz"], 24000);
+        assert!(audio["websocket_url"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("/ws/audio/{room_id}")));
+        assert!(audio["token"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+    }
+
+    /// Deterministic provider that finalizes the first received audio frame twice.
+    struct DuplicateFinalTranscriptionProvider;
+
+    #[async_trait]
+    impl TranscriptionProvider for DuplicateFinalTranscriptionProvider {
+        /// Starts a test session whose duplicate finals exercise idempotent persistence.
+        async fn start_session(
+            &self,
+            _context: TranscriptionSessionContext,
+        ) -> Result<crate::transcription::TranscriptionSessionHandle> {
+            let (input, mut inputs) = mpsc::channel(4);
+            let (events, event_receiver) = mpsc::channel(4);
+            tokio::spawn(async move {
+                let _ = events.send(TranscriptionEvent::Ready).await;
+                while let Some(message) = inputs.recv().await {
+                    if matches!(message, TranscriptionInput::Audio(_)) {
+                        let utterance = FinalTranscriptUtterance {
+                            start_time_ms: 0,
+                            end_time_ms: 20,
+                            text: "relay transcript".to_string(),
+                            result_ids: vec!["stable-result".to_string()],
+                        };
+                        let _ = events
+                            .send(TranscriptionEvent::FinalUtterance(utterance.clone()))
+                            .await;
+                        let _ = events
+                            .send(TranscriptionEvent::FinalUtterance(utterance))
+                            .await;
+                        break;
+                    }
+                }
+            });
+            Ok(crate::transcription::TranscriptionSessionHandle {
+                input,
+                events: event_receiver,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn audio_websocket_relays_pcm_and_commits_one_final_utterance() {
+        let mut config = voice_enabled_config();
+        config.transcription.enabled = true;
+        config.speechmatics.api_key = "server-only-test-key".to_string();
+        let router = build_router(
+            TinyAdapter,
+            config,
+            ServeOptions {
+                transcription_provider: Some(Arc::new(DuplicateFinalTranscriptionProvider)),
+                ..ServeOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (a, b, room_id) = create_joined_room(router.clone()).await;
+        let (_, plan_a) = json_request(
+            router.clone(),
+            http::Method::POST,
+            &format!("/api/rooms/{room_id}/audio-session"),
+            json!({"participant_session_id":a}),
+        )
+        .await;
+        let (_, plan_b) = json_request(
+            router.clone(),
+            http::Method::POST,
+            &format!("/api/rooms/{room_id}/audio-session"),
+            json!({"participant_session_id":b}),
+        )
+        .await;
+        let (base_url, server) = spawn_test_server(router.clone()).await;
+        let host = base_url.trim_start_matches("http://");
+        let (mut socket_b, _) = connect_async(format!(
+            "ws://{host}/ws/audio/{room_id}?token={}",
+            plan_b["token"].as_str().unwrap()
+        ))
+        .await
+        .unwrap();
+        let (mut socket_a, _) = connect_async(format!(
+            "ws://{host}/ws/audio/{room_id}?token={}",
+            plan_a["token"].as_str().unwrap()
+        ))
+        .await
+        .unwrap();
+        let frame = AudioFrame {
+            sequence: 0,
+            timestamp_ms: 0,
+            pcm: vec![0; crate::audio::AUDIO_FRAME_BYTES],
+        }
+        .encode();
+        socket_a
+            .send(TungsteniteMessage::Binary(frame.clone()))
+            .await
+            .unwrap();
+        loop {
+            let message = tokio::time::timeout(Duration::from_secs(2), socket_b.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if matches!(message, TungsteniteMessage::Binary(bytes) if bytes == frame) {
+                break;
+            }
+        }
+        let export = wait_for_export_event(router, "transcript_segment").await;
         assert_eq!(
-            audio["sinks"][1]["credentials"]["temporary_key"],
-            "temporary-key"
+            export["session_events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|event| event["event_type"] == "transcript_segment")
+                .count(),
+            1
         );
-        assert_eq!(
-            audio["sinks"][1]["credentials"]["realtime_url"],
-            "wss://speechmatics.example.test/v2"
-        );
-        assert_eq!(audio["sinks"][1]["credentials"]["language"], "de");
-        assert_eq!(audio["sinks"][1]["credentials"]["model"], "test-model");
-        assert_eq!(audio["sinks"][1]["credentials"]["ttl_seconds"], 321);
+        server.abort();
+    }
+
+    /// Proves that two simultaneous player pairs receive audio only inside their own rooms.
+    #[tokio::test]
+    async fn audio_websockets_isolate_two_simultaneous_player_pairs() {
+        let router = build_router(TinyAdapter, voice_enabled_config(), ServeOptions::default())
+            .await
+            .unwrap();
+        let (a_one, b_one, room_one) = create_joined_room(router.clone()).await;
+        let (a_two, b_two, room_two) = create_joined_room(router.clone()).await;
+        assert_ne!(room_one, room_two);
+
+        let plan_a_one = request_audio_plan(router.clone(), &room_one, &a_one).await;
+        let plan_b_one = request_audio_plan(router.clone(), &room_one, &b_one).await;
+        let plan_a_two = request_audio_plan(router.clone(), &room_two, &a_two).await;
+        let plan_b_two = request_audio_plan(router.clone(), &room_two, &b_two).await;
+        let tokens = [
+            plan_a_one["token"].as_str().unwrap(),
+            plan_b_one["token"].as_str().unwrap(),
+            plan_a_two["token"].as_str().unwrap(),
+            plan_b_two["token"].as_str().unwrap(),
+        ];
+        for (index, token) in tokens.iter().enumerate() {
+            assert!(tokens[..index].iter().all(|existing| existing != token));
+        }
+
+        let (base_url, server) = spawn_test_server(router).await;
+        let host = base_url.trim_start_matches("http://");
+        let connect = |room_id: &str, token: &str| {
+            connect_async(format!("ws://{host}/ws/audio/{room_id}?token={token}"))
+        };
+        let (mut socket_a_one, _) = connect(&room_one, tokens[0]).await.unwrap();
+        let (mut socket_b_one, _) = connect(&room_one, tokens[1]).await.unwrap();
+        let (mut socket_a_two, _) = connect(&room_two, tokens[2]).await.unwrap();
+        let (mut socket_b_two, _) = connect(&room_two, tokens[3]).await.unwrap();
+
+        let frame_one = AudioFrame {
+            sequence: 11,
+            timestamp_ms: 220,
+            pcm: vec![1; crate::audio::AUDIO_FRAME_BYTES],
+        }
+        .encode();
+        let frame_two = AudioFrame {
+            sequence: 22,
+            timestamp_ms: 440,
+            pcm: vec![2; crate::audio::AUDIO_FRAME_BYTES],
+        }
+        .encode();
+        socket_a_one
+            .send(TungsteniteMessage::Binary(frame_one.clone()))
+            .await
+            .unwrap();
+        assert_eq!(read_audio_binary(&mut socket_b_one).await, frame_one);
+        assert_no_audio_binary(&mut socket_a_two).await;
+        assert_no_audio_binary(&mut socket_b_two).await;
+
+        socket_a_two
+            .send(TungsteniteMessage::Binary(frame_two.clone()))
+            .await
+            .unwrap();
+        assert_eq!(read_audio_binary(&mut socket_b_two).await, frame_two);
+        assert_no_audio_binary(&mut socket_a_one).await;
+        assert_no_audio_binary(&mut socket_b_one).await;
+
+        server.abort();
     }
 
     #[tokio::test]
@@ -6836,80 +7129,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn human_agent_waits_for_speechmatics_audio_session_before_agent_start() {
-        let mut config = human_vs_agent_config();
-        config.livekit.enabled = true;
-        config.livekit.url = "wss://livekit.example.test".to_string();
-        config.livekit.api_key = "livekit-key".to_string();
-        config.livekit.api_secret = "livekit-secret".to_string();
-        config.transcription.enabled = true;
-        config.transcription.provider = "speechmatics".to_string();
-        config.speechmatics.enabled = true;
-        config.speechmatics.api_key = "permanent-key".to_string();
-        config.speechmatics.management_url =
-            spawn_delayed_speechmatics_key_server("temporary-key", Duration::from_millis(500))
-                .await;
-        config.speechmatics.realtime_url = "wss://speechmatics.example.test/v2".to_string();
-
-        let factory = Arc::new(ScriptedAgentFactory::new(vec![vec![scripted_response(
-            Some("agent starts after stt"),
-            None,
-        )]]));
-        let router = build_router(
-            TinyAdapter,
-            config,
-            ServeOptions {
-                agent_factory: Some(factory),
-                ..ServeOptions::default()
-            },
-        )
-        .await
-        .unwrap();
-        let (human, room_id) = create_human_vs_agent_room(router.clone(), "Human").await;
-        let (base_url, server) = spawn_test_server(router.clone()).await;
-        let host = base_url.trim_start_matches("http://");
-        let (mut socket, _) = connect_async(format!(
-            "ws://{host}/ws/game/{room_id}?participantSessionId={human}"
-        ))
-        .await
-        .unwrap();
-        assert_no_ws_type(&mut socket, "roleAssigned").await;
-        assert_no_ws_type(&mut socket, "conversationMessageAdded").await;
-
-        let client = reqwest::Client::new();
-        let audio_base_url = base_url.clone();
-        let audio_room_id = room_id.clone();
-        let audio_human = human.clone();
-        let audio_session = tokio::spawn(async move {
-            client
-                .post(format!(
-                    "{audio_base_url}/api/rooms/{audio_room_id}/audio-session"
-                ))
-                .json(&json!({"participant_session_id": audio_human}))
-                .send()
-                .await
-                .unwrap()
-                .error_for_status()
-                .unwrap()
-                .json::<Value>()
-                .await
-                .unwrap()
-        });
-        assert_no_ws_type(&mut socket, "conversationMessageAdded").await;
-        let audio = audio_session.await.unwrap();
-        assert_eq!(audio["enabled"], true);
-        let assigned = read_ws_type(&mut socket, "roleAssigned").await;
-        assert_eq!(assigned["role"], "A");
-        let message = read_ws_type(&mut socket, "conversationMessageAdded").await;
-        assert_eq!(message["conversation_message"]["origin"], "agent");
-        assert_eq!(
-            message["conversation_message"]["text"],
-            "agent starts after stt"
-        );
-        server.abort();
-    }
-
-    #[tokio::test]
     async fn websocket_accepts_actions_chat_completion_and_persists_state_changes() {
         let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
             .await
@@ -7098,11 +7317,8 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(transcript_status, StatusCode::FORBIDDEN);
-        assert!(transcript_response["raw"]
-            .as_str()
-            .unwrap()
-            .contains("no longer accepts game messages"));
+        assert_eq!(transcript_status, StatusCode::NOT_FOUND);
+        assert!(transcript_response["raw"].as_str().is_none());
 
         let (export_status, export) =
             json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
@@ -7133,7 +7349,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transcripts_and_diagnostics_persist_without_public_history_endpoints() {
+    async fn transcript_endpoints_are_private_and_diagnostics_persist() {
         let (config, _temp) = sqlite_config();
         let router = build_router(TinyAdapter, config, ServeOptions::default())
             .await
@@ -7163,7 +7379,7 @@ mod tests {
             Value::Null,
         )
         .await;
-        assert_eq!(transcript_get_status, StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(transcript_get_status, StatusCode::NOT_FOUND);
         let (transcript_stream_status, _) = json_request(
             router.clone(),
             http::Method::GET,
@@ -7181,7 +7397,7 @@ mod tests {
         .await;
         assert_eq!(transcription_context_status, StatusCode::NOT_FOUND);
 
-        let (transcript_status, transcript) = json_request(
+        let (transcript_status, _transcript) = json_request(
             router.clone(),
             http::Method::POST,
             &format!("/api/rooms/{room_id}/transcripts"),
@@ -7195,8 +7411,7 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(transcript_status, StatusCode::OK);
-        assert_eq!(transcript["player"], "A");
+        assert_eq!(transcript_status, StatusCode::NOT_FOUND);
 
         let (diagnostic_status, diagnostic) = json_request(
             router.clone(),
@@ -7216,20 +7431,16 @@ mod tests {
             json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
         assert_eq!(export_status, StatusCode::OK);
         let events = export["session_events"].as_array().unwrap();
-        assert!(events
+        assert!(!events
             .iter()
             .any(|event| event["event_type"] == "transcript_segment"));
-        assert!(events.iter().any(|event| {
-            event["event_type"] == "conversation_message"
-                && event["payload"]["origin"] == "voice_transcript"
-        }));
         assert!(events
             .iter()
             .any(|event| event["event_type"] == "voice_diagnostic"));
     }
 
     #[tokio::test]
-    async fn admin_games_api_reads_actions_and_transcripts_from_database() {
+    async fn admin_games_api_reads_actions_from_database() {
         let (config, _temp) = sqlite_config();
         let router = build_router(TinyAdapter, config, ServeOptions::default())
             .await
@@ -7271,7 +7482,7 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(transcript_status, StatusCode::OK);
+        assert_eq!(transcript_status, StatusCode::NOT_FOUND);
 
         let (games_status, games) = json_request(
             router.clone(),
@@ -7298,10 +7509,6 @@ mod tests {
             event["event_type"] == "game_action_accepted"
                 && event["text"].as_str().unwrap().contains("\"finish\":false")
         }));
-        assert!(events.iter().any(|event| {
-            event["event_type"] == "transcript_segment"
-                && event["text"] == "admin-visible transcript"
-        }));
 
         let after_action = events
             .iter()
@@ -7316,10 +7523,7 @@ mod tests {
         )
         .await;
         assert_eq!(poll_status, StatusCode::OK);
-        assert!(poll["events"].as_array().unwrap().iter().any(|event| {
-            event["event_type"] == "transcript_segment"
-                && event["text"] == "admin-visible transcript"
-        }));
+        assert!(poll["events"].as_array().unwrap().is_empty());
         server.abort();
     }
 
@@ -7502,20 +7706,18 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(status, StatusCode::OK);
+        assert_eq!(status, StatusCode::NOT_FOUND);
 
         for _ in 0..20 {
             let captured = observations.lock().unwrap().clone();
-            if captured.contains(&"message:A:Typed:typed hello".to_string())
-                && captured.contains(&"message:A:Spoken:spoken hello".to_string())
-            {
+            if captured.contains(&"message:A:Typed:typed hello".to_string()) {
                 server.abort();
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         server.abort();
-        panic!("expected agent to observe typed and spoken messages");
+        panic!("expected agent to observe typed messages");
     }
 
     #[tokio::test]

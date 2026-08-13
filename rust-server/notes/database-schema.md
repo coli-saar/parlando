@@ -154,6 +154,8 @@ The intended event vocabulary includes:
 
 Accepted game actions store the actor, typed action payload, game events, full resulting game state, and timestamp.
 
+The `voice_diagnostic` payload may include browser `audio_playback_underrun` events with cumulative underrun and buffered-sample measurements. Raw PCM is not stored in the event stream.
+
 ## Runtime Cache Boundary
 
 The current server still keeps active participants, rooms, broadcasts, transcript buffers, and conversation buffers in memory for live WebSocket/game execution. Durable semantic state should be written through `ExperimentStore`; caches are allowed only for active runtime coordination and should be recoverable or replaceable in later work.

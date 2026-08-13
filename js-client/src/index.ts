@@ -2,6 +2,7 @@ export {
   AudioSessionController
 } from "./audio/audioSessionController";
 export { MicrophoneSource } from "./audio/microphoneSource";
+export { ParlandoAudioSink } from "./audio/parlandoAudioSink";
 export {
   initialVoicePreflight,
   initialVoiceStatus,
@@ -18,19 +19,14 @@ export {
   checkedJson,
   socketUrl,
   type AudioSessionPlan,
-  type AudioSinkPlan,
   type AudioSinkPurpose,
-  type AudioSinkTransport,
   type ConsentItem,
   type ConversationMessage,
   type ConversationOrigin,
-  type LiveKitTokenResponse,
   type ParticipantCreateResponse,
   type PublicConfigResponse,
   type RoomMode,
   type RoomResponse,
-  type ServerMessage,
-  type TranscriptSegmentInput,
-  type TranscriptSegmentResponse
+  type ServerMessage
 } from "./protocol";
 export { bothPlayersConnected, requiredConsentsAccepted, transcriptionProgressForStatus } from "./helpers";

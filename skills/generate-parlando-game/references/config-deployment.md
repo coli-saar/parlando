@@ -9,7 +9,7 @@ When voice, transcription, or TTS is requested, tell the user exactly where the 
 - Local runs read `config/experiment.local.yaml` by default through `make run` or `--config config/experiment.local.yaml`.
 - If secrets are needed locally, generate or document an uncommitted overlay such as `config/experiment.voice.private.yaml`, include it from `config/experiment.local.yaml`, and add it to `.gitignore`.
 - Render/Docker deployments should read the checked-in base file, usually `config/experiment.render.example.yaml`, plus a secret overlay mounted at deployment time. State the exact mount path used by the generated Docker/Render config.
-- Put non-secret defaults in checked-in YAML. Put `LIVEKIT_API_SECRET`, `SPEECHMATICS_API_KEY`, `ELEVENLABS_API_KEY`, and other private values in the local private overlay or deployment secret file.
+- Put non-secret defaults in checked-in YAML. Put `SPEECHMATICS_API_KEY`, `ELEVENLABS_API_KEY`, and other private values in the local private overlay or deployment secret file.
 
 `ExperimentConfig::from_yaml` supports includes, environment-variable substitution, and relative path resolution. Main sections:
 
@@ -19,15 +19,17 @@ When voice, transcription, or TTS is requested, tell the user exactly where the 
 - `database`: SQLite URL.
 - `direct`: room-code and consent settings.
 - `agents`: human-vs-human or human-vs-agent mode and agent selection.
-- `livekit`: realtime audio room settings.
-- `speechmatics`: browser STT credentials and realtime options.
-- `transcription`: transcription mode exposed to the browser.
+- `voice`: server audio-relay format and buffering settings.
+- `speechmatics`: server-side STT credentials and realtime options.
+- `transcription`: provider-neutral transcription settings.
 - `tts`: agent text-to-speech settings.
 - `conversation`: conversation-history settings.
 
-For local non-voice studies, keep `livekit.enabled`, `speechmatics.enabled`, `transcription.enabled`, and `tts.enabled` false. For voice studies, enable the full stack: LiveKit, Speechmatics transcription, and ElevenLabs TTS. Keep service credentials in a private YAML include or secret file, not in checked-in config or frontend build variables.
+For local non-voice studies, keep `voice.enabled`, `transcription.enabled`, and `tts.enabled` false. For voice studies, enable the Parlando relay and the requested Speechmatics/ElevenLabs features. Keep service credentials in a private YAML include or secret file.
 
 Voice enablement is a server/config decision. The generated game adapter and game-specific browser UI must not decide whether voice is enabled; they should consume the capability metadata and controls exposed by `parlando-server` and `@coli-saar/parlando-client`.
+
+Protocol version 1 is fixed at 24 kHz mono PCM16 in 20 ms frames. Keep `sample_rate_hz: 24000` and `frame_duration_ms: 20`; use `jitter_buffer_ms: 100` unless deployment measurements justify another value. Configure TTS as `pcm_24000`. Do not offer codec, channel, or transport choices that the runtime does not implement.
 
 TTS enablement is also a server/config decision. When `tts.enabled` is true, generated agents should return participant-facing utterances in `AgentResponse.message`; `parlando-server` handles synthesis, diagnostics, and audio publishing. Browser clients should display the conversation message as usual and must not call TTS providers directly.
 
@@ -58,10 +60,7 @@ direct:
 agents:
   mode: human_vs_human
 
-livekit:
-  enabled: false
-
-speechmatics:
+voice:
   enabled: false
 
 transcription:
@@ -100,11 +99,11 @@ Generated games should include reasonable placeholder consent text when the user
 
 ## Voice Infrastructure Config
 
-Only configure Parlando's voice services; do not explain or reimplement how Parlando uses LiveKit, Speechmatics, or ElevenLabs internally. A generated game should set YAML keys, keep credentials private, and let `parlando-server` and `@coli-saar/parlando-client` handle voice runtime behavior.
+Only configure Parlando's voice services; do not reimplement the relay, Speechmatics, or ElevenLabs integration. A generated game should set YAML keys, keep credentials private, and let `parlando-server` and `@coli-saar/parlando-client` handle runtime behavior.
 
 If the server/session exposes voice capability, the game must allow that capability through the SDK-provided session controls/status. If voice capability is absent, the game should omit or disable voice UI from session state rather than from game-specific policy.
 
-When the user asks to enable voice, generate the full voice package: LiveKit, Speechmatics, and ElevenLabs. Do not create partial voice configs unless the user explicitly asks for a reduced setup. Use `rust-server/config/experiment.voice.full.example.yaml` as the canonical source template when working in this repository.
+When the user asks to enable conversational voice, generate the relay plus Speechmatics and ElevenLabs configuration. Use `rust-server/config/experiment.voice.full.example.yaml` as the canonical source template.
 
 When voice or transcription is enabled, generated clients should delegate browser startup behavior to `ParlandoStartupGate` in `@coli-saar/parlando-client/react`.
 
@@ -117,27 +116,24 @@ include:
   - path: config/experiment.voice.private.yaml
     optional: true
 
-livekit:
+voice:
   enabled: false
 
 transcription:
-  enabled: false
-
-speechmatics:
   enabled: false
 
 tts:
   enabled: false
 ```
 
-The generated `config/experiment.voice.private.yaml` or deployment secret file should contain fields for all three providers:
+The generated `config/experiment.voice.private.yaml` or deployment secret file should contain server-side provider fields:
 
 ```yaml
-livekit:
+voice:
   enabled: true
-  url: ${LIVEKIT_URL}
-  api_key: ${LIVEKIT_API_KEY}
-  api_secret: ${LIVEKIT_API_SECRET}
+  sample_rate_hz: 24000
+  frame_duration_ms: 20
+  jitter_buffer_ms: 100
 
 transcription:
   enabled: true
@@ -147,11 +143,8 @@ transcription:
   store_audio: false
 
 speechmatics:
-  enabled: true
   api_key: ${SPEECHMATICS_API_KEY}
   realtime_url: wss://eu.rt.speechmatics.com/v2
-  management_url: https://mp.speechmatics.com/v1/api_keys
-  temporary_key_ttl_seconds: 60
   max_delay: 2.0
   enable_partials: true
   end_of_utterance_silence_trigger: 1.2
@@ -168,21 +161,16 @@ tts:
 
 Validation requirements:
 
-- `livekit.url`, `livekit.api_key`, and `livekit.api_secret` are required when `livekit.enabled` is true.
-- `speechmatics.enabled` and `speechmatics.api_key` are required when `transcription.enabled` is true and `transcription.provider` is `speechmatics`.
+- `voice.sample_rate_hz` must be `24000` and `voice.frame_duration_ms` must be `20` when voice is enabled.
+- `speechmatics.api_key` is required when `transcription.enabled` is true and `transcription.provider` is `speechmatics`.
 - `tts.voice_id` and `tts.api_key` are required when `tts.enabled` is true.
 
-Use environment-variable placeholders or an uncommitted private include for credentials. Never put LiveKit, Speechmatics, or ElevenLabs secrets in frontend code.
+Use environment-variable placeholders or an uncommitted private include for credentials. Never put Speechmatics or ElevenLabs secrets in frontend code.
 
 Example local private overlay:
 
 ```yaml
 # config/experiment.voice.private.yaml
-livekit:
-  url: wss://your-livekit-host
-  api_key: your-livekit-api-key
-  api_secret: your-livekit-api-secret
-
 speechmatics:
   api_key: your-speechmatics-api-key
 
@@ -274,8 +262,9 @@ For Render deployment:
 - Mount a persistent disk at `/data`.
 - Store SQLite at `sqlite:////data/parlando.sqlite`.
 - Use a checked-in base config plus a Render Secret File for private overrides. If the generated app follows the Parlando convention, mount the secret file at `/etc/secrets/parlando-render.yaml` and include or merge it from the production config.
-- Keep LiveKit, Speechmatics, and TTS credentials in secrets.
+- Keep Speechmatics and TTS credentials in secrets.
 - Set `server.public_base_url` to the deployed URL.
+- Run one Parlando process or configure sticky room routing. Audio rooms and one-use audio credentials are process-local, so ordinary stateless balancing across instances will break voice sessions.
 
 Example production database config:
 

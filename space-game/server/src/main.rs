@@ -5,13 +5,12 @@ use std::{
 
 use anyhow::Result;
 use clap::Parser;
-use parlando_server::{serve, ExperimentConfig, LiveKitAgentAudioPublisher, ServeOptions};
+use parlando_server::{serve, ExperimentConfig, ServeOptions};
 use parlando_space_game::{
     agents::{available_agent_options, factory_from_config},
     SpaceGameAdapter,
 };
 use serde_json::{json, Value};
-use std::sync::Arc;
 
 #[derive(Debug, Parser)]
 #[command(name = "parlando-space-game")]
@@ -49,11 +48,6 @@ async fn main() -> Result<()> {
         })
         .unwrap_or(8000);
     let agent_factory = factory_from_config(&config)?;
-    let audio_publisher = if config.livekit.enabled && config.tts.enabled {
-        Some(Arc::new(LiveKitAgentAudioPublisher::new(config.livekit.clone())) as _)
-    } else {
-        None
-    };
     let adapter = SpaceGameAdapter::new();
     serve(
         adapter,
@@ -61,7 +55,6 @@ async fn main() -> Result<()> {
         SocketAddr::new(cli.host, port),
         ServeOptions {
             agent_factory,
-            audio_publisher,
             game_version_manifest: Some(space_game_version_manifest()),
             admin_agent_options: available_agent_options(),
             ..ServeOptions::default()

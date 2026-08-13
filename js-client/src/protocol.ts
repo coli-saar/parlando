@@ -8,21 +8,20 @@ export interface PublicConfigResponse {
   study_name: string;
   require_consent: boolean;
   consents: ConsentItem[];
-  livekit?: {
+  voice?: {
     enabled?: boolean;
-    url?: string | null;
+    transport?: "websocket";
+    sample_rate_hz?: number;
+    frame_duration_ms?: number;
+    jitter_buffer_ms?: number;
   };
   transcription?: {
     enabled?: boolean;
-    provider?: string;
     language?: string;
-    model?: string;
     store_audio?: boolean;
   };
   tts?: {
     enabled?: boolean;
-    provider?: string;
-    model?: string;
     voice_name?: string | null;
     worker_autostart?: boolean;
   };
@@ -57,44 +56,17 @@ export interface RoomResponse<TState = unknown, TObservation = TState, TAction =
 
 export type RoomMode = "direct" | string;
 
-export interface LiveKitTokenResponse {
-  enabled: boolean;
-  url?: string | null;
-  token?: string | null;
-  identity?: string | null;
-}
-
 export type AudioSinkPurpose = "partner-audio" | "transcription";
-export type AudioSinkTransport = "webrtc-room" | "websocket-stt" | "server-room-worker";
-
-export interface AudioSinkPlan {
-  id: string;
-  provider: string;
-  purposes: AudioSinkPurpose[];
-  transport: AudioSinkTransport;
-  credentials: Record<string, unknown>;
-}
 
 export interface AudioSessionPlan {
   enabled: boolean;
-  capture: Record<string, unknown>;
-  sinks: AudioSinkPlan[];
-}
-
-export interface TranscriptSegmentInput {
-  participant_session_id: string;
-  player: string;
-  start_time_ms?: number;
-  end_time_ms?: number;
-  text: string;
-  metadata?: Record<string, unknown>;
-}
-
-export interface TranscriptSegmentResponse extends TranscriptSegmentInput {
-  id: string;
-  room_id: string;
-  move_count?: number | null;
-  created_at: string;
+  websocket_url?: string | null;
+  token?: string | null;
+  protocol_version: number;
+  sample_rate_hz: number;
+  channels: number;
+  frame_duration_ms: number;
+  jitter_buffer_ms: number;
 }
 
 export type ConversationOrigin = "typed" | "voice_transcript" | "agent" | "system";
@@ -194,16 +166,8 @@ export class ExperimentApiClient {
     return this.post(`/api/rooms/${roomId}/join`, { participant_session_id: participantSessionId });
   }
 
-  getLiveKitToken(roomId: string, participantSessionId: string): Promise<LiveKitTokenResponse> {
-    return this.post(`/api/rooms/${roomId}/livekit-token`, { participant_session_id: participantSessionId });
-  }
-
   getAudioSession(roomId: string, participantSessionId: string): Promise<AudioSessionPlan> {
     return this.post(`/api/rooms/${roomId}/audio-session`, { participant_session_id: participantSessionId });
-  }
-
-  postTranscriptSegment(roomId: string, segment: TranscriptSegmentInput): Promise<TranscriptSegmentResponse> {
-    return this.post(`/api/rooms/${roomId}/transcripts`, segment);
   }
 
   postVoiceDiagnostic(

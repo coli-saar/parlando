@@ -60,7 +60,7 @@ function ActiveSpaceGame({ session }: { session: SpaceGameSession }) {
   const serverAvailableActions = session?.availableActions ?? [];
   const eventLog = session?.events ?? [];
   const assignedRole = session?.role === "A" || session?.role === "B" ? session.role : null;
-  const audioStudy = Boolean(session.publicConfig.livekit?.enabled);
+  const audioStudy = Boolean(session.publicConfig.voice?.enabled);
   const voiceStatus = session.voiceStatus;
   const voicePreflight = session.voicePreflight;
   const onlineReady = true;
@@ -146,7 +146,7 @@ function ActiveSpaceGame({ session }: { session: SpaceGameSession }) {
           <CommunicationPanel
             chatDraft={chatDraft}
             conversation={session.conversation}
-            liveKitEnabled={audioStudy}
+            voiceEnabled={audioStudy}
             onChatDraftChange={setChatDraft}
             onSubmitChat={submitChat}
             onToggleVoice={() => void session.toggleVoice()}
@@ -462,7 +462,7 @@ function SharedConsole({
 function CommunicationPanel({
   chatDraft,
   conversation,
-  liveKitEnabled,
+  voiceEnabled,
   onChatDraftChange,
   onSubmitChat,
   onToggleVoice,
@@ -471,7 +471,7 @@ function CommunicationPanel({
 }: {
   chatDraft: string;
   conversation: ConversationMessage[];
-  liveKitEnabled: boolean;
+  voiceEnabled: boolean;
   onChatDraftChange: (value: string) => void;
   onSubmitChat: () => void;
   onToggleVoice: () => void;
@@ -479,7 +479,7 @@ function CommunicationPanel({
   voiceStatus: VoiceStatus;
 }) {
   const textMessages = conversation.filter((message) => message.origin !== "voice_transcript").slice(-6);
-  if (!liveKitEnabled) {
+  if (!voiceEnabled) {
     return (
       <section className="communication-panel" aria-label="Text chat">
         <div className="communication-header">
@@ -528,7 +528,7 @@ function CommunicationPanel({
           <p className="eyebrow">Comms</p>
           <h3>{voiceStatus.message}</h3>
         </div>
-        <VoiceJoinButton liveKitEnabled={liveKitEnabled} onToggleVoice={onToggleVoice} voiceStatus={voiceStatus} />
+        <VoiceJoinButton voiceEnabled={voiceEnabled} onToggleVoice={onToggleVoice} voiceStatus={voiceStatus} />
       </div>
       <div className="voice-feedback" aria-label="Voice diagnostics">
         <div className="meter-stack">

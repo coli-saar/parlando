@@ -2,7 +2,7 @@ experiment:
   id: local-space-game-back-and-forth-voice
 
 includes:
-  - ../../rust-server/config/experiment.livekit.private.yaml
+  - ../../rust-server/config/experiment.voice.private.yaml
 
 study:
   name: Parlando Space Game Back And Forth Voice

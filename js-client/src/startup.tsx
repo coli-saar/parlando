@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AudioSessionController } from "./audio/audioSessionController";
-import { LiveKitCombinedSink } from "./audio/liveKitCombinedSink";
+import { ParlandoAudioSink } from "./audio/parlandoAudioSink";
 import { MicrophoneSource } from "./audio/microphoneSource";
-import { SpeechmaticsTranscriptionSink } from "./audio/speechmaticsTranscriptionSink";
 import { initialVoicePreflight, initialVoiceStatus, type VoicePreflight, type VoiceStatus } from "./audio/types";
 import { requiredConsentsAccepted, transcriptionProgressForStatus, type PresenceState } from "./helpers";
 import {
@@ -150,6 +149,7 @@ export function ParlandoStartupGate<
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>(initialVoiceStatus);
   const [voicePreflight, setVoicePreflight] = useState<VoicePreflight>(initialVoicePreflight);
   const sessionRef = useRef<RoomSession<TState, TObservation, TAction, TEvent, TSummary> | null>(null);
+  const automaticVoiceAttemptRef = useRef("");
   const consentReady = requiredConsentsAccepted(publicConfig, consentDecisions);
   const voiceEnabled = isVoiceEnabled(publicConfig);
   const canEnter = Boolean(publicConfig && consentReady && (!voiceEnabled || voicePreflight.ready));
@@ -325,18 +325,21 @@ export function ParlandoStartupGate<
         selectedAudioInputId,
         selectedAudioInputLabel: selectedAudioInput?.label || null,
         getAudioSession: () => apiClient.getAudioSession(session.roomId, session.participantSessionId),
-        getLiveKitToken: () => apiClient.getLiveKitToken(session.roomId, session.participantSessionId),
-        postTranscriptSegment: (segment) => {
-          if (sessionRef.current?.completed) return Promise.resolve(null);
-          return apiClient.postTranscriptSegment(session.roomId, segment);
-        },
         logVoice,
         onVoiceStatus: (status) => audioController.updateVoiceStatus(status)
-      },
-      selectedAudioInputId,
-      selectedAudioInputLabel(audioInputs, selectedAudioInputId)
+      }
     );
   }, [apiClient, audioController, audioInputs, selectedAudioInputId, session]);
+
+  /** Connects the prepared microphone to the room transport exactly once automatically. */
+  const connectVoice = useCallback(async () => {
+    setError("");
+    try {
+      await toggleVoice();
+    } catch (caught) {
+      setError(errorMessage(caught, "Could not start voice chat."));
+    }
+  }, [toggleVoice]);
 
   useEffect(() => {
     let cancelled = false;
@@ -389,8 +392,11 @@ export function ParlandoStartupGate<
 
   useEffect(() => {
     if (!session || !voiceEnabled || !voicePreflight.ready || voiceStatus.connected || voiceStatus.connecting) return;
-    void toggleVoice().catch((caught) => setError(errorMessage(caught, "Could not start voice chat.")));
-  }, [session, toggleVoice, voiceEnabled, voicePreflight.ready, voiceStatus.connected, voiceStatus.connecting]);
+    const attemptKey = `${session.roomId}:${session.participantSessionId}`;
+    if (automaticVoiceAttemptRef.current === attemptKey) return;
+    automaticVoiceAttemptRef.current = attemptKey;
+    void connectVoice();
+  }, [connectVoice, session, voiceEnabled, voicePreflight.ready, voiceStatus.connected, voiceStatus.connecting]);
 
   if (configLoading || !publicConfig) {
     return <StartupShell labels={labels} title={startupTitle} heading="Loading study" body="Connecting to the experiment server." error={error} />;
@@ -430,7 +436,7 @@ export function ParlandoStartupGate<
         body={labels.waitingBody ?? "The game starts when all required participants and services are ready."}
         error={error}
       >
-        <ReadinessBoard liveKitEnabled={voiceEnabled} presence={session.presence} voiceStatus={voiceStatus} />
+        <ReadinessBoard voiceEnabled={voiceEnabled} presence={session.presence} voiceStatus={voiceStatus} />
         {voiceEnabled && <StartupTranscriptionProgress voiceStatus={voiceStatus} />}
         <div className="voice-preflight">
           <div>
@@ -490,7 +496,7 @@ export function ParlandoStartupGate<
           </div>
           <VoicePreparationControls
             audioInputs={audioInputs}
-            liveKitEnabled={voiceEnabled}
+            voiceEnabled={voiceEnabled}
             onPrepareVoice={prepareVoice}
             onSelectedAudioInputChange={setSelectedAudioInputId}
             selectedAudioInputId={selectedAudioInputId}
@@ -540,11 +546,11 @@ function StartupShell({
 }
 
 function ReadinessBoard({
-  liveKitEnabled,
+  voiceEnabled,
   presence,
   voiceStatus
 }: {
-  liveKitEnabled: boolean;
+  voiceEnabled: boolean;
   presence: PresenceState;
   voiceStatus: VoiceStatus;
 }) {
@@ -560,7 +566,7 @@ function ReadinessBoard({
         <strong>Player B / Agent</strong>
         <span>{bConnected ? "Connected" : "Waiting"}</span>
       </div>
-      {liveKitEnabled && (
+      {voiceEnabled && (
         <div className={voiceStatus.transcriptionReady ? "seat-ready" : ""}>
           <strong>Transcription Service</strong>
           <span>{voiceStatus.transcriptionReady ? "Ready" : voiceStatus.transcriptionMessage}</span>
@@ -595,23 +601,20 @@ function StartupTranscriptionProgress({ voiceStatus }: { voiceStatus: VoiceStatu
 export function createDefaultAudioController(): AudioSessionController {
   return new AudioSessionController({
     microphone: new MicrophoneSource(),
-    sinks: [
-      new LiveKitCombinedSink({ id: "livekit-partner", purposes: ["partner-audio"], updateTranscriptionStatus: false }),
-      new SpeechmaticsTranscriptionSink()
-    ]
+    sink: new ParlandoAudioSink()
   });
 }
 
 function VoicePreparationControls({
   audioInputs,
-  liveKitEnabled,
+  voiceEnabled,
   onPrepareVoice,
   onSelectedAudioInputChange,
   selectedAudioInputId,
   voicePreflight = initialVoicePreflight
 }: {
   audioInputs: MediaDeviceInfo[];
-  liveKitEnabled: boolean;
+  voiceEnabled: boolean;
   onPrepareVoice: () => void;
   onSelectedAudioInputChange: (value: string) => void;
   selectedAudioInputId: string;
@@ -622,7 +625,7 @@ function VoicePreparationControls({
     <>
       <select
         aria-label="Microphone input"
-        disabled={!liveKitEnabled || voicePreflight.preparing || voicePreflight.ready}
+        disabled={!voiceEnabled || voicePreflight.preparing || voicePreflight.ready}
         onChange={(event) => onSelectedAudioInputChange(event.target.value)}
         value={selectedAudioInputId}
       >
@@ -637,7 +640,7 @@ function VoicePreparationControls({
         )}
       </select>
       {voicePreflight.micProbeActive && <MicLevelMeter active={voicePreflight.micProbeActive} label="Device" level={voicePreflight.micLevel} />}
-      <button disabled={!liveKitEnabled || voicePreflight.preparing || voicePreflight.ready} onClick={onPrepareVoice}>
+      <button disabled={!voiceEnabled || voicePreflight.preparing || voicePreflight.ready} onClick={onPrepareVoice}>
         {label}
       </button>
     </>
@@ -656,7 +659,7 @@ function MicLevelMeter({ active, label, level }: { active: boolean; label: strin
 }
 
 export function isVoiceEnabled(config: PublicConfigResponse | null): boolean {
-  return Boolean(config?.livekit?.enabled);
+  return Boolean(config?.voice?.enabled);
 }
 
 export function resolveStartupTitle(labels: Pick<ParlandoStartupLabels, "title">, config: Pick<PublicConfigResponse, "study_name"> | null): string {

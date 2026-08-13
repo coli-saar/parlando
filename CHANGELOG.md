@@ -4,19 +4,28 @@ All notable changes to Parlando releases are tracked in this file.
 
 The format is based on Keep a Changelog, and this project uses semantic versioning for the published Rust server crate and JavaScript client package.
 
+## Unreleased
+
+### Changed
+
+- Added an authenticated Parlando PCM audio relay and server-side transcription provider boundary.
+- Routed final speech utterances through the normal conversation and agent-observation path, with duplicate-final protection.
+- Routed agent TTS through the same room relay and kept provider credentials out of browser code.
+- Stabilized synthesized speech with absolute server frame deadlines, jitter prebuffering, linear browser resampling, short underrun recovery, and underrun diagnostics.
+- Made playback worklets self-contained for consumer bundlers and prevented waiting-room transport failures from reacquiring an already prepared microphone.
+
 ## [0.1.3]
 
 ### Added
 
 - Added generated-game guidance for explicit terminal outcomes, agent message observation, SDK voice-status widgets, and reliable microphone meter styling.
-- Added generated-server guidance for retaining WebRTC Objective-C categories in final macOS game binaries.
 
 ### Changed
 
 - Improved the default human-human startup flow by keeping room pairing server-owned instead of exposing generic room selection in the shared startup gate.
 - Treat browser tab/window teardown like the in-game leave action so room presence updates when participants close the game.
 - Made agent action/message responses apply game actions before speech, and made follow-up decisions wait for the next delivered observation.
-- Kept LiveKit agent audio tracks alive for the computed PCM playback duration so longer TTS messages are not truncated.
+- Preserved complete playback of longer synthesized agent messages.
 - Updated researcher-facing documentation around workflows, build requirements, route names, analysis summaries, and deployment boundaries.
 
 ## [0.1.2]
@@ -55,5 +64,5 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 - First packaged Parlando baseline with `parlando-server` as the reusable Rust experiment server runtime.
 - Published the reusable browser SDK as `@coli-saar/parlando-client`.
 - Included typed game adapter boundaries, room creation and join flows, WebSocket game updates, conversation events, consent handling, and durable experiment/session export support.
-- Included browser audio-session support for LiveKit partner audio and Speechmatics transcription, plus server-side TTS and agent audio publishing foundations.
+- Included browser audio-session support, transcription, server-side TTS, and agent audio publishing foundations.
 - Included local development and generation support through the Space Game demo, documentation, Makefiles, and the `generate-parlando-game` skill.

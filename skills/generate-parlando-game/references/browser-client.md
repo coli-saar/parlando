@@ -38,7 +38,9 @@ Use the latest published client version discovered by the skill:
 }
 ```
 
-Add `livekit-client` only if the generated client imports SDK voice helpers that require it as a peer dependency.
+Voice support requires no additional browser dependency beyond `@coli-saar/parlando-client`.
+
+The SDK opens one authenticated Parlando audio WebSocket for each human participant. It owns microphone resampling to 24 kHz PCM, binary framing, initial jitter buffering, linear playback resampling, stale-audio trimming, underrun diagnostics, and partner/agent playback. Generated clients must not add media SDKs, peer negotiation, custom AudioWorklets, direct provider WebSockets, transcript upload calls, or their own playback queue.
 
 ## Game JSON Types
 
@@ -127,7 +129,7 @@ function VoiceStrip({ session }: { session: GameSession }) {
   return (
     <div className="voice-strip">
       <VoiceJoinButton
-        liveKitEnabled={Boolean(session.publicConfig.livekit?.enabled)}
+        voiceEnabled={Boolean(session.publicConfig.voice?.enabled)}
         onToggleVoice={session.toggleVoice}
         voiceStatus={session.voiceStatus}
       />
@@ -166,7 +168,7 @@ The mic meter relies on a transform-scaled child inside `.mic-meter-track`. Incl
 
 The exact colors and dimensions should match the game theme, but the child span must have block layout, full dimensions, and a visible background. Otherwise `transform: scaleX(...)` updates can run while the meter appears frozen.
 
-When TTS is enabled, do not synthesize agent speech in the browser. Agent utterances should arrive as normal agent-origin conversation messages and, if the server is configured with TTS and audio publishing, the server will vocalize them through the voice transport.
+When TTS is enabled, do not synthesize agent speech in the browser. Agent utterances arrive as normal agent-origin conversation messages and, when configured, the server synthesizes 24 kHz PCM, maintains a jitter-buffer lead with absolute frame deadlines, and sends it through the room transport.
 
 ## Actions And Chat
 

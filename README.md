@@ -26,7 +26,7 @@ Parlando is less useful for single-participant surveys, reaction-time tasks, or 
 - Provide a reusable browser protocol and JavaScript client package for participants, room setup, WebSockets, audio-session setup, and typed game payloads.
 - Support human-vs-human and human-vs-agent studies from the same experiment configuration.
 - Include infrastructure for direct studies, matchmaking, and Prolific-oriented experiment automation.
-- Provide optional voice infrastructure through LiveKit partner audio, Speechmatics browser transcription, ElevenLabs text-to-speech, and LiveKit agent audio publishing.
+- Provide optional voice infrastructure through a server-owned PCM audio relay, server-side Speechmatics transcription, and ElevenLabs text-to-speech.
 - Persist evaluation data in SQLite: experiments, durable participants, sessions, consent declarations, ordered actions, state changes, transcripts, conversation messages, agent events, and diagnostics.
 - Serve a bundled browser client when a built frontend is available, while keeping API and WebSocket routes usable for separately deployed clients.
 - Expose a DB-backed operator monitor at `/admin/experiments` and JSON export at `/api/admin/export`.
@@ -126,6 +126,14 @@ Point an experiment config at that service with `agents.human_vs_agent.factory: 
 
 The Space Game browser app lives in `space-game/client`. The Rust server can serve a built client directory through `server.client_dist_path`.
 
+## Voice And Audio Privacy
+
+Voice-enabled browsers connect directly to Parlando over an authenticated WebSocket. Parlando relays fixed 24 kHz mono PCM frames to the other player, independently streams the speaker's frames to the configured server-side transcription provider, and sends agent TTS through the same room relay. The browser receives no transcription or TTS provider credentials and does not contact those providers directly.
+
+The current Speechmatics integration is hosted, so microphone audio sent for transcription still leaves the Parlando server. The provider-neutral server interface is designed so a later local recognizer can keep that audio entirely on controlled infrastructure without changing games or browser clients. Raw audio is not persisted by the current relay.
+
+See [Audio Transport](docs/audio-transport.md) for the binary protocol, authentication, buffering, TTS pacing, privacy boundary, and deployment constraints.
+
 ## System Requirements
 
 Parlando builds a Rust server and a TypeScript browser client. Install these tools before running the demo or packaging a game:
@@ -133,7 +141,7 @@ Parlando builds a Rust server and a TypeScript browser client. Install these too
 - Rust stable toolchain with Cargo. The repository does not pin a `rust-toolchain` file, so use a current stable Rust installation from `rustup`.
 - Node.js `20.19.0` or newer, or Node.js `22.12.0` or newer. The Space Game browser build uses Vite 7, whose published engine requirement excludes older Node 20 and early Node 22 releases. Use the matching `npm` that ships with that Node version.
 - GNU Make. The top-level and Space Game workflows are documented as `make` targets.
-- macOS only: Apple Command Line Tools for Xcode `16.0.0` or newer. Check the selected compiler with `xcrun clang --version`; it should report Apple clang `16.0.0` or newer. For a Command Line Tools-only install, `pkgutil --pkg-info=com.apple.pkg.CLTools_Executables` also reports the installed CLT package version. If the selected developer directory is stale, update the Command Line Tools in System Settings or install a current Xcode, then run `sudo xcode-select --switch /Library/Developer/CommandLineTools` or select the matching Xcode developer directory. This requirement matters for `make install-server`, because the Rust server links native LiveKit/WebRTC dependencies through Apple's compiler and SDK.
+- macOS only: the standard Apple Command Line Tools required by the Rust toolchain.
 - Linux only: a standard C/C++ build toolchain and system libraries sufficient for Rust crates with native dependencies. The included Dockerfile uses Debian Bookworm as the reference Linux build environment.
 
 ## Run The Demo Server
@@ -164,6 +172,7 @@ The main service endpoints are:
 - `POST /api/direct/start` and `POST /api/direct/enter`
 - `POST /api/rooms`, `POST /api/rooms/{room_id}/join`
 - `GET /ws/game/{room_id}?participantSessionId=...`
+- `GET /ws/audio/{room_id}?token=...`
 - `GET /admin/experiments`
 - `GET /api/admin/export`
 

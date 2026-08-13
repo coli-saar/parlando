@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ParticipantCreateRequest {
@@ -47,7 +47,7 @@ pub struct PublicConfigResponse {
     pub study_name: String,
     pub require_consent: bool,
     pub consents: Vec<ConsentItemResponse>,
-    pub livekit: Value,
+    pub voice: Value,
     pub transcription: Value,
     pub tts: Value,
     pub conversation: Value,
@@ -99,83 +99,44 @@ pub type CreateRoomResponse = RoomResponse;
 pub type JoinRoomResponse = RoomResponse;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct LiveKitTokenRequest {
-    pub participant_session_id: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct LiveKitWorkerTokenRequest {
-    pub role: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct LiveKitTokenResponse {
-    pub enabled: bool,
-    pub url: Option<String>,
-    pub token: Option<String>,
-    pub identity: Option<String>,
-}
-
-impl LiveKitTokenResponse {
-    pub fn disabled() -> Self {
-        Self {
-            enabled: false,
-            url: None,
-            token: None,
-            identity: None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AudioSessionRequest {
     pub participant_session_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct AudioSinkPlan {
-    pub id: String,
-    pub provider: String,
-    pub purposes: Vec<String>,
-    pub transport: String,
-    #[serde(default)]
-    pub credentials: Value,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AudioSessionPlanResponse {
+    /// Whether room audio is enabled for this experiment.
     pub enabled: bool,
-    #[serde(default = "default_capture")]
-    pub capture: Value,
-    #[serde(default)]
-    pub sinks: Vec<AudioSinkPlan>,
-}
-
-fn default_capture() -> Value {
-    json!({"audio": true})
+    /// Authenticated Parlando audio WebSocket URL without its credential.
+    pub websocket_url: Option<String>,
+    /// Short-lived credential bound to the room, participant, and current role.
+    pub token: Option<String>,
+    /// Binary audio protocol version understood by the server.
+    pub protocol_version: u8,
+    /// Required PCM sample rate.
+    pub sample_rate_hz: u32,
+    /// Required PCM channel count.
+    pub channels: u16,
+    /// Duration represented by each complete binary frame.
+    pub frame_duration_ms: u16,
+    /// Recommended browser playback buffer target.
+    pub jitter_buffer_ms: u16,
 }
 
 impl AudioSessionPlanResponse {
+    /// Creates a credential-free plan for experiments with voice disabled.
     pub fn disabled() -> Self {
         Self {
             enabled: false,
-            capture: default_capture(),
-            sinks: vec![],
+            websocket_url: None,
+            token: None,
+            protocol_version: 1,
+            sample_rate_hz: 24_000,
+            channels: 1,
+            frame_duration_ms: 20,
+            jitter_buffer_ms: 100,
         }
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct TranscriptSegmentIn {
-    pub participant_session_id: String,
-    pub player: String,
-    #[serde(default)]
-    pub start_time_ms: i64,
-    #[serde(default)]
-    pub end_time_ms: i64,
-    pub text: String,
-    #[serde(default)]
-    pub metadata: Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
