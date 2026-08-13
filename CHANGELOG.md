@@ -6,6 +6,8 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## Unreleased
 
+## [0.2.0] - 2026-08-13
+
 ### Changed
 
 - Added an authenticated Parlando PCM audio relay and server-side transcription provider boundary.
