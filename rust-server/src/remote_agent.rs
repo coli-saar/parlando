@@ -1,11 +1,16 @@
-use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
+use std::{collections::BTreeMap, env, fmt, marker::PhantomData, time::Duration};
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use prost_types::{value::Kind, ListValue, NullValue, Struct, Value as ProstValue};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{Number, Value};
-use tonic::transport::Channel;
+use tonic::{
+    metadata::{Ascii, MetadataValue},
+    service::{interceptor::InterceptedService, Interceptor},
+    transport::Channel,
+    Request, Status,
+};
 
 use crate::{
     agents::{
@@ -22,11 +27,12 @@ pub mod pb {
 
 use pb::{
     agent_service_client::AgentServiceClient, CreateAgentRequest, DecisionRequest,
-    ObserveActionRequest, ObserveMessageRequest, ObserveStateRequest, UtteranceKind,
+    ObserveActionRequest, ObserveMessageRequest, ObserveStateRequest, ShutdownRequest,
+    UtteranceKind,
 };
 
 /// Configuration for a remote gRPC agent backend.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RemoteGrpcAgentConfig {
     /// HTTP/2 endpoint for the remote agent service, such as `http://127.0.0.1:50051`.
     pub endpoint: String,
@@ -38,6 +44,25 @@ pub struct RemoteGrpcAgentConfig {
     pub protocol_version: String,
     /// Per-request timeout for create and act calls.
     pub request_timeout: Duration,
+    auth_token: Option<String>,
+}
+
+impl fmt::Debug for RemoteGrpcAgentConfig {
+    /// Formats non-secret transport settings while redacting bearer authentication material.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RemoteGrpcAgentConfig")
+            .field("endpoint", &self.endpoint)
+            .field("agent_name", &self.agent_name)
+            .field("agent_version", &self.agent_version)
+            .field("protocol_version", &self.protocol_version)
+            .field("request_timeout", &self.request_timeout)
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl RemoteGrpcAgentConfig {
@@ -49,9 +74,36 @@ impl RemoteGrpcAgentConfig {
             agent_version: None,
             protocol_version: "parlando-agent-v2".to_string(),
             request_timeout: Duration::from_secs(5),
+            auth_token: env::var("PARLANDO_REMOTE_AGENT_TOKEN").ok(),
         }
     }
+
+    /// Sets a runtime-only bearer token without exposing it through `Debug` or serialization.
+    pub fn with_auth_token(mut self, token: impl Into<String>) -> Self {
+        self.auth_token = Some(token.into());
+        self
+    }
 }
+
+#[derive(Clone)]
+struct RemoteAuthInterceptor {
+    authorization: Option<MetadataValue<Ascii>>,
+}
+
+impl Interceptor for RemoteAuthInterceptor {
+    /// Adds the configured bearer credential to every remote-agent RPC.
+    fn call(&mut self, mut request: Request<()>) -> std::result::Result<Request<()>, Status> {
+        if let Some(authorization) = self.authorization.clone() {
+            request
+                .metadata_mut()
+                .insert("authorization", authorization);
+        }
+        Ok(request)
+    }
+}
+
+type AuthenticatedAgentClient =
+    AgentServiceClient<InterceptedService<Channel, RemoteAuthInterceptor>>;
 
 /// Agent factory that adapts a gRPC service to Parlando's normal in-process trait.
 pub struct RemoteGrpcAgentFactory<A: GameAdapter> {
@@ -109,7 +161,7 @@ impl<A: GameAdapter> AgentFactory<A> for RemoteGrpcAgentFactory<A> {
 pub struct RemoteGrpcAgent<A: GameAdapter> {
     config: RemoteGrpcAgentConfig,
     init_context: AgentInitContext,
-    client: Option<AgentServiceClient<Channel>>,
+    client: Option<AuthenticatedAgentClient>,
     agent_id: Option<String>,
     _adapter: PhantomData<A>,
 }
@@ -123,12 +175,21 @@ where
         if self.agent_id.is_some() {
             return Ok(());
         }
+        validate_remote_endpoint(&self.config.endpoint, self.config.auth_token.is_some())?;
         let channel = Channel::from_shared(self.config.endpoint.clone())
             .context("invalid remote agent endpoint")?
             .connect()
             .await
             .context("failed to connect to remote agent service")?;
-        let mut client = AgentServiceClient::new(channel);
+        let authorization = self
+            .config
+            .auth_token
+            .as_ref()
+            .map(|token| format!("Bearer {token}").parse::<MetadataValue<Ascii>>())
+            .transpose()
+            .context("remote-agent bearer token is not valid metadata")?;
+        let mut client =
+            AgentServiceClient::with_interceptor(channel, RemoteAuthInterceptor { authorization });
         let request = CreateAgentRequest {
             protocol_version: self.config.protocol_version.clone(),
             agent_name: self.config.agent_name.clone(),
@@ -150,6 +211,44 @@ where
         self.agent_id = Some(response.agent_id);
         Ok(())
     }
+}
+
+/// Rejects cleartext remote-agent transport unless it is confined to loopback development.
+fn validate_remote_endpoint(endpoint: &str, has_auth_token: bool) -> Result<()> {
+    let uri = endpoint
+        .parse::<http::Uri>()
+        .context("invalid remote agent endpoint")?;
+    match uri.scheme_str() {
+        Some("https") if has_auth_token => {}
+        Some("https") => {
+            bail!("non-loopback remote-agent TLS requires PARLANDO_REMOTE_AGENT_TOKEN")
+        }
+        Some("http") => {
+            let host = uri
+                .host()
+                .ok_or_else(|| anyhow!("remote agent endpoint has no host"))?;
+            if matches!(host, "localhost" | "127.0.0.1" | "::1") {
+                // Literal loopback cleartext is the development-only exception.
+            } else {
+                bail!("cleartext remote-agent endpoints are allowed only on loopback; use https")
+            }
+        }
+        _ => bail!("remote agent endpoint must use https, or http on loopback for development"),
+    }
+    let host = uri
+        .host()
+        .ok_or_else(|| anyhow!("remote agent endpoint has no host"))?;
+    if !matches!(host, "localhost" | "127.0.0.1" | "::1") {
+        let allowed = env::var("PARLANDO_REMOTE_AGENT_ALLOWED_HOSTS").unwrap_or_default();
+        if !allowed
+            .split(',')
+            .map(str::trim)
+            .any(|candidate| !candidate.is_empty() && candidate.eq_ignore_ascii_case(host))
+        {
+            bail!("remote agent host is not listed in PARLANDO_REMOTE_AGENT_ALLOWED_HOSTS");
+        }
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -256,6 +355,23 @@ where
             .into_inner();
         proto_to_agent_response(response)
     }
+
+    /// Releases the corresponding remote server instance on normal completion or cancellation.
+    async fn shutdown(&mut self) -> Result<()> {
+        let Some(agent_id) = self.agent_id.clone() else {
+            return Ok(());
+        };
+        let request_timeout = self.config.request_timeout;
+        tokio::time::timeout(
+            request_timeout,
+            self.client()?.shutdown(ShutdownRequest { agent_id }),
+        )
+        .await
+        .context("remote agent shutdown timed out")?
+        .context("remote agent shutdown failed")?;
+        self.agent_id = None;
+        Ok(())
+    }
 }
 
 impl<A> RemoteGrpcAgent<A>
@@ -271,7 +387,7 @@ where
     }
 
     /// Returns the connected gRPC client after creation.
-    fn client(&mut self) -> Result<&mut AgentServiceClient<Channel>> {
+    fn client(&mut self) -> Result<&mut AuthenticatedAgentClient> {
         self.client
             .as_mut()
             .ok_or_else(|| anyhow!("remote agent client was not connected"))

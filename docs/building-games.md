@@ -140,7 +140,7 @@ Before implementing, write down:
 - Completion summary fields needed for analysis.
 - Fields that should be exported for downstream analysis.
 
-This checklist is also the natural prompt shape for the planned Parlando LLM skill: describe the game in these terms, generate a first adapter/client, then iterate.
+This checklist is also the natural prompt shape for the included `generate-parlando-game` skill: describe the game in these terms, generate a first adapter/client, then iterate.
 
 ## Reference Files
 

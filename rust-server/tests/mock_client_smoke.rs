@@ -5,6 +5,10 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Result};
+use argon2::{
+    password_hash::{PasswordHasher, SaltString},
+    Argon2,
+};
 use async_trait::async_trait;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
@@ -12,9 +16,9 @@ use parlando_server::{
     agents::{AgentFactory, AgentInitContext, AgentResponse, GameAgent},
     build_router,
     config::{
-        AgentsConfig, AgentsMode, ConversationConfig, DatabaseConfig, DirectConfig,
-        ExperimentConfig, ExperimentIdentityConfig, HumanVsAgentConfig, SpeechmaticsConfig,
-        TranscriptionConfig, VoiceConfig,
+        AgentsConfig, AgentsMode, ConsentItemConfig, ConversationConfig, DatabaseConfig,
+        DirectConfig, ExperimentConfig, ExperimentIdentityConfig, HumanVsAgentConfig,
+        SpeechmaticsConfig, TranscriptionConfig, VoiceConfig,
     },
     game::{GameAdapter, PlayerRole},
     remote_agent::{
@@ -384,6 +388,7 @@ async fn spawn_server(
     config: ExperimentConfig,
     options: ServeOptions<DummyAdapter>,
 ) -> Result<TestServer> {
+    configure_test_administrator()?;
     let temp = TempDir::new()?;
     let mut config = config;
     config.database = DatabaseConfig {
@@ -391,6 +396,18 @@ async fn spawn_server(
     };
     let router = build_router(DummyAdapter, config, options).await?;
     spawn_router(router, temp).await
+}
+
+fn configure_test_administrator() -> Result<()> {
+    let salt = SaltString::encode_b64(b"parlando-smoke-test-salt")
+        .map_err(|error| anyhow!(error.to_string()))?;
+    let hash = Argon2::default()
+        .hash_password(b"test-password", &salt)
+        .map_err(|error| anyhow!(error.to_string()))?
+        .to_string();
+    std::env::set_var("PARLANDO_ADMIN_USERNAME", "smoke-admin");
+    std::env::set_var("PARLANDO_ADMIN_PASSWORD_HASH", hash);
+    Ok(())
 }
 
 async fn spawn_router(router: Router, temp: TempDir) -> Result<TestServer> {
@@ -417,6 +434,12 @@ fn config(mode: AgentsMode) -> ExperimentConfig {
         },
         direct: DirectConfig {
             require_consent: true,
+            consents: vec![ConsentItemConfig {
+                id: "study".to_string(),
+                title: "Study consent".to_string(),
+                body_html: "I agree".to_string(),
+                required: true,
+            }],
             ..DirectConfig::default()
         },
         voice: VoiceConfig {
@@ -447,30 +470,46 @@ fn config(mode: AgentsMode) -> ExperimentConfig {
     }
 }
 
+struct TestParticipant {
+    id: String,
+    credential: String,
+}
+
 async fn create_participant(
     client: &reqwest::Client,
     base_url: &str,
-    name: &str,
-) -> Result<String> {
+    _name: &str,
+) -> Result<TestParticipant> {
     let response = client
         .post(format!("{base_url}/api/participants"))
-        .json(&json!({"source": "direct", "display_name": name}))
+        .json(&json!({"source": "direct"}))
         .send()
         .await?
         .error_for_status()?
         .json::<Value>()
         .await?;
-    Ok(response["participant_session_id"]
-        .as_str()
-        .ok_or_else(|| anyhow!("missing participant_session_id"))?
-        .to_string())
+    Ok(TestParticipant {
+        id: response["participant_session_id"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing participant_session_id"))?
+            .to_string(),
+        credential: response["participant_credential"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing participant_credential"))?
+            .to_string(),
+    })
 }
 
-async fn consent(client: &reqwest::Client, base_url: &str, participant: &str) -> Result<()> {
+async fn consent(
+    client: &reqwest::Client,
+    base_url: &str,
+    participant: &TestParticipant,
+) -> Result<()> {
     client
         .post(format!("{base_url}/api/consent"))
+        .bearer_auth(&participant.credential)
         .json(&json!({
-            "participant_session_id": participant,
+            "participant_session_id": participant.id,
             "decisions": {"study": true}
         }))
         .send()
@@ -479,10 +518,15 @@ async fn consent(client: &reqwest::Client, base_url: &str, participant: &str) ->
     Ok(())
 }
 
-async fn create_room(client: &reqwest::Client, base_url: &str, participant: &str) -> Result<Value> {
+async fn create_room(
+    client: &reqwest::Client,
+    base_url: &str,
+    participant: &TestParticipant,
+) -> Result<Value> {
     Ok(client
         .post(format!("{base_url}/api/rooms"))
-        .json(&json!({"participant_session_id": participant, "mode": "direct"}))
+        .bearer_auth(&participant.credential)
+        .json(&json!({"participant_session_id": participant.id, "mode": "direct"}))
         .send()
         .await?
         .error_for_status()?
@@ -494,11 +538,12 @@ async fn join_room(
     client: &reqwest::Client,
     base_url: &str,
     room_id: &str,
-    participant: &str,
+    participant: &TestParticipant,
 ) -> Result<Value> {
     Ok(client
         .post(format!("{base_url}/api/rooms/{room_id}/join"))
-        .json(&json!({"participant_session_id": participant}))
+        .bearer_auth(&participant.credential)
+        .json(&json!({"participant_session_id": participant.id}))
         .send()
         .await?
         .error_for_status()?
@@ -506,12 +551,77 @@ async fn join_room(
         .await?)
 }
 
-async fn ws_connect(ws_base_url: &str, room_id: &str, participant: &str) -> Result<TestSocket> {
+async fn ws_connect(
+    client: &reqwest::Client,
+    server: &TestServer,
+    room_id: &str,
+    participant: &TestParticipant,
+) -> Result<TestSocket> {
+    let plan = client
+        .post(format!(
+            "{}/api/rooms/{room_id}/game-session",
+            server.base_url
+        ))
+        .bearer_auth(&participant.credential)
+        .json(&json!({}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Value>()
+        .await?;
+    let token = plan["token"]
+        .as_str()
+        .ok_or_else(|| anyhow!("missing game ticket"))?;
     let (socket, _) = connect_async(format!(
-        "{ws_base_url}/ws/game/{room_id}?participantSessionId={participant}"
+        "{}/ws/game/{room_id}?token={token}",
+        server.ws_base_url
     ))
     .await?;
     Ok(socket)
+}
+
+struct TestAdminSession {
+    cookie: String,
+    csrf_token: String,
+}
+
+async fn admin_login(client: &reqwest::Client, base_url: &str) -> Result<TestAdminSession> {
+    let response = client
+        .post(format!("{base_url}/api/admin/login"))
+        .json(&json!({"username": "smoke-admin", "password": "test-password"}))
+        .send()
+        .await?
+        .error_for_status()?;
+    let cookie = response
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .ok_or_else(|| anyhow!("missing administrator cookie"))?
+        .to_string();
+    let body = response.json::<Value>().await?;
+    Ok(TestAdminSession {
+        cookie,
+        csrf_token: body["csrf_token"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing administrator CSRF token"))?
+            .to_string(),
+    })
+}
+
+async fn admin_export(
+    client: &reqwest::Client,
+    base_url: &str,
+    admin: &TestAdminSession,
+) -> Result<Value> {
+    Ok(client
+        .get(format!("{base_url}/api/admin/export?variant=full"))
+        .header(reqwest::header::COOKIE, &admin.cookie)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?)
 }
 
 async fn send_ws(socket: &mut TestSocket, payload: Value) -> Result<()> {
@@ -539,9 +649,69 @@ async fn read_ws_type(socket: &mut TestSocket, expected: &str) -> Result<Value> 
 }
 
 #[tokio::test]
+async fn public_security_boundaries_reject_anonymous_and_cross_participant_requests() -> Result<()>
+{
+    let server = spawn_server(config(AgentsMode::HumanVsHuman), ServeOptions::default()).await?;
+    let client = reqwest::Client::new();
+    let a = create_participant(&client, &server.base_url, "A").await?;
+    let b = create_participant(&client, &server.base_url, "B").await?;
+
+    let anonymous_room = client
+        .post(format!("{}/api/rooms", server.base_url))
+        .json(&json!({"participant_session_id": a.id, "mode": "direct"}))
+        .send()
+        .await?;
+    assert_eq!(anonymous_room.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let impersonation = client
+        .post(format!("{}/api/consent", server.base_url))
+        .bearer_auth(&a.credential)
+        .json(&json!({
+            "participant_session_id": b.id,
+            "decisions": {"study": true}
+        }))
+        .send()
+        .await?;
+    assert_eq!(impersonation.status(), reqwest::StatusCode::FORBIDDEN);
+
+    let anonymous_export = client
+        .get(format!("{}/api/admin/export", server.base_url))
+        .send()
+        .await?;
+    assert_eq!(anonymous_export.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let privileged_source = client
+        .post(format!("{}/api/participants", server.base_url))
+        .json(&json!({"source": "agent"}))
+        .send()
+        .await?;
+    assert_eq!(privileged_source.status(), reqwest::StatusCode::FORBIDDEN);
+
+    let admin = admin_login(&client, &server.base_url).await?;
+    let missing_csrf = client
+        .post(format!("{}/api/admin/experiments", server.base_url))
+        .header(reqwest::header::COOKIE, &admin.cookie)
+        .json(&json!({"study_name": "forged"}))
+        .send()
+        .await?;
+    assert_eq!(missing_csrf.status(), reqwest::StatusCode::FORBIDDEN);
+
+    let valid_csrf = client
+        .post(format!("{}/api/admin/experiments", server.base_url))
+        .header(reqwest::header::COOKIE, &admin.cookie)
+        .header("x-csrf-token", &admin.csrf_token)
+        .json(&json!({"study_name": "Authorized draft"}))
+        .send()
+        .await?;
+    assert_eq!(valid_csrf.status(), reqwest::StatusCode::OK);
+    Ok(())
+}
+
+#[tokio::test]
 async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> Result<()> {
     let server = spawn_server(config(AgentsMode::HumanVsHuman), ServeOptions::default()).await?;
     let client = reqwest::Client::new();
+    let admin_cookie = admin_login(&client, &server.base_url).await?;
     let a = create_participant(&client, &server.base_url, "A").await?;
     let b = create_participant(&client, &server.base_url, "B").await?;
     consent(&client, &server.base_url, &a).await?;
@@ -560,7 +730,8 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
             "{}/api/rooms/{room_id}/audio-session",
             server.base_url
         ))
-        .json(&json!({"participant_session_id": a}))
+        .bearer_auth(&a.credential)
+        .json(&json!({"participant_session_id": a.id}))
         .send()
         .await?
         .error_for_status()?
@@ -573,8 +744,8 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
         .as_str()
         .is_some_and(|value| !value.is_empty()));
 
-    let mut socket_a = ws_connect(&server.ws_base_url, &room_id, &a).await?;
-    let mut socket_b = ws_connect(&server.ws_base_url, &room_id, &b).await?;
+    let mut socket_a = ws_connect(&client, &server, &room_id, &a).await?;
+    let mut socket_b = ws_connect(&client, &server, &room_id, &b).await?;
     let assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await?;
     let assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await?;
     assert_eq!(assigned_a["role"], "A");
@@ -604,13 +775,7 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
 
     let mut export = Value::Null;
     for _ in 0..20 {
-        export = client
-            .get(format!("{}/api/admin/export", server.base_url))
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
-            .await?;
+        export = admin_export(&client, &server.base_url, &admin_cookie).await?;
         if export["session_events"].as_array().is_some_and(|events| {
             [
                 "conversation_message",
@@ -662,13 +827,14 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
     )
     .await?;
     let client = reqwest::Client::new();
+    let admin_cookie = admin_login(&client, &server.base_url).await?;
     let human = create_participant(&client, &server.base_url, "Human").await?;
     consent(&client, &server.base_url, &human).await?;
     let room = create_room(&client, &server.base_url, &human).await?;
     assert_eq!(room["role"], "A");
     let room_id = room["room_id"].as_str().unwrap();
 
-    let mut socket = ws_connect(&server.ws_base_url, room_id, &human).await?;
+    let mut socket = ws_connect(&client, &server, room_id, &human).await?;
     let assigned = read_ws_type(&mut socket, "roleAssigned").await?;
     assert_eq!(assigned["role"], "A");
     let message = read_ws_type(&mut socket, "conversationMessageAdded").await?;
@@ -690,13 +856,7 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    let export = client
-        .get(format!("{}/api/admin/export", server.base_url))
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Value>()
-        .await?;
+    let export = admin_export(&client, &server.base_url, &admin_cookie).await?;
     let events = export["session_events"].as_array().unwrap();
     assert!(events.iter().any(|event| {
         event["event_type"] == "conversation_message" && event["payload"]["origin"] == "agent"
@@ -727,12 +887,13 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
     )
     .await?;
     let client = reqwest::Client::new();
+    let admin_cookie = admin_login(&client, &server.base_url).await?;
     let human = create_participant(&client, &server.base_url, "Human").await?;
     consent(&client, &server.base_url, &human).await?;
     let room = create_room(&client, &server.base_url, &human).await?;
     let room_id = room["room_id"].as_str().unwrap();
 
-    let mut socket = ws_connect(&server.ws_base_url, room_id, &human).await?;
+    let mut socket = ws_connect(&client, &server, room_id, &human).await?;
     let assigned = read_ws_type(&mut socket, "roleAssigned").await?;
     assert_eq!(assigned["role"], "A");
     let message = read_ws_type(&mut socket, "conversationMessageAdded").await?;
@@ -770,13 +931,7 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
     assert!(maybe_act_requests[0].available_actions_provided);
     assert_eq!(maybe_act_requests[0].available_actions.len(), 2);
 
-    let export = client
-        .get(format!("{}/api/admin/export", server.base_url))
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Value>()
-        .await?;
+    let export = admin_export(&client, &server.base_url, &admin_cookie).await?;
     let events = export["session_events"].as_array().unwrap();
     let remote_participant = export["participants"]
         .as_array()

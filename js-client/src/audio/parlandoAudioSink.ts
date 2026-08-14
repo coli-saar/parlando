@@ -1,4 +1,4 @@
-import type { AudioSessionContext, LocalAudioSink, MicrophoneInput } from "./types";
+import type { AudioSessionContext, LocalAudioSink, MicrophoneInput } from "./types.js";
 
 const HEADER_BYTES = 13;
 const PCM_BYTES = 960;

@@ -6,6 +6,22 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## Unreleased
 
+### Added
+
+- Added Privacy Contract version 1 with four persistence switches, versioned participant-information evidence, fixed `research`, `corpus`, and `full` exports, an authenticated installation-wide privacy status, and counted manual participant deletion in the admin dashboard.
+- Added random three-word participant and dialogue identifiers. Participant identifiers are scoped to one experiment and remain consistent across that experiment's sessions and repeated exports; dialogue identifiers remain consistent across repeated exports.
+- Added application-owned administrator authentication, roles, CSRF protection, participant bearer credentials, one-use game/audio upgrade tickets, exact origin enforcement, bounded resources, transactional action persistence, secret-redaction tooling, hardened container packaging, and authenticated TLS-capable remote agents.
+
+### Changed
+
+- Removed participant-entered display names from the browser flow, protocol, runtime, database, admin interface, and exports.
+- Changed the `corpus` export description to a publication-oriented `corpus_candidate`: it removes internal identifiers and absolute timestamps but requires removal of recruitment mappings and content review before it can be treated as anonymous.
+- Scoped external recruitment identities to one experiment, so the same external identifier receives an independently generated participant identifier in every experiment.
+
+### Removed
+
+- Removed participant-session identifiers as authentication material and removed credentials, recruitment identifiers, consent evidence, and full configuration from normal research/corpus exports.
+
 ## [0.2.0] - 2026-08-13
 
 ### Changed

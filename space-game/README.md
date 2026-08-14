@@ -10,7 +10,7 @@ The local Parlando checkout has three parts:
 - `js-client` builds the reusable SDK package `@coli-saar/parlando-client`.
 - `space-game` owns the demo game's Rust server crate, browser UI, assets, state interpretation, controls, configs, and tests.
 
-The browser dependency direction is one-way: this app consumes the SDK as an installed package. The Rust game server is source-local in `server/` and depends on the reusable `rust-server` crate.
+The browser dependency direction is one-way: this app consumes the sibling SDK through its local `file:` dependency. The Rust game server is source-local in `server/` and depends on the sibling `rust-server` crate through a Cargo path dependency.
 
 ## Start the game
 
@@ -28,9 +28,17 @@ cd /Users/koller/Documents/workspace/parlando/space-game
 make run-solo-voice
 ```
 
+`make run` intentionally uses `config/experiment.local-rust.yaml`, where voice is disabled, so that mode does not show microphone preparation. Use `make run-solo-voice` when testing microphone capture, Speechmatics transcription, or agent speech. In either mode, the browser UI follows the server's public `voice.enabled` capability instead of enabling or hiding microphone access in game-specific code.
+
 Both commands install or refresh shared local artifacts before starting the server. They are convenient after source changes, but they can take a while because they may run `cargo install`, build `@coli-saar/parlando-client`, reinstall client dependencies, and rebuild the browser app.
 
 Open the game at `http://127.0.0.1:8000/`. Stop it with `Ctrl-C` in the terminal running `make`.
+
+### Administrator login
+
+Open `http://localhost:8000/admin` after starting the game. On the first visit for that configuration's database, choose an administrator username and a password of at least 12 characters. Parlando stores only an Argon2id password hash in SQLite and shows the ordinary login form afterward.
+
+`make run` and `make run-solo-voice` use different SQLite files, so each needs this one-time setup. The credential survives server restarts and binary reinstalls. See [Running And Deployment](../docs/running-and-deployment.md#first-administrator-setup) for persistence, first-visitor behavior, and recovery overrides.
 
 ## Local install
 
@@ -64,7 +72,7 @@ make build
 make run
 ```
 
-The Makefile installs the SDK from the local checkout with `npm install --no-save file:...`, so the committed dependency stays versioned as `"@coli-saar/parlando-client": "^0.2.0"`.
+The Rust and browser manifests point directly at the sibling `rust-server` and `js-client` directories. This makes `make run` and `make run-solo-voice` development workflows: they always compile the current Parlando checkout rather than the last packages published to crates.io or npm.
 
 ## Solo voice test
 

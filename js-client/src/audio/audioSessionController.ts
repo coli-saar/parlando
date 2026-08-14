@@ -1,12 +1,12 @@
-import { MicrophoneSource } from "./microphoneSource";
+import { MicrophoneSource } from "./microphoneSource.js";
 import type {
   AudioSessionContext,
   AudioSessionSnapshot,
   LocalAudioSink,
   VoicePreflight,
   VoiceStatus
-} from "./types";
-import { initialVoicePreflight, initialVoiceStatus } from "./types";
+} from "./types.js";
+import { initialVoicePreflight, initialVoiceStatus } from "./types.js";
 
 type Listener = (snapshot: AudioSessionSnapshot) => void;
 

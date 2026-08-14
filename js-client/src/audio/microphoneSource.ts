@@ -1,5 +1,5 @@
-import type { MicrophoneInput, VoicePreflight } from "./types";
-import { initialVoicePreflight } from "./types";
+import type { MicrophoneInput, VoicePreflight } from "./types.js";
+import { initialVoicePreflight } from "./types.js";
 
 type Listener = (preflight: VoicePreflight) => void;
 

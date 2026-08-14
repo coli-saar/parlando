@@ -17,10 +17,10 @@ Partner relay, transcription, and agent playback are independent consumers. A sl
 
 ## Session And Authentication
 
-After joining a room, the browser requests `POST /api/rooms/{room_id}/audio-session` with its participant-session id. When voice is enabled, the response contains:
+After joining a room, the browser requests `POST /api/rooms/{room_id}/audio-session` with its participant bearer credential; the server verifies that any accompanying participant-session id belongs to that principal. When voice is enabled, the response contains:
 
 - the `/ws/audio/{room_id}` URL;
-- an opaque, random token valid for five minutes and one WebSocket upgrade;
+- an opaque, random token valid for one minute and one WebSocket upgrade;
 - protocol version, sample rate, channel count, frame duration, and jitter-buffer target.
 
 Token claims remain in server memory. The token is bound to the current room, participant session, and authoritative role, and it is removed when used. Production deployments must use HTTPS/WSS so microphone audio and the query token are encrypted in transit. Avoid query-string logging at reverse proxies even though the token contains no readable participant data.

@@ -13,18 +13,18 @@ WORKDIR /app
 COPY js-client ./js-client
 COPY space-game/client ./space-game/client
 RUN cd js-client \
-    && npm install \
-    && npm run build \
-    && npm pack --pack-destination /tmp
+    && npm ci --ignore-scripts \
+    && npm run build
 RUN cd space-game/client \
-    && npm install --no-save /tmp/coli-saar-parlando-client-0.2.0.tgz \
+    && npm ci --ignore-scripts \
     && npm run build
 
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --create-home --home-dir /home/parlando parlando
 
 WORKDIR /app
 COPY --from=builder /app/space-game/server/target/release/parlando-space-game /usr/local/bin/parlando-space-game
@@ -33,5 +33,6 @@ COPY space-game/config/experiment.render.example.yaml /app/config/experiment.yam
 
 ENV RUST_LOG=info
 EXPOSE 8000
+USER 10001:10001
 
 CMD ["parlando-space-game", "--host", "0.0.0.0", "--config", "/app/config/experiment.yaml"]

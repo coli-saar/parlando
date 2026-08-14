@@ -139,6 +139,11 @@ pub trait GameAgent<A: GameAdapter>: Send {
         }
         Ok(response)
     }
+
+    /// Releases remote or per-session resources when the room agent stops.
+    async fn shutdown(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Creates fresh game agent instances for individual agent participants.

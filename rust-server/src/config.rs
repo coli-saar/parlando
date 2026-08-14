@@ -44,6 +44,8 @@ pub struct DirectConfig {
     pub enabled: bool,
     pub allow_room_codes: bool,
     pub require_consent: bool,
+    pub participant_information_version: String,
+    pub participant_information_url: String,
     pub consents: Vec<ConsentItemConfig>,
 }
 
@@ -53,7 +55,37 @@ impl Default for DirectConfig {
             enabled: true,
             allow_room_codes: true,
             require_consent: false,
+            participant_information_version: String::new(),
+            participant_information_url: String::new(),
             consents: vec![],
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PrivacyConfig {
+    /// Version of the stable privacy behavior implemented by this server release.
+    pub contract_version: String,
+    /// Persists complete game-state snapshots alongside accepted transitions.
+    pub store_full_game_state: bool,
+    /// Persists participant messages whose existing origin is `typed`.
+    pub store_typed_messages: bool,
+    /// Persists final transcript and corresponding conversation-message events.
+    pub store_final_transcripts: bool,
+    /// Persists minimized voice diagnostic events.
+    pub store_voice_diagnostics: bool,
+}
+
+impl Default for PrivacyConfig {
+    /// Uses research-friendly content defaults while disabling optional diagnostics.
+    fn default() -> Self {
+        Self {
+            contract_version: "1".to_string(),
+            store_full_game_state: true,
+            store_typed_messages: true,
+            store_final_transcripts: true,
+            store_voice_diagnostics: false,
         }
     }
 }
@@ -278,6 +310,7 @@ pub struct ExperimentConfig {
     pub tts: TtsConfig,
     pub conversation: ConversationConfig,
     pub agents: AgentsConfig,
+    pub privacy: PrivacyConfig,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -300,6 +333,7 @@ impl Default for ExperimentConfig {
             tts: TtsConfig::default(),
             conversation: ConversationConfig::default(),
             agents: AgentsConfig::default(),
+            privacy: PrivacyConfig::default(),
             extra: HashMap::new(),
         }
     }
@@ -321,6 +355,19 @@ impl ExperimentConfig {
 
     /// Validates cross-field requirements that cannot be expressed by serde defaults alone.
     pub fn validate(&self) -> Result<()> {
+        if self.privacy.contract_version.trim().is_empty() {
+            bail!("privacy.contract_version must not be empty");
+        }
+        if self.direct.require_consent
+            && (self
+                .direct
+                .participant_information_version
+                .trim()
+                .is_empty()
+                || self.direct.participant_information_url.trim().is_empty())
+        {
+            bail!("direct participant information version and URL are required when consent is enabled");
+        }
         if self.tts.enabled {
             if self.tts.voice_id.is_empty() {
                 bail!("tts.voice_id is required when TTS is enabled");
@@ -558,6 +605,8 @@ study:
   name: base
 direct:
   require_consent: true
+  participant_information_version: test-v1
+  participant_information_url: https://example.test/privacy
 database:
   url: sqlite:///data/parlando.sqlite
 server:

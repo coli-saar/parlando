@@ -1,8 +1,8 @@
 export {
   AudioSessionController
-} from "./audio/audioSessionController";
-export { MicrophoneSource } from "./audio/microphoneSource";
-export { ParlandoAudioSink } from "./audio/parlandoAudioSink";
+} from "./audio/audioSessionController.js";
+export { MicrophoneSource } from "./audio/microphoneSource.js";
+export { ParlandoAudioSink } from "./audio/parlandoAudioSink.js";
 export {
   initialVoicePreflight,
   initialVoiceStatus,
@@ -12,13 +12,14 @@ export {
   type MicrophoneInput,
   type VoicePreflight,
   type VoiceStatus
-} from "./audio/types";
+} from "./audio/types.js";
 export {
   ExperimentApiClient,
   apiBase,
   checkedJson,
   socketUrl,
   type AudioSessionPlan,
+  type GameSessionPlan,
   type AudioSinkPurpose,
   type ConsentItem,
   type ConversationMessage,
@@ -28,5 +29,5 @@ export {
   type RoomMode,
   type RoomResponse,
   type ServerMessage
-} from "./protocol";
-export { bothPlayersConnected, requiredConsentsAccepted, transcriptionProgressForStatus } from "./helpers";
+} from "./protocol.js";
+export { bothPlayersConnected, requiredConsentsAccepted, transcriptionProgressForStatus } from "./helpers.js";

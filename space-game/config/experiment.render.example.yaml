@@ -36,6 +36,8 @@ direct:
   enabled: true
   allow_room_codes: true
   require_consent: true
+  participant_information_version: space-game-v1
+  participant_information_url: https://example.org/studies/space-game/privacy
   consents:
     - id: study
       title: Study Consent
@@ -79,3 +81,10 @@ tts:
 conversation:
   enabled: true
   max_history_messages: 50
+
+privacy:
+  contract_version: "1"
+  store_full_game_state: true
+  store_typed_messages: true
+  store_final_transcripts: true
+  store_voice_diagnostics: false

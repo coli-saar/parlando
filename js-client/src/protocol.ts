@@ -1,12 +1,15 @@
 export interface ParticipantCreateResponse {
   participant_session_id: string;
+  participant_credential: string;
   source: "direct" | "prolific" | "admin" | "test" | "agent";
-  display_name?: string | null;
+  participant_id: string;
 }
 
 export interface PublicConfigResponse {
   study_name: string;
   require_consent: boolean;
+  participant_information_version?: string | null;
+  participant_information_url?: string | null;
   consents: ConsentItem[];
   voice?: {
     enabled?: boolean;
@@ -32,6 +35,13 @@ export interface PublicConfigResponse {
   agents?: {
     mode?: "human_vs_human" | "human_vs_agent" | string;
     human_vs_agent?: boolean;
+  };
+  privacy?: {
+    contract_version?: string;
+    store_full_game_state?: boolean;
+    store_typed_messages?: boolean;
+    store_final_transcripts?: boolean;
+    store_voice_diagnostics?: boolean;
   };
 }
 
@@ -67,6 +77,11 @@ export interface AudioSessionPlan {
   channels: number;
   frame_duration_ms: number;
   jitter_buffer_ms: number;
+}
+
+export interface GameSessionPlan {
+  websocket_url: string;
+  token: string;
 }
 
 export type ConversationOrigin = "typed" | "voice_transcript" | "agent" | "system";
@@ -129,45 +144,58 @@ export function apiBase(): string {
   return window.location.origin;
 }
 
-export function socketUrl(roomId: string, participantSessionId: string, baseUrl = apiBase()): string {
-  const base = new URL(baseUrl);
-  base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
-  base.pathname = `/ws/game/${roomId}`;
-  base.search = new URLSearchParams({ participantSessionId }).toString();
+export function socketUrl(websocketUrl: string, token: string): string {
+  const base = new URL(websocketUrl);
+  base.search = new URLSearchParams({ token }).toString();
   return base.toString();
 }
 
 export class ExperimentApiClient {
+  private readonly participantCredentials = new Map<string, string>();
+
   constructor(private readonly baseUrl = apiBase()) {}
 
   getPublicConfig(): Promise<PublicConfigResponse> {
     return this.get("/api/config");
   }
 
-  createParticipant(displayName?: string): Promise<ParticipantCreateResponse> {
-    return this.post("/api/participants", { source: "direct", display_name: displayName || null });
+  async createParticipant(): Promise<ParticipantCreateResponse> {
+    const participant = await this.post<ParticipantCreateResponse>(
+      "/api/participants",
+      { source: "direct" }
+    );
+    this.participantCredentials.set(participant.participant_session_id, participant.participant_credential);
+    return participant;
   }
 
   submitConsent(participantSessionId: string, decisions: Record<string, boolean>): Promise<void> {
-    return this.post("/api/consent", { participant_session_id: participantSessionId, decisions });
+    return this.post("/api/consent", { participant_session_id: participantSessionId, decisions }, participantSessionId);
   }
 
   createRoom<TState = unknown, TObservation = TState, TAction = unknown, TEvent = unknown>(
     participantSessionId: string,
     mode: RoomMode = "direct"
   ): Promise<RoomResponse<TState, TObservation, TAction, TEvent>> {
-    return this.post("/api/rooms", { participant_session_id: participantSessionId, mode });
+    return this.post("/api/rooms", { participant_session_id: participantSessionId, mode }, participantSessionId);
   }
 
   joinRoom<TState = unknown, TObservation = TState, TAction = unknown, TEvent = unknown>(
     roomId: string,
     participantSessionId: string
   ): Promise<RoomResponse<TState, TObservation, TAction, TEvent>> {
-    return this.post(`/api/rooms/${roomId}/join`, { participant_session_id: participantSessionId });
+    return this.post(`/api/rooms/${roomId}/join`, { participant_session_id: participantSessionId }, participantSessionId);
   }
 
   getAudioSession(roomId: string, participantSessionId: string): Promise<AudioSessionPlan> {
-    return this.post(`/api/rooms/${roomId}/audio-session`, { participant_session_id: participantSessionId });
+    return this.post(
+      `/api/rooms/${roomId}/audio-session`,
+      { participant_session_id: participantSessionId },
+      participantSessionId
+    );
+  }
+
+  getGameSession(roomId: string, participantSessionId: string): Promise<GameSessionPlan> {
+    return this.post(`/api/rooms/${roomId}/game-session`, {}, participantSessionId);
   }
 
   postVoiceDiagnostic(
@@ -178,7 +206,7 @@ export class ExperimentApiClient {
   ): void {
     void fetch(`${this.baseUrl}/api/rooms/${roomId}/voice-diagnostics`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: this.authHeaders(participantSessionId),
       body: JSON.stringify({
         participant_session_id: participantSessionId,
         event,
@@ -196,22 +224,33 @@ export class ExperimentApiClient {
     socket?.send(JSON.stringify({ type: "sendChatMessage", text }));
   }
 
-  socketUrl(roomId: string, participantSessionId: string): string {
-    return socketUrl(roomId, participantSessionId, this.baseUrl);
+  socketUrl(plan: GameSessionPlan): string {
+    return socketUrl(plan.websocket_url, plan.token);
   }
 
   private get<T>(path: string): Promise<T> {
     return checkedJson(fetch(`${this.baseUrl}${path}`));
   }
 
-  private post<T>(path: string, body: unknown): Promise<T> {
+  private post<T>(path: string, body: unknown, participantSessionId?: string): Promise<T> {
     return checkedJson(
       fetch(`${this.baseUrl}${path}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: participantSessionId
+          ? this.authHeaders(participantSessionId)
+          : { "Content-Type": "application/json" },
         body: JSON.stringify(body)
       })
     );
+  }
+
+  private authHeaders(participantSessionId: string): Record<string, string> {
+    const credential = this.participantCredentials.get(participantSessionId);
+    if (!credential) throw new Error("No participant credential is available for this session.");
+    return {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${credential}`
+    };
   }
 }
 

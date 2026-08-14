@@ -1,0 +1,64 @@
+# Parlando consent-item template 1.0, 14 August 2026.
+#
+# Replace every {{PLACEHOLDER}} and publish participant-information-v1.0.md at
+# the stable URL before collecting data. Material changes require a new local
+# information version and new consent-item IDs. Include the voice item only when
+# live voice or hosted transcription is enabled.
+#
+# These items assume consent is the legal basis for processing. If the local
+# institution relies on a public research task or another legal basis, replace
+# research_data_consent_v1_0 and, if present, voice_and_transcription_v1_0 with
+# locally approved participation/acknowledgement wording and update the
+# participant-information page accordingly.
+
+direct:
+  enabled: true
+  allow_room_codes: true
+  require_consent: true
+  participant_information_version: "{{LOCAL_INFORMATION_VERSION}}"
+  participant_information_url: "{{PARTICIPANT_INFORMATION_URL}}"
+  consents:
+    - id: eligibility_and_information_v1_0
+      title: Eligibility and study information
+      required: true
+      body_html: >-
+        I confirm that I am at least 18 years old. I have read and understood
+        the <a href="{{PARTICIPANT_INFORMATION_URL}}" target="_blank"
+        rel="noopener noreferrer">Participant Information and Privacy Notice,
+        version {{LOCAL_INFORMATION_VERSION}}</a>, and I have had the
+        opportunity to ask questions.
+
+    - id: research_data_consent_v1_0
+      title: Voluntary participation and research data
+      required: true
+      body_html: >-
+        I voluntarily agree to participate and consent to {{INSTITUTION_NAME}}
+        processing the study-specific identifiers, game actions, timing,
+        results, and the messages or final transcripts enabled for this study.
+        I understand that these data will be used for this study, scientific
+        verification and reuse, and the preparation and publication of
+        anonymized research corpora as described in the Participant Information
+        and Privacy Notice. I understand how to withdraw my consent while my
+        data can still be linked to my study-specific participant identifier.
+
+    - id: participant_privacy_rules_v1_0
+      title: Communication and privacy rules
+      required: true
+      body_html: >-
+        I will discuss only the fictional task. I will not disclose contact
+        details, credentials, or sensitive real-world information, and I will
+        not record, identify, copy, or redistribute another participant's
+        communications.
+
+    # Include this item only when live voice or hosted transcription is enabled.
+    - id: voice_and_transcription_v1_0
+      title: Live voice and transcription
+      required: true
+      body_html: >-
+        I consent to my live microphone audio being transmitted to the other
+        participant and, when transcription is enabled, to
+        {{SPEECHMATICS_ENTITY_AND_SERVICE}} in
+        {{SPEECHMATICS_PROCESSING_REGION}} for real-time transcription. I
+        consent to storage of the final transcript and timing when enabled for
+        this study. I understand that Parlando does not store raw microphone
+        audio.

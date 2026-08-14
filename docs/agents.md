@@ -128,7 +128,7 @@ Returned actions must be JSON-compatible dictionaries matching the game action s
 
 For local experiments, the Rust server can call `http://127.0.0.1:50051` if the Python agent runs on the same machine.
 
-For hosted deployments, the gRPC endpoint must be reachable from the Rust service. Common options are:
+For hosted deployments, the gRPC endpoint must use HTTPS, its hostname must appear exactly in `PARLANDO_REMOTE_AGENT_ALLOWED_HOSTS`, and the Rust and Python processes must share `PARLANDO_REMOTE_AGENT_TOKEN` through runtime secret storage. The Python SDK rejects non-loopback cleartext binding, supports TLS and optional client-certificate verification, bounds gRPC message/stream resources, and checks bearer metadata on every RPC. Common deployment options are:
 
 - run the Python agent as a second service on the same private network.
 - package the agent into the same container and supervise both processes.

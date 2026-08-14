@@ -1,5 +1,5 @@
-import type { ConsentItem, PublicConfigResponse } from "./protocol";
-import type { VoiceStatus } from "./audio/types";
+import type { ConsentItem, PublicConfigResponse } from "./protocol.js";
+import type { VoiceStatus } from "./audio/types.js";
 
 export interface PresenceState {
   A?: { participantSessionId?: string; connected?: boolean; audioReady?: boolean };

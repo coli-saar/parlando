@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AudioSessionController } from "./audio/audioSessionController";
-import { ParlandoAudioSink } from "./audio/parlandoAudioSink";
-import { MicrophoneSource } from "./audio/microphoneSource";
-import { initialVoicePreflight, initialVoiceStatus, type VoicePreflight, type VoiceStatus } from "./audio/types";
-import { requiredConsentsAccepted, transcriptionProgressForStatus, type PresenceState } from "./helpers";
+import { AudioSessionController } from "./audio/audioSessionController.js";
+import { ParlandoAudioSink } from "./audio/parlandoAudioSink.js";
+import { MicrophoneSource } from "./audio/microphoneSource.js";
+import { initialVoicePreflight, initialVoiceStatus, type VoicePreflight, type VoiceStatus } from "./audio/types.js";
+import { requiredConsentsAccepted, transcriptionProgressForStatus, type PresenceState } from "./helpers.js";
 import {
   ExperimentApiClient,
   type ConversationMessage,
   type PublicConfigResponse,
   type RoomResponse,
   type ServerMessage
-} from "./protocol";
+} from "./protocol.js";
 
 export interface ParlandoStartupLabels {
   title?: string;
@@ -62,7 +62,6 @@ export interface ParlandoStartupGateProps<
   renderGame(session: ActiveParlandoSession<TState, TObservation, TAction, TEvent, TSummary>): ReactNode;
   apiClient?: ExperimentApiClient;
   createAudioController?: () => AudioSessionController;
-  initialDisplayName?: string;
 }
 
 interface RoomSession<TState, TObservation, TAction, TEvent, TSummary = Record<string, unknown>> {
@@ -130,8 +129,7 @@ export function ParlandoStartupGate<
   labels,
   renderGame,
   apiClient: providedApiClient,
-  createAudioController = createDefaultAudioController,
-  initialDisplayName = ""
+  createAudioController = createDefaultAudioController
 }: ParlandoStartupGateProps<TState, TObservation, TAction, TEvent, TSummary>) {
   const apiClient = useMemo(() => providedApiClient ?? new ExperimentApiClient(), [providedApiClient]);
   const audioControllerRef = useRef<AudioSessionController | null>(null);
@@ -140,7 +138,6 @@ export function ParlandoStartupGate<
 
   const [publicConfig, setPublicConfig] = useState<PublicConfigResponse | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
-  const [displayName, setDisplayName] = useState(initialDisplayName);
   const [consentDecisions, setConsentDecisions] = useState<Record<string, boolean>>({});
   const [session, setSession] = useState<RoomSession<TState, TObservation, TAction, TEvent, TSummary> | null>(null);
   const [error, setError] = useState("");
@@ -178,8 +175,9 @@ export function ParlandoStartupGate<
   }, [endCurrentSession]);
 
   const connectRoom = useCallback(
-    (room: RoomResponse<TState, TObservation, TAction, TEvent>) => {
-      const socket = new WebSocket(apiClient.socketUrl(room.room_id, room.participant_session_id));
+    async (room: RoomResponse<TState, TObservation, TAction, TEvent>) => {
+      const gameSession = await apiClient.getGameSession(room.room_id, room.participant_session_id);
+      const socket = new WebSocket(apiClient.socketUrl(gameSession));
       setSession({
         roomId: room.room_id,
         participantSessionId: room.participant_session_id,
@@ -278,18 +276,18 @@ export function ParlandoStartupGate<
     if (!requiredConsentsAccepted(publicConfig, consentDecisions)) {
       throw new Error("Please accept all required consents before entering the waiting room.");
     }
-    const participant = await apiClient.createParticipant(displayName);
+    const participant = await apiClient.createParticipant();
     if (publicConfig.require_consent) {
       await apiClient.submitConsent(participant.participant_session_id, consentDecisions);
     }
     return participant.participant_session_id;
-  }, [apiClient, consentDecisions, displayName, publicConfig]);
+  }, [apiClient, consentDecisions, publicConfig]);
 
   const createDirectRoom = useCallback(async () => {
     try {
       setError("");
       const participantSessionId = await ensureParticipant();
-      connectRoom(await apiClient.createRoom<TState, TObservation, TAction, TEvent>(participantSessionId, "direct"));
+      await connectRoom(await apiClient.createRoom<TState, TObservation, TAction, TEvent>(participantSessionId, "direct"));
     } catch (caught) {
       setError(errorMessage(caught, "Could not create the waiting room."));
     }
@@ -310,12 +308,7 @@ export function ParlandoStartupGate<
     if (!session) return;
     const selectedAudioInput = audioInputs.find((device) => device.deviceId === selectedAudioInputId);
     const logVoice = (event: string, metadata: Record<string, unknown> = {}) => {
-      apiClient.postVoiceDiagnostic(session.roomId, session.participantSessionId, event, {
-        role: session.role,
-        selected_audio_input_id: selectedAudioInputId || null,
-        selected_audio_input_label: selectedAudioInput?.label || null,
-        ...metadata
-      });
+      apiClient.postVoiceDiagnostic(session.roomId, session.participantSessionId, event, metadata);
     };
     await audioController.toggle(
       {
@@ -459,16 +452,16 @@ export function ParlandoStartupGate<
       body={labels.setupBody ?? "Enter your details and prepare your browser before joining the room."}
       error={error}
     >
-      <div className="lobby-actions">
-        <input
-          aria-label="Display name"
-          onChange={(event) => setDisplayName(event.target.value)}
-          placeholder="Display name"
-          value={displayName}
-        />
-      </div>
       {publicConfig.require_consent && (
         <div className="consent-list">
+          {publicConfig.participant_information_url && (
+            <p className="participant-information">
+              <a href={publicConfig.participant_information_url} rel="noreferrer" target="_blank">
+                Participant information
+                {publicConfig.participant_information_version && ` (${publicConfig.participant_information_version})`}
+              </a>
+            </p>
+          )}
           {publicConfig.consents.map((consent) => (
             <label className="consent-row" key={consent.id}>
               <input

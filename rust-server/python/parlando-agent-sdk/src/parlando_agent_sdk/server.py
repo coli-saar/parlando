@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import importlib
+import os
 import sys
 import uuid
 from dataclasses import dataclass
@@ -97,14 +99,30 @@ AgentFactory = Callable[[dict[str, Any]], GameAgent | Awaitable[GameAgent]]
 class _AgentService:
     """Generated gRPC servicer implementation backed by Python GameAgent instances."""
 
-    def __init__(self, factory: AgentFactory) -> None:
+    def __init__(
+        self, factory: AgentFactory, auth_token: str | None = None, max_agents: int = 128
+    ) -> None:
         """Creates a service that instantiates one Python agent per CreateAgent call."""
         self._factory = factory
+        self._auth_token = auth_token
+        self._max_agents = max_agents
         self._agents: dict[str, GameAgent] = {}
         self._pb2, _pb2_grpc = _generated_modules()
 
+    async def _authenticate(self, context: grpc.aio.ServicerContext) -> None:
+        """Rejects an RPC whose bearer metadata does not match the runtime-only token."""
+        if self._auth_token is None:
+            return
+        supplied = dict(context.invocation_metadata()).get("authorization", "")
+        expected = f"Bearer {self._auth_token}"
+        if not hmac.compare_digest(supplied, expected):
+            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "authentication required")
+
     async def CreateAgent(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote CreateAgent request from the Rust server."""
+        await self._authenticate(context)
+        if len(self._agents) >= self._max_agents:
+            await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "agent capacity reached")
         init_context = {
             "protocol_version": request.protocol_version,
             "agent_name": request.agent_name,
@@ -121,6 +139,7 @@ class _AgentService:
 
     async def ObserveState(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote ObserveState request from the Rust server."""
+        await self._authenticate(context)
         agent = self._agents.get(request.agent_id)
         if agent is None:
             await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
@@ -129,6 +148,7 @@ class _AgentService:
 
     async def ObserveAction(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote ObserveAction request from the Rust server."""
+        await self._authenticate(context)
         agent = self._agents.get(request.agent_id)
         if agent is None:
             await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
@@ -141,6 +161,7 @@ class _AgentService:
 
     async def ObserveMessage(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote ObserveMessage request from the Rust server."""
+        await self._authenticate(context)
         agent = self._agents.get(request.agent_id)
         if agent is None:
             await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
@@ -153,6 +174,7 @@ class _AgentService:
 
     async def MaybeAct(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote MaybeAct request from the Rust server."""
+        await self._authenticate(context)
         agent = self._agents.get(request.agent_id)
         if agent is None:
             await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
@@ -163,6 +185,7 @@ class _AgentService:
 
     async def Act(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote Act request from the Rust server."""
+        await self._authenticate(context)
         agent = self._agents.get(request.agent_id)
         if agent is None:
             await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
@@ -170,6 +193,7 @@ class _AgentService:
 
     async def Shutdown(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote Shutdown request from the Rust server."""
+        await self._authenticate(context)
         agent = self._agents.pop(request.agent_id, None)
         if agent is not None:
             await agent.close()
@@ -180,8 +204,13 @@ async def serve_agent_async(
     factory: type[GameAgent] | AgentFactory,
     host: str = "127.0.0.1",
     port: int = 50051,
+    certificate_chain: bytes | None = None,
+    private_key: bytes | None = None,
+    client_ca: bytes | None = None,
+    auth_token: str | None = None,
+    max_agents: int = 128,
 ) -> None:
-    """Starts an async gRPC server for a Python Parlando agent factory."""
+    """Starts a bounded gRPC server, requiring TLS for every non-loopback binding."""
     pb2, pb2_grpc = _generated_modules()
 
     def normalized_factory(context: dict[str, Any]) -> GameAgent | Awaitable[GameAgent]:
@@ -190,9 +219,32 @@ async def serve_agent_async(
             return factory()
         return factory(context)
 
-    server = grpc.aio.server()
-    pb2_grpc.add_AgentServiceServicer_to_server(_AgentService(normalized_factory), server)
-    server.add_insecure_port(f"{host}:{port}")
+    auth_token = auth_token or os.environ.get("PARLANDO_REMOTE_AGENT_TOKEN")
+    server = grpc.aio.server(
+        options=(
+            ("grpc.max_receive_message_length", 1_048_576),
+            ("grpc.max_send_message_length", 1_048_576),
+            ("grpc.max_concurrent_streams", 128),
+        )
+    )
+    pb2_grpc.add_AgentServiceServicer_to_server(
+        _AgentService(normalized_factory, auth_token, max_agents), server
+    )
+    if (certificate_chain is None) != (private_key is None):
+        raise ValueError("certificate_chain and private_key must be configured together")
+    if certificate_chain is not None and private_key is not None:
+        credentials = grpc.ssl_server_credentials(
+            ((private_key, certificate_chain),),
+            root_certificates=client_ca,
+            require_client_auth=client_ca is not None,
+        )
+        server.add_secure_port(f"{host}:{port}", credentials)
+    elif host in {"127.0.0.1", "::1", "localhost"}:
+        server.add_insecure_port(f"{host}:{port}")
+    else:
+        raise ValueError("non-loopback remote-agent bindings require TLS credentials")
+    if host not in {"127.0.0.1", "::1", "localhost"} and client_ca is None and auth_token is None:
+        raise ValueError("non-loopback remote-agent bindings require mTLS or a bearer token")
     await server.start()
     await server.wait_for_termination()
 
@@ -201,9 +253,25 @@ def serve_agent(
     factory: type[GameAgent] | AgentFactory,
     host: str = "127.0.0.1",
     port: int = 50051,
+    certificate_chain: bytes | None = None,
+    private_key: bytes | None = None,
+    client_ca: bytes | None = None,
+    auth_token: str | None = None,
+    max_agents: int = 128,
 ) -> None:
-    """Runs a Python Parlando agent server until interrupted."""
-    asyncio.run(serve_agent_async(factory, host=host, port=port))
+    """Runs a Python Parlando agent server with the selected TLS or loopback policy."""
+    asyncio.run(
+        serve_agent_async(
+            factory,
+            host=host,
+            port=port,
+            certificate_chain=certificate_chain,
+            private_key=private_key,
+            client_ca=client_ca,
+            auth_token=auth_token,
+            max_agents=max_agents,
+        )
+    )
 
 
 def _struct_to_dict(value: Struct) -> dict[str, Any]:

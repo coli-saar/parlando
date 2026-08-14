@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { transcriptionProgressForStatus, voiceButtonLabel } from "./helpers";
-import type { AudioSessionController, AudioSessionSnapshot, VoicePreflight, VoiceStatus } from "./index";
-import { initialVoicePreflight, initialVoiceStatus } from "./index";
+import { transcriptionProgressForStatus, voiceButtonLabel } from "./helpers.js";
+import type { AudioSessionController, AudioSessionSnapshot, VoicePreflight, VoiceStatus } from "./index.js";
+import { initialVoicePreflight, initialVoiceStatus } from "./index.js";
 
 export function useVoiceController(controller: AudioSessionController): AudioSessionSnapshot {
   const [snapshot, setSnapshot] = useState<AudioSessionSnapshot>(() => controller.snapshot());
@@ -151,4 +151,4 @@ export {
   type ActiveParlandoSession,
   type ParlandoStartupGateProps,
   type ParlandoStartupLabels
-} from "./startup";
+} from "./startup.js";

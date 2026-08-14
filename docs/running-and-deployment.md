@@ -2,7 +2,7 @@
 
 This page covers local development, experiment configuration, frontend serving, Docker, Render, and hosted remote agents.
 
-The same server shape applies to direct links, matched participant sessions, human-vs-agent studies, and Prolific-oriented flows: create or recover participant sessions, route participants into the waiting-room flow, and persist the same evaluation records.
+The same server shape applies to direct links, matched participant sessions, and human-vs-agent studies: create participant sessions, route them into the waiting-room flow, and persist the same evaluation records. Recruitment-provider identity must enter through a server-controlled integration; the public participant endpoint accepts direct participants only.
 
 ## Local Development
 
@@ -33,10 +33,30 @@ Useful routes:
 
 - `GET /health`
 - `GET /api/config`
+- `GET /admin` or `GET /admin/login`
 - `GET /admin/experiments`
+- `GET /admin/privacy`
 - `GET /api/admin/export`
 
 `/admin/games` remains available as a compatibility alias for older deployments.
+
+### First administrator setup
+
+Administrator routes require Parlando's built-in login even when a reverse proxy also authenticates users. Start the server, then open `http://localhost:8000/admin`. If the configured database has no administrator credential, the page asks you to choose a username and password. The first successful submission creates the administrator and signs it in; later visits show the normal login form.
+
+Parlando never stores the cleartext password. The server hashes it with Argon2id and stores the username, password hash, role, and creation time in the SQLite `administrator_credential` table. This row persists across server restarts and binary reinstalls. Each database has its own administrator: the normal Space Game and solo-voice configurations use separate SQLite files under `space-game/.local/`, so each one requires setup once.
+
+First-visitor setup is intentionally open until that database has an administrator. Complete setup before exposing a new deployment to participants or the public internet. An atomic singleton insert ensures that only the first successful setup request is accepted.
+
+For credential recovery or automated deployment, environment variables can override the database credential without changing it:
+
+```sh
+export PARLANDO_ADMIN_USERNAME="admin"
+export PARLANDO_ADMIN_PASSWORD_HASH='<Argon2id PHC hash>'
+export PARLANDO_ADMIN_ROLE="administrator" # or "operator"
+```
+
+Remove the override and restart to return to the database credential. If the password is lost and no override is available, restore or deliberately replace the SQLite database; reinstalling only the Parlando binary does not reset the administrator.
 
 ## Configuration
 
@@ -57,6 +77,7 @@ The main sections are:
 - `transcription`: provider-neutral transcription settings.
 - `tts`: agent text-to-speech settings.
 - `conversation`: conversation-history settings.
+- `privacy`: Privacy Contract version plus the four persistence switches for full game state, typed messages, final transcripts, and minimized voice diagnostics.
 
 For local development without paid audio services, keep `voice.enabled`, `transcription.enabled`, and `tts.enabled` false. For voice studies, keep Speechmatics and ElevenLabs credentials in a private YAML include rather than in checked-in config or frontend build variables.
 
@@ -84,11 +105,13 @@ The repository includes Docker and Render examples for the demo server under `sp
 3. Attach a persistent disk mounted at `/data`.
 4. Add a Render Secret File named `parlando-render.yaml`. Render mounts it at `/etc/secrets/parlando-render.yaml` for Docker services.
 5. Paste deployment-specific YAML into that secret file. Start from `space-game/config/experiment.render.secret.example.yaml`, set `experiment.id` and `server.public_base_url`, and add Speechmatics and ElevenLabs credentials only when their features are enabled.
-6. Deploy.
+6. Deploy, immediately open `/admin`, and create the first administrator before sharing the service URL. For automated provisioning, use the environment-variable override documented above instead.
 
 The committed Render config at `space-game/config/experiment.render.example.yaml` includes `/etc/secrets/parlando-render.yaml` as an optional overlay. The secret file deep-merges over the checked-in base config, so it can override public deployment settings, enable `agents.mode`, or provide private service credentials without expanding the Render environment-variable list.
 
-The browser client should not receive Speechmatics or TTS secrets. It receives public capability metadata from `/api/config` and a short-lived credential for Parlando's room audio WebSocket from `/api/rooms/{room_id}/audio-session`.
+The browser client never receives Speechmatics or TTS secrets. Provider keys are removed from the configuration object before it is persisted, and export applies a second redaction boundary. The browser receives public capability metadata, one in-memory participant credential, and distinct one-use game/audio upgrade tickets.
+
+Before reusing a database created by a version predating the secret-storage boundary, audit it with `cargo run --manifest-path rust-server/Cargo.toml --bin redact_experiment_secrets -- <sqlite-url>`. It is a dry run unless `--apply` is supplied. Back up the database first. Internal testing alone is not evidence that Speechmatics or ElevenLabs credentials were compromised; rotate only when the exposure review finds a credential crossed the controlled boundary, survives in a shared artifact, or policy requires rotation.
 
 Audio rooms and their one-use credentials are process-local. A voice deployment must run one Parlando process or use sticky routing that keeps every request and WebSocket for a room on the same instance. Ordinary stateless load balancing is not sufficient. See [Audio Transport](audio-transport.md) for bandwidth, queue, privacy, and monitoring details.
 
@@ -105,7 +128,7 @@ database:
   url: sqlite:////data/parlando.sqlite
 ```
 
-The production image serves the browser app from `/app/client-dist`. If you deploy the frontend separately, remove or adjust `server.client_dist_path`.
+The production image runs as uid 10001, uses the repository `.dockerignore` to exclude private configs and local data, and serves the browser app from `/app/client-dist`. If you deploy the frontend separately, remove or adjust `server.client_dist_path`.
 
 ## Reference Files
 

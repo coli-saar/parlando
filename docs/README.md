@@ -12,10 +12,14 @@ If you are starting a new experiment, read these pages in order:
 6. [Agents](agents.md): how to add in-process Rust agents or connect Python agents over gRPC.
 7. [Running And Deployment](running-and-deployment.md): local development, configuration, frontend serving, Docker, Render, and remote-agent deployment.
 8. [Data And Monitoring](data-and-monitoring.md): persisted evaluation data, operator monitoring, and export.
+9. [Unterlage zur datenschutzrechtlichen Plattformbewertung](datenschutz-pruefvorlage.md): German basis for a reusable DPO assessment of self-hosted Parlando deployments.
+10. [Umgesetzte Datenschutz-Roadmap](datenschutz-code-roadmap.md): concise record of the six implemented privacy functions, including experiment-scoped identifiers, fixed exports, deletion, and the configuration-derived privacy status page.
 
 Maintenance reference:
 
 - [Publishing Packages](publishing-packages.md): local package smoke tests and online publishing for `parlando-server` and `@coli-saar/parlando-client`.
+- [Participant Information and Privacy Notice v1.0](participant-information-v1.0.md): versioned English participant-facing template.
+- [Consent Items v1.0](consent-items-v1.0.yaml): matching machine-readable English consent-item template.
 
 Use the demo game as a worked example:
 

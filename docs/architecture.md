@@ -4,7 +4,7 @@ Parlando separates reusable experiment infrastructure from the game-specific mec
 
 The design goal is a clear research boundary: your study defines the world, roles, legal actions, private information, UI, agents, and analysis summary. Parlando provides the room lifecycle, communication channels, storage, monitoring, export, and deployment shape around that study.
 
-The planned Parlando LLM skill is intended to generate and revise much of the adapter and client code from a game description, so the architecture is explicit and regular rather than hidden behind a large framework.
+The included `generate-parlando-game` skill generates and revises adapter and client code from a game description, so the architecture is explicit and regular rather than hidden behind a large framework.
 
 ## Terminology
 
@@ -12,7 +12,7 @@ The planned Parlando LLM skill is intended to generate and revise much of the ad
 - **Experiment**: one data-collection campaign using a game. It has a durable id, display name, lifecycle status, consent text, condition labels, selected agent identities, and a captured game/server/client version manifest.
 - **Session**: one play-through within an experiment. A session has a room id, one or two participants or agents, role assignments, events, transcripts, actions, and completion data.
 
-Configuration files may bootstrap a game run, but durable experiment metadata should be stored with the experiment record once data collection starts.
+Configuration files bootstrap a game run, and Parlando stores the effective non-secret experiment metadata and version manifest with the experiment record when data collection starts.
 
 ## Components
 
@@ -23,7 +23,7 @@ The reusable Rust server owns:
 - action validation flow, action persistence, state-change persistence, completion records, transcripts, conversation messages, agent events, and diagnostics.
 - optional server-owned audio relay, server-side Speechmatics, and ElevenLabs integration.
 - local and remote agent execution.
-- admin monitoring and export.
+- authenticated admin monitoring, privacy status, fixed exports, and manual participant deletion.
 
 The game crate owns:
 
@@ -54,10 +54,10 @@ This boundary keeps the reusable server generic without forcing game logic into 
 
 A typical human-vs-human session follows this path:
 
-1. A participant is created and, when required, records consent.
+1. A participant is created with a non-secret session handle, a separate opaque credential, and an experiment-specific random participant identifier; when required, the server durably records the configured declarations.
 2. The participant creates or joins a waiting room.
 3. The server creates or joins a room and assigns roles `A` and `B`.
-4. Browser clients connect to `/ws/game/{room_id}` with their participant-session ids.
+4. The authenticated browser requests a one-use game ticket and connects to `/ws/game/{room_id}?token=...`; a participant-session id is never accepted as a credential.
 5. The server waits until required participants and audio setup are ready.
 6. The server sends role-specific start payloads and observations.
 7. Players submit actions; the game adapter validates and applies them.

@@ -5,7 +5,6 @@ use serde_json::Value;
 pub struct ParticipantCreateRequest {
     #[serde(default = "default_direct")]
     pub source: String,
-    pub display_name: Option<String>,
     pub study_id: Option<String>,
     pub external_id: Option<String>,
     #[serde(default)]
@@ -18,7 +17,6 @@ fn default_direct() -> String {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DirectStartRequest {
-    pub display_name: Option<String>,
     pub study_id: Option<String>,
     pub external_id: Option<String>,
     #[serde(default)]
@@ -27,9 +25,13 @@ pub struct DirectStartRequest {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ParticipantCreateResponse {
+    /// Non-secret identifier used for correlation and user-interface state.
     pub participant_session_id: String,
+    /// Opaque participant bearer credential; clients must keep it out of URLs and logs.
+    pub participant_credential: String,
     pub source: String,
-    pub display_name: Option<String>,
+    /// Human-readable random identifier scoped to the current experiment.
+    pub participant_id: String,
 }
 
 pub type DirectStartResponse = ParticipantCreateResponse;
@@ -46,12 +48,15 @@ pub struct ConsentItemResponse {
 pub struct PublicConfigResponse {
     pub study_name: String,
     pub require_consent: bool,
+    pub participant_information_version: Option<String>,
+    pub participant_information_url: Option<String>,
     pub consents: Vec<ConsentItemResponse>,
     pub voice: Value,
     pub transcription: Value,
     pub tts: Value,
     pub conversation: Value,
     pub agents: Value,
+    pub privacy: Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -121,6 +126,15 @@ pub struct AudioSessionPlanResponse {
     pub frame_duration_ms: u16,
     /// Recommended browser playback buffer target.
     pub jitter_buffer_ms: u16,
+}
+
+/// One-use authenticated game WebSocket upgrade plan.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct GameSessionPlanResponse {
+    /// Game WebSocket URL without embedded participant identifiers.
+    pub websocket_url: String,
+    /// Short-lived, one-use ticket bound to this room and participant role.
+    pub token: String,
 }
 
 impl AudioSessionPlanResponse {

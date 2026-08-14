@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
@@ -6,12 +6,16 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
     SqlitePool,
 };
 use tokio::sync::RwLock;
 
-use crate::{game::Seat, identity::new_id};
+use crate::{
+    game::Seat,
+    identity::new_id,
+    readable_id::{dialogue_id, participant_id as readable_participant_id},
+};
 
 /// Returns the current UTC timestamp in ISO-8601/RFC3339 form.
 pub fn now_iso() -> String {
@@ -52,10 +56,11 @@ pub struct StoredExperimentSummary {
 /// Input for upserting a durable participant identity.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ParticipantRecord {
+    /// Experiment within which exports reuse this participant identifier.
+    pub experiment_id: String,
     pub participant_kind: String,
     pub identity_provider: String,
     pub external_id: Option<String>,
-    pub display_name: Option<String>,
     pub metadata: Value,
 }
 
@@ -124,6 +129,8 @@ pub struct StoredSessionSummary {
     pub experiment_id: String,
     pub session_id: i64,
     pub room_id: String,
+    /// Human-readable random identifier reused for this dialogue in exports and administration.
+    pub dialogue_id: String,
     pub mode: String,
     pub status: String,
     pub created_at: String,
@@ -141,19 +148,55 @@ pub struct StoredSessionParticipant {
     pub experiment_id: String,
     pub session_id: i64,
     pub participant_id: i64,
+    /// Human-readable random identifier reused within this experiment's administration and exports.
+    pub research_id: Option<String>,
     pub participant_session_id: String,
     pub role: String,
     pub joined_at: String,
     pub left_at: Option<String>,
     pub connection_status: String,
     pub participant_kind: Option<String>,
-    pub display_name: Option<String>,
     pub metadata: Option<Value>,
+}
+
+/// Counts participant-linked records before an administrator confirms deletion.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ParticipantDataPreview {
+    /// Durable participant identity selected for deletion.
+    pub participant_id: i64,
+    /// Number of session appearances associated with the identity.
+    pub session_count: i64,
+    /// Number of stored consent declarations associated with the identity.
+    pub consent_count: i64,
+    /// Number of authored message or transcript events that will be removed.
+    pub content_event_count: i64,
+    /// Number of other authored events whose actor reference will be anonymized.
+    pub other_event_count: i64,
+}
+
+/// Durable administrator credential material loaded by the authentication layer.
+///
+/// `password_hash` is an Argon2id PHC string. The cleartext password is never
+/// accepted by or written to the storage layer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredAdminCredential {
+    /// Login name selected during setup.
+    pub username: String,
+    /// Argon2id PHC password hash; never the cleartext password.
+    pub password_hash: String,
+    /// Stable authorization role loaded after successful authentication.
+    pub role: String,
 }
 
 /// Backend-neutral storage interface centered on experiment evaluation.
 #[async_trait]
 pub trait ExperimentStore: Send + Sync {
+    /// Loads the singleton administrator credential, if initial setup is complete.
+    async fn admin_credential(&self) -> Result<Option<StoredAdminCredential>>;
+    /// Atomically creates the singleton administrator credential.
+    ///
+    /// Returns `false` when another request or process completed setup first.
+    async fn create_admin_credential(&self, credential: StoredAdminCredential) -> Result<bool>;
     /// Ensures that one experiment row exists for this server run.
     async fn ensure_experiment(&self, experiment: ExperimentRecord) -> Result<()>;
     /// Returns durable experiment rows with compact session aggregates.
@@ -162,6 +205,8 @@ pub trait ExperimentStore: Send + Sync {
     async fn update_experiment_status(&self, experiment_id: &str, status: &str) -> Result<()>;
     /// Creates or reuses a durable participant identity and returns `participant_id`.
     async fn upsert_participant(&self, participant: ParticipantRecord) -> Result<i64>;
+    /// Returns the human-readable experiment-specific identifier for a durable participant.
+    async fn participant_research_id(&self, participant_id: i64) -> Result<Option<String>>;
     /// Creates a session for a client-facing room id and returns its per-experiment `session_id`.
     async fn create_session(&self, session: SessionRecord) -> Result<i64>;
     /// Adds a participant to a session with a session-local role.
@@ -178,6 +223,12 @@ pub trait ExperimentStore: Send + Sync {
         -> Result<()>;
     /// Appends one ordered session event and returns its event index.
     async fn append_session_event(&self, event: SessionEventRecord) -> Result<i64>;
+    /// Atomically appends one game transition's events and optional completion update.
+    async fn commit_session_transition(
+        &self,
+        events: Vec<SessionEventRecord>,
+        completion: Option<Value>,
+    ) -> Result<()>;
     /// Returns ordered events for one session, optionally filtered by event type.
     async fn session_events(
         &self,
@@ -208,6 +259,18 @@ pub trait ExperimentStore: Send + Sync {
     async fn export_experiment(&self, experiment_id: &str) -> Result<Value>;
     /// Exports all durable evaluation data for one session.
     async fn export_session(&self, experiment_id: &str, session_id: i64) -> Result<Value>;
+    /// Counts records affected by manual participant-data deletion.
+    async fn participant_data_preview(
+        &self,
+        experiment_id: &str,
+        participant_id: i64,
+    ) -> Result<ParticipantDataPreview>;
+    /// Removes participant-authored content and anonymizes remaining references.
+    async fn delete_participant_data(
+        &self,
+        experiment_id: &str,
+        participant_id: i64,
+    ) -> Result<ParticipantDataPreview>;
 }
 
 /// Shared trait-object handle for the configured experiment store backend.
@@ -215,6 +278,7 @@ pub type SharedExperimentStore = Arc<dyn ExperimentStore>;
 
 #[derive(Default)]
 struct MemoryStoreInner {
+    admin_credential: Option<StoredAdminCredential>,
     experiments: HashMap<String, Value>,
     participants: Vec<Value>,
     sessions: Vec<Value>,
@@ -232,6 +296,19 @@ pub struct MemoryExperimentStore {
 
 #[async_trait]
 impl ExperimentStore for MemoryExperimentStore {
+    async fn admin_credential(&self) -> Result<Option<StoredAdminCredential>> {
+        Ok(self.inner.read().await.admin_credential.clone())
+    }
+
+    async fn create_admin_credential(&self, credential: StoredAdminCredential) -> Result<bool> {
+        let mut inner = self.inner.write().await;
+        if inner.admin_credential.is_some() {
+            return Ok(false);
+        }
+        inner.admin_credential = Some(credential);
+        Ok(true)
+    }
+
     async fn ensure_experiment(&self, experiment: ExperimentRecord) -> Result<()> {
         let mut inner = self.inner.write().await;
         inner.experiments.insert(
@@ -306,7 +383,8 @@ impl ExperimentStore for MemoryExperimentStore {
         let mut inner = self.inner.write().await;
         if let Some(external_id) = participant.external_id.as_deref() {
             if let Some(existing) = inner.participants.iter().find(|row| {
-                row["identity_provider"] == participant.identity_provider
+                row["experiment_id"] == participant.experiment_id
+                    && row["identity_provider"] == participant.identity_provider
                     && row["external_id"].as_str() == Some(external_id)
             }) {
                 return Ok(existing["participant_id"].as_i64().unwrap());
@@ -314,16 +392,39 @@ impl ExperimentStore for MemoryExperimentStore {
         }
         inner.next_participant_id += 1;
         let participant_id = inner.next_participant_id;
+        let research_id = loop {
+            let candidate = readable_participant_id();
+            if !inner
+                .participants
+                .iter()
+                .any(|row| row["research_id"].as_str() == Some(&candidate))
+            {
+                break candidate;
+            }
+        };
         inner.participants.push(json!({
             "participant_id": participant_id,
+            "research_id": research_id,
+            "experiment_id": participant.experiment_id,
             "participant_kind": participant.participant_kind,
             "identity_provider": participant.identity_provider,
             "external_id": participant.external_id,
-            "display_name": participant.display_name,
             "metadata": participant.metadata,
             "created_at": now_iso(),
         }));
         Ok(participant_id)
+    }
+
+    async fn participant_research_id(&self, participant_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .inner
+            .read()
+            .await
+            .participants
+            .iter()
+            .find(|row| row["participant_id"].as_i64() == Some(participant_id))
+            .and_then(|row| row["research_id"].as_str())
+            .map(str::to_string))
     }
 
     async fn create_session(&self, session: SessionRecord) -> Result<i64> {
@@ -336,10 +437,21 @@ impl ExperimentStore for MemoryExperimentStore {
             .max()
             .unwrap_or(0)
             + 1;
+        let readable_dialogue_id = loop {
+            let candidate = dialogue_id();
+            if !inner
+                .sessions
+                .iter()
+                .any(|row| row["dialogue_id"].as_str() == Some(&candidate))
+            {
+                break candidate;
+            }
+        };
         inner.sessions.push(json!({
             "experiment_id": session.experiment_id,
             "session_id": session_id,
             "room_id": session.room_id,
+            "dialogue_id": readable_dialogue_id,
             "mode": session.mode,
             "status": session.status,
             "created_at": now_iso(),
@@ -424,6 +536,74 @@ impl ExperimentStore for MemoryExperimentStore {
         Ok(event_index)
     }
 
+    async fn commit_session_transition(
+        &self,
+        events: Vec<SessionEventRecord>,
+        completion: Option<Value>,
+    ) -> Result<()> {
+        let Some(first) = events.first() else {
+            return Ok(());
+        };
+        let experiment_id = first.experiment_id.clone();
+        let session_id = first.session_id;
+        if events
+            .iter()
+            .any(|event| event.experiment_id != experiment_id || event.session_id != session_id)
+        {
+            bail!("transition events must belong to one session");
+        }
+        let mut inner = self.inner.write().await;
+        let completion_session_index = if completion.is_some() {
+            Some(
+                inner
+                    .sessions
+                    .iter()
+                    .position(|row| {
+                        row["experiment_id"].as_str() == Some(experiment_id.as_str())
+                            && row["session_id"].as_i64() == Some(session_id)
+                    })
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("session not found for transition completion")
+                    })?,
+            )
+        } else {
+            None
+        };
+        let mut event_index = inner
+            .session_events
+            .iter()
+            .filter(|row| {
+                row["experiment_id"] == experiment_id
+                    && row["session_id"].as_i64() == Some(session_id)
+            })
+            .filter_map(|row| row["event_index"].as_i64())
+            .max()
+            .unwrap_or(0);
+        for event in events {
+            event_index += 1;
+            let event_id = inner.session_events.len() + 1;
+            inner.session_events.push(json!({
+                "event_id": event_id,
+                "experiment_id": event.experiment_id,
+                "session_id": event.session_id,
+                "event_index": event_index,
+                "event_type": event.event_type,
+                "actor_participant_id": event.actor_participant_id,
+                "actor_role": event.actor_role,
+                "payload": event.payload,
+                "game_state": event.game_state,
+                "created_at": now_iso(),
+            }));
+        }
+        if let (Some(completion), Some(index)) = (completion, completion_session_index) {
+            let row = &mut inner.sessions[index];
+            row["status"] = json!("completed");
+            row["completed_at"] = json!(now_iso());
+            row["completion"] = completion;
+        }
+        Ok(())
+    }
+
     async fn session_events(
         &self,
         experiment_id: &str,
@@ -494,6 +674,7 @@ impl ExperimentStore for MemoryExperimentStore {
                     experiment_id: experiment_id.to_string(),
                     session_id,
                     room_id: row["room_id"].as_str().unwrap_or_default().to_string(),
+                    dialogue_id: row["dialogue_id"].as_str().unwrap_or_default().to_string(),
                     mode: row["mode"].as_str().unwrap_or_default().to_string(),
                     status: row["status"].as_str().unwrap_or_default().to_string(),
                     created_at: row["created_at"].as_str().unwrap_or_default().to_string(),
@@ -543,6 +724,9 @@ impl ExperimentStore for MemoryExperimentStore {
                     experiment_id: experiment_id.to_string(),
                     session_id,
                     participant_id,
+                    research_id: participant
+                        .and_then(|participant| participant["research_id"].as_str())
+                        .map(str::to_string),
                     participant_session_id: row["participant_session_id"]
                         .as_str()
                         .unwrap_or_default()
@@ -556,9 +740,6 @@ impl ExperimentStore for MemoryExperimentStore {
                         .to_string(),
                     participant_kind: participant
                         .and_then(|participant| participant["participant_kind"].as_str())
-                        .map(str::to_string),
-                    display_name: participant
-                        .and_then(|participant| participant["display_name"].as_str())
                         .map(str::to_string),
                     metadata: participant
                         .and_then(|participant| participant.get("metadata"))
@@ -612,6 +793,151 @@ impl ExperimentStore for MemoryExperimentStore {
             "session_events": inner.session_events.iter().filter(|row| row["experiment_id"].as_str() == Some(experiment_id) && row["session_id"].as_i64() == Some(session_id)).collect::<Vec<_>>(),
         }))
     }
+
+    async fn participant_data_preview(
+        &self,
+        experiment_id: &str,
+        participant_id: i64,
+    ) -> Result<ParticipantDataPreview> {
+        let inner = self.inner.read().await;
+        Ok(memory_participant_data_preview(
+            &inner,
+            experiment_id,
+            participant_id,
+        ))
+    }
+
+    async fn delete_participant_data(
+        &self,
+        experiment_id: &str,
+        participant_id: i64,
+    ) -> Result<ParticipantDataPreview> {
+        let mut inner = self.inner.write().await;
+        let preview = memory_participant_data_preview(&inner, experiment_id, participant_id);
+        let session_ids = inner
+            .session_participants
+            .iter()
+            .filter(|row| row["experiment_id"].as_str() == Some(experiment_id))
+            .filter(|row| row["participant_id"].as_i64() == Some(participant_id))
+            .filter_map(|row| row["participant_session_id"].as_str().map(str::to_string))
+            .collect::<Vec<_>>();
+        inner.consent_declarations.retain(|row| {
+            row["experiment_id"].as_str() != Some(experiment_id)
+                || row["participant_id"].as_i64() != Some(participant_id)
+        });
+        inner.session_events.retain(|row| {
+            !(row["experiment_id"].as_str() == Some(experiment_id)
+                && row["actor_participant_id"].as_i64() == Some(participant_id)
+                && matches!(
+                    row["event_type"].as_str(),
+                    Some("conversation_message" | "transcript_segment")
+                ))
+        });
+        for row in inner
+            .session_events
+            .iter_mut()
+            .filter(|row| row["experiment_id"].as_str() == Some(experiment_id))
+        {
+            if row["actor_participant_id"].as_i64() == Some(participant_id) {
+                row["actor_participant_id"] = Value::Null;
+                row["actor_role"] = json!("deleted_participant");
+            }
+            redact_participant_strings(&mut row["payload"], &session_ids);
+            redact_participant_strings(&mut row["game_state"], &session_ids);
+        }
+        for row in inner
+            .session_participants
+            .iter_mut()
+            .filter(|row| row["experiment_id"].as_str() == Some(experiment_id))
+            .filter(|row| row["participant_id"].as_i64() == Some(participant_id))
+        {
+            row["participant_session_id"] = json!(new_id("deleted"));
+            row["connection_status"] = json!("deleted");
+            row["left_at"] = json!(now_iso());
+        }
+        if let Some(row) = inner
+            .participants
+            .iter_mut()
+            .find(|row| row["participant_id"].as_i64() == Some(participant_id))
+        {
+            row["research_id"] = Value::Null;
+            row["participant_kind"] = json!("deleted");
+            row["external_id"] = Value::Null;
+            row["metadata"] = json!({});
+        }
+        Ok(preview)
+    }
+}
+
+/// Counts participant-linked rows in the in-memory backend.
+fn memory_participant_data_preview(
+    inner: &MemoryStoreInner,
+    experiment_id: &str,
+    participant_id: i64,
+) -> ParticipantDataPreview {
+    let matching_events = inner.session_events.iter().filter(|row| {
+        row["experiment_id"].as_str() == Some(experiment_id)
+            && row["actor_participant_id"].as_i64() == Some(participant_id)
+    });
+    let mut content_event_count = 0;
+    let mut other_event_count = 0;
+    for row in matching_events {
+        if matches!(
+            row["event_type"].as_str(),
+            Some("conversation_message" | "transcript_segment")
+        ) {
+            content_event_count += 1;
+        } else {
+            other_event_count += 1;
+        }
+    }
+    ParticipantDataPreview {
+        participant_id,
+        session_count: inner
+            .session_participants
+            .iter()
+            .filter(|row| row["experiment_id"].as_str() == Some(experiment_id))
+            .filter(|row| row["participant_id"].as_i64() == Some(participant_id))
+            .count() as i64,
+        consent_count: inner
+            .consent_declarations
+            .iter()
+            .filter(|row| row["experiment_id"].as_str() == Some(experiment_id))
+            .filter(|row| row["participant_id"].as_i64() == Some(participant_id))
+            .count() as i64,
+        content_event_count,
+        other_event_count,
+    }
+}
+
+/// Replaces exact participant-session identifiers in nested JSON values.
+fn redact_participant_strings(value: &mut Value, identifiers: &[String]) {
+    match value {
+        Value::String(text) if identifiers.iter().any(|identifier| identifier == text) => {
+            *text = "deleted_participant".to_string();
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| redact_participant_strings(item, identifiers)),
+        Value::Object(fields) => fields
+            .values_mut()
+            .for_each(|item| redact_participant_strings(item, identifiers)),
+        _ => {}
+    }
+}
+
+/// Returns whether SQLite rejected a write because a unique value already exists.
+fn sqlite_unique_constraint(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .is_some_and(|database_error| database_error.is_unique_violation())
+}
+
+/// Returns whether SQLite names the expected unique column in its constraint error.
+fn sqlite_unique_constraint_for(error: &sqlx::Error, column: &str) -> bool {
+    error.as_database_error().is_some_and(|database_error| {
+        database_error.is_unique_violation() && database_error.message().contains(column)
+    })
 }
 
 /// SQLite implementation of the evaluation-oriented experiment store.
@@ -624,7 +950,7 @@ impl SqliteExperimentStore {
     pub async fn connect(database_url: &str) -> Result<Self> {
         if database_url.is_empty() || database_url == "sqlite:///:memory:" {
             let pool = SqlitePoolOptions::new()
-                .max_connections(5)
+                .max_connections(1)
                 .connect("sqlite::memory:")
                 .await?;
             let store = Self { pool };
@@ -640,9 +966,12 @@ impl SqliteExperimentStore {
         }
         let options = path
             .parse::<SqliteConnectOptions>()?
-            .create_if_missing(true);
+            .create_if_missing(true)
+            .busy_timeout(Duration::from_secs(5))
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal);
         let pool = SqlitePoolOptions::new()
-            .max_connections(5)
+            .max_connections(1)
             .connect_with(options)
             .await?;
         let store = Self { pool };
@@ -653,6 +982,15 @@ impl SqliteExperimentStore {
     /// Creates the relational evaluation schema.
     async fn ensure_schema(&self) -> Result<()> {
         for statement in [
+            r#"
+            create table if not exists administrator_credential (
+                singleton integer primary key check (singleton = 1),
+                username text not null,
+                password_hash text not null,
+                role text not null,
+                created_at text not null
+            )
+            "#,
             r#"
             create table if not exists experiments (
                 experiment_id text primary key,
@@ -667,24 +1005,21 @@ impl SqliteExperimentStore {
             r#"
             create table if not exists participants (
                 participant_id integer primary key autoincrement,
+                research_id text unique,
+                experiment_id text not null,
                 participant_kind text not null,
                 identity_provider text not null,
                 external_id text,
-                display_name text,
                 metadata_json text,
                 created_at text not null
             )
-            "#,
-            r#"
-            create unique index if not exists idx_participants_provider_external
-            on participants(identity_provider, external_id)
-            where external_id is not null
             "#,
             r#"
             create table if not exists sessions (
                 experiment_id text not null,
                 session_id integer not null,
                 room_id text not null unique,
+                dialogue_id text unique,
                 mode text not null,
                 status text not null,
                 created_at text not null,
@@ -751,6 +1086,193 @@ impl SqliteExperimentStore {
             .await?;
         self.ensure_column("experiments", "status", "text not null default 'draft'")
             .await?;
+        self.ensure_column("participants", "research_id", "text")
+            .await?;
+        self.ensure_column("participants", "experiment_id", "text")
+            .await?;
+        self.ensure_column("sessions", "dialogue_id", "text")
+            .await?;
+        sqlx::query("drop index if exists idx_participants_provider_external")
+            .execute(&self.pool)
+            .await?;
+        self.scope_legacy_participants().await?;
+        sqlx::query(
+            "create unique index if not exists idx_participants_experiment_provider_external on participants(experiment_id, identity_provider, external_id) where external_id is not null",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "create unique index if not exists idx_participants_research_id on participants(research_id) where research_id is not null",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "create unique index if not exists idx_sessions_dialogue_id on sessions(dialogue_id) where dialogue_id is not null",
+        )
+        .execute(&self.pool)
+        .await?;
+        self.backfill_readable_ids().await?;
+        self.drop_column_if_exists("participants", "display_name")
+            .await?;
+        Ok(())
+    }
+
+    /// Splits legacy participant rows that were shared by more than one experiment.
+    async fn scope_legacy_participants(&self) -> Result<()> {
+        let participant_ids = sqlx::query_scalar::<_, i64>(
+            "select participant_id from participants where experiment_id is null",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        for participant_id in participant_ids {
+            let experiment_ids = sqlx::query_scalar::<_, String>(
+                r#"
+                select experiment_id from session_participants where participant_id = ?
+                union select experiment_id from consent_declarations where participant_id = ?
+                union select experiment_id from session_events where actor_participant_id = ?
+                order by experiment_id
+                "#,
+            )
+            .bind(participant_id)
+            .bind(participant_id)
+            .bind(participant_id)
+            .fetch_all(&self.pool)
+            .await?;
+            let Some((first_experiment, remaining_experiments)) = experiment_ids.split_first()
+            else {
+                sqlx::query(
+                    "update participants set experiment_id = 'legacy_unassigned' where participant_id = ?",
+                )
+                .bind(participant_id)
+                .execute(&self.pool)
+                .await?;
+                continue;
+            };
+            sqlx::query("update participants set experiment_id = ? where participant_id = ?")
+                .bind(first_experiment)
+                .bind(participant_id)
+                .execute(&self.pool)
+                .await?;
+            for experiment_id in remaining_experiments {
+                let source = sqlx::query_as::<
+                    _,
+                    (String, String, Option<String>, Option<String>, String),
+                >(
+                    "select participant_kind, identity_provider, external_id, metadata_json, created_at from participants where participant_id = ?",
+                )
+                .bind(participant_id)
+                .fetch_one(&self.pool)
+                .await?;
+                let new_participant_id = loop {
+                    let result = sqlx::query(
+                        r#"
+                        insert into participants
+                        (research_id, experiment_id, participant_kind, identity_provider, external_id, metadata_json, created_at)
+                        values (?, ?, ?, ?, ?, ?, ?)
+                        "#,
+                    )
+                    .bind(readable_participant_id())
+                    .bind(experiment_id)
+                    .bind(&source.0)
+                    .bind(&source.1)
+                    .bind(&source.2)
+                    .bind(&source.3)
+                    .bind(&source.4)
+                    .execute(&self.pool)
+                    .await;
+                    match result {
+                        Ok(result) => break result.last_insert_rowid(),
+                        Err(error)
+                            if sqlite_unique_constraint_for(&error, "participants.research_id") =>
+                        {
+                            continue
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                };
+                for table in ["session_participants", "consent_declarations"] {
+                    sqlx::query(&format!(
+                        "update {table} set participant_id = ? where experiment_id = ? and participant_id = ?"
+                    ))
+                    .bind(new_participant_id)
+                    .bind(experiment_id)
+                    .bind(participant_id)
+                    .execute(&self.pool)
+                    .await?;
+                }
+                sqlx::query(
+                    "update session_events set actor_participant_id = ? where experiment_id = ? and actor_participant_id = ?",
+                )
+                .bind(new_participant_id)
+                .bind(experiment_id)
+                .bind(participant_id)
+                .execute(&self.pool)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Replaces legacy opaque participant ids and fills missing dialogue ids.
+    async fn backfill_readable_ids(&self) -> Result<()> {
+        let participants = sqlx::query_scalar::<_, i64>(
+            "select participant_id from participants where research_id is null or research_id like 'research_%'",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        for participant_id in participants {
+            loop {
+                let candidate = readable_participant_id();
+                let result =
+                    sqlx::query("update participants set research_id = ? where participant_id = ?")
+                        .bind(candidate)
+                        .bind(participant_id)
+                        .execute(&self.pool)
+                        .await;
+                match result {
+                    Ok(_) => break,
+                    Err(error) if sqlite_unique_constraint(&error) => continue,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        let sessions = sqlx::query_as::<_, (String, i64)>(
+            "select experiment_id, session_id from sessions where dialogue_id is null",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        for (experiment_id, session_id) in sessions {
+            loop {
+                let candidate = dialogue_id();
+                let result = sqlx::query(
+                    "update sessions set dialogue_id = ? where experiment_id = ? and session_id = ?",
+                )
+                .bind(candidate)
+                .bind(&experiment_id)
+                .bind(session_id)
+                .execute(&self.pool)
+                .await;
+                match result {
+                    Ok(_) => break,
+                    Err(error) if sqlite_unique_constraint(&error) => continue,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Drops a legacy SQLite column when it is present.
+    async fn drop_column_if_exists(&self, table: &str, column: &str) -> Result<()> {
+        let pragma = format!("pragma table_info({table})");
+        let columns = sqlx::query_as::<_, (i64, String, String, i64, Option<String>, i64)>(&pragma)
+            .fetch_all(&self.pool)
+            .await?;
+        if columns.iter().any(|row| row.1 == column) {
+            sqlx::query(&format!("alter table {table} drop column {column}"))
+                .execute(&self.pool)
+                .await?;
+        }
         Ok(())
     }
 
@@ -783,6 +1305,37 @@ impl SqliteExperimentStore {
 
 #[async_trait]
 impl ExperimentStore for SqliteExperimentStore {
+    async fn admin_credential(&self) -> Result<Option<StoredAdminCredential>> {
+        Ok(sqlx::query_as::<_, (String, String, String)>(
+            "select username, password_hash, role from administrator_credential where singleton = 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|(username, password_hash, role)| StoredAdminCredential {
+            username,
+            password_hash,
+            role,
+        }))
+    }
+
+    async fn create_admin_credential(&self, credential: StoredAdminCredential) -> Result<bool> {
+        let result = sqlx::query(
+            r#"
+            insert into administrator_credential
+                (singleton, username, password_hash, role, created_at)
+            values (1, ?, ?, ?, ?)
+            on conflict(singleton) do nothing
+            "#,
+        )
+        .bind(credential.username)
+        .bind(credential.password_hash)
+        .bind(credential.role)
+        .bind(now_iso())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     async fn ensure_experiment(&self, experiment: ExperimentRecord) -> Result<()> {
         sqlx::query(
             r#"
@@ -886,8 +1439,9 @@ impl ExperimentStore for SqliteExperimentStore {
     async fn upsert_participant(&self, participant: ParticipantRecord) -> Result<i64> {
         if let Some(external_id) = participant.external_id.as_deref() {
             if let Some(participant_id) = sqlx::query_scalar::<_, i64>(
-                "select participant_id from participants where identity_provider = ? and external_id = ?",
+                "select participant_id from participants where experiment_id = ? and identity_provider = ? and external_id = ?",
             )
+            .bind(&participant.experiment_id)
             .bind(&participant.identity_provider)
             .bind(external_id)
             .fetch_optional(&self.pool)
@@ -896,22 +1450,40 @@ impl ExperimentStore for SqliteExperimentStore {
                 return Ok(participant_id);
             }
         }
-        let result = sqlx::query(
-            r#"
-            insert into participants
-            (participant_kind, identity_provider, external_id, display_name, metadata_json, created_at)
-            values (?, ?, ?, ?, ?, ?)
-            "#,
+        loop {
+            let result = sqlx::query(
+                r#"
+                insert into participants
+                (research_id, experiment_id, participant_kind, identity_provider, external_id, metadata_json, created_at)
+                values (?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(readable_participant_id())
+            .bind(&participant.experiment_id)
+            .bind(&participant.participant_kind)
+            .bind(&participant.identity_provider)
+            .bind(&participant.external_id)
+            .bind(serde_json::to_string(&participant.metadata)?)
+            .bind(now_iso())
+            .execute(&self.pool)
+            .await;
+            match result {
+                Ok(result) => return Ok(result.last_insert_rowid()),
+                Err(error) if sqlite_unique_constraint_for(&error, "participants.research_id") => {
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    async fn participant_research_id(&self, participant_id: i64) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar::<_, String>(
+            "select research_id from participants where participant_id = ?",
         )
-        .bind(participant.participant_kind)
-        .bind(participant.identity_provider)
-        .bind(participant.external_id)
-        .bind(participant.display_name)
-        .bind(serde_json::to_string(&participant.metadata)?)
-        .bind(now_iso())
-        .execute(&self.pool)
-        .await?;
-        Ok(result.last_insert_rowid())
+        .bind(participant_id)
+        .fetch_optional(&self.pool)
+        .await?)
     }
 
     async fn create_session(&self, session: SessionRecord) -> Result<i64> {
@@ -922,16 +1494,29 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(&session.experiment_id)
         .fetch_one(&mut *tx)
         .await?;
+        let readable_dialogue_id = loop {
+            let candidate = dialogue_id();
+            let exists = sqlx::query_scalar::<_, bool>(
+                "select exists(select 1 from sessions where dialogue_id = ?)",
+            )
+            .bind(&candidate)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !exists {
+                break candidate;
+            }
+        };
         sqlx::query(
             r#"
             insert into sessions
-            (experiment_id, session_id, room_id, mode, status, created_at)
-            values (?, ?, ?, ?, ?, ?)
+            (experiment_id, session_id, room_id, dialogue_id, mode, status, created_at)
+            values (?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(session.experiment_id)
         .bind(next_session_id)
         .bind(session.room_id)
+        .bind(readable_dialogue_id)
         .bind(session.mode)
         .bind(session.status)
         .bind(now_iso())
@@ -1037,6 +1622,66 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(event_index)
     }
 
+    async fn commit_session_transition(
+        &self,
+        events: Vec<SessionEventRecord>,
+        completion: Option<Value>,
+    ) -> Result<()> {
+        let Some(first) = events.first() else {
+            return Ok(());
+        };
+        let experiment_id = first.experiment_id.clone();
+        let session_id = first.session_id;
+        if events
+            .iter()
+            .any(|event| event.experiment_id != experiment_id || event.session_id != session_id)
+        {
+            bail!("transition events must belong to one session");
+        }
+        let mut tx = self.pool.begin().await?;
+        let mut event_index = sqlx::query_scalar::<_, i64>(
+            "select coalesce(max(event_index), 0) from session_events where experiment_id = ? and session_id = ?",
+        )
+        .bind(&experiment_id)
+        .bind(session_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        for event in events {
+            event_index += 1;
+            sqlx::query(
+                r#"
+                insert into session_events
+                (experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(event.experiment_id)
+            .bind(event.session_id)
+            .bind(event_index)
+            .bind(event.event_type)
+            .bind(event.actor_participant_id)
+            .bind(event.actor_role)
+            .bind(serde_json::to_string(&event.payload)?)
+            .bind(event.game_state.map(|state| serde_json::to_string(&state)).transpose()?)
+            .bind(now_iso())
+            .execute(&mut *tx)
+            .await?;
+        }
+        if let Some(completion) = completion {
+            sqlx::query(
+                "update sessions set status = 'completed', completed_at = ?, completion_json = ? where experiment_id = ? and session_id = ?",
+            )
+            .bind(now_iso())
+            .bind(serde_json::to_string(&completion)?)
+            .bind(&experiment_id)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn session_events(
         &self,
         experiment_id: &str,
@@ -1091,6 +1736,7 @@ impl ExperimentStore for SqliteExperimentStore {
                 String,
                 String,
                 String,
+                String,
                 Option<String>,
                 Option<String>,
                 Option<String>,
@@ -1100,7 +1746,7 @@ impl ExperimentStore for SqliteExperimentStore {
             ),
         >(
             r#"
-            select s.experiment_id, s.session_id, s.room_id, s.mode, s.status,
+            select s.experiment_id, s.session_id, s.room_id, s.dialogue_id, s.mode, s.status,
                    s.created_at, s.started_at, s.completed_at, s.completion_json,
                    count(distinct sp.participant_id) as participant_count,
                    count(distinct se.event_id) as event_count,
@@ -1126,18 +1772,19 @@ impl ExperimentStore for SqliteExperimentStore {
                 experiment_id: row.0,
                 session_id: row.1,
                 room_id: row.2,
-                mode: row.3,
-                status: row.4,
-                created_at: row.5,
-                started_at: row.6,
-                completed_at: row.7,
+                dialogue_id: row.3,
+                mode: row.4,
+                status: row.5,
+                created_at: row.6,
+                started_at: row.7,
+                completed_at: row.8,
                 completion: row
-                    .8
+                    .9
                     .map(|raw| serde_json::from_str::<Value>(&raw))
                     .transpose()?,
-                participant_count: row.9,
-                event_count: row.10,
-                last_event_at: row.11,
+                participant_count: row.10,
+                event_count: row.11,
+                last_event_at: row.12,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -1168,7 +1815,7 @@ impl ExperimentStore for SqliteExperimentStore {
             r#"
             select sp.experiment_id, sp.session_id, sp.participant_id,
                    sp.participant_session_id, sp.role, sp.joined_at, sp.left_at,
-                   sp.connection_status, p.participant_kind, p.display_name, p.metadata_json
+                   sp.connection_status, p.research_id, p.participant_kind, p.metadata_json
             from session_participants sp
             left join participants p on p.participant_id = sp.participant_id
             where sp.experiment_id = ? and sp.session_id = ?
@@ -1190,8 +1837,8 @@ impl ExperimentStore for SqliteExperimentStore {
                 joined_at: row.5,
                 left_at: row.6,
                 connection_status: row.7,
-                participant_kind: row.8,
-                display_name: row.9,
+                research_id: row.8,
+                participant_kind: row.9,
                 metadata: row
                     .10
                     .map(|raw| serde_json::from_str::<Value>(&raw))
@@ -1227,6 +1874,123 @@ impl ExperimentStore for SqliteExperimentStore {
     async fn export_session(&self, experiment_id: &str, session_id: i64) -> Result<Value> {
         export_rows(&self.pool, Some((experiment_id, Some(session_id)))).await
     }
+
+    async fn participant_data_preview(
+        &self,
+        experiment_id: &str,
+        participant_id: i64,
+    ) -> Result<ParticipantDataPreview> {
+        sqlite_participant_data_preview(&self.pool, experiment_id, participant_id).await
+    }
+
+    async fn delete_participant_data(
+        &self,
+        experiment_id: &str,
+        participant_id: i64,
+    ) -> Result<ParticipantDataPreview> {
+        let preview =
+            sqlite_participant_data_preview(&self.pool, experiment_id, participant_id).await?;
+        let mut tx = self.pool.begin().await?;
+        let participant_session_ids = sqlx::query_scalar::<_, String>(
+            "select participant_session_id from session_participants where experiment_id = ? and participant_id = ?",
+        )
+        .bind(experiment_id)
+        .bind(participant_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        sqlx::query(
+            "delete from consent_declarations where experiment_id = ? and participant_id = ?",
+        )
+        .bind(experiment_id)
+        .bind(participant_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "delete from session_events where experiment_id = ? and actor_participant_id = ? and event_type in ('conversation_message', 'transcript_segment')",
+        )
+        .bind(experiment_id)
+        .bind(participant_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "update session_events set actor_participant_id = null, actor_role = 'deleted_participant' where experiment_id = ? and actor_participant_id = ?",
+        )
+        .bind(experiment_id)
+        .bind(participant_id)
+        .execute(&mut *tx)
+        .await?;
+        for participant_session_id in &participant_session_ids {
+            sqlx::query(
+                "update session_events set payload_json = replace(payload_json, ?, 'deleted_participant'), game_state_json = replace(game_state_json, ?, 'deleted_participant') where experiment_id = ?",
+            )
+            .bind(participant_session_id)
+            .bind(participant_session_id)
+            .bind(experiment_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        for participant_session_id in participant_session_ids {
+            sqlx::query(
+                "update session_participants set participant_session_id = ?, connection_status = 'deleted', left_at = ? where participant_session_id = ?",
+            )
+            .bind(new_id("deleted"))
+            .bind(now_iso())
+            .bind(participant_session_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query(
+            "update participants set research_id = null, participant_kind = 'deleted', external_id = null, metadata_json = '{}' where participant_id = ?",
+        )
+        .bind(participant_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(preview)
+    }
+}
+
+/// Counts participant-linked rows in SQLite without modifying them.
+async fn sqlite_participant_data_preview(
+    pool: &SqlitePool,
+    experiment_id: &str,
+    participant_id: i64,
+) -> Result<ParticipantDataPreview> {
+    let session_count = sqlx::query_scalar::<_, i64>(
+        "select count(*) from session_participants where experiment_id = ? and participant_id = ?",
+    )
+    .bind(experiment_id)
+    .bind(participant_id)
+    .fetch_one(pool)
+    .await?;
+    let consent_count = sqlx::query_scalar::<_, i64>(
+        "select count(*) from consent_declarations where experiment_id = ? and participant_id = ?",
+    )
+    .bind(experiment_id)
+    .bind(participant_id)
+    .fetch_one(pool)
+    .await?;
+    let content_event_count = sqlx::query_scalar::<_, i64>(
+        "select count(*) from session_events where experiment_id = ? and actor_participant_id = ? and event_type in ('conversation_message', 'transcript_segment')",
+    )
+    .bind(experiment_id)
+    .bind(participant_id)
+    .fetch_one(pool)
+    .await?;
+    let other_event_count = sqlx::query_scalar::<_, i64>(
+        "select count(*) from session_events where experiment_id = ? and actor_participant_id = ? and event_type not in ('conversation_message', 'transcript_segment')",
+    )
+    .bind(experiment_id)
+    .bind(participant_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(ParticipantDataPreview {
+        participant_id,
+        session_count,
+        consent_count,
+        content_event_count,
+        other_event_count,
+    })
 }
 
 /// Creates the configured experiment store from `database.url`.
@@ -1298,15 +2062,16 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
         ))
     };
     let sessions_sql = if session_id.is_some() {
-        "select experiment_id, session_id, room_id, mode, status, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? and session_id = ? order by session_id"
+        "select experiment_id, session_id, room_id, dialogue_id, mode, status, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? and session_id = ? order by session_id"
     } else {
-        "select experiment_id, session_id, room_id, mode, status, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? order by session_id"
+        "select experiment_id, session_id, room_id, dialogue_id, mode, status, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? order by session_id"
     };
     let mut sessions_query = sqlx::query_as::<
         _,
         (
             String,
             i64,
+            String,
             String,
             String,
             String,
@@ -1329,12 +2094,13 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
                 "experiment_id": row.0,
                 "session_id": row.1,
                 "room_id": row.2,
-                "mode": row.3,
-                "status": row.4,
-                "created_at": row.5,
-                "started_at": row.6,
-                "completed_at": row.7,
-                "completion": row.8.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
+                "dialogue_id": row.3,
+                "mode": row.4,
+                "status": row.5,
+                "created_at": row.6,
+                "started_at": row.7,
+                "completed_at": row.8,
+                "completion": row.9.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
             })
         })
         .collect::<Vec<_>>();
@@ -1355,8 +2121,8 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
         .collect::<Result<Vec<_>>>()?;
     let participants_sql = if session_id.is_some() {
         r#"
-        select distinct p.participant_id, p.participant_kind, p.identity_provider, p.external_id,
-               p.display_name, p.metadata_json, p.created_at
+        select distinct p.participant_id, p.research_id, p.participant_kind, p.identity_provider, p.external_id,
+               p.metadata_json, p.created_at
         from participants p
         join session_participants sp on sp.participant_id = p.participant_id
         where sp.experiment_id = ? and sp.session_id = ?
@@ -1364,8 +2130,8 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
         "#
     } else {
         r#"
-        select distinct p.participant_id, p.participant_kind, p.identity_provider, p.external_id,
-               p.display_name, p.metadata_json, p.created_at
+        select distinct p.participant_id, p.research_id, p.participant_kind, p.identity_provider, p.external_id,
+               p.metadata_json, p.created_at
         from participants p
         join session_participants sp on sp.participant_id = p.participant_id
         where sp.experiment_id = ?
@@ -1376,9 +2142,9 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
         _,
         (
             i64,
-            String,
-            String,
             Option<String>,
+            String,
+            String,
             Option<String>,
             Option<String>,
             String,
@@ -1395,10 +2161,10 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
         .map(|row| {
             json!({
                 "participant_id": row.0,
-                "participant_kind": row.1,
-                "identity_provider": row.2,
-                "external_id": row.3,
-                "display_name": row.4,
+                "research_id": row.1,
+                "participant_kind": row.2,
+                "identity_provider": row.3,
+                "external_id": row.4,
                 "metadata": row.5.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
                 "created_at": row.6,
             })
@@ -1499,9 +2265,9 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
 pub struct ParticipantSession {
     pub id: String,
     pub participant_id: i64,
+    pub research_id: String,
     pub source: String,
     pub status: String,
-    pub display_name: Option<String>,
     pub study_id: Option<String>,
     pub consent_decisions: HashMap<String, bool>,
     pub created_at: String,
@@ -1575,17 +2341,17 @@ impl<S: Clone + Serialize> MemoryState<S> {
     pub fn create_participant(
         &mut self,
         participant_id: i64,
+        research_id: String,
         source: String,
-        display_name: Option<String>,
         study_id: Option<String>,
     ) -> ParticipantSession {
         let now = now_iso();
         let participant = ParticipantSession {
             id: new_id("ps"),
             participant_id,
+            research_id,
             source,
             status: "created".to_string(),
-            display_name,
             study_id,
             consent_decisions: HashMap::new(),
             created_at: now.clone(),
@@ -1611,8 +2377,9 @@ mod tests {
 
     use super::*;
 
+    /// Confirms the schema contains both evaluation data and the isolated credential table.
     #[tokio::test]
-    async fn sqlite_schema_has_only_evaluation_tables() {
+    async fn sqlite_schema_has_evaluation_and_administrator_tables() {
         let store = SqliteExperimentStore::connect("sqlite:///:memory:")
             .await
             .unwrap();
@@ -1621,6 +2388,7 @@ mod tests {
         assert_eq!(
             tables,
             vec![
+                "administrator_credential",
                 "consent_declarations",
                 "experiments",
                 "participants",
@@ -1629,6 +2397,114 @@ mod tests {
                 "sessions",
             ]
         );
+    }
+
+    /// Confirms an existing installation loses the obsolete participant display-name column.
+    #[tokio::test]
+    async fn sqlite_migration_removes_participant_display_names() {
+        let temp = tempdir().expect("tempdir");
+        let database_path = temp.path().join("legacy.sqlite");
+        let setup_pool = SqlitePoolOptions::new()
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&database_path)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"
+            create table participants (
+                participant_id integer primary key autoincrement,
+                participant_kind text not null,
+                identity_provider text not null,
+                external_id text,
+                display_name text,
+                metadata_json text,
+                created_at text not null
+            )
+            "#,
+        )
+        .execute(&setup_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "create unique index idx_participants_provider_external on participants(identity_provider, external_id) where external_id is not null",
+        )
+        .execute(&setup_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into participants (participant_kind, identity_provider, external_id, display_name, metadata_json, created_at) values ('human', 'prolific', 'same-recruitment-id', 'Legacy Name', '{}', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&setup_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "create table session_participants (experiment_id text not null, participant_id integer not null)",
+        )
+        .execute(&setup_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into session_participants values ('experiment-a', 1), ('experiment-b', 1)",
+        )
+        .execute(&setup_pool)
+        .await
+        .unwrap();
+        setup_pool.close().await;
+
+        let database_url = format!("sqlite:///{}", database_path.display());
+        let store = SqliteExperimentStore::connect(&database_url).await.unwrap();
+        let columns = sqlx::query_as::<_, (i64, String, String, i64, Option<String>, i64)>(
+            "pragma table_info(participants)",
+        )
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        assert!(columns.iter().all(|column| column.1 != "display_name"));
+        assert!(columns.iter().any(|column| column.1 == "research_id"));
+        let participants = sqlx::query_as::<_, (String, String, String)>(
+            "select experiment_id, research_id, external_id from participants order by experiment_id",
+        )
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(participants.len(), 2);
+        assert_eq!(participants[0].0, "experiment-a");
+        assert_eq!(participants[1].0, "experiment-b");
+        assert_ne!(participants[0].1, participants[1].1);
+        assert_eq!(participants[0].2, "same-recruitment-id");
+        assert_eq!(participants[1].2, "same-recruitment-id");
+    }
+
+    /// Confirms first setup wins atomically and survives reopening the SQLite database.
+    #[tokio::test]
+    async fn sqlite_admin_setup_is_atomic_and_persistent() {
+        let temp = tempdir().expect("tempdir");
+        let database_url = format!("sqlite:///{}", temp.path().join("admin.sqlite").display());
+        let store = SqliteExperimentStore::connect(&database_url).await.unwrap();
+        let credential = StoredAdminCredential {
+            username: "researcher".to_string(),
+            password_hash: "$argon2id$test-hash".to_string(),
+            role: "administrator".to_string(),
+        };
+
+        assert!(store
+            .create_admin_credential(credential.clone())
+            .await
+            .unwrap());
+        assert!(!store
+            .create_admin_credential(StoredAdminCredential {
+                username: "second".to_string(),
+                ..credential.clone()
+            })
+            .await
+            .unwrap());
+        drop(store);
+
+        let reopened = SqliteExperimentStore::connect(&database_url).await.unwrap();
+        assert_eq!(reopened.admin_credential().await.unwrap(), Some(credential));
     }
 
     #[tokio::test]
@@ -1649,20 +2525,20 @@ mod tests {
             .unwrap();
         let participant_id = store
             .upsert_participant(ParticipantRecord {
+                experiment_id: "exp_eval".to_string(),
                 participant_kind: "human".to_string(),
                 identity_provider: "prolific".to_string(),
                 external_id: Some("PID123".to_string()),
-                display_name: None,
                 metadata: json!({"source": "fixture"}),
             })
             .await
             .unwrap();
         let same_participant_id = store
             .upsert_participant(ParticipantRecord {
+                experiment_id: "exp_eval".to_string(),
                 participant_kind: "human".to_string(),
                 identity_provider: "prolific".to_string(),
                 external_id: Some("PID123".to_string()),
-                display_name: Some("Ignored on reuse".to_string()),
                 metadata: Value::Null,
             })
             .await
@@ -1741,6 +2617,56 @@ mod tests {
         let exported = store.export_session("exp_eval", session_one).await.unwrap();
         assert_eq!(exported["sessions"].as_array().unwrap().len(), 1);
         assert_eq!(exported["session_events"].as_array().unwrap().len(), 2);
+        let participant_pseudonym = exported["participants"][0]["research_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let dialogue_pseudonym = exported["sessions"][0]["dialogue_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(participant_pseudonym.split('-').count(), 3);
+        assert_eq!(dialogue_pseudonym.split('-').count(), 3);
+        let repeated_export = store.export_session("exp_eval", session_one).await.unwrap();
+        assert_eq!(
+            repeated_export["participants"][0]["research_id"],
+            participant_pseudonym
+        );
+        assert_eq!(
+            repeated_export["sessions"][0]["dialogue_id"],
+            dialogue_pseudonym
+        );
+
+        let preview = store
+            .participant_data_preview("exp_eval", participant_id)
+            .await
+            .unwrap();
+        assert_eq!(preview.session_count, 1);
+        assert_eq!(preview.consent_count, 1);
+        assert_eq!(preview.other_event_count, 1);
+        store
+            .delete_participant_data("exp_eval", participant_id)
+            .await
+            .unwrap();
+        let redacted = store.export_session("exp_eval", session_one).await.unwrap();
+        assert!(redacted["consent_declarations"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(redacted["participants"][0]["research_id"], Value::Null);
+        assert_eq!(redacted["participants"][0]["external_id"], Value::Null);
+        assert_eq!(
+            redacted["session_events"][0]["actor_participant_id"],
+            Value::Null
+        );
+        assert_eq!(
+            redacted["session_events"][0]["actor_role"],
+            "deleted_participant"
+        );
+        assert_ne!(
+            redacted["session_participants"][0]["participant_session_id"],
+            "ps_1"
+        );
     }
 
     #[tokio::test]
@@ -1761,14 +2687,43 @@ mod tests {
             .unwrap();
         let participant_id = store
             .upsert_participant(ParticipantRecord {
+                experiment_id: "exp_returning".to_string(),
                 participant_kind: "human".to_string(),
                 identity_provider: "prolific".to_string(),
                 external_id: Some("PROLIFIC-REPEAT".to_string()),
-                display_name: None,
                 metadata: json!({"first_seen_batch": 7}),
             })
             .await
             .unwrap();
+        store
+            .ensure_experiment(ExperimentRecord {
+                experiment_id: "exp_other".to_string(),
+                config: Value::Null,
+                server_version: None,
+                version_manifest: None,
+                status: "active".to_string(),
+                notes: None,
+            })
+            .await
+            .unwrap();
+        let other_experiment_participant = store
+            .upsert_participant(ParticipantRecord {
+                experiment_id: "exp_other".to_string(),
+                participant_kind: "human".to_string(),
+                identity_provider: "prolific".to_string(),
+                external_id: Some("PROLIFIC-REPEAT".to_string()),
+                metadata: Value::Null,
+            })
+            .await
+            .unwrap();
+        assert_ne!(participant_id, other_experiment_participant);
+        assert_ne!(
+            store.participant_research_id(participant_id).await.unwrap(),
+            store
+                .participant_research_id(other_experiment_participant)
+                .await
+                .unwrap()
+        );
         let first_session = store
             .create_session(SessionRecord {
                 experiment_id: "exp_returning".to_string(),
@@ -1854,21 +2809,21 @@ mod tests {
 
         let direct_one = store
             .upsert_participant(ParticipantRecord {
+                experiment_id: "exp_weird".to_string(),
                 participant_kind: "human".to_string(),
                 identity_provider: "direct".to_string(),
                 external_id: None,
-                display_name: Some("Casey".to_string()),
-                metadata: json!({"typed_name": true}),
+                metadata: json!({"signup": 1}),
             })
             .await
             .unwrap();
         let direct_two = store
             .upsert_participant(ParticipantRecord {
+                experiment_id: "exp_weird".to_string(),
                 participant_kind: "human".to_string(),
                 identity_provider: "direct".to_string(),
                 external_id: None,
-                display_name: Some("Casey".to_string()),
-                metadata: json!({"typed_name": true, "second_signup": true}),
+                metadata: json!({"signup": 2}),
             })
             .await
             .unwrap();
@@ -1876,30 +2831,30 @@ mod tests {
 
         let prolific = store
             .upsert_participant(ParticipantRecord {
+                experiment_id: "exp_weird".to_string(),
                 participant_kind: "human".to_string(),
                 identity_provider: "prolific".to_string(),
                 external_id: Some("PID-WEIRD".to_string()),
-                display_name: None,
                 metadata: json!({"study_id": "STUDY42", "session_id": "SESSION99"}),
             })
             .await
             .unwrap();
         let agent = store
             .upsert_participant(ParticipantRecord {
+                experiment_id: "exp_weird".to_string(),
                 participant_kind: "agent".to_string(),
                 identity_provider: "agent".to_string(),
                 external_id: Some("back-and-forth@v2".to_string()),
-                display_name: Some("Back And Forth".to_string()),
                 metadata: json!({"temperature": 0, "seed": 1234}),
             })
             .await
             .unwrap();
         let worker = store
             .upsert_participant(ParticipantRecord {
+                experiment_id: "exp_weird".to_string(),
                 participant_kind: "worker".to_string(),
                 identity_provider: "worker".to_string(),
                 external_id: Some("transcriber-1".to_string()),
-                display_name: None,
                 metadata: json!({"provider": "speechmatics"}),
             })
             .await

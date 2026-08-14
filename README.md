@@ -25,11 +25,11 @@ Parlando is less useful for single-participant surveys, reaction-time tasks, or 
 - Let each player receive a role-specific view of the same underlying game, which is useful for asymmetric information, coordination tasks, repair games, map tasks, reference games, and other interactive dialogue settings.
 - Provide a reusable browser protocol and JavaScript client package for participants, room setup, WebSockets, audio-session setup, and typed game payloads.
 - Support human-vs-human and human-vs-agent studies from the same experiment configuration.
-- Include infrastructure for direct studies, matchmaking, and Prolific-oriented experiment automation.
+- Include infrastructure for direct studies and server-owned matchmaking; recruitment-provider integration remains experiment-specific.
 - Provide optional voice infrastructure through a server-owned PCM audio relay, server-side Speechmatics transcription, and ElevenLabs text-to-speech.
 - Persist evaluation data in SQLite: experiments, durable participants, sessions, consent declarations, ordered actions, state changes, transcripts, conversation messages, agent events, and diagnostics.
 - Serve a bundled browser client when a built frontend is available, while keeping API and WebSocket routes usable for separately deployed clients.
-- Expose a DB-backed operator monitor at `/admin/experiments` and JSON export at `/api/admin/export`.
+- Expose an authenticated DB-backed operator monitor at `/admin/experiments`, fixed `research`, `corpus`, and `full` exports at `/api/admin/export`, manual participant deletion, and an installation-wide privacy status at `/admin/privacy`.
 - Connect custom agents when needed, either inside the Rust game crate or as Python services over gRPC.
 - Deploy as a Docker web service, with `space-game/render.yaml` and a Render-safe example config included.
 
@@ -77,7 +77,7 @@ impl GameAdapter for MyGameAdapter {
 
 That adapter is enough for the reusable server to handle rooms, WebSockets, persistence, export, and agents. The game crate stays typed; JSON appears only at the browser, database, and remote-agent boundaries.
 
-The planned Parlando LLM skill will make this workflow more accessible: experiment authors should be able to describe the game, state, actions, and interface they want, then use the skill to generate and revise the Rust adapter and JavaScript client. Understanding Rust or JavaScript will still help for review and debugging, but it should not be a prerequisite for starting a Parlando-based game.
+The included `generate-parlando-game` skill makes this workflow more accessible: experiment authors can describe the game, state, actions, and interface they want, then use the skill to generate and revise the Rust adapter and JavaScript client. Understanding Rust or JavaScript still helps with review and debugging, but is not required to produce a first implementation.
 
 ## Compared With Other Platforms
 
@@ -88,7 +88,7 @@ Parlando sits near existing experiment systems, but it is optimized for a narrow
 | [Slurk](https://github.com/clp-research/slurk) | Dialogue experiments centered on typed chat, with rooms, bots, layouts, and optional JavaScript task components. | Parlando puts the JavaScript game itself in the foreground and treats dialogue as the communication layer around that game. Voice is designed to stay out of the way of the task UI, while the server owns typed state transitions, readiness, persistence, export, and a YAML setup story for local and deployed studies. |
 | [Empirica](https://docs.empirica.ly/) | Multiplayer browser experiments and games with an admin panel, batches, treatments, and React/JavaScript app structure. | Parlando is less general-purpose but more focused on dialogue game data: role-specific observations, conversation/transcript persistence, voice-session planning, and Rust-authoritative state transitions are core concepts rather than app-level conventions. |
 | [oTree](https://www.otree.org/) | Behavioral and economic experiments, especially structured rounds, surveys, games, and participant payments. | Parlando targets continuous interactive dialogue sessions rather than page/round-oriented studies. It emphasizes live WebSocket state, voice/chat traces, custom game clients, and game-specific observations. |
-| [Dallinger](https://dallinger.readthedocs.io/) | Crowd-sourced behavioral experiments with recruitment automation, networks, bots, and data management. | Parlando's planned Prolific automation covers the recruitment/setup path for dialogue studies, while the core runtime stays focused on the live game: room readiness, typed actions, state changes, voice/chat traces, transcripts, conversations, and export. |
+| [Dallinger](https://dallinger.readthedocs.io/) | Crowd-sourced behavioral experiments with recruitment automation, networks, bots, and data management. | Parlando does not attempt to replace a general recruitment platform. Its core runtime focuses on the live dialogue game: room readiness, typed actions, state changes, voice/chat traces, transcripts, conversations, and export. |
 | [jsPsych](https://www.jspsych.org/latest/) and [lab.js](https://lab.js.org/) | Browser-based single-participant tasks, surveys, timing-sensitive stimuli, and online study building. | Parlando is for multi-participant or human-agent interaction where a server must coordinate shared state, private views, live communication, and durable session events. |
 
 The tradeoff is deliberate. If your study is a conventional survey, reaction-time task, or round-based economic game, one of the established platforms may be a better fit. Parlando is meant for cases where the dialogue and the evolving shared task state are the experiment.
@@ -171,11 +171,13 @@ The main service endpoints are:
 - `GET /health`
 - `GET /api/config`
 - `POST /api/participants`
-- `POST /api/direct/start` and `POST /api/direct/enter`
+- `POST /api/direct/start` (direct-study convenience alias for participant creation)
 - `POST /api/rooms`, `POST /api/rooms/{room_id}/join`
-- `GET /ws/game/{room_id}?participantSessionId=...`
+- `POST /api/rooms/{room_id}/game-session`, followed by `GET /ws/game/{room_id}?token=...` with the returned one-use ticket
 - `GET /ws/audio/{room_id}?token=...`
+- `GET /admin` (first-run setup or administrator login)
 - `GET /admin/experiments`
+- `GET /admin/privacy`
 - `GET /api/admin/export`
 
 ## Learn More

@@ -1,7 +1,5 @@
 client/node_modules/
 client/dist/
-client/package-lock.json
 server/target/
 .local/
-package-lock.json
 .DS_Store

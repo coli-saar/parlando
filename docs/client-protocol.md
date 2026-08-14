@@ -69,16 +69,29 @@ Write UI code that handles both omitted optional properties and explicit `null` 
 A typical browser flow is:
 
 1. `GET /api/config` to read public study settings, consent text, and enabled audio/conversation features.
-2. `POST /api/participants` or `POST /api/direct/start` to create a participant session.
-3. `POST /api/consent` if consent is required.
-4. `POST /api/rooms` plus `POST /api/rooms/{room_id}/join`.
+2. `POST /api/participants` or its direct-study convenience alias `POST /api/direct/start` to create a participant session and receive an opaque bearer credential.
+3. Send that credential as `Authorization: Bearer ...` on participant-owned HTTP calls such as `POST /api/consent`.
+4. `POST /api/rooms` plus `POST /api/rooms/{room_id}/join` with the participant bearer credential.
 5. `POST /api/rooms/{room_id}/audio-session` if voice is enabled.
-6. Connect to `/ws/game/{room_id}?participantSessionId=...`.
+6. `POST /api/rooms/{room_id}/game-session`, then connect to the returned WebSocket URL with its short-lived one-use `token` query value.
 7. Wait for `roleAssigned` before showing active game controls.
 
 The reusable JavaScript client wraps these HTTP calls, but the game UI still decides how to arrange screens and when to move from setup to waiting to active play.
 
-Direct-study flows may use `/api/direct/start` and `/api/direct/enter` instead of manually creating participants and rooms. Those routes still produce participant-session and room state that connect to the same WebSocket protocol.
+`POST /api/direct/start` is a convenience alias for creating a participant with source `direct`. Room creation, joining, and the WebSocket flow are otherwise unchanged.
+
+The participant-creation response separates three concepts:
+
+```ts
+interface ParticipantCreateResponse {
+  participant_session_id: string; // non-secret runtime handle
+  participant_credential: string; // bearer credential; keep out of URLs and logs
+  source: "direct";
+  participant_id: string; // readable random identifier scoped to this experiment
+}
+```
+
+The same recruited person receives a different `participant_id` in another experiment. Within one experiment, the identifier remains unchanged across administration views and repeated research or corpus exports.
 
 ## HTTP Room Payloads
 
@@ -111,19 +124,20 @@ The server still validates every submitted action, including actions selected fr
 
 ## WebSocket Messages
 
-After setup, open a room socket with:
+After setup, mint a one-use upgrade plan and open the room socket with:
 
 ```ts
-const socket = new WebSocket(
-  socketUrl(roomId, participantSessionId, apiBaseUrl)
-);
+const plan = await apiClient.getGameSession(roomId, participantSessionId);
+const socket = new WebSocket(apiClient.socketUrl(plan));
 ```
 
 The URL shape is:
 
 ```text
-/ws/game/{room_id}?participantSessionId={participant_session_id}
+/ws/game/{room_id}?token={one_use_game_ticket}
 ```
+
+The public participant identifier is never accepted as authentication. The SDK retains the participant credential in memory and does not put it in browser history, `localStorage`, presence, or export payloads.
 
 ### `roleAssigned`
 
@@ -225,7 +239,7 @@ Text chat uses:
 }
 ```
 
-The server persists the message as a conversation event and broadcasts `conversationMessageAdded`.
+The server broadcasts `conversationMessageAdded`. It also persists the message as a conversation event when `privacy.store_typed_messages` is enabled.
 
 ## TypeScript Mirror Types
 
@@ -266,7 +280,7 @@ For a new game client, implement:
 
 1. TypeScript mirror types for `Action`, `Observation`, `Event`, and `Summary`.
 2. Participant setup screens that call `/api/config`, `/api/participants`, consent if required, and room creation or join.
-3. A WebSocket connection to `/ws/game/{room_id}?participantSessionId=...`.
+3. An authenticated request to `/api/rooms/{room_id}/game-session`, followed by a WebSocket connection to `/ws/game/{room_id}?token=...` with the returned one-use ticket.
 4. Handling for `roleAssigned`, `stateChanged`, `conversationMessageAdded`, `completed`, `presenceChanged`, `voiceStatusChanged`, and `error`.
 5. Rendering from `observation`, not from hidden server state.
 6. Action controls that send `{ type: "submitAction", action }`.

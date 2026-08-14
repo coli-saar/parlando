@@ -13,7 +13,6 @@ PORT ?= 8000
 CONFIG ?= $(SPACE_GAME_DIR)/config/experiment.local-rust.yaml
 SERVER_BIN ?= $(LOCAL_BIN)/parlando-space-game
 CLIENT_PACKAGE ?= @coli-saar/parlando-client
-CLIENT_VERSION ?= 0.2.0
 LOCAL_CLIENT_PACKAGE := $(JS_CLIENT_DIR)
 
 .PHONY: all install-local install-server prepare-client-local check-server check-client-package install-client-deps build-client build run run-solo-voice clean-client clean
@@ -43,13 +42,13 @@ check-server:
 # Verify that the shared JavaScript client checkout has been built.
 check-client-package:
 	@test -f "$(LOCAL_CLIENT_PACKAGE)/package.json" && test -f "$(LOCAL_CLIENT_PACKAGE)/dist/index.js" || { \
-		echo "Missing built local package $(CLIENT_PACKAGE)@$(CLIENT_VERSION). Run 'make prepare-client-local' from this directory."; \
+		echo "Missing built local package $(CLIENT_PACKAGE). Run 'make prepare-client-local' from this directory."; \
 		exit 1; \
 	}
 
-# Install the local path copy of @coli-saar/parlando-client into the Space Game browser app.
+# Install the Space Game client dependencies, including the manifest's local SDK path.
 install-client-deps: check-client-package
-	cd "$(CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" install --no-save "file:$(LOCAL_CLIENT_PACKAGE)"
+	cd "$(CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" install
 
 # Build the Space Game browser client.
 build-client: install-client-deps
