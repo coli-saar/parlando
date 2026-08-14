@@ -4,7 +4,9 @@ import {
   completedSessionPatch,
   isVoiceEnabled,
   normalizePresence,
+  participantMicrophoneLabel,
   resolveStartupTitle,
+  selectableAudioInputs,
   sendActionIfGameActive,
   sendChatMessageIfGameActive,
   voiceStatusUpdate
@@ -24,6 +26,11 @@ function publicConfig(overrides: Partial<PublicConfigResponse> = {}): PublicConf
   };
 }
 
+// Builds the browser device shape needed by startup helper tests.
+function audioInput(deviceId: string, label: string): MediaDeviceInfo {
+  return { deviceId, groupId: "", kind: "audioinput", label, toJSON: () => ({}) };
+}
+
 describe("Parlando startup helpers", () => {
   it("resolves startup titles from app labels, then public study config", () => {
     expect(resolveStartupTitle({ title: "Custom Title" }, publicConfig({ study_name: "Configured Study" }))).toBe("Custom Title");
@@ -34,6 +41,22 @@ describe("Parlando startup helpers", () => {
   it("treats disabled voice as a no-voice startup", () => {
     expect(isVoiceEnabled(publicConfig())).toBe(false);
     expect(isVoiceEnabled(publicConfig({ voice: { enabled: true } }))).toBe(true);
+  });
+
+  it("offers only concrete microphones as post-permission alternatives", () => {
+    const inputs = [
+      audioInput("default", "Default — Built-in microphone"),
+      audioInput("built-in", "Built-in microphone"),
+      audioInput("headset", "USB headset")
+    ];
+
+    expect(selectableAudioInputs(inputs).map((device) => device.deviceId)).toEqual(["built-in", "headset"]);
+  });
+
+  it("removes browser-added USB identifiers from participant-facing microphone names", () => {
+    expect(participantMicrophoneLabel("Marantz Umpire Mic (0d8c:1901)")).toBe("Marantz Umpire Mic");
+    expect(participantMicrophoneLabel("Conference Mic [ABCD:1234]")).toBe("Conference Mic");
+    expect(participantMicrophoneLabel("Built-in Microphone")).toBe("Built-in Microphone");
   });
 
   it("normalizes human-human and human-agent presence snapshots", () => {

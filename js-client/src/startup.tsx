@@ -153,11 +153,11 @@ export function ParlandoStartupGate<
   const startupTitle = resolveStartupTitle(labels, publicConfig);
 
   const refreshAudioInputs = useCallback(async () => {
-    if (!navigator.mediaDevices?.enumerateDevices) return;
+    if (!navigator.mediaDevices?.enumerateDevices) return [];
     const devices = await navigator.mediaDevices.enumerateDevices();
     const inputs = devices.filter((device) => device.kind === "audioinput");
     setAudioInputs(inputs);
-    setSelectedAudioInputId((current) => current || inputs.find((device) => device.deviceId === "default")?.deviceId || inputs[0]?.deviceId || "");
+    return inputs;
   }, []);
 
   const endCurrentSession = useCallback(() => {
@@ -293,16 +293,22 @@ export function ParlandoStartupGate<
     }
   }, [apiClient, connectRoom, ensureParticipant]);
 
-  const prepareVoice = useCallback(async () => {
-    if (!voiceEnabled) return;
+  const prepareVoice = useCallback(async (deviceId = ""): Promise<boolean> => {
+    if (!voiceEnabled) return false;
     try {
       setError("");
-      await audioController.prepare(selectedAudioInputId, selectedAudioInputLabel(audioInputs, selectedAudioInputId));
-      await refreshAudioInputs();
+      setSelectedAudioInputId(deviceId);
+      await audioController.prepare(deviceId, selectedAudioInputLabel(audioInputs, deviceId));
+      const refreshedInputs = await refreshAudioInputs();
+      const activeDeviceLabel = audioController.snapshot().voicePreflight.deviceLabel;
+      const activeDevice = refreshedInputs.find((device) => device.label === activeDeviceLabel);
+      setSelectedAudioInputId(deviceId || activeDevice?.deviceId || "");
+      return true;
     } catch (caught) {
       setError(errorMessage(caught, "Microphone permission was not granted."));
+      return false;
     }
-  }, [audioController, audioInputs, refreshAudioInputs, selectedAudioInputId, voiceEnabled]);
+  }, [audioController, audioInputs, refreshAudioInputs, voiceEnabled]);
 
   const toggleVoice = useCallback(async () => {
     if (!session) return;
@@ -484,8 +490,7 @@ export function ParlandoStartupGate<
         <div className="voice-preflight">
           <div>
             <strong>Voice chat</strong>
-            <span>{voicePreflight.message}</span>
-            <span className="mic-device-label">{voicePreflight.deviceLabel}</span>
+            <span>{voicePreflight.ready ? "Microphone ready" : voicePreflight.message}</span>
           </div>
           <VoicePreparationControls
             audioInputs={audioInputs}
@@ -598,7 +603,13 @@ export function createDefaultAudioController(): AudioSessionController {
   });
 }
 
-function VoicePreparationControls({
+/**
+ * Renders the participant's microphone-preparation controls.
+ *
+ * The first action prepares the browser default. Once permission reveals named devices, the active
+ * microphone becomes the selected dropdown value and choosing another value replaces the stream.
+ */
+export function VoicePreparationControls({
   audioInputs,
   voiceEnabled,
   onPrepareVoice,
@@ -608,34 +619,41 @@ function VoicePreparationControls({
 }: {
   audioInputs: MediaDeviceInfo[];
   voiceEnabled: boolean;
-  onPrepareVoice: () => void;
+  onPrepareVoice: (deviceId?: string) => boolean | void | Promise<boolean | void>;
   onSelectedAudioInputChange: (value: string) => void;
   selectedAudioInputId: string;
   voicePreflight?: VoicePreflight;
 }) {
-  const label = voicePreflight.preparing ? "Preparing" : voicePreflight.ready ? "Voice ready" : "Prepare voice";
+  const availableMicrophones = selectableAudioInputs(audioInputs);
   return (
     <>
-      <select
-        aria-label="Microphone input"
-        disabled={!voiceEnabled || voicePreflight.preparing || voicePreflight.ready}
-        onChange={(event) => onSelectedAudioInputChange(event.target.value)}
-        value={selectedAudioInputId}
-      >
-        {audioInputs.length === 0 ? (
-          <option value="">Default microphone</option>
-        ) : (
-          audioInputs.map((device, index) => (
+      {(voicePreflight.ready || voicePreflight.preparing) && (
+        <select
+          aria-label="Microphone input"
+          disabled={voicePreflight.preparing || availableMicrophones.length < 2}
+          onChange={(event) => {
+            const deviceId = event.target.value;
+            onSelectedAudioInputChange(deviceId);
+            void Promise.resolve(onPrepareVoice(deviceId)).catch(() => undefined);
+          }}
+          value={selectedAudioInputId}
+        >
+          {!availableMicrophones.some((device) => device.deviceId === selectedAudioInputId) && (
+            <option value="">{participantMicrophoneLabel(voicePreflight.deviceLabel)}</option>
+          )}
+          {availableMicrophones.map((device, index) => (
             <option key={device.deviceId || `audio-${index}`} value={device.deviceId}>
-              {device.label || `Microphone ${index + 1}`}
+              {participantMicrophoneLabel(device.label || `Microphone ${index + 1}`)}
             </option>
-          ))
-        )}
-      </select>
-      {voicePreflight.micProbeActive && <MicLevelMeter active={voicePreflight.micProbeActive} label="Device" level={voicePreflight.micLevel} />}
-      <button disabled={!voiceEnabled || voicePreflight.preparing || voicePreflight.ready} onClick={onPrepareVoice}>
-        {label}
-      </button>
+          ))}
+        </select>
+      )}
+      {voicePreflight.micProbeActive && <MicLevelMeter active={voicePreflight.micProbeActive} label="Level" level={voicePreflight.micLevel} />}
+      {!voicePreflight.ready && !voicePreflight.preparing && (
+        <button disabled={!voiceEnabled} onClick={() => void onPrepareVoice("")} type="button">
+          Prepare voice
+        </button>
+      )}
     </>
   );
 }
@@ -653,6 +671,16 @@ function MicLevelMeter({ active, label, level }: { active: boolean; label: strin
 
 export function isVoiceEnabled(config: PublicConfigResponse | null): boolean {
   return Boolean(config?.voice?.enabled);
+}
+
+/** Returns concrete microphone inputs, excluding the browser's synthetic default-device alias. */
+export function selectableAudioInputs(audioInputs: MediaDeviceInfo[]): MediaDeviceInfo[] {
+  return audioInputs.filter((device) => device.deviceId !== "default");
+}
+
+/** Removes browser-added USB vendor/product identifiers from a participant-facing microphone name. */
+export function participantMicrophoneLabel(label: string): string {
+  return label.replace(/\s*[([][0-9a-f]{4}:[0-9a-f]{4}[)\]]\s*$/i, "").trim() || "Microphone";
 }
 
 export function resolveStartupTitle(labels: Pick<ParlandoStartupLabels, "title">, config: Pick<PublicConfigResponse, "study_name"> | null): string {

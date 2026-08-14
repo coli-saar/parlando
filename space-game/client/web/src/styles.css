@@ -332,8 +332,27 @@ p {
 }
 
 .voice-preflight select {
+  background: #121a20;
+  border: 1px solid #566675;
+  border-radius: 7px;
+  color: #f5f8fb;
+  color-scheme: dark;
+  font: inherit;
+  font-weight: 800;
+  min-height: 40px;
   min-width: 0;
+  padding: 0.48rem 2.1rem 0.48rem 0.62rem;
   width: 100%;
+}
+
+.voice-preflight select:focus-visible {
+  border-color: #a8d7f1;
+  outline: none;
+}
+
+.voice-preflight select:disabled {
+  cursor: default;
+  opacity: 0.78;
 }
 
 .mic-device-label {

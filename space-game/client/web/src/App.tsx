@@ -5,6 +5,7 @@ import {
   ParlandoStartupGate,
   TranscriptionStatusChip,
   VoiceJoinButton,
+  participantMicrophoneLabel,
   type ActiveParlandoSession
 } from "@coli-saar/parlando-client/react";
 import {
@@ -532,8 +533,8 @@ function CommunicationPanel({
       </div>
       <div className="voice-feedback" aria-label="Voice diagnostics">
         <div className="meter-stack">
-          <span className="mic-device-label">{voicePreflight.deviceLabel}</span>
-          <MicLevelMeter active={voicePreflight.micProbeActive} label="Device" level={voicePreflight.micLevel} />
+          <span className="mic-device-label">{participantMicrophoneLabel(voicePreflight.deviceLabel)}</span>
+          <MicLevelMeter active={voicePreflight.micProbeActive} label="Level" level={voicePreflight.micLevel} />
         </div>
         <TranscriptionStatusChip voiceStatus={voiceStatus} />
       </div>

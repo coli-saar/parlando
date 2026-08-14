@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { transcriptionProgressForStatus, voiceButtonLabel } from "./helpers.js";
-import type { AudioSessionController, AudioSessionSnapshot, VoicePreflight, VoiceStatus } from "./index.js";
-import { initialVoicePreflight, initialVoiceStatus } from "./index.js";
+import type { AudioSessionController, AudioSessionSnapshot, VoiceStatus } from "./index.js";
+import { initialVoiceStatus } from "./index.js";
 
 export function useVoiceController(controller: AudioSessionController): AudioSessionSnapshot {
   const [snapshot, setSnapshot] = useState<AudioSessionSnapshot>(() => controller.snapshot());
@@ -108,45 +108,14 @@ export function TranscriptionProgress({ voiceStatus = initialVoiceStatus }: { vo
   );
 }
 
-export function VoicePreparationControls({
-  audioInputs,
-  voiceEnabled,
-  onPrepareVoice,
-  onSelectedAudioInputChange,
-  selectedAudioInputId,
-  voicePreflight = initialVoicePreflight
-}: {
-  audioInputs: MediaDeviceInfo[];
-  voiceEnabled: boolean;
-  onPrepareVoice: () => void;
-  onSelectedAudioInputChange: (value: string) => void;
-  selectedAudioInputId: string;
-  voicePreflight?: VoicePreflight;
-}) {
-  const label = voicePreflight.preparing ? "Preparing" : voicePreflight.ready ? "Voice ready" : "Prepare voice";
-  return (
-    <>
-      <DeviceSelect
-        audioInputs={audioInputs}
-        disabled={!voiceEnabled || voicePreflight.preparing || voicePreflight.ready}
-        onSelectedAudioInputChange={onSelectedAudioInputChange}
-        selectedAudioInputId={selectedAudioInputId}
-      />
-      {voicePreflight.micProbeActive && (
-        <MicLevelMeter active={voicePreflight.micProbeActive} label="Device" level={voicePreflight.micLevel} />
-      )}
-      <button disabled={!voiceEnabled || voicePreflight.preparing || voicePreflight.ready} onClick={onPrepareVoice}>
-        {label}
-      </button>
-    </>
-  );
-}
-
 export {
   ParlandoStartupGate,
+  VoicePreparationControls,
   createDefaultAudioController,
   isVoiceEnabled,
   normalizePresence,
+  participantMicrophoneLabel,
+  selectableAudioInputs,
   voiceStatusUpdate,
   type ActiveParlandoSession,
   type ParlandoStartupGateProps,
