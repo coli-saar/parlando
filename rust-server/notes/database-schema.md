@@ -53,7 +53,7 @@ metadata_json text
 created_at text not null
 ```
 
-`participant_kind` is values such as `human`, `agent`, or `worker`. The legacy-named `research_id` column contains the random human-readable participant identifier used in administration and repeated exports of this experiment. Together with an external recruitment mapping, this identifier forms part of the pseudonymization; it is not an experiment-spanning identity. `identity_provider` is values such as `prolific`, `direct`, `agent`, or `worker`.
+`participant_kind` is values such as `human`, `agent`, or `worker`. The legacy-named `research_id` column contains the human-readable identifier used in administration and repeated exports of this experiment. Humans receive random three-word identifiers. Agents instead receive a descriptive identifier containing agent type, implementation name when available, and version; other non-human participants use their durable kind and provider identity rather than a human-style random name. Together with an external recruitment mapping, a human identifier forms part of the pseudonymization; it is not an experiment-spanning identity. `identity_provider` is values such as `prolific`, `direct`, `agent`, or `worker`.
 
 There is a partial unique index on `(experiment_id, identity_provider, external_id)` when `external_id is not null`. A returning Prolific user therefore maps to the same participant row within one experiment, but receives an independently generated participant identifier in another experiment. Direct users without external ids create fresh rows.
 

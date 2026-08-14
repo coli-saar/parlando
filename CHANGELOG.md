@@ -9,7 +9,7 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 ### Added
 
 - Added Privacy Contract version 1 with four persistence switches, versioned participant-information evidence, fixed `research`, `corpus`, and `full` exports, an authenticated installation-wide privacy status, and counted manual participant deletion in the admin dashboard.
-- Added random three-word participant and dialogue identifiers. Participant identifiers are scoped to one experiment and remain consistent across that experiment's sessions and repeated exports; dialogue identifiers remain consistent across repeated exports.
+- Added random three-word identifiers for human participants and dialogues. Human participant identifiers are scoped to one experiment and remain consistent across that experiment's sessions and repeated exports; dialogue identifiers remain consistent across repeated exports. Agent participants instead use descriptive identifiers containing their agent type, implementation name when available, and version.
 - Added application-owned administrator authentication, roles, CSRF protection, participant bearer credentials, one-use game/audio upgrade tickets, exact origin enforcement, bounded resources, transactional action persistence, secret-redaction tooling, hardened container packaging, and authenticated TLS-capable remote agents.
 
 ### Changed

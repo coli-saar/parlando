@@ -134,7 +134,7 @@ For hosted deployments, the gRPC endpoint must use HTTPS, its hostname must appe
 - package the agent into the same container and supervise both processes.
 - deploy the agent on a separate host with a private or protected endpoint.
 
-Record the agent name and version in config. Parlando persists remote-agent participant metadata as `identity_provider = remote_grpc` and `external_id = <agent_name>@<agent_version>`, which helps later analysis distinguish policies.
+Record the agent name and version in config. Parlando persists remote-agent participant metadata as `identity_provider = remote_grpc` and `external_id = <agent_name>@<agent_version>`. The participant identifier shown in administration and exports also exposes the transport type, agent name, and version, for example `agent:remote_grpc:my-agent@v1`. A missing version is visibly marked `unversioned`.
 
 If the agent uses an LLM or another hosted model, keep provider credentials in the agent process or server-side configuration. Do not put model credentials in browser code or public config.
 

@@ -27,6 +27,84 @@ pub fn generated_experiment_id() -> String {
     new_id("exp")
 }
 
+/// Builds the base identifier for a non-human participant from durable identity metadata.
+fn nonhuman_participant_identifier(participant: &ParticipantRecord) -> String {
+    let metadata = participant.metadata.as_object();
+    let external_parts = participant
+        .external_id
+        .as_deref()
+        .and_then(|value| value.rsplit_once('@'));
+    let agent_type = metadata
+        .and_then(|value| value.get("agent_type").or_else(|| value.get("agent_name")))
+        .and_then(Value::as_str)
+        .or_else(|| external_parts.map(|(name, _)| name))
+        .unwrap_or(&participant.identity_provider);
+    let agent_name = metadata
+        .and_then(|value| value.get("agent_name"))
+        .and_then(Value::as_str)
+        .filter(|name| *name != agent_type);
+    let version = metadata
+        .and_then(|value| value.get("agent_version"))
+        .and_then(Value::as_str)
+        .or_else(|| external_parts.map(|(_, version)| version));
+
+    let mut identity_parts = vec![identifier_component(&participant.participant_kind)];
+    identity_parts.push(identifier_component(agent_type));
+    if let Some(agent_name) = agent_name {
+        identity_parts.push(identifier_component(agent_name));
+    }
+    let version = version.map(identifier_component).unwrap_or_else(|| {
+        if participant.participant_kind == "agent" {
+            "unversioned".to_string()
+        } else {
+            participant
+                .external_id
+                .as_deref()
+                .filter(|external_id| *external_id != agent_type)
+                .map(identifier_component)
+                .unwrap_or_else(|| "unversioned".to_string())
+        }
+    });
+    format!("{}@{version}", identity_parts.join(":"))
+}
+
+/// Restricts one externally supplied identifier component to a compact display-safe alphabet.
+fn identifier_component(value: &str) -> String {
+    let mut component = String::new();
+    let mut previous_was_separator = false;
+    for character in value.trim().chars() {
+        if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-') {
+            component.push(character);
+            previous_was_separator = false;
+        } else if !previous_was_separator && !component.is_empty() {
+            component.push('-');
+            previous_was_separator = true;
+        }
+    }
+    while component.ends_with('-') {
+        component.pop();
+    }
+    if component.is_empty() {
+        "unknown".to_string()
+    } else {
+        component
+    }
+}
+
+/// Produces a unique candidate, using random names only for human participants.
+fn participant_identifier_candidate(participant: &ParticipantRecord, attempt: usize) -> String {
+    if participant.participant_kind == "human" {
+        readable_participant_id()
+    } else {
+        let base = nonhuman_participant_identifier(participant);
+        if attempt == 1 {
+            base
+        } else {
+            format!("{base}~{attempt}")
+        }
+    }
+}
+
 /// Input for creating or updating the durable experiment row.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ExperimentRecord {
@@ -392,8 +470,9 @@ impl ExperimentStore for MemoryExperimentStore {
         }
         inner.next_participant_id += 1;
         let participant_id = inner.next_participant_id;
+        let mut identifier_attempt = 1;
         let research_id = loop {
-            let candidate = readable_participant_id();
+            let candidate = participant_identifier_candidate(&participant, identifier_attempt);
             if !inner
                 .participants
                 .iter()
@@ -401,6 +480,7 @@ impl ExperimentStore for MemoryExperimentStore {
             {
                 break candidate;
             }
+            identifier_attempt += 1;
         };
         inner.participants.push(json!({
             "participant_id": participant_id,
@@ -1213,16 +1293,48 @@ impl SqliteExperimentStore {
         Ok(())
     }
 
-    /// Replaces legacy opaque participant ids and fills missing dialogue ids.
+    /// Backfills human random names, descriptive non-human ids, and missing dialogue ids.
     async fn backfill_readable_ids(&self) -> Result<()> {
-        let participants = sqlx::query_scalar::<_, i64>(
-            "select participant_id from participants where research_id is null or research_id like 'research_%'",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        for participant_id in participants {
+        let participants =
+            sqlx::query_as::<_, (i64, String, String, String, Option<String>, Option<String>)>(
+                r#"
+            select participant_id, experiment_id, participant_kind, identity_provider,
+                   external_id, metadata_json
+            from participants
+            where (
+                participant_kind = 'human'
+                and (research_id is null or research_id like 'research_%')
+            ) or (
+                participant_kind not in ('human', 'deleted')
+                and (research_id is null or research_id not like participant_kind || ':%')
+            )
+            "#,
+            )
+            .fetch_all(&self.pool)
+            .await?;
+        for (
+            participant_id,
+            experiment_id,
+            participant_kind,
+            identity_provider,
+            external_id,
+            metadata_json,
+        ) in participants
+        {
+            let participant = ParticipantRecord {
+                experiment_id,
+                participant_kind,
+                identity_provider,
+                external_id,
+                metadata: metadata_json
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()?
+                    .unwrap_or(Value::Null),
+            };
+            let mut identifier_attempt = 1;
             loop {
-                let candidate = readable_participant_id();
+                let candidate = participant_identifier_candidate(&participant, identifier_attempt);
                 let result =
                     sqlx::query("update participants set research_id = ? where participant_id = ?")
                         .bind(candidate)
@@ -1231,7 +1343,10 @@ impl SqliteExperimentStore {
                         .await;
                 match result {
                     Ok(_) => break,
-                    Err(error) if sqlite_unique_constraint(&error) => continue,
+                    Err(error) if sqlite_unique_constraint(&error) => {
+                        identifier_attempt += 1;
+                        continue;
+                    }
                     Err(error) => return Err(error.into()),
                 }
             }
@@ -1450,7 +1565,9 @@ impl ExperimentStore for SqliteExperimentStore {
                 return Ok(participant_id);
             }
         }
+        let mut identifier_attempt = 1;
         loop {
+            let identifier = participant_identifier_candidate(&participant, identifier_attempt);
             let result = sqlx::query(
                 r#"
                 insert into participants
@@ -1458,7 +1575,7 @@ impl ExperimentStore for SqliteExperimentStore {
                 values (?, ?, ?, ?, ?, ?, ?)
                 "#,
             )
-            .bind(readable_participant_id())
+            .bind(identifier)
             .bind(&participant.experiment_id)
             .bind(&participant.participant_kind)
             .bind(&participant.identity_provider)
@@ -1470,6 +1587,7 @@ impl ExperimentStore for SqliteExperimentStore {
             match result {
                 Ok(result) => return Ok(result.last_insert_rowid()),
                 Err(error) if sqlite_unique_constraint_for(&error, "participants.research_id") => {
+                    identifier_attempt += 1;
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -2376,6 +2494,120 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    /// Confirms agent identifiers expose the configured type, implementation name, and version.
+    #[test]
+    fn agent_identifier_uses_durable_type_and_version_metadata() {
+        let participant = ParticipantRecord {
+            experiment_id: "experiment-a".to_string(),
+            participant_kind: "agent".to_string(),
+            identity_provider: "remote_grpc".to_string(),
+            external_id: Some("Python Agent@v1.2 beta".to_string()),
+            metadata: json!({
+                "agent_type": "remote_grpc",
+                "agent_name": "Python Agent",
+                "agent_version": "v1.2 beta",
+            }),
+        };
+
+        assert_eq!(
+            participant_identifier_candidate(&participant, 1),
+            "agent:remote_grpc:Python-Agent@v1.2-beta"
+        );
+        assert_eq!(
+            participant_identifier_candidate(&participant, 2),
+            "agent:remote_grpc:Python-Agent@v1.2-beta~2"
+        );
+
+        let unversioned = ParticipantRecord {
+            external_id: Some("Python Agent".to_string()),
+            metadata: json!({
+                "agent_type": "remote_grpc",
+                "agent_name": "Python Agent",
+            }),
+            ..participant
+        };
+        assert_eq!(
+            participant_identifier_candidate(&unversioned, 1),
+            "agent:remote_grpc:Python-Agent@unversioned"
+        );
+    }
+
+    /// Confirms only human durable participants receive random three-word names.
+    #[tokio::test]
+    async fn sqlite_assigns_random_names_only_to_humans() {
+        let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+            .await
+            .unwrap();
+        let human = store
+            .upsert_participant(ParticipantRecord {
+                experiment_id: "experiment-a".to_string(),
+                participant_kind: "human".to_string(),
+                identity_provider: "direct".to_string(),
+                external_id: None,
+                metadata: Value::Null,
+            })
+            .await
+            .unwrap();
+        let agent = store
+            .upsert_participant(ParticipantRecord {
+                experiment_id: "experiment-a".to_string(),
+                participant_kind: "agent".to_string(),
+                identity_provider: "space_game".to_string(),
+                external_id: Some("space_game.back_and_forth@0.2.0".to_string()),
+                metadata: json!({
+                    "agent_type": "space_game.back_and_forth",
+                    "agent_name": "BackAndForthAgent",
+                    "agent_version": "0.2.0",
+                }),
+            })
+            .await
+            .unwrap();
+
+        let human_identifier = store.participant_research_id(human).await.unwrap().unwrap();
+        let agent_identifier = store.participant_research_id(agent).await.unwrap().unwrap();
+        assert_eq!(human_identifier.split('-').count(), 3);
+        assert_eq!(
+            agent_identifier,
+            "agent:space_game.back_and_forth:BackAndForthAgent@0.2.0"
+        );
+    }
+
+    /// Confirms reopening an existing database replaces legacy random agent names.
+    #[tokio::test]
+    async fn sqlite_migrates_legacy_agent_random_names() {
+        let temp = tempdir().expect("tempdir");
+        let database_url = format!("sqlite:///{}", temp.path().join("agents.sqlite").display());
+        let store = SqliteExperimentStore::connect(&database_url).await.unwrap();
+        let agent = store
+            .upsert_participant(ParticipantRecord {
+                experiment_id: "experiment-a".to_string(),
+                participant_kind: "agent".to_string(),
+                identity_provider: "remote_grpc".to_string(),
+                external_id: Some("planner@test-7".to_string()),
+                metadata: json!({
+                    "agent_type": "remote_grpc",
+                    "agent_name": "planner",
+                    "agent_version": "test-7",
+                }),
+            })
+            .await
+            .unwrap();
+        sqlx::query(
+            "update participants set research_id = 'calm-blue-otter' where participant_id = ?",
+        )
+        .bind(agent)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        store.pool.close().await;
+
+        let reopened = SqliteExperimentStore::connect(&database_url).await.unwrap();
+        assert_eq!(
+            reopened.participant_research_id(agent).await.unwrap(),
+            Some("agent:remote_grpc:planner@test-7".to_string())
+        );
+    }
 
     /// Confirms the schema contains both evaluation data and the isolated credential table.
     #[tokio::test]

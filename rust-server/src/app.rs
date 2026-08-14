@@ -2576,7 +2576,7 @@ fn privacy_status<A: GameAdapter>(state: &AppState<A>) -> PrivacyStatus {
             research_export: true,
             corpus_export: true,
             formats: vec!["JSON".to_string(), "YAML".to_string(), "CSV".to_string()],
-            detail: "Research is the dashboard default. Research and corpus exports retain readable participant and dialogue identifiers across repeated exports of one experiment; participant identifiers are not reused across experiments. Corpus candidates require content review before publication; full is restricted to internal administration.".to_string(),
+            detail: "Research is the dashboard default. Research and corpus exports retain readable participant and dialogue identifiers across repeated exports of one experiment. Human participant identifiers are random and are not reused across experiments; agent identifiers expose agent type and version. Corpus candidates require content review before publication; full is restricted to internal administration.".to_string(),
         },
         participant_deletion: PrivacyFeatureStatus {
             available: true,

@@ -54,7 +54,7 @@ This boundary keeps the reusable server generic without forcing game logic into 
 
 A typical human-vs-human session follows this path:
 
-1. A participant is created with a non-secret session handle, a separate opaque credential, and an experiment-specific random participant identifier; when required, the server durably records the configured declarations.
+1. A human participant is created with a non-secret session handle, a separate opaque credential, and an experiment-specific random participant identifier; when required, the server durably records the configured declarations. Agent participants instead receive a descriptive type-and-version identifier.
 2. The participant creates or joins a waiting room.
 3. The server creates or joins a room and assigns roles `A` and `B`.
 4. The authenticated browser requests a one-use game ticket and connects to `/ws/game/{room_id}?token=...`; a participant-session id is never accepted as a credential.

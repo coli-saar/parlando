@@ -58,7 +58,7 @@ WebSocket remains a possible future lightweight transport, but it should not be 
 - The factory implements the same `AgentFactory<A>` trait as in-process Rust agents.
 - `RemoteGrpcAgent` lazily connects to the configured gRPC endpoint, sends one `CreateAgent` request, forwards observations through `ObserveState`, `ObserveAction`, and `ObserveMessage`, and asks for responses through `MaybeAct` or `Act`.
 - Returned actions are deserialized into the game-specific Rust action type and still pass through normal server validation before changing game state.
-- Remote gRPC factories export durable participant metadata as `participant_kind = agent`, `identity_provider = remote_grpc`, and `external_id = <agent_name>@<agent_version>`.
+- Remote gRPC factories export durable participant metadata as `participant_kind = agent`, `identity_provider = remote_grpc`, and `external_id = <agent_name>@<agent_version>`. Administration and research exports use a descriptive identifier such as `agent:remote_grpc:<agent_name>@<agent_version>` rather than a human-style random name; absent version metadata is marked `unversioned`.
 - The Python SDK wrapper lives in `python/parlando-agent-sdk`. It provides `GameAgent`, `AgentResponse`, `serve_agent`, a protobuf generation command, and a bundled copy of the protocol.
 - The mock-client integration suite starts an in-process tonic gRPC service and verifies remote-agent messages, actions, completion, and persisted session events through the real HTTP/WebSocket server.
 

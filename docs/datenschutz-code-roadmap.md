@@ -25,11 +25,13 @@ Jedes Experiment kann eine feste Versionskennung und URL seiner Teilnehmerinform
 
 Unbekannte Consent-Items werden abgelehnt. Alle erforderlichen Erklärungen müssen erfolgreich gespeichert sein, bevor ein Teilnehmer einen Raum betreten kann. Der Hash belegt die serverseitig konfigurierte Referenz und Consent-Darstellung, nicht den unabhängig gehosteten Seiteninhalt hinter der URL. Deshalb wird die veröffentlichte Teilnehmerinformation zusätzlich unter ihrer Versionskennung archiviert. Eine materielle Textänderung erhält eine neue lokale Versionskennung und neue Consent-Item-IDs.
 
-## 2. Experimentbezogene Teilnehmer- und Dialogkennungen
+## 2. Kennungen für Menschen, Agenten und Dialoge
 
-Parlando erzeugt bei der Anlage dreiteilige, menschenlesbare Zufallskennungen. Teilnehmerkennungen enden in einem Tiernamen, Dialogkennungen in einem Orts- oder Objektnamen. Die getrennten Wortlisten machen die Kennungsart ohne Präfix erkennbar.
+Parlando erzeugt bei der Anlage dreiteilige, menschenlesbare Zufallskennungen ausschließlich für menschliche Teilnehmer und Dialoge. Menschliche Teilnehmerkennungen enden in einem Tiernamen, Dialogkennungen in einem Orts- oder Objektnamen. Die getrennten Wortlisten machen die Kennungsart ohne Präfix erkennbar.
 
-Eine Teilnehmerkennung gilt nur innerhalb eines Experiments. Dieselbe externe Rekrutierungskennung erhält in einem anderen Experiment einen unabhängig erzeugten Namen. Innerhalb desselben Experiments bleiben Teilnehmer- und Dialogkennungen über Sitzungen und wiederholte Exporte unverändert.
+Agententeilnehmer erhalten keinen Zufallsnamen. Ihre Kennung nennt stattdessen Agententyp, Implementierungsname, soweit vorhanden, und Version, beispielsweise `agent:space_game.back_and_forth:BackAndForthAgent@0.2.0`. Fehlt eine Versionsangabe, wird dies mit `unversioned` ausdrücklich sichtbar gemacht. Damit lassen sich Beiträge unterschiedlicher Agentimplementierungen in Adminansicht und Export unmittelbar unterscheiden.
+
+Eine menschliche Teilnehmerkennung gilt nur innerhalb eines Experiments. Dieselbe externe Rekrutierungskennung erhält in einem anderen Experiment einen unabhängig erzeugten Namen. Innerhalb desselben Experiments bleiben menschliche Teilnehmer-, Agenten- und Dialogkennungen über Sitzungen und wiederholte Exporte unverändert.
 
 Solange eine Rekrutierungszuordnung oder ein anderes realistisches Zuordnungsmittel besteht, sind die Forschungsdaten pseudonymisierte personenbezogene Daten. Nach Entfernung dieser Zuordnung und erfolgreicher Inhaltsprüfung können die zufälligen Kennungen als nicht personenbezogene Korpuslabels erhalten bleiben.
 
