@@ -1286,7 +1286,7 @@ async fn public_config<A: GameAdapter>(
     let config = &state.config;
     Json(PublicConfigResponse {
         study_name: config.study.name.clone(),
-        require_consent: config.direct.require_consent,
+        institution: nonempty_string(&config.study.institution),
         participant_information_version: nonempty_string(
             &config.direct.participant_information_version,
         ),
@@ -2371,6 +2371,7 @@ struct AdminCreateExperimentRequest {
     source_experiment_id: Option<String>,
     experiment_id: Option<String>,
     study_name: Option<String>,
+    institution: Option<String>,
     status: Option<String>,
     agents_mode: Option<AgentsMode>,
     agent_factory: Option<String>,
@@ -2583,12 +2584,14 @@ fn privacy_status<A: GameAdapter>(state: &AppState<A>) -> PrivacyStatus {
             detail: "Human participant cards provide a counted preview and irreversible manual deletion of that experiment's recruitment mapping, participant identifier, consent evidence, and authored communication; no automatic retention deletion is performed.".to_string(),
         },
         consent_evidence: PrivacyFeatureStatus {
-            available: nonempty_string(&state.config.direct.participant_information_version).is_some()
-                && nonempty_string(&state.config.direct.participant_information_url).is_some(),
+            available: !state.config.direct.consents.is_empty(),
             detail: format!(
-                "Consent is configured {}; {} consent item(s) are configured. Accepted declarations record the participant-information version, URL, and a server-computed hash of the complete presentation.",
-                enabled_label(state.config.direct.require_consent),
-                state.config.direct.consents.len()
+                "Consent is configured through {} consent item(s). Accepted declarations record a server-computed hash of the complete presentation. A participant-information reference is {}.",
+                state.config.direct.consents.len(),
+                enabled_label(
+                    nonempty_string(&state.config.direct.participant_information_version).is_some()
+                        && nonempty_string(&state.config.direct.participant_information_url).is_some()
+                )
             ),
         },
     }
@@ -2878,6 +2881,9 @@ async fn admin_create_experiment<A: GameAdapter>(
     config.experiment.id = Some(experiment_id.clone());
     if let Some(study_name) = request.study_name.filter(|value| !value.trim().is_empty()) {
         config.study.name = study_name.trim().to_string();
+    }
+    if let Some(institution) = request.institution {
+        config.study.institution = institution.trim().to_string();
     }
     if let Some(timeout) = request.waiting_room_timeout_seconds {
         if timeout <= 0 {
@@ -4545,6 +4551,10 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
           <input id="experimentStudyName" name="study_name" placeholder="e.g. Back-and-forth pilot 2" required>
         </label>
         <label>
+          <span class="label">Institution</span>
+          <input id="experimentInstitution" name="institution" placeholder="e.g. Saarland University">
+        </label>
+        <label>
           <span class="label">Experiment id</span>
           <input id="experimentId" name="experiment_id" placeholder="Generated if left blank">
         </label>
@@ -4868,6 +4878,7 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
       const agents = config?.agents || state.defaultAgents || {};
       const humanVsAgent = agents.human_vs_agent || {};
       document.getElementById('experimentStudyName').value = config?.study?.name || experiment?.study_name || '';
+      document.getElementById('experimentInstitution').value = config?.study?.institution || '';
       document.getElementById('experimentWaitingTimeout').value = config?.study?.waiting_room_timeout_seconds ?? '';
       document.getElementById('experimentReconnectGrace').value = config?.study?.reconnect_grace_seconds ?? '';
       document.getElementById('experimentNotes').value = experiment?.notes || '';
@@ -4948,6 +4959,7 @@ const ADMIN_GAMES_HTML: &str = r##"<!doctype html>
           source_experiment_id: experimentSource.value || null,
           experiment_id: document.getElementById('experimentId').value.trim() || null,
           study_name: document.getElementById('experimentStudyName').value.trim() || null,
+          institution: document.getElementById('experimentInstitution').value.trim(),
           status: document.getElementById('experimentStatus').value,
           agents_mode: experimentAgentsMode.value,
           agent_factory: experimentAgentsMode.value === 'human_vs_agent' ? experimentAgentFactory.value : null,
@@ -6648,7 +6660,7 @@ async fn require_consent<A: GameAdapter>(
         .participants
         .get(participant_session_id)
         .ok_or_else(|| AppError::not_found("Participant session not found."))?;
-    if participant.source == "direct" && state.config.direct.require_consent {
+    if participant.source == "direct" {
         let missing = state
             .config
             .direct
@@ -7261,6 +7273,7 @@ mod tests {
             json!({
                 "experiment_id": "pilot-two",
                 "study_name": "Pilot Two",
+                "institution": "Test University",
                 "status": "draft",
                 "agents_mode": "human_vs_agent",
                 "agent_factory": "remote_grpc",
@@ -7321,6 +7334,10 @@ mod tests {
         assert_eq!(
             exported["experiment"]["config"]["study"]["name"],
             "Pilot Two"
+        );
+        assert_eq!(
+            exported["experiment"]["config"]["study"]["institution"],
+            "Test University"
         );
         assert_eq!(
             exported["experiment"]["config"]["agents"]["mode"],
@@ -8187,7 +8204,6 @@ mod tests {
             direct: DirectConfig {
                 enabled: true,
                 allow_room_codes: true,
-                require_consent: true,
                 participant_information_version: "test-v1".to_string(),
                 participant_information_url: "https://example.test/privacy".to_string(),
                 consents: vec![crate::config::ConsentItemConfig {
@@ -8599,6 +8615,7 @@ mod tests {
     async fn health_and_public_config_expose_client_bootstrap_shape() {
         let mut config = step_five_config();
         config.study.name = "Bootstrap Study".to_string();
+        config.study.institution = "Test University".to_string();
         config.voice.enabled = true;
         config.transcription.enabled = true;
         config.speechmatics.api_key = "test-key".to_string();
@@ -8619,7 +8636,7 @@ mod tests {
             json_request(router, http::Method::GET, "/api/config", Value::Null).await;
         assert_eq!(config_status, StatusCode::OK);
         assert_eq!(public_config["study_name"], "Bootstrap Study");
-        assert_eq!(public_config["require_consent"], true);
+        assert_eq!(public_config["institution"], "Test University");
         assert_eq!(public_config["consents"][0]["id"], "study");
         assert_eq!(public_config["voice"]["enabled"], true);
         assert_eq!(public_config["voice"]["transport"], "websocket");

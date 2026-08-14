@@ -12,17 +12,6 @@ import {
   type ServerMessage
 } from "./protocol.js";
 
-export interface ParlandoStartupLabels {
-  title?: string;
-  eyebrow?: string;
-  setupHeading?: string;
-  setupBody?: string;
-  waitingHeading?: string;
-  waitingBody?: string;
-  gameHint?: string;
-  enterWaitingRoomLabel?: string;
-}
-
 export interface ActiveParlandoSession<
   TState,
   TObservation,
@@ -58,7 +47,6 @@ export interface ParlandoStartupGateProps<
   TEvent,
   TSummary = Record<string, unknown>
 > {
-  labels: ParlandoStartupLabels;
   renderGame(session: ActiveParlandoSession<TState, TObservation, TAction, TEvent, TSummary>): ReactNode;
   apiClient?: ExperimentApiClient;
   createAudioController?: () => AudioSessionController;
@@ -126,7 +114,6 @@ export function ParlandoStartupGate<
   TEvent = unknown,
   TSummary = Record<string, unknown>
 >({
-  labels,
   renderGame,
   apiClient: providedApiClient,
   createAudioController = createDefaultAudioController
@@ -150,7 +137,7 @@ export function ParlandoStartupGate<
   const consentReady = requiredConsentsAccepted(publicConfig, consentDecisions);
   const voiceEnabled = isVoiceEnabled(publicConfig);
   const canEnter = Boolean(publicConfig && consentReady && (!voiceEnabled || voicePreflight.ready));
-  const startupTitle = resolveStartupTitle(labels, publicConfig);
+  const startupTitle = resolveStartupTitle(publicConfig);
 
   const refreshAudioInputs = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) return [];
@@ -277,7 +264,7 @@ export function ParlandoStartupGate<
       throw new Error("Please accept all required consents before entering the waiting room.");
     }
     const participant = await apiClient.createParticipant();
-    if (publicConfig.require_consent) {
+    if (publicConfig.consents.length > 0) {
       await apiClient.submitConsent(participant.participant_session_id, consentDecisions);
     }
     return participant.participant_session_id;
@@ -398,7 +385,15 @@ export function ParlandoStartupGate<
   }, [connectVoice, session, voiceEnabled, voicePreflight.ready, voiceStatus.connected, voiceStatus.connecting]);
 
   if (configLoading || !publicConfig) {
-    return <StartupShell labels={labels} title={startupTitle} heading="Loading study" body="Connecting to the experiment server." error={error} />;
+    return (
+      <StartupShell
+        title={startupTitle}
+        institution={publicConfig?.institution}
+        heading="Loading study"
+        body="Connecting to the experiment server."
+        error={error}
+      />
+    );
   }
 
   if (session?.active) {
@@ -429,10 +424,10 @@ export function ParlandoStartupGate<
   if (session) {
     return (
       <StartupShell
-        labels={labels}
         title={startupTitle}
-        heading={labels.waitingHeading ?? "Starting game"}
-        body={labels.waitingBody ?? "The game starts when all required participants and services are ready."}
+        institution={publicConfig.institution}
+        heading="Starting game"
+        body="The game starts when all required participants and services are ready."
         error={error}
       >
         <ReadinessBoard voiceEnabled={voiceEnabled} presence={session.presence} voiceStatus={voiceStatus} />
@@ -452,13 +447,11 @@ export function ParlandoStartupGate<
 
   return (
     <StartupShell
-      labels={labels}
       title={startupTitle}
-      heading={labels.setupHeading ?? "Waiting Room"}
-      body={labels.setupBody ?? "Enter your details and prepare your browser before joining the room."}
+      institution={publicConfig.institution}
       error={error}
     >
-      {publicConfig.require_consent && (
+      {publicConfig.consents.length > 0 && (
         <div className="consent-list">
           {publicConfig.participant_information_url && (
             <p className="participant-information">
@@ -504,7 +497,7 @@ export function ParlandoStartupGate<
       )}
       <div className="lobby-actions">
         <button disabled={!canEnter} onClick={createDirectRoom}>
-          {labels.enterWaitingRoomLabel ?? "Enter waiting room"}
+          Enter waiting room
         </button>
       </div>
     </StartupShell>
@@ -516,27 +509,28 @@ function StartupShell({
   children,
   error,
   heading,
-  labels,
+  institution,
   title
 }: {
-  body: string;
+  body?: string;
   children?: ReactNode;
   error: string;
-  heading: string;
-  labels: ParlandoStartupLabels;
+  heading?: string;
+  institution?: string | null;
   title: string;
 }) {
   return (
     <section className="lobby-panel">
       <div className="lobby-heading">
-        <p className="eyebrow">{labels.eyebrow ?? "Parlando Experiment"}</p>
+        <p className="platform-label">{platformLabel(institution)}</p>
         <h1>{title}</h1>
       </div>
-      <div className="lobby-copy">
-        <h2>{heading}</h2>
-        <p>{body}</p>
-        {labels.gameHint && <p>{labels.gameHint}</p>}
-      </div>
+      {(heading || body) && (
+        <div className="lobby-copy">
+          {heading && <h2>{heading}</h2>}
+          {body && <p>{body}</p>}
+        </div>
+      )}
       {children}
       {error && <p className="online-error">{error}</p>}
     </section>
@@ -683,8 +677,15 @@ export function participantMicrophoneLabel(label: string): string {
   return label.replace(/\s*[([][0-9a-f]{4}:[0-9a-f]{4}[)\]]\s*$/i, "").trim() || "Microphone";
 }
 
-export function resolveStartupTitle(labels: Pick<ParlandoStartupLabels, "title">, config: Pick<PublicConfigResponse, "study_name"> | null): string {
-  return labels.title ?? config?.study_name ?? "Parlando Experiment";
+/** Formats the stable platform label with an optional operating institution. */
+export function platformLabel(institution?: string | null): string {
+  const name = institution?.trim();
+  return name ? `Parlando · ${name}` : "Parlando";
+}
+
+/** Resolves the participant-facing game title from the server's public study configuration. */
+export function resolveStartupTitle(config: Pick<PublicConfigResponse, "study_name"> | null): string {
+  return config?.study_name ?? "Parlando Experiment";
 }
 
 export function normalizePresence(presence: Record<string, unknown> | undefined): PresenceState {

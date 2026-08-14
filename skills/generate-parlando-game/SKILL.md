@@ -193,7 +193,7 @@ Generated clients must style both the active game screen and the shared startup 
 
 In `web/src/styles.css`, include polished, responsive styles for the startup classes emitted by the SDK:
 
-- `lobby-panel`, `lobby-heading`, `lobby-copy`, `eyebrow`, `online-error`
+- `lobby-panel`, `lobby-heading`, `lobby-copy`, `platform-label`, `online-error`
 - `lobby-actions`, including buttons, inputs, and selects
 - `consent-list` and `consent-row`
 - `seat-grid` and `seat-ready`
@@ -215,7 +215,7 @@ Generate `config/experiment.local.yaml` with:
 - local SQLite under `.local/`
 - voice, transcription, and TTS disabled unless requested
 - when voice is requested, `voice`, server-side Speechmatics, and ElevenLabs fields via a private overlay
-- consent items under `direct.require_consent` and `direct.consents`
+- consent items under `direct.consents`; an empty list skips consent
 - conversation enabled by default
 
 Generate `config/experiment.render.example.yaml` with:

@@ -349,3 +349,23 @@ Decision: Make `Prepare voice` acquire the browser's default microphone without 
 Tradeoffs: The common path has one fewer control and respects the browser/system default. Participants with multiple physical or virtual inputs retain page-level selection without a separate change/cancel mode. A single-input dropdown is disabled because it communicates the active microphone without pretending another choice exists. Device enumeration differs slightly across browsers, so unavailable devices remain absent from the page.
 
 Follow-up risks: Verify the post-permission device list and stream replacement in current Chrome, Firefox, and Safari. If browsers expose duplicate concrete entries, selection may need stable deduplication using both labels and group identifiers.
+
+## 2026-08-14: Startup content is limited to current platform tasks
+
+Context: The shared startup gate accepted arbitrary eyebrow, setup-copy, waiting-copy, and game-hint labels. This allowed game clients to place in-game controls, stale instructions, and vague category labels on a platform screen whose immediate jobs are consent, browser preparation, and room entry. The public study configuration already supplies the authoritative game title.
+
+Decision: Remove the generic startup-label API. Resolve the title only from the server's public `study_name`; render no heading or explanatory copy on the initial screen; and keep consent, voice preparation, errors, and room entry as the only initial content. The post-entry waiting state retains concise core-owned readiness text because it describes the participant's current platform state rather than game controls.
+
+Tradeoffs: Game clients can no longer add arbitrary marketing text or premature control instructions to the shared startup surface. Studies that need participant information continue to use structured consent and participant-information fields. Changing the configured game title or the game's visual treatment remains the responsibility of the game/configuration layer.
+
+Follow-up risks: If a future study needs essential pre-room instructions unrelated to consent or browser readiness, add a structured, purpose-specific platform field instead of restoring an unrestricted copy slot.
+
+## 2026-08-14: Platform identity and consent derive from authoritative configuration
+
+Context: The simplified startup title needs to distinguish the Parlando platform, the operating university, and the game without repeating them in one large heading. Consent configuration also had two independent switches: `direct.require_consent` and `direct.consents`, which could disagree about whether declarations were displayed or enforced.
+
+Decision: Add optional `study.institution` configuration and expose it publicly so the shared shell renders `Parlando · <institution>` above the `study.name` game title. Remove `direct.require_consent` from Rust and browser protocols. A non-empty `direct.consents` list now triggers browser rendering and submission, privacy-status reporting, and server enforcement of required declarations; an empty list skips the consent flow. Participant-information version and URL remain optional evidence metadata and do not gate consent or server startup.
+
+Tradeoffs: Institution identity remains optional for installations that do not want it displayed. Games no longer need to repeat Parlando in `study.name`. Consent cannot be temporarily hidden while keeping configured items in place; operators must remove the items from the effective configuration, which makes the visible behavior explicit.
+
+Follow-up risks: Existing configuration overlays must remove `require_consent`, although older unknown YAML keys may be ignored by serde. Institutions remain responsible for approved local names, participant-information text, URLs, and consent wording.

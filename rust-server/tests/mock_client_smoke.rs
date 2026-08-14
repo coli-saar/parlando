@@ -433,7 +433,6 @@ fn config(mode: AgentsMode) -> ExperimentConfig {
             url: "sqlite:///:memory:".to_string(),
         },
         direct: DirectConfig {
-            require_consent: true,
             consents: vec![ConsentItemConfig {
                 id: "study".to_string(),
                 title: "Study consent".to_string(),

@@ -14,6 +14,8 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ### Changed
 
+- Simplified the JavaScript startup gate to show only the configured study title and current platform tasks; removed arbitrary startup-label, eyebrow, setup-copy, and game-hint customization.
+- Added an optional operating institution to the study identity shown above the game title, and derived consent display and enforcement solely from configured consent items instead of a separate `require_consent` flag.
 - Removed participant-entered display names from the browser flow, protocol, runtime, database, admin interface, and exports.
 - Changed the `corpus` export description to a publication-oriented `corpus_candidate`: it removes internal identifiers and absolute timestamps but requires removal of recruitment mappings and content review before it can be treated as anonymous.
 - Scoped external recruitment identities to one experiment, so the same external identifier receives an independently generated participant identifier in every experiment.

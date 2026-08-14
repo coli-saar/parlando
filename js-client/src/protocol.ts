@@ -7,7 +7,8 @@ export interface ParticipantCreateResponse {
 
 export interface PublicConfigResponse {
   study_name: string;
-  require_consent: boolean;
+  /** Institution operating the study, when the server exposes one. */
+  institution?: string | null;
   participant_information_version?: string | null;
   participant_information_url?: string | null;
   consents: ConsentItem[];

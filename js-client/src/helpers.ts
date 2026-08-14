@@ -7,10 +7,10 @@ export interface PresenceState {
 }
 
 export function requiredConsentsAccepted(
-  config: Pick<PublicConfigResponse, "require_consent" | "consents"> | null,
+  config: Pick<PublicConfigResponse, "consents"> | null,
   decisions: Record<string, boolean>
 ): boolean {
-  if (!config?.require_consent) return true;
+  if (!config) return true;
   return config.consents.every((consent: ConsentItem) => !consent.required || decisions[consent.id] === true);
 }
 

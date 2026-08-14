@@ -5,6 +5,7 @@ import {
   isVoiceEnabled,
   normalizePresence,
   participantMicrophoneLabel,
+  platformLabel,
   resolveStartupTitle,
   selectableAudioInputs,
   sendActionIfGameActive,
@@ -12,11 +13,11 @@ import {
   voiceStatusUpdate
 } from "./startup";
 import type { PublicConfigResponse } from "./protocol";
+import { requiredConsentsAccepted } from "./helpers";
 
 function publicConfig(overrides: Partial<PublicConfigResponse> = {}): PublicConfigResponse {
   return {
     study_name: "Startup Test",
-    require_consent: false,
     consents: [],
     voice: { enabled: false },
     transcription: { enabled: false, provider: "speechmatics" },
@@ -32,15 +33,29 @@ function audioInput(deviceId: string, label: string): MediaDeviceInfo {
 }
 
 describe("Parlando startup helpers", () => {
-  it("resolves startup titles from app labels, then public study config", () => {
-    expect(resolveStartupTitle({ title: "Custom Title" }, publicConfig({ study_name: "Configured Study" }))).toBe("Custom Title");
-    expect(resolveStartupTitle({}, publicConfig({ study_name: "Configured Study" }))).toBe("Configured Study");
-    expect(resolveStartupTitle({}, null)).toBe("Parlando Experiment");
+  it("resolves startup titles from public study config", () => {
+    expect(resolveStartupTitle(publicConfig({ study_name: "Configured Study" }))).toBe("Configured Study");
+    expect(resolveStartupTitle(null)).toBe("Parlando Experiment");
+  });
+
+  it("combines the platform name with an optional institution", () => {
+    expect(platformLabel("Saarland University")).toBe("Parlando · Saarland University");
+    expect(platformLabel("  ")).toBe("Parlando");
+    expect(platformLabel()).toBe("Parlando");
   });
 
   it("treats disabled voice as a no-voice startup", () => {
     expect(isVoiceEnabled(publicConfig())).toBe(false);
     expect(isVoiceEnabled(publicConfig({ voice: { enabled: true } }))).toBe(true);
+  });
+
+  it("derives consent readiness from configured items alone", () => {
+    expect(requiredConsentsAccepted({ consents: [] }, {})).toBe(true);
+    const configured = {
+      consents: [{ id: "study", title: "Study", body_html: "Agree?", required: true }]
+    };
+    expect(requiredConsentsAccepted(configured, {})).toBe(false);
+    expect(requiredConsentsAccepted(configured, { study: true })).toBe(true);
   });
 
   it("offers only concrete microphones as post-permission alternatives", () => {

@@ -39,14 +39,6 @@ export function App() {
   return (
     <main className="app-shell">
       <ParlandoStartupGate<StationState, StationObservation, GameAction, ObservationEvent>
-        labels={{
-          eyebrow: "Cooperative Experiment",
-          setupHeading: "Waiting Room",
-          setupBody: "Review consent if required, enter your name, and prepare voice if this study uses audio.",
-          waitingBody: "The station unlocks when all required participants and services are ready.",
-          gameHint: "Use arrow keys to move your assigned character. Press Enter to use a device.",
-          enterWaitingRoomLabel: "Enter waiting room"
-        }}
         renderGame={(session) => <ActiveSpaceGame session={session} />}
       />
     </main>

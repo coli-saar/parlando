@@ -5,7 +5,8 @@ includes:
   - ../../rust-server/config/experiment.voice.private.yaml
 
 study:
-  name: Parlando Space Game Back And Forth Voice
+  name: Space Game
+  institution: Saarland University
   enabled_sources: [direct]
   waiting_room_timeout_seconds: 300
   reconnect_grace_seconds: 90
@@ -21,7 +22,6 @@ database:
 direct:
   enabled: true
   allow_room_codes: true
-  require_consent: false
   consents: []
 
 agents:

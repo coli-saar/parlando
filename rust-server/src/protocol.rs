@@ -47,7 +47,8 @@ pub struct ConsentItemResponse {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PublicConfigResponse {
     pub study_name: String,
-    pub require_consent: bool,
+    /// Institution displayed with the Parlando platform identity, when configured.
+    pub institution: Option<String>,
     pub participant_information_version: Option<String>,
     pub participant_information_url: Option<String>,
     pub consents: Vec<ConsentItemResponse>,

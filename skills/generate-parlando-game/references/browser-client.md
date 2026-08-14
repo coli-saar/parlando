@@ -89,14 +89,13 @@ type GameSession = ActiveParlandoSession<GameState, GameObservation, GameAction,
 export function App() {
   return (
     <ParlandoStartupGate<GameState, GameObservation, GameAction, GameEvent>
-      labels={{ title: "Game Name" }}
       renderGame={(session) => <GameView session={session} />}
     />
   );
 }
 ```
 
-Omit `labels.title` when the YAML `study.name` is the right participant-facing title. The gate passes an `ActiveParlandoSession` only when the game may render. Generated clients must not implement custom startup lifecycle or generic WebSocket-message handling.
+The YAML `study.name` is the participant-facing title. The gate passes an `ActiveParlandoSession` only when the game may render. Generated clients must not implement custom startup lifecycle or generic WebSocket-message handling.
 
 Use these session fields in game UI as needed:
 
@@ -196,7 +195,7 @@ Recommended client files:
 - `web/src/game/stateEngine.ts`: optional pure helpers for labels, previews, visual derivations, or UI-only controls.
 - `web/src/game/stateEngine.test.ts`: tests for helper logic.
 - `web/src/App.tsx`: `ParlandoStartupGate` wrapper, game rendering, and action dispatch.
-- `web/src/styles.css`: active game styling plus startup-screen styling for SDK classes such as `lobby-panel`, `lobby-actions`, `consent-row`, `seat-grid`, `voice-preflight`, `transcription-progress`, `online-error`, and `mic-meter`.
+- `web/src/styles.css`: active game styling plus startup-screen styling for SDK classes such as `lobby-panel`, `platform-label`, `lobby-actions`, `consent-row`, `seat-grid`, `voice-preflight`, `transcription-progress`, `online-error`, and `mic-meter`.
 
 ## Startup Styling
 

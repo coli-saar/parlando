@@ -115,9 +115,9 @@ export {
   isVoiceEnabled,
   normalizePresence,
   participantMicrophoneLabel,
+  platformLabel,
   selectableAudioInputs,
   voiceStatusUpdate,
   type ActiveParlandoSession,
-  type ParlandoStartupGateProps,
-  type ParlandoStartupLabels
+  type ParlandoStartupGateProps
 } from "./startup.js";

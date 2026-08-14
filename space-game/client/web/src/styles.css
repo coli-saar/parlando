@@ -365,7 +365,8 @@ p {
   white-space: nowrap;
 }
 
-.eyebrow {
+.eyebrow,
+.platform-label {
   color: #9fb0bd;
   font-size: 0.7rem;
   font-weight: 900;

@@ -13,6 +13,8 @@ use serde_json::Value;
 #[serde(default)]
 pub struct StudyConfig {
     pub name: String,
+    /// Optional name of the institution operating the participant-facing study.
+    pub institution: String,
     pub enabled_sources: Vec<String>,
     pub waiting_room_timeout_seconds: i64,
     pub reconnect_grace_seconds: i64,
@@ -22,6 +24,7 @@ impl Default for StudyConfig {
     fn default() -> Self {
         Self {
             name: "experiment".to_string(),
+            institution: String::new(),
             enabled_sources: vec!["direct".to_string()],
             waiting_room_timeout_seconds: 300,
             reconnect_grace_seconds: 90,
@@ -43,7 +46,6 @@ pub struct ConsentItemConfig {
 pub struct DirectConfig {
     pub enabled: bool,
     pub allow_room_codes: bool,
-    pub require_consent: bool,
     pub participant_information_version: String,
     pub participant_information_url: String,
     pub consents: Vec<ConsentItemConfig>,
@@ -54,7 +56,6 @@ impl Default for DirectConfig {
         Self {
             enabled: true,
             allow_room_codes: true,
-            require_consent: false,
             participant_information_version: String::new(),
             participant_information_url: String::new(),
             consents: vec![],
@@ -358,16 +359,6 @@ impl ExperimentConfig {
         if self.privacy.contract_version.trim().is_empty() {
             bail!("privacy.contract_version must not be empty");
         }
-        if self.direct.require_consent
-            && (self
-                .direct
-                .participant_information_version
-                .trim()
-                .is_empty()
-                || self.direct.participant_information_url.trim().is_empty())
-        {
-            bail!("direct participant information version and URL are required when consent is enabled");
-        }
         if self.tts.enabled {
             if self.tts.voice_id.is_empty() {
                 bail!("tts.voice_id is required when TTS is enabled");
@@ -604,9 +595,13 @@ mod tests {
 study:
   name: base
 direct:
-  require_consent: true
   participant_information_version: test-v1
   participant_information_url: https://example.test/privacy
+  consents:
+    - id: study
+      title: Study
+      body_html: Agree?
+      required: true
 database:
   url: sqlite:///data/parlando.sqlite
 server:
@@ -643,7 +638,7 @@ agents:
             ExperimentConfig::from_yaml(config_dir.join("experiment.yaml")).expect("config loads");
 
         assert_eq!(config.study.name, "Env Study");
-        assert!(config.direct.require_consent);
+        assert_eq!(config.direct.consents.len(), 1);
         assert_eq!(config.conversation.max_history_messages, 12);
         assert_eq!(config.agents.mode, AgentsMode::HumanVsAgent);
         let canonical_project = config_dir
@@ -691,5 +686,24 @@ agents:
         let error = config.validate().expect_err("missing api key fails");
 
         assert!(error.to_string().contains("tts.api_key"));
+    }
+
+    /// Confirms that consent items require no separate enablement or metadata fields.
+    #[test]
+    fn validation_accepts_consent_items_without_separate_enablement() {
+        let mut config = ExperimentConfig::default();
+        config
+            .validate()
+            .expect("an empty consent list disables consent");
+        config.direct.consents.push(ConsentItemConfig {
+            id: "study".to_string(),
+            title: "Study consent".to_string(),
+            body_html: "Agree?".to_string(),
+            required: true,
+        });
+
+        config
+            .validate()
+            .expect("the non-empty consent list is sufficient to enable consent");
     }
 }

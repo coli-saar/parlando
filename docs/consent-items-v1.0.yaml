@@ -14,7 +14,6 @@
 direct:
   enabled: true
   allow_room_codes: true
-  require_consent: true
   participant_information_version: "{{LOCAL_INFORMATION_VERSION}}"
   participant_information_url: "{{PARTICIPANT_INFORMATION_URL}}"
   consents:

@@ -14,7 +14,7 @@ When voice, transcription, or TTS is requested, tell the user exactly where the 
 `ExperimentConfig::from_yaml` supports includes, environment-variable substitution, and relative path resolution. Main sections:
 
 - `experiment`: durable experiment id.
-- `study`: study name and waiting/reconnect timing.
+- `study`: game title, optional operating institution, and waiting/reconnect timing.
 - `server`: public base URL, CORS origins, optional `client_dist_path`.
 - `database`: SQLite URL.
 - `direct`: room-code and consent settings.
@@ -41,6 +41,7 @@ experiment:
 
 study:
   name: "<Game Name>"
+  institution: "<Institution Name>"
 
 server:
   public_base_url: http://localhost:8000
@@ -54,7 +55,6 @@ database:
 direct:
   enabled: true
   allow_room_codes: true
-  require_consent: false
   consents: []
 
 agents:
@@ -83,7 +83,6 @@ Use:
 direct:
   enabled: true
   allow_room_codes: true
-  require_consent: true
   consents:
     - id: study
       title: Study Consent
@@ -96,6 +95,8 @@ direct:
 ```
 
 Generated games should include reasonable placeholder consent text when the user asks for a study flow, especially for voice studies. The final answer must tell the user to replace placeholder consent text with their approved IRB/ethics-board language before collecting data.
+
+The presence of one or more `direct.consents` items enables the consent screen and server-side enforcement. An empty list skips consent; there is no separate enablement flag. `participant_information_version` and `participant_information_url` are optional evidence metadata and do not enable or disable consent.
 
 ## Voice Infrastructure Config
 
