@@ -20,6 +20,9 @@ pub use agents::{
 pub use app::{build_game_router, build_router, serve, serve_game, ServeOptions};
 pub use audio_publisher::{AgentAudioPublisher, AudioPublishSummary};
 pub use config::ExperimentConfig;
-pub use game::{GameAdapter, GameDescriptor, PlayerRole, Seat};
+pub use game::{
+    AgentConfigFieldDescriptor, AgentFactoryDescriptor, GameAdapter, GameDescriptor, PlayerRole,
+    Seat,
+};
 pub use remote_agent::{RemoteGrpcAgentConfig, RemoteGrpcAgentFactory};
 pub use storage::{merge_sqlite_catalogues, CatalogueMergeReport, CatalogueRowCounts};

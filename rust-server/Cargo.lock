@@ -1841,6 +1841,7 @@ dependencies = [
  "futures-util",
  "hmac",
  "http",
+ "hyper",
  "ipnet",
  "prost",
  "prost-types",

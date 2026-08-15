@@ -14,7 +14,7 @@ import {
   voiceStatusUpdate
 } from "./startup";
 import type { PublicConfigResponse } from "./protocol";
-import { requiredConsentsAccepted } from "./helpers";
+import { experimentAllowsIntake, requiredConsentsAccepted, transcriptionProgressForStatus } from "./helpers";
 
 function publicConfig(overrides: Partial<PublicConfigResponse> = {}): PublicConfigResponse {
   return {
@@ -61,6 +61,20 @@ describe("Parlando startup helpers", () => {
     };
     expect(requiredConsentsAccepted(configured, {})).toBe(false);
     expect(requiredConsentsAccepted(configured, { study: true })).toBe(true);
+  });
+
+  it("allows participant intake for both testing and active experiments", () => {
+    expect(experimentAllowsIntake("testing")).toBe(true);
+    expect(experimentAllowsIntake("active")).toBe(true);
+    expect(experimentAllowsIntake("inactive")).toBe(false);
+    expect(experimentAllowsIntake("completed")).toBe(false);
+    expect(experimentAllowsIntake("archived")).toBe(false);
+  });
+
+  it("does not present an idle transcription service as already starting", () => {
+    const progress = transcriptionProgressForStatus("ASR idle", false);
+    expect(progress.value).toBe(0);
+    expect(progress.steps.every((step) => !step.done)).toBe(true);
   });
 
   it("offers only concrete microphones as post-permission alternatives", () => {

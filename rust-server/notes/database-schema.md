@@ -77,6 +77,8 @@ primary key (experiment_id, session_id)
 
 `session_id` counts upward from `1` inside each experiment. `room_id` is the client-facing room alias. `dialogue_id` is the random human-readable dialogue identifier used consistently in administration and repeated exports.
 
+`status` follows `waiting → running → completed | abandoned | expired`. The transition to `running` sets `started_at`; every terminal state sets `completed_at`.
+
 ### `session_participants`
 
 One row per participant appearance in a session.

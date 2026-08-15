@@ -6,7 +6,7 @@
   <title>Parlando Experimenter Dashboard</title>
   <style>
     /* Dashboard information architecture: game navigation, experiment catalogue, and session workspace. */
-    :root { --line: #d9dee3; --strong-line: #c6ccd2; --surface: #f4f5f6; --selected: #e5f2fb; --accent: #1687c9; --text: #20262c; --subtle: #68737d; --draft: #e9972d; --active: #35b76f; --completed: #3998e8; --archived: #a9afb5; --danger: #cf4c48; --catalogue-width: 290px; --session-width: 300px; background: #fff; color: var(--text); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; line-height: 1.35; }
+    :root { --line: #d9dee3; --strong-line: #c6ccd2; --surface: #f4f5f6; --selected: #e5f2fb; --accent: #1687c9; --text: #20262c; --subtle: #68737d; --draft: #e9972d; --testing: #7b61c9; --active: #35b76f; --completed: #3998e8; --archived: #a9afb5; --danger: #cf4c48; --catalogue-width: 290px; --session-width: 300px; background: #fff; color: var(--text); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; line-height: 1.35; }
     * { box-sizing: border-box; }
     body { background: #fff; color: var(--text); display: flex; flex-direction: column; margin: 0; min-height: 100vh; }
     .icon-sprite { height: 0; overflow: hidden; position: absolute; width: 0; }
@@ -71,11 +71,11 @@
     .new-experiment { margin-top: auto; width: 100%; }
     .status-dot { background: var(--archived); border-radius: 50%; display: inline-block; flex: 0 0 auto; height: 7px; width: 7px; }
     .status-dot.inactive, .status-dot.waiting, .status-dot.delayed { background: var(--draft); }
-    .status-dot.active, .status-dot.playing, .status-dot.live, .status-dot.running { background: var(--active); }
+    .status-dot.testing { background: var(--testing); }
+    .status-dot.active, .status-dot.running, .status-dot.live, .status-dot.research { background: var(--active); }
     .status-dot.completed { background: var(--completed); }
-    .status-dot.archived { background: var(--archived); }
-    .status-dot.not-running { background: transparent; border: 1px solid var(--archived); }
-    .status-dot.disconnected, .status-dot.stale, .status-dot.expired { background: var(--danger); }
+    .status-dot.archived, .status-dot.unavailable { background: var(--archived); }
+    .status-dot.disconnected, .status-dot.stale, .status-dot.expired, .status-dot.abandoned { background: var(--danger); }
     .status-dot.server { background: #7057a3; }
     .column-resizer { align-items: stretch; align-self: stretch; background: transparent; border: 0; cursor: col-resize; display: flex; justify-content: center; padding: 0; touch-action: none; }
     .column-resizer span { background: var(--strong-line); height: 100%; width: 1px; }
@@ -102,12 +102,13 @@
     .session-detail { min-width: 0; padding-left: 24px; }
     .session-summary { background: #fff; border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 18px; padding: 18px; }
     .session-summary h2 { margin: 0; }
-    .session-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; }
+    .session-facts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; }
     .session-facts > div { border-left: 1px solid var(--line); display: grid; gap: 5px; padding: 0 18px; }
     .session-facts > div:first-child { border-left: 0; padding-left: 0; }
     .session-facts dt { color: var(--subtle); font-size: 12px; }
     .session-facts dd { margin: 0; }
     .status-chip { align-items: center; background: #f2f4f6; border-radius: 999px; display: inline-flex; gap: 6px; padding: 4px 9px; white-space: nowrap; }
+    .purpose-marker { align-items: center; color: #654caf; display: inline-flex; gap: 5px; font-weight: 600; }
     .participant-assignments { border-top: 1px solid var(--line); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding-top: 14px; }
     .participant-assignment { align-items: center; display: grid; gap: 10px; grid-template-columns: auto auto minmax(0, 1fr) auto; min-width: 0; }
     .participant-assignment + .participant-assignment { border-left: 1px solid var(--line); padding-left: 18px; }
@@ -132,13 +133,61 @@
     .section-intro h2 { margin: 0; }
     .export-controls { align-items: end; display: grid; gap: 16px; grid-template-columns: repeat(3, minmax(0, 1fr)); padding-top: 24px; }
     .export-controls label, .settings-form label { display: grid; gap: 6px; }
-    .config-form { display: grid; gap: 0; padding-top: 22px; }
-    .config-group { border: 0; border-radius: 0; border-top: 1px solid var(--line); display: grid; gap: 14px; padding: 22px 0; }
-    .config-group legend { padding: 0; }
-    .config-field { display: grid; gap: 6px; }
-    .config-field > span { color: var(--subtle); font-size: 12px; font-weight: 700; }
+    .config-form { display: grid; gap: 0; padding-top: 10px; }
+    .config-group { border: 0; border-radius: 0; border-top: 1px solid var(--line); display: grid; gap: 36px; grid-template-columns: minmax(180px, .65fr) minmax(360px, 1.35fr); padding: 26px 0; }
+    .config-group-copy { display: grid; gap: 5px; align-content: start; }
+    .config-group-copy h3 { font-size: 16px; margin: 0; }
+    .config-fields { display: grid; gap: 16px; }
+    .config-field { display: grid; gap: 6px; min-width: 0; }
+    .config-field > span:first-child { font-size: 13px; font-weight: 700; }
+    .config-boolean { align-content: start; }
+    .checkbox-line { align-items: center; display: inline-flex; gap: 8px; justify-self: start; }
+    .checkbox-line > span { font-size: 13px; font-weight: 700; }
+    .config-help { color: var(--subtle); font-size: 12px; font-weight: 400; }
     .config-field input[type="checkbox"] { height: 18px; justify-self: start; width: 18px; }
     .config-field textarea { min-height: 90px; }
+    .config-field-row { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .agent-editor { gap: 20px; }
+    .agent-settings { display: grid; gap: 18px; }
+    .agent-settings[hidden] { display: none; }
+    .agent-specific-fields { display: grid; gap: 16px; }
+    .agent-specific-fields:empty { display: none; }
+    .agent-settings input, .agent-settings select { min-width: 0; width: 100%; }
+    .consent-editor { display: grid; gap: 12px; }
+    .consent-items { display: grid; }
+    .consent-item { border-top: 1px solid var(--line); display: grid; gap: 12px; padding: 16px 0; }
+    .consent-item:last-child { border-bottom: 1px solid var(--line); }
+    .consent-item-header { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
+    .consent-item-header strong { font-size: 13px; }
+    .consent-item-fields { align-items: start; display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .consent-body { display: grid; gap: 6px; }
+    .consent-body > span, .consent-item-fields label > span { font-size: 12px; font-weight: 700; }
+    .consent-item-fields label { align-content: start; display: grid; gap: 6px; }
+    .consent-item-fields input { height: 38px; min-width: 0; width: 100%; }
+    .consent-body textarea { min-width: 0; width: 100%; }
+    .consent-required { align-items: center; display: inline-flex; gap: 8px; justify-self: start; }
+    .consent-required input { height: 18px; width: 18px; }
+    .consent-actions { align-items: end; display: grid; gap: 8px; grid-template-columns: minmax(220px, 1fr) auto auto; }
+    .consent-template-field { display: grid; gap: 6px; min-width: 0; }
+    .consent-template-field > span { font-size: 12px; font-weight: 700; }
+    .consent-empty { border-block: 1px solid var(--line); padding: 16px 0; }
+    .secret-control { align-items: center; display: grid; gap: 7px; grid-template-columns: minmax(0, 1fr) auto auto; }
+    .secret-control input { min-width: 0; width: 100%; }
+    .secret-state { color: var(--subtle); font-size: 12px; }
+    .secret-missing input { border-color: #d7a34b; }
+    .secret-configured .secret-state { color: #257748; font-weight: 600; }
+    .game-yaml { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-height: 260px !important; tab-size: 2; }
+    .validation-row { align-items: center; display: flex; gap: 10px; }
+    .validation-result.valid { color: #23824d; }
+    .validation-result.invalid { color: var(--danger); }
+    .activation-warning { background: #fff8e8; border-left: 3px solid var(--draft); color: #694500; display: grid; gap: 6px; margin: 10px 0 18px; padding: 11px 13px; }
+    .activation-warning[hidden] { display: none; }
+    .activation-warning strong { color: var(--text); }
+    .activation-blocker { color: #9a6300; font-weight: 700; }
+    .game-secret-list { display: grid; gap: 10px; }
+    .game-secret-row { align-items: center; display: grid; gap: 8px; grid-template-columns: minmax(120px, .7fr) minmax(180px, 1.3fr) auto auto; }
+    .game-secret-key { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+    .add-secret-row { align-items: end; display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) auto; }
     .configuration-save { border-top: 1px solid var(--line); display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) auto; padding-top: 20px; }
     .revision-section { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 20px; }
     .revision-section h2 { margin: 0 0 12px; }
@@ -193,6 +242,11 @@
     .settings-section + .settings-section { border-top: 1px solid var(--line); }
     .settings-form { display: grid; gap: 16px; }
     .settings-form .primary { justify-self: start; }
+    #gameProviderSecrets { display: grid; gap: 20px; }
+    .settings-save-row { align-items: center; display: flex; gap: 12px; }
+    .save-confirmation { color: #257748; font-size: 12px; font-weight: 700; opacity: 1; transition: opacity 180ms ease; }
+    .save-confirmation[hidden] { display: none; }
+    .save-confirmation.fading { opacity: 0; }
     .build-facts, .privacy-facts { display: grid; gap: 0; margin: 0; }
     .build-facts > div, .privacy-facts > div { align-items: center; border-top: 1px solid var(--line); display: flex; gap: 20px; justify-content: space-between; padding: 11px 0; }
     .build-facts > div:last-child, .privacy-facts > div:last-child { border-bottom: 1px solid var(--line); }
@@ -253,7 +307,11 @@
       .session-facts > div { border-left: 0; border-top: 1px solid var(--line); padding: 10px 0 0; }
       .participant-assignment + .participant-assignment { border-left: 0; border-top: 1px solid var(--line); margin-top: 12px; padding: 12px 0 0; }
       .settings-section { gap: 16px; }
-      .configuration-save { grid-template-columns: 1fr; }
+      .configuration-save, .config-group, .config-field-row, .consent-item-fields { grid-template-columns: 1fr; }
+      .consent-actions { align-items: stretch; grid-template-columns: 1fr; }
+      .consent-actions button { justify-self: start; }
+      .game-secret-row { grid-template-columns: 1fr auto auto; }
+      .game-secret-row .game-secret-key { grid-column: 1 / -1; }
       .event-line { grid-template-columns: 34px minmax(0, 1fr); }
       .role-badge { grid-column: 1; min-width: 28px; padding: 0; width: 28px; }
       .event-main, .event-text, .event-meta { grid-column: 2; }
@@ -276,6 +334,7 @@
     <symbol id="icon-archive" viewBox="0 0 24 24"><path d="M4 7h16v13H4zM3 4h18v3H3zM9 11h6"/></symbol>
     <symbol id="icon-restore" viewBox="0 0 24 24"><path d="M4 7h16v13H4zM3 4h18v3H3zM8 13a4 4 0 1 0 1.2-2.8L7 12"/><path d="M7 9v3h3"/></symbol>
     <symbol id="icon-power" viewBox="0 0 24 24"><path d="M12 2v10M6.3 5.8a9 9 0 1 0 11.4 0"/></symbol>
+    <symbol id="icon-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
     <symbol id="icon-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 20h16"/></symbol>
     <symbol id="icon-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 21c.8-4.6 3.3-7 7.5-7s6.7 2.4 7.5 7"/></symbol>
     <symbol id="icon-bot" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 7V4M9 4h6M9 16h6"/><circle cx="9" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1" fill="currentColor" stroke="none"/></symbol>
@@ -297,7 +356,6 @@
       <button class="scope-link active" type="button" data-scope="experiments"><svg class="icon" aria-hidden="true"><use href="#icon-flask"></use></svg>Experiments</button>
       <button class="scope-link" type="button" data-scope="operations"><svg class="icon" aria-hidden="true"><use href="#icon-activity"></use></svg>Operations</button>
       <button class="scope-link" type="button" data-scope="game"><svg class="icon" aria-hidden="true"><use href="#icon-settings"></use></svg>Game settings</button>
-      <button class="scope-link" type="button" data-scope="privacy"><svg class="icon" aria-hidden="true"><use href="#icon-shield"></use></svg>Privacy</button>
     </nav>
   </header>
 
@@ -312,7 +370,9 @@
             <div class="status-filter-menu" role="listbox" aria-label="Experiment status" hidden>
               <button class="status-filter-option" type="button" role="option" data-value="" aria-selected="true">All</button>
               <button class="status-filter-option" type="button" role="option" data-value="inactive" aria-selected="false"><span class="status-dot inactive" aria-hidden="true"></span>Inactive</button>
+              <button class="status-filter-option" type="button" role="option" data-value="testing" aria-selected="false"><span class="status-dot testing" aria-hidden="true"></span>Testing</button>
               <button class="status-filter-option" type="button" role="option" data-value="active" aria-selected="false"><span class="status-dot active" aria-hidden="true"></span>Active</button>
+              <button class="status-filter-option" type="button" role="option" data-value="completed" aria-selected="false"><span class="status-dot completed" aria-hidden="true"></span>Completed</button>
               <button class="status-filter-option" type="button" role="option" data-value="archived" aria-selected="false"><span class="status-dot archived" aria-hidden="true"></span>Archived</button>
             </div>
           </div>
@@ -332,6 +392,7 @@
           <button class="tab active" type="button" data-tab="sessions">Sessions</button>
           <button class="tab" type="button" data-tab="export">Export</button>
           <button class="tab" type="button" data-tab="details">Configuration</button>
+          <button class="tab" type="button" data-tab="privacy"><svg class="icon" aria-hidden="true"><use href="#icon-shield"></use></svg>Privacy</button>
         </nav>
 
         <section id="sessionsPanel" class="tab-panel session-workspace">
@@ -344,8 +405,9 @@
                 <div class="status-filter-menu" role="listbox" aria-label="Session status" hidden>
                   <button class="status-filter-option" type="button" role="option" data-value="" aria-selected="true">All</button>
                   <button class="status-filter-option" type="button" role="option" data-value="waiting" aria-selected="false"><span class="status-dot waiting" aria-hidden="true"></span>Waiting</button>
-                  <button class="status-filter-option" type="button" role="option" data-value="playing" aria-selected="false"><span class="status-dot playing" aria-hidden="true"></span>Playing</button>
+                  <button class="status-filter-option" type="button" role="option" data-value="running" aria-selected="false"><span class="status-dot running" aria-hidden="true"></span>Running</button>
                   <button class="status-filter-option" type="button" role="option" data-value="completed" aria-selected="false"><span class="status-dot completed" aria-hidden="true"></span>Completed</button>
+                  <button class="status-filter-option" type="button" role="option" data-value="abandoned" aria-selected="false"><span class="status-dot abandoned" aria-hidden="true"></span>Abandoned</button>
                   <button class="status-filter-option" type="button" role="option" data-value="expired" aria-selected="false"><span class="status-dot expired" aria-hidden="true"></span>Expired</button>
                 </div>
               </div>
@@ -385,6 +447,11 @@
           <div class="configuration-save"><input id="changeSummary" placeholder="Optional change summary"><button class="primary" id="saveConfiguration" type="button">Save new revision</button></div>
           <section class="revision-section"><h2>Revision history</h2><div id="revisionHistory" class="revision-list"></div></section>
         </section>
+
+        <section id="privacyPanel" class="tab-panel simple-panel" hidden>
+          <header class="section-intro"><h2>Privacy</h2><p class="muted">Storage, external services, consent evidence, and administrative controls for this experiment.</p><span class="page-actions"><a id="privacyMarkdown" class="secondary" download>Markdown</a><a id="privacyJson" class="primary" download>JSON</a></span></header>
+          <div id="privacyContent"><div class="empty">Loading privacy status…</div></div>
+        </section>
       </section>
     </section>
 
@@ -403,18 +470,15 @@
     <section id="gamePanel" class="scope-screen page-scope" data-scope-panel="game" hidden>
       <header class="page-header"><span><h1>Game settings</h1><p class="muted">Settings and build identity shared by every experiment in this process.</p></span></header>
       <div class="settings-content">
-        <section class="settings-section" id="gameSettingsPanel"><header class="section-intro"><h2>Shared settings</h2><p class="muted">These values belong to the game process, not to an individual experiment.</p></header><div class="settings-form"><label>Institution<input id="institutionInput" placeholder="Optional institution"></label><label>Administrator IP ranges<textarea id="adminAllowedIpRangesInput" rows="4" placeholder="One CIDR range per line; empty allows every direct peer"></textarea></label><p class="muted small">This list uses the direct network peer. If a reverse proxy hides it, enforce the equivalent range at that trusted proxy.</p><button class="primary" id="saveGameSettings" type="button">Save game settings</button></div></section>
+        <section class="settings-section" id="gameSettingsPanel"><header class="section-intro"><h2>Shared settings</h2><p class="muted">These values belong to the game process, not to an individual experiment.</p></header><div class="settings-form"><label>Institution<input id="institutionInput" placeholder="Optional institution"></label><label>Administrator IP ranges<textarea id="adminAllowedIpRangesInput" rows="4" placeholder="One CIDR range per line; empty allows every direct peer"></textarea></label><p class="muted small">This list uses the direct network peer. If a reverse proxy hides it, enforce the equivalent range at that trusted proxy.</p></div></section>
+        <section class="settings-section"><header class="section-intro"><h2>Voice services</h2><p class="muted">Connections and credentials shared by every experiment. Language, recognition behavior, and voices remain experiment settings.</p></header><div class="settings-form"><label>Speechmatics realtime URL<input id="speechmaticsRealtimeUrlInput" type="url" placeholder="wss://eu.rt.speechmatics.com/v2"><span class="config-help">Regional or private WebSocket endpoint used for live recognition.</span></label><div id="gameProviderSecrets"></div><p class="muted small">Changes apply when an experiment runtime is next constructed; restart the server to replace a runtime that is already loaded.</p><div class="settings-save-row"><button class="primary" id="saveGameSettings" type="button">Save game settings</button><span class="save-confirmation" id="gameSettingsSaved" role="status" hidden>Settings saved</span></div></div></section>
         <section class="settings-section"><header class="section-intro"><h2>Build information</h2><p class="muted">The compiled game and Parlando versions used by all experiments.</p></header><div id="reproducibility"><div class="empty">Loading build information…</div></div></section>
       </div>
     </section>
 
-    <section id="privacyPanel" class="scope-screen page-scope" data-scope-panel="privacy" hidden>
-      <header class="page-header"><span><h1>Privacy</h1><p class="muted">Installation-wide storage, service, export, and participant-administration facts.</p></span><span class="page-actions"><a class="secondary" download href="/api/admin/privacy.md">Markdown</a><a class="primary" download href="/api/admin/privacy.json">JSON</a></span></header>
-      <div id="privacyContent" class="settings-content"><div class="empty">Loading privacy status…</div></div>
-    </section>
   </main>
   <script>
-    const state = { experiment: null, experiments: [], game: null, gameSettings: null, storageCapacity: null, runtimeCapacity: null, runningExperimentId: null, load: null, privacy: null, sessions: [], selected: null, selectedSession: null, selectedParticipants: [], events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, csrfToken: null, activeScope: 'experiments', activeTab: 'sessions', loadedConfigKey: null };
+    const state = { experiment: null, experiments: [], game: null, gameSettings: null, load: null, privacy: null, activationIssues: [], sessions: [], selected: null, selectedSession: null, selectedParticipants: [], events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, csrfToken: null, activeScope: 'experiments', activeTab: 'sessions', loadedConfigKey: null, configValue: null, configuredSecrets: [], gameSecretKeys: [], secretDeletions: new Set(), agentFactories: [], gameProviderSecrets: [], gameProviderSecretDeletions: new Set(), gameProviderSecretUpdates: new Map(), gameSettingsConfirmationTimer: null };
     const experimentList = document.getElementById('experimentList');
     const menuButton = document.getElementById('menuButton');
     const experimentHeader = document.getElementById('experimentHeader');
@@ -452,7 +516,8 @@
     const tabPanels = {
       sessions: document.getElementById('sessionsPanel'),
       export: document.getElementById('exportPanel'),
-      details: document.getElementById('detailsPanel')
+      details: document.getElementById('detailsPanel'),
+      privacy: document.getElementById('privacyPanel')
     };
 
     // Formats one stored or runtime timestamp for the administrator's locale.
@@ -547,14 +612,9 @@
       });
     }
 
-    // Returns the truthful catalogue status exposed by the current server model.
+    // Returns the lifecycle status exposed directly by the server model.
     function experimentDisplayStatus(experiment) {
-      return experiment.obsolete ? 'archived' : experiment.status;
-    }
-
-    // Returns whether this experiment owns the runtime hosted by the current process.
-    function experimentRuntimeState(experiment) {
-      return experiment.experiment_id === state.runningExperimentId ? 'running' : 'not-running';
+      return experiment.status;
     }
 
     // Converts a machine status into a compact human-readable label.
@@ -583,12 +643,12 @@
 
     // Returns the runtime-only liveness row corresponding to one durable session.
     function sessionLiveness(sessionId) {
-      return (state.load?.sessions || []).find(row => row.session_id === sessionId) || null;
+      return (state.load?.sessions || []).find(row => row.experiment_id === state.experiment?.experiment_id && row.session_id === sessionId) || null;
     }
 
     // Renders a consistent status marker for session and participant health.
     function livenessBadge(health, detail = '') {
-      const normalized = ['live', 'delayed', 'stale', 'disconnected', 'waiting', 'completed', 'server'].includes(health) ? health : 'disconnected';
+      const normalized = ['live', 'delayed', 'stale', 'disconnected', 'waiting', 'completed', 'server', 'unavailable'].includes(health) ? health : 'unavailable';
       const title = detail ? ` title="${escapeHtml(detail)}"` : '';
       return `<span class="status-chip"${title}>${statusLabel(normalized)}</span>`;
     }
@@ -680,7 +740,7 @@
       const load = state.load;
       const current = load?.current;
       if (!current) return;
-      document.getElementById('operationsScopeNote').textContent = `Detailed telemetry is currently scoped to ${state.experiment?.experiment_id || 'the selected experiment'}; the server does not yet expose aggregate game-process history.`;
+      document.getElementById('operationsScopeNote').textContent = 'Telemetry aggregates every experiment runtime currently hosted by this game process.';
       const capacity = current.capacity;
       const connections = current.connections;
       const counters = current.counters;
@@ -716,15 +776,15 @@
       renderLivenessTable();
     }
 
-    // Clears runtime-only telemetry when a historical configuration cannot be started.
+    // Clears game-wide telemetry when the process endpoint cannot be read.
     function renderLoadUnavailable() {
-      document.getElementById('operationsScopeNote').textContent = 'The selected experiment has no constructible runtime under this game version, and the server does not yet expose aggregate game-process telemetry.';
-      loadOverview.innerHTML = '<div class="empty">Runtime telemetry is unavailable for this historical experiment configuration. Stored sessions and exports remain available.</div>';
+      document.getElementById('operationsScopeNote').textContent = 'Game-process telemetry is temporarily unavailable.';
+      loadOverview.innerHTML = '<div class="empty">Runtime telemetry could not be loaded.</div>';
       capacityList.innerHTML = '';
       trafficMetrics.innerHTML = '';
       loadChart.innerHTML = '<div class="empty">No runtime samples are available.</div>';
-      livenessTable.innerHTML = '<div class="empty">Historical sessions are not loaded into process memory.</div>';
-      loadUpdated.textContent = 'Historical configuration';
+      livenessTable.innerHTML = '<div class="empty">Runtime liveness is unavailable.</div>';
+      loadUpdated.textContent = 'Unavailable';
     }
 
     // Renders every in-memory session with transport ages and its next cleanup deadline.
@@ -734,28 +794,30 @@
         livenessTable.innerHTML = '<div class="empty">No sessions currently occupy runtime memory.</div>';
         return;
       }
-      livenessTable.innerHTML = `<table class="load-table"><thead><tr><th>Session</th><th>Liveness</th><th>Participants</th><th>Meaningful activity</th><th>Next lifecycle deadline</th></tr></thead><tbody>${sessions.map(session => `
-        <tr class="load-session" data-session="${session.session_id}">
-          <td><strong>#${session.session_id}</strong><div class="muted small">${escapeHtml(session.status)}</div></td>
+      livenessTable.innerHTML = `<table class="load-table"><thead><tr><th>Experiment / session</th><th>Liveness</th><th>Participants</th><th>Meaningful activity</th><th>Next lifecycle deadline</th></tr></thead><tbody>${sessions.map(session => `
+        <tr class="load-session" data-experiment="${escapeHtml(session.experiment_id)}" data-session="${session.session_id}">
+          <td><strong>${escapeHtml(session.experiment_id)} · #${session.session_id}</strong><div class="muted small">${escapeHtml(session.status)}</div></td>
           <td>${livenessBadge(session.health)}</td>
           <td>${session.participants.map(participant => participant.source === 'agent' ? `<div class="participant-liveness">${escapeHtml(participant.role)} ${livenessBadge('server', 'Trusted server-side agent')}</div>` : `<div class="participant-liveness">${escapeHtml(participant.role)} ${livenessBadge(participant.game_health, participant.game ? `Last game message ${formatAge(participant.game.last_message_at_ms)}` : 'No current game socket')}<div class="muted small">game ${participant.game ? formatAge(participant.game.last_message_at_ms) : 'disconnected'} · audio ${participant.audio ? formatAge(participant.audio.last_message_at_ms) : 'disconnected'}</div></div>`).join('')}</td>
           <td>${escapeHtml(formatAge(new Date(session.meaningful_activity_at).getTime()))}</td>
           <td>${session.lifecycle_deadline_at ? `${escapeHtml(fmtTime(session.lifecycle_deadline_at))}<div class="muted small">${escapeHtml(session.deadline_reason)}</div>` : '—'}</td>
         </tr>`).join('')}</tbody></table>`;
       livenessTable.querySelectorAll('[data-session]').forEach(row => {
-        row.addEventListener('click', () => {
+        row.addEventListener('click', async () => {
           state.activeTab = 'sessions';
           renderTabs();
           showScope('experiments');
-          selectSession(Number(row.dataset.session));
+          if (state.experiment?.experiment_id !== row.dataset.experiment) {
+            await selectExperiment(row.dataset.experiment);
+          }
+          await selectSession(Number(row.dataset.session));
         });
       });
     }
 
-    // Fetches operational telemetry for the selected isolated experiment runtime.
+    // Fetches operational telemetry aggregated across the game process.
     async function loadLoad() {
-      if (!state.experiment) return;
-      const response = await fetch(runtimeApi('load'));
+      const response = await fetch('/api/admin/load');
       if (!response.ok) {
         state.load = null;
         renderLoadUnavailable();
@@ -774,7 +836,7 @@
     function renderExperiment() {
       const experiment = state.experiment;
       const requestedStatus = experimentStatusFilter.value;
-      const visibleExperiments = state.experiments.filter(item => !requestedStatus || experimentDisplayStatus(item) === requestedStatus);
+      const visibleExperiments = state.experiments.filter(item => requestedStatus ? experimentDisplayStatus(item) === requestedStatus : experimentDisplayStatus(item) !== 'archived');
       if (!state.experiments.length) {
         experimentList.innerHTML = '<div class="empty">No experiments yet.</div>';
         return;
@@ -810,36 +872,55 @@
         return;
       }
       const status = experimentDisplayStatus(experiment);
-      const runtimeState = experimentRuntimeState(experiment);
       experimentHeader.innerHTML = `
         <h1>${escapeHtml(experiment.experiment_id)}</h1>
         <span class="workspace-facts small">
           ${statusLabel(status)}
-          ${runtimeState === 'running' ? statusLabel('running') : statusLabel('not-running')}
           <span>Configuration revision ${escapeHtml(experiment.config_revision)}</span>
           <span>Created ${escapeHtml(fmtDate(experiment.created_at))}</span>
+          ${state.activationIssues.length ? `<span class="activation-blocker">Cannot start · ${escapeHtml(state.activationIssues.join(' '))}</span>` : ''}
         </span>
       `;
       experimentStats.innerHTML = `
         <a class="secondary" href="/e/${encodeURIComponent(experiment.experiment_id)}/" target="_blank" rel="noopener">${icon('external')}Participant page</a>
         <button class="secondary" id="cloneButton" type="button">${icon('copy')}Clone</button>
-        <button class="secondary" id="obsoleteButton" type="button" ${experiment.status === 'active' && !experiment.obsolete ? 'disabled title="Deactivate intake before archiving this experiment"' : ''}>${icon(experiment.obsolete ? 'restore' : 'archive')}${experiment.obsolete ? 'Restore' : 'Archive'}</button>
-        <button class="${experiment.status === 'active' ? 'secondary' : 'primary'}" id="lifecycleButton" type="button" ${experiment.game_version !== state.game?.version ? 'disabled title="Clone this experiment to use the current game version"' : ''}>
-          ${icon('power')}${experiment.status === 'active' ? 'Deactivate intake' : 'Activate intake'}
-        </button>
+        <button class="secondary" id="archiveButton" type="button" ${['active', 'testing'].includes(experiment.status) ? 'disabled title="Stop intake before archiving this experiment"' : ''}>${icon(experiment.status === 'archived' ? 'restore' : 'archive')}${experiment.status === 'archived' ? 'Restore' : 'Archive'}</button>
+        ${lifecycleActions(experiment)}
       `;
-      document.getElementById('lifecycleButton').addEventListener('click', () => {
-        updateExperimentStatus(experiment.status === 'active' ? 'inactive' : 'active');
+      experimentStats.querySelectorAll('[data-lifecycle]').forEach(button => {
+        button.addEventListener('click', () => updateExperimentStatus(button.dataset.lifecycle));
       });
       document.getElementById('cloneButton').addEventListener('click', cloneSelectedExperiment);
-      document.getElementById('obsoleteButton').addEventListener('click', () => updateCatalogue({ obsolete: !experiment.obsolete }));
+      document.getElementById('archiveButton').addEventListener('click', () => {
+        updateExperimentStatus(experiment.status === 'archived' ? 'inactive' : 'archived');
+      });
+    }
+
+    // Returns state-appropriate intake and completion controls for one experiment.
+    function lifecycleActions(experiment) {
+      const incompatible = experiment.game_version !== state.game?.version;
+      const incomplete = state.activationIssues.length > 0;
+      const disabled = incompatible
+        ? 'disabled title="Clone this experiment to use the current game version"'
+        : incomplete
+          ? `disabled title="${escapeHtml(state.activationIssues.join(' '))}"`
+          : '';
+      if (experiment.status === 'inactive') return `
+        <button class="secondary" data-lifecycle="testing" type="button" ${disabled}>${icon('flask')}Start testing</button>
+        <button class="primary" data-lifecycle="active" type="button" ${disabled}>${icon('power')}Activate intake</button>`;
+      if (experiment.status === 'testing') return `
+        <button class="secondary" data-lifecycle="inactive" type="button">${icon('power')}Stop testing</button>
+        <button class="primary" data-lifecycle="active" type="button">${icon('flask')}Start research</button>`;
+      if (experiment.status === 'active') return `
+        <button class="secondary" data-lifecycle="inactive" type="button">${icon('power')}Pause intake</button>
+        <button class="primary" data-lifecycle="completed" type="button">${icon('check')}Complete</button>`;
+      return '';
     }
 
     // Renders the game and Parlando build identity shared by every experiment.
     function renderExperimentDetails() {
       const experiment = state.experiment;
-      const hostExperiment = state.experiments.find(item => item.experiment_id === state.runningExperimentId) || experiment;
-      const manifest = hostExperiment?.version_manifest || state.versionManifest || {};
+      const manifest = state.versionManifest || {};
       const warnings = manifest.warnings || [];
       const gameManifest = state.game?.build_manifest || manifest.game || {};
       gameName.textContent = state.game?.display_name || displayGameName(gameManifest);
@@ -852,7 +933,7 @@
           <div><dt>GAME VERSION</dt><dd>${escapeHtml(gameManifest.version || state.game?.version || '—')}</dd></div>
           <div><dt>GAME GIT</dt><dd><code>${escapeHtml(shortSha(gameManifest.git_sha))}</code></dd></div>
           <div><dt>GAME BUILD TIME</dt><dd>${escapeHtml(fmtTime(gameManifest.build_time))}</dd></div>
-          <div><dt>PARLANDO SERVER VERSION</dt><dd>${escapeHtml(manifest.server?.version || hostExperiment?.server_version || '—')}</dd></div>
+          <div><dt>PARLANDO SERVER VERSION</dt><dd>${escapeHtml(manifest.server?.version || '—')}</dd></div>
           <div><dt>PARLANDO CLIENT VERSION</dt><dd>${escapeHtml(gameManifest.client?.version || '—')}</dd></div>
           <div><dt>PARLANDO CLIENT PACKAGE</dt><dd>${escapeHtml(gameManifest.client?.package_version || '—')}</dd></div>
         </dl>
@@ -882,7 +963,7 @@
         <button class="session ${state.selected === session.session_id ? 'active' : ''}" data-session="${session.session_id}">
           <span class="session-main">
             <span class="session-name">${statusLabel(session.status, true)}<strong>${escapeHtml(session.dialogue_id || `Session #${session.session_id}`)}</strong></span>
-            <span class="muted small">#${session.session_id} · ${escapeHtml(fmtTime(session.created_at))}</span>
+            <span class="muted small">#${session.session_id} · ${escapeHtml(fmtTime(session.created_at))}${session.purpose === 'testing' ? ` · <span class="purpose-marker"><span class="status-dot testing" aria-hidden="true"></span>Testing</span>` : ''}</span>
           </span>
           <span class="session-count small" title="${session.event_count} events">${icon('list-tree', 'count-icon')}${session.event_count}</span>
         </button>
@@ -918,47 +999,50 @@
       const data = await response.json();
       state.experiments = data.experiments || [];
       state.game = data.game || null;
+      state.versionManifest = data.version_manifest || null;
       state.gameSettings = data.game_settings || null;
-      state.storageCapacity = data.storage_capacity || null;
-      state.runtimeCapacity = data.runtime_capacity || null;
-      state.runningExperimentId = data.running_experiment_id || null;
+      state.gameProviderSecrets = data.game_provider_secrets || [];
       state.csrfToken = data.csrf_token || null;
-      const selectedId = state.experiment?.experiment_id || data.running_experiment_id;
+      const selectedId = state.experiment?.experiment_id || state.experiments.find(item => ['active', 'testing'].includes(item.status))?.experiment_id;
       state.experiment = state.experiments.find(item => item.experiment_id === selectedId) || state.experiments[0] || null;
-      state.versionManifest = state.experiment?.version_manifest || null;
       renderExperiment();
       renderExperimentHeader();
       renderExperimentDetails();
       institutionInput.value = state.gameSettings?.institution || '';
       adminAllowedIpRangesInput.value = (state.gameSettings?.admin_allowed_ip_ranges || []).join('\n');
+      speechmaticsRealtimeUrlInput.value = state.gameSettings?.speechmatics_realtime_url || 'wss://eu.rt.speechmatics.com/v2';
+      renderGameProviderSecrets();
       const configKey = state.experiment ? `${state.experiment.experiment_id}:${state.experiment.config_revision}` : null;
       if (configKey && configKey !== state.loadedConfigKey) await loadConfiguration();
+      updateConfigurationEditability();
     }
 
-    // Changes whether the selected experiment accepts new participant intake.
+    // Changes the selected experiment's durable lifecycle.
     async function updateExperimentStatus(status) {
-      const button = document.getElementById('lifecycleButton');
-      if (button) button.disabled = true;
+      const buttons = [...experimentStats.querySelectorAll('button')];
+      buttons.forEach(button => { button.disabled = true; });
       const response = await fetch(runtimeApi('experiment/status'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
         body: JSON.stringify({ status })
       });
       if (!response.ok) {
-        if (button) button.disabled = false;
+        buttons.forEach(button => { button.disabled = false; });
         window.alert(await response.text());
         return;
       }
       await loadExperiment();
     }
 
-    // Selects one experiment and scopes all subsequent monitoring requests to its runtime.
+    // Selects one experiment and scopes session, export, and configuration requests to it.
     async function selectExperiment(experimentId) {
       state.experiment = state.experiments.find(item => item.experiment_id === experimentId) || null;
       state.selected = null;
       state.selectedSession = null;
       state.selectedParticipants = [];
       state.load = null;
+      state.privacy = null;
+      state.activationIssues = [];
       sessionDetail.hidden = true;
       closeExperimentMenu();
       renderExperiment();
@@ -966,6 +1050,7 @@
       renderExperimentDetails();
       await loadConfiguration();
       await Promise.all([loadSessions(), loadLoad()]);
+      if (state.activeTab === 'privacy') await loadPrivacy();
     }
 
     // Returns an authenticated runtime API path for the selected experiment.
@@ -981,12 +1066,32 @@
       const response = await fetch(`/api/admin/experiments/${id}/config`);
       if (!response.ok) throw new Error(await response.text());
       const data = await response.json();
-      renderConfigurationForm(data.experiment.config);
+      state.agentFactories = data.agent_factories || [];
+      state.configuredSecrets = data.configured_secrets || [];
+      state.activationIssues = data.activation_issues || [];
+      renderExperimentHeader();
+      state.gameSecretKeys = state.configuredSecrets.filter(item => item.key.startsWith('game.')).map(item => item.key);
+      state.secretDeletions = new Set();
+      const authoritativeExperiment = data.experiment;
+      if (state.experiment?.experiment_id === authoritativeExperiment.experiment_id) {
+        Object.assign(state.experiment, authoritativeExperiment);
+        const catalogueExperiment = state.experiments.find(item => item.experiment_id === authoritativeExperiment.experiment_id);
+        if (catalogueExperiment && catalogueExperiment !== state.experiment) Object.assign(catalogueExperiment, authoritativeExperiment);
+        renderExperiment();
+        renderExperimentHeader();
+        renderExperimentDetails();
+      }
+      renderConfigurationForm(data.experiment.config, data.game_yaml || '{}\n');
       configRevision.textContent = `Revision ${data.experiment.config_revision}`;
       state.loadedConfigKey = `${data.experiment.experiment_id}:${data.experiment.config_revision}`;
       await loadRevisionHistory();
-      const readOnly = state.experiment.status === 'active' || state.experiment.game_version !== state.game?.version;
-      configForm.querySelectorAll('input, textarea').forEach(control => { control.disabled = readOnly; });
+      updateConfigurationEditability(authoritativeExperiment);
+    }
+
+    // Reapplies editor availability after lifecycle-only refreshes that do not reload configuration data.
+    function updateConfigurationEditability(experiment = state.experiment) {
+      const readOnly = !experiment || experiment.status !== 'inactive' || experiment.game_version !== state.game?.version;
+      configForm.querySelectorAll('input, textarea, select, button:not([data-reveal-secret])').forEach(control => { control.disabled = readOnly; });
       saveConfiguration.disabled = readOnly;
     }
 
@@ -1005,87 +1110,498 @@
       `).join('') || '<div class="empty">No revisions stored.</div>';
     }
 
-    // Renders every persisted configuration value as a typed browser control.
-    function renderConfigurationForm(config) {
-      configForm.replaceChildren();
-      Object.entries(config).forEach(([key, value]) => {
-        if (value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length) {
-          const group = document.createElement('fieldset');
-          group.className = 'config-group';
-          const legend = document.createElement('legend');
-          legend.textContent = key;
-          group.appendChild(legend);
-          appendConfigurationFields(group, value, [key]);
-          configForm.appendChild(group);
-        } else {
-          appendConfigurationField(configForm, key, value, [key]);
-        }
-      });
-    }
-
-    // Recursively appends leaf controls while retaining their exact object paths.
-    function appendConfigurationFields(parent, object, path) {
-      Object.entries(object).forEach(([key, value]) => {
-        const fieldPath = [...path, key];
-        if (value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length) {
-          const group = document.createElement('fieldset');
-          group.className = 'config-group';
-          const legend = document.createElement('legend');
-          legend.textContent = key;
-          group.appendChild(legend);
-          appendConfigurationFields(group, value, fieldPath);
-          parent.appendChild(group);
-        } else {
-          appendConfigurationField(parent, key, value, fieldPath);
-        }
-      });
-    }
-
-    // Creates one boolean, number, string, or structured JSON configuration control.
-    function appendConfigurationField(parent, labelText, value, path) {
-      const label = document.createElement('label');
-      label.className = 'config-field';
-      const caption = document.createElement('span');
-      caption.textContent = labelText;
-      const structured = value === null || typeof value === 'object';
-      const control = structured ? document.createElement('textarea') : document.createElement('input');
-      control.dataset.configPath = JSON.stringify(path);
-      if (structured) {
-        control.dataset.configType = 'json';
-        control.value = JSON.stringify(value, null, 2);
-      } else if (typeof value === 'boolean') {
-        control.type = 'checkbox';
-        control.dataset.configType = 'boolean';
-        control.checked = value;
-      } else if (typeof value === 'number') {
-        control.type = 'number';
-        control.step = 'any';
-        control.dataset.configType = 'number';
-        control.value = String(value);
-      } else {
-        control.type = 'text';
-        control.dataset.configType = 'string';
-        control.value = String(value);
+    const CONSENT_TEMPLATES = {
+      eligibility: {
+        id: 'eligibility_and_information_v1_0',
+        title: 'Eligibility and study information',
+        required: true,
+        body: ({ informationVersion }) => `I confirm that I am at least 18 years old. I have read and understood the Participant Information and Privacy Notice${informationVersion ? `, version ${informationVersion},` : ''} linked above, and I have had the opportunity to ask questions.`
+      },
+      researchData: {
+        id: 'research_data_consent_v1_0',
+        title: 'Voluntary participation and research data',
+        required: true,
+        body: ({ institution }) => `I voluntarily agree to participate and consent to ${institution || 'the institution responsible for this study'} processing the study-specific identifiers, game actions, timing, results, and the messages or final transcripts enabled for this study. I understand that these data will be used for this study, scientific verification and reuse, and the preparation and publication of anonymized research corpora as described in the Participant Information and Privacy Notice. I understand how to withdraw my consent while my data can still be linked to my study-specific participant identifier.`
+      },
+      privacyRules: {
+        id: 'participant_privacy_rules_v1_0',
+        title: 'Communication and privacy rules',
+        required: true,
+        body: "I will discuss only the fictional task. I will not disclose contact details, credentials, or sensitive real-world information, and I will not record, identify, copy, or redistribute another participant's communications."
+      },
+      voice: {
+        id: 'voice_and_transcription_v1_0',
+        title: 'Live voice and transcription',
+        required: true,
+        body: () => 'I consent to my live microphone audio being transmitted to the other participant and, when transcription is enabled, to Speechmatics for real-time transcription in the processing region described in the Participant Information and Privacy Notice. I consent to storage of the final transcript and timing when enabled for this study. I understand that Parlando does not store raw microphone audio.'
       }
-      label.append(caption, control);
-      parent.appendChild(label);
+    };
+
+    const CONSENT_TEMPLATE_CHOICES = [
+      ['eligibility', 'Eligibility and study information'],
+      ['researchData', 'Voluntary participation and research data'],
+      ['privacyRules', 'Communication and privacy rules'],
+      ['voice', 'Live voice and transcription']
+    ];
+
+    const PARLANDO_CONFIG_SECTIONS = [
+      { title: 'Study', description: 'Participant-facing identity and session lifecycle limits.', fields: [
+        { path: 'study.name', label: 'Study name', help: 'Shown to participants; the administrator catalogue uses the experiment id.' },
+        { path: 'study.waiting_room_timeout_seconds', label: 'Waiting-room timeout (seconds)', help: 'Time before an unmatched room expires.', type: 'number', min: 1 },
+        { path: 'study.reconnect_grace_seconds', label: 'Reconnect grace (seconds)', help: 'Time a disconnected participant may return.', type: 'number', min: 0 },
+        { path: 'study.session_idle_timeout_seconds', label: 'Session idle timeout (seconds)', help: 'Time without meaningful activity before expiry.', type: 'number', min: 1 },
+        { path: 'study.session_max_lifetime_seconds', label: 'Maximum session lifetime (seconds)', help: 'Absolute lifetime, including waiting.', type: 'number', min: 1 }
+      ]},
+      { title: 'Participant access and consent', description: 'Controls direct participant entry and the exact information presented before play.', fields: [
+        { path: 'direct.enabled', label: 'Enable direct participant access', help: 'Allow participants to enter this experiment from its public participant page.', type: 'boolean' },
+        { path: 'direct.participant_information_version', label: 'Participant-information version', help: 'Version identifier recorded with the information shown to participants.' },
+        { path: 'direct.participant_information_url', label: 'Participant-information URL', help: 'Public document describing the study and its data handling.', type: 'url' },
+        { path: 'direct.consents', label: 'Consent items', help: 'Statements presented before participation. Accepted items are recorded with their exact presentation hash.', type: 'consents' }
+      ]},
+      { title: 'Voice transport', description: 'Live browser audio carried through Parlando. This is independent of speech recognition.', fields: [
+        { path: 'voice.enabled', label: 'Enable voice transport', help: 'Allow participants to send and receive live audio. Parlando relays audio but does not store the raw recording.', type: 'boolean' },
+        { path: 'voice.jitter_buffer_ms', label: 'Playback jitter buffer (ms)', help: 'Audio buffered before playback.', type: 'number', min: 20, max: 5000 },
+      ]},
+      { title: 'Speech recognition', description: 'Optional Speechmatics conversion of participant speech into text.', fields: [
+        { path: 'transcription.enabled', label: 'Enable speech recognition', help: 'Send live participant audio to Speechmatics and make recognized text available to the game and agents.', type: 'boolean' },
+        { path: 'transcription.model', label: 'Recognition model', help: 'Enhanced favors recognition quality; Standard is the lighter operating point.', type: 'select', options: [['enhanced', 'Enhanced'], ['standard', 'Standard']] },
+        { path: 'transcription.language', label: 'Spoken language', help: 'Speechmatics language code for the expected participant speech, for example en or de.' },
+        { path: 'speechmatics.max_delay', label: 'Maximum transcript delay (seconds)', help: 'Maximum recognition delay; larger values may improve accuracy at the cost of responsiveness.', type: 'decimal', min: 0.1 },
+        { path: 'speechmatics.enable_partials', label: 'Show partial transcripts', help: 'Deliver provisional text while the participant is still speaking.', type: 'boolean' },
+        { path: 'speechmatics.end_of_utterance_silence_trigger', label: 'End-of-utterance silence (seconds)', help: 'Silence used to close an utterance.', type: 'decimal', min: 0.1 }
+      ]},
+      { title: 'Text to speech', description: 'Optional ElevenLabs speech synthesis for agent messages.', fields: [
+        { path: 'tts.enabled', label: 'Enable text to speech', help: 'Synthesize agent messages with ElevenLabs and publish the audio through voice transport.', type: 'boolean' },
+        { path: 'tts.model', label: 'Synthesis model', help: 'Choose the ElevenLabs balance of latency, language coverage, and expressiveness.', type: 'select', options: [['eleven_flash_v2_5', 'Flash v2.5'], ['eleven_flash_v2', 'Flash v2'], ['eleven_multilingual_v2', 'Multilingual v2'], ['eleven_v3', 'Eleven v3']] },
+        { path: 'tts.voice_id', label: 'ElevenLabs voice id', help: 'Stable ElevenLabs identifier of the voice used for agent speech.' },
+        { path: 'tts.voice_name', label: 'Voice display name', help: 'Human-readable voice label exposed to the participant client.' }
+      ]},
+      { title: 'Players and agents', description: 'Select human pairing or one server-side agent and configure its runtime limits.', fields: [
+        { path: 'agents', label: 'Participants', help: 'Pair two people, or pair one person with an agent compiled into this game server.', type: 'agents' }
+      ]},
+      { title: 'Capacity', description: 'Admission limits and the disk reserve protecting durable storage.', fields: [
+        { path: 'capacity.max_active_sessions', label: 'Maximum active sessions', help: 'Maximum sessions that have paired participants or otherwise occupy active runtime capacity.', type: 'number', min: 1 },
+        { path: 'capacity.max_waiting_sessions', label: 'Maximum waiting rooms', help: 'Maximum unmatched participant sessions waiting for a compatible partner.', type: 'number', min: 1 },
+        { path: 'capacity.max_unattached_participants', label: 'Maximum unattached participants', help: 'Maximum issued participant identities that have not yet joined a session.', type: 'number', min: 1 },
+        { path: 'capacity.max_transcription_streams', label: 'Maximum recognition streams', help: 'Maximum simultaneous participant audio streams sent to speech recognition.', type: 'number', min: 1 },
+        { path: 'capacity.storage_reserve_megabytes', label: 'Disk reserve (MB)', help: 'Pause new session admission when available disk space falls below this reserve.', type: 'number', min: 1 }
+      ]},
+      { title: 'Research data', description: 'Choose which optional content enters durable research storage.', fields: [
+        { path: 'privacy.store_full_game_state', label: 'Store full game-state snapshots', help: 'Persist the complete game state alongside accepted events for detailed reconstruction and analysis.', type: 'boolean' },
+        { path: 'privacy.store_typed_messages', label: 'Store typed participant messages', help: 'Persist text that participants type into the conversation interface.', type: 'boolean' },
+        { path: 'privacy.store_final_transcripts', label: 'Store final speech transcripts', help: 'Persist finalized recognized speech as text. Parlando never stores raw microphone audio.', type: 'boolean' },
+        { path: 'privacy.store_voice_diagnostics', label: 'Store voice diagnostics', help: 'Persist minimized scalar transport and recognition diagnostics for troubleshooting, without audio content.', type: 'boolean' }
+      ]}
+    ];
+
+    // Returns one nested configuration value without evaluating a user-controlled expression.
+    function configAt(config, path) {
+      return path.split('.').reduce((value, key) => value == null ? undefined : value[key], config);
     }
 
-    // Reconstructs normalized configuration JSON from the generated controls.
+    // Writes one nested configuration value while preserving unedited server-owned defaults.
+    function setConfigAt(config, path, value) {
+      const segments = path.split('.');
+      let target = config;
+      segments.slice(0, -1).forEach(segment => { target = target[segment] ||= {}; });
+      target[segments.at(-1)] = value;
+    }
+
+    // Renders the curated Parlando editor, game YAML, and write-only secret controls.
+    function renderConfigurationForm(config, gameYaml = '{}\n') {
+      state.configValue = structuredClone(config);
+      const activationWarning = `<div id="activationWarning" class="activation-warning" role="alert" ${state.activationIssues.length ? '' : 'hidden'}><strong>This experiment cannot be started yet.</strong><span id="activationWarningItems">${state.activationIssues.map(issue => escapeHtml(issue)).join(' ')}</span></div>`;
+      const sections = PARLANDO_CONFIG_SECTIONS.map(section => `
+        <section class="config-group">
+          <header class="config-group-copy"><h3>${escapeHtml(section.title)}</h3><p class="muted small">${escapeHtml(section.description)}</p></header>
+          <div class="config-fields">${section.fields.map(field => renderConfigField(field, config)).join('')}</div>
+        </section>`).join('');
+      configForm.innerHTML = `${activationWarning}${sections}
+        <section class="config-group">
+          <header class="config-group-copy"><h3>Game configuration</h3><p class="muted small">Game-owned options. YAML is parsed and validated by the compiled game before it can be saved.</p></header>
+          <div class="config-fields">
+            <label class="config-field"><span>Game options</span><textarea id="gameYaml" class="game-yaml" spellcheck="false">${escapeHtml(gameYaml)}</textarea></label>
+            <div class="validation-row"><button class="secondary" id="validateGameYaml" type="button">${icon('check')}Validate YAML</button><span id="gameYamlValidation" class="validation-result small"></span></div>
+          </div>
+        </section>
+        <section class="config-group">
+          <header class="config-group-copy"><h3>Game secrets</h3><p class="muted small">Named credentials available to game startup code. Values are omitted from revisions and exports.</p></header>
+          <div class="config-fields"><div id="gameSecretList" class="game-secret-list"></div><div class="add-secret-row"><label class="config-field"><span>New secret name</span><input id="newGameSecretName" placeholder="service_api_key"></label><button class="secondary" id="addGameSecret" type="button">${icon('plus')}Add secret</button></div></div>
+        </section>`;
+      document.getElementById('validateGameYaml').addEventListener('click', validateGameYaml);
+      document.getElementById('addGameSecret').addEventListener('click', addGameSecret);
+      configForm.querySelectorAll('[data-reveal-secret]').forEach(button => button.addEventListener('click', () => revealSecret(button.dataset.revealSecret, button)));
+      configForm.querySelectorAll('[data-delete-secret]').forEach(button => button.addEventListener('click', () => removeSecret(button.dataset.deleteSecret)));
+      configForm.querySelectorAll('[data-secret-placeholder="true"]').forEach(installSecretReplacementInput);
+      configForm.querySelectorAll('[data-consent-editor]').forEach(initializeConsentEditor);
+      configForm.querySelectorAll('[data-agent-editor]').forEach(initializeAgentEditor);
+      configForm.querySelectorAll('[data-config-path], [data-secret-update]').forEach(control => {
+        control.addEventListener('input', refreshDraftActivationWarning);
+        control.addEventListener('change', refreshDraftActivationWarning);
+      });
+      renderGameSecrets();
+      refreshDraftActivationWarning();
+    }
+
+    // Renders one curated typed Parlando setting.
+    function renderConfigField(field, config) {
+      const value = configAt(config, field.path);
+      const help = field.help ? `<span class="config-help">${escapeHtml(field.help)}</span>` : '';
+      let control;
+      if (field.type === 'consents') return renderConsentEditor(field, Array.isArray(value) ? value : []);
+      if (field.type === 'agents') return renderAgentEditor(field, value || {});
+      if (field.type === 'boolean') return `<label class="config-field config-boolean"><span class="checkbox-line"><input data-config-path="${escapeHtml(field.path)}" data-config-type="boolean" type="checkbox" ${value ? 'checked' : ''}><span>${escapeHtml(field.label)}</span></span>${help}</label>`;
+      else if (field.type === 'number') control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="number" type="number" value="${escapeHtml(value)}" ${field.min != null ? `min="${field.min}"` : ''} ${field.max != null ? `max="${field.max}"` : ''} step="${field.step || '1'}">`;
+      else if (field.type === 'decimal') control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="number" type="text" inputmode="decimal" pattern="-?[0-9]+(?:\\.[0-9]+)?" value="${escapeHtml(value)}" placeholder="1.2" title="Use a decimal point, for example 1.2">`;
+      else if (field.type === 'select') control = `<select data-config-path="${escapeHtml(field.path)}" data-config-type="string">${field.options.map(([option, label]) => `<option value="${escapeHtml(option)}" ${value === option ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select>`;
+      else if (field.type === 'json') control = `<textarea data-config-path="${escapeHtml(field.path)}" data-config-type="json" rows="${field.rows || 5}" spellcheck="false">${escapeHtml(JSON.stringify(value, null, 2))}</textarea>`;
+      else control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="string" type="${field.type === 'url' ? 'url' : 'text'}" value="${escapeHtml(value ?? '')}">`;
+      return `<label class="config-field"><span>${escapeHtml(field.label)}</span>${control}${help}</label>`;
+    }
+
+    // Renders fields owned by one compiled agent factory without exposing raw JSON.
+    function agentFactoryFieldsMarkup(descriptor, values = {}) {
+      if (!descriptor) return '<p class="muted small">This game binary does not provide an agent.</p>';
+      const fields = (descriptor.config_fields || []).map(field => {
+        const value = values[field.key] ?? field.default_value ?? '';
+        return `<label class="config-field"><span>${escapeHtml(field.label)}</span><input data-agent-config-key="${escapeHtml(field.key)}" type="${field.kind === 'url' ? 'url' : 'text'}" value="${escapeHtml(value ?? '')}" ${field.required ? 'required' : ''}><span class="config-help">${escapeHtml(field.help || '')}</span></label>`;
+      }).join('');
+      return fields;
+    }
+
+    // Renders pairing and runtime controls as one valid, atomic agent configuration.
+    function renderAgentEditor(field, agents) {
+      const configured = agents.human_vs_agent || {};
+      const selectedId = configured.factory || state.agentFactories[0]?.id || '';
+      const descriptor = state.agentFactories.find(factory => factory.id === selectedId) || state.agentFactories[0] || null;
+      const humanVsAgent = agents.mode === 'human_vs_agent';
+      return `<div class="config-field agent-editor" data-agent-editor>
+        <label class="config-field"><span>Participant pairing</span><select data-agent-mode><option value="human_vs_human" ${humanVsAgent ? '' : 'selected'}>Human vs human</option><option value="human_vs_agent" ${humanVsAgent ? 'selected' : ''} ${state.agentFactories.length ? '' : 'disabled'}>Human vs agent</option></select><span class="config-help">${escapeHtml(field.help || '')}</span></label>
+        <div class="agent-settings" data-agent-settings ${humanVsAgent ? '' : 'hidden'}>
+          <label class="config-field"><span>Agent</span><select data-agent-factory>${state.agentFactories.map(factory => `<option value="${escapeHtml(factory.id)}" ${factory.id === descriptor?.id ? 'selected' : ''}>${escapeHtml(factory.display_name)}</option>`).join('')}</select><span class="config-help" data-agent-description>${escapeHtml(descriptor?.description || 'Select one of the agent implementations compiled into this game binary.')}</span></label>
+          <div class="agent-specific-fields" data-agent-specific-fields>${agentFactoryFieldsMarkup(descriptor, configured.config || {})}</div>
+          <label class="config-field"><span>Action timeout (seconds)</span><input data-agent-timeout type="text" inputmode="decimal" value="${escapeHtml(configured.act_timeout_seconds ?? 30)}"><span class="config-help">Maximum time allowed for the agent to choose one action.</span></label>
+          <label class="config-field"><span>Invalid-action limit</span><input data-agent-invalid-limit type="number" min="1" step="1" value="${escapeHtml(configured.invalid_action_limit ?? 3)}"><span class="config-help">End the session after this many invalid agent actions.</span></label>
+          <label class="config-field"><span>Random seed</span><input data-agent-seed type="number" step="1" value="${escapeHtml(configured.seed ?? '')}" placeholder="Optional"><span class="config-help">Optional reproducible seed supplied to the agent.</span></label>
+        </div>
+      </div>`;
+    }
+
+    // Installs conditional behavior for the structured agent editor.
+    function initializeAgentEditor(editor) {
+      const mode = editor.querySelector('[data-agent-mode]');
+      const settings = editor.querySelector('[data-agent-settings]');
+      mode.addEventListener('change', () => {
+        settings.hidden = mode.value !== 'human_vs_agent';
+        refreshDraftActivationWarning();
+      });
+      editor.querySelector('[data-agent-factory]')?.addEventListener('change', event => {
+        const descriptor = state.agentFactories.find(factory => factory.id === event.target.value);
+        editor.querySelector('[data-agent-description]').textContent = descriptor?.description || '';
+        editor.querySelector('[data-agent-specific-fields]').innerHTML = agentFactoryFieldsMarkup(descriptor);
+      });
+    }
+
+    // Renders one structured consent statement with explicit editable fields.
+    function consentItemMarkup(item, index) {
+      return `<section class="consent-item">
+        <header class="consent-item-header"><strong>Consent item ${index + 1}</strong><button class="secondary" type="button" data-remove-consent>${icon('trash')}Remove</button></header>
+        <div class="consent-item-fields">
+          <label><span>Identifier</span><input data-consent-field="id" value="${escapeHtml(item.id || '')}" placeholder="data-processing" autocomplete="off"><span class="config-help">Stable identifier stored with the participant's decision.</span></label>
+          <label><span>Title</span><input data-consent-field="title" value="${escapeHtml(item.title || '')}" placeholder="Data processing consent"><span class="config-help">Short heading shown to the participant.</span></label>
+        </div>
+        <label class="consent-body"><span>Statement</span><textarea data-consent-field="body" rows="5" placeholder="Explain what the participant is agreeing to.">${escapeHtml(item.body || '')}</textarea><span class="config-help">Plain text shown in full before the participant decides.</span></label>
+        <label class="consent-required"><input data-consent-field="required" type="checkbox" ${item.required ? 'checked' : ''}><span>Acceptance is required to participate</span></label>
+      </section>`;
+    }
+
+    // Renders the repeatable consent editor without exposing its JSON representation.
+    function renderConsentEditor(field, items) {
+      const contents = items.length
+        ? items.map(consentItemMarkup).join('')
+        : '<p class="consent-empty muted small">No consent statements configured.</p>';
+      const templateOptions = CONSENT_TEMPLATE_CHOICES.map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('');
+      return `<div class="config-field"><span>${escapeHtml(field.label)}</span>${field.help ? `<span class="config-help">${escapeHtml(field.help)}</span>` : ''}<div class="consent-editor" data-consent-editor data-consent-path="${escapeHtml(field.path)}"><div class="consent-items">${contents}</div><div class="consent-actions"><label class="consent-template-field"><span>Consent template</span><select data-consent-template>${templateOptions}</select></label><button class="secondary" type="button" data-add-consent-template>${icon('plus')}Add template</button><button class="secondary" type="button" data-add-consent>${icon('plus')}Blank item</button></div><span class="config-help">Templates come from Parlando's participant-information package and assume consent is the legal basis. Every added template is required by default. Review every placeholder and obtain local approval before collecting data.</span></div></div>`;
+    }
+
+    // Renumbers consent headings and restores the empty state after structural edits.
+    function refreshConsentEditor(editor) {
+      const items = Array.from(editor.querySelectorAll('.consent-item'));
+      items.forEach((item, index) => { item.querySelector('.consent-item-header strong').textContent = `Consent item ${index + 1}`; });
+      const container = editor.querySelector('.consent-items');
+      const empty = container.querySelector('.consent-empty');
+      if (!items.length && !empty) container.innerHTML = '<p class="consent-empty muted small">No consent statements configured.</p>';
+      if (items.length) empty?.remove();
+    }
+
+    // Chooses a non-conflicting editable identifier for a newly added statement.
+    function nextConsentId(editor) {
+      const ids = new Set(Array.from(editor.querySelectorAll('[data-consent-field="id"]')).map(input => input.value.trim()));
+      let number = ids.size + 1;
+      while (ids.has(`consent-${number}`)) number += 1;
+      return `consent-${number}`;
+    }
+
+    // Replaces template placeholders for installation facts already configured in the dashboard.
+    function hydrateConsentTemplate(template) {
+      const informationVersion = configForm.querySelector('[data-config-path="direct.participant_information_version"]')?.value.trim();
+      const institution = state.gameSettings?.institution?.trim();
+      const body = typeof template.body === 'function'
+        ? template.body({ informationVersion, institution })
+        : template.body;
+      return { ...template, body };
+    }
+
+    // Adds one ordinary required consent item from the selected reviewed template.
+    function addConsentTemplate(editor) {
+      const selected = editor.querySelector('[data-consent-template]').value;
+      const template = CONSENT_TEMPLATES[selected];
+      if (!template) return;
+      const existingIds = new Set(Array.from(editor.querySelectorAll('[data-consent-field="id"]')).map(input => input.value.trim()));
+      if (existingIds.has(template.id)) {
+        window.alert('This consent template is already present.');
+        return;
+      }
+      const container = editor.querySelector('.consent-items');
+      container.querySelector('.consent-empty')?.remove();
+      const count = container.querySelectorAll('.consent-item').length;
+      container.insertAdjacentHTML('beforeend', consentItemMarkup(hydrateConsentTemplate(template), count));
+      refreshConsentEditor(editor);
+      container.querySelector('.consent-item:last-child [data-consent-field="body"]')?.focus();
+    }
+
+    // Adds and removes structured consent items while preserving all other draft fields.
+    function initializeConsentEditor(editor) {
+      editor.addEventListener('click', event => {
+        if (event.target.closest('[data-add-consent-template]')) {
+          addConsentTemplate(editor);
+          return;
+        }
+        if (event.target.closest('[data-add-consent]')) {
+          const container = editor.querySelector('.consent-items');
+          container.querySelector('.consent-empty')?.remove();
+          const count = container.querySelectorAll('.consent-item').length;
+          container.insertAdjacentHTML('beforeend', consentItemMarkup({ id: nextConsentId(editor), title: '', body: '', required: true }, count));
+          refreshConsentEditor(editor);
+          container.querySelector('.consent-item:last-child [data-consent-field="id"]')?.focus();
+          return;
+        }
+        const remove = event.target.closest('[data-remove-consent]');
+        if (remove) {
+          remove.closest('.consent-item')?.remove();
+          refreshConsentEditor(editor);
+        }
+      });
+    }
+
+    // Turns the visual configured-secret mask into an empty field only when replacement begins.
+    function clearSecretPlaceholder(input) {
+      if (input.dataset.secretPlaceholder !== 'true') return;
+      input.value = '';
+      input.dataset.secretPlaceholder = 'false';
+    }
+
+    // Preserves the hidden-key mask on focus while allowing typing or paste to replace it cleanly.
+    function installSecretReplacementInput(input) {
+      input.addEventListener('keydown', event => {
+        if (input.dataset.secretPlaceholder === 'true' && (event.key === 'Backspace' || event.key === 'Delete')) {
+          event.preventDefault();
+          return;
+        }
+        if (event.key.length === 1) clearSecretPlaceholder(input);
+      });
+      input.addEventListener('paste', () => clearSecretPlaceholder(input));
+      input.addEventListener('cut', event => {
+        if (input.dataset.secretPlaceholder === 'true') event.preventDefault();
+      });
+      input.addEventListener('input', () => {
+        const status = state.configuredSecrets.find(item => item.key === input.dataset.secretUpdate);
+        if (status?.configured && !state.secretDeletions.has(input.dataset.secretUpdate) && !input.value) {
+          input.value = '••••••••••••';
+          input.dataset.secretPlaceholder = 'true';
+        }
+      });
+    }
+
+    // Returns whether a draft has an existing or newly entered credential after pending deletions.
+    function draftHasSecret(key) {
+      if (matchesGameProviderSecret(key)) {
+        return state.gameProviderSecrets.some(item => item.key === key && item.configured);
+      }
+      if (state.secretDeletions.has(key)) return false;
+      const input = configForm.querySelector(`[data-secret-update="${CSS.escape(key)}"]`);
+      if (input?.dataset.secretPlaceholder === 'true') return true;
+      if (input?.value.trim()) return true;
+      return state.configuredSecrets.some(item => item.key === key && item.configured);
+    }
+
+    // Identifies credentials that belong to the game installation rather than one experiment.
+    function matchesGameProviderSecret(key) {
+      return key === 'speechmatics.api_key' || key === 'tts.api_key';
+    }
+
+    // Recomputes hosted-service start blockers immediately as the inactive draft is edited.
+    function refreshDraftActivationWarning() {
+      const issues = [];
+      const transcriptionEnabled = configForm.querySelector('[data-config-path="transcription.enabled"]')?.checked;
+      const ttsEnabled = configForm.querySelector('[data-config-path="tts.enabled"]')?.checked;
+      if (transcriptionEnabled && !draftHasSecret('speechmatics.api_key')) issues.push('Speechmatics API key is required when transcription is enabled.');
+      if (ttsEnabled && !draftHasSecret('tts.api_key')) issues.push('ElevenLabs API key is required when text to speech is enabled.');
+      const voiceId = configForm.querySelector('[data-config-path="tts.voice_id"]')?.value.trim();
+      if (ttsEnabled && !voiceId) issues.push('ElevenLabs voice id is required when text to speech is enabled.');
+      const warning = document.getElementById('activationWarning');
+      const items = document.getElementById('activationWarningItems');
+      if (!warning || !items) return;
+      warning.hidden = issues.length === 0;
+      items.textContent = issues.join(' ');
+    }
+
+    // Reconstructs typed Parlando JSON while leaving game YAML and credentials separate.
     function configurationFromForm() {
-      const config = {};
+      const config = structuredClone(state.configValue || {});
       configForm.querySelectorAll('[data-config-path]').forEach(control => {
-        const path = JSON.parse(control.dataset.configPath);
         let value;
         if (control.dataset.configType === 'boolean') value = control.checked;
-        else if (control.dataset.configType === 'number') value = Number(control.value);
+        else if (control.dataset.configType === 'number') {
+          value = Number(control.value);
+          if (!Number.isFinite(value)) throw new Error(`${control.dataset.configPath} must be a number written with a decimal point`);
+        }
         else if (control.dataset.configType === 'json') value = JSON.parse(control.value);
         else value = control.value;
-        let target = config;
-        path.slice(0, -1).forEach(segment => { target = target[segment] ||= {}; });
-        target[path.at(-1)] = value;
+        setConfigAt(config, control.dataset.configPath, value);
       });
+      configForm.querySelectorAll('[data-consent-editor]').forEach(editor => {
+        const items = Array.from(editor.querySelectorAll('.consent-item')).map(item => ({
+          id: item.querySelector('[data-consent-field="id"]').value.trim(),
+          title: item.querySelector('[data-consent-field="title"]').value.trim(),
+          body: item.querySelector('[data-consent-field="body"]').value.trim(),
+          required: item.querySelector('[data-consent-field="required"]').checked
+        }));
+        setConfigAt(config, editor.dataset.consentPath, items);
+      });
+      configForm.querySelectorAll('[data-agent-editor]').forEach(editor => {
+        const mode = editor.querySelector('[data-agent-mode]').value;
+        if (mode === 'human_vs_human') {
+          config.agents = { mode, human_vs_agent: null };
+          return;
+        }
+        const factory = editor.querySelector('[data-agent-factory]').value;
+        const agentConfig = {};
+        editor.querySelectorAll('[data-agent-config-key]').forEach(control => {
+          if (control.value !== '') agentConfig[control.dataset.agentConfigKey] = control.value;
+        });
+        const timeout = Number(editor.querySelector('[data-agent-timeout]').value);
+        const invalidLimit = Number(editor.querySelector('[data-agent-invalid-limit]').value);
+        const seedValue = editor.querySelector('[data-agent-seed]').value;
+        if (!Number.isFinite(timeout) || timeout <= 0) throw new Error('Agent action timeout must be a positive number');
+        if (!Number.isInteger(invalidLimit) || invalidLimit <= 0) throw new Error('Agent invalid-action limit must be a positive integer');
+        if (seedValue !== '' && !Number.isInteger(Number(seedValue))) throw new Error('Agent random seed must be an integer');
+        config.agents = {
+          mode,
+          human_vs_agent: {
+            factory,
+            act_timeout_seconds: timeout,
+            invalid_action_limit: invalidLimit,
+            seed: seedValue === '' ? null : Number(seedValue),
+            config: agentConfig
+          }
+        };
+      });
+      delete config.game;
       return config;
+    }
+
+    // Asks the compiled game to parse and validate the current YAML without saving it.
+    async function validateGameYaml() {
+      const result = document.getElementById('gameYamlValidation');
+      result.className = 'validation-result small';
+      result.textContent = 'Validating…';
+      const id = encodeURIComponent(state.experiment.experiment_id);
+      const response = await fetch(`/api/admin/experiments/${id}/config/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
+        body: JSON.stringify({ game_yaml: document.getElementById('gameYaml').value })
+      });
+      if (!response.ok) {
+        result.classList.add('invalid');
+        result.textContent = await response.text();
+        return false;
+      }
+      result.classList.add('valid');
+      result.textContent = 'Valid';
+      return true;
+    }
+
+    // Renders named game secrets with masked values and explicit reveal/remove actions.
+    function renderGameSecrets() {
+      const list = document.getElementById('gameSecretList');
+      if (!list) return;
+      list.innerHTML = state.gameSecretKeys.length ? state.gameSecretKeys.map(key => {
+        const configured = state.configuredSecrets.some(item => item.key === key) && !state.secretDeletions.has(key);
+        return `<div class="game-secret-row"><span class="game-secret-key">${escapeHtml(key.slice(5))}</span><input type="password" autocomplete="new-password" data-secret-update="${escapeHtml(key)}" value="${configured ? '••••••••••••' : ''}" ${configured ? 'data-secret-placeholder="true"' : ''} placeholder="${configured ? 'Enter a replacement value' : 'Enter value'}"><button class="secondary" type="button" data-reveal-secret="${escapeHtml(key)}" ${configured ? '' : 'disabled'}>Reveal</button><button class="secondary" type="button" data-delete-secret="${escapeHtml(key)}">Remove</button></div>`;
+      }).join('') : '<p class="muted small">No game-specific secrets configured.</p>';
+      list.querySelectorAll('[data-reveal-secret]').forEach(button => button.addEventListener('click', () => revealSecret(button.dataset.revealSecret, button)));
+      list.querySelectorAll('[data-delete-secret]').forEach(button => button.addEventListener('click', () => removeSecret(button.dataset.deleteSecret)));
+      list.querySelectorAll('[data-secret-placeholder="true"]').forEach(installSecretReplacementInput);
+    }
+
+    // Adds one named game credential row without assigning a value until save.
+    function addGameSecret() {
+      const input = document.getElementById('newGameSecretName');
+      const name = input.value.trim();
+      if (!name || !/^[A-Za-z0-9_.-]+$/.test(name)) {
+        window.alert('Use letters, digits, dots, dashes, or underscores for the secret name.');
+        return;
+      }
+      const key = `game.${name}`;
+      if (!state.gameSecretKeys.includes(key)) state.gameSecretKeys.push(key);
+      state.secretDeletions.delete(key);
+      input.value = '';
+      renderGameSecrets();
+    }
+
+    // Marks an experiment-owned secret for deletion when the new revision is saved.
+    function removeSecret(key) {
+      const status = state.configuredSecrets.find(item => item.key === key);
+      if (status?.source === 'experiment') state.secretDeletions.add(key);
+      if (key.startsWith('game.')) state.gameSecretKeys = state.gameSecretKeys.filter(item => item !== key);
+      else {
+        const input = configForm.querySelector(`[data-secret-update="${CSS.escape(key)}"]`);
+        if (input) {
+          input.value = '';
+          input.dataset.secretPlaceholder = 'false';
+          input.placeholder = status?.source === 'server' ? 'Server value will remain available' : 'Will be removed on save';
+          const field = input.closest('.config-field');
+          field?.classList.remove('secret-configured');
+          field?.classList.add('secret-missing');
+          const secretState = field?.querySelector('.secret-state');
+          if (secretState) secretState.textContent = status?.source === 'server' ? 'Configured server fallback remains' : 'Will be removed on save';
+        }
+      }
+      renderGameSecrets();
+      refreshDraftActivationWarning();
+    }
+
+    // Fetches one secret only after an explicit administrator action and exposes it for copying.
+    async function revealSecret(key, button) {
+      const input = configForm.querySelector(`[data-secret-update="${CSS.escape(key)}"]`);
+      if (button.dataset.revealed === 'true') {
+        if (input) { input.type = 'password'; input.value = '••••••••••••'; input.dataset.secretPlaceholder = 'true'; }
+        button.dataset.revealed = 'false';
+        button.textContent = 'Reveal';
+        return;
+      }
+      const id = encodeURIComponent(state.experiment.experiment_id);
+      const response = await fetch(`/api/admin/experiments/${id}/secrets/reveal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
+        body: JSON.stringify({ key })
+      });
+      if (!response.ok) { window.alert(await response.text()); return; }
+      const data = await response.json();
+      if (input) { input.type = 'text'; input.value = data.value; input.dataset.secretPlaceholder = 'false'; input.focus(); input.select(); }
+      button.dataset.revealed = 'true';
+      button.textContent = 'Hide';
     }
 
     // Creates an inactive experiment from the compiled game's current defaults.
@@ -1129,7 +1645,6 @@
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
         body: JSON.stringify({
           pinned: changes.pinned ?? experiment.pinned,
-          obsolete: changes.obsolete ?? experiment.obsolete,
           notes: changes.notes ?? experiment.notes
         })
       });
@@ -1143,14 +1658,106 @@
       let config;
       try { config = configurationFromForm(); }
       catch (error) { window.alert(`Invalid structured value: ${error.message}`); return; }
+      const secretUpdates = {};
+      configForm.querySelectorAll('[data-secret-update]').forEach(control => {
+        if (control.value && control.dataset.secretPlaceholder !== 'true') secretUpdates[control.dataset.secretUpdate] = control.value;
+      });
       const id = encodeURIComponent(state.experiment.experiment_id);
       const response = await fetch(`/api/admin/experiments/${id}/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
-        body: JSON.stringify({ expected_revision: expectedRevision, config, change_summary: document.getElementById('changeSummary').value || null })
+        body: JSON.stringify({
+          expected_revision: expectedRevision,
+          config,
+          game_yaml: document.getElementById('gameYaml').value,
+          secret_updates: secretUpdates,
+          secret_deletions: [...state.secretDeletions],
+          change_summary: document.getElementById('changeSummary').value || null
+        })
       });
       if (!response.ok) { window.alert(await response.text()); return; }
       await loadExperiment();
+    }
+
+    // Renders the two installation-wide provider credentials without returning their values.
+    function renderGameProviderSecrets() {
+      const container = document.getElementById('gameProviderSecrets');
+      const definitions = [
+        ['speechmatics.api_key', 'Speechmatics API key', 'Used to open live transcription streams.'],
+        ['tts.api_key', 'ElevenLabs API key', 'Used to synthesize agent speech.']
+      ];
+      container.innerHTML = definitions.map(([key, label, help]) => {
+        const status = state.gameProviderSecrets.find(item => item.key === key) || {};
+        const configured = status.configured && !state.gameProviderSecretDeletions.has(key);
+        return `<label class="config-field ${configured ? 'secret-configured' : 'secret-missing'}"><span>${escapeHtml(label)}</span><span class="secret-control"><input type="password" autocomplete="new-password" data-game-provider-secret="${escapeHtml(key)}" value="${configured ? '••••••••••••' : ''}" ${configured ? 'data-game-secret-placeholder="true"' : ''} placeholder="${configured ? 'Enter a replacement key' : 'Paste API key'}"><button class="secondary" type="button" data-reveal-game-secret="${escapeHtml(key)}" ${configured ? '' : 'disabled'}>Reveal</button><button class="secondary" type="button" data-delete-game-secret="${escapeHtml(key)}" ${status.source === 'game' ? '' : 'disabled'}>Remove</button></span><span class="secret-state">${configured ? `Configured (${escapeHtml(status.source)}), hidden` : 'Not configured'}</span><span class="config-help">${escapeHtml(help)}</span></label>`;
+      }).join('');
+      container.querySelectorAll('[data-game-provider-secret]').forEach(input => {
+        const key = input.dataset.gameProviderSecret;
+        const status = state.gameProviderSecrets.find(item => item.key === key) || {};
+        input.addEventListener('beforeinput', event => {
+          if (input.dataset.gameSecretPlaceholder === 'true' && (event.inputType.startsWith('insert') || event.inputType.startsWith('delete'))) {
+            input.value = '';
+            input.dataset.gameSecretPlaceholder = 'false';
+          }
+        });
+        input.addEventListener('input', () => {
+          input.dataset.gameSecretPlaceholder = 'false';
+          if (input.value) {
+            state.gameProviderSecretUpdates.set(key, input.value);
+            state.gameProviderSecretDeletions.delete(key);
+          } else {
+            state.gameProviderSecretUpdates.delete(key);
+            if (status.source === 'game') state.gameProviderSecretDeletions.add(key);
+          }
+        });
+      });
+      container.querySelectorAll('[data-delete-game-secret]').forEach(button => button.addEventListener('click', () => {
+        const key = button.dataset.deleteGameSecret;
+        state.gameProviderSecretUpdates.delete(key);
+        state.gameProviderSecretDeletions.add(key);
+        renderGameProviderSecrets();
+      }));
+      container.querySelectorAll('[data-reveal-game-secret]').forEach(button => button.addEventListener('click', () => revealGameProviderSecret(button)));
+    }
+
+    // Reveals or re-hides one game-wide provider credential for deliberate copying.
+    async function revealGameProviderSecret(button) {
+      const key = button.dataset.revealGameSecret;
+      const input = document.querySelector(`[data-game-provider-secret="${CSS.escape(key)}"]`);
+      if (button.dataset.revealed === 'true') {
+        input.type = 'password';
+        input.value = '••••••••••••';
+        input.dataset.gameSecretPlaceholder = 'true';
+        button.dataset.revealed = 'false';
+        button.textContent = 'Reveal';
+        return;
+      }
+      const response = await fetch('/api/admin/game/secrets/reveal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
+        body: JSON.stringify({ key })
+      });
+      if (!response.ok) { window.alert(await response.text()); return; }
+      const data = await response.json();
+      input.type = 'text';
+      input.value = data.value;
+      input.dataset.gameSecretPlaceholder = 'false';
+      input.focus();
+      input.select();
+      button.dataset.revealed = 'true';
+      button.textContent = 'Hide';
+    }
+
+    // Briefly confirms that the server committed the complete game-settings transaction.
+    function flashGameSettingsSaved() {
+      const confirmation = document.getElementById('gameSettingsSaved');
+      clearTimeout(state.gameSettingsConfirmationTimer);
+      confirmation.classList.remove('fading');
+      confirmation.hidden = false;
+      state.gameSettingsConfirmationTimer = setTimeout(() => {
+        confirmation.classList.add('fading');
+        setTimeout(() => { confirmation.hidden = true; }, 180);
+      }, 1800);
     }
 
     // Saves installation-wide game and administrator-network settings.
@@ -1159,12 +1766,33 @@
         .split(/[\n,]/)
         .map(value => value.trim())
         .filter(Boolean);
-      const response = await fetch('/api/admin/game/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
-        body: JSON.stringify({ expected_revision: state.gameSettings.revision, institution: institutionInput.value, admin_allowed_ip_ranges: adminAllowedIpRanges })
-      });
+      const saveButton = document.getElementById('saveGameSettings');
+      saveButton.disabled = true;
+      let response;
+      try {
+        response = await fetch('/api/admin/game/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
+          body: JSON.stringify({
+            expected_revision: state.gameSettings.revision,
+            institution: institutionInput.value,
+            admin_allowed_ip_ranges: adminAllowedIpRanges,
+            speechmatics_realtime_url: speechmaticsRealtimeUrlInput.value,
+            secret_updates: Object.fromEntries(state.gameProviderSecretUpdates),
+            secret_deletions: [...state.gameProviderSecretDeletions]
+          })
+        });
+      } catch (error) {
+        saveButton.disabled = false;
+        window.alert(`Could not save game settings: ${error.message}`);
+        return;
+      }
+      saveButton.disabled = false;
       if (!response.ok) { window.alert(await response.text()); return; }
+      state.gameProviderSecretDeletions = new Set();
+      state.gameProviderSecretUpdates = new Map();
+      state.loadedConfigKey = null;
+      flashGameSettingsSaved();
       await loadExperiment();
     }
 
@@ -1204,29 +1832,32 @@
       menuButton.hidden = scope !== 'experiments';
       closeExperimentMenu();
       if (scope === 'operations') loadLoad().catch(error => { loadUpdated.textContent = error.message; });
-      if (scope === 'privacy') loadPrivacy().catch(error => { privacyContent.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; });
     }
 
-    // Renders the installation-wide privacy contract returned by the server.
+    // Renders the selected experiment's privacy contract returned by the server.
     function renderPrivacy() {
       const privacy = state.privacy;
       if (!privacy) return;
       const storageRows = (privacy.storage || []).map(item => `<tr><td>${escapeHtml(item.category)}</td><td>${item.persisted_when_produced ? 'Yes' : 'No'}</td><td>${item.configurable ? 'Yes' : 'No'}</td><td>${escapeHtml(item.detail)}</td></tr>`).join('');
       const serviceRows = (privacy.external_services || []).map(service => `<tr><td>${escapeHtml(service.service)}</td><td>${service.enabled ? 'Enabled' : 'Disabled'}</td><td>${escapeHtml(service.data_sent)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">No external speech services are enabled.</td></tr>';
       privacyContent.innerHTML = `
-        <section class="settings-section"><header class="section-intro"><h2>Assessment status</h2><p class="muted">Current review state for the deployed game.</p></header><dl class="privacy-facts"><div><dt>REVIEW STATE</dt><dd>${escapeHtml(privacy.review_state)}</dd></div><div><dt>PRIVACY CONTRACT</dt><dd>${escapeHtml(privacy.privacy_contract_version)}</dd></div><div><dt>RAW AUDIO STORED</dt><dd>${privacy.raw_audio_stored_by_parlando ? 'Yes' : 'No'}</dd></div><div><dt>GENERATED</dt><dd>${escapeHtml(fmtTime(privacy.generated_at))}</dd></div></dl></section>
+        <section class="settings-section"><header class="section-intro"><h2>Assessment status</h2><p class="muted">Current review state for ${escapeHtml(state.experiment?.experiment_id || 'this experiment')}.</p></header><dl class="privacy-facts"><div><dt>REVIEW STATE</dt><dd>${escapeHtml(privacy.review_state)}</dd></div><div><dt>PRIVACY CONTRACT</dt><dd>${escapeHtml(privacy.privacy_contract_version)}</dd></div><div><dt>RAW AUDIO STORED</dt><dd>${privacy.raw_audio_stored_by_parlando ? 'Yes' : 'No'}</dd></div><div><dt>GENERATED</dt><dd>${escapeHtml(fmtTime(privacy.generated_at))}</dd></div></dl></section>
         <section class="settings-section"><header class="section-intro"><h2>Storage behavior</h2><p class="muted">What Parlando persists when each category is produced.</p></header><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Category</th><th>Stored</th><th>Configurable</th><th>Detail</th></tr></thead><tbody>${storageRows}</tbody></table></div></section>
         <section class="settings-section"><header class="section-intro"><h2>External services</h2><p class="muted">Configured providers and the data sent to them.</p></header><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Service</th><th>Status</th><th>Data sent</th></tr></thead><tbody>${serviceRows}</tbody></table></div></section>
         <section class="settings-section"><header class="section-intro"><h2>Administration</h2><p class="muted">Export and participant-data controls exposed by this server.</p></header><dl class="privacy-facts"><div><dt>RESEARCH EXPORT</dt><dd>${privacy.exports?.research_export ? 'Available' : 'Unavailable'}</dd></div><div><dt>CORPUS EXPORT</dt><dd>${privacy.exports?.corpus_export ? 'Available' : 'Unavailable'}</dd></div><div><dt>FULL INTERNAL EXPORT</dt><dd>${privacy.exports?.full_internal_export ? 'Available' : 'Unavailable'}</dd></div><div><dt>PARTICIPANT DELETION</dt><dd>${privacy.participant_deletion?.available ? 'Available' : 'Unavailable'}</dd></div><div><dt>CONSENT EVIDENCE</dt><dd>${privacy.consent_evidence?.available ? 'Available' : 'Unavailable'}</dd></div></dl></section>`;
     }
 
-    // Loads privacy status once and reuses it for subsequent navigation.
+    // Loads privacy status for the selected experiment and updates its report links.
     async function loadPrivacy() {
+      if (!state.experiment) return;
       if (state.privacy) {
         renderPrivacy();
         return;
       }
-      const response = await fetch('/api/admin/privacy');
+      const id = encodeURIComponent(state.experiment.experiment_id);
+      document.getElementById('privacyMarkdown').href = `/api/admin/experiments/${id}/privacy.md`;
+      document.getElementById('privacyJson').href = `/api/admin/experiments/${id}/privacy.json`;
+      const response = await fetch(`/api/admin/experiments/${id}/privacy`);
       if (!response.ok) throw new Error(await response.text());
       state.privacy = await response.json();
       renderPrivacy();
@@ -1283,12 +1914,13 @@
     // Renders a compact session header that separates durable lifecycle from runtime health.
     function renderSummary(session, participantRows) {
       const live = sessionLiveness(session.session_id);
-      const health = live?.health || (session.status === 'completed' ? 'completed' : 'disconnected');
+      const health = live?.health || (session.status === 'completed' ? 'completed' : 'unavailable');
       summary.innerHTML = `
         <h2>Session #${escapeHtml(session.session_id)}</h2>
         <dl class="session-facts">
           <div><dt>Status</dt><dd><span class="status-chip">${statusLabel(session.status)}</span></dd></div>
           <div><dt>Health</dt><dd>${livenessBadge(health, live ? `Meaningful activity ${formatAge(new Date(live.meaningful_activity_at).getTime())}` : 'Session is not present in this process runtime')}</dd></div>
+          <div><dt>Purpose</dt><dd><span class="status-chip">${statusLabel(session.purpose || 'research')}</span></dd></div>
           <div><dt>Mode</dt><dd>${escapeHtml(statusText(session.mode))}</dd></div>
           <div><dt>Created</dt><dd>${escapeHtml(fmtTime(session.created_at))}</dd></div>
         </dl>
@@ -1479,6 +2111,7 @@
       button.addEventListener('click', () => {
         state.activeTab = button.dataset.tab;
         renderTabs();
+        if (state.activeTab === 'privacy') loadPrivacy().catch(error => { privacyContent.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; });
       });
     });
     scopeButtons.forEach(button => {

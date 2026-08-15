@@ -195,23 +195,65 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-scope=\"experiments\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-scope=\"operations\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-scope=\"game\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-scope=\"privacy\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("/api/admin/privacy"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("data-scope=\"privacy\""));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("data-tab=\"privacy\""));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("/privacy.md"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("checkbox-line"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Speechmatics API key"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("ElevenLabs API key"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("gameProviderSecretUpdates"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("gameSettingsSaved"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Settings saved"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Configured ("));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("data-secret-placeholder"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("refreshDraftActivationWarning"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("End-of-utterance silence (seconds)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("inputmode=\"decimal\""));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Use a decimal point, for example 1.2"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Voice transport"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Speech recognition"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("path: 'voice.sample_rate_hz'"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("path: 'voice.frame_duration_ms'"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("path: 'transcription.provider'"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("path: 'tts.output_format'"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Parlando never stores raw microphone audio"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("data-consent-editor"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("data-consent-field=\"id\""));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("data-consent-field=\"title\""));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("data-consent-field=\"body\""));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Add template"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("Core research set (3 items)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("eligibility_and_information_v1_0"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("voice_and_transcription_v1_0"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Blank item"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("{{LOCAL_INFORMATION_VERSION}}"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("{{INSTITUTION_NAME}}"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("{{SPEECHMATICS_ENTITY_AND_SERVICE}}"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("JSON list of consent statements"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("eleven_flash_v2_5"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Activate intake"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Deactivate intake"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Pause intake"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Start testing"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Complete"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("/api/admin/runtime/"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("fetch('/api/admin/load')"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("runtimeApi('load')"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("runningExperimentId"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("New experiment"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("new-experiment"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("experimentStatusFilter"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-status-filter"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("initializeStatusFilter"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("All statuses"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("data-value=\"running\""));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("data-value=\"playing\""));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("🟠"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("🟢"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("🔵"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("🔴"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("experimentRuntimeState"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("statusLabel('not-running')"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("experimentRuntimeState"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("statusLabel('not-running')"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("experiment.status === 'archived'"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("<time>${escapeHtml(fmtDate(item.created_at))}</time>"));
     assert!(!ADMIN_EXPERIMENT_HTML
         .contains("<time>Created ${escapeHtml(fmtDate(item.created_at))}</time>"));
@@ -222,6 +264,14 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(!ADMIN_EXPERIMENT_HTML.contains("experimentForm"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"configForm\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("configurationFromForm"));
+    assert!(
+        ADMIN_EXPERIMENT_HTML.contains("Object.assign(state.experiment, authoritativeExperiment)")
+    );
+    assert!(ADMIN_EXPERIMENT_HTML.contains("function updateConfigurationEditability"));
+    assert!(
+        ADMIN_EXPERIMENT_HTML.contains("updateConfigurationEditability(authoritativeExperiment)")
+    );
+    assert!(ADMIN_EXPERIMENT_HTML.contains("experiment.status !== 'inactive'"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"institutionInput\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Build information"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-tab=\"sessions\""));
@@ -265,6 +315,187 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(!sessions_panel.contains("<h2>Players</h2>"));
 }
 
+/// Confirms legacy consent-template macros never reach participants or evidence hashes.
+#[test]
+fn consent_templates_expand_to_complete_participant_text() {
+    let mut config = ExperimentConfig::default();
+    config.direct.participant_information_version = "local-v3".to_string();
+    config.direct.consents = vec![crate::config::ConsentItemConfig {
+        id: "template".to_string(),
+        title: "Template".to_string(),
+        required: true,
+        body: "Version {{LOCAL_INFORMATION_VERSION}}; controller {{INSTITUTION_NAME}}; provider {{SPEECHMATICS_ENTITY_AND_SERVICE}} in {{SPEECHMATICS_PROCESSING_REGION}}."
+            .to_string(),
+    }];
+    let settings = StoredGameSettings {
+        institution: "Saarland University".to_string(),
+        speechmatics_realtime_url: "wss://eu.rt.speechmatics.com/v2".to_string(),
+        ..StoredGameSettings::default()
+    };
+    let expanded = expanded_consent_items(&config, &settings);
+    assert_eq!(
+        expanded[0].body,
+        "Version local-v3; controller Saarland University; provider Speechmatics in the European Union."
+    );
+    assert!(!expanded[0].body.contains("{{"));
+    let hash = consent_configuration_hash(&config, &settings).unwrap();
+    assert!(hash.starts_with("sha256:"));
+}
+
+/// Confirms administrator cookies remain first-party and work on loopback HTTP in Brave.
+#[test]
+fn administrator_cookie_matches_transport_security() {
+    let mut config = ExperimentConfig::default();
+    config.server.public_base_url = "http://127.0.0.1:8000".to_string();
+    let loopback = administrator_cookie("token", ADMIN_ABSOLUTE_SECONDS, &config);
+    assert!(loopback.contains("Max-Age=2592000"));
+    assert!(loopback.contains("HttpOnly; SameSite=Strict"));
+    assert!(!loopback.contains("Secure"));
+    assert!(!loopback.contains("Domain="));
+
+    config.server.public_base_url = "https://experiments.example.edu".to_string();
+    let public = administrator_cookie("token", ADMIN_ABSOLUTE_SECONDS, &config);
+    assert!(public.contains("Secure; HttpOnly; SameSite=Strict"));
+}
+
+/// Confirms lifecycle transitions preserve the semantic boundary between results and deletion.
+#[test]
+fn experiment_lifecycle_rejects_ambiguous_shortcuts() {
+    assert!(ExperimentLifecycle::Inactive.can_transition_to(ExperimentLifecycle::Testing));
+    assert!(ExperimentLifecycle::Testing.can_transition_to(ExperimentLifecycle::Active));
+    assert!(ExperimentLifecycle::Active.can_transition_to(ExperimentLifecycle::Completed));
+    assert!(ExperimentLifecycle::Completed.can_transition_to(ExperimentLifecycle::Archived));
+    assert!(ExperimentLifecycle::Archived.can_transition_to(ExperimentLifecycle::Inactive));
+    assert!(!ExperimentLifecycle::Testing.can_transition_to(ExperimentLifecycle::Completed));
+    assert!(!ExperimentLifecycle::Active.can_transition_to(ExperimentLifecycle::Archived));
+    assert!(!ExperimentLifecycle::Archived.can_transition_to(ExperimentLifecycle::Active));
+}
+
+/// Confirms game YAML rejects embedded credentials in favor of the secret store.
+#[test]
+fn game_configuration_rejects_credential_shaped_fields() {
+    validate_game_config_contains_no_secrets(&json!({"difficulty": 2})).unwrap();
+    let error = validate_game_config_contains_no_secrets(&json!({
+        "provider": {"access_token": "sentinel"}
+    }))
+    .unwrap_err();
+    assert!(error.to_string().contains("provider.access_token"));
+    assert!(error.to_string().contains("Game secrets"));
+}
+
+/// Confirms game-wide provider and experiment game secrets require explicit reveal.
+#[tokio::test]
+async fn administrator_can_store_and_explicitly_reveal_experiment_secrets() {
+    let (mut config, _tmp) = sqlite_config();
+    config.experiment.id = Some("secret-config".to_string());
+    config.speechmatics.api_key = "bootstrap-speech-secret".to_string();
+    let descriptor = GameDescriptor {
+        id: "tiny-game".to_string(),
+        display_name: "Tiny Game".to_string(),
+        version: semver::Version::parse("0.4.0").unwrap(),
+        build_manifest: json!({}),
+    };
+    let router = super::build_game_router(TinyAdapter, config, descriptor, |_| {
+        Ok(ServeOptions::default())
+    })
+    .await
+    .unwrap();
+    authenticate_test_admin(router.clone()).await.unwrap();
+
+    let (status, current) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments/secret-config/config",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!serde_json::to_string(&current)
+        .unwrap()
+        .contains("bootstrap-speech-secret"));
+    assert_eq!(current["configured_secrets"], json!([]));
+
+    let (status, catalogue) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(catalogue["game_provider_secrets"][0]["source"], "server");
+
+    let (status, revealed) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/game/secrets/reveal",
+        json!({"key": "speechmatics.api_key"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(revealed["value"], "bootstrap-speech-secret");
+
+    let (status, updated) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/game/settings",
+        json!({
+            "expected_revision": 1,
+            "institution": "Test University",
+            "admin_allowed_ip_ranges": [],
+            "speechmatics_realtime_url": "wss://eu.rt.speechmatics.com/v2",
+            "secret_updates": {"tts.api_key": "stored-elevenlabs-secret"},
+            "secret_deletions": []
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["revision"], 2);
+    let (status, catalogue) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(catalogue["game_provider_secrets"][1]["source"], "game");
+    let (status, revealed) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/game/secrets/reveal",
+        json!({"key": "tts.api_key"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(revealed["value"], "stored-elevenlabs-secret");
+
+    let (status, saved) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiments/secret-config/config",
+        json!({
+            "expected_revision": 1,
+            "config": current["experiment"]["config"].clone(),
+            "game_yaml": "difficulty: 2\n",
+            "secret_updates": {"game.copy_key": "copy-me"},
+            "secret_deletions": [],
+            "change_summary": "Configure game"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let (status, revealed) = json_request(
+        router,
+        http::Method::POST,
+        "/api/admin/experiments/secret-config/secrets/reveal",
+        json!({"key": "game.copy_key"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(revealed["value"], "copy-me");
+}
+
 /// Confirms the protected load endpoint exposes bounded operational telemetry.
 #[tokio::test]
 async fn admin_load_exposes_capacity_counters_and_liveness_policy() {
@@ -293,6 +524,7 @@ async fn admin_privacy_status_renders_and_downloads_current_facts() {
     let router = build_router(TinyAdapter, config, ServeOptions::default())
         .await
         .unwrap();
+    authenticate_test_admin(router.clone()).await.unwrap();
 
     let page = admin_raw_request(router.clone(), http::Method::GET, "/admin/privacy").await;
     assert_eq!(page.status(), StatusCode::OK);
@@ -311,6 +543,7 @@ async fn admin_privacy_status_renders_and_downloads_current_facts() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(privacy["privacy_contract_version"], "1");
+    assert_eq!(privacy["experiment_count"], 1);
     assert_eq!(privacy["raw_audio_stored_by_parlando"], false);
     assert_eq!(privacy["exports"]["full_internal_export"], true);
     assert_eq!(privacy["exports"]["research_export"], true);
@@ -319,7 +552,26 @@ async fn admin_privacy_status_renders_and_downloads_current_facts() {
     assert_eq!(privacy["consent_evidence"]["available"], true);
     assert_eq!(privacy["external_services"], json!([]));
 
-    let markdown = admin_raw_request(router, http::Method::GET, "/api/admin/privacy.md").await;
+    let (experiment_status, experiment_privacy) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments/step5/privacy",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(experiment_status, StatusCode::OK);
+    assert_eq!(experiment_privacy["experiment_count"], 1);
+    assert!(experiment_privacy["consent_evidence"]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("1 item(s)"));
+
+    let markdown = admin_raw_request(
+        router,
+        http::Method::GET,
+        "/api/admin/experiments/step5/privacy.md",
+    )
+    .await;
     assert_eq!(markdown.status(), StatusCode::OK);
     assert_eq!(
         markdown
@@ -468,7 +720,7 @@ async fn admin_setup_page_creates_one_persistent_credential() {
     assert_eq!(login_status, StatusCode::OK);
 }
 
-/// Confirms startup is closed, activation opens intake, and restart closes it again.
+/// Confirms lifecycle changes gate intake and persist across restarts.
 #[tokio::test]
 async fn experiment_starts_inactive_and_admin_controls_intake() {
     let (mut config, _tmp) = sqlite_config();
@@ -505,6 +757,23 @@ async fn experiment_starts_inactive_and_admin_controls_intake() {
     )
     .await;
     assert_eq!(settings_status, StatusCode::OK);
+    let (status, testing) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiment/status",
+        json!({"status": "testing"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(testing["status"], "testing");
+    let (status, _) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/participants",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
     let (status, activation) = json_request(
         router.clone(),
         http::Method::POST,
@@ -532,9 +801,23 @@ async fn experiment_starts_inactive_and_admin_controls_intake() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) =
-        json_request(router, http::Method::POST, "/api/participants", json!({})).await;
+    let (status, _) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/participants",
+        json!({}),
+    )
+    .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let (status, archived) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiment/status",
+        json!({"status": "archived"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(archived["status"], "archived");
 
     let restarted = super::build_router(TinyAdapter, config, ServeOptions::default())
         .await
@@ -548,7 +831,106 @@ async fn experiment_starts_inactive_and_admin_controls_intake() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(experiment["experiment"]["status"], "inactive");
+    assert_eq!(experiment["experiment"]["status"], "archived");
+}
+
+/// Confirms incomplete hosted voice services remain editable but block testing and active intake.
+#[tokio::test]
+async fn hosted_voice_services_without_credentials_block_experiment_start() {
+    let (mut config, _tmp) = sqlite_config();
+    config.transcription.enabled = true;
+    config.speechmatics.api_key.clear();
+    let router = super::build_router(TinyAdapter, config, ServeOptions::default())
+        .await
+        .expect("an incomplete inactive draft still builds");
+    authenticate_test_admin(router.clone()).await.unwrap();
+
+    let (config_status, dashboard_config) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments/step5/config",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(config_status, StatusCode::OK);
+    assert!(dashboard_config["activation_issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|issue| issue.as_str().unwrap().contains("Speechmatics API key")));
+    assert_eq!(
+        dashboard_config["experiment"]["config"]["study"]["waiting_room_timeout_seconds"],
+        600
+    );
+    assert_eq!(
+        dashboard_config["experiment"]["config"]["study"]["session_max_lifetime_seconds"],
+        14_400
+    );
+    assert_eq!(
+        dashboard_config["experiment"]["config"]["capacity"]["max_active_sessions"],
+        30
+    );
+    assert_eq!(
+        dashboard_config["experiment"]["config"]["capacity"]["storage_reserve_megabytes"],
+        256
+    );
+
+    let (status, problem) = json_request(
+        router,
+        http::Method::POST,
+        "/api/admin/experiment/status",
+        json!({"status": "testing"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(problem["raw"]
+        .as_str()
+        .unwrap()
+        .contains("Speechmatics API key"));
+}
+
+/// Confirms test sessions and their dependent rows are absent from every export variant input.
+#[test]
+fn export_filter_removes_testing_session_graph() {
+    let mut exported = json!({
+        "participants": [
+            {"participant_id": 1, "research_id": "test-only"},
+            {"participant_id": 2, "research_id": "research"}
+        ],
+        "sessions": [
+            {"session_id": 10, "purpose": "testing"},
+            {"session_id": 20, "purpose": "research"}
+        ],
+        "session_participants": [
+            {"session_id": 10, "participant_id": 1},
+            {"session_id": 20, "participant_id": 2}
+        ],
+        "consent_declarations": [
+            {"session_id": 10, "participant_id": 1, "purpose": "testing"},
+            {"session_id": null, "participant_id": 1, "purpose": "testing"},
+            {"session_id": null, "participant_id": 2, "purpose": "research"}
+        ],
+        "session_events": [
+            {"session_id": 10},
+            {"session_id": 20}
+        ]
+    });
+
+    exclude_testing_sessions(&mut exported);
+
+    assert_eq!(exported["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        exported["session_participants"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(exported["session_events"].as_array().unwrap().len(), 1);
+    assert_eq!(exported["participants"].as_array().unwrap().len(), 1);
+    assert_eq!(exported["participants"][0]["participant_id"], 2);
+    assert_eq!(
+        exported["consent_declarations"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(exported["consent_declarations"][0]["participant_id"], 2);
 }
 
 /// Confirms one compiled-game router can activate and isolate two experiment runtimes.
@@ -624,7 +1006,7 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         router.clone(),
         http::Method::POST,
         "/api/admin/experiments",
-        json!({"experiment_id": "secondary", "study_name": "Second condition"}),
+        json!({"experiment_id": "secondary"}),
     )
     .await;
     assert_eq!(create_status, StatusCode::OK);
@@ -653,12 +1035,12 @@ async fn compiled_game_router_hosts_multiple_experiments() {
     assert_eq!(save_status, StatusCode::OK, "config save failed: {saved}");
     assert_eq!(saved["revision"], 2);
 
-    for experiment_id in ["primary", "secondary"] {
+    for (experiment_id, lifecycle) in [("primary", "active"), ("secondary", "testing")] {
         let (status, body) = json_request(
             router.clone(),
             http::Method::POST,
             &format!("/api/admin/runtime/{experiment_id}/experiment/status"),
-            json!({"status": "active"}),
+            json!({"status": lifecycle}),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "activation failed: {body}");
@@ -726,6 +1108,31 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         session["websocket_url"],
         format!("/e/primary/ws/game/{room_id}")
     );
+    let game_ticket = session["token"].as_str().unwrap();
+    let (base_url, server) = spawn_test_server(router.clone()).await;
+    let host = base_url.trim_start_matches("http://");
+    let (mut game_socket, _) = connect_async(format!(
+        "ws://{host}/e/primary/ws/game/{room_id}?token={game_ticket}"
+    ))
+    .await
+    .expect("experiment dispatcher must preserve the WebSocket upgrade handle");
+    let presence = read_ws_type(&mut game_socket, "presenceChanged").await;
+    assert_eq!(presence["presence"]["A"]["connected"], true);
+    game_socket.close(None).await.unwrap();
+    server.abort();
+    let (_, process_load) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/load",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(process_load["current"]["capacity"]["waiting_sessions"], 1);
+    assert!(process_load["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["experiment_id"] == "primary"));
     let (_, secondary_config) = json_request(
         router.clone(),
         http::Method::GET,
@@ -737,7 +1144,7 @@ async fn compiled_game_router_hosts_multiple_experiments() {
     assert_eq!(secondary_config["study_name"], "Edited second condition");
 
     let (_, catalogue) = json_request(
-        router,
+        router.clone(),
         http::Method::GET,
         "/api/admin/experiments",
         Value::Null,
@@ -745,6 +1152,33 @@ async fn compiled_game_router_hosts_multiple_experiments() {
     .await;
     assert_eq!(catalogue["game"]["display_name"], "Tiny Game");
     assert_eq!(catalogue["experiments"].as_array().unwrap().len(), 2);
+    let (_, privacy) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/privacy",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(privacy["experiment_count"], 2);
+
+    let restarted = build_game_router(TinyAdapter, config, descriptor, |_config| {
+        Ok(ServeOptions::default())
+    })
+    .await
+    .unwrap();
+    authenticate_test_admin(restarted.clone()).await.unwrap();
+    let (_, restarted_catalogue) = json_request(
+        restarted,
+        http::Method::GET,
+        "/api/admin/experiments",
+        Value::Null,
+    )
+    .await;
+    assert!(restarted_catalogue["experiments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|experiment| experiment["status"] == "inactive"));
 }
 
 /// Confirms old game versions remain inspectable but must be cloned before activation.
@@ -823,11 +1257,22 @@ async fn compiled_game_router_requires_exact_version_and_clones_forward() {
     )
     .await;
     assert_eq!(catalogue_status, StatusCode::OK);
-    assert!(catalogue["experiments"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|experiment| experiment["status"] == "inactive"));
+    assert!(catalogue.get("running_experiment_id").is_none());
+    let experiments = catalogue["experiments"].as_array().unwrap();
+    assert_eq!(
+        experiments
+            .iter()
+            .find(|experiment| experiment["experiment_id"] == "historical-on-0.4")
+            .unwrap()["status"],
+        "inactive"
+    );
+    assert_eq!(
+        experiments
+            .iter()
+            .find(|experiment| experiment["experiment_id"] == "historical")
+            .unwrap()["status"],
+        "inactive"
+    );
 }
 
 #[test]
@@ -2858,6 +3303,54 @@ async fn websocket_role_assignment_is_targeted_to_one_connection() {
     assert_eq!(assigned_b["participant_session_id"], b);
     assert_eq!(assigned_b["role"], "B");
     assert_no_ws_type(&mut socket_a, "roleAssigned").await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn explicit_leave_abandons_session_and_notifies_partner() {
+    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+        .await
+        .unwrap();
+    let (a, b, room_id) = create_joined_room(router.clone()).await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
+    let (mut socket_a, _) = connect_async(game_socket_url(&base_url, &room_id, &a).await)
+        .await
+        .unwrap();
+    let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &room_id, &b).await)
+        .await
+        .unwrap();
+    let _assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
+    let _assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await;
+
+    let (export_status, running_export) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/export",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(export_status, StatusCode::OK);
+    assert_eq!(running_export["sessions"][0]["status"], "running");
+    assert!(running_export["sessions"][0]["started_at"].is_string());
+
+    send_ws_json(&mut socket_a, json!({"type": "leave"})).await;
+    let abandoned = read_ws_type(&mut socket_b, "abandoned").await;
+    assert_eq!(abandoned["room_id"], room_id);
+    assert!(abandoned["message"]
+        .as_str()
+        .unwrap()
+        .contains("participant left"));
+
+    let export = wait_for_export_event(router, "session_abandoned").await;
+    assert_eq!(export["sessions"][0]["status"], "abandoned");
+    let event = export["session_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["event_type"] == "session_abandoned")
+        .unwrap();
+    assert_eq!(event["actor_role"], "A");
+    assert_eq!(event["payload"]["reason"], "participant_left");
     server.abort();
 }
 

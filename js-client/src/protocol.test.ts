@@ -43,4 +43,16 @@ describe("ExperimentApiClient room helpers", () => {
       body: JSON.stringify({})
     });
   });
+
+  it("sends an explicit leave message only on an open game channel", () => {
+    vi.stubGlobal("WebSocket", { OPEN: 1 });
+    const client = new ExperimentApiClient("http://server.test");
+    const send = vi.fn();
+
+    client.leaveSession({ readyState: 1, send } as unknown as WebSocket);
+    client.leaveSession({ readyState: 3, send } as unknown as WebSocket);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith(JSON.stringify({ type: "leave" }));
+  });
 });

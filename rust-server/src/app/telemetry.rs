@@ -14,7 +14,7 @@ use tokio::sync::RwLock;
 /// Maximum five-second samples retained for the administrator load history.
 const LOAD_HISTORY_CAPACITY: usize = 720;
 
-/// Bounded, process-local operational counters for one experiment runtime.
+/// Bounded operational counters shared by every runtime in one game process.
 ///
 /// The telemetry deliberately excludes participant content and bearer credentials.
 /// It is reset on process restart and never enters research exports.
@@ -379,6 +379,8 @@ pub(crate) struct ParticipantLiveness {
 /// Runtime-only session status used by dashboard liveness views.
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct SessionLiveness {
+    /// Experiment runtime which owns this session identifier.
+    pub experiment_id: String,
     pub session_id: i64,
     pub room_id: String,
     pub status: String,

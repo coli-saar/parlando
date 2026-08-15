@@ -8,10 +8,13 @@ type ServeOptionsFactory<A> =
 
 /// Installation-owned resources shared by every experiment runtime.
 #[derive(Clone)]
-struct RuntimeShared {
+struct RuntimeShared<A: GameAdapter> {
     store: SharedExperimentStore,
     admin_auth: Arc<AdminAuthenticator>,
     game_settings: Arc<RwLock<StoredGameSettings>>,
+    telemetry: Arc<RuntimeTelemetry>,
+    runtime_registry: Arc<RwLock<HashMap<String, Weak<AppState<A>>>>>,
+    bootstrap_secrets: Arc<HashMap<String, String>>,
 }
 
 /// One compiled game's installation-level dispatcher and lazily built experiment routers.
@@ -24,6 +27,9 @@ struct GameHost<A: GameAdapter + Clone> {
     game_settings: Arc<RwLock<StoredGameSettings>>,
     options_factory: ServeOptionsFactory<A>,
     routers: RwLock<HashMap<String, Router>>,
+    telemetry: Arc<RuntimeTelemetry>,
+    runtime_registry: Arc<RwLock<HashMap<String, Weak<AppState<A>>>>>,
+    bootstrap_secrets: Arc<HashMap<String, String>>,
     primary_experiment_id: String,
     health_slots: Semaphore,
 }
@@ -79,7 +85,22 @@ where
                 .with_context(|| {
                     format!("experiment {experiment_id:?} has invalid configuration")
                 })?;
+        let stored_secrets = self.store.experiment_secrets(experiment_id).await?;
         apply_bootstrap_settings(&mut config, &self.bootstrap, experiment_id);
+        apply_experiment_secrets(&mut config, &stored_secrets);
+        let game_secrets = self.store.game_secrets().await?;
+        let game_settings = self.game_settings.read().await.clone();
+        apply_game_provider_settings(
+            &mut config,
+            &game_settings,
+            &self.bootstrap_secrets,
+            &game_secrets,
+        );
+        self.adapter
+            .validate_config(&config.game)
+            .with_context(|| {
+                format!("experiment {experiment_id:?} has invalid game configuration")
+            })?;
         let mut options = (self.options_factory)(&config)?;
         options.game_descriptor = Some(self.descriptor.clone());
         let router = build_router_with_resources(
@@ -90,6 +111,9 @@ where
                 store: self.store.clone(),
                 admin_auth: self.admin_auth.clone(),
                 game_settings: self.game_settings.clone(),
+                telemetry: self.telemetry.clone(),
+                runtime_registry: self.runtime_registry.clone(),
+                bootstrap_secrets: self.bootstrap_secrets.clone(),
             }),
         )
         .await?;
@@ -285,9 +309,16 @@ where
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .cloned();
+    let on_upgrade = request
+        .extensions()
+        .get::<hyper::upgrade::OnUpgrade>()
+        .cloned();
     *request.extensions_mut() = http::Extensions::new();
     if let Some(connect_info) = connect_info {
         request.extensions_mut().insert(connect_info);
+    }
+    if let Some(on_upgrade) = on_upgrade {
+        request.extensions_mut().insert(on_upgrade);
     }
     if let Some(admin_scope) = admin_scope {
         request.extensions_mut().insert(admin_scope);
@@ -311,16 +342,23 @@ where
     F: Fn(&ExperimentConfig) -> Result<ServeOptions<A>> + Send + Sync + 'static,
 {
     bootstrap.validate()?;
+    validate_game_config_contains_no_secrets(&bootstrap.game)?;
+    adapter.validate_config(&bootstrap.game)?;
     descriptor.validate()?;
     let store = experiment_store_from_url(&bootstrap.database.url).await?;
     let admin_auth = Arc::new(AdminAuthenticator::load(store.clone()).await?);
     let game_settings = Arc::new(RwLock::new(store.game_settings().await?));
+    let telemetry = Arc::new(RuntimeTelemetry::default());
+    let runtime_registry = Arc::new(RwLock::new(HashMap::new()));
+    let bootstrap_secrets = Arc::new(bootstrap_secret_values(&bootstrap));
     let cleanup_auth = admin_auth.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
-            cleanup_auth.cleanup().await;
+            if let Err(error) = cleanup_auth.cleanup().await {
+                tracing::warn!(%error, "failed to clean expired administrator sessions");
+            }
         }
     });
     let primary_experiment_id = bootstrap
@@ -328,11 +366,6 @@ where
         .id
         .clone()
         .unwrap_or_else(generated_experiment_id);
-    for experiment in store.list_experiments(1_000).await? {
-        store
-            .update_experiment_status(&experiment.experiment_id, "inactive")
-            .await?;
-    }
     store
         .ensure_experiment(ExperimentRecord {
             experiment_id: primary_experiment_id.clone(),
@@ -344,6 +377,13 @@ where
             notes: None,
         })
         .await?;
+    let deactivated_experiments = store.deactivate_open_experiments().await?;
+    if deactivated_experiments > 0 {
+        tracing::info!(
+            count = deactivated_experiments,
+            "closed experiment intake after game-process startup"
+        );
+    }
     let host = Arc::new(GameHost {
         adapter,
         bootstrap,
@@ -353,10 +393,21 @@ where
         game_settings,
         options_factory: Arc::new(options_factory),
         routers: RwLock::new(HashMap::new()),
+        telemetry,
+        runtime_registry,
+        bootstrap_secrets,
         primary_experiment_id,
         health_slots: Semaphore::new(1),
     });
     let _primary_router = host.experiment_router(&host.primary_experiment_id).await?;
+    let primary_state = host
+        .runtime_registry
+        .read()
+        .await
+        .get(&host.primary_experiment_id)
+        .and_then(Weak::upgrade)
+        .ok_or_else(|| anyhow!("primary experiment runtime did not register"))?;
+    spawn_load_sampler(primary_state);
     Ok(Router::new()
         .route("/", get(game_root))
         .route("/e/:experiment_id", any(dispatch_experiment_root::<A>))
@@ -457,12 +508,14 @@ async fn build_router_with_resources<A: GameAdapter>(
     adapter: A,
     mut config: ExperimentConfig,
     options: ServeOptions<A>,
-    shared: Option<RuntimeShared>,
+    shared: Option<RuntimeShared<A>>,
 ) -> Result<Router>
 where
     A::State: Serialize,
 {
     config.validate()?;
+    validate_game_config_contains_no_secrets(&config.game)?;
+    adapter.validate_config(&config.game)?;
     let clean_admin_sessions = shared.is_none();
     let game_descriptor = options
         .game_descriptor
@@ -475,6 +528,10 @@ where
             build_manifest: options.game_version_manifest.clone().unwrap_or(Value::Null),
         });
     game_descriptor.validate()?;
+    let bootstrap_secrets = shared
+        .as_ref()
+        .map(|shared| shared.bootstrap_secrets.clone())
+        .unwrap_or_else(|| Arc::new(bootstrap_secret_values(&config)));
     let speechmatics_api_key = std::mem::take(&mut config.speechmatics.api_key);
     let tts_api_key = std::mem::take(&mut config.tts.api_key);
     let store = if let Some(shared) = shared.as_ref() {
@@ -504,9 +561,11 @@ where
         .await?
         .ok_or_else(|| anyhow!("configured experiment was not stored"))?;
     let client_dist = config.server.client_dist_path.as_ref().map(PathBuf::from);
+    let tts_provider_is_override = options.tts_provider.is_some();
+    let transcription_provider_is_override = options.transcription_provider.is_some();
     let tts_provider = if options.tts_provider.is_some() {
         options.tts_provider
-    } else if config.tts.enabled {
+    } else if config.tts.enabled && !tts_api_key.is_empty() && !config.tts.voice_id.is_empty() {
         let mut provider_config = config.tts.clone();
         provider_config.api_key = tts_api_key;
         Some(
@@ -519,7 +578,10 @@ where
     let audio_rooms = Arc::new(AudioRoomRegistry::default());
     let transcription_provider = if options.transcription_provider.is_some() {
         options.transcription_provider
-    } else if config.transcription.enabled && config.transcription.provider == "speechmatics" {
+    } else if config.transcription.enabled
+        && config.transcription.provider == "speechmatics"
+        && !speechmatics_api_key.is_empty()
+    {
         let mut provider_config = config.speechmatics.clone();
         provider_config.api_key = speechmatics_api_key;
         Some(
@@ -545,17 +607,26 @@ where
     } else {
         Arc::new(AdminAuthenticator::load(store.clone()).await?)
     };
-    let game_settings = if let Some(shared) = shared {
-        shared.game_settings
+    let game_settings = if let Some(shared) = shared.as_ref() {
+        shared.game_settings.clone()
     } else {
         Arc::new(RwLock::new(store.game_settings().await?))
     };
+    let telemetry = shared
+        .as_ref()
+        .map(|shared| shared.telemetry.clone())
+        .unwrap_or_else(|| Arc::new(RuntimeTelemetry::default()));
+    let runtime_registry = shared
+        .as_ref()
+        .map(|shared| shared.runtime_registry.clone())
+        .unwrap_or_else(|| Arc::new(RwLock::new(HashMap::new())));
     let state = Arc::new(AppState {
         adapter,
         config,
         experiment_id,
         game_descriptor,
         game_settings,
+        bootstrap_secrets,
         config_revision: stored_experiment.config_revision,
         experiment_lifecycle: RwLock::new(
             ExperimentLifecycle::parse(&lifecycle).map_err(|error| anyhow!(error.message))?,
@@ -567,9 +638,11 @@ where
         started_agents: RwLock::new(HashSet::new()),
         agent_inboxes: RwLock::new(HashMap::new()),
         tts_provider,
+        tts_provider_is_override,
         audio_publisher,
         audio_rooms,
         transcription_provider,
+        transcription_provider_is_override,
         committed_transcripts: RwLock::new(HashSet::new()),
         participant_auth: ParticipantAuthenticator::default(),
         upgrade_tickets: UpgradeTicketStore::default(),
@@ -577,12 +650,17 @@ where
         participant_creation_window: RwLock::new(ParticipantCreationRate::default()),
         chat_submission_budgets: RwLock::new(HashMap::new()),
         rejection_windows: RwLock::new(HashMap::new()),
-        telemetry: Arc::new(RuntimeTelemetry::default()),
+        telemetry,
+        runtime_registry: runtime_registry.clone(),
         room_transition_locks: RwLock::new(HashMap::new()),
         game_connections: RwLock::new(HashMap::new()),
         audio_connections: RwLock::new(HashMap::new()),
         version_manifest,
     });
+    runtime_registry
+        .write()
+        .await
+        .insert(state.experiment_id.clone(), Arc::downgrade(&state));
 
     let public_routes = Router::new()
         .route("/health", get(health::<A>))
@@ -640,6 +718,26 @@ where
             get(admin_experiment_config::<A>).post(admin_save_experiment_config::<A>),
         )
         .route(
+            "/api/admin/experiments/:experiment_id/privacy",
+            get(admin_experiment_privacy_json::<A>),
+        )
+        .route(
+            "/api/admin/experiments/:experiment_id/privacy.json",
+            get(admin_experiment_privacy_json_download::<A>),
+        )
+        .route(
+            "/api/admin/experiments/:experiment_id/privacy.md",
+            get(admin_experiment_privacy_markdown_download::<A>),
+        )
+        .route(
+            "/api/admin/experiments/:experiment_id/secrets/reveal",
+            post(admin_reveal_experiment_secret::<A>),
+        )
+        .route(
+            "/api/admin/experiments/:experiment_id/config/validate",
+            post(admin_validate_game_config::<A>),
+        )
+        .route(
             "/api/admin/experiments/:experiment_id/revisions",
             get(admin_experiment_revisions::<A>),
         )
@@ -650,6 +748,10 @@ where
         .route(
             "/api/admin/game/settings",
             get(admin_game_settings::<A>).post(admin_update_game_settings::<A>),
+        )
+        .route(
+            "/api/admin/game/secrets/reveal",
+            post(admin_reveal_game_secret::<A>),
         )
         .route(
             "/api/admin/experiment/status",
@@ -706,7 +808,9 @@ where
         .with_state(state.clone());
 
     spawn_security_cleanup(state.clone(), clean_admin_sessions);
-    spawn_load_sampler(state);
+    if clean_admin_sessions {
+        spawn_load_sampler(state);
+    }
 
     if let Some(dist) = client_dist.filter(|path| path.join("index.html").is_file()) {
         let index = dist.join("index.html");

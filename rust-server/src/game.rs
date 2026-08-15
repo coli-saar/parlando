@@ -2,6 +2,36 @@ use anyhow::Result;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
+/// Describes one configuration input accepted by a compiled agent factory.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct AgentConfigFieldDescriptor {
+    /// Stable object key written beneath `agents.human_vs_agent.config`.
+    pub key: String,
+    /// Human-readable field label shown by the administrator dashboard.
+    pub label: String,
+    /// Brief explanation of the value's purpose.
+    pub help: String,
+    /// Browser control kind, such as `text` or `url`.
+    pub kind: String,
+    /// Whether an administrator must supply a non-empty value.
+    pub required: bool,
+    /// Default value inserted when this factory is selected.
+    pub default_value: Value,
+}
+
+/// Describes one agent implementation compiled into a concrete game server.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct AgentFactoryDescriptor {
+    /// Stable selector persisted in `agents.human_vs_agent.factory`.
+    pub id: String,
+    /// Concise name shown in the agent selector.
+    pub display_name: String,
+    /// Explanation of where the agent runs and how it behaves.
+    pub description: String,
+    /// Factory-specific structured configuration inputs.
+    pub config_fields: Vec<AgentConfigFieldDescriptor>,
+}
+
 /// Immutable identity of the one game implementation compiled into a server process.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct GameDescriptor {
@@ -104,6 +134,19 @@ pub trait GameAdapter: Send + Sync + 'static {
 
     /// Creates a fresh authoritative state for a new room.
     fn initial_state(&self) -> Self::State;
+    /// Lists the agent factories compiled into this game binary.
+    fn agent_factories(&self) -> Vec<AgentFactoryDescriptor> {
+        Vec::new()
+    }
+    /// Validates game-owned per-experiment configuration before it is saved or activated.
+    fn validate_config(&self, _config: &Value) -> Result<()> {
+        Ok(())
+    }
+    /// Creates initial state using validated game-owned per-experiment configuration.
+    fn initial_state_with_config(&self, config: &Value) -> Result<Self::State> {
+        self.validate_config(config)?;
+        Ok(self.initial_state())
+    }
     /// Parses a browser-provided JSON action into the game-specific action type.
     fn parse_action(&self, action: Value) -> Result<Self::Action> {
         Ok(serde_json::from_value(action)?)

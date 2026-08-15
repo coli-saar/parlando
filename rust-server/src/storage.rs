@@ -135,8 +135,6 @@ pub struct StoredExperimentSummary {
     pub notes: Option<String>,
     /// Whether the experiment should sort ahead of ordinary inactive experiments.
     pub pinned: bool,
-    /// Whether the experiment should be visually de-emphasized as obsolete.
-    pub obsolete: bool,
     /// Immutable configuration revision currently selected by the experiment.
     pub config_revision: i64,
     pub session_count: i64,
@@ -155,14 +153,12 @@ pub struct StoredExperimentDefinition {
     pub config: Value,
     /// Current immutable configuration revision number.
     pub config_revision: i64,
-    /// Current two-state intake lifecycle.
+    /// Current participant-availability lifecycle.
     pub status: String,
     /// Optional researcher-authored catalogue notes.
     pub notes: Option<String>,
     /// Whether this experiment is pinned in the dashboard.
     pub pinned: bool,
-    /// Whether this experiment has been marked obsolete.
-    pub obsolete: bool,
 }
 
 /// One immutable stored configuration revision.
@@ -181,14 +177,28 @@ pub struct StoredExperimentRevision {
 }
 
 /// Settings shared by every experiment hosted by one compiled game process.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StoredGameSettings {
     /// Institution displayed by every experiment of this game process.
     pub institution: String,
     /// Direct-peer CIDR ranges allowed to access administrator surfaces.
     pub admin_allowed_ip_ranges: Vec<String>,
+    /// Installation-wide Speechmatics realtime WebSocket endpoint.
+    pub speechmatics_realtime_url: String,
     /// Optimistic-concurrency revision for dashboard updates.
     pub revision: i64,
+}
+
+impl Default for StoredGameSettings {
+    /// Supplies safe installation defaults before durable settings are loaded.
+    fn default() -> Self {
+        Self {
+            institution: String::new(),
+            admin_allowed_ip_ranges: Vec::new(),
+            speechmatics_realtime_url: "wss://eu.rt.speechmatics.com/v2".to_string(),
+            revision: 1,
+        }
+    }
 }
 
 /// Input for upserting a durable participant identity.
@@ -213,6 +223,8 @@ pub struct SessionRecord {
     pub room_id: String,
     pub mode: String,
     pub status: String,
+    /// Immutable `testing` or `research` data-use purpose.
+    pub purpose: String,
 }
 
 /// Input for placing a participant into a session with a session-local role.
@@ -232,6 +244,8 @@ pub struct ConsentDeclarationRecord {
     pub experiment_id: String,
     pub session_id: Option<i64>,
     pub participant_id: i64,
+    /// Immutable data-use classification inherited from participant intake.
+    pub purpose: String,
     pub consent_item_id: String,
     pub accepted: bool,
     pub consent_text_hash: Option<String>,
@@ -275,6 +289,8 @@ pub struct StoredSessionSummary {
     pub dialogue_id: String,
     pub mode: String,
     pub status: String,
+    /// Immutable data-use classification selected from experiment lifecycle at creation.
+    pub purpose: String,
     /// Immutable experiment configuration revision used for this session.
     pub config_revision: i64,
     /// Exact compiled game version which executed this session.
@@ -334,6 +350,21 @@ pub struct StoredAdminCredential {
     pub role: String,
 }
 
+/// Durable server-side administrator session identified by a hash of its browser token.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredAdminSession {
+    /// Unkeyed SHA-256 digest of a 256-bit random token; the bearer token is never stored.
+    pub token_digest: String,
+    /// Stable authorization role captured when the session was issued.
+    pub role: String,
+    /// Random synchronizer token required on state-changing requests.
+    pub csrf_token: String,
+    /// Unix timestamp at which the administrator authenticated.
+    pub created_at: i64,
+    /// Unix timestamp of the latest periodically persisted authenticated use.
+    pub last_seen_at: i64,
+}
+
 /// Filesystem and database size information used to stop only new session admission.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct StorageCapacity {
@@ -364,7 +395,21 @@ pub trait ExperimentStore: Send + Sync {
     ///
     /// Returns `false` when another request or process completed setup first.
     async fn create_admin_credential(&self, credential: StoredAdminCredential) -> Result<bool>;
-    /// Ensures the process-owned experiment exists, resets it inactive, and returns that status.
+    /// Persists a newly authenticated administrator session without storing its bearer token.
+    async fn save_admin_session(&self, session: StoredAdminSession) -> Result<()>;
+    /// Loads one administrator session by its bearer-token digest.
+    async fn admin_session(&self, token_digest: &str) -> Result<Option<StoredAdminSession>>;
+    /// Advances the durable idle timestamp for one administrator session.
+    async fn touch_admin_session(&self, token_digest: &str, last_seen_at: i64) -> Result<()>;
+    /// Revokes one administrator session by its bearer-token digest.
+    async fn delete_admin_session(&self, token_digest: &str) -> Result<()>;
+    /// Removes administrator sessions outside either the idle or absolute lifetime.
+    async fn delete_expired_admin_sessions(
+        &self,
+        idle_before: i64,
+        absolute_before: i64,
+    ) -> Result<()>;
+    /// Ensures the bootstrap experiment exists without changing its durable lifecycle.
     async fn ensure_experiment(&self, experiment: ExperimentRecord) -> Result<String>;
     /// Lists all experiments owned by the compiled game process.
     async fn list_experiments(&self, limit: i64) -> Result<Vec<StoredExperimentSummary>>;
@@ -375,13 +420,17 @@ pub trait ExperimentStore: Send + Sync {
     ) -> Result<Option<StoredExperimentDefinition>>;
     /// Creates a new inactive experiment and its immutable first configuration revision.
     async fn create_experiment(&self, experiment: ExperimentRecord) -> Result<()>;
-    /// Stores a new immutable configuration revision using optimistic concurrency.
-    async fn save_experiment_revision(
+    /// Loads write-only experiment credentials for runtime construction.
+    async fn experiment_secrets(&self, experiment_id: &str) -> Result<HashMap<String, String>>;
+    /// Atomically saves a configuration revision and its independent secret changes.
+    async fn save_experiment_configuration(
         &self,
         experiment_id: &str,
         expected_revision: i64,
         config: Value,
         change_summary: Option<String>,
+        secret_updates: HashMap<String, String>,
+        secret_deletions: Vec<String>,
     ) -> Result<i64>;
     /// Lists immutable configuration revisions newest first.
     async fn experiment_revisions(
@@ -393,31 +442,39 @@ pub trait ExperimentStore: Send + Sync {
         &self,
         experiment_id: &str,
         pinned: bool,
-        obsolete: bool,
         notes: Option<String>,
     ) -> Result<()>;
     /// Loads settings shared by all experiments in this game process.
     async fn game_settings(&self) -> Result<StoredGameSettings>;
+    /// Loads provider credentials shared by every experiment in this game process.
+    async fn game_secrets(&self) -> Result<HashMap<String, String>>;
     /// Updates shared game settings when the caller edited the current revision.
     async fn update_game_settings(
         &self,
         expected_revision: i64,
         institution: String,
         admin_allowed_ip_ranges: Vec<String>,
+        speechmatics_realtime_url: String,
+        secret_updates: HashMap<String, String>,
+        secret_deletions: Vec<String>,
     ) -> Result<i64>;
-    /// Returns the process-owned experiment with compact session aggregates.
+    /// Returns one experiment with compact session aggregates.
     async fn experiment_summary(
         &self,
         experiment_id: &str,
     ) -> Result<Option<StoredExperimentSummary>>;
     /// Updates the lifecycle status for one experiment row.
     async fn update_experiment_status(&self, experiment_id: &str, status: &str) -> Result<()>;
+    /// Closes all intake that was open before the current game-process startup.
+    async fn deactivate_open_experiments(&self) -> Result<u64>;
     /// Creates or reuses a durable participant identity and returns `participant_id`.
     async fn upsert_participant(&self, participant: ParticipantRecord) -> Result<i64>;
     /// Returns the human-readable experiment-specific identifier for a durable participant.
     async fn participant_research_id(&self, participant_id: i64) -> Result<Option<String>>;
     /// Creates a session for a client-facing room id and returns its per-experiment `session_id`.
     async fn create_session(&self, session: SessionRecord) -> Result<i64>;
+    /// Atomically moves one waiting session to running and records its first start time.
+    async fn start_session(&self, experiment_id: &str, session_id: i64) -> Result<bool>;
     /// Adds a participant to a session with a session-local role.
     async fn add_session_participant(&self, participant: SessionParticipantRecord) -> Result<()>;
     /// Updates connection status for a participant's session appearance.
@@ -445,6 +502,8 @@ pub trait ExperimentStore: Send + Sync {
         session_id: i64,
         reason: &str,
     ) -> Result<()>;
+    /// Marks an unfinished session abandoned and atomically appends its departure event.
+    async fn abandon_session(&self, event: SessionEventRecord) -> Result<()>;
     /// Returns ordered events for one session, optionally filtered by event type.
     async fn session_events(
         &self,
@@ -558,6 +617,15 @@ impl SqliteExperimentStore {
             )
             "#,
             r#"
+            create table if not exists administrator_sessions (
+                token_digest text primary key,
+                role text not null,
+                csrf_token text not null,
+                created_at integer not null,
+                last_seen_at integer not null
+            )
+            "#,
+            r#"
             create table if not exists schema_migrations (
                 version integer primary key,
                 applied_at text not null
@@ -574,8 +642,7 @@ impl SqliteExperimentStore {
                 version_manifest_json text,
                 status text not null default 'inactive',
                 notes text,
-                pinned integer not null default 0,
-                obsolete integer not null default 0
+                pinned integer not null default 0
             )
             "#,
             r#"
@@ -590,11 +657,29 @@ impl SqliteExperimentStore {
             )
             "#,
             r#"
+            create table if not exists experiment_secrets (
+                experiment_id text not null,
+                secret_key text not null,
+                secret_value text not null,
+                updated_at text not null,
+                primary key (experiment_id, secret_key),
+                foreign key (experiment_id) references experiments(experiment_id)
+            )
+            "#,
+            r#"
             create table if not exists game_settings (
                 singleton integer primary key check (singleton = 1),
                 institution text not null default '',
                 admin_allowed_ip_ranges_json text not null default '[]',
+                speechmatics_realtime_url text not null default 'wss://eu.rt.speechmatics.com/v2',
                 revision integer not null default 1,
+                updated_at text not null
+            )
+            "#,
+            r#"
+            create table if not exists game_secrets (
+                secret_key text primary key,
+                secret_value text not null,
                 updated_at text not null
             )
             "#,
@@ -618,6 +703,7 @@ impl SqliteExperimentStore {
                 dialogue_id text unique,
                 mode text not null,
                 status text not null,
+                purpose text not null default 'research',
                 created_at text not null,
                 started_at text,
                 completed_at text,
@@ -651,6 +737,7 @@ impl SqliteExperimentStore {
                 participant_id integer not null,
                 consent_item_id text not null,
                 accepted integer not null,
+                purpose text not null default 'research',
                 declared_at text not null,
                 consent_text_hash text,
                 metadata_json text,
@@ -810,6 +897,134 @@ impl SqliteExperimentStore {
             )
             .await?;
             sqlx::query("insert into schema_migrations (version, applied_at) values (3, ?)")
+                .bind(now_iso())
+                .execute(&self.pool)
+                .await?;
+            version = 3;
+        }
+        if version < 4 {
+            sqlx::query("update experiments set status = 'archived' where obsolete = 1")
+                .execute(&self.pool)
+                .await?;
+            self.drop_column_if_exists("experiments", "obsolete")
+                .await?;
+            sqlx::query("insert into schema_migrations (version, applied_at) values (4, ?)")
+                .bind(now_iso())
+                .execute(&self.pool)
+                .await?;
+            version = 4;
+        }
+        if version < 5 {
+            self.ensure_column("sessions", "purpose", "text not null default 'research'")
+                .await?;
+            sqlx::query("insert into schema_migrations (version, applied_at) values (5, ?)")
+                .bind(now_iso())
+                .execute(&self.pool)
+                .await?;
+            version = 5;
+        }
+        if version < 6 {
+            self.ensure_column(
+                "consent_declarations",
+                "purpose",
+                "text not null default 'research'",
+            )
+            .await?;
+            sqlx::query("insert into schema_migrations (version, applied_at) values (6, ?)")
+                .bind(now_iso())
+                .execute(&self.pool)
+                .await?;
+            version = 6;
+        }
+        if version < 7 {
+            sqlx::query(
+                r#"
+                create table if not exists experiment_secrets (
+                    experiment_id text not null,
+                    secret_key text not null,
+                    secret_value text not null,
+                    updated_at text not null,
+                    primary key (experiment_id, secret_key),
+                    foreign key (experiment_id) references experiments(experiment_id)
+                )
+                "#,
+            )
+            .execute(&self.pool)
+            .await?;
+            sqlx::query("insert into schema_migrations (version, applied_at) values (7, ?)")
+                .bind(now_iso())
+                .execute(&self.pool)
+                .await?;
+            version = 7;
+        }
+        if version < 8 {
+            sqlx::query(
+                r#"
+                create table if not exists administrator_sessions (
+                    token_digest text primary key,
+                    role text not null,
+                    csrf_token text not null,
+                    created_at integer not null,
+                    last_seen_at integer not null
+                )
+                "#,
+            )
+            .execute(&self.pool)
+            .await?;
+            sqlx::query("insert into schema_migrations (version, applied_at) values (8, ?)")
+                .bind(now_iso())
+                .execute(&self.pool)
+                .await?;
+            version = 8;
+        }
+        if version < 9 {
+            self.ensure_column(
+                "game_settings",
+                "speechmatics_realtime_url",
+                "text not null default 'wss://eu.rt.speechmatics.com/v2'",
+            )
+            .await?;
+            sqlx::query(
+                r#"
+                create table if not exists game_secrets (
+                    secret_key text primary key,
+                    secret_value text not null,
+                    updated_at text not null
+                )
+                "#,
+            )
+            .execute(&self.pool)
+            .await?;
+            sqlx::query(
+                r#"
+                insert or replace into game_secrets (secret_key, secret_value, updated_at)
+                select source.secret_key, source.secret_value, source.updated_at
+                from experiment_secrets source
+                where source.secret_key in ('speechmatics.api_key', 'tts.api_key')
+                  and source.updated_at = (
+                    select max(candidate.updated_at) from experiment_secrets candidate
+                    where candidate.secret_key = source.secret_key
+                  )
+                "#,
+            )
+            .execute(&self.pool)
+            .await?;
+            sqlx::query(
+                "delete from experiment_secrets where secret_key in ('speechmatics.api_key', 'tts.api_key')",
+            )
+            .execute(&self.pool)
+            .await?;
+            sqlx::query("insert into schema_migrations (version, applied_at) values (9, ?)")
+                .bind(now_iso())
+                .execute(&self.pool)
+                .await?;
+            version = 9;
+        }
+        if version < 10 {
+            sqlx::query("update sessions set status = 'running' where status = 'playing'")
+                .execute(&self.pool)
+                .await?;
+            sqlx::query("insert into schema_migrations (version, applied_at) values (10, ?)")
                 .bind(now_iso())
                 .execute(&self.pool)
                 .await?;
@@ -1204,9 +1419,9 @@ pub async fn merge_sqlite_catalogues(
     for statement in [
         r#"insert into main.experiments
                (experiment_id, created_at, game_version, config_json, config_revision,
-                server_version, version_manifest_json, status, notes, pinned, obsolete)
+                server_version, version_manifest_json, status, notes, pinned)
            select experiment_id, created_at, game_version, config_json, config_revision,
-                  server_version, version_manifest_json, status, notes, pinned, obsolete
+                  server_version, version_manifest_json, status, notes, pinned
            from merge_source.experiments"#,
         r#"insert into main.experiment_config_revisions
                (experiment_id, revision, config_json, created_at, change_summary)
@@ -1432,6 +1647,78 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(result.rows_affected() == 1)
     }
 
+    async fn save_admin_session(&self, session: StoredAdminSession) -> Result<()> {
+        sqlx::query(
+            r#"
+            insert into administrator_sessions
+                (token_digest, role, csrf_token, created_at, last_seen_at)
+            values (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(session.token_digest)
+        .bind(session.role)
+        .bind(session.csrf_token)
+        .bind(session.created_at)
+        .bind(session.last_seen_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn admin_session(&self, token_digest: &str) -> Result<Option<StoredAdminSession>> {
+        Ok(sqlx::query_as::<_, (String, String, String, i64, i64)>(
+            r#"
+            select token_digest, role, csrf_token, created_at, last_seen_at
+            from administrator_sessions
+            where token_digest = ?
+            "#,
+        )
+        .bind(token_digest)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(
+            |(token_digest, role, csrf_token, created_at, last_seen_at)| StoredAdminSession {
+                token_digest,
+                role,
+                csrf_token,
+                created_at,
+                last_seen_at,
+            },
+        ))
+    }
+
+    async fn touch_admin_session(&self, token_digest: &str, last_seen_at: i64) -> Result<()> {
+        sqlx::query("update administrator_sessions set last_seen_at = ? where token_digest = ?")
+            .bind(last_seen_at)
+            .bind(token_digest)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn delete_admin_session(&self, token_digest: &str) -> Result<()> {
+        sqlx::query("delete from administrator_sessions where token_digest = ?")
+            .bind(token_digest)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn delete_expired_admin_sessions(
+        &self,
+        idle_before: i64,
+        absolute_before: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "delete from administrator_sessions where last_seen_at <= ? or created_at <= ?",
+        )
+        .bind(idle_before)
+        .bind(absolute_before)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn ensure_experiment(&self, experiment: ExperimentRecord) -> Result<String> {
         let config_json = serde_json::to_string(&experiment.config)?;
         let created_at = now_iso();
@@ -1443,8 +1730,7 @@ impl ExperimentStore for SqliteExperimentStore {
             values (?, ?, ?, ?, 1, ?, ?, ?, ?)
             on conflict(experiment_id) do update set
                 server_version = excluded.server_version,
-                version_manifest_json = excluded.version_manifest_json,
-                status = 'inactive'
+                version_manifest_json = excluded.version_manifest_json
             returning status
             "#,
         )
@@ -1484,7 +1770,8 @@ impl ExperimentStore for SqliteExperimentStore {
             select experiment_id
             from experiments
             order by case when status = 'active' then 0 else 1 end,
-                     pinned desc, obsolete asc, created_at desc
+                     case when status = 'archived' then 1 else 0 end,
+                     pinned desc, created_at desc
             limit ?
             "#,
         )
@@ -1504,22 +1791,10 @@ impl ExperimentStore for SqliteExperimentStore {
         &self,
         experiment_id: &str,
     ) -> Result<Option<StoredExperimentDefinition>> {
-        let row = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                String,
-                i64,
-                String,
-                Option<String>,
-                bool,
-                bool,
-            ),
-        >(
+        let row = sqlx::query_as::<_, (String, String, String, i64, String, Option<String>, bool)>(
             r#"
             select experiment_id, game_version, config_json, config_revision, status,
-                   notes, pinned, obsolete
+                   notes, pinned
             from experiments where experiment_id = ?
             "#,
         )
@@ -1535,7 +1810,6 @@ impl ExperimentStore for SqliteExperimentStore {
                 status: row.4,
                 notes: row.5,
                 pinned: row.6,
-                obsolete: row.7,
             })
         })
         .transpose()
@@ -1553,8 +1827,8 @@ impl ExperimentStore for SqliteExperimentStore {
             r#"
             insert into experiments
                 (experiment_id, created_at, game_version, config_json, config_revision,
-                 server_version, version_manifest_json, status, notes, pinned, obsolete)
-            values (?, ?, ?, ?, 1, ?, ?, 'inactive', ?, 0, 0)
+                 server_version, version_manifest_json, status, notes, pinned)
+            values (?, ?, ?, ?, 1, ?, ?, 'inactive', ?, 0)
             "#,
         )
         .bind(&experiment.experiment_id)
@@ -1582,21 +1856,31 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(())
     }
 
-    async fn save_experiment_revision(
+    async fn experiment_secrets(&self, experiment_id: &str) -> Result<HashMap<String, String>> {
+        Ok(sqlx::query_as::<_, (String, String)>(
+            "select secret_key, secret_value from experiment_secrets where experiment_id = ?",
+        )
+        .bind(experiment_id)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .collect())
+    }
+
+    async fn save_experiment_configuration(
         &self,
         experiment_id: &str,
         expected_revision: i64,
         config: Value,
         change_summary: Option<String>,
+        secret_updates: HashMap<String, String>,
+        secret_deletions: Vec<String>,
     ) -> Result<i64> {
         let mut tx = self.pool.begin().await?;
         let next_revision = expected_revision + 1;
         let config_json = serde_json::to_string(&config)?;
         let result = sqlx::query(
-            r#"
-            update experiments set config_json = ?, config_revision = ?
-            where experiment_id = ? and config_revision = ? and status = 'inactive'
-            "#,
+            "update experiments set config_json = ?, config_revision = ? where experiment_id = ? and config_revision = ? and status = 'inactive'",
         )
         .bind(&config_json)
         .bind(next_revision)
@@ -1605,22 +1889,38 @@ impl ExperimentStore for SqliteExperimentStore {
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() != 1 {
-            bail!("experiment configuration changed concurrently or experiment is active");
+            bail!("experiment configuration changed concurrently or experiment is not inactive");
         }
         sqlx::query(
-            r#"
-            insert into experiment_config_revisions
-                (experiment_id, revision, config_json, created_at, change_summary)
-            values (?, ?, ?, ?, ?)
-            "#,
+            "insert into experiment_config_revisions (experiment_id, revision, config_json, created_at, change_summary) values (?, ?, ?, ?, ?)",
         )
         .bind(experiment_id)
         .bind(next_revision)
-        .bind(config_json)
+        .bind(&config_json)
         .bind(now_iso())
         .bind(change_summary)
         .execute(&mut *tx)
         .await?;
+        for (key, value) in secret_updates {
+            sqlx::query(
+                "insert into experiment_secrets (experiment_id, secret_key, secret_value, updated_at) values (?, ?, ?, ?) on conflict(experiment_id, secret_key) do update set secret_value = excluded.secret_value, updated_at = excluded.updated_at",
+            )
+            .bind(experiment_id)
+            .bind(key)
+            .bind(value)
+            .bind(now_iso())
+            .execute(&mut *tx)
+            .await?;
+        }
+        for key in secret_deletions {
+            sqlx::query(
+                "delete from experiment_secrets where experiment_id = ? and secret_key = ?",
+            )
+            .bind(experiment_id)
+            .bind(key)
+            .execute(&mut *tx)
+            .await?;
+        }
         tx.commit().await?;
         Ok(next_revision)
     }
@@ -1656,18 +1956,15 @@ impl ExperimentStore for SqliteExperimentStore {
         &self,
         experiment_id: &str,
         pinned: bool,
-        obsolete: bool,
         notes: Option<String>,
     ) -> Result<()> {
-        let result = sqlx::query(
-            "update experiments set pinned = ?, obsolete = ?, notes = ? where experiment_id = ?",
-        )
-        .bind(pinned)
-        .bind(obsolete)
-        .bind(notes)
-        .bind(experiment_id)
-        .execute(&self.pool)
-        .await?;
+        let result =
+            sqlx::query("update experiments set pinned = ?, notes = ? where experiment_id = ?")
+                .bind(pinned)
+                .bind(notes)
+                .bind(experiment_id)
+                .execute(&self.pool)
+                .await?;
         if result.rows_affected() != 1 {
             bail!("experiment not found");
         }
@@ -1675,16 +1972,27 @@ impl ExperimentStore for SqliteExperimentStore {
     }
 
     async fn game_settings(&self) -> Result<StoredGameSettings> {
-        let row = sqlx::query_as::<_, (String, String, i64)>(
-            "select institution, admin_allowed_ip_ranges_json, revision from game_settings where singleton = 1",
+        let row = sqlx::query_as::<_, (String, String, String, i64)>(
+            "select institution, admin_allowed_ip_ranges_json, speechmatics_realtime_url, revision from game_settings where singleton = 1",
         )
         .fetch_one(&self.pool)
         .await?;
         Ok(StoredGameSettings {
             institution: row.0,
             admin_allowed_ip_ranges: serde_json::from_str(&row.1)?,
-            revision: row.2,
+            speechmatics_realtime_url: row.2,
+            revision: row.3,
         })
+    }
+
+    async fn game_secrets(&self) -> Result<HashMap<String, String>> {
+        Ok(sqlx::query_as::<_, (String, String)>(
+            "select secret_key, secret_value from game_secrets",
+        )
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .collect())
     }
 
     async fn update_game_settings(
@@ -1692,24 +2000,44 @@ impl ExperimentStore for SqliteExperimentStore {
         expected_revision: i64,
         institution: String,
         admin_allowed_ip_ranges: Vec<String>,
+        speechmatics_realtime_url: String,
+        secret_updates: HashMap<String, String>,
+        secret_deletions: Vec<String>,
     ) -> Result<i64> {
+        let mut tx = self.pool.begin().await?;
         let next_revision = expected_revision + 1;
         let result = sqlx::query(
             r#"
-            update game_settings set institution = ?, admin_allowed_ip_ranges_json = ?, revision = ?, updated_at = ?
+            update game_settings set institution = ?, admin_allowed_ip_ranges_json = ?, speechmatics_realtime_url = ?, revision = ?, updated_at = ?
             where singleton = 1 and revision = ?
             "#,
         )
         .bind(institution.trim())
         .bind(serde_json::to_string(&admin_allowed_ip_ranges)?)
+        .bind(speechmatics_realtime_url.trim())
         .bind(next_revision)
         .bind(now_iso())
         .bind(expected_revision)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
         if result.rows_affected() != 1 {
             bail!("game settings changed concurrently");
         }
+        for (key, value) in secret_updates {
+            sqlx::query("insert into game_secrets (secret_key, secret_value, updated_at) values (?, ?, ?) on conflict(secret_key) do update set secret_value = excluded.secret_value, updated_at = excluded.updated_at")
+                .bind(key)
+                .bind(value)
+                .bind(now_iso())
+                .execute(&mut *tx)
+                .await?;
+        }
+        for key in secret_deletions {
+            sqlx::query("delete from game_secrets where secret_key = ?")
+                .bind(key)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
         Ok(next_revision)
     }
 
@@ -1729,7 +2057,6 @@ impl ExperimentStore for SqliteExperimentStore {
                 String,
                 Option<String>,
                 bool,
-                bool,
                 i64,
                 i64,
                 i64,
@@ -1738,7 +2065,7 @@ impl ExperimentStore for SqliteExperimentStore {
         >(
             r#"
             select e.experiment_id, e.game_version, e.created_at, e.config_json, e.server_version,
-                   e.version_manifest_json, e.status, e.notes, e.pinned, e.obsolete,
+                   e.version_manifest_json, e.status, e.notes, e.pinned,
                    e.config_revision,
                    count(s.session_id) as session_count,
                    sum(case when s.status = 'completed' then 1 else 0 end) as completed_session_count,
@@ -1774,11 +2101,10 @@ impl ExperimentStore for SqliteExperimentStore {
                 status: row.6,
                 notes: row.7,
                 pinned: row.8,
-                obsolete: row.9,
-                config_revision: row.10,
-                session_count: row.11,
-                completed_session_count: row.12,
-                last_session_at: row.13,
+                config_revision: row.9,
+                session_count: row.10,
+                completed_session_count: row.11,
+                last_session_at: row.12,
             })
         })
         .transpose()
@@ -1791,6 +2117,15 @@ impl ExperimentStore for SqliteExperimentStore {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    async fn deactivate_open_experiments(&self) -> Result<u64> {
+        let result = sqlx::query(
+            "update experiments set status = 'inactive' where status in ('active', 'testing')",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     async fn upsert_participant(&self, participant: ParticipantRecord) -> Result<i64> {
@@ -1848,6 +2183,11 @@ impl ExperimentStore for SqliteExperimentStore {
 
     async fn create_session(&self, session: SessionRecord) -> Result<i64> {
         let mut tx = self.pool.begin().await?;
+        if !matches!(session.purpose.as_str(), "testing" | "research") {
+            return Err(anyhow::anyhow!(
+                "session purpose must be testing or research"
+            ));
+        }
         let next_session_id = sqlx::query_scalar::<_, i64>(
             "select coalesce(max(session_id), 0) + 1 from sessions where experiment_id = ?",
         )
@@ -1869,9 +2209,9 @@ impl ExperimentStore for SqliteExperimentStore {
         sqlx::query(
             r#"
             insert into sessions
-            (experiment_id, session_id, room_id, dialogue_id, mode, status, created_at,
+            (experiment_id, session_id, room_id, dialogue_id, mode, status, purpose, created_at,
              config_revision, game_version)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(session.experiment_id)
@@ -1880,6 +2220,7 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(readable_dialogue_id)
         .bind(session.mode)
         .bind(session.status)
+        .bind(session.purpose)
         .bind(now_iso())
         .bind(session.config_revision)
         .bind(session.game_version)
@@ -1887,6 +2228,18 @@ impl ExperimentStore for SqliteExperimentStore {
         .await?;
         tx.commit().await?;
         Ok(next_session_id)
+    }
+
+    async fn start_session(&self, experiment_id: &str, session_id: i64) -> Result<bool> {
+        let result = sqlx::query(
+            "update sessions set status = 'running', started_at = coalesce(started_at, ?) where experiment_id = ? and session_id = ? and status = 'waiting'",
+        )
+        .bind(now_iso())
+        .bind(experiment_id)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     async fn add_session_participant(&self, participant: SessionParticipantRecord) -> Result<()> {
@@ -1937,8 +2290,8 @@ impl ExperimentStore for SqliteExperimentStore {
         sqlx::query(
             r#"
             insert into consent_declarations
-            (experiment_id, session_id, participant_id, consent_item_id, accepted, declared_at, consent_text_hash, metadata_json)
-            values (?, ?, ?, ?, ?, ?, ?, ?)
+            (experiment_id, session_id, participant_id, consent_item_id, accepted, purpose, declared_at, consent_text_hash, metadata_json)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(declaration.experiment_id)
@@ -1946,6 +2299,7 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(declaration.participant_id)
         .bind(declaration.consent_item_id)
         .bind(if declaration.accepted { 1 } else { 0 })
+        .bind(declaration.purpose)
         .bind(now_iso())
         .bind(declaration.consent_text_hash)
         .bind(serde_json::to_string(&declaration.metadata)?)
@@ -2062,7 +2416,7 @@ impl ExperimentStore for SqliteExperimentStore {
         let Some(status) = status else {
             bail!("session not found");
         };
-        if matches!(status.as_str(), "completed" | "expired") {
+        if matches!(status.as_str(), "completed" | "expired" | "abandoned") {
             tx.rollback().await?;
             return Ok(());
         }
@@ -2094,6 +2448,65 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(now_iso())
         .bind(experiment_id)
         .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn abandon_session(&self, event: SessionEventRecord) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        let status = sqlx::query_scalar::<_, String>(
+            "select status from sessions where experiment_id = ? and session_id = ?",
+        )
+        .bind(&event.experiment_id)
+        .bind(event.session_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(status) = status else {
+            bail!("session not found");
+        };
+        if matches!(status.as_str(), "completed" | "expired" | "abandoned") {
+            tx.rollback().await?;
+            return Ok(());
+        }
+        let event_index = sqlx::query_scalar::<_, i64>(
+            "select coalesce(max(event_index), 0) + 1 from session_events where experiment_id = ? and session_id = ?",
+        )
+        .bind(&event.experiment_id)
+        .bind(event.session_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            insert into session_events
+            (experiment_id, session_id, event_index, event_type, actor_participant_id,
+             actor_role, payload_json, game_state_json, created_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&event.experiment_id)
+        .bind(event.session_id)
+        .bind(event_index)
+        .bind(event.event_type)
+        .bind(event.actor_participant_id)
+        .bind(event.actor_role)
+        .bind(serde_json::to_string(&event.payload)?)
+        .bind(
+            event
+                .game_state
+                .map(|state| serde_json::to_string(&state))
+                .transpose()?,
+        )
+        .bind(now_iso())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "update sessions set status = 'abandoned', completed_at = ? where experiment_id = ? and session_id = ?",
+        )
+        .bind(now_iso())
+        .bind(&event.experiment_id)
+        .bind(event.session_id)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -2154,6 +2567,7 @@ impl ExperimentStore for SqliteExperimentStore {
                 String,
                 String,
                 String,
+                String,
                 i64,
                 String,
                 String,
@@ -2166,7 +2580,7 @@ impl ExperimentStore for SqliteExperimentStore {
             ),
         >(
             r#"
-            select s.experiment_id, s.session_id, s.room_id, s.dialogue_id, s.mode, s.status,
+            select s.experiment_id, s.session_id, s.room_id, s.dialogue_id, s.mode, s.status, s.purpose,
                    s.config_revision, s.game_version, s.created_at, s.started_at,
                    s.completed_at, s.completion_json,
                    count(distinct sp.participant_id) as participant_count,
@@ -2196,18 +2610,19 @@ impl ExperimentStore for SqliteExperimentStore {
                 dialogue_id: row.3,
                 mode: row.4,
                 status: row.5,
-                config_revision: row.6,
-                game_version: row.7,
-                created_at: row.8,
-                started_at: row.9,
-                completed_at: row.10,
+                purpose: row.6,
+                config_revision: row.7,
+                game_version: row.8,
+                created_at: row.9,
+                started_at: row.10,
+                completed_at: row.11,
                 completion: row
-                    .11
+                    .12
                     .map(|raw| serde_json::from_str::<Value>(&raw))
                     .transpose()?,
-                participant_count: row.12,
-                event_count: row.13,
-                last_event_at: row.14,
+                participant_count: row.13,
+                event_count: row.14,
+                last_event_at: row.15,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -2461,16 +2876,15 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
                 String,
                 Option<String>,
                 bool,
-                bool,
             ),
         >(
-            "select experiment_id, game_version, config_revision, created_at, config_json, server_version, version_manifest_json, status, notes, pinned, obsolete from experiments where experiment_id = ?",
+            "select experiment_id, game_version, config_revision, created_at, config_json, server_version, version_manifest_json, status, notes, pinned from experiments where experiment_id = ?",
         )
         .bind(experiment_id)
         .fetch_optional(pool)
         .await?;
         json!(row.map(
-            |(id, game_version, config_revision, created_at, config_json, server_version, version_manifest_json, status, notes, pinned, obsolete)| json!({
+            |(id, game_version, config_revision, created_at, config_json, server_version, version_manifest_json, status, notes, pinned)| json!({
                 "experiment_id": id,
                 "game_version": game_version,
                 "config_revision": config_revision,
@@ -2481,20 +2895,20 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
                 "status": status,
                 "notes": notes,
                 "pinned": pinned,
-                "obsolete": obsolete,
             })
         ))
     };
     let sessions_sql = if session_id.is_some() {
-        "select experiment_id, session_id, room_id, dialogue_id, mode, status, config_revision, game_version, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? and session_id = ? order by session_id"
+        "select experiment_id, session_id, room_id, dialogue_id, mode, status, purpose, config_revision, game_version, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? and session_id = ? order by session_id"
     } else {
-        "select experiment_id, session_id, room_id, dialogue_id, mode, status, config_revision, game_version, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? order by session_id"
+        "select experiment_id, session_id, room_id, dialogue_id, mode, status, purpose, config_revision, game_version, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? order by session_id"
     };
     let mut sessions_query = sqlx::query_as::<
         _,
         (
             String,
             i64,
+            String,
             String,
             String,
             String,
@@ -2523,12 +2937,13 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
                 "dialogue_id": row.3,
                 "mode": row.4,
                 "status": row.5,
-                "config_revision": row.6,
-                "game_version": row.7,
-                "created_at": row.8,
-                "started_at": row.9,
-                "completed_at": row.10,
-                "completion": row.11.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
+                "purpose": row.6,
+                "config_revision": row.7,
+                "game_version": row.8,
+                "created_at": row.9,
+                "started_at": row.10,
+                "completed_at": row.11,
+                "completion": row.12.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
             })
         })
         .collect::<Vec<_>>();
@@ -2638,9 +3053,9 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
         })
         .collect::<Vec<_>>();
     let consent_sql = if session_id.is_some() {
-        "select consent_id, experiment_id, session_id, participant_id, consent_item_id, accepted, declared_at, consent_text_hash, metadata_json from consent_declarations where experiment_id = ? and session_id = ? order by declared_at, consent_id"
+        "select consent_id, experiment_id, session_id, participant_id, consent_item_id, accepted, purpose, declared_at, consent_text_hash, metadata_json from consent_declarations where experiment_id = ? and session_id = ? order by declared_at, consent_id"
     } else {
-        "select consent_id, experiment_id, session_id, participant_id, consent_item_id, accepted, declared_at, consent_text_hash, metadata_json from consent_declarations where experiment_id = ? order by declared_at, consent_id"
+        "select consent_id, experiment_id, session_id, participant_id, consent_item_id, accepted, purpose, declared_at, consent_text_hash, metadata_json from consent_declarations where experiment_id = ? order by declared_at, consent_id"
     };
     let mut consent_query = sqlx::query_as::<
         _,
@@ -2651,6 +3066,7 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
             i64,
             String,
             i64,
+            String,
             String,
             Option<String>,
             Option<String>,
@@ -2672,9 +3088,10 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
                 "participant_id": row.3,
                 "consent_item_id": row.4,
                 "accepted": row.5 != 0,
-                "declared_at": row.6,
-                "consent_text_hash": row.7,
-                "metadata": row.8.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
+                "purpose": row.6,
+                "declared_at": row.7,
+                "consent_text_hash": row.8,
+                "metadata": row.9.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
             })
         })
         .collect::<Vec<_>>();
@@ -2695,6 +3112,8 @@ pub struct ParticipantSession {
     pub participant_id: i64,
     pub research_id: String,
     pub source: String,
+    /// Immutable data-use purpose selected when participant intake opened.
+    pub purpose: String,
     pub status: String,
     pub study_id: Option<String>,
     pub consent_decisions: HashMap<String, bool>,
@@ -2727,8 +3146,10 @@ pub struct GameRoom<S> {
     pub experiment_id: String,
     pub session_id: i64,
     pub mode: String,
+    /// Immutable data-use purpose shared by every participant in this room.
+    pub purpose: String,
     pub state: S,
-    /// Runtime lifecycle status: `waiting`, `playing`, or `completed`.
+    /// Runtime lifecycle status: `waiting`, `running`, `completed`, or `abandoned`.
     pub status: String,
     pub study_id: Option<String>,
     pub participants: HashMap<String, RoomParticipant>,
@@ -2773,6 +3194,7 @@ impl<S: Clone + Serialize> MemoryState<S> {
         participant_id: i64,
         research_id: String,
         source: String,
+        purpose: String,
         study_id: Option<String>,
     ) -> ParticipantSession {
         let now = now_iso();
@@ -2781,6 +3203,7 @@ impl<S: Clone + Serialize> MemoryState<S> {
             participant_id,
             research_id,
             source,
+            purpose,
             status: "created".to_string(),
             study_id,
             consent_decisions: HashMap::new(),

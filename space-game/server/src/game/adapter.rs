@@ -1,5 +1,8 @@
-use anyhow::Result;
-use parlando_server::{GameAdapter, PlayerRole};
+use anyhow::{bail, Result};
+use parlando_server::{
+    AgentConfigFieldDescriptor, AgentFactoryDescriptor, GameAdapter, PlayerRole,
+};
+use serde_json::Value;
 
 use super::state_engine::{
     apply_action, available_actions, derive_systems, initial_state, validate_action,
@@ -7,9 +10,11 @@ use super::state_engine::{
 };
 
 #[derive(Clone, Debug, Default)]
+/// Connects the Space Game state engine to the reusable Parlando runtime.
 pub struct SpaceGameAdapter;
 
 impl SpaceGameAdapter {
+    /// Creates the stateless adapter used by every experiment runtime in this process.
     pub fn new() -> Self {
         Self
     }
@@ -24,6 +29,65 @@ impl GameAdapter for SpaceGameAdapter {
 
     fn initial_state(&self) -> Self::State {
         initial_state()
+    }
+
+    /// Advertises the Space Game agents compiled into this server binary.
+    fn agent_factories(&self) -> Vec<AgentFactoryDescriptor> {
+        vec![
+            AgentFactoryDescriptor {
+                id: "space_game.back_and_forth".to_string(),
+                display_name: "Back and forth".to_string(),
+                description: "Built-in deterministic Space Game agent; useful for local experiments and testing.".to_string(),
+                config_fields: Vec::new(),
+            },
+            AgentFactoryDescriptor {
+                id: "remote_grpc".to_string(),
+                display_name: "Remote gRPC agent".to_string(),
+                description: "Connects to an external agent process using the Parlando agent protocol.".to_string(),
+                config_fields: vec![
+                    AgentConfigFieldDescriptor {
+                        key: "endpoint".to_string(),
+                        label: "Agent endpoint".to_string(),
+                        help: "gRPC endpoint of the external agent process, for example http://127.0.0.1:50051.".to_string(),
+                        kind: "url".to_string(),
+                        required: true,
+                        default_value: Value::String("http://127.0.0.1:50051".to_string()),
+                    },
+                    AgentConfigFieldDescriptor {
+                        key: "agent_name".to_string(),
+                        label: "Agent name".to_string(),
+                        help: "Name sent to the external process when a session is created.".to_string(),
+                        kind: "text".to_string(),
+                        required: false,
+                        default_value: Value::String("space-game-remote-agent".to_string()),
+                    },
+                    AgentConfigFieldDescriptor {
+                        key: "agent_version".to_string(),
+                        label: "Agent version".to_string(),
+                        help: "Optional version recorded with the agent participant.".to_string(),
+                        kind: "text".to_string(),
+                        required: false,
+                        default_value: Value::Null,
+                    },
+                    AgentConfigFieldDescriptor {
+                        key: "protocol_version".to_string(),
+                        label: "Protocol version".to_string(),
+                        help: "Agent protocol expected by the external process.".to_string(),
+                        kind: "text".to_string(),
+                        required: false,
+                        default_value: Value::String("parlando-agent-v2".to_string()),
+                    },
+                ],
+            },
+        ]
+    }
+
+    /// Rejects game-owned options because the current Space Game has no such parameters.
+    fn validate_config(&self, config: &Value) -> Result<()> {
+        if !config.as_object().is_some_and(|options| options.is_empty()) {
+            bail!("Space Game currently has no game-specific options; use an empty YAML mapping")
+        }
+        Ok(())
     }
 
     fn validate_action(
@@ -133,6 +197,7 @@ impl GameAdapter for SpaceGameAdapter {
     }
 }
 
+/// Formats one accepted game action from the observing participant's perspective.
 fn event_text(action: &SpaceAction, is_actor: bool) -> String {
     let subject = if is_actor {
         "You".to_string()
@@ -159,5 +224,42 @@ fn event_text(action: &SpaceAction, is_actor: bool) -> String {
         SpaceAction::LaunchBeacon { .. } => format!("{subject} launch the beacon."),
         SpaceAction::RunDiagnostic { .. } => format!("{subject} run diagnostics."),
         _ => format!("{subject} act."),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Confirms the dashboard cannot save game-owned keys that Space Game would ignore.
+    #[test]
+    fn game_configuration_rejects_unknown_options() {
+        let adapter = SpaceGameAdapter::new();
+        adapter.validate_config(&serde_json::json!({})).unwrap();
+        let error = adapter
+            .validate_config(&serde_json::json!({"difficulty": 2}))
+            .unwrap_err();
+        assert!(error.to_string().contains("no game-specific options"));
+    }
+
+    /// Confirms the dashboard receives every agent selector resolved by Space Game.
+    #[test]
+    fn compiled_agent_catalogue_matches_factory_selectors() {
+        let factories = SpaceGameAdapter::new().agent_factories();
+        assert_eq!(
+            factories
+                .iter()
+                .map(|factory| factory.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["space_game.back_and_forth", "remote_grpc"]
+        );
+        let remote = factories
+            .iter()
+            .find(|factory| factory.id == "remote_grpc")
+            .unwrap();
+        assert!(remote
+            .config_fields
+            .iter()
+            .any(|field| field.key == "endpoint" && field.required));
     }
 }

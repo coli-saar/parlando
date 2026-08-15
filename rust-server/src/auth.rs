@@ -17,11 +17,12 @@ use tokio::{
     task,
 };
 
-use crate::storage::{SharedExperimentStore, StoredAdminCredential};
+use crate::storage::{SharedExperimentStore, StoredAdminCredential, StoredAdminSession};
 
 const PARTICIPANT_LIFETIME_SECONDS: i64 = 24 * 60 * 60;
-const ADMIN_IDLE_SECONDS: i64 = 30 * 60;
-const ADMIN_ABSOLUTE_SECONDS: i64 = 8 * 60 * 60;
+pub(crate) const ADMIN_IDLE_SECONDS: i64 = 7 * 24 * 60 * 60;
+pub(crate) const ADMIN_ABSOLUTE_SECONDS: i64 = 30 * 24 * 60 * 60;
+const ADMIN_TOUCH_SECONDS: i64 = 5 * 60;
 const TICKET_LIFETIME_SECONDS: i64 = 60;
 
 /// The authenticated identity attached to a participant-owned request.
@@ -268,12 +269,11 @@ pub(crate) struct AdminSession {
     pub last_seen_at: i64,
 }
 
-/// Built-in Argon2id administrator authenticator and server-side session registry.
+/// Built-in Argon2id administrator authenticator backed by durable hashed sessions.
 pub(crate) struct AdminAuthenticator {
     credential: RwLock<Option<AdminCredential>>,
     store: SharedExperimentStore,
-    sessions: RwLock<HashMap<[u8; 32], AdminSession>>,
-    session_pepper: [u8; 32],
+    comparison_pepper: [u8; 32],
     login_slots: Semaphore,
 }
 
@@ -298,8 +298,7 @@ impl AdminAuthenticator {
         Ok(Self {
             credential: RwLock::new(credential),
             store,
-            sessions: RwLock::new(HashMap::new()),
-            session_pepper: random_bytes(),
+            comparison_pepper: random_bytes(),
             login_slots: Semaphore::new(2),
         })
     }
@@ -380,8 +379,8 @@ impl AdminAuthenticator {
         let Some(credential) = credential else {
             return Ok(AdminLoginResult::Invalid);
         };
-        let username_valid: bool = token_digest(username, &self.session_pepper)
-            .ct_eq(&token_digest(&credential.username, &self.session_pepper))
+        let username_valid: bool = token_digest(username, &self.comparison_pepper)
+            .ct_eq(&token_digest(&credential.username, &self.comparison_pepper))
             .into();
         let password_hash = credential.password_hash.clone();
         let password = password.to_string();
@@ -405,44 +404,55 @@ impl AdminAuthenticator {
             created_at: now,
             last_seen_at: now,
         };
-        self.sessions
-            .write()
-            .await
-            .insert(token_digest(&token, &self.session_pepper), session.clone());
+        self.store
+            .save_admin_session(StoredAdminSession {
+                token_digest: administrator_token_digest(&token),
+                role: session.role.as_str().to_string(),
+                csrf_token: session.csrf_token.clone(),
+                created_at: session.created_at,
+                last_seen_at: session.last_seen_at,
+            })
+            .await?;
         Ok(AdminLoginResult::Authenticated(token, session))
     }
 
     /// Validates a session token and refreshes its idle timestamp.
-    pub async fn authenticate(&self, token: &str) -> Option<AdminSession> {
+    pub async fn authenticate(&self, token: &str) -> Result<Option<AdminSession>> {
         let now = now_timestamp();
-        let mut sessions = self.sessions.write().await;
-        let digest = token_digest(token, &self.session_pepper);
-        let session = sessions.get_mut(&digest)?;
-        if session.last_seen_at <= now - ADMIN_IDLE_SECONDS
-            || session.created_at <= now - ADMIN_ABSOLUTE_SECONDS
+        let digest = administrator_token_digest(token);
+        let Some(stored) = self.store.admin_session(&digest).await? else {
+            return Ok(None);
+        };
+        if stored.last_seen_at <= now - ADMIN_IDLE_SECONDS
+            || stored.created_at <= now - ADMIN_ABSOLUTE_SECONDS
         {
-            sessions.remove(&digest);
-            return None;
+            self.store.delete_admin_session(&digest).await?;
+            return Ok(None);
         }
-        session.last_seen_at = now;
-        Some(session.clone())
+        if stored.last_seen_at <= now - ADMIN_TOUCH_SECONDS {
+            self.store.touch_admin_session(&digest, now).await?;
+        }
+        Ok(Some(AdminSession {
+            role: AdminRole::parse(&stored.role)?,
+            csrf_token: stored.csrf_token,
+            created_at: stored.created_at,
+            last_seen_at: now,
+        }))
     }
 
     /// Revokes a server-side administrator session.
-    pub async fn logout(&self, token: &str) {
-        self.sessions
-            .write()
+    pub async fn logout(&self, token: &str) -> Result<()> {
+        self.store
+            .delete_admin_session(&administrator_token_digest(token))
             .await
-            .remove(&token_digest(token, &self.session_pepper));
     }
 
     /// Removes expired administrator sessions.
-    pub async fn cleanup(&self) {
+    pub async fn cleanup(&self) -> Result<()> {
         let now = now_timestamp();
-        self.sessions.write().await.retain(|_, session| {
-            session.last_seen_at > now - ADMIN_IDLE_SECONDS
-                && session.created_at > now - ADMIN_ABSOLUTE_SECONDS
-        });
+        self.store
+            .delete_expired_admin_sessions(now - ADMIN_IDLE_SECONDS, now - ADMIN_ABSOLUTE_SECONDS)
+            .await
     }
 }
 
@@ -465,6 +475,13 @@ fn token_digest(token: &str, pepper: &[u8; 32]) -> [u8; 32] {
         Hmac::<Sha256>::new_from_slice(pepper).expect("SHA-256 accepts 32-byte HMAC keys");
     mac.update(token.as_bytes());
     mac.finalize().into_bytes().into()
+}
+
+/// Hashes a high-entropy administrator bearer token for durable lookup without a stored key.
+fn administrator_token_digest(token: &str) -> String {
+    use sha2::Digest as _;
+
+    URL_SAFE_NO_PAD.encode(Sha256::digest(token.as_bytes()))
 }
 
 /// Returns the current UTC timestamp in seconds.
@@ -518,6 +535,37 @@ mod admin_setup_tests {
 
         assert!(auth.setup("researcher", "too-short").await.is_err());
         assert!(!auth.is_configured().await);
+    }
+
+    /// Confirms a hashed administrator session remains usable after authenticator reconstruction.
+    #[tokio::test]
+    async fn administrator_session_survives_server_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let database_url = format!(
+            "sqlite:///{}",
+            temp.path().join("administrator-session.sqlite").display()
+        );
+        let store = experiment_store_from_url(&database_url).await.unwrap();
+        let auth = AdminAuthenticator::load(store.clone()).await.unwrap();
+        auth.setup("researcher", "a-long-test-password")
+            .await
+            .unwrap();
+        let (token, issued) = match auth
+            .login("researcher", "a-long-test-password")
+            .await
+            .unwrap()
+        {
+            AdminLoginResult::Authenticated(token, session) => (token, session),
+            _ => panic!("valid administrator login was rejected"),
+        };
+        drop(auth);
+        drop(store);
+
+        let reopened = experiment_store_from_url(&database_url).await.unwrap();
+        let restarted = AdminAuthenticator::load(reopened).await.unwrap();
+        let resumed = restarted.authenticate(&token).await.unwrap().unwrap();
+        assert_eq!(resumed.csrf_token, issued.csrf_token);
+        assert_eq!(resumed.role, issued.role);
     }
 }
 

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env, fs,
     path::{Path, PathBuf},
 };
@@ -41,7 +41,7 @@ impl Default for StudyConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CapacityConfig {
-    /// Sessions that may be playing or retained during their reconnect grace period.
+    /// Sessions that may be running or retained during their reconnect grace period.
     pub max_active_sessions: usize,
     /// Human-human rooms that may wait for their second participant.
     pub max_waiting_sessions: usize,
@@ -284,7 +284,7 @@ pub struct AgentsConfig {
     pub human_vs_agent: Option<HumanVsAgentConfig>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ExperimentConfig {
     pub experiment: ExperimentIdentityConfig,
@@ -299,6 +299,33 @@ pub struct ExperimentConfig {
     pub agents: AgentsConfig,
     pub capacity: CapacityConfig,
     pub privacy: PrivacyConfig,
+    /// Game-owned, per-experiment options edited as YAML in the dashboard.
+    pub game: Value,
+    /// Write-only game credentials loaded from the experiment secret store.
+    #[serde(skip)]
+    pub game_secrets: HashMap<String, String>,
+}
+
+impl Default for ExperimentConfig {
+    /// Creates a complete experiment configuration with an empty game-owned mapping.
+    fn default() -> Self {
+        Self {
+            experiment: ExperimentIdentityConfig::default(),
+            study: StudyConfig::default(),
+            direct: DirectConfig::default(),
+            server: ServerConfig::default(),
+            database: DatabaseConfig::default(),
+            voice: VoiceConfig::default(),
+            speechmatics: SpeechmaticsConfig::default(),
+            transcription: TranscriptionConfig::default(),
+            tts: TtsConfig::default(),
+            agents: AgentsConfig::default(),
+            capacity: CapacityConfig::default(),
+            privacy: PrivacyConfig::default(),
+            game: Value::Object(Default::default()),
+            game_secrets: HashMap::new(),
+        }
+    }
 }
 
 impl ExperimentConfig {
@@ -375,14 +402,8 @@ impl ExperimentConfig {
             if self.tts.provider != "elevenlabs" {
                 bail!("tts.provider must be elevenlabs");
             }
-            if self.tts.voice_id.is_empty() {
-                bail!("tts.voice_id is required when TTS is enabled");
-            }
             if self.tts.model.trim().is_empty() {
                 bail!("tts.model is required when TTS is enabled");
-            }
-            if self.tts.api_key.is_empty() {
-                bail!("tts.api_key is required when TTS is enabled");
             }
             if self.tts.output_format != "pcm_24000" {
                 bail!("tts.output_format must be pcm_24000");
@@ -399,15 +420,15 @@ impl ExperimentConfig {
             if self.transcription.provider != "speechmatics" {
                 bail!("transcription.provider must be speechmatics");
             }
+            if !matches!(self.transcription.model.as_str(), "standard" | "enhanced") {
+                bail!("transcription.model must be standard or enhanced");
+            }
             if self.transcription.model.trim().is_empty()
                 || self.transcription.language.trim().is_empty()
             {
                 bail!("transcription.model and transcription.language must not be empty");
             }
             validate_websocket_url("speechmatics.realtime_url", &self.speechmatics.realtime_url)?;
-            if self.speechmatics.api_key.is_empty() {
-                bail!("speechmatics.api_key is required for Speechmatics transcription");
-            }
             if !self.speechmatics.max_delay.is_finite() || self.speechmatics.max_delay <= 0.0 {
                 bail!("speechmatics.max_delay must be finite and positive");
             }
@@ -463,6 +484,30 @@ impl ExperimentConfig {
                 "direct.participant_information_url",
                 &self.direct.participant_information_url,
             )?;
+        }
+        Ok(())
+    }
+
+    /// Lists missing runtime credentials or identifiers which prevent participant intake.
+    pub fn activation_issues(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        if self.transcription.enabled && self.speechmatics.api_key.trim().is_empty() {
+            issues.push("Speechmatics API key is required when transcription is enabled.".into());
+        }
+        if self.tts.enabled && self.tts.api_key.trim().is_empty() {
+            issues.push("ElevenLabs API key is required when text to speech is enabled.".into());
+        }
+        if self.tts.enabled && self.tts.voice_id.trim().is_empty() {
+            issues.push("ElevenLabs voice id is required when text to speech is enabled.".into());
+        }
+        issues
+    }
+
+    /// Rejects activation when enabled hosted services cannot be constructed safely.
+    pub fn validate_activation_readiness(&self) -> Result<()> {
+        let issues = self.activation_issues();
+        if !issues.is_empty() {
+            bail!(issues.join(" "));
         }
         Ok(())
     }
@@ -816,16 +861,22 @@ agents:
         assert!(error.to_string().contains("act_timeout_seconds"));
     }
 
+    /// Confirms incomplete hosted-service drafts remain editable but cannot accept participants.
     #[test]
-    fn validation_requires_enabled_tts_secrets() {
+    fn activation_validation_requires_enabled_tts_secrets() {
         let mut config = ExperimentConfig::default();
         config.database.url = "sqlite:///:memory:".to_string();
         config.tts.enabled = true;
         config.tts.voice_id = "voice".to_string();
 
-        let error = config.validate().expect_err("missing api key fails");
+        config
+            .validate()
+            .expect("incomplete draft remains editable");
+        let error = config
+            .validate_activation_readiness()
+            .expect_err("missing api key prevents activation");
 
-        assert!(error.to_string().contains("tts.api_key"));
+        assert!(error.to_string().contains("ElevenLabs API key"));
     }
 
     /// Confirms that consent items require no separate enablement or metadata fields.

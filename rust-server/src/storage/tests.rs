@@ -131,9 +131,12 @@ async fn sqlite_schema_has_evaluation_and_administrator_tables() {
         tables,
         vec![
             "administrator_credential",
+            "administrator_sessions",
             "consent_declarations",
             "experiment_config_revisions",
+            "experiment_secrets",
             "experiments",
+            "game_secrets",
             "game_settings",
             "participants",
             "schema_migrations",
@@ -142,6 +145,357 @@ async fn sqlite_schema_has_evaluation_and_administrator_tables() {
             "sessions",
         ]
     );
+    let experiment_columns = sqlx::query_scalar::<_, String>(
+        "select name from pragma_table_info('experiments') order by cid",
+    )
+    .fetch_all(&store.pool)
+    .await
+    .unwrap();
+    assert!(!experiment_columns.iter().any(|column| column == "obsolete"));
+    let session_columns = sqlx::query_scalar::<_, String>(
+        "select name from pragma_table_info('sessions') order by cid",
+    )
+    .fetch_all(&store.pool)
+    .await
+    .unwrap();
+    assert!(session_columns.iter().any(|column| column == "purpose"));
+}
+
+/// Confirms secret changes are atomic with revisions and never enter revision JSON.
+#[tokio::test]
+async fn sqlite_stores_experiment_secrets_outside_configuration_revisions() {
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+    store
+        .create_experiment(ExperimentRecord {
+            experiment_id: "secrets".to_string(),
+            game_version: "0.4.0".to_string(),
+            config: json!({"game": {"difficulty": 2}}),
+            server_version: None,
+            version_manifest: None,
+            status: "inactive".to_string(),
+            notes: None,
+        })
+        .await
+        .unwrap();
+    store
+        .save_experiment_configuration(
+            "secrets",
+            1,
+            json!({"game": {"difficulty": 3}}),
+            Some("Configure provider".to_string()),
+            HashMap::from([("game.service_token".to_string(), "game-secret".to_string())]),
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    let secrets = store.experiment_secrets("secrets").await.unwrap();
+    assert_eq!(secrets["game.service_token"], "game-secret");
+    let revisions = store.experiment_revisions("secrets").await.unwrap();
+    assert!(!serde_json::to_string(&revisions)
+        .unwrap()
+        .contains("game-secret"));
+
+    store
+        .save_experiment_configuration(
+            "secrets",
+            2,
+            json!({"game": {"difficulty": 3}}),
+            None,
+            HashMap::new(),
+            vec!["game.service_token".to_string()],
+        )
+        .await
+        .unwrap();
+    assert!(!store
+        .experiment_secrets("secrets")
+        .await
+        .unwrap()
+        .contains_key("game.service_token"));
+}
+
+/// Confirms schema migration 9 promotes legacy provider keys to the game installation.
+#[tokio::test]
+async fn sqlite_migrates_experiment_provider_keys_to_game_secrets() {
+    let temp = tempdir().expect("tempdir");
+    let database_url = format!(
+        "sqlite:///{}",
+        temp.path().join("provider-migration.sqlite").display()
+    );
+    let store = SqliteExperimentStore::connect(&database_url).await.unwrap();
+    store
+        .create_experiment(ExperimentRecord {
+            experiment_id: "legacy-provider".to_string(),
+            game_version: "0.4.0".to_string(),
+            config: json!({}),
+            server_version: None,
+            version_manifest: None,
+            status: "inactive".to_string(),
+            notes: None,
+        })
+        .await
+        .unwrap();
+    sqlx::query("insert into experiment_secrets (experiment_id, secret_key, secret_value, updated_at) values ('legacy-provider', 'speechmatics.api_key', 'legacy-key', '2026-08-15T18:00:00Z')")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("delete from game_secrets")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("delete from schema_migrations where version >= 9")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store.pool.close().await;
+
+    let reopened = SqliteExperimentStore::connect(&database_url).await.unwrap();
+    assert_eq!(
+        reopened
+            .game_secrets()
+            .await
+            .unwrap()
+            .get("speechmatics.api_key")
+            .map(String::as_str),
+        Some("legacy-key")
+    );
+    assert!(!reopened
+        .experiment_secrets("legacy-provider")
+        .await
+        .unwrap()
+        .contains_key("speechmatics.api_key"));
+}
+
+/// Confirms schema migration 10 replaces the former in-progress session label.
+#[tokio::test]
+async fn sqlite_migrates_playing_sessions_to_running() {
+    let temp = tempdir().expect("tempdir");
+    let database_url = format!(
+        "sqlite:///{}",
+        temp.path().join("running-migration.sqlite").display()
+    );
+    let store = SqliteExperimentStore::connect(&database_url).await.unwrap();
+    store
+        .create_experiment(ExperimentRecord {
+            experiment_id: "running-migration".to_string(),
+            game_version: "0.4.0".to_string(),
+            config: json!({}),
+            server_version: None,
+            version_manifest: None,
+            status: "inactive".to_string(),
+            notes: None,
+        })
+        .await
+        .unwrap();
+    let session_id = store
+        .create_session(SessionRecord {
+            experiment_id: "running-migration".to_string(),
+            config_revision: 1,
+            game_version: "0.4.0".to_string(),
+            room_id: "FORMER_PLAYING".to_string(),
+            mode: "direct".to_string(),
+            status: "waiting".to_string(),
+            purpose: "research".to_string(),
+        })
+        .await
+        .unwrap();
+    sqlx::query(
+        "update sessions set status = 'playing' where experiment_id = ? and session_id = ?",
+    )
+    .bind("running-migration")
+    .bind(session_id)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query("delete from schema_migrations where version >= 10")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store.pool.close().await;
+
+    let reopened = SqliteExperimentStore::connect(&database_url).await.unwrap();
+    let exported = reopened
+        .export_session("running-migration", session_id)
+        .await
+        .unwrap();
+    assert_eq!(exported["sessions"][0]["status"], "running");
+}
+
+/// Confirms session purpose is fixed from lifecycle at creation and never inferred later.
+#[tokio::test]
+async fn sqlite_stamps_testing_and_research_session_purpose() {
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+    store
+        .create_experiment(ExperimentRecord {
+            experiment_id: "purpose".to_string(),
+            game_version: "0.4.0".to_string(),
+            config: json!({}),
+            server_version: None,
+            version_manifest: None,
+            status: "testing".to_string(),
+            notes: None,
+        })
+        .await
+        .unwrap();
+    store
+        .update_experiment_status("purpose", "testing")
+        .await
+        .unwrap();
+    let testing_session = store
+        .create_session(SessionRecord {
+            experiment_id: "purpose".to_string(),
+            config_revision: 1,
+            game_version: "0.4.0".to_string(),
+            room_id: "TESTING".to_string(),
+            mode: "direct".to_string(),
+            status: "waiting".to_string(),
+            purpose: "testing".to_string(),
+        })
+        .await
+        .unwrap();
+    store
+        .update_experiment_status("purpose", "active")
+        .await
+        .unwrap();
+    let research_session = store
+        .create_session(SessionRecord {
+            experiment_id: "purpose".to_string(),
+            config_revision: 1,
+            game_version: "0.4.0".to_string(),
+            room_id: "RESEARCH".to_string(),
+            mode: "direct".to_string(),
+            status: "waiting".to_string(),
+            purpose: "research".to_string(),
+        })
+        .await
+        .unwrap();
+
+    let sessions = store.recent_sessions("purpose", 10).await.unwrap();
+    assert_eq!(sessions[0].session_id, research_session);
+    assert_eq!(sessions[0].purpose, "research");
+    assert_eq!(sessions[1].session_id, testing_session);
+    assert_eq!(sessions[1].purpose, "testing");
+    assert_eq!(
+        store
+            .export_session("purpose", testing_session)
+            .await
+            .unwrap()["sessions"][0]["purpose"],
+        "testing"
+    );
+}
+
+/// Confirms process startup closes only lifecycle states that permit intake.
+#[tokio::test]
+async fn sqlite_deactivates_every_open_experiment_without_changing_terminal_states() {
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+    for (experiment_id, status) in [
+        ("active-one", "active"),
+        ("testing-one", "testing"),
+        ("completed-one", "completed"),
+        ("archived-one", "archived"),
+    ] {
+        store
+            .create_experiment(ExperimentRecord {
+                experiment_id: experiment_id.to_string(),
+                game_version: "0.4.0".to_string(),
+                config: json!({}),
+                server_version: None,
+                version_manifest: None,
+                status: status.to_string(),
+                notes: None,
+            })
+            .await
+            .unwrap();
+        store
+            .update_experiment_status(experiment_id, status)
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(store.deactivate_open_experiments().await.unwrap(), 2);
+    let experiments = store.list_experiments(10).await.unwrap();
+    let statuses = experiments
+        .into_iter()
+        .map(|experiment| (experiment.experiment_id, experiment.status))
+        .collect::<HashMap<_, _>>();
+    assert_eq!(statuses["active-one"], "inactive");
+    assert_eq!(statuses["testing-one"], "inactive");
+    assert_eq!(statuses["completed-one"], "completed");
+    assert_eq!(statuses["archived-one"], "archived");
+}
+
+/// Confirms the former obsolescence flag migrates into the unified archived lifecycle.
+#[tokio::test]
+async fn sqlite_migration_converts_obsolete_experiments_to_archived() {
+    let temp = tempdir().expect("tempdir");
+    let database_path = temp.path().join("obsolete.sqlite");
+    let setup_pool = SqlitePoolOptions::new()
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(&database_path)
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+    sqlx::query(
+        "create table schema_migrations (version integer primary key, applied_at text not null)",
+    )
+    .execute(&setup_pool)
+    .await
+    .unwrap();
+    sqlx::query("insert into schema_migrations values (3, '2026-01-01T00:00:00Z')")
+        .execute(&setup_pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        r#"
+        create table experiments (
+            experiment_id text primary key,
+            created_at text not null,
+            game_version text not null,
+            config_json text not null,
+            config_revision integer not null,
+            server_version text,
+            version_manifest_json text,
+            status text not null,
+            notes text,
+            pinned integer not null,
+            obsolete integer not null
+        )
+        "#,
+    )
+    .execute(&setup_pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into experiments values ('legacy', '2026-01-01T00:00:00Z', '0.4.0', '{}', 1, null, null, 'inactive', null, 0, 1)",
+    )
+    .execute(&setup_pool)
+    .await
+    .unwrap();
+    setup_pool.close().await;
+
+    let database_url = format!("sqlite:///{}", database_path.display());
+    let store = SqliteExperimentStore::connect(&database_url).await.unwrap();
+    let definition = store
+        .experiment_definition("legacy")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(definition.status, "archived");
+    let columns = sqlx::query_scalar::<_, String>(
+        "select name from pragma_table_info('experiments') order by cid",
+    )
+    .fetch_all(&store.pool)
+    .await
+    .unwrap();
+    assert!(!columns.iter().any(|column| column == "obsolete"));
 }
 
 /// Confirms the catalogue migration recovers an exact game version from old manifests.
@@ -337,6 +691,7 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
             room_id: "ROOM1".to_string(),
             mode: "direct".to_string(),
             status: "waiting".to_string(),
+            purpose: "research".to_string(),
         })
         .await
         .unwrap();
@@ -348,6 +703,7 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
             room_id: "ROOM2".to_string(),
             mode: "direct".to_string(),
             status: "waiting".to_string(),
+            purpose: "research".to_string(),
         })
         .await
         .unwrap();
@@ -369,6 +725,7 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
             experiment_id: "exp_eval".to_string(),
             session_id: Some(session_one),
             participant_id,
+            purpose: "research".to_string(),
             consent_item_id: "study".to_string(),
             accepted: true,
             consent_text_hash: None,
@@ -521,7 +878,8 @@ async fn sqlite_allows_returning_participant_in_multiple_sessions_with_different
             game_version: "0.4.0".to_string(),
             room_id: "ROOM_A".to_string(),
             mode: "human_vs_human".to_string(),
-            status: "playing".to_string(),
+            status: "running".to_string(),
+            purpose: "research".to_string(),
         })
         .await
         .unwrap();
@@ -532,7 +890,8 @@ async fn sqlite_allows_returning_participant_in_multiple_sessions_with_different
             game_version: "0.4.0".to_string(),
             room_id: "ROOM_B".to_string(),
             mode: "role_swap_replay".to_string(),
-            status: "playing".to_string(),
+            status: "running".to_string(),
+            purpose: "research".to_string(),
         })
         .await
         .unwrap();
@@ -661,7 +1020,8 @@ async fn sqlite_holds_mixed_participant_and_event_shapes_for_weird_experiments()
             game_version: "0.4.0".to_string(),
             room_id: "ROOM_WEIRD".to_string(),
             mode: "human_agent_with_worker".to_string(),
-            status: "playing".to_string(),
+            status: "running".to_string(),
+            purpose: "research".to_string(),
         })
         .await
         .unwrap();
@@ -689,6 +1049,7 @@ async fn sqlite_holds_mixed_participant_and_event_shapes_for_weird_experiments()
             experiment_id: "exp_weird".to_string(),
             session_id: None,
             participant_id: prolific,
+            purpose: "research".to_string(),
             consent_item_id: "screening".to_string(),
             accepted: true,
             consent_text_hash: Some("hash-screening".to_string()),
@@ -701,6 +1062,7 @@ async fn sqlite_holds_mixed_participant_and_event_shapes_for_weird_experiments()
             experiment_id: "exp_weird".to_string(),
             session_id: Some(session_id),
             participant_id: prolific,
+            purpose: "research".to_string(),
             consent_item_id: "record_audio".to_string(),
             accepted: false,
             consent_text_hash: Some("hash-audio".to_string()),
@@ -793,22 +1155,24 @@ async fn sqlite_stores_multi_experiment_catalogue_and_revisions() {
         .unwrap();
 
     let revision = store
-        .save_experiment_revision(
+        .save_experiment_configuration(
             "pilot",
             1,
             json!({"study": {"name": "Revised pilot"}}),
             Some("Clarified title".to_string()),
+            HashMap::new(),
+            vec![],
         )
         .await
         .unwrap();
     assert_eq!(revision, 2);
     assert!(store
-        .save_experiment_revision("pilot", 1, Value::Null, None)
+        .save_experiment_configuration("pilot", 1, Value::Null, None, HashMap::new(), vec![],)
         .await
         .is_err());
 
     store
-        .update_experiment_catalogue("pilot", true, false, Some("Important".to_string()))
+        .update_experiment_catalogue("pilot", true, Some("Important".to_string()))
         .await
         .unwrap();
     let experiments = store.list_experiments(100).await.unwrap();
@@ -831,11 +1195,19 @@ async fn sqlite_game_settings_reject_stale_updates() {
         .await
         .unwrap();
     let settings = store.game_settings().await.unwrap();
+    let mut provider_updates = HashMap::new();
+    provider_updates.insert(
+        "speechmatics.api_key".to_string(),
+        "shared-speechmatics-key".to_string(),
+    );
     let revision = store
         .update_game_settings(
             settings.revision,
             "Saarland University".to_string(),
             vec!["192.0.2.0/24".to_string()],
+            "wss://eu.rt.speechmatics.com/v2".to_string(),
+            provider_updates,
+            vec![],
         )
         .await
         .unwrap();
@@ -848,8 +1220,24 @@ async fn sqlite_game_settings_reject_stale_updates() {
         store.game_settings().await.unwrap().admin_allowed_ip_ranges,
         vec!["192.0.2.0/24"]
     );
+    assert_eq!(
+        store
+            .game_secrets()
+            .await
+            .unwrap()
+            .get("speechmatics.api_key")
+            .map(String::as_str),
+        Some("shared-speechmatics-key")
+    );
     assert!(store
-        .update_game_settings(settings.revision, "Stale".to_string(), vec![])
+        .update_game_settings(
+            settings.revision,
+            "Stale".to_string(),
+            vec![],
+            "wss://eu.rt.speechmatics.com/v2".to_string(),
+            HashMap::new(),
+            vec![],
+        )
         .await
         .is_err());
 }
@@ -879,7 +1267,8 @@ async fn sqlite_session_expiry_records_reason_and_status_atomically() {
             game_version: "0.4.0".to_string(),
             room_id: "EXPIRING".to_string(),
             mode: "direct".to_string(),
-            status: "playing".to_string(),
+            status: "running".to_string(),
+            purpose: "research".to_string(),
         })
         .await
         .unwrap();
@@ -894,6 +1283,67 @@ async fn sqlite_session_expiry_records_reason_and_status_atomically() {
     assert_eq!(
         exported["session_events"][0]["payload"]["reason"],
         "idle_timeout"
+    );
+}
+
+/// Confirms intentional departure has its own terminal status and durable actor event.
+#[tokio::test]
+async fn sqlite_session_abandonment_records_actor_and_status_atomically() {
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+    store
+        .create_experiment(ExperimentRecord {
+            experiment_id: "departure".to_string(),
+            game_version: "0.4.0".to_string(),
+            config: json!({}),
+            server_version: None,
+            version_manifest: None,
+            status: "inactive".to_string(),
+            notes: None,
+        })
+        .await
+        .unwrap();
+    let session_id = store
+        .create_session(SessionRecord {
+            experiment_id: "departure".to_string(),
+            config_revision: 1,
+            game_version: "0.4.0".to_string(),
+            room_id: "ABANDONED".to_string(),
+            mode: "direct".to_string(),
+            status: "running".to_string(),
+            purpose: "research".to_string(),
+        })
+        .await
+        .unwrap();
+
+    store
+        .abandon_session(SessionEventRecord {
+            experiment_id: "departure".to_string(),
+            session_id,
+            event_type: "session_abandoned".to_string(),
+            actor_participant_id: None,
+            actor_role: Some("A".to_string()),
+            payload: json!({"reason": "participant_left"}),
+            game_state: None,
+        })
+        .await
+        .unwrap();
+    store
+        .expire_session("departure", session_id, "reconnect_timeout")
+        .await
+        .unwrap();
+
+    let exported = store.export_session("departure", session_id).await.unwrap();
+    assert_eq!(exported["sessions"][0]["status"], "abandoned");
+    assert_eq!(
+        exported["session_events"][0]["event_type"],
+        "session_abandoned"
+    );
+    assert_eq!(exported["session_events"][0]["actor_role"], "A");
+    assert_eq!(
+        exported["session_events"][0]["payload"]["reason"],
+        "participant_left"
     );
 }
 

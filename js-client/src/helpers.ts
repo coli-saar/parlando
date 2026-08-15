@@ -14,6 +14,13 @@ export function requiredConsentsAccepted(
   return config.consents.every((consent: ConsentItem) => !consent.required || decisions[consent.id] === true);
 }
 
+/** Reports whether the experiment lifecycle currently permits participant intake. */
+export function experimentAllowsIntake(
+  status: PublicConfigResponse["experiment_status"] | null | undefined
+): boolean {
+  return status === "testing" || status === "active";
+}
+
 export function bothPlayersConnected(presence: PresenceState): boolean {
   return Boolean(presence.A?.connected && presence.B?.connected);
 }
@@ -33,9 +40,9 @@ export function transcriptionProgressForStatus(
     }
   ];
   const matchedIndex = stages.findIndex((stage) => stage.statuses.includes(status));
-  const completedIndex = ready ? stages.length - 1 : Math.max(0, matchedIndex);
+  const completedIndex = ready ? stages.length - 1 : matchedIndex;
   return {
-    value: ready ? 1 : (completedIndex + 1) / stages.length,
+    value: ready ? 1 : matchedIndex < 0 ? 0 : (matchedIndex + 1) / stages.length,
     steps: stages.map((stage, index) => ({ label: stage.label, done: index <= completedIndex }))
   };
 }

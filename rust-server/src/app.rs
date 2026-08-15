@@ -3,11 +3,11 @@ use std::{
     future::Future,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Weak},
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use axum::{
     extract::{
         ws::{Message, WebSocket},
@@ -51,8 +51,9 @@ use crate::{
     auth::{
         AdminAuthenticator, AdminLoginResult, AdminSession, ParticipantAuthenticator,
         ParticipantPrincipal, UpgradePurpose, UpgradeTicketClaims, UpgradeTicketStore,
+        ADMIN_ABSOLUTE_SECONDS,
     },
-    config::{AgentsMode, ExperimentConfig},
+    config::{AgentsMode, ConsentItemConfig, ExperimentConfig},
     game::{GameAdapter, GameDescriptor, PlayerRole, Seat},
     identity::{new_id, room_code},
     protocol::*,
@@ -116,8 +117,53 @@ fn persistable_config_json(config: &ExperimentConfig) -> Result<Value> {
             settings.remove("api_key");
         }
     }
+    if let Some(speechmatics) = value.get_mut("speechmatics").and_then(Value::as_object_mut) {
+        speechmatics.remove("realtime_url");
+    }
     redact_secret_fields(&mut value);
     Ok(value)
+}
+
+/// Rejects credentials embedded in revisioned game options instead of silently redacting them.
+fn validate_game_config_contains_no_secrets(value: &Value) -> Result<()> {
+    fn visit(value: &Value, path: &mut Vec<String>) -> Result<()> {
+        match value {
+            Value::Object(object) => {
+                for (key, child) in object {
+                    path.push(key.clone());
+                    let normalized = key.to_ascii_lowercase();
+                    let secret = normalized == "private_key"
+                        || normalized == "client_secret"
+                        || normalized == "access_token"
+                        || normalized == "auth_token"
+                        || normalized.ends_with("_api_key")
+                        || normalized.ends_with("_password")
+                        || normalized.ends_with("_secret")
+                        || normalized.ends_with("_token")
+                        || matches!(
+                            normalized.as_str(),
+                            "api_key" | "apikey" | "password" | "token" | "secret"
+                        );
+                    if secret {
+                        bail!(
+                            "game configuration field {} looks like a credential; add it under Game secrets instead",
+                            path.join(".")
+                        );
+                    }
+                    visit(child, path)?;
+                    path.pop();
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    visit(item, path)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    visit(value, &mut Vec::new())
 }
 
 /// Restores bootstrap-only fields before strict experiment configuration validation.
@@ -166,6 +212,90 @@ fn experiment_config_from_json(
     Ok(config)
 }
 
+/// Applies write-only experiment credentials after loading revisioned non-secret settings.
+fn apply_experiment_secrets(config: &mut ExperimentConfig, secrets: &HashMap<String, String>) {
+    config.game_secrets = secrets
+        .iter()
+        .filter_map(|(key, value)| {
+            key.strip_prefix("game.")
+                .map(|key| (key.to_string(), value.clone()))
+        })
+        .collect();
+}
+
+/// Applies installation-wide provider connections and credentials to one experiment runtime.
+fn apply_game_provider_settings(
+    config: &mut ExperimentConfig,
+    settings: &StoredGameSettings,
+    bootstrap_secrets: &HashMap<String, String>,
+    stored_secrets: &HashMap<String, String>,
+) {
+    config.speechmatics.realtime_url = settings.speechmatics_realtime_url.clone();
+    config.speechmatics.api_key = stored_secrets
+        .get("speechmatics.api_key")
+        .or_else(|| bootstrap_secrets.get("speechmatics.api_key"))
+        .cloned()
+        .unwrap_or_default();
+    config.tts.api_key = stored_secrets
+        .get("tts.api_key")
+        .or_else(|| bootstrap_secrets.get("tts.api_key"))
+        .cloned()
+        .unwrap_or_default();
+}
+
+/// Loads one stored revision with process bootstrap settings and effective credentials applied.
+async fn hydrated_experiment_config<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+    experiment_id: &str,
+) -> Result<ExperimentConfig, AppError> {
+    let experiment = state
+        .store
+        .experiment_definition(experiment_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("Experiment not found."))?;
+    let mut config = experiment_config_from_json(experiment.config, &state.config, experiment_id)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    let experiment_secrets = state.store.experiment_secrets(experiment_id).await?;
+    apply_experiment_secrets(&mut config, &experiment_secrets);
+    let game_secrets = state.store.game_secrets().await?;
+    let game_settings = state.game_settings.read().await.clone();
+    apply_game_provider_settings(
+        &mut config,
+        &game_settings,
+        &state.bootstrap_secrets,
+        &game_secrets,
+    );
+    Ok(config)
+}
+
+/// Computes intake blockers while honoring providers injected by an embedding application.
+async fn experiment_activation_issues<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+    experiment_id: &str,
+) -> Result<Vec<String>, AppError> {
+    let mut config = hydrated_experiment_config(state, experiment_id).await?;
+    if state.transcription_provider_is_override {
+        config.speechmatics.api_key = "provided-by-runtime".to_string();
+    }
+    if state.tts_provider_is_override {
+        config.tts.api_key = "provided-by-runtime".to_string();
+        config.tts.voice_id = "provided-by-runtime".to_string();
+    }
+    Ok(config.activation_issues())
+}
+
+/// Extracts non-empty process bootstrap credentials for experiment fallback and reveal.
+fn bootstrap_secret_values(config: &ExperimentConfig) -> HashMap<String, String> {
+    [
+        ("speechmatics.api_key", config.speechmatics.api_key.as_str()),
+        ("tts.api_key", config.tts.api_key.as_str()),
+    ]
+    .into_iter()
+    .filter(|(_, value)| !value.is_empty())
+    .map(|(key, value)| (key.to_string(), value.to_string()))
+    .collect()
+}
+
 /// Recursively removes credential-shaped fields as a defense-in-depth serialization boundary.
 fn redact_secret_fields(value: &mut Value) {
     match value {
@@ -209,12 +339,62 @@ fn nonempty_string(value: &str) -> Option<String> {
     (!value.trim().is_empty()).then(|| value.to_string())
 }
 
-/// Hashes the complete participant-information reference and ordered consent presentation.
-fn consent_configuration_hash(config: &ExperimentConfig) -> Result<String, AppError> {
+/// Resolves legacy dashboard-template placeholders into complete participant-facing prose.
+fn expanded_consent_items(
+    config: &ExperimentConfig,
+    game_settings: &StoredGameSettings,
+) -> Vec<ConsentItemConfig> {
+    let information_version = config.direct.participant_information_version.trim();
+    let institution = game_settings.institution.trim();
+    let processing_region = if game_settings.speechmatics_realtime_url.contains("//eu.") {
+        "the European Union"
+    } else if game_settings.speechmatics_realtime_url.contains("//us.") {
+        "the United States"
+    } else {
+        "the processing region described in the Participant Information and Privacy Notice"
+    };
+    config
+        .direct
+        .consents
+        .iter()
+        .cloned()
+        .map(|mut item| {
+            if information_version.is_empty() {
+                item.body = item.body.replace(
+                    ", version {{LOCAL_INFORMATION_VERSION}}, linked above",
+                    " linked above",
+                );
+            } else {
+                item.body = item
+                    .body
+                    .replace("{{LOCAL_INFORMATION_VERSION}}", information_version);
+            }
+            item.body = item.body.replace(
+                "{{INSTITUTION_NAME}}",
+                if institution.is_empty() {
+                    "the institution responsible for this study"
+                } else {
+                    institution
+                },
+            );
+            item.body = item
+                .body
+                .replace("{{SPEECHMATICS_ENTITY_AND_SERVICE}}", "Speechmatics")
+                .replace("{{SPEECHMATICS_PROCESSING_REGION}}", processing_region);
+            item
+        })
+        .collect()
+}
+
+/// Hashes the exact participant-information reference and expanded consent presentation.
+fn consent_configuration_hash(
+    config: &ExperimentConfig,
+    game_settings: &StoredGameSettings,
+) -> Result<String, AppError> {
     let presented = json!({
         "participant_information_version": config.direct.participant_information_version,
         "participant_information_url": config.direct.participant_information_url,
-        "consents": config.direct.consents,
+        "consents": expanded_consent_items(config, game_settings),
     });
     let canonical = serde_json::to_string(&presented)
         .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
@@ -419,7 +599,9 @@ fn spawn_security_cleanup<A: GameAdapter>(state: Arc<AppState<A>>, clean_admin_s
             let expired_participants = state.participant_auth.cleanup().await;
             state.upgrade_tickets.cleanup().await;
             if clean_admin_sessions {
-                state.admin_auth.cleanup().await;
+                if let Err(error) = state.admin_auth.cleanup().await {
+                    tracing::warn!(%error, "failed to clean expired administrator sessions");
+                }
             }
             cleanup_transient_rooms(&state).await;
             let participant_ids_in_rooms = state
@@ -485,6 +667,11 @@ fn spawn_security_cleanup<A: GameAdapter>(state: Arc<AppState<A>>, clean_admin_s
     });
 }
 
+/// Returns whether a runtime room has reached a durable terminal lifecycle state.
+fn room_status_is_terminal(status: &str) -> bool {
+    matches!(status, "completed" | "abandoned")
+}
+
 /// Removes or expires transient rooms after configured waiting, idle, and lifetime bounds.
 async fn cleanup_transient_rooms<A: GameAdapter>(state: &Arc<AppState<A>>) {
     let now = chrono::Utc::now();
@@ -518,7 +705,7 @@ async fn cleanup_transient_rooms<A: GameAdapter>(state: &Arc<AppState<A>>) {
                     })
                     .max()
                     .unwrap_or(updated);
-                let reason = if room.status != "completed"
+                let reason = if !room_status_is_terminal(&room.status)
                     && created < now - chrono::Duration::seconds(max_lifetime)
                 {
                     Some("maximum_lifetime")
@@ -526,20 +713,20 @@ async fn cleanup_transient_rooms<A: GameAdapter>(state: &Arc<AppState<A>>) {
                     && updated < now - chrono::Duration::seconds(waiting_timeout)
                 {
                     Some("waiting_timeout")
-                } else if room.status == "playing"
+                } else if room.status == "running"
                     && updated < now - chrono::Duration::seconds(idle_timeout)
                 {
                     Some("idle_timeout")
-                } else if room.status != "completed"
+                } else if !room_status_is_terminal(&room.status)
                     && !has_connection
                     && disconnected_since < now - chrono::Duration::seconds(reconnect_grace)
                 {
                     Some("reconnect_timeout")
-                } else if room.status == "completed"
+                } else if room_status_is_terminal(&room.status)
                     && !has_connection
                     && disconnected_since < now - chrono::Duration::seconds(reconnect_grace)
                 {
-                    Some("completed_cleanup")
+                    Some("terminal_cleanup")
                 } else {
                     None
                 }?;
@@ -571,7 +758,7 @@ async fn cleanup_transient_rooms<A: GameAdapter>(state: &Arc<AppState<A>>) {
         if !removed_current_room {
             continue;
         }
-        if reason != "completed_cleanup" && session_id > 0 {
+        if reason != "terminal_cleanup" && session_id > 0 {
             persist_event(
                 "session_expired",
                 state
@@ -720,7 +907,7 @@ async fn require_admin_auth<A: GameAdapter>(
             "Administrator authentication is not configured",
         ));
     }
-    let Some(session) = state.admin_auth.authenticate(token).await else {
+    let Some(session) = state.admin_auth.authenticate(token).await? else {
         if browser_page {
             return Ok(Redirect::temporary("/admin/login").into_response());
         }
@@ -995,8 +1182,10 @@ async fn admin_login_response<A: GameAdapter>(
     let mut response = Json(json!({"ok": true, "csrf_token": session.csrf_token})).into_response();
     response.headers_mut().insert(
         SET_COOKIE,
-        HeaderValue::from_str(&format!(
-            "parlando_admin={token}; Path=/; Max-Age=28800; Secure; HttpOnly; SameSite=Strict"
+        HeaderValue::from_str(&administrator_cookie(
+            &token,
+            ADMIN_ABSOLUTE_SECONDS,
+            &state.config,
         ))
         .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?,
     );
@@ -1009,17 +1198,25 @@ async fn admin_logout<A: GameAdapter>(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     if let Some(token) = cookie_value(&headers, "parlando_admin") {
-        state.admin_auth.logout(token).await;
+        state.admin_auth.logout(token).await?;
     }
     tracing::info!("administrator logged out");
     let mut response = Json(json!({"ok": true})).into_response();
     response.headers_mut().insert(
         SET_COOKIE,
-        HeaderValue::from_static(
-            "parlando_admin=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict",
-        ),
+        HeaderValue::from_str(&administrator_cookie("", 0, &state.config))
+            .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?,
     );
     Ok(response)
+}
+
+/// Builds one host-only first-party administrator cookie for HTTPS or loopback HTTP.
+fn administrator_cookie(token: &str, max_age: i64, config: &ExperimentConfig) -> String {
+    let secure = config.server.public_base_url.starts_with("https://");
+    format!(
+        "parlando_admin={token}; Path=/; Max-Age={max_age}; {}HttpOnly; SameSite=Strict",
+        if secure { "Secure; " } else { "" }
+    )
 }
 
 /// Shared server state used by HTTP handlers, WebSocket tasks, and background agents.
@@ -1031,6 +1228,8 @@ pub struct AppState<A: GameAdapter> {
     pub game_descriptor: GameDescriptor,
     /// Settings shared by every experiment of this compiled game.
     pub game_settings: Arc<RwLock<StoredGameSettings>>,
+    /// Process bootstrap credentials used only when an experiment has no override.
+    bootstrap_secrets: Arc<HashMap<String, String>>,
     /// Immutable configuration revision used for newly created sessions.
     pub config_revision: i64,
     experiment_lifecycle: RwLock<ExperimentLifecycle>,
@@ -1041,9 +1240,13 @@ pub struct AppState<A: GameAdapter> {
     pub started_agents: RwLock<HashSet<String>>,
     agent_inboxes: RwLock<HashMap<String, mpsc::Sender<AgentObservation<A>>>>,
     pub tts_provider: Option<Arc<dyn StreamingTtsProvider>>,
+    /// Whether the embedding application supplied TTS independently of dashboard credentials.
+    tts_provider_is_override: bool,
     pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
     pub audio_rooms: SharedAudioRooms,
     pub transcription_provider: Option<Arc<dyn TranscriptionProvider>>,
+    /// Whether the embedding application supplied transcription independently of dashboard credentials.
+    transcription_provider_is_override: bool,
     committed_transcripts: RwLock<HashSet<String>>,
     participant_auth: ParticipantAuthenticator,
     upgrade_tickets: UpgradeTicketStore,
@@ -1052,6 +1255,8 @@ pub struct AppState<A: GameAdapter> {
     chat_submission_budgets: RwLock<HashMap<String, TokenBucket>>,
     rejection_windows: RwLock<HashMap<String, RejectionWindow>>,
     telemetry: Arc<RuntimeTelemetry>,
+    /// Weak references to every experiment runtime hosted by this game process.
+    runtime_registry: Arc<RwLock<HashMap<String, Weak<AppState<A>>>>>,
     room_transition_locks: RwLock<HashMap<String, Arc<Mutex<()>>>>,
     game_connections: RwLock<HashMap<String, ConnectionControl>>,
     audio_connections: RwLock<HashMap<String, ConnectionControl>>,
@@ -1134,7 +1339,7 @@ struct RejectionWindow {
 }
 
 mod lifecycle;
-use lifecycle::{require_active_experiment, ExperimentLifecycle};
+use lifecycle::{require_open_experiment, ExperimentLifecycle};
 mod telemetry;
 use telemetry::{
     CapacitySample, ConnectionLiveness, ConnectionLivenessSnapshot, ConnectionSample, LoadSample,
@@ -1567,7 +1772,7 @@ async fn build_session_liveness<A: GameAdapter>(state: &Arc<AppState<A>>) -> Vec
                     state.config.study.waiting_room_timeout_seconds,
                     "waiting timeout",
                 );
-            } else if room.status == "playing" {
+            } else if room.status == "running" {
                 retain_earliest_deadline(
                     &mut deadline,
                     &room.updated_at,
@@ -1575,7 +1780,7 @@ async fn build_session_liveness<A: GameAdapter>(state: &Arc<AppState<A>>) -> Vec
                     "idle timeout",
                 );
             }
-            if room.status != "completed" {
+            if !room_status_is_terminal(&room.status) {
                 retain_earliest_deadline(
                     &mut deadline,
                     &room.created_at,
@@ -1583,7 +1788,9 @@ async fn build_session_liveness<A: GameAdapter>(state: &Arc<AppState<A>>) -> Vec
                     "maximum lifetime",
                 );
             }
-            if room.status != "completed" && room.participants.iter().all(|row| !row.connected) {
+            if !room_status_is_terminal(&room.status)
+                && room.participants.iter().all(|row| !row.connected)
+            {
                 if let Some(latest) = room
                     .participants
                     .iter()
@@ -1629,8 +1836,12 @@ async fn build_session_liveness<A: GameAdapter>(state: &Arc<AppState<A>>) -> Vec
                 .iter()
                 .filter(|participant| participant.source != "agent")
                 .collect::<Vec<_>>();
-            let health = if room.status == "completed" {
-                "completed"
+            let health = if room_status_is_terminal(&room.status) {
+                if room.status == "completed" {
+                    "completed"
+                } else {
+                    "abandoned"
+                }
             } else if browser_participants
                 .iter()
                 .any(|participant| participant.game_health == "stale")
@@ -1641,7 +1852,7 @@ async fn build_session_liveness<A: GameAdapter>(state: &Arc<AppState<A>>) -> Vec
                 .any(|participant| participant.game_health == "delayed")
             {
                 "delayed"
-            } else if room.status == "playing"
+            } else if room.status == "running"
                 && browser_participants
                     .iter()
                     .any(|participant| participant.game_health == "disconnected")
@@ -1658,6 +1869,7 @@ async fn build_session_liveness<A: GameAdapter>(state: &Arc<AppState<A>>) -> Vec
                 "disconnected"
             };
             SessionLiveness {
+                experiment_id: state.experiment_id.clone(),
                 session_id: room.session_id,
                 room_id: room.room_id,
                 status: room.status,
@@ -1673,25 +1885,95 @@ async fn build_session_liveness<A: GameAdapter>(state: &Arc<AppState<A>>) -> Vec
     sessions
 }
 
-/// Samples bounded one-hour operational history every five seconds.
+/// Returns strong references to every currently hosted experiment runtime.
+async fn hosted_runtime_states<A: GameAdapter>(state: &Arc<AppState<A>>) -> Vec<Arc<AppState<A>>> {
+    let mut runtimes = state
+        .runtime_registry
+        .read()
+        .await
+        .values()
+        .filter_map(Weak::upgrade)
+        .collect::<Vec<_>>();
+    runtimes.sort_by(|left, right| left.experiment_id.cmp(&right.experiment_id));
+    runtimes
+}
+
+/// Aggregates current capacity and transport use across every hosted experiment runtime.
+async fn build_game_load_sample<A: GameAdapter>(state: &Arc<AppState<A>>) -> LoadSample {
+    let runtimes = hosted_runtime_states(state).await;
+    let mut samples = Vec::with_capacity(runtimes.len().max(1));
+    if runtimes.is_empty() {
+        samples.push(build_load_sample(state).await);
+    } else {
+        for runtime in runtimes {
+            samples.push(build_load_sample(&runtime).await);
+        }
+    }
+    let mut aggregate = samples.remove(0);
+    for sample in samples {
+        aggregate.capacity.active_reserved_sessions += sample.capacity.active_reserved_sessions;
+        aggregate.capacity.active_session_limit += sample.capacity.active_session_limit;
+        aggregate.capacity.waiting_sessions += sample.capacity.waiting_sessions;
+        aggregate.capacity.waiting_session_limit += sample.capacity.waiting_session_limit;
+        aggregate.capacity.completed_retained_sessions +=
+            sample.capacity.completed_retained_sessions;
+        aggregate.capacity.unattached_participants += sample.capacity.unattached_participants;
+        aggregate.capacity.unattached_participant_limit +=
+            sample.capacity.unattached_participant_limit;
+        aggregate.capacity.transcription_streams_reserved +=
+            sample.capacity.transcription_streams_reserved;
+        aggregate.capacity.transcription_stream_limit += sample.capacity.transcription_stream_limit;
+        aggregate.capacity.active_agents += sample.capacity.active_agents;
+        aggregate.capacity.storage_reserve_bytes = aggregate
+            .capacity
+            .storage_reserve_bytes
+            .max(sample.capacity.storage_reserve_bytes);
+        aggregate.connections.game_connections += sample.connections.game_connections;
+        aggregate.connections.game_live += sample.connections.game_live;
+        aggregate.connections.game_delayed += sample.connections.game_delayed;
+        aggregate.connections.game_stale += sample.connections.game_stale;
+        aggregate.connections.audio_connections += sample.connections.audio_connections;
+        aggregate.pending_rejections += sample.pending_rejections;
+    }
+    aggregate.counters = state.telemetry.counters();
+    aggregate
+}
+
+/// Returns liveness for every in-memory session across the hosted game process.
+async fn build_game_session_liveness<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+) -> Vec<SessionLiveness> {
+    let mut sessions = Vec::new();
+    for runtime in hosted_runtime_states(state).await {
+        sessions.extend(build_session_liveness(&runtime).await);
+    }
+    sessions.sort_by(|left, right| {
+        left.experiment_id
+            .cmp(&right.experiment_id)
+            .then(left.session_id.cmp(&right.session_id))
+    });
+    sessions
+}
+
+/// Samples bounded game-process operational history every five seconds.
 fn spawn_load_sampler<A: GameAdapter>(state: Arc<AppState<A>>) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(5));
         loop {
             interval.tick().await;
-            let sample = build_load_sample(&state).await;
+            let sample = build_game_load_sample(&state).await;
             state.telemetry.push_sample(sample).await;
         }
     });
 }
 
-/// Returns the current snapshot, one-hour history, and runtime session liveness.
+/// Returns game-wide current load, one-hour history, and runtime session liveness.
 async fn admin_load<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
 ) -> Result<Json<Value>, AppError> {
-    let current = build_load_sample(&state).await;
+    let current = build_game_load_sample(&state).await;
     let history = state.telemetry.history().await;
-    let sessions = build_session_liveness(&state).await;
+    let sessions = build_game_session_liveness(&state).await;
     Ok(Json(json!({
         "current": current,
         "history": history,
@@ -1805,17 +2087,16 @@ async fn public_config<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
 ) -> Json<PublicConfigResponse> {
     let config = &state.config;
+    let game_settings = state.game_settings.read().await.clone();
     Json(PublicConfigResponse {
         study_name: config.study.name.clone(),
         experiment_status: state.experiment_lifecycle.read().await.as_str().to_string(),
-        institution: nonempty_string(&state.game_settings.read().await.institution),
+        institution: nonempty_string(&game_settings.institution),
         participant_information_version: nonempty_string(
             &config.direct.participant_information_version,
         ),
         participant_information_url: nonempty_string(&config.direct.participant_information_url),
-        consents: config
-            .direct
-            .consents
+        consents: expanded_consent_items(config, &game_settings)
             .iter()
             .map(|item| ConsentItemResponse {
                 id: item.id.clone(),
@@ -1864,7 +2145,7 @@ async fn create_participant_inner<A: GameAdapter>(
     state: Arc<AppState<A>>,
     _request: ParticipantCreateRequest,
 ) -> Result<ParticipantCreateResponse, AppError> {
-    let _intake_guard = require_active_experiment(&state).await?;
+    let _intake_guard = require_open_experiment(&state).await?;
     enforce_creation_rate(&state).await?;
     if !state.config.direct.enabled {
         return Err(AppError::not_found("Direct mode is disabled."));
@@ -1910,6 +2191,7 @@ async fn create_participant_inner<A: GameAdapter>(
         participant_id,
         research_id,
         "direct".to_string(),
+        _intake_guard.data_purpose().to_string(),
         Some(state.config.study.name.clone()),
     );
     let participant_credential = state.participant_auth.issue(participant.id.clone()).await;
@@ -1941,7 +2223,7 @@ async fn consent<A: GameAdapter>(
     {
         return Err(AppError::bad_request("Unknown consent item"));
     }
-    let (participant_id, current_decisions) = {
+    let (participant_id, purpose, current_decisions) = {
         let memory = state.memory.read().await;
         let participant = memory
             .participants
@@ -1949,6 +2231,7 @@ async fn consent<A: GameAdapter>(
             .ok_or_else(|| AppError::not_found("Participant session not found."))?;
         (
             participant.participant_id,
+            participant.purpose.clone(),
             participant.consent_decisions.clone(),
         )
     };
@@ -1972,7 +2255,8 @@ async fn consent<A: GameAdapter>(
     } else {
         None
     };
-    let consent_text_hash = Some(consent_configuration_hash(&state.config)?);
+    let game_settings = state.game_settings.read().await.clone();
+    let consent_text_hash = Some(consent_configuration_hash(&state.config, &game_settings)?);
     let consent_metadata = json!({
         "participant_information_version": nonempty_string(&state.config.direct.participant_information_version),
         "participant_information_url": nonempty_string(&state.config.direct.participant_information_url),
@@ -1984,6 +2268,7 @@ async fn consent<A: GameAdapter>(
                 experiment_id: state.experiment_id.clone(),
                 session_id,
                 participant_id,
+                purpose: purpose.clone(),
                 consent_item_id: consent_item_id.clone(),
                 accepted: *accepted,
                 consent_text_hash: consent_text_hash.clone(),
@@ -2026,7 +2311,7 @@ async fn create_room<A: GameAdapter>(
 where
     A::State: Serialize,
 {
-    let _intake_guard = require_active_experiment(&state).await?;
+    let _intake_guard = require_open_experiment(&state).await?;
     let participant_session_id = authenticated_participant_id(principal)?;
     require_consent(&state, &participant_session_id).await?;
     require_session_storage_reserve(&state).await?;
@@ -2038,6 +2323,11 @@ where
                 &memory,
                 &requested_mode,
                 Some(state.config.study.name.as_str()),
+                &memory
+                    .participants
+                    .get(&participant_session_id)
+                    .ok_or_else(|| AppError::not_found("Participant session not found."))?
+                    .purpose,
             ) {
                 ensure_session_capacity(&state.config, &memory, SessionAdmission::Active, 1)?;
                 let role = add_human_participant_to_room_locked(
@@ -2066,6 +2356,11 @@ where
                         room_id: room_id.clone(),
                         mode: requested_mode.clone(),
                         status: "waiting".to_string(),
+                        purpose: memory
+                            .rooms
+                            .get(&room_id)
+                            .map(|room| room.purpose.clone())
+                            .ok_or_else(|| AppError::not_found("Room not found."))?,
                     })
                     .await
                 {
@@ -2099,6 +2394,11 @@ where
                     room_id: room_id.clone(),
                     mode: requested_mode.clone(),
                     status: "waiting".to_string(),
+                    purpose: memory
+                        .rooms
+                        .get(&room_id)
+                        .map(|room| room.purpose.clone())
+                        .ok_or_else(|| AppError::not_found("Room not found."))?,
                 })
                 .await
             {
@@ -2229,6 +2529,14 @@ async fn add_agent_to_room<A: GameAdapter>(
     state: &Arc<AppState<A>>,
     room_id: &str,
 ) -> Result<String, AppError> {
+    let purpose = state
+        .memory
+        .read()
+        .await
+        .rooms
+        .get(room_id)
+        .map(|room| room.purpose.clone())
+        .ok_or_else(|| AppError::not_found("Room not found."))?;
     let factory_identity = state
         .agent_factory
         .as_ref()
@@ -2286,6 +2594,7 @@ async fn add_agent_to_room<A: GameAdapter>(
             agent_participant_db_id,
             agent_research_id,
             "agent".to_string(),
+            purpose,
             Some(state.config.study.name.clone()),
         );
         let room = memory
@@ -2331,6 +2640,7 @@ fn open_human_room_for_pairing<S>(
     memory: &MemoryState<S>,
     mode: &str,
     study_id: Option<&str>,
+    purpose: &str,
 ) -> Option<String> {
     memory
         .rooms
@@ -2339,6 +2649,7 @@ fn open_human_room_for_pairing<S>(
             room.status == "waiting"
                 && room.mode == mode
                 && room.study_id.as_deref() == study_id
+                && room.purpose == purpose
                 && next_role(room) == Some(Seat::B)
                 && room
                     .participants
@@ -2364,6 +2675,12 @@ fn add_human_participant_to_room_locked<A: GameAdapter>(
         .rooms
         .get_mut(room_id)
         .ok_or_else(|| AppError::not_found("Room not found."))?;
+    if room.purpose != participant.purpose {
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            "Testing and research participants cannot share a session",
+        ));
+    }
     if let Some(existing) = room.participants.get(participant_session_id) {
         return Ok(existing.role);
     }
@@ -2427,7 +2744,11 @@ fn create_room_locked<A: GameAdapter>(
             experiment_id: state.experiment_id.clone(),
             session_id: 0,
             mode,
-            state: state.adapter.initial_state(),
+            purpose: participant.purpose,
+            state: state
+                .adapter
+                .initial_state_with_config(&state.config.game)
+                .map_err(|error| AppError::bad_request(error.to_string()))?,
             status: "waiting".to_string(),
             study_id,
             participants,
@@ -2847,7 +3168,6 @@ struct AdminUpdateExperimentStatusRequest {
 #[serde(deny_unknown_fields)]
 struct AdminCreateExperimentRequest {
     experiment_id: String,
-    study_name: Option<String>,
     config: Option<Value>,
     notes: Option<String>,
 }
@@ -2864,14 +3184,31 @@ struct AdminCloneExperimentRequest {
 struct AdminSaveExperimentConfigRequest {
     expected_revision: i64,
     config: Value,
+    #[serde(default)]
+    game_yaml: Option<String>,
+    #[serde(default)]
+    secret_updates: HashMap<String, String>,
+    #[serde(default)]
+    secret_deletions: Vec<String>,
     change_summary: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdminRevealExperimentSecretRequest {
+    key: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdminValidateGameConfigRequest {
+    game_yaml: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AdminCatalogueRequest {
     pinned: bool,
-    obsolete: bool,
     notes: Option<String>,
 }
 
@@ -2881,6 +3218,17 @@ struct AdminGameSettingsRequest {
     expected_revision: i64,
     institution: String,
     admin_allowed_ip_ranges: Vec<String>,
+    speechmatics_realtime_url: Option<String>,
+    #[serde(default)]
+    secret_updates: HashMap<String, String>,
+    #[serde(default)]
+    secret_deletions: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdminRevealGameSecretRequest {
+    key: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2895,6 +3243,7 @@ struct AdminExportQuery {
 #[derive(Clone, Debug, Serialize)]
 struct PrivacyStatus {
     generated_at: String,
+    experiment_count: usize,
     privacy_contract_version: String,
     review_state: String,
     software: PrivacySoftwareStatus,
@@ -2950,22 +3299,26 @@ async fn admin_experiments_page(Extension(nonce): Extension<CspNonce>) -> Html<S
 }
 
 /// Serves the installation-wide privacy status inside the protected administrator area.
-async fn admin_privacy_page<A: GameAdapter>(State(state): State<Arc<AppState<A>>>) -> Html<String> {
-    Html(render_privacy_status_html(&privacy_status(&state)))
+async fn admin_privacy_page<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+) -> Result<Html<String>, AppError> {
+    Ok(Html(render_privacy_status_html(
+        &privacy_status(&state, None).await?,
+    )))
 }
 
 /// Returns the installation-wide privacy status as structured JSON for administrative tooling.
 async fn admin_privacy_json<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
-) -> Json<PrivacyStatus> {
-    Json(privacy_status(&state))
+) -> Result<Json<PrivacyStatus>, AppError> {
+    Ok(Json(privacy_status(&state, None).await?))
 }
 
 /// Downloads the installation-wide privacy status as a pretty-printed JSON attachment.
 async fn admin_privacy_json_download<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
 ) -> Result<Response, AppError> {
-    let body = serde_json::to_string_pretty(&privacy_status(&state))
+    let body = serde_json::to_string_pretty(&privacy_status(&state, None).await?)
         .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
     Ok(privacy_download_response(
         body,
@@ -2977,35 +3330,241 @@ async fn admin_privacy_json_download<A: GameAdapter>(
 /// Downloads the installation-wide privacy status as a Markdown attachment for review records.
 async fn admin_privacy_markdown_download<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
-) -> Response {
-    privacy_download_response(
-        render_privacy_status_markdown(&privacy_status(&state)),
+) -> Result<Response, AppError> {
+    Ok(privacy_download_response(
+        render_privacy_status_markdown(&privacy_status(&state, None).await?),
         "text/markdown; charset=utf-8",
         "parlando-privacy-status.md",
-    )
+    ))
 }
 
-/// Builds a privacy report from executable server facts and the effective runtime configuration.
-fn privacy_status<A: GameAdapter>(state: &AppState<A>) -> PrivacyStatus {
+/// Returns the privacy status for one experiment selected in the dashboard workspace.
+async fn admin_experiment_privacy_json<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Path(experiment_id): Path<String>,
+) -> Result<Json<PrivacyStatus>, AppError> {
+    Ok(Json(privacy_status(&state, Some(&experiment_id)).await?))
+}
+
+/// Downloads one experiment's privacy status as a pretty-printed JSON attachment.
+async fn admin_experiment_privacy_json_download<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Path(experiment_id): Path<String>,
+) -> Result<Response, AppError> {
+    let body =
+        serde_json::to_string_pretty(&privacy_status(&state, Some(&experiment_id)).await?)
+            .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(privacy_download_response(
+        body,
+        "application/json; charset=utf-8",
+        &format!("{experiment_id}-privacy-status.json"),
+    ))
+}
+
+/// Downloads one experiment's privacy status as Markdown for review records.
+async fn admin_experiment_privacy_markdown_download<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Path(experiment_id): Path<String>,
+) -> Result<Response, AppError> {
+    Ok(privacy_download_response(
+        render_privacy_status_markdown(&privacy_status(&state, Some(&experiment_id)).await?),
+        "text/markdown; charset=utf-8",
+        &format!("{experiment_id}-privacy-status.md"),
+    ))
+}
+
+/// Privacy-relevant projection which remains readable across configuration schema versions.
+struct PrivacyConfigFacts {
+    contract_version: String,
+    store_full_game_state: bool,
+    store_typed_messages: bool,
+    store_final_transcripts: bool,
+    store_voice_diagnostics: bool,
+    transcription_enabled: bool,
+    transcription_provider: String,
+    tts_enabled: bool,
+    tts_provider: String,
+    voice_enabled: bool,
+    consent_items: usize,
+    participant_information_reference: bool,
+}
+
+/// Reads one boolean from a nested normalized experiment configuration.
+fn privacy_config_bool(config: &Value, section: &str, key: &str) -> bool {
+    config
+        .get(section)
+        .and_then(|value| value.get(key))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Reads one string from a nested normalized experiment configuration.
+fn privacy_config_string(config: &Value, section: &str, key: &str) -> String {
+    config
+        .get(section)
+        .and_then(|value| value.get(key))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Projects privacy facts without requiring an old configuration to validate under today's schema.
+fn privacy_config_facts(config: &Value) -> PrivacyConfigFacts {
+    let information_version =
+        privacy_config_string(config, "direct", "participant_information_version");
+    let information_url = privacy_config_string(config, "direct", "participant_information_url");
+    PrivacyConfigFacts {
+        contract_version: privacy_config_string(config, "privacy", "contract_version"),
+        store_full_game_state: privacy_config_bool(config, "privacy", "store_full_game_state"),
+        store_typed_messages: privacy_config_bool(config, "privacy", "store_typed_messages"),
+        store_final_transcripts: privacy_config_bool(config, "privacy", "store_final_transcripts"),
+        store_voice_diagnostics: privacy_config_bool(config, "privacy", "store_voice_diagnostics"),
+        transcription_enabled: privacy_config_bool(config, "transcription", "enabled"),
+        transcription_provider: privacy_config_string(config, "transcription", "provider"),
+        tts_enabled: privacy_config_bool(config, "tts", "enabled"),
+        tts_provider: privacy_config_string(config, "tts", "provider"),
+        voice_enabled: privacy_config_bool(config, "voice", "enabled"),
+        consent_items: config
+            .get("direct")
+            .and_then(|value| value.get("consents"))
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len),
+        participant_information_reference: !information_version.trim().is_empty()
+            && !information_url.trim().is_empty(),
+    }
+}
+
+/// Formats how many experiment configurations enable one privacy-affecting feature.
+fn privacy_coverage(enabled: usize, total: usize, setting: &str) -> String {
+    if total == 1 {
+        format!(
+            "{} for this experiment; controlled by {setting}.",
+            if enabled == 1 { "Enabled" } else { "Disabled" }
+        )
+    } else {
+        format!("Enabled in {enabled} of {total} experiments; controlled by {setting}.")
+    }
+}
+
+/// Describes one related privacy feature for either a selected experiment or an aggregate report.
+fn privacy_feature_coverage(enabled: usize, total: usize, feature: &str) -> String {
+    if total == 1 {
+        format!(
+            "{feature} is {}.",
+            if enabled == 1 { "enabled" } else { "disabled" }
+        )
+    } else {
+        format!("{feature} is enabled in {enabled} of {total} experiments.")
+    }
+}
+
+/// Builds a privacy report for one experiment or, for tooling, the complete game process.
+async fn privacy_status<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+    experiment_id: Option<&str>,
+) -> Result<PrivacyStatus, AppError> {
     let server_manifest = state.version_manifest.get("server");
+    let mut facts = Vec::new();
+    if let Some(experiment_id) = experiment_id {
+        let definition = state
+            .store
+            .experiment_definition(experiment_id)
+            .await?
+            .ok_or_else(|| AppError::not_found("Experiment not found."))?;
+        facts.push(privacy_config_facts(&definition.config));
+    } else {
+        let summaries = state.store.list_experiments(1_000).await?;
+        facts.reserve(summaries.len());
+        for summary in &summaries {
+            if let Some(definition) = state
+                .store
+                .experiment_definition(&summary.experiment_id)
+                .await?
+            {
+                facts.push(privacy_config_facts(&definition.config));
+            }
+        }
+    }
+    if facts.is_empty() {
+        facts.push(privacy_config_facts(&persistable_config_json(
+            &state.config,
+        )?));
+    }
+    let total = facts.len();
+    let mut contract_versions = facts
+        .iter()
+        .map(|fact| fact.contract_version.as_str())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    contract_versions.sort_unstable();
+    contract_versions.dedup();
     let mut external_services = Vec::new();
-    if state.config.transcription.enabled {
-        external_services.push(PrivacyServiceStatus {
-            service: state.config.transcription.provider.clone(),
+    for fact in &facts {
+        if fact.transcription_enabled
+            && !external_services
+                .iter()
+                .any(|service: &PrivacyServiceStatus| {
+                    service.service == fact.transcription_provider
+                        && service.data_sent.starts_with("Live microphone audio")
+                })
+        {
+            external_services.push(PrivacyServiceStatus {
+                service: fact.transcription_provider.clone(),
             enabled: true,
             data_sent: "Live microphone audio for real-time transcription; Parlando receives text and timing information.".to_string(),
         });
-    }
-    if state.config.tts.enabled {
-        external_services.push(PrivacyServiceStatus {
-            service: state.config.tts.provider.clone(),
+        }
+        if fact.tts_enabled
+            && !external_services.iter().any(|service| {
+                service.service == fact.tts_provider
+                    && service
+                        .data_sent
+                        .starts_with("Software-agent-generated text")
+            })
+        {
+            external_services.push(PrivacyServiceStatus {
+                service: fact.tts_provider.clone(),
             enabled: true,
             data_sent: "Software-agent-generated text and technical voice/model parameters; no participant audio, transcript, identifier, or game state.".to_string(),
         });
+        }
     }
-    PrivacyStatus {
+    let full_game_state = facts
+        .iter()
+        .filter(|fact| fact.store_full_game_state)
+        .count();
+    let typed_messages = facts
+        .iter()
+        .filter(|fact| fact.store_typed_messages)
+        .count();
+    let final_transcripts = facts
+        .iter()
+        .filter(|fact| fact.store_final_transcripts)
+        .count();
+    let voice_diagnostics = facts
+        .iter()
+        .filter(|fact| fact.store_voice_diagnostics)
+        .count();
+    let transcription = facts
+        .iter()
+        .filter(|fact| fact.transcription_enabled)
+        .count();
+    let voice = facts.iter().filter(|fact| fact.voice_enabled).count();
+    let consent_items = facts.iter().map(|fact| fact.consent_items).sum::<usize>();
+    let information_references = facts
+        .iter()
+        .filter(|fact| fact.participant_information_reference)
+        .count();
+    Ok(PrivacyStatus {
         generated_at: now_iso(),
-        privacy_contract_version: state.config.privacy.contract_version.clone(),
+        experiment_count: total,
+        privacy_contract_version: if contract_versions.len() == 1 {
+            contract_versions[0].to_string()
+        } else if contract_versions.is_empty() {
+            "Unspecified".to_string()
+        } else {
+            format!("Mixed ({})", contract_versions.join(", "))
+        },
         review_state: "Not yet bound to a completed DPO platform assessment.".to_string(),
         software: PrivacySoftwareStatus {
             server_name: server_manifest
@@ -3031,32 +3590,34 @@ fn privacy_status<A: GameAdapter>(state: &AppState<A>) -> PrivacyStatus {
         storage: vec![
             PrivacyStorageStatus {
                 category: "Full game state".to_string(),
-                persisted_when_produced: state.config.privacy.store_full_game_state,
+                persisted_when_produced: full_game_state > 0,
                 configurable: true,
-                detail: "Controlled by privacy.store_full_game_state.".to_string(),
+                detail: privacy_coverage(full_game_state, total, "privacy.store_full_game_state"),
             },
             PrivacyStorageStatus {
                 category: "Typed participant messages".to_string(),
-                persisted_when_produced: state.config.privacy.store_typed_messages,
+                persisted_when_produced: typed_messages > 0,
                 configurable: true,
-                detail: "Controlled by privacy.store_typed_messages.".to_string(),
+                detail: privacy_coverage(typed_messages, total, "privacy.store_typed_messages"),
             },
             PrivacyStorageStatus {
                 category: "Final voice transcripts".to_string(),
-                persisted_when_produced: state.config.privacy.store_final_transcripts,
+                persisted_when_produced: final_transcripts > 0,
                 configurable: true,
                 detail: format!(
-                    "Controlled by privacy.store_final_transcripts; transcription is configured {}.",
-                    enabled_label(state.config.transcription.enabled)
+                    "{} {}",
+                    privacy_coverage(final_transcripts, total, "privacy.store_final_transcripts"),
+                    privacy_feature_coverage(transcription, total, "Transcription")
                 ),
             },
             PrivacyStorageStatus {
                 category: "Voice diagnostics".to_string(),
-                persisted_when_produced: state.config.privacy.store_voice_diagnostics,
+                persisted_when_produced: voice_diagnostics > 0,
                 configurable: true,
                 detail: format!(
-                    "Controlled by privacy.store_voice_diagnostics; stored metadata is restricted to scalar transport metrics. Voice is configured {}.",
-                    enabled_label(state.config.voice.enabled)
+                    "{} Stored metadata is restricted to scalar transport metrics; {}",
+                    privacy_coverage(voice_diagnostics, total, "privacy.store_voice_diagnostics"),
+                    privacy_feature_coverage(voice, total, "voice")
                 ),
             },
         ],
@@ -3067,33 +3628,26 @@ fn privacy_status<A: GameAdapter>(state: &AppState<A>) -> PrivacyStatus {
             research_export: true,
             corpus_export: true,
             formats: vec!["JSON".to_string(), "YAML".to_string(), "CSV".to_string()],
-            detail: "Research is the dashboard default. Research and corpus exports retain readable participant and dialogue identifiers across repeated exports of one experiment. Human participant identifiers are random and are not reused across experiments; agent identifiers expose agent type and version. Corpus candidates require content review before publication; full is restricted to internal administration.".to_string(),
+            detail: "Testing sessions and their linked events, memberships, consent declarations, and test-only participants are excluded from every export. Archived experiments must be restored before export. Completed experiments remain exportable. Research is the dashboard default. Research and corpus exports retain readable participant and dialogue identifiers across repeated exports of one experiment. Human participant identifiers are random and are not reused across experiments; agent identifiers expose agent type and version. Corpus candidates require content review before publication; full is restricted to internal administration.".to_string(),
         },
         participant_deletion: PrivacyFeatureStatus {
             available: true,
             detail: "Human participant cards provide a counted preview and irreversible manual deletion of that experiment's recruitment mapping, participant identifier, consent evidence, and authored communication; no automatic retention deletion is performed.".to_string(),
         },
         consent_evidence: PrivacyFeatureStatus {
-            available: !state.config.direct.consents.is_empty(),
-            detail: format!(
-                "Consent is configured through {} consent item(s). Accepted declarations record a server-computed hash of the complete presentation. A participant-information reference is {}.",
-                state.config.direct.consents.len(),
-                enabled_label(
-                    nonempty_string(&state.config.direct.participant_information_version).is_some()
-                        && nonempty_string(&state.config.direct.participant_information_url).is_some()
+            available: consent_items > 0,
+            detail: if total == 1 {
+                format!(
+                    "Consent is configured through {consent_items} item(s). Accepted declarations record a server-computed hash of the complete presentation. A participant-information reference is {}.",
+                    if information_references == 1 { "configured" } else { "not configured" }
                 )
-            ),
+            } else {
+                format!(
+                    "Consent is configured through {consent_items} item(s) across {total} experiments. Accepted declarations record a server-computed hash of the complete presentation. A participant-information reference is configured in {information_references} experiments."
+                )
+            },
         },
-    }
-}
-
-/// Returns a stable human-readable label for an effective boolean configuration value.
-fn enabled_label(enabled: bool) -> &'static str {
-    if enabled {
-        "enabled"
-    } else {
-        "disabled"
-    }
+    })
 }
 
 /// Renders the privacy status as a self-contained administrator page without client-side scripts.
@@ -3178,7 +3732,7 @@ fn render_privacy_status_html(status: &PrivacyStatus) -> String {
     <div class="warning"><strong>Review state:</strong> {review_state} Privacy Contract: <strong>{contract_version}</strong>.</div>
     <section class="panel">
       <h2>Software</h2>
-      <div class="facts"><div class="fact"><span>Server</span><strong>{server_name} {server_version}</strong></div><div class="fact"><span>Generated</span><strong>{generated_at}</strong></div><div class="fact"><span>Git revision</span><strong>{git_sha}</strong></div><div class="fact"><span>Working tree at build</span><strong>{git_dirty}</strong></div></div>
+      <div class="facts"><div class="fact"><span>Server</span><strong>{server_name} {server_version}</strong></div><div class="fact"><span>Experiments covered</span><strong>{experiment_count}</strong></div><div class="fact"><span>Generated</span><strong>{generated_at}</strong></div><div class="fact"><span>Git revision</span><strong>{git_sha}</strong></div><div class="fact"><span>Working tree at build</span><strong>{git_dirty}</strong></div></div>
     </section>
     <section class="panel">
       <h2>Storage behavior</h2>
@@ -3200,6 +3754,7 @@ fn render_privacy_status_html(status: &PrivacyStatus) -> String {
         contract_version = escape_html_text(&status.privacy_contract_version),
         server_name = escape_html_text(&status.software.server_name),
         server_version = escape_html_text(&status.software.server_version),
+        experiment_count = status.experiment_count,
         generated_at = escape_html_text(&status.generated_at),
         git_sha = escape_html_text(git_sha),
         git_dirty = escape_html_text(&status.software.git_dirty),
@@ -3220,8 +3775,9 @@ fn render_privacy_status_html(status: &PrivacyStatus) -> String {
 /// Renders the privacy status as a portable Markdown record for DPO review material.
 fn render_privacy_status_markdown(status: &PrivacyStatus) -> String {
     let mut output = format!(
-        "# Parlando privacy status\n\nGenerated: {}  \nPrivacy Contract: {}  \nReview state: {}\n\n## Software\n\n- Server: {} {}\n- Git revision: {}\n- Working tree at build: {}\n\n## Storage behavior\n\n| Category | Persisted when produced | Configurable | Detail |\n| --- | --- | --- | --- |\n",
+        "# Parlando privacy status\n\nGenerated: {}  \nExperiments covered: {}  \nPrivacy Contract: {}  \nReview state: {}\n\n## Software\n\n- Server: {} {}\n- Git revision: {}\n- Working tree at build: {}\n\n## Storage behavior\n\n| Category | Persisted when produced | Configurable | Detail |\n| --- | --- | --- | --- |\n",
         markdown_cell(&status.generated_at),
+        status.experiment_count,
         markdown_cell(&status.privacy_contract_version),
         markdown_cell(&status.review_state),
         markdown_cell(&status.software.server_name),
@@ -3270,12 +3826,8 @@ fn render_privacy_status_markdown(status: &PrivacyStatus) -> String {
     output
 }
 
-/// Creates a download response with a fixed safe filename and explicit media type.
-fn privacy_download_response(
-    body: String,
-    content_type: &'static str,
-    filename: &'static str,
-) -> Response {
+/// Creates a download response with an experiment-id-safe filename and explicit media type.
+fn privacy_download_response(body: String, content_type: &'static str, filename: &str) -> Response {
     let mut response = body.into_response();
     response
         .headers_mut()
@@ -3283,7 +3835,7 @@ fn privacy_download_response(
     response.headers_mut().insert(
         CONTENT_DISPOSITION,
         HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
-            .expect("fixed privacy-status filename is a valid header value"),
+            .expect("validated experiment ids produce a valid privacy-status filename"),
     );
     response
 }
@@ -3322,34 +3874,13 @@ async fn admin_experiments<A: GameAdapter>(
 ) -> Result<Json<Value>, AppError> {
     let experiments = state.store.list_experiments(1_000).await?;
     let game_settings = state.game_settings.read().await.clone();
-    let storage_capacity = state.store.storage_capacity().await?;
-    let (waiting_sessions, active_sessions, reserved_transcription_streams) = {
-        let memory = state.memory.read().await;
-        let waiting = memory
-            .rooms
-            .values()
-            .filter(|room| room.status == "waiting" && room.participants.len() < 2)
-            .count();
-        let active = memory.rooms.len().saturating_sub(waiting);
-        let transcription = memory
-            .rooms
-            .values()
-            .flat_map(|room| room.participants.values())
-            .filter(|participant| participant.source != "agent")
-            .count();
-        (waiting, active, transcription)
-    };
+    let game_secrets = state.store.game_secrets().await?;
     Ok(Json(json!({
         "game": state.game_descriptor,
+        "version_manifest": state.version_manifest,
         "game_settings": game_settings,
+        "game_provider_secrets": configured_provider_secret_statuses(&state.bootstrap_secrets, &game_secrets),
         "experiments": experiments,
-        "running_experiment_id": state.experiment_id,
-        "storage_capacity": storage_capacity,
-        "runtime_capacity": {
-            "waiting_sessions": waiting_sessions,
-            "active_sessions": active_sessions,
-            "reserved_transcription_streams": reserved_transcription_streams,
-        },
         "csrf_token": admin_session.csrf_token,
     })))
 }
@@ -3367,9 +3898,6 @@ async fn admin_create_experiment<A: GameAdapter>(
         state.config.clone()
     };
     config.experiment.id = Some(request.experiment_id.clone());
-    if let Some(study_name) = request.study_name {
-        config.study.name = study_name;
-    }
     config
         .validate()
         .map_err(|error| AppError::bad_request(error.to_string()))?;
@@ -3444,12 +3972,149 @@ async fn admin_experiment_config<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
     Path(experiment_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let experiment = state
+    let mut experiment = state
         .store
         .experiment_definition(&experiment_id)
         .await?
         .ok_or_else(|| AppError::not_found("Experiment not found."))?;
-    Ok(Json(json!({ "experiment": experiment })))
+    let stored_secrets = state.store.experiment_secrets(&experiment_id).await?;
+    let empty_game = Value::Object(Default::default());
+    let game_yaml = serde_yaml::to_string(
+        experiment
+            .config
+            .get("game")
+            .filter(|game| !game.is_null())
+            .unwrap_or(&empty_game),
+    )
+    .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let configured_secrets = configured_secret_statuses(&stored_secrets);
+    let activation_issues = if experiment.game_version == state.game_descriptor.version.to_string()
+    {
+        let mut normalized = hydrated_experiment_config(&state, &experiment_id).await?;
+        let game_settings = state.game_settings.read().await.clone();
+        normalized.direct.consents = expanded_consent_items(&normalized, &game_settings);
+        experiment.config = persistable_config_json(&normalized)
+            .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        experiment_activation_issues(&state, &experiment_id).await?
+    } else {
+        Vec::new()
+    };
+    Ok(Json(json!({
+        "experiment": experiment,
+        "game_yaml": game_yaml,
+        "agent_factories": state.adapter.agent_factories(),
+        "configured_secrets": configured_secrets,
+        "activation_issues": activation_issues,
+    })))
+}
+
+/// Describes secret availability without returning credential values.
+fn configured_provider_secret_statuses(
+    bootstrap: &HashMap<String, String>,
+    stored: &HashMap<String, String>,
+) -> Vec<Value> {
+    vec![
+        json!({
+            "key": "speechmatics.api_key",
+            "configured": stored.contains_key("speechmatics.api_key") || bootstrap.contains_key("speechmatics.api_key"),
+            "source": if stored.contains_key("speechmatics.api_key") { "game" } else if bootstrap.contains_key("speechmatics.api_key") { "server" } else { "missing" },
+        }),
+        json!({
+            "key": "tts.api_key",
+            "configured": stored.contains_key("tts.api_key") || bootstrap.contains_key("tts.api_key"),
+            "source": if stored.contains_key("tts.api_key") { "game" } else if bootstrap.contains_key("tts.api_key") { "server" } else { "missing" },
+        }),
+    ]
+}
+
+/// Describes configured experiment-owned game secrets without revealing values.
+fn configured_secret_statuses(stored: &HashMap<String, String>) -> Vec<Value> {
+    let mut game_keys = stored
+        .keys()
+        .filter(|key| key.starts_with("game."))
+        .cloned()
+        .collect::<Vec<_>>();
+    game_keys.sort();
+    game_keys
+        .drain(..)
+        .map(|key| json!({"key": key, "configured": true, "source": "experiment"}))
+        .collect()
+}
+
+/// Validates one write-only secret name and value before opening a transaction.
+fn validate_secret_update(key: &str, value: Option<&str>) -> Result<(), AppError> {
+    let game = key
+        .strip_prefix("game.")
+        .is_some_and(|name| !name.is_empty());
+    if key.chars().count() > 128
+        || !game
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
+        return Err(AppError::bad_request(
+            "Experiment secret keys must use game.<name> with letters, digits, dots, dashes, and underscores",
+        ));
+    }
+    if value.is_some_and(|value| value.is_empty() || value.len() > 65_536) {
+        return Err(AppError::bad_request(
+            "Secret values must contain 1 to 65536 bytes",
+        ));
+    }
+    Ok(())
+}
+
+/// Reveals one explicitly requested secret to an authenticated administrator.
+async fn admin_reveal_experiment_secret<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Path(experiment_id): Path<String>,
+    Json(request): Json<AdminRevealExperimentSecretRequest>,
+) -> Result<Response, AppError> {
+    validate_secret_update(&request.key, None)?;
+    state
+        .store
+        .experiment_definition(&experiment_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("Experiment not found."))?;
+    let stored = state.store.experiment_secrets(&experiment_id).await?;
+    let value = stored
+        .get(&request.key)
+        .cloned()
+        .or_else(|| state.bootstrap_secrets.get(&request.key).cloned());
+    let value = value.ok_or_else(|| AppError::not_found("Secret is not configured."))?;
+    tracing::warn!(
+        experiment_id,
+        secret_key = request.key,
+        "administrator revealed experiment secret"
+    );
+    let mut response = Json(json!({"key": request.key, "value": value})).into_response();
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-store, max-age=0"),
+    );
+    Ok(response)
+}
+
+/// Parses and validates game-owned YAML without saving a configuration revision.
+async fn admin_validate_game_config<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Path(experiment_id): Path<String>,
+    Json(request): Json<AdminValidateGameConfigRequest>,
+) -> Result<Json<Value>, AppError> {
+    state
+        .store
+        .experiment_definition(&experiment_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("Experiment not found."))?;
+    let game = serde_yaml::from_str::<Value>(&request.game_yaml)
+        .map_err(|error| AppError::bad_request(format!("Invalid game YAML: {error}")))?;
+    validate_game_config_contains_no_secrets(&game)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    state
+        .adapter
+        .validate_config(&game)
+        .map_err(|error| AppError::bad_request(format!("Invalid game configuration: {error}")))?;
+    Ok(Json(json!({"valid": true})))
 }
 
 /// Validates and saves a new immutable configuration revision for an inactive experiment.
@@ -3469,19 +4134,58 @@ async fn admin_save_experiment_config<A: GameAdapter>(
             "Clone this experiment before editing it under the current game version",
         ));
     }
-    let mut config = experiment_config_from_json(request.config, &state.config, &experiment_id)
+    for (key, value) in &request.secret_updates {
+        validate_secret_update(key, Some(value))?;
+    }
+    for key in &request.secret_deletions {
+        validate_secret_update(key, None)?;
+    }
+    let mut config_value = request.config;
+    if let Some(game_yaml) = request.game_yaml.as_deref() {
+        let game = serde_yaml::from_str::<Value>(game_yaml)
+            .map_err(|error| AppError::bad_request(format!("Invalid game YAML: {error}")))?;
+        validate_game_config_contains_no_secrets(&game)
+            .map_err(|error| AppError::bad_request(error.to_string()))?;
+        config_value
+            .as_object_mut()
+            .ok_or_else(|| AppError::bad_request("configuration must be an object"))?
+            .insert("game".to_string(), game);
+    }
+    let mut config = experiment_config_from_json(config_value, &state.config, &experiment_id)
         .map_err(|error| AppError::bad_request(error.to_string()))?;
+    let mut secrets = state.store.experiment_secrets(&experiment_id).await?;
+    for key in &request.secret_deletions {
+        secrets.remove(key);
+    }
+    secrets.extend(request.secret_updates.clone());
+    apply_experiment_secrets(&mut config, &secrets);
+    let game_secrets = state.store.game_secrets().await?;
+    let game_settings = state.game_settings.read().await.clone();
+    apply_game_provider_settings(
+        &mut config,
+        &game_settings,
+        &state.bootstrap_secrets,
+        &game_secrets,
+    );
     config.experiment.id = Some(experiment_id.clone());
     config
         .validate()
         .map_err(|error| AppError::bad_request(error.to_string()))?;
+    validate_game_config_contains_no_secrets(&config.game)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    state
+        .adapter
+        .validate_config(&config.game)
+        .map_err(|error| AppError::bad_request(format!("Invalid game configuration: {error}")))?;
     let revision = state
         .store
-        .save_experiment_revision(
+        .save_experiment_configuration(
             &experiment_id,
             request.expected_revision,
             persistable_config_json(&config)?,
             request.change_summary,
+            request.secret_updates,
+            request.secret_deletions,
         )
         .await
         .map_err(|error| AppError::new(StatusCode::CONFLICT, error.to_string()))?;
@@ -3509,12 +4213,7 @@ async fn admin_update_experiment_catalogue<A: GameAdapter>(
 ) -> Result<Json<Value>, AppError> {
     state
         .store
-        .update_experiment_catalogue(
-            &experiment_id,
-            request.pinned,
-            request.obsolete,
-            request.notes,
-        )
+        .update_experiment_catalogue(&experiment_id, request.pinned, request.notes)
         .await
         .map_err(|error| AppError::bad_request(error.to_string()))?;
     Ok(Json(json!({ "experiment_id": experiment_id, "ok": true })))
@@ -3544,21 +4243,88 @@ async fn admin_update_game_settings<A: GameAdapter>(
             AppError::bad_request(format!("Invalid administrator IP range {range:?}: {error}"))
         })?;
     }
+    let current_realtime_url = state
+        .game_settings
+        .read()
+        .await
+        .speechmatics_realtime_url
+        .clone();
+    let speechmatics_realtime_url = request
+        .speechmatics_realtime_url
+        .unwrap_or(current_realtime_url)
+        .trim()
+        .to_string();
+    if !(speechmatics_realtime_url.starts_with("wss://")
+        || speechmatics_realtime_url.starts_with("ws://"))
+    {
+        return Err(AppError::bad_request(
+            "Speechmatics realtime URL must use ws:// or wss://",
+        ));
+    }
+    for (key, value) in &request.secret_updates {
+        validate_game_provider_secret(key, Some(value))?;
+    }
+    for key in &request.secret_deletions {
+        validate_game_provider_secret(key, None)?;
+    }
     let revision = state
         .store
         .update_game_settings(
             request.expected_revision,
             institution.clone(),
             admin_allowed_ip_ranges.clone(),
+            speechmatics_realtime_url.clone(),
+            request.secret_updates,
+            request.secret_deletions,
         )
         .await
         .map_err(|error| AppError::new(StatusCode::CONFLICT, error.to_string()))?;
     *state.game_settings.write().await = StoredGameSettings {
         institution,
         admin_allowed_ip_ranges,
+        speechmatics_realtime_url,
         revision,
     };
     Ok(Json(json!({ "revision": revision })))
+}
+
+/// Validates one game-wide hosted-provider credential change.
+fn validate_game_provider_secret(key: &str, value: Option<&str>) -> Result<(), AppError> {
+    if !matches!(key, "speechmatics.api_key" | "tts.api_key") {
+        return Err(AppError::bad_request(
+            "Unknown game-wide provider credential",
+        ));
+    }
+    if value.is_some_and(|value| value.is_empty() || value.len() > 65_536) {
+        return Err(AppError::bad_request(
+            "Provider credentials must contain 1 to 65536 bytes",
+        ));
+    }
+    Ok(())
+}
+
+/// Reveals one game-wide provider credential after an explicit administrator action.
+async fn admin_reveal_game_secret<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Json(request): Json<AdminRevealGameSecretRequest>,
+) -> Result<Response, AppError> {
+    validate_game_provider_secret(&request.key, None)?;
+    let stored = state.store.game_secrets().await?;
+    let value = stored
+        .get(&request.key)
+        .cloned()
+        .or_else(|| state.bootstrap_secrets.get(&request.key).cloned())
+        .ok_or_else(|| AppError::not_found("Provider credential is not configured."))?;
+    tracing::warn!(
+        secret_key = request.key,
+        "administrator revealed game provider credential"
+    );
+    let mut response = Json(json!({"key": request.key, "value": value})).into_response();
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-store, max-age=0"),
+    );
+    Ok(response)
 }
 
 /// Validates a dashboard-supplied experiment id using the public configuration contract.
@@ -3606,15 +4372,33 @@ async fn admin_update_experiment_status<A: GameAdapter>(
         .experiment_definition(&state.experiment_id)
         .await?
         .ok_or_else(|| AppError::not_found("Configured experiment not found."))?;
-    if lifecycle == ExperimentLifecycle::Active
-        && stored.game_version != state.game_descriptor.version.to_string()
+    if lifecycle.allows_intake() && stored.game_version != state.game_descriptor.version.to_string()
     {
         return Err(AppError::new(
             StatusCode::CONFLICT,
             "This experiment belongs to another game version; clone it before activation",
         ));
     }
+    if lifecycle.allows_intake() {
+        let issues = experiment_activation_issues(&state, &state.experiment_id).await?;
+        if !issues.is_empty() {
+            return Err(AppError::new(
+                StatusCode::CONFLICT,
+                format!("Experiment cannot start: {}", issues.join(" ")),
+            ));
+        }
+    }
     let mut current_lifecycle = state.experiment_lifecycle.write().await;
+    if !current_lifecycle.can_transition_to(lifecycle) {
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            format!(
+                "Experiment cannot transition directly from {} to {}",
+                current_lifecycle.as_str(),
+                lifecycle.as_str()
+            ),
+        ));
+    }
     state
         .store
         .update_experiment_status(&state.experiment_id, lifecycle.as_str())
@@ -3793,7 +4577,7 @@ struct AdminEventBundle {
 fn admin_event_is_terminal_boundary(event: &Value) -> bool {
     matches!(
         admin_event_type(event).as_str(),
-        "session_completed" | "session_expired" | "participant_disconnected"
+        "session_completed" | "session_abandoned" | "session_expired" | "participant_disconnected"
     )
 }
 
@@ -4031,7 +4815,9 @@ fn admin_bundle_title(bundle: &AdminEventBundle) -> String {
         "voice" => "Voice".to_string(),
         "transcript" => "Voice Message".to_string(),
         "conversation" => "Message".to_string(),
-        "session_created" | "session_completed" | "session_expired" => "Session".to_string(),
+        "session_created" | "session_completed" | "session_abandoned" | "session_expired" => {
+            "Session".to_string()
+        }
         _ => bundle
             .events
             .first()
@@ -4206,6 +4992,7 @@ fn is_important_admin_event(event: &crate::storage::StoredSessionEvent) -> bool 
             | "participant_disconnected"
             | "participant_joined"
             | "ready"
+            | "session_abandoned"
             | "session_completed"
             | "session_created"
             | "session_expired"
@@ -4262,6 +5049,7 @@ fn admin_event_title(event_type: &str, payload: &Value) -> &'static str {
         "participant_disconnected" => "Participant disconnected",
         "participant_joined" => "Participant joined",
         "ready" => "Participant ready",
+        "session_abandoned" => "Session abandoned",
         "session_completed" => "Session completed",
         "session_created" => "Session created",
         "session_expired" => "Session expired",
@@ -4286,7 +5074,7 @@ fn admin_event_text(event_type: &str, payload: &Value) -> Option<String> {
             .get("error")
             .and_then(Value::as_str)
             .map(str::to_string),
-        "session_expired" => payload
+        "session_abandoned" | "session_expired" => payload
             .get("reason")
             .and_then(Value::as_str)
             .map(str::to_string),
@@ -4519,6 +5307,17 @@ async fn filtered_export<A: GameAdapter>(
 where
     A::State: Serialize,
 {
+    let experiment = state
+        .store
+        .experiment_definition(experiment_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("Configured experiment not found."))?;
+    if experiment.status == "archived" {
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            "Archived experiments must be restored before export",
+        ));
+    }
     let mut exported = if let Some(session_id) = query.session_id {
         state
             .store
@@ -4527,6 +5326,18 @@ where
     } else {
         state.store.export_experiment(experiment_id).await?
     };
+    exclude_testing_sessions(&mut exported);
+    if query.session_id.is_some()
+        && exported
+            .get("sessions")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty)
+    {
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            "Testing sessions are not exportable",
+        ));
+    }
     if let Some(status) = query.status.as_deref() {
         filter_array_by_string(&mut exported, "sessions", "status", status);
         filter_scoped_tables_to_sessions(&mut exported);
@@ -4535,6 +5346,42 @@ where
         filter_array_by_string(&mut exported, "session_events", "event_type", event_type);
     }
     Ok(exported)
+}
+
+/// Removes test sessions and every session-scoped record linked only to them.
+fn exclude_testing_sessions(exported: &mut Value) {
+    filter_array_by_string_not_equal(exported, "sessions", "purpose", "testing");
+    filter_array_by_string_not_equal(exported, "consent_declarations", "purpose", "testing");
+    filter_scoped_tables_to_sessions(exported);
+    let participant_ids = exported
+        .get("session_participants")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row.get("participant_id").and_then(Value::as_i64))
+        .collect::<HashSet<_>>();
+    if let Some(rows) = exported
+        .get_mut("participants")
+        .and_then(Value::as_array_mut)
+    {
+        rows.retain(|row| {
+            row.get("participant_id")
+                .and_then(Value::as_i64)
+                .is_some_and(|id| participant_ids.contains(&id))
+        });
+    }
+}
+
+/// Retains rows whose string field does not equal the excluded value.
+fn filter_array_by_string_not_equal(
+    exported: &mut Value,
+    table: &str,
+    field: &str,
+    excluded: &str,
+) {
+    if let Some(rows) = exported.get_mut(table).and_then(Value::as_array_mut) {
+        rows.retain(|row| row.get(field).and_then(Value::as_str) != Some(excluded));
+    }
 }
 
 fn filter_array_by_string(exported: &mut Value, table: &str, field: &str, expected: &str) {
@@ -4553,11 +5400,7 @@ fn filter_scoped_tables_to_sessions(exported: &mut Value) {
                 .collect::<HashSet<_>>()
         })
         .unwrap_or_default();
-    for table in [
-        "session_participants",
-        "consent_declarations",
-        "session_events",
-    ] {
+    for table in ["session_participants", "session_events"] {
         if let Some(rows) = exported.get_mut(table).and_then(Value::as_array_mut) {
             rows.retain(|row| {
                 row.get("session_id")
@@ -4565,6 +5408,28 @@ fn filter_scoped_tables_to_sessions(exported: &mut Value) {
                     .is_some_and(|id| session_ids.contains(&id))
             });
         }
+    }
+    let participant_ids = exported
+        .get("session_participants")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row.get("participant_id").and_then(Value::as_i64))
+        .collect::<HashSet<_>>();
+    if let Some(rows) = exported
+        .get_mut("consent_declarations")
+        .and_then(Value::as_array_mut)
+    {
+        rows.retain(|row| {
+            row.get("session_id").and_then(Value::as_i64).map_or_else(
+                || {
+                    row.get("participant_id")
+                        .and_then(Value::as_i64)
+                        .is_some_and(|id| participant_ids.contains(&id))
+                },
+                |id| session_ids.contains(&id),
+            )
+        });
     }
 }
 
@@ -5419,6 +6284,42 @@ async fn websocket_loop<A: GameAdapter>(
     );
 }
 
+/// Atomically records an intentional departure and closes the room to further game input.
+async fn abandon_room<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+    room_id: &str,
+    participant_session_id: &str,
+) -> Result<bool> {
+    let transition_lock = room_transition_lock(state, room_id).await;
+    let _transition_guard = transition_lock.lock().await;
+    let status = state
+        .memory
+        .read()
+        .await
+        .rooms
+        .get(room_id)
+        .map(|room| room.status.clone())
+        .ok_or_else(|| anyhow!("Room not found."))?;
+    if room_status_is_terminal(&status) {
+        return Ok(false);
+    }
+    let event = session_event_record(
+        state,
+        room_id,
+        Some(participant_session_id),
+        "session_abandoned",
+        json!({"reason": "participant_left"}),
+        None,
+    )
+    .await?;
+    state.store.abandon_session(event).await?;
+    if let Some(room) = state.memory.write().await.rooms.get_mut(room_id) {
+        room.status = "abandoned".to_string();
+        room.updated_at = now_iso();
+    }
+    Ok(true)
+}
+
 async fn handle_client_message<A: GameAdapter>(
     state: Arc<AppState<A>>,
     bus: &broadcast::Sender<ServerMessage>,
@@ -5496,6 +6397,20 @@ async fn handle_client_message<A: GameAdapter>(
                 .await;
             }
         }
+        "leave" => match abandon_room(&state, room_id, participant_session_id).await {
+            Ok(true) => {
+                let _ = bus.send(ServerMessage {
+                    room_id: Some(room_id.to_string()),
+                    message: Some("This session ended because a participant left.".to_string()),
+                    ..ServerMessage::new("abandoned")
+                });
+            }
+            Ok(false) => {}
+            Err(error) => {
+                tracing::error!(%error, room_id, "could not abandon session");
+                let _ = bus.send(error_message(room_id, "Could not end the session"));
+            }
+        },
         "sendChatMessage" => {
             let text = message.text.unwrap_or_default();
             if text.chars().count() > 4_000 {
@@ -5800,9 +6715,9 @@ where
             .rooms
             .get(room_id)
             .ok_or_else(|| anyhow!("Room not found."))?;
-        if room.status == "completed" {
+        if room_status_is_terminal(&room.status) {
             return Err(anyhow!(
-                "Room is completed and no longer accepts game messages."
+                "Room has ended and no longer accepts game messages."
             ));
         }
         if !room_ready_for_game::<A>(&state.config, room) {
@@ -6690,21 +7605,40 @@ async fn maybe_start_game<A: GameAdapter>(state: Arc<AppState<A>>, room_id: &str
 where
     A::State: Serialize,
 {
-    let should_start = {
+    let transition_lock = room_transition_lock(&state, room_id).await;
+    let _transition_guard = transition_lock.lock().await;
+    let durable_session = {
+        let memory = state.memory.read().await;
+        memory.rooms.get(room_id).and_then(|room| {
+            (room.status == "waiting" && room_ready_for_game::<A>(&state.config, room))
+                .then(|| (room.experiment_id.clone(), room.session_id))
+        })
+    };
+    let Some((experiment_id, session_id)) = durable_session else {
+        return;
+    };
+    match state.store.start_session(&experiment_id, session_id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::warn!(
+                room_id,
+                session_id,
+                "waiting session was not durably startable"
+            );
+            return;
+        }
+        Err(error) => {
+            tracing::error!(%error, room_id, session_id, "could not durably start session");
+            return;
+        }
+    }
+    {
         let mut memory = state.memory.write().await;
         let Some(room) = memory.rooms.get_mut(room_id) else {
             return;
         };
-        if room.status != "waiting" || !room_ready_for_game::<A>(&state.config, room) {
-            false
-        } else {
-            room.status = "playing".to_string();
-            room.updated_at = now_iso();
-            true
-        }
-    };
-    if !should_start {
-        return;
+        room.status = "running".to_string();
+        room.updated_at = now_iso();
     }
 
     let participants = {

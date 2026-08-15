@@ -8,7 +8,7 @@ export interface ParticipantCreateResponse {
 export interface PublicConfigResponse {
   study_name: string;
   /** Lifecycle state of the experiment selected by this client's route. */
-  experiment_status: "inactive" | "active";
+  experiment_status: "inactive" | "testing" | "active" | "completed" | "archived";
   /** Institution operating the study, when the server exposes one. */
   institution?: string | null;
   participant_information_version?: string | null;
@@ -123,6 +123,7 @@ export type ServerMessage<
     }
   | { type: "conversationMessageAdded"; room_id: string; conversation_message: ConversationMessage }
   | { type: "completed"; room_id: string; summary: TSummary }
+  | { type: "abandoned"; room_id: string; message?: string }
   | { type: "presenceChanged"; room_id?: string; presence?: Record<string, unknown> }
   | {
       type: "voiceStatusChanged";
@@ -204,6 +205,11 @@ export class ExperimentApiClient {
 
   sendChatMessage(socket: WebSocket | null, text: string): void {
     socket?.send(JSON.stringify({ type: "sendChatMessage", text }));
+  }
+
+  /** Declares an intentional participant departure before closing the game channel. */
+  leaveSession(socket: WebSocket | null): void {
+    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "leave" }));
   }
 
   socketUrl(plan: GameSessionPlan): string {

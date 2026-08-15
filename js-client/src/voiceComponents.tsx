@@ -16,16 +16,35 @@ export function MicLevelMeter({ active, label, level }: { active: boolean; label
 }
 
 /** Renders the shared hosted-transcription readiness progression. */
-export function TranscriptionProgress({ voiceStatus = initialVoiceStatus }: { voiceStatus?: VoiceStatus }) {
+export function TranscriptionProgress({
+  gameConnected = true,
+  voiceStatus = initialVoiceStatus
+}: {
+  gameConnected?: boolean;
+  voiceStatus?: VoiceStatus;
+}) {
   const progress = useMemo(
     () => transcriptionProgressForStatus(voiceStatus.transcriptionMessage, voiceStatus.transcriptionReady),
     [voiceStatus.transcriptionMessage, voiceStatus.transcriptionReady]
   );
+  const transportStarted = gameConnected && (voiceStatus.connecting || voiceStatus.connected);
+  const heading = !gameConnected
+    ? "Waiting for game connection"
+    : !transportStarted
+      ? "Preparing voice connection"
+      : voiceStatus.transcriptionReady
+        ? "Transcription ready"
+        : "Waiting for transcription service";
+  const detail = !gameConnected
+    ? "Transcription has not started."
+    : !transportStarted
+      ? "Transcription starts after the voice transport connects."
+      : voiceStatus.transcriptionMessage;
   return (
     <div className="transcription-progress" aria-label="Transcription service progress">
       <div>
-        <strong>{voiceStatus.transcriptionReady ? "Transcription ready" : "Waiting for transcription service"}</strong>
-        <span>{voiceStatus.transcriptionMessage}</span>
+        <strong>{heading}</strong>
+        <span>{detail}</span>
       </div>
       <div className="transcription-progress-track" aria-hidden="true">
         <span style={{ transform: `scaleX(${progress.value})` }} />
