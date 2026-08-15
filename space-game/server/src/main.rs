@@ -6,39 +6,28 @@ use std::{
 use anyhow::Result;
 use clap::Parser;
 use parlando_server::{serve, ExperimentConfig, ServeOptions};
-use parlando_space_game::{
-    agents::{available_agent_options, factory_from_config},
-    SpaceGameAdapter,
-};
+use parlando_space_game::{agents::factory_from_config, SpaceGameAdapter};
 use serde_json::{json, Value};
 
 #[derive(Debug, Parser)]
 #[command(name = "parlando-space-game")]
 struct Cli {
     #[arg(long, short)]
-    config: Option<PathBuf>,
+    config: PathBuf,
     #[arg(long, default_value = "127.0.0.1")]
     host: IpAddr,
     #[arg(long)]
     port: Option<u16>,
-    #[arg(long)]
-    experiment_id: Option<String>,
 }
 
+/// Loads the required experiment configuration and starts its dedicated process.
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let cli = Cli::parse();
-    let mut config = if let Some(path) = cli.config {
-        ExperimentConfig::from_yaml(path)?
-    } else {
-        ExperimentConfig::default()
-    };
-    if cli.experiment_id.is_some() {
-        config.experiment.id = cli.experiment_id;
-    }
+    let config = ExperimentConfig::from_yaml(cli.config)?;
     let port = cli
         .port
         .or_else(|| {
@@ -56,7 +45,6 @@ async fn main() -> Result<()> {
         ServeOptions {
             agent_factory,
             game_version_manifest: Some(space_game_version_manifest()),
-            admin_agent_options: available_agent_options(),
             ..ServeOptions::default()
         },
     )

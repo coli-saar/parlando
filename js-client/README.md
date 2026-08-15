@@ -27,7 +27,7 @@ import { VoiceStatusChip } from "@coli-saar/parlando-client/react";
 
 The root entrypoint contains protocol types, API helpers, WebSocket helpers, the audio-session controller and sink, microphone helpers, and non-React utility functions.
 
-For voice-enabled games, create or join a room before rendering the readiness waiting room. `ExperimentApiClient.createRoom(...)` returns a `room_id` for Player A immediately, and `ExperimentApiClient.joinRoom(...)` adds Player B to that existing room. In human-agent mode, the server supplies Player B when the room is created. Once the client has `room_id` and `participant_session_id`, it can open the room WebSocket and request `/api/rooms/{room_id}/audio-session` while the UI still shows Player A, Player B/agent, and STT readiness.
+For voice-enabled games, call `ExperimentApiClient.createRoom(...)` before rendering the readiness waiting room. The server pairs a human with an existing compatible waiting room or creates one; in human-agent mode it supplies Player B immediately. Once the client has `room_id` and `participant_session_id`, it can open the room WebSocket and request `/api/rooms/{room_id}/audio-session` while the UI still shows Player A, Player B/agent, and STT readiness.
 
 ## Speech configuration
 

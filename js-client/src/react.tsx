@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { transcriptionProgressForStatus, voiceButtonLabel } from "./helpers.js";
+import { useEffect, useState } from "react";
+import { voiceButtonLabel } from "./helpers.js";
 import type { AudioSessionController, AudioSessionSnapshot, VoiceStatus } from "./index.js";
 import { initialVoiceStatus } from "./index.js";
 
@@ -9,16 +9,7 @@ export function useVoiceController(controller: AudioSessionController): AudioSes
   return snapshot;
 }
 
-export function MicLevelMeter({ active, label, level }: { active: boolean; label: string; level: number }) {
-  return (
-    <div className="mic-meter">
-      <span>{label}</span>
-      <div className="mic-meter-track" aria-hidden="true">
-        <span style={{ transform: `scaleX(${active ? level : 0})` }} />
-      </div>
-    </div>
-  );
-}
+export { MicLevelMeter, TranscriptionProgress } from "./voiceComponents.js";
 
 export function VoiceJoinButton({
   voiceEnabled,
@@ -79,31 +70,6 @@ export function TranscriptionStatusChip({ voiceStatus = initialVoiceStatus }: { 
     <div className={`transcription-chip ${voiceStatus.transcriptionMessage === "ASR error" ? "error" : ""}`}>
       <span aria-hidden="true" />
       {voiceStatus.transcriptionMessage}
-    </div>
-  );
-}
-
-export function TranscriptionProgress({ voiceStatus = initialVoiceStatus }: { voiceStatus?: VoiceStatus }) {
-  const progress = useMemo(
-    () => transcriptionProgressForStatus(voiceStatus.transcriptionMessage, voiceStatus.transcriptionReady),
-    [voiceStatus.transcriptionMessage, voiceStatus.transcriptionReady]
-  );
-  return (
-    <div className="transcription-progress" aria-label="Transcription service progress">
-      <div>
-        <strong>{voiceStatus.transcriptionReady ? "Transcription ready" : "Waiting for transcription service"}</strong>
-        <span>{voiceStatus.transcriptionMessage}</span>
-      </div>
-      <div className="transcription-progress-track" aria-hidden="true">
-        <span style={{ transform: `scaleX(${progress.value})` }} />
-      </div>
-      <ol>
-        {progress.steps.map((step) => (
-          <li className={step.done ? "done" : ""} key={step.label}>
-            {step.label}
-          </li>
-        ))}
-      </ol>
     </div>
   );
 }

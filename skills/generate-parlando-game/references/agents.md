@@ -146,7 +146,7 @@ pub fn factory_from_config(
     })?;
     match human_vs_agent.factory.as_deref().unwrap_or("<game-slug>.demo_agent") {
         "<game-slug>.demo_agent" => Ok(Some(Arc::new(DemoAgentFactory))),
-        "remote_grpc" | "parlando.remote_grpc" => {
+        "remote_grpc" => {
             let config = RemoteAgentSelectorConfig::from_value(
                 human_vs_agent.config.clone(),
                 human_vs_agent.act_timeout_seconds,

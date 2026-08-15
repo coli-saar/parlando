@@ -157,7 +157,7 @@ cargo run --manifest-path space-game/server/Cargo.toml -- --host 127.0.0.1 --por
 
 The normal `cargo test` suite is credential-free and never contacts Speechmatics. The standalone ten-minute stress dashboard defaults to a production-shaped workload and runs with `cargo run --release --features stress-tui --bin audio-stress-tui`; its realistic, saturation, and impaired CLI modes are documented in [Audio Testing](docs/audio-testing.md).
 
-With no config file, the server starts with conservative defaults and API routes enabled. For a configured study, pass a YAML file:
+Each server process requires one experiment YAML file:
 
 ```sh
 cargo run --manifest-path space-game/server/Cargo.toml -- \
@@ -171,8 +171,7 @@ The main service endpoints are:
 - `GET /health`
 - `GET /api/config`
 - `POST /api/participants`
-- `POST /api/direct/start` (direct-study convenience alias for participant creation)
-- `POST /api/rooms`, `POST /api/rooms/{room_id}/join`
+- `POST /api/rooms` (server-owned matchmaking)
 - `POST /api/rooms/{room_id}/game-session`, followed by `GET /ws/game/{room_id}?token=...` with the returned one-use ticket
 - `GET /ws/audio/{room_id}?token=...`
 - `GET /admin` (first-run setup or administrator login)

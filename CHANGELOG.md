@@ -14,15 +14,25 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ### Changed
 
+- Made each server process own one configured experiment. Startup now always resets intake to `inactive`; the authenticated dashboard explicitly activates or deactivates intake, and deactivation leaves existing sessions connected.
+- Replaced the multi-experiment dashboard and API with singular experiment status and session views.
 - Simplified the JavaScript startup gate to show only the configured study title and current platform tasks; removed arbitrary startup-label, eyebrow, setup-copy, and game-hint customization.
 - Added an optional operating institution to the study identity shown above the game title, and derived consent display and enforcement solely from configured consent items instead of a separate `require_consent` flag.
 - Removed participant-entered display names from the browser flow, protocol, runtime, database, admin interface, and exports.
 - Changed the `corpus` export description to a publication-oriented `corpus_candidate`: it removes internal identifiers and absolute timestamps but requires removal of recruitment mappings and content review before it can be treated as anonymous.
 - Scoped external recruitment identities to one experiment, so the same external identifier receives an independently generated participant identifier in every experiment.
+- Made configuration strict and fail-closed: unknown fields and missing environment placeholders now fail startup, runtime limits and provider URLs are validated, consent copy is plain text, and obsolete no-op switches are no longer accepted.
+- Made participant intake capacity-safe with per-peer and global creation limits, pre-insert capacity checks, and cleanup tied to credential expiry.
+- Made all room assignment server-owned and made JavaScript participant authentication implicit in each client instance rather than passing session identifiers through authenticated method signatures.
+- Versioned SQLite compatibility migrations and narrowed the published Rust and JavaScript package contents and public surface.
+- Removed conditional test authentication and the final participant-ID WebSocket compatibility path; unit tests now use real administrator sessions, bearer credentials, CSRF tokens, and one-use game tickets.
+- Split router construction, lifecycle policy, dashboard markup, application tests, and storage tests into focused source files, and removed the dashboard's remaining multi-experiment selection state.
 
 ### Removed
 
+- Removed dashboard experiment-record creation and cloning, the `agents.available` configuration used only by that form, and the `/admin/games`, `/api/admin/games`, and `/api/direct/start` compatibility aliases.
 - Removed participant-session identifiers as authentication material and removed credentials, recruitment identifiers, consent evidence, and full configuration from normal research/corpus exports.
+- Removed public room-code joining, caller-selected room modes, the test-only memory persistence backend, duplicate voice UI implementations, unused agent selector aliases, and the Space Game's unexposed direct-move and reset actions.
 
 ## [0.2.0] - 2026-08-13
 

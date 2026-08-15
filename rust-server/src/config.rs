@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::HashSet,
     env, fs,
     path::{Path, PathBuf},
 };
@@ -10,12 +10,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct StudyConfig {
     pub name: String,
     /// Optional name of the institution operating the participant-facing study.
     pub institution: String,
-    pub enabled_sources: Vec<String>,
     pub waiting_room_timeout_seconds: i64,
     pub reconnect_grace_seconds: i64,
 }
@@ -25,7 +24,6 @@ impl Default for StudyConfig {
         Self {
             name: "experiment".to_string(),
             institution: String::new(),
-            enabled_sources: vec!["direct".to_string()],
             waiting_room_timeout_seconds: 300,
             reconnect_grace_seconds: 90,
         }
@@ -33,19 +31,19 @@ impl Default for StudyConfig {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ConsentItemConfig {
     pub id: String,
     pub title: String,
-    pub body_html: String,
+    /// Plain-text consent copy displayed without HTML interpretation.
+    pub body: String,
     pub required: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DirectConfig {
     pub enabled: bool,
-    pub allow_room_codes: bool,
     pub participant_information_version: String,
     pub participant_information_url: String,
     pub consents: Vec<ConsentItemConfig>,
@@ -55,7 +53,6 @@ impl Default for DirectConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            allow_room_codes: true,
             participant_information_version: String::new(),
             participant_information_url: String::new(),
             consents: vec![],
@@ -64,7 +61,7 @@ impl Default for DirectConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PrivacyConfig {
     /// Version of the stable privacy behavior implemented by this server release.
     pub contract_version: String,
@@ -91,15 +88,8 @@ impl Default for PrivacyConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
-pub struct LegacyGameConfig {
-    pub adapter: Option<String>,
-    pub module_paths: Vec<String>,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
     pub public_base_url: String,
     pub allowed_origins: Vec<String>,
@@ -117,19 +107,19 @@ impl Default for ServerConfig {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DatabaseConfig {
     pub url: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ExperimentIdentityConfig {
     pub id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct VoiceConfig {
     /// Enables Parlando's authenticated browser-to-server audio WebSocket.
     pub enabled: bool,
@@ -154,7 +144,7 @@ impl Default for VoiceConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SpeechmaticsConfig {
     pub api_key: String,
     pub realtime_url: String,
@@ -176,13 +166,12 @@ impl Default for SpeechmaticsConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TranscriptionConfig {
     pub enabled: bool,
     pub provider: String,
     pub model: String,
     pub language: String,
-    pub store_audio: bool,
 }
 
 impl Default for TranscriptionConfig {
@@ -192,13 +181,12 @@ impl Default for TranscriptionConfig {
             provider: "speechmatics".to_string(),
             model: "enhanced".to_string(),
             language: "en-US".to_string(),
-            store_audio: false,
         }
     }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TtsConfig {
     pub enabled: bool,
     pub provider: String,
@@ -207,7 +195,6 @@ pub struct TtsConfig {
     pub voice_name: String,
     pub api_key: String,
     pub output_format: String,
-    pub worker_autostart: bool,
 }
 
 impl Default for TtsConfig {
@@ -220,29 +207,12 @@ impl Default for TtsConfig {
             voice_name: String::new(),
             api_key: String::new(),
             output_format: "pcm_24000".to_string(),
-            worker_autostart: true,
         }
     }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default)]
-pub struct ConversationConfig {
-    pub enabled: bool,
-    pub max_history_messages: usize,
-}
-
-impl Default for ConversationConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            max_history_messages: 50,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HumanVsAgentConfig {
     pub factory: Option<String>,
     pub max_concurrent_games: usize,
@@ -265,43 +235,26 @@ impl Default for HumanVsAgentConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
-pub struct AgentOptionConfig {
-    pub selector: String,
-    pub label: String,
-    pub description: Option<String>,
-    pub requires_config: bool,
-    pub default_config: Value,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentsMode {
+    #[default]
     HumanVsHuman,
     HumanVsAgent,
 }
 
-impl Default for AgentsMode {
-    fn default() -> Self {
-        Self::HumanVsHuman
-    }
-}
-
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AgentsConfig {
     pub mode: AgentsMode,
     pub human_vs_agent: Option<HumanVsAgentConfig>,
-    pub available: Vec<AgentOptionConfig>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ExperimentConfig {
     pub experiment: ExperimentIdentityConfig,
     pub study: StudyConfig,
-    pub game: LegacyGameConfig,
     pub direct: DirectConfig,
     pub server: ServerConfig,
     pub database: DatabaseConfig,
@@ -309,35 +262,8 @@ pub struct ExperimentConfig {
     pub speechmatics: SpeechmaticsConfig,
     pub transcription: TranscriptionConfig,
     pub tts: TtsConfig,
-    pub conversation: ConversationConfig,
     pub agents: AgentsConfig,
     pub privacy: PrivacyConfig,
-    #[serde(flatten)]
-    pub extra: HashMap<String, Value>,
-}
-
-impl Default for ExperimentConfig {
-    fn default() -> Self {
-        Self {
-            study: StudyConfig::default(),
-            experiment: ExperimentIdentityConfig::default(),
-            game: LegacyGameConfig {
-                adapter: None,
-                module_paths: vec!["src".to_string()],
-            },
-            direct: DirectConfig::default(),
-            server: ServerConfig::default(),
-            database: DatabaseConfig::default(),
-            voice: VoiceConfig::default(),
-            speechmatics: SpeechmaticsConfig::default(),
-            transcription: TranscriptionConfig::default(),
-            tts: TtsConfig::default(),
-            conversation: ConversationConfig::default(),
-            agents: AgentsConfig::default(),
-            privacy: PrivacyConfig::default(),
-            extra: HashMap::new(),
-        }
-    }
 }
 
 impl ExperimentConfig {
@@ -356,15 +282,60 @@ impl ExperimentConfig {
 
     /// Validates cross-field requirements that cannot be expressed by serde defaults alone.
     pub fn validate(&self) -> Result<()> {
+        if self.study.name.trim().is_empty() {
+            bail!("study.name must not be empty");
+        }
+        if self.experiment.id.as_ref().is_some_and(|id| {
+            id.is_empty()
+                || id.chars().count() > 128
+                || !id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        }) {
+            bail!(
+                "experiment.id must contain 1 to 128 letters, digits, dots, dashes, or underscores"
+            );
+        }
+        if self.study.waiting_room_timeout_seconds <= 0 {
+            bail!("study.waiting_room_timeout_seconds must be positive");
+        }
+        if self.study.reconnect_grace_seconds < 0 {
+            bail!("study.reconnect_grace_seconds must not be negative");
+        }
+        validate_http_url("server.public_base_url", &self.server.public_base_url)?;
+        for origin in &self.server.allowed_origins {
+            validate_http_url("server.allowed_origins", origin)?;
+            let uri: http::Uri = origin.parse()?;
+            if uri.path() != "/" || uri.query().is_some() {
+                bail!("server.allowed_origins entries must not contain paths or queries");
+            }
+        }
+        if self.database.url.trim().is_empty() {
+            bail!("database.url must not be empty");
+        }
         if self.privacy.contract_version.trim().is_empty() {
             bail!("privacy.contract_version must not be empty");
         }
+        if self.voice.jitter_buffer_ms < self.voice.frame_duration_ms
+            || self.voice.jitter_buffer_ms > 5_000
+        {
+            bail!("voice.jitter_buffer_ms must be between one frame and 5000 ms");
+        }
         if self.tts.enabled {
+            if self.tts.provider != "elevenlabs" {
+                bail!("tts.provider must be elevenlabs");
+            }
             if self.tts.voice_id.is_empty() {
                 bail!("tts.voice_id is required when TTS is enabled");
             }
+            if self.tts.model.trim().is_empty() {
+                bail!("tts.model is required when TTS is enabled");
+            }
             if self.tts.api_key.is_empty() {
                 bail!("tts.api_key is required when TTS is enabled");
+            }
+            if self.tts.output_format != "pcm_24000" {
+                bail!("tts.output_format must be pcm_24000");
             }
         }
         if self.voice.enabled
@@ -374,14 +345,102 @@ impl ExperimentConfig {
                 "voice protocol version 1 requires sample_rate_hz 24000 and frame_duration_ms 20"
             );
         }
-        if self.transcription.enabled
-            && self.transcription.provider == "speechmatics"
-            && self.speechmatics.api_key.is_empty()
-        {
-            bail!("speechmatics.api_key is required for Speechmatics transcription");
+        if self.transcription.enabled {
+            if self.transcription.provider != "speechmatics" {
+                bail!("transcription.provider must be speechmatics");
+            }
+            if self.transcription.model.trim().is_empty()
+                || self.transcription.language.trim().is_empty()
+            {
+                bail!("transcription.model and transcription.language must not be empty");
+            }
+            validate_websocket_url("speechmatics.realtime_url", &self.speechmatics.realtime_url)?;
+            if self.speechmatics.api_key.is_empty() {
+                bail!("speechmatics.api_key is required for Speechmatics transcription");
+            }
+            if !self.speechmatics.max_delay.is_finite() || self.speechmatics.max_delay <= 0.0 {
+                bail!("speechmatics.max_delay must be finite and positive");
+            }
+            if !self
+                .speechmatics
+                .end_of_utterance_silence_trigger
+                .is_finite()
+                || self.speechmatics.end_of_utterance_silence_trigger <= 0.0
+            {
+                bail!("speechmatics.end_of_utterance_silence_trigger must be finite and positive");
+            }
+        }
+        if let Some(agent) = &self.agents.human_vs_agent {
+            if agent.max_concurrent_games == 0 {
+                bail!("agents.human_vs_agent.max_concurrent_games must be positive");
+            }
+            if !agent.act_timeout_seconds.is_finite() || agent.act_timeout_seconds <= 0.0 {
+                bail!("agents.human_vs_agent.act_timeout_seconds must be finite and positive");
+            }
+            if agent.invalid_action_limit == 0 {
+                bail!("agents.human_vs_agent.invalid_action_limit must be positive");
+            }
+        }
+        if self.agents.mode == AgentsMode::HumanVsAgent && self.agents.human_vs_agent.is_none() {
+            bail!("agents.human_vs_agent is required in human_vs_agent mode");
+        }
+        if self.agents.mode == AgentsMode::HumanVsHuman && self.agents.human_vs_agent.is_some() {
+            bail!("agents.human_vs_agent must be omitted in human_vs_human mode");
+        }
+        let mut consent_ids = HashSet::new();
+        for item in &self.direct.consents {
+            if item.id.trim().is_empty() || item.id.chars().count() > 128 {
+                bail!("direct consent ids must contain 1 to 128 characters");
+            }
+            if !consent_ids.insert(item.id.as_str()) {
+                bail!("direct consent ids must be unique");
+            }
+            if item.title.trim().is_empty() || item.title.chars().count() > 500 {
+                bail!("direct consent titles must contain 1 to 500 characters");
+            }
+            if item.body.trim().is_empty() || item.body.chars().count() > 20_000 {
+                bail!("direct consent bodies must contain 1 to 20000 characters");
+            }
+        }
+        let has_information_version = !self
+            .direct
+            .participant_information_version
+            .trim()
+            .is_empty();
+        let has_information_url = !self.direct.participant_information_url.trim().is_empty();
+        if has_information_version != has_information_url {
+            bail!("direct participant information version and URL must be configured together");
+        }
+        if has_information_url {
+            validate_http_url(
+                "direct.participant_information_url",
+                &self.direct.participant_information_url,
+            )?;
         }
         Ok(())
     }
+}
+
+/// Rejects malformed hosted-service WebSocket URLs.
+fn validate_websocket_url(field: &str, value: &str) -> Result<()> {
+    let uri: http::Uri = value
+        .parse()
+        .with_context(|| format!("{field} must be a valid URL"))?;
+    if !matches!(uri.scheme_str(), Some("ws" | "wss")) || uri.authority().is_none() {
+        bail!("{field} must use ws or wss and include a host");
+    }
+    Ok(())
+}
+
+/// Rejects malformed or non-HTTP URLs used in browser-visible configuration.
+fn validate_http_url(field: &str, value: &str) -> Result<()> {
+    let uri: http::Uri = value
+        .parse()
+        .with_context(|| format!("{field} must be a valid URL"))?;
+    if !matches!(uri.scheme_str(), Some("http" | "https")) || uri.authority().is_none() {
+        bail!("{field} must use http or https and include a host");
+    }
+    Ok(())
 }
 
 fn load_yaml_with_includes(path: &Path, seen: &mut Vec<PathBuf>) -> Result<Value> {
@@ -389,7 +448,7 @@ fn load_yaml_with_includes(path: &Path, seen: &mut Vec<PathBuf>) -> Result<Value
         bail!("config include cycle detected at {}", path.display());
     }
     seen.push(path.to_path_buf());
-    let text = expand_env(&fs::read_to_string(path)?);
+    let text = expand_env(&fs::read_to_string(path)?)?;
     let yaml: serde_yaml::Value = serde_yaml::from_str(&text)?;
     let mut data = serde_json::to_value(yaml)?;
     let parent = take_field(&mut data, "extends");
@@ -560,13 +619,25 @@ fn apply_env_overrides(data: &mut Value) {
     }
 }
 
-fn expand_env(text: &str) -> String {
+/// Expands required environment placeholders and reports missing variables.
+fn expand_env(text: &str) -> Result<String> {
     let pattern = Regex::new(r"\$\{([A-Z0-9_]+)\}").expect("valid env regex");
-    pattern
+    let missing = pattern
+        .captures_iter(text)
+        .map(|captures| captures[1].to_string())
+        .filter(|name| env::var(name).is_err())
+        .collect::<HashSet<_>>();
+    if !missing.is_empty() {
+        bail!(
+            "missing environment variables referenced by configuration: {}",
+            missing.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+    Ok(pattern
         .replace_all(text, |captures: &regex::Captures| {
-            env::var(&captures[1]).unwrap_or_default()
+            env::var(&captures[1]).expect("environment variable was checked above")
         })
-        .to_string()
+        .to_string())
 }
 
 #[cfg(test)]
@@ -600,7 +671,7 @@ direct:
   consents:
     - id: study
       title: Study
-      body_html: Agree?
+      body: Agree?
       required: true
 database:
   url: sqlite:///data/parlando.sqlite
@@ -610,19 +681,10 @@ server:
         )
         .expect("base config");
         fs::write(
-            config_dir.join("include.yaml"),
-            r#"
-conversation:
-  max_history_messages: 12
-"#,
-        )
-        .expect("include config");
-        fs::write(
             config_dir.join("experiment.yaml"),
             r#"
 extends: base.yaml
 includes:
-  - include.yaml
   - path: missing-private.yaml
     optional: true
 study:
@@ -639,7 +701,6 @@ agents:
 
         assert_eq!(config.study.name, "Env Study");
         assert_eq!(config.direct.consents.len(), 1);
-        assert_eq!(config.conversation.max_history_messages, 12);
         assert_eq!(config.agents.mode, AgentsMode::HumanVsAgent);
         let canonical_project = config_dir
             .canonicalize()
@@ -677,9 +738,57 @@ agents:
         );
     }
 
+    /// Confirms misspelled or removed configuration fields fail closed.
+    #[test]
+    fn yaml_rejects_unknown_fields() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("experiment.yaml");
+        fs::write(
+            &path,
+            "database:\n  url: sqlite:///:memory:\ndirect:\n  allow_room_codes: true\n",
+        )
+        .expect("config");
+
+        ExperimentConfig::from_yaml(path).expect_err("unknown field fails");
+    }
+
+    /// Confirms unresolved credential placeholders cannot silently become empty strings.
+    #[test]
+    fn yaml_rejects_missing_environment_placeholders() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        env::remove_var("PARLANDO_TEST_MISSING_SECRET");
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("experiment.yaml");
+        fs::write(
+            &path,
+            "database:\n  url: sqlite:///:memory:\nspeechmatics:\n  api_key: ${PARLANDO_TEST_MISSING_SECRET}\n",
+        )
+        .expect("config");
+
+        let error = ExperimentConfig::from_yaml(path).expect_err("missing environment fails");
+
+        assert!(error.to_string().contains("PARLANDO_TEST_MISSING_SECRET"));
+    }
+
+    /// Confirms invalid floating-point agent timeouts are rejected before Duration conversion.
+    #[test]
+    fn validation_rejects_nonfinite_agent_timeout() {
+        let mut config = ExperimentConfig::default();
+        config.database.url = "sqlite:///:memory:".to_string();
+        config.agents.human_vs_agent = Some(HumanVsAgentConfig {
+            act_timeout_seconds: f64::NAN,
+            ..HumanVsAgentConfig::default()
+        });
+
+        let error = config.validate().expect_err("nonfinite timeout fails");
+
+        assert!(error.to_string().contains("act_timeout_seconds"));
+    }
+
     #[test]
     fn validation_requires_enabled_tts_secrets() {
         let mut config = ExperimentConfig::default();
+        config.database.url = "sqlite:///:memory:".to_string();
         config.tts.enabled = true;
         config.tts.voice_id = "voice".to_string();
 
@@ -692,13 +801,14 @@ agents:
     #[test]
     fn validation_accepts_consent_items_without_separate_enablement() {
         let mut config = ExperimentConfig::default();
+        config.database.url = "sqlite:///:memory:".to_string();
         config
             .validate()
             .expect("an empty consent list disables consent");
         config.direct.consents.push(ConsentItemConfig {
             id: "study".to_string(),
             title: "Study consent".to_string(),
-            body_html: "Agree?".to_string(),
+            body: "Agree?".to_string(),
             required: true,
         });
 

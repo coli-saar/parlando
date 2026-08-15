@@ -177,29 +177,21 @@ use parlando_server::{serve, ExperimentConfig, ServeOptions};
 #[derive(Debug, Parser)]
 struct Cli {
     #[arg(long, short)]
-    config: Option<PathBuf>,
+    config: PathBuf,
     #[arg(long, default_value = "127.0.0.1")]
     host: IpAddr,
     #[arg(long)]
     port: Option<u16>,
-    #[arg(long)]
-    experiment_id: Option<String>,
 }
 
+/// Loads the required experiment configuration and starts its dedicated process.
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let cli = Cli::parse();
-    let mut config = if let Some(path) = cli.config {
-        ExperimentConfig::from_yaml(path)?
-    } else {
-        ExperimentConfig::default()
-    };
-    if cli.experiment_id.is_some() {
-        config.experiment.id = cli.experiment_id;
-    }
+    let config = ExperimentConfig::from_yaml(cli.config)?;
     let port = cli
         .port
         .or_else(|| std::env::var("PORT").ok().and_then(|value| value.parse().ok()))

@@ -45,7 +45,7 @@ study:
 
 server:
   public_base_url: http://localhost:8000
-  cors_origins:
+  allowed_origins:
     - http://localhost:5173
   client_dist_path: client/dist
 
@@ -54,7 +54,6 @@ database:
 
 direct:
   enabled: true
-  allow_room_codes: true
   consents: []
 
 agents:
@@ -69,8 +68,6 @@ transcription:
 tts:
   enabled: false
 
-conversation:
-  enabled: true
 ```
 
 ## Consent Config
@@ -82,15 +79,14 @@ Use:
 ```yaml
 direct:
   enabled: true
-  allow_room_codes: true
   consents:
     - id: study
       title: Study Consent
-      body_html: "I agree to participate in this study."
+      body: "I agree to participate in this study."
       required: true
     - id: recording
       title: Voice Recording Consent
-      body_html: "I agree that my voice may be recorded and transcribed for research."
+      body: "I agree that my voice may be recorded and transcribed for research."
       required: true
 ```
 
@@ -141,7 +137,6 @@ transcription:
   provider: speechmatics
   language: en-US
   model: enhanced
-  store_audio: false
 
 speechmatics:
   api_key: ${SPEECHMATICS_API_KEY}

@@ -71,11 +71,7 @@ fn redact_secret_fields(value: &mut Value) -> usize {
             .iter_mut()
             .map(|(key, child)| {
                 let normalized = key.to_ascii_lowercase();
-                if matches!(
-                    normalized.as_str(),
-                    "api_key" | "apikey" | "password" | "password_hash" | "token" | "secret"
-                ) && !child.is_null()
-                {
+                if is_secret_field(&normalized) && !child.is_null() {
                     *child = Value::Null;
                     1
                 } else {
@@ -88,6 +84,22 @@ fn redact_secret_fields(value: &mut Value) -> usize {
     }
 }
 
+/// Recognizes exact and suffix-shaped credential field names used by runtime integrations.
+fn is_secret_field(normalized: &str) -> bool {
+    normalized == "private_key"
+        || normalized == "client_secret"
+        || normalized == "access_token"
+        || normalized == "auth_token"
+        || normalized.ends_with("_api_key")
+        || normalized.ends_with("_password")
+        || normalized.ends_with("_secret")
+        || normalized.ends_with("_token")
+        || matches!(
+            normalized,
+            "api_key" | "apikey" | "password" | "password_hash" | "token" | "secret"
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,9 +109,13 @@ mod tests {
     fn redaction_is_idempotent() {
         let mut config = serde_json::json!({
             "speechmatics": {"api_key": "sentinel", "model": "enhanced"},
-            "nested": [{"token": "sentinel-2"}]
+            "nested": [{
+                "token": "sentinel-2",
+                "client_secret": "sentinel-3",
+                "service_auth_token": "sentinel-4"
+            }]
         });
-        assert_eq!(redact_secret_fields(&mut config), 2);
+        assert_eq!(redact_secret_fields(&mut config), 4);
         assert_eq!(redact_secret_fields(&mut config), 0);
         assert_eq!(config["speechmatics"]["model"], "enhanced");
         assert!(config["speechmatics"]["api_key"].is_null());

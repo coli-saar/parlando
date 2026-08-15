@@ -7,7 +7,6 @@ includes:
 study:
   name: Space Game
   institution: Saarland University
-  enabled_sources: [direct]
   waiting_room_timeout_seconds: 300
   reconnect_grace_seconds: 90
 
@@ -21,32 +20,13 @@ database:
 
 direct:
   enabled: true
-  allow_room_codes: true
   consents: []
 
 agents:
   mode: human_vs_agent
-  available:
-    - selector: space_game.back_and_forth
-      label: Back-and-forth agent
-      description: Built-in deterministic Space Game movement agent.
-      requires_config: false
-      default_config: {}
-    - selector: remote_grpc
-      label: Remote gRPC agent
-      description: External agent service using the Parlando agent protocol.
-      requires_config: true
-      default_config:
-        endpoint: http://127.0.0.1:50051
-        agent_name: space-game-remote-agent
-        agent_version:
   human_vs_agent:
     factory: space_game.back_and_forth
     act_timeout_seconds: 5
     invalid_action_limit: 3
     seed: 1
     config: {}
-
-conversation:
-  enabled: true
-  max_history_messages: 50

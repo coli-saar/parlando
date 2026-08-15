@@ -84,10 +84,6 @@ export function deriveSystems(state: StationState): DerivedSystems {
 }
 
 export function runStateEngine(state: StationState, action: GameAction): StationState {
-  if (action.type === "reset") {
-    return initialState;
-  }
-
   const before = deriveSystems(state);
   let next: StationState = cloneState(state);
   let message = "";
@@ -124,21 +120,6 @@ export function runStateEngine(state: StationState, action: GameAction): Station
       next.players[action.player].room = targetRoom;
       next.players[action.player].plateHeld = target.x === 7 && target.y === 2;
       message = `${name(action.player)} walks to ${roomById[targetRoom].name}.`;
-      break;
-    }
-    case "move": {
-      if (!roomById[next.players[action.player].room].exits.includes(action.room)) {
-        message = `${name(action.player)} cannot reach ${roomById[action.room].name} from here.`;
-        break;
-      }
-      if (action.room === "airlock" && !before.doorAccess) {
-        reveal(next, action.player, "The airlock hatch needs oxygen pressure, door power, and the floor plate.");
-        message = `${name(action.player)} bumps the airlock hatch. The latch clicks but the motor does not cycle.`;
-        break;
-      }
-      next.players[action.player].room = action.room;
-      next.players[action.player].position = roomCenter(action.room);
-      message = `${name(action.player)} moves to ${roomById[action.room].name}.`;
       break;
     }
     case "toggleFuse": {
@@ -321,8 +302,6 @@ export function describeAction(action: GameAction, state?: StationState): string
   switch (action.type) {
     case "moveStep":
       return `Walk ${action.direction}`;
-    case "move":
-      return `Move to ${roomById[action.room].name}`;
     case "toggleFuse":
       return `${state?.fuses[action.color] ? "Remove" : "Insert"} ${action.color} fuse`;
     case "toggleBreaker":
@@ -347,8 +326,6 @@ export function describeAction(action: GameAction, state?: StationState): string
       return "Run diagnostics";
     case "launchBeacon":
       return "Launch beacon";
-    case "reset":
-      return "Reset";
   }
 }
 
@@ -404,20 +381,6 @@ function step(position: Position, direction: "up" | "down" | "left" | "right"): 
   };
   const delta = deltas[direction];
   return { x: position.x + delta.x, y: position.y + delta.y };
-}
-
-function roomCenter(room: string): Position {
-  const centers: Record<string, Position> = {
-    power: { x: 2, y: 2 },
-    junction: { x: 6, y: 2 },
-    oxygen: { x: 10, y: 2 },
-    diagnostics: { x: 2, y: 6 },
-    charger: { x: 6, y: 6 },
-    valve: { x: 10, y: 6 },
-    signal: { x: 10, y: 8 },
-    airlock: { x: 6, y: 8 }
-  };
-  return centers[room] ?? centers.junction;
 }
 
 function finalize(

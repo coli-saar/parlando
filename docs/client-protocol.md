@@ -68,17 +68,15 @@ Write UI code that handles both omitted optional properties and explicit `null` 
 
 A typical browser flow is:
 
-1. `GET /api/config` to read public study settings, consent text, and enabled audio/conversation features.
-2. `POST /api/participants` or its direct-study convenience alias `POST /api/direct/start` to create a participant session and receive an opaque bearer credential.
+1. `GET /api/config` to read public study settings, the `experiment_status` lifecycle value, consent text, and enabled audio features. When the value is `inactive`, do not attempt participant or room creation; the shared startup gate renders the closed-intake state.
+2. `POST /api/participants` to create a participant session and receive an opaque bearer credential.
 3. Send that credential as `Authorization: Bearer ...` on participant-owned HTTP calls such as `POST /api/consent`.
-4. `POST /api/rooms` plus `POST /api/rooms/{room_id}/join` with the participant bearer credential.
+4. `POST /api/rooms` with the participant bearer credential. The server pairs compatible waiting participants or creates a waiting room; callers do not choose room ids or matchmaking modes.
 5. `POST /api/rooms/{room_id}/audio-session` if voice is enabled.
 6. `POST /api/rooms/{room_id}/game-session`, then connect to the returned WebSocket URL with its short-lived one-use `token` query value.
 7. Wait for `roleAssigned` before showing active game controls.
 
 The reusable JavaScript client wraps these HTTP calls, but the game UI still decides how to arrange screens and when to move from setup to waiting to active play.
-
-`POST /api/direct/start` is a convenience alias for creating a participant with source `direct`. Room creation, joining, and the WebSocket flow are otherwise unchanged.
 
 The participant-creation response separates three concepts:
 
@@ -127,7 +125,7 @@ The server still validates every submitted action, including actions selected fr
 After setup, mint a one-use upgrade plan and open the room socket with:
 
 ```ts
-const plan = await apiClient.getGameSession(roomId, participantSessionId);
+const plan = await apiClient.getGameSession(roomId);
 const socket = new WebSocket(apiClient.socketUrl(plan));
 ```
 

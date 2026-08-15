@@ -6,9 +6,8 @@ use std::{
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use parlando_server::{
-    AdminAgentOption, AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResponse,
-    AgentUtteranceKind, ExperimentConfig, GameAgent, PlayerRole, RemoteGrpcAgentConfig,
-    RemoteGrpcAgentFactory,
+    AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResponse, AgentUtteranceKind,
+    ExperimentConfig, GameAgent, PlayerRole, RemoteGrpcAgentConfig, RemoteGrpcAgentFactory,
 };
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::Deserialize;
@@ -34,13 +33,11 @@ pub fn factory_from_config(
         .as_deref()
         .unwrap_or("space_game.back_and_forth")
     {
-        "space_game.back_and_forth" | "space_game.agents:create_back_and_forth_agent" => {
-            Ok(Some(Arc::new(BackAndForthAgentFactory {
-                seed: human_vs_agent.seed,
-                config: human_vs_agent.config.clone(),
-            })))
-        }
-        "remote_grpc" | "parlando.remote_grpc" => {
+        "space_game.back_and_forth" => Ok(Some(Arc::new(BackAndForthAgentFactory {
+            seed: human_vs_agent.seed,
+            config: human_vs_agent.config.clone(),
+        }))),
+        "remote_grpc" => {
             let config = RemoteAgentSelectorConfig::from_value(
                 human_vs_agent.config.clone(),
                 human_vs_agent.act_timeout_seconds,
@@ -53,33 +50,8 @@ pub fn factory_from_config(
     }
 }
 
-/// Returns the Space Game agent selectors supported by `factory_from_config`.
-pub fn available_agent_options() -> Vec<AdminAgentOption> {
-    vec![
-        AdminAgentOption {
-            selector: "space_game.back_and_forth".to_string(),
-            label: "Back-and-forth agent".to_string(),
-            description: Some("Built-in deterministic Space Game movement agent.".to_string()),
-            requires_config: false,
-            default_config: serde_json::json!({}),
-        },
-        AdminAgentOption {
-            selector: "remote_grpc".to_string(),
-            label: "Remote gRPC agent".to_string(),
-            description: Some(
-                "External agent service using the Parlando agent protocol.".to_string(),
-            ),
-            requires_config: true,
-            default_config: serde_json::json!({
-                "endpoint": "http://127.0.0.1:50051",
-                "agent_name": "space-game-remote-agent",
-                "agent_version": null
-            }),
-        },
-    ]
-}
-
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RemoteAgentSelectorConfig {
     endpoint: String,
     #[serde(default = "default_remote_agent_name")]
@@ -465,63 +437,51 @@ mod tests {
     }
 
     #[test]
-    fn factory_from_config_accepts_default_and_legacy_selectors() {
-        for selector in [None, Some("space_game.agents:create_back_and_forth_agent")] {
-            let mut config = ExperimentConfig::default();
-            config.agents = AgentsConfig {
+    fn factory_from_config_accepts_default_selector() {
+        let config = ExperimentConfig {
+            agents: AgentsConfig {
                 mode: AgentsMode::HumanVsAgent,
-                human_vs_agent: Some(HumanVsAgentConfig {
-                    factory: selector.map(str::to_string),
-                    ..HumanVsAgentConfig::default()
-                }),
-                ..AgentsConfig::default()
-            };
-
-            assert!(factory_from_config(&config).unwrap().is_some());
-        }
-    }
-
-    #[test]
-    fn factory_from_config_accepts_remote_grpc_selector() {
-        let mut config = ExperimentConfig::default();
-        config.agents = AgentsConfig {
-            mode: AgentsMode::HumanVsAgent,
-            human_vs_agent: Some(HumanVsAgentConfig {
-                factory: Some("remote_grpc".to_string()),
-                act_timeout_seconds: 0.5,
-                config: serde_json::json!({
-                    "endpoint": "http://127.0.0.1:50051",
-                    "agent_name": "test-python-agent",
-                    "agent_version": "v1"
-                }),
-                ..HumanVsAgentConfig::default()
-            }),
-            ..AgentsConfig::default()
+                human_vs_agent: Some(HumanVsAgentConfig::default()),
+            },
+            ..ExperimentConfig::default()
         };
 
         assert!(factory_from_config(&config).unwrap().is_some());
     }
 
     #[test]
-    fn available_agent_options_include_supported_selectors() {
-        let selectors = available_agent_options()
-            .into_iter()
-            .map(|option| option.selector)
-            .collect::<Vec<_>>();
-        assert!(selectors.contains(&"space_game.back_and_forth".to_string()));
-        assert!(selectors.contains(&"remote_grpc".to_string()));
+    fn factory_from_config_accepts_remote_grpc_selector() {
+        let config = ExperimentConfig {
+            agents: AgentsConfig {
+                mode: AgentsMode::HumanVsAgent,
+                human_vs_agent: Some(HumanVsAgentConfig {
+                    factory: Some("remote_grpc".to_string()),
+                    act_timeout_seconds: 0.5,
+                    config: serde_json::json!({
+                        "endpoint": "http://127.0.0.1:50051",
+                        "agent_name": "test-python-agent",
+                        "agent_version": "v1"
+                    }),
+                    ..HumanVsAgentConfig::default()
+                }),
+            },
+            ..ExperimentConfig::default()
+        };
+
+        assert!(factory_from_config(&config).unwrap().is_some());
     }
 
     #[test]
     fn factory_from_config_rejects_unknown_selectors() {
-        let mut config = ExperimentConfig::default();
-        config.agents = AgentsConfig {
-            mode: AgentsMode::HumanVsAgent,
-            human_vs_agent: Some(HumanVsAgentConfig {
-                factory: Some("python.module:factory".to_string()),
-                ..HumanVsAgentConfig::default()
-            }),
-            ..AgentsConfig::default()
+        let config = ExperimentConfig {
+            agents: AgentsConfig {
+                mode: AgentsMode::HumanVsAgent,
+                human_vs_agent: Some(HumanVsAgentConfig {
+                    factory: Some("python.module:factory".to_string()),
+                    ..HumanVsAgentConfig::default()
+                }),
+            },
+            ..ExperimentConfig::default()
         };
 
         assert!(factory_from_config(&config).is_err());

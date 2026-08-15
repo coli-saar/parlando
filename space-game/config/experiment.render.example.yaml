@@ -18,7 +18,6 @@ experiment:
 study:
   name: Space Game
   institution: Saarland University
-  enabled_sources: [direct]
   waiting_room_timeout_seconds: 300
   reconnect_grace_seconds: 90
 
@@ -35,22 +34,16 @@ database:
 
 direct:
   enabled: true
-  allow_room_codes: true
   participant_information_version: space-game-v1
   participant_information_url: https://example.org/studies/space-game/privacy
   consents:
     - id: study
       title: Study Consent
-      body_html: "I agree to participate in this study."
+      body: "I agree to participate in this study."
       required: true
 
 agents:
   mode: human_vs_human
-  human_vs_agent:
-    factory: space_game.back_and_forth
-    act_timeout_seconds: 5
-    invalid_action_limit: 3
-    config: {}
 
 voice:
   enabled: false
@@ -69,18 +62,12 @@ transcription:
   provider: speechmatics
   model: enhanced
   language: en
-  store_audio: false
 
 tts:
   enabled: false
   provider: elevenlabs
   model: eleven_flash_v2_5
   output_format: pcm_24000
-  worker_autostart: true
-
-conversation:
-  enabled: true
-  max_history_messages: 50
 
 privacy:
   contract_version: "1"

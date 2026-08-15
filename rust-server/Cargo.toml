@@ -8,6 +8,12 @@ repository = "https://github.com/coli-saar/parlando"
 readme = "../README.md"
 keywords = ["dialogue", "experiments", "games"]
 categories = ["web-programming::http-server"]
+exclude = [
+    "config/*.private.yaml",
+    "notes/**",
+    "python/**",
+    "tests/**",
+]
 
 [dependencies]
 anyhow = "1"
@@ -23,16 +29,13 @@ prost = "0.13"
 prost-types = "0.13"
 regex = "1"
 rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite", "chrono", "json"] }
 subtle = "2"
-thiserror = "1"
 tokio = { version = "1", features = ["full"] }
-tokio-stream = { version = "0.1", features = ["net", "sync"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 tonic = { version = "0.13.1", features = ["transport", "tls-native-roots", "tls-ring"] }
 tower = { version = "0.5", features = ["limit"] }
@@ -55,5 +58,7 @@ tonic-build = "0.13.1"
 protoc-bin-vendored = "3"
 
 [dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tempfile = "3"
+tokio-stream = { version = "0.1", features = ["net", "sync"] }

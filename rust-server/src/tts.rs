@@ -151,7 +151,6 @@ mod tests {
             voice_name: "Voice".to_string(),
             api_key: "api-key".to_string(),
             output_format: "pcm_16000".to_string(),
-            worker_autostart: true,
         }
     }
 

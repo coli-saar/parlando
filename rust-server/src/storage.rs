@@ -1,5 +1,10 @@
 use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 
+use crate::{
+    game::Seat,
+    identity::new_id,
+    readable_id::{dialogue_id, participant_id as readable_participant_id},
+};
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -8,13 +13,6 @@ use serde_json::{json, Value};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
     SqlitePool,
-};
-use tokio::sync::RwLock;
-
-use crate::{
-    game::Seat,
-    identity::new_id,
-    readable_id::{dialogue_id, participant_id as readable_participant_id},
 };
 
 /// Returns the current UTC timestamp in ISO-8601/RFC3339 form.
@@ -275,10 +273,13 @@ pub trait ExperimentStore: Send + Sync {
     ///
     /// Returns `false` when another request or process completed setup first.
     async fn create_admin_credential(&self, credential: StoredAdminCredential) -> Result<bool>;
-    /// Ensures that one experiment row exists for this server run.
-    async fn ensure_experiment(&self, experiment: ExperimentRecord) -> Result<()>;
-    /// Returns durable experiment rows with compact session aggregates.
-    async fn list_experiments(&self, limit: i64) -> Result<Vec<StoredExperimentSummary>>;
+    /// Ensures the process-owned experiment exists, resets it inactive, and returns that status.
+    async fn ensure_experiment(&self, experiment: ExperimentRecord) -> Result<String>;
+    /// Returns the process-owned experiment with compact session aggregates.
+    async fn experiment_summary(
+        &self,
+        experiment_id: &str,
+    ) -> Result<Option<StoredExperimentSummary>>;
     /// Updates the lifecycle status for one experiment row.
     async fn update_experiment_status(&self, experiment_id: &str, status: &str) -> Result<()>;
     /// Creates or reuses a durable participant identity and returns `participant_id`.
@@ -326,13 +327,6 @@ pub trait ExperimentStore: Send + Sync {
         experiment_id: &str,
         session_id: i64,
     ) -> Result<Vec<StoredSessionParticipant>>;
-    /// Marks a session complete with an optional completion payload.
-    async fn complete_session(
-        &self,
-        experiment_id: &str,
-        session_id: i64,
-        completion: Option<Value>,
-    ) -> Result<()>;
     /// Exports all durable evaluation data for one experiment.
     async fn export_experiment(&self, experiment_id: &str) -> Result<Value>;
     /// Exports all durable evaluation data for one session.
@@ -353,658 +347,6 @@ pub trait ExperimentStore: Send + Sync {
 
 /// Shared trait-object handle for the configured experiment store backend.
 pub type SharedExperimentStore = Arc<dyn ExperimentStore>;
-
-#[derive(Default)]
-struct MemoryStoreInner {
-    admin_credential: Option<StoredAdminCredential>,
-    experiments: HashMap<String, Value>,
-    participants: Vec<Value>,
-    sessions: Vec<Value>,
-    session_participants: Vec<Value>,
-    consent_declarations: Vec<Value>,
-    session_events: Vec<Value>,
-    next_participant_id: i64,
-}
-
-/// In-memory experiment store used only by focused unit tests and empty local database URLs.
-#[derive(Default)]
-pub struct MemoryExperimentStore {
-    inner: RwLock<MemoryStoreInner>,
-}
-
-#[async_trait]
-impl ExperimentStore for MemoryExperimentStore {
-    async fn admin_credential(&self) -> Result<Option<StoredAdminCredential>> {
-        Ok(self.inner.read().await.admin_credential.clone())
-    }
-
-    async fn create_admin_credential(&self, credential: StoredAdminCredential) -> Result<bool> {
-        let mut inner = self.inner.write().await;
-        if inner.admin_credential.is_some() {
-            return Ok(false);
-        }
-        inner.admin_credential = Some(credential);
-        Ok(true)
-    }
-
-    async fn ensure_experiment(&self, experiment: ExperimentRecord) -> Result<()> {
-        let mut inner = self.inner.write().await;
-        inner.experiments.insert(
-            experiment.experiment_id.clone(),
-            json!({
-                "experiment_id": experiment.experiment_id,
-                "created_at": now_iso(),
-                "config": experiment.config,
-                "server_version": experiment.server_version,
-                "version_manifest": experiment.version_manifest,
-                "status": experiment.status,
-                "notes": experiment.notes,
-            }),
-        );
-        Ok(())
-    }
-
-    async fn list_experiments(&self, limit: i64) -> Result<Vec<StoredExperimentSummary>> {
-        let inner = self.inner.read().await;
-        let mut experiments = inner
-            .experiments
-            .values()
-            .map(|row| {
-                let experiment_id = row["experiment_id"].as_str().unwrap_or_default();
-                let matching_sessions = inner
-                    .sessions
-                    .iter()
-                    .filter(|session| session["experiment_id"].as_str() == Some(experiment_id))
-                    .collect::<Vec<_>>();
-                StoredExperimentSummary {
-                    experiment_id: experiment_id.to_string(),
-                    study_name: row
-                        .get("config")
-                        .and_then(|config| config.get("study"))
-                        .and_then(|study| study.get("name"))
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    created_at: row["created_at"].as_str().unwrap_or_default().to_string(),
-                    status: row["status"].as_str().unwrap_or("draft").to_string(),
-                    server_version: row["server_version"].as_str().map(str::to_string),
-                    version_manifest: row
-                        .get("version_manifest")
-                        .cloned()
-                        .filter(|value| !value.is_null()),
-                    notes: row["notes"].as_str().map(str::to_string),
-                    session_count: matching_sessions.len() as i64,
-                    completed_session_count: matching_sessions
-                        .iter()
-                        .filter(|session| session["status"].as_str() == Some("completed"))
-                        .count() as i64,
-                    last_session_at: matching_sessions
-                        .iter()
-                        .filter_map(|session| session["created_at"].as_str())
-                        .max()
-                        .map(str::to_string),
-                }
-            })
-            .collect::<Vec<_>>();
-        experiments.sort_by(|left, right| right.created_at.cmp(&left.created_at));
-        experiments.truncate(limit.max(0) as usize);
-        Ok(experiments)
-    }
-
-    async fn update_experiment_status(&self, experiment_id: &str, status: &str) -> Result<()> {
-        if let Some(row) = self.inner.write().await.experiments.get_mut(experiment_id) {
-            row["status"] = json!(status);
-        }
-        Ok(())
-    }
-
-    async fn upsert_participant(&self, participant: ParticipantRecord) -> Result<i64> {
-        let mut inner = self.inner.write().await;
-        if let Some(external_id) = participant.external_id.as_deref() {
-            if let Some(existing) = inner.participants.iter().find(|row| {
-                row["experiment_id"] == participant.experiment_id
-                    && row["identity_provider"] == participant.identity_provider
-                    && row["external_id"].as_str() == Some(external_id)
-            }) {
-                return Ok(existing["participant_id"].as_i64().unwrap());
-            }
-        }
-        inner.next_participant_id += 1;
-        let participant_id = inner.next_participant_id;
-        let mut identifier_attempt = 1;
-        let research_id = loop {
-            let candidate = participant_identifier_candidate(&participant, identifier_attempt);
-            if !inner
-                .participants
-                .iter()
-                .any(|row| row["research_id"].as_str() == Some(&candidate))
-            {
-                break candidate;
-            }
-            identifier_attempt += 1;
-        };
-        inner.participants.push(json!({
-            "participant_id": participant_id,
-            "research_id": research_id,
-            "experiment_id": participant.experiment_id,
-            "participant_kind": participant.participant_kind,
-            "identity_provider": participant.identity_provider,
-            "external_id": participant.external_id,
-            "metadata": participant.metadata,
-            "created_at": now_iso(),
-        }));
-        Ok(participant_id)
-    }
-
-    async fn participant_research_id(&self, participant_id: i64) -> Result<Option<String>> {
-        Ok(self
-            .inner
-            .read()
-            .await
-            .participants
-            .iter()
-            .find(|row| row["participant_id"].as_i64() == Some(participant_id))
-            .and_then(|row| row["research_id"].as_str())
-            .map(str::to_string))
-    }
-
-    async fn create_session(&self, session: SessionRecord) -> Result<i64> {
-        let mut inner = self.inner.write().await;
-        let session_id = inner
-            .sessions
-            .iter()
-            .filter(|row| row["experiment_id"] == session.experiment_id)
-            .filter_map(|row| row["session_id"].as_i64())
-            .max()
-            .unwrap_or(0)
-            + 1;
-        let readable_dialogue_id = loop {
-            let candidate = dialogue_id();
-            if !inner
-                .sessions
-                .iter()
-                .any(|row| row["dialogue_id"].as_str() == Some(&candidate))
-            {
-                break candidate;
-            }
-        };
-        inner.sessions.push(json!({
-            "experiment_id": session.experiment_id,
-            "session_id": session_id,
-            "room_id": session.room_id,
-            "dialogue_id": readable_dialogue_id,
-            "mode": session.mode,
-            "status": session.status,
-            "created_at": now_iso(),
-        }));
-        Ok(session_id)
-    }
-
-    async fn add_session_participant(&self, participant: SessionParticipantRecord) -> Result<()> {
-        self.inner.write().await.session_participants.push(json!({
-            "experiment_id": participant.experiment_id,
-            "session_id": participant.session_id,
-            "participant_id": participant.participant_id,
-            "participant_session_id": participant.participant_session_id,
-            "role": participant.role,
-            "joined_at": now_iso(),
-            "connection_status": participant.connection_status,
-        }));
-        Ok(())
-    }
-
-    async fn update_session_participant_connection(
-        &self,
-        participant_session_id: &str,
-        connection_status: &str,
-        left_at: Option<String>,
-    ) -> Result<()> {
-        let mut inner = self.inner.write().await;
-        if let Some(row) = inner
-            .session_participants
-            .iter_mut()
-            .find(|row| row["participant_session_id"].as_str() == Some(participant_session_id))
-        {
-            row["connection_status"] = json!(connection_status);
-            row["left_at"] = json!(left_at);
-        }
-        Ok(())
-    }
-
-    async fn record_consent_declaration(
-        &self,
-        declaration: ConsentDeclarationRecord,
-    ) -> Result<()> {
-        self.inner.write().await.consent_declarations.push(json!({
-            "experiment_id": declaration.experiment_id,
-            "session_id": declaration.session_id,
-            "participant_id": declaration.participant_id,
-            "consent_item_id": declaration.consent_item_id,
-            "accepted": declaration.accepted,
-            "declared_at": now_iso(),
-            "consent_text_hash": declaration.consent_text_hash,
-            "metadata": declaration.metadata,
-        }));
-        Ok(())
-    }
-
-    async fn append_session_event(&self, event: SessionEventRecord) -> Result<i64> {
-        let mut inner = self.inner.write().await;
-        let event_index = inner
-            .session_events
-            .iter()
-            .filter(|row| {
-                row["experiment_id"] == event.experiment_id
-                    && row["session_id"].as_i64() == Some(event.session_id)
-            })
-            .filter_map(|row| row["event_index"].as_i64())
-            .max()
-            .unwrap_or(0)
-            + 1;
-        let event_id = inner.session_events.len() + 1;
-        inner.session_events.push(json!({
-            "event_id": event_id,
-            "experiment_id": event.experiment_id,
-            "session_id": event.session_id,
-            "event_index": event_index,
-            "event_type": event.event_type,
-            "actor_participant_id": event.actor_participant_id,
-            "actor_role": event.actor_role,
-            "payload": event.payload,
-            "game_state": event.game_state,
-            "created_at": now_iso(),
-        }));
-        Ok(event_index)
-    }
-
-    async fn commit_session_transition(
-        &self,
-        events: Vec<SessionEventRecord>,
-        completion: Option<Value>,
-    ) -> Result<()> {
-        let Some(first) = events.first() else {
-            return Ok(());
-        };
-        let experiment_id = first.experiment_id.clone();
-        let session_id = first.session_id;
-        if events
-            .iter()
-            .any(|event| event.experiment_id != experiment_id || event.session_id != session_id)
-        {
-            bail!("transition events must belong to one session");
-        }
-        let mut inner = self.inner.write().await;
-        let completion_session_index = if completion.is_some() {
-            Some(
-                inner
-                    .sessions
-                    .iter()
-                    .position(|row| {
-                        row["experiment_id"].as_str() == Some(experiment_id.as_str())
-                            && row["session_id"].as_i64() == Some(session_id)
-                    })
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("session not found for transition completion")
-                    })?,
-            )
-        } else {
-            None
-        };
-        let mut event_index = inner
-            .session_events
-            .iter()
-            .filter(|row| {
-                row["experiment_id"] == experiment_id
-                    && row["session_id"].as_i64() == Some(session_id)
-            })
-            .filter_map(|row| row["event_index"].as_i64())
-            .max()
-            .unwrap_or(0);
-        for event in events {
-            event_index += 1;
-            let event_id = inner.session_events.len() + 1;
-            inner.session_events.push(json!({
-                "event_id": event_id,
-                "experiment_id": event.experiment_id,
-                "session_id": event.session_id,
-                "event_index": event_index,
-                "event_type": event.event_type,
-                "actor_participant_id": event.actor_participant_id,
-                "actor_role": event.actor_role,
-                "payload": event.payload,
-                "game_state": event.game_state,
-                "created_at": now_iso(),
-            }));
-        }
-        if let (Some(completion), Some(index)) = (completion, completion_session_index) {
-            let row = &mut inner.sessions[index];
-            row["status"] = json!("completed");
-            row["completed_at"] = json!(now_iso());
-            row["completion"] = completion;
-        }
-        Ok(())
-    }
-
-    async fn session_events(
-        &self,
-        experiment_id: &str,
-        session_id: i64,
-        event_type: Option<&str>,
-    ) -> Result<Vec<StoredSessionEvent>> {
-        let inner = self.inner.read().await;
-        let mut events = inner
-            .session_events
-            .iter()
-            .filter(|row| row["experiment_id"].as_str() == Some(experiment_id))
-            .filter(|row| row["session_id"].as_i64() == Some(session_id))
-            .filter(|row| {
-                event_type.is_none_or(|event_type| row["event_type"].as_str() == Some(event_type))
-            })
-            .map(|row| StoredSessionEvent {
-                event_id: row["event_id"].as_i64().unwrap_or_default(),
-                experiment_id: row["experiment_id"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-                session_id: row["session_id"].as_i64().unwrap_or_default(),
-                event_index: row["event_index"].as_i64().unwrap_or_default(),
-                event_type: row["event_type"].as_str().unwrap_or_default().to_string(),
-                actor_participant_id: row["actor_participant_id"].as_i64(),
-                actor_role: row["actor_role"].as_str().map(str::to_string),
-                payload: row["payload"].clone(),
-                game_state: row
-                    .get("game_state")
-                    .cloned()
-                    .filter(|value| !value.is_null()),
-                created_at: row["created_at"].as_str().unwrap_or_default().to_string(),
-            })
-            .collect::<Vec<_>>();
-        events.sort_by_key(|event| event.event_index);
-        Ok(events)
-    }
-
-    async fn recent_sessions(
-        &self,
-        experiment_id: &str,
-        limit: i64,
-    ) -> Result<Vec<StoredSessionSummary>> {
-        let inner = self.inner.read().await;
-        let mut sessions = inner
-            .sessions
-            .iter()
-            .filter(|row| row["experiment_id"].as_str() == Some(experiment_id))
-            .map(|row| {
-                let session_id = row["session_id"].as_i64().unwrap_or_default();
-                let participant_count = inner
-                    .session_participants
-                    .iter()
-                    .filter(|participant| {
-                        participant["experiment_id"].as_str() == Some(experiment_id)
-                            && participant["session_id"].as_i64() == Some(session_id)
-                    })
-                    .count() as i64;
-                let matching_events = inner
-                    .session_events
-                    .iter()
-                    .filter(|event| {
-                        event["experiment_id"].as_str() == Some(experiment_id)
-                            && event["session_id"].as_i64() == Some(session_id)
-                    })
-                    .collect::<Vec<_>>();
-                StoredSessionSummary {
-                    experiment_id: experiment_id.to_string(),
-                    session_id,
-                    room_id: row["room_id"].as_str().unwrap_or_default().to_string(),
-                    dialogue_id: row["dialogue_id"].as_str().unwrap_or_default().to_string(),
-                    mode: row["mode"].as_str().unwrap_or_default().to_string(),
-                    status: row["status"].as_str().unwrap_or_default().to_string(),
-                    created_at: row["created_at"].as_str().unwrap_or_default().to_string(),
-                    started_at: row["started_at"].as_str().map(str::to_string),
-                    completed_at: row["completed_at"].as_str().map(str::to_string),
-                    completion: row
-                        .get("completion")
-                        .cloned()
-                        .filter(|value| !value.is_null()),
-                    participant_count,
-                    event_count: matching_events.len() as i64,
-                    last_event_at: matching_events
-                        .iter()
-                        .filter_map(|event| event["created_at"].as_str())
-                        .max()
-                        .map(str::to_string),
-                }
-            })
-            .collect::<Vec<_>>();
-        sessions.sort_by(|left, right| {
-            right
-                .created_at
-                .cmp(&left.created_at)
-                .then_with(|| right.session_id.cmp(&left.session_id))
-        });
-        sessions.truncate(limit.max(0) as usize);
-        Ok(sessions)
-    }
-
-    async fn session_participants(
-        &self,
-        experiment_id: &str,
-        session_id: i64,
-    ) -> Result<Vec<StoredSessionParticipant>> {
-        let inner = self.inner.read().await;
-        let mut participants = inner
-            .session_participants
-            .iter()
-            .filter(|row| row["experiment_id"].as_str() == Some(experiment_id))
-            .filter(|row| row["session_id"].as_i64() == Some(session_id))
-            .map(|row| {
-                let participant_id = row["participant_id"].as_i64().unwrap_or_default();
-                let participant = inner.participants.iter().find(|participant| {
-                    participant["participant_id"].as_i64() == Some(participant_id)
-                });
-                StoredSessionParticipant {
-                    experiment_id: experiment_id.to_string(),
-                    session_id,
-                    participant_id,
-                    research_id: participant
-                        .and_then(|participant| participant["research_id"].as_str())
-                        .map(str::to_string),
-                    participant_session_id: row["participant_session_id"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
-                    role: row["role"].as_str().unwrap_or_default().to_string(),
-                    joined_at: row["joined_at"].as_str().unwrap_or_default().to_string(),
-                    left_at: row["left_at"].as_str().map(str::to_string),
-                    connection_status: row["connection_status"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
-                    participant_kind: participant
-                        .and_then(|participant| participant["participant_kind"].as_str())
-                        .map(str::to_string),
-                    metadata: participant
-                        .and_then(|participant| participant.get("metadata"))
-                        .cloned()
-                        .filter(|value| !value.is_null()),
-                }
-            })
-            .collect::<Vec<_>>();
-        participants.sort_by(|left, right| left.role.cmp(&right.role));
-        Ok(participants)
-    }
-
-    async fn complete_session(
-        &self,
-        experiment_id: &str,
-        session_id: i64,
-        completion: Option<Value>,
-    ) -> Result<()> {
-        let mut inner = self.inner.write().await;
-        if let Some(row) = inner.sessions.iter_mut().find(|row| {
-            row["experiment_id"].as_str() == Some(experiment_id)
-                && row["session_id"].as_i64() == Some(session_id)
-        }) {
-            row["status"] = json!("completed");
-            row["completed_at"] = json!(now_iso());
-            row["completion"] = json!(completion);
-        }
-        Ok(())
-    }
-
-    async fn export_experiment(&self, experiment_id: &str) -> Result<Value> {
-        let inner = self.inner.read().await;
-        Ok(json!({
-            "experiment": inner.experiments.get(experiment_id),
-            "participants": inner.participants,
-            "sessions": inner.sessions.iter().filter(|row| row["experiment_id"].as_str() == Some(experiment_id)).collect::<Vec<_>>(),
-            "session_participants": inner.session_participants.iter().filter(|row| row["experiment_id"].as_str() == Some(experiment_id)).collect::<Vec<_>>(),
-            "consent_declarations": inner.consent_declarations.iter().filter(|row| row["experiment_id"].as_str() == Some(experiment_id)).collect::<Vec<_>>(),
-            "session_events": inner.session_events.iter().filter(|row| row["experiment_id"].as_str() == Some(experiment_id)).collect::<Vec<_>>(),
-        }))
-    }
-
-    async fn export_session(&self, experiment_id: &str, session_id: i64) -> Result<Value> {
-        let inner = self.inner.read().await;
-        Ok(json!({
-            "experiment_id": experiment_id,
-            "session_id": session_id,
-            "sessions": inner.sessions.iter().filter(|row| row["experiment_id"].as_str() == Some(experiment_id) && row["session_id"].as_i64() == Some(session_id)).collect::<Vec<_>>(),
-            "session_participants": inner.session_participants.iter().filter(|row| row["experiment_id"].as_str() == Some(experiment_id) && row["session_id"].as_i64() == Some(session_id)).collect::<Vec<_>>(),
-            "consent_declarations": inner.consent_declarations.iter().filter(|row| row["experiment_id"].as_str() == Some(experiment_id) && row["session_id"].as_i64() == Some(session_id)).collect::<Vec<_>>(),
-            "session_events": inner.session_events.iter().filter(|row| row["experiment_id"].as_str() == Some(experiment_id) && row["session_id"].as_i64() == Some(session_id)).collect::<Vec<_>>(),
-        }))
-    }
-
-    async fn participant_data_preview(
-        &self,
-        experiment_id: &str,
-        participant_id: i64,
-    ) -> Result<ParticipantDataPreview> {
-        let inner = self.inner.read().await;
-        Ok(memory_participant_data_preview(
-            &inner,
-            experiment_id,
-            participant_id,
-        ))
-    }
-
-    async fn delete_participant_data(
-        &self,
-        experiment_id: &str,
-        participant_id: i64,
-    ) -> Result<ParticipantDataPreview> {
-        let mut inner = self.inner.write().await;
-        let preview = memory_participant_data_preview(&inner, experiment_id, participant_id);
-        let session_ids = inner
-            .session_participants
-            .iter()
-            .filter(|row| row["experiment_id"].as_str() == Some(experiment_id))
-            .filter(|row| row["participant_id"].as_i64() == Some(participant_id))
-            .filter_map(|row| row["participant_session_id"].as_str().map(str::to_string))
-            .collect::<Vec<_>>();
-        inner.consent_declarations.retain(|row| {
-            row["experiment_id"].as_str() != Some(experiment_id)
-                || row["participant_id"].as_i64() != Some(participant_id)
-        });
-        inner.session_events.retain(|row| {
-            !(row["experiment_id"].as_str() == Some(experiment_id)
-                && row["actor_participant_id"].as_i64() == Some(participant_id)
-                && matches!(
-                    row["event_type"].as_str(),
-                    Some("conversation_message" | "transcript_segment")
-                ))
-        });
-        for row in inner
-            .session_events
-            .iter_mut()
-            .filter(|row| row["experiment_id"].as_str() == Some(experiment_id))
-        {
-            if row["actor_participant_id"].as_i64() == Some(participant_id) {
-                row["actor_participant_id"] = Value::Null;
-                row["actor_role"] = json!("deleted_participant");
-            }
-            redact_participant_strings(&mut row["payload"], &session_ids);
-            redact_participant_strings(&mut row["game_state"], &session_ids);
-        }
-        for row in inner
-            .session_participants
-            .iter_mut()
-            .filter(|row| row["experiment_id"].as_str() == Some(experiment_id))
-            .filter(|row| row["participant_id"].as_i64() == Some(participant_id))
-        {
-            row["participant_session_id"] = json!(new_id("deleted"));
-            row["connection_status"] = json!("deleted");
-            row["left_at"] = json!(now_iso());
-        }
-        if let Some(row) = inner
-            .participants
-            .iter_mut()
-            .find(|row| row["participant_id"].as_i64() == Some(participant_id))
-        {
-            row["research_id"] = Value::Null;
-            row["participant_kind"] = json!("deleted");
-            row["external_id"] = Value::Null;
-            row["metadata"] = json!({});
-        }
-        Ok(preview)
-    }
-}
-
-/// Counts participant-linked rows in the in-memory backend.
-fn memory_participant_data_preview(
-    inner: &MemoryStoreInner,
-    experiment_id: &str,
-    participant_id: i64,
-) -> ParticipantDataPreview {
-    let matching_events = inner.session_events.iter().filter(|row| {
-        row["experiment_id"].as_str() == Some(experiment_id)
-            && row["actor_participant_id"].as_i64() == Some(participant_id)
-    });
-    let mut content_event_count = 0;
-    let mut other_event_count = 0;
-    for row in matching_events {
-        if matches!(
-            row["event_type"].as_str(),
-            Some("conversation_message" | "transcript_segment")
-        ) {
-            content_event_count += 1;
-        } else {
-            other_event_count += 1;
-        }
-    }
-    ParticipantDataPreview {
-        participant_id,
-        session_count: inner
-            .session_participants
-            .iter()
-            .filter(|row| row["experiment_id"].as_str() == Some(experiment_id))
-            .filter(|row| row["participant_id"].as_i64() == Some(participant_id))
-            .count() as i64,
-        consent_count: inner
-            .consent_declarations
-            .iter()
-            .filter(|row| row["experiment_id"].as_str() == Some(experiment_id))
-            .filter(|row| row["participant_id"].as_i64() == Some(participant_id))
-            .count() as i64,
-        content_event_count,
-        other_event_count,
-    }
-}
-
-/// Replaces exact participant-session identifiers in nested JSON values.
-fn redact_participant_strings(value: &mut Value, identifiers: &[String]) {
-    match value {
-        Value::String(text) if identifiers.iter().any(|identifier| identifier == text) => {
-            *text = "deleted_participant".to_string();
-        }
-        Value::Array(items) => items
-            .iter_mut()
-            .for_each(|item| redact_participant_strings(item, identifiers)),
-        Value::Object(fields) => fields
-            .values_mut()
-            .for_each(|item| redact_participant_strings(item, identifiers)),
-        _ => {}
-    }
-}
 
 /// Returns whether SQLite rejected a write because a unique value already exists.
 fn sqlite_unique_constraint(error: &sqlx::Error) -> bool {
@@ -1061,6 +403,9 @@ impl SqliteExperimentStore {
 
     /// Creates the relational evaluation schema.
     async fn ensure_schema(&self) -> Result<()> {
+        if self.schema_version().await? >= 1 {
+            return Ok(());
+        }
         for statement in [
             r#"
             create table if not exists administrator_credential (
@@ -1072,13 +417,19 @@ impl SqliteExperimentStore {
             )
             "#,
             r#"
+            create table if not exists schema_migrations (
+                version integer primary key,
+                applied_at text not null
+            )
+            "#,
+            r#"
             create table if not exists experiments (
                 experiment_id text primary key,
                 created_at text not null,
                 config_json text not null,
                 server_version text,
                 version_manifest_json text,
-                status text not null default 'draft',
+                status text not null default 'inactive',
                 notes text
             )
             "#,
@@ -1162,9 +513,42 @@ impl SqliteExperimentStore {
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
         }
+        self.apply_pending_migrations().await?;
+        Ok(())
+    }
+
+    /// Reads the applied schema version without mutating an already-current database.
+    async fn schema_version(&self) -> Result<i64> {
+        let migrations_table_exists = sqlx::query_scalar::<_, i64>(
+            "select count(*) from sqlite_master where type = 'table' and name = 'schema_migrations'",
+        )
+        .fetch_one(&self.pool)
+        .await?
+            > 0;
+        if !migrations_table_exists {
+            return Ok(0);
+        }
+        Ok(
+            sqlx::query_scalar::<_, Option<i64>>("select max(version) from schema_migrations")
+                .fetch_one(&self.pool)
+                .await?
+                .unwrap_or(0),
+        )
+    }
+
+    /// Applies each historical compatibility migration once per database.
+    async fn apply_pending_migrations(&self) -> Result<()> {
+        let version =
+            sqlx::query_scalar::<_, Option<i64>>("select max(version) from schema_migrations")
+                .fetch_one(&self.pool)
+                .await?
+                .unwrap_or(0);
+        if version >= 1 {
+            return Ok(());
+        }
         self.ensure_column("experiments", "version_manifest_json", "text")
             .await?;
-        self.ensure_column("experiments", "status", "text not null default 'draft'")
+        self.ensure_column("experiments", "status", "text not null default 'inactive'")
             .await?;
         self.ensure_column("participants", "research_id", "text")
             .await?;
@@ -1193,6 +577,10 @@ impl SqliteExperimentStore {
         .await?;
         self.backfill_readable_ids().await?;
         self.drop_column_if_exists("participants", "display_name")
+            .await?;
+        sqlx::query("insert into schema_migrations (version, applied_at) values (1, ?)")
+            .bind(now_iso())
+            .execute(&self.pool)
             .await?;
         Ok(())
     }
@@ -1451,8 +839,8 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(result.rows_affected() == 1)
     }
 
-    async fn ensure_experiment(&self, experiment: ExperimentRecord) -> Result<()> {
-        sqlx::query(
+    async fn ensure_experiment(&self, experiment: ExperimentRecord) -> Result<String> {
+        let status = sqlx::query_scalar::<_, String>(
             r#"
             insert into experiments (experiment_id, created_at, config_json, server_version, version_manifest_json, status, notes)
             values (?, ?, ?, ?, ?, ?, ?)
@@ -1460,8 +848,8 @@ impl ExperimentStore for SqliteExperimentStore {
                 config_json = excluded.config_json,
                 server_version = excluded.server_version,
                 version_manifest_json = excluded.version_manifest_json,
-                status = excluded.status,
-                notes = excluded.notes
+                status = 'inactive'
+            returning status
             "#,
         )
         .bind(experiment.experiment_id)
@@ -1476,13 +864,16 @@ impl ExperimentStore for SqliteExperimentStore {
         )
         .bind(experiment.status)
         .bind(experiment.notes)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
-        Ok(())
+        Ok(status)
     }
 
-    async fn list_experiments(&self, limit: i64) -> Result<Vec<StoredExperimentSummary>> {
-        let rows = sqlx::query_as::<
+    async fn experiment_summary(
+        &self,
+        experiment_id: &str,
+    ) -> Result<Option<StoredExperimentSummary>> {
+        let row = sqlx::query_as::<
             _,
             (
                 String,
@@ -1505,41 +896,39 @@ impl ExperimentStore for SqliteExperimentStore {
                    max(s.created_at) as last_session_at
             from experiments e
             left join sessions s on s.experiment_id = e.experiment_id
+            where e.experiment_id = ?
             group by e.experiment_id
-            order by e.created_at desc
-            limit ?
             "#,
         )
-        .bind(limit.clamp(1, 500))
-        .fetch_all(&self.pool)
+        .bind(experiment_id)
+        .fetch_optional(&self.pool)
         .await?;
-        rows.into_iter()
-            .map(|row| {
-                Ok(StoredExperimentSummary {
-                    experiment_id: row.0,
-                    study_name: serde_json::from_str::<Value>(&row.2)
-                        .ok()
-                        .and_then(|config| {
-                            config
-                                .get("study")
-                                .and_then(|study| study.get("name"))
-                                .and_then(Value::as_str)
-                                .map(str::to_string)
-                        }),
-                    created_at: row.1,
-                    server_version: row.3,
-                    version_manifest: row
-                        .4
-                        .map(|raw| serde_json::from_str::<Value>(&raw))
-                        .transpose()?,
-                    status: row.5,
-                    notes: row.6,
-                    session_count: row.7,
-                    completed_session_count: row.8,
-                    last_session_at: row.9,
-                })
+        row.map(|row| {
+            Ok(StoredExperimentSummary {
+                experiment_id: row.0,
+                study_name: serde_json::from_str::<Value>(&row.2)
+                    .ok()
+                    .and_then(|config| {
+                        config
+                            .get("study")
+                            .and_then(|study| study.get("name"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    }),
+                created_at: row.1,
+                server_version: row.3,
+                version_manifest: row
+                    .4
+                    .map(|raw| serde_json::from_str::<Value>(&raw))
+                    .transpose()?,
+                status: row.5,
+                notes: row.6,
+                session_count: row.7,
+                completed_session_count: row.8,
+                last_session_at: row.9,
             })
-            .collect()
+        })
+        .transpose()
     }
 
     async fn update_experiment_status(&self, experiment_id: &str, status: &str) -> Result<()> {
@@ -1965,24 +1354,6 @@ impl ExperimentStore for SqliteExperimentStore {
         })
         .collect::<Result<Vec<_>>>()?;
         Ok(participants)
-    }
-
-    async fn complete_session(
-        &self,
-        experiment_id: &str,
-        session_id: i64,
-        completion: Option<Value>,
-    ) -> Result<()> {
-        sqlx::query(
-            "update sessions set status = 'completed', completed_at = ?, completion_json = ? where experiment_id = ? and session_id = ?",
-        )
-        .bind(now_iso())
-        .bind(completion.map(|value| serde_json::to_string(&value)).transpose()?)
-        .bind(experiment_id)
-        .bind(session_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
     }
 
     async fn export_experiment(&self, experiment_id: &str) -> Result<Value> {
@@ -2479,754 +1850,7 @@ impl<S: Clone + Serialize> MemoryState<S> {
             .insert(participant.id.clone(), participant.clone());
         participant
     }
-
-    /// Finds the first room containing the participant session.
-    pub fn room_for_participant(&self, participant_session_id: &str) -> Option<&GameRoom<S>> {
-        self.rooms
-            .values()
-            .find(|room| room.participants.contains_key(participant_session_id))
-    }
 }
 
 #[cfg(test)]
-mod tests {
-    use serde_json::json;
-    use tempfile::tempdir;
-
-    use super::*;
-
-    /// Confirms agent identifiers expose the configured type, implementation name, and version.
-    #[test]
-    fn agent_identifier_uses_durable_type_and_version_metadata() {
-        let participant = ParticipantRecord {
-            experiment_id: "experiment-a".to_string(),
-            participant_kind: "agent".to_string(),
-            identity_provider: "remote_grpc".to_string(),
-            external_id: Some("Python Agent@v1.2 beta".to_string()),
-            metadata: json!({
-                "agent_type": "remote_grpc",
-                "agent_name": "Python Agent",
-                "agent_version": "v1.2 beta",
-            }),
-        };
-
-        assert_eq!(
-            participant_identifier_candidate(&participant, 1),
-            "agent:remote_grpc:Python-Agent@v1.2-beta"
-        );
-        assert_eq!(
-            participant_identifier_candidate(&participant, 2),
-            "agent:remote_grpc:Python-Agent@v1.2-beta~2"
-        );
-
-        let unversioned = ParticipantRecord {
-            external_id: Some("Python Agent".to_string()),
-            metadata: json!({
-                "agent_type": "remote_grpc",
-                "agent_name": "Python Agent",
-            }),
-            ..participant
-        };
-        assert_eq!(
-            participant_identifier_candidate(&unversioned, 1),
-            "agent:remote_grpc:Python-Agent@unversioned"
-        );
-    }
-
-    /// Confirms only human durable participants receive random three-word names.
-    #[tokio::test]
-    async fn sqlite_assigns_random_names_only_to_humans() {
-        let store = SqliteExperimentStore::connect("sqlite:///:memory:")
-            .await
-            .unwrap();
-        let human = store
-            .upsert_participant(ParticipantRecord {
-                experiment_id: "experiment-a".to_string(),
-                participant_kind: "human".to_string(),
-                identity_provider: "direct".to_string(),
-                external_id: None,
-                metadata: Value::Null,
-            })
-            .await
-            .unwrap();
-        let agent = store
-            .upsert_participant(ParticipantRecord {
-                experiment_id: "experiment-a".to_string(),
-                participant_kind: "agent".to_string(),
-                identity_provider: "space_game".to_string(),
-                external_id: Some("space_game.back_and_forth@0.2.0".to_string()),
-                metadata: json!({
-                    "agent_type": "space_game.back_and_forth",
-                    "agent_name": "BackAndForthAgent",
-                    "agent_version": "0.2.0",
-                }),
-            })
-            .await
-            .unwrap();
-
-        let human_identifier = store.participant_research_id(human).await.unwrap().unwrap();
-        let agent_identifier = store.participant_research_id(agent).await.unwrap().unwrap();
-        assert_eq!(human_identifier.split('-').count(), 3);
-        assert_eq!(
-            agent_identifier,
-            "agent:space_game.back_and_forth:BackAndForthAgent@0.2.0"
-        );
-    }
-
-    /// Confirms reopening an existing database replaces legacy random agent names.
-    #[tokio::test]
-    async fn sqlite_migrates_legacy_agent_random_names() {
-        let temp = tempdir().expect("tempdir");
-        let database_url = format!("sqlite:///{}", temp.path().join("agents.sqlite").display());
-        let store = SqliteExperimentStore::connect(&database_url).await.unwrap();
-        let agent = store
-            .upsert_participant(ParticipantRecord {
-                experiment_id: "experiment-a".to_string(),
-                participant_kind: "agent".to_string(),
-                identity_provider: "remote_grpc".to_string(),
-                external_id: Some("planner@test-7".to_string()),
-                metadata: json!({
-                    "agent_type": "remote_grpc",
-                    "agent_name": "planner",
-                    "agent_version": "test-7",
-                }),
-            })
-            .await
-            .unwrap();
-        sqlx::query(
-            "update participants set research_id = 'calm-blue-otter' where participant_id = ?",
-        )
-        .bind(agent)
-        .execute(&store.pool)
-        .await
-        .unwrap();
-        store.pool.close().await;
-
-        let reopened = SqliteExperimentStore::connect(&database_url).await.unwrap();
-        assert_eq!(
-            reopened.participant_research_id(agent).await.unwrap(),
-            Some("agent:remote_grpc:planner@test-7".to_string())
-        );
-    }
-
-    /// Confirms the schema contains both evaluation data and the isolated credential table.
-    #[tokio::test]
-    async fn sqlite_schema_has_evaluation_and_administrator_tables() {
-        let store = SqliteExperimentStore::connect("sqlite:///:memory:")
-            .await
-            .unwrap();
-        let tables = store.table_names().await.unwrap();
-
-        assert_eq!(
-            tables,
-            vec![
-                "administrator_credential",
-                "consent_declarations",
-                "experiments",
-                "participants",
-                "session_events",
-                "session_participants",
-                "sessions",
-            ]
-        );
-    }
-
-    /// Confirms an existing installation loses the obsolete participant display-name column.
-    #[tokio::test]
-    async fn sqlite_migration_removes_participant_display_names() {
-        let temp = tempdir().expect("tempdir");
-        let database_path = temp.path().join("legacy.sqlite");
-        let setup_pool = SqlitePoolOptions::new()
-            .connect_with(
-                SqliteConnectOptions::new()
-                    .filename(&database_path)
-                    .create_if_missing(true),
-            )
-            .await
-            .unwrap();
-        sqlx::query(
-            r#"
-            create table participants (
-                participant_id integer primary key autoincrement,
-                participant_kind text not null,
-                identity_provider text not null,
-                external_id text,
-                display_name text,
-                metadata_json text,
-                created_at text not null
-            )
-            "#,
-        )
-        .execute(&setup_pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "create unique index idx_participants_provider_external on participants(identity_provider, external_id) where external_id is not null",
-        )
-        .execute(&setup_pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "insert into participants (participant_kind, identity_provider, external_id, display_name, metadata_json, created_at) values ('human', 'prolific', 'same-recruitment-id', 'Legacy Name', '{}', '2026-01-01T00:00:00Z')",
-        )
-        .execute(&setup_pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "create table session_participants (experiment_id text not null, participant_id integer not null)",
-        )
-        .execute(&setup_pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "insert into session_participants values ('experiment-a', 1), ('experiment-b', 1)",
-        )
-        .execute(&setup_pool)
-        .await
-        .unwrap();
-        setup_pool.close().await;
-
-        let database_url = format!("sqlite:///{}", database_path.display());
-        let store = SqliteExperimentStore::connect(&database_url).await.unwrap();
-        let columns = sqlx::query_as::<_, (i64, String, String, i64, Option<String>, i64)>(
-            "pragma table_info(participants)",
-        )
-        .fetch_all(&store.pool)
-        .await
-        .unwrap();
-        assert!(columns.iter().all(|column| column.1 != "display_name"));
-        assert!(columns.iter().any(|column| column.1 == "research_id"));
-        let participants = sqlx::query_as::<_, (String, String, String)>(
-            "select experiment_id, research_id, external_id from participants order by experiment_id",
-        )
-        .fetch_all(&store.pool)
-        .await
-        .unwrap();
-        assert_eq!(participants.len(), 2);
-        assert_eq!(participants[0].0, "experiment-a");
-        assert_eq!(participants[1].0, "experiment-b");
-        assert_ne!(participants[0].1, participants[1].1);
-        assert_eq!(participants[0].2, "same-recruitment-id");
-        assert_eq!(participants[1].2, "same-recruitment-id");
-    }
-
-    /// Confirms first setup wins atomically and survives reopening the SQLite database.
-    #[tokio::test]
-    async fn sqlite_admin_setup_is_atomic_and_persistent() {
-        let temp = tempdir().expect("tempdir");
-        let database_url = format!("sqlite:///{}", temp.path().join("admin.sqlite").display());
-        let store = SqliteExperimentStore::connect(&database_url).await.unwrap();
-        let credential = StoredAdminCredential {
-            username: "researcher".to_string(),
-            password_hash: "$argon2id$test-hash".to_string(),
-            role: "administrator".to_string(),
-        };
-
-        assert!(store
-            .create_admin_credential(credential.clone())
-            .await
-            .unwrap());
-        assert!(!store
-            .create_admin_credential(StoredAdminCredential {
-                username: "second".to_string(),
-                ..credential.clone()
-            })
-            .await
-            .unwrap());
-        drop(store);
-
-        let reopened = SqliteExperimentStore::connect(&database_url).await.unwrap();
-        assert_eq!(reopened.admin_credential().await.unwrap(), Some(credential));
-    }
-
-    #[tokio::test]
-    async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
-        let temp = tempdir().expect("tempdir");
-        let database_url = format!("sqlite:///{}", temp.path().join("eval.sqlite").display());
-        let store = SqliteExperimentStore::connect(&database_url).await.unwrap();
-        store
-            .ensure_experiment(ExperimentRecord {
-                experiment_id: "exp_eval".to_string(),
-                config: json!({"study": "demo"}),
-                server_version: Some("test".to_string()),
-                version_manifest: None,
-                status: "active".to_string(),
-                notes: None,
-            })
-            .await
-            .unwrap();
-        let participant_id = store
-            .upsert_participant(ParticipantRecord {
-                experiment_id: "exp_eval".to_string(),
-                participant_kind: "human".to_string(),
-                identity_provider: "prolific".to_string(),
-                external_id: Some("PID123".to_string()),
-                metadata: json!({"source": "fixture"}),
-            })
-            .await
-            .unwrap();
-        let same_participant_id = store
-            .upsert_participant(ParticipantRecord {
-                experiment_id: "exp_eval".to_string(),
-                participant_kind: "human".to_string(),
-                identity_provider: "prolific".to_string(),
-                external_id: Some("PID123".to_string()),
-                metadata: Value::Null,
-            })
-            .await
-            .unwrap();
-        assert_eq!(participant_id, same_participant_id);
-
-        let session_one = store
-            .create_session(SessionRecord {
-                experiment_id: "exp_eval".to_string(),
-                room_id: "ROOM1".to_string(),
-                mode: "direct".to_string(),
-                status: "waiting".to_string(),
-            })
-            .await
-            .unwrap();
-        let session_two = store
-            .create_session(SessionRecord {
-                experiment_id: "exp_eval".to_string(),
-                room_id: "ROOM2".to_string(),
-                mode: "direct".to_string(),
-                status: "waiting".to_string(),
-            })
-            .await
-            .unwrap();
-        assert_eq!((session_one, session_two), (1, 2));
-
-        store
-            .add_session_participant(SessionParticipantRecord {
-                experiment_id: "exp_eval".to_string(),
-                session_id: session_one,
-                participant_id,
-                participant_session_id: "ps_1".to_string(),
-                role: "A".to_string(),
-                connection_status: "joined".to_string(),
-            })
-            .await
-            .unwrap();
-        store
-            .record_consent_declaration(ConsentDeclarationRecord {
-                experiment_id: "exp_eval".to_string(),
-                session_id: Some(session_one),
-                participant_id,
-                consent_item_id: "study".to_string(),
-                accepted: true,
-                consent_text_hash: None,
-                metadata: Value::Null,
-            })
-            .await
-            .unwrap();
-        let first_event = store
-            .append_session_event(SessionEventRecord {
-                experiment_id: "exp_eval".to_string(),
-                session_id: session_one,
-                event_type: "game_action_accepted".to_string(),
-                actor_participant_id: Some(participant_id),
-                actor_role: Some("A".to_string()),
-                payload: json!({"action": "noop"}),
-                game_state: Some(json!({"step": 1})),
-            })
-            .await
-            .unwrap();
-        let second_event = store
-            .append_session_event(SessionEventRecord {
-                experiment_id: "exp_eval".to_string(),
-                session_id: session_one,
-                event_type: "state_changed".to_string(),
-                actor_participant_id: None,
-                actor_role: None,
-                payload: json!({"reason": "test"}),
-                game_state: Some(json!({"step": 2})),
-            })
-            .await
-            .unwrap();
-        assert_eq!((first_event, second_event), (1, 2));
-
-        let exported = store.export_session("exp_eval", session_one).await.unwrap();
-        assert_eq!(exported["sessions"].as_array().unwrap().len(), 1);
-        assert_eq!(exported["session_events"].as_array().unwrap().len(), 2);
-        let participant_pseudonym = exported["participants"][0]["research_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let dialogue_pseudonym = exported["sessions"][0]["dialogue_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        assert_eq!(participant_pseudonym.split('-').count(), 3);
-        assert_eq!(dialogue_pseudonym.split('-').count(), 3);
-        let repeated_export = store.export_session("exp_eval", session_one).await.unwrap();
-        assert_eq!(
-            repeated_export["participants"][0]["research_id"],
-            participant_pseudonym
-        );
-        assert_eq!(
-            repeated_export["sessions"][0]["dialogue_id"],
-            dialogue_pseudonym
-        );
-
-        let preview = store
-            .participant_data_preview("exp_eval", participant_id)
-            .await
-            .unwrap();
-        assert_eq!(preview.session_count, 1);
-        assert_eq!(preview.consent_count, 1);
-        assert_eq!(preview.other_event_count, 1);
-        store
-            .delete_participant_data("exp_eval", participant_id)
-            .await
-            .unwrap();
-        let redacted = store.export_session("exp_eval", session_one).await.unwrap();
-        assert!(redacted["consent_declarations"]
-            .as_array()
-            .unwrap()
-            .is_empty());
-        assert_eq!(redacted["participants"][0]["research_id"], Value::Null);
-        assert_eq!(redacted["participants"][0]["external_id"], Value::Null);
-        assert_eq!(
-            redacted["session_events"][0]["actor_participant_id"],
-            Value::Null
-        );
-        assert_eq!(
-            redacted["session_events"][0]["actor_role"],
-            "deleted_participant"
-        );
-        assert_ne!(
-            redacted["session_participants"][0]["participant_session_id"],
-            "ps_1"
-        );
-    }
-
-    #[tokio::test]
-    async fn sqlite_allows_returning_participant_in_multiple_sessions_with_different_roles() {
-        let store = SqliteExperimentStore::connect("sqlite:///:memory:")
-            .await
-            .unwrap();
-        store
-            .ensure_experiment(ExperimentRecord {
-                experiment_id: "exp_returning".to_string(),
-                config: json!({"condition": "repeat-play"}),
-                server_version: None,
-                version_manifest: None,
-                status: "active".to_string(),
-                notes: Some("same Prolific participant appears twice".to_string()),
-            })
-            .await
-            .unwrap();
-        let participant_id = store
-            .upsert_participant(ParticipantRecord {
-                experiment_id: "exp_returning".to_string(),
-                participant_kind: "human".to_string(),
-                identity_provider: "prolific".to_string(),
-                external_id: Some("PROLIFIC-REPEAT".to_string()),
-                metadata: json!({"first_seen_batch": 7}),
-            })
-            .await
-            .unwrap();
-        store
-            .ensure_experiment(ExperimentRecord {
-                experiment_id: "exp_other".to_string(),
-                config: Value::Null,
-                server_version: None,
-                version_manifest: None,
-                status: "active".to_string(),
-                notes: None,
-            })
-            .await
-            .unwrap();
-        let other_experiment_participant = store
-            .upsert_participant(ParticipantRecord {
-                experiment_id: "exp_other".to_string(),
-                participant_kind: "human".to_string(),
-                identity_provider: "prolific".to_string(),
-                external_id: Some("PROLIFIC-REPEAT".to_string()),
-                metadata: Value::Null,
-            })
-            .await
-            .unwrap();
-        assert_ne!(participant_id, other_experiment_participant);
-        assert_ne!(
-            store.participant_research_id(participant_id).await.unwrap(),
-            store
-                .participant_research_id(other_experiment_participant)
-                .await
-                .unwrap()
-        );
-        let first_session = store
-            .create_session(SessionRecord {
-                experiment_id: "exp_returning".to_string(),
-                room_id: "ROOM_A".to_string(),
-                mode: "human_vs_human".to_string(),
-                status: "playing".to_string(),
-            })
-            .await
-            .unwrap();
-        let second_session = store
-            .create_session(SessionRecord {
-                experiment_id: "exp_returning".to_string(),
-                room_id: "ROOM_B".to_string(),
-                mode: "role_swap_replay".to_string(),
-                status: "playing".to_string(),
-            })
-            .await
-            .unwrap();
-
-        store
-            .add_session_participant(SessionParticipantRecord {
-                experiment_id: "exp_returning".to_string(),
-                session_id: first_session,
-                participant_id,
-                participant_session_id: "ps_repeat_a".to_string(),
-                role: "A".to_string(),
-                connection_status: "connected".to_string(),
-            })
-            .await
-            .unwrap();
-        store
-            .add_session_participant(SessionParticipantRecord {
-                experiment_id: "exp_returning".to_string(),
-                session_id: second_session,
-                participant_id,
-                participant_session_id: "ps_repeat_b".to_string(),
-                role: "B".to_string(),
-                connection_status: "connected".to_string(),
-            })
-            .await
-            .unwrap();
-
-        let experiment = store.export_experiment("exp_returning").await.unwrap();
-        assert_eq!(experiment["participants"].as_array().unwrap().len(), 1);
-        assert_eq!(
-            experiment["session_participants"].as_array().unwrap().len(),
-            2
-        );
-        assert!(experiment["participants"][0].get("role").is_none());
-        assert_eq!(experiment["session_participants"][0]["role"], "A");
-        assert_eq!(experiment["session_participants"][1]["role"], "B");
-
-        let second = store
-            .export_session("exp_returning", second_session)
-            .await
-            .unwrap();
-        assert_eq!(second["participants"].as_array().unwrap().len(), 1);
-        assert_eq!(
-            second["session_participants"][0]["participant_session_id"],
-            "ps_repeat_b"
-        );
-    }
-
-    #[tokio::test]
-    async fn sqlite_holds_mixed_participant_and_event_shapes_for_weird_experiments() {
-        let store = SqliteExperimentStore::connect("sqlite:///:memory:")
-            .await
-            .unwrap();
-        store
-            .ensure_experiment(ExperimentRecord {
-                experiment_id: "exp_weird".to_string(),
-                config: json!({
-                    "conditions": ["voice", "agent", "worker"],
-                    "nested": {"levels": [{"id": 1}, {"id": 2}]}
-                }),
-                server_version: Some("test".to_string()),
-                version_manifest: None,
-                status: "active".to_string(),
-                notes: None,
-            })
-            .await
-            .unwrap();
-
-        let direct_one = store
-            .upsert_participant(ParticipantRecord {
-                experiment_id: "exp_weird".to_string(),
-                participant_kind: "human".to_string(),
-                identity_provider: "direct".to_string(),
-                external_id: None,
-                metadata: json!({"signup": 1}),
-            })
-            .await
-            .unwrap();
-        let direct_two = store
-            .upsert_participant(ParticipantRecord {
-                experiment_id: "exp_weird".to_string(),
-                participant_kind: "human".to_string(),
-                identity_provider: "direct".to_string(),
-                external_id: None,
-                metadata: json!({"signup": 2}),
-            })
-            .await
-            .unwrap();
-        assert_ne!(direct_one, direct_two);
-
-        let prolific = store
-            .upsert_participant(ParticipantRecord {
-                experiment_id: "exp_weird".to_string(),
-                participant_kind: "human".to_string(),
-                identity_provider: "prolific".to_string(),
-                external_id: Some("PID-WEIRD".to_string()),
-                metadata: json!({"study_id": "STUDY42", "session_id": "SESSION99"}),
-            })
-            .await
-            .unwrap();
-        let agent = store
-            .upsert_participant(ParticipantRecord {
-                experiment_id: "exp_weird".to_string(),
-                participant_kind: "agent".to_string(),
-                identity_provider: "agent".to_string(),
-                external_id: Some("back-and-forth@v2".to_string()),
-                metadata: json!({"temperature": 0, "seed": 1234}),
-            })
-            .await
-            .unwrap();
-        let worker = store
-            .upsert_participant(ParticipantRecord {
-                experiment_id: "exp_weird".to_string(),
-                participant_kind: "worker".to_string(),
-                identity_provider: "worker".to_string(),
-                external_id: Some("transcriber-1".to_string()),
-                metadata: json!({"provider": "speechmatics"}),
-            })
-            .await
-            .unwrap();
-        let session_id = store
-            .create_session(SessionRecord {
-                experiment_id: "exp_weird".to_string(),
-                room_id: "ROOM_WEIRD".to_string(),
-                mode: "human_agent_with_worker".to_string(),
-                status: "playing".to_string(),
-            })
-            .await
-            .unwrap();
-
-        for (participant_id, handle, role) in [
-            (prolific, "ps_prolific", "A"),
-            (agent, "ps_agent", "B"),
-            (worker, "worker-transcriber-1", "worker"),
-        ] {
-            store
-                .add_session_participant(SessionParticipantRecord {
-                    experiment_id: "exp_weird".to_string(),
-                    session_id,
-                    participant_id,
-                    participant_session_id: handle.to_string(),
-                    role: role.to_string(),
-                    connection_status: "connected".to_string(),
-                })
-                .await
-                .unwrap();
-        }
-
-        store
-            .record_consent_declaration(ConsentDeclarationRecord {
-                experiment_id: "exp_weird".to_string(),
-                session_id: None,
-                participant_id: prolific,
-                consent_item_id: "screening".to_string(),
-                accepted: true,
-                consent_text_hash: Some("hash-screening".to_string()),
-                metadata: json!({"before_room": true}),
-            })
-            .await
-            .unwrap();
-        store
-            .record_consent_declaration(ConsentDeclarationRecord {
-                experiment_id: "exp_weird".to_string(),
-                session_id: Some(session_id),
-                participant_id: prolific,
-                consent_item_id: "record_audio".to_string(),
-                accepted: false,
-                consent_text_hash: Some("hash-audio".to_string()),
-                metadata: json!({"reason": "declined_optional"}),
-            })
-            .await
-            .unwrap();
-
-        let event_payloads = [
-            (
-                "transcript_segment",
-                Some(prolific),
-                Some("A"),
-                json!({"text": "hello there", "alternatives": [], "confidence": 0.91}),
-                None,
-            ),
-            (
-                "game_action_accepted",
-                Some(agent),
-                Some("B"),
-                json!({"action": {"type": "toggle", "target": "aux"}, "events": [{"kind": "system_on"}]}),
-                Some(json!({"systems": {"aux": true}, "history": [{"actor": "B"}]})),
-            ),
-            (
-                "voice_diagnostic",
-                Some(worker),
-                Some("worker"),
-                json!({"event": "temporary_key_minted", "latency_ms": 42}),
-                None,
-            ),
-        ];
-        for (event_type, actor_participant_id, actor_role, payload, game_state) in event_payloads {
-            store
-                .append_session_event(SessionEventRecord {
-                    experiment_id: "exp_weird".to_string(),
-                    session_id,
-                    event_type: event_type.to_string(),
-                    actor_participant_id,
-                    actor_role: actor_role.map(str::to_string),
-                    payload,
-                    game_state,
-                })
-                .await
-                .unwrap();
-        }
-
-        let exported = store.export_session("exp_weird", session_id).await.unwrap();
-        assert_eq!(exported["participants"].as_array().unwrap().len(), 3);
-        assert_eq!(
-            exported["session_participants"].as_array().unwrap().len(),
-            3
-        );
-        assert_eq!(
-            exported["consent_declarations"].as_array().unwrap().len(),
-            1,
-            "session export should include only session-scoped consent"
-        );
-        assert_eq!(exported["session_events"].as_array().unwrap().len(), 3);
-        assert_eq!(exported["session_events"][0]["event_index"], 1);
-        assert_eq!(exported["session_events"][1]["event_index"], 2);
-        assert_eq!(
-            exported["session_events"][1]["game_state"]["systems"]["aux"],
-            true
-        );
-
-        let experiment = store.export_experiment("exp_weird").await.unwrap();
-        assert_eq!(
-            experiment["consent_declarations"].as_array().unwrap().len(),
-            2
-        );
-    }
-
-    #[tokio::test]
-    async fn unsupported_database_scheme_fails_clearly() {
-        let error = match experiment_store_from_url("postgres://localhost/parlando").await {
-            Ok(_) => panic!("unsupported scheme should fail"),
-            Err(error) => error,
-        };
-
-        assert!(error
-            .to_string()
-            .contains("unsupported database url scheme"));
-    }
-
-    #[tokio::test]
-    async fn empty_database_url_is_rejected() {
-        let error = match experiment_store_from_url("").await {
-            Ok(_) => panic!("empty database url should fail"),
-            Err(error) => error,
-        };
-
-        assert!(error.to_string().contains("database.url is required"));
-    }
-}
+mod tests;

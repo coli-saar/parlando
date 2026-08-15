@@ -21,6 +21,7 @@ use tokio_tungstenite::{
 };
 
 /// Captures the client request and drives the subset of the provider protocol Parlando uses.
+#[allow(clippy::result_large_err)]
 async fn run_fake_speechmatics(
     listener: TcpListener,
     authorization: Arc<Mutex<Option<String>>>,

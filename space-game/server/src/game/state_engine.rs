@@ -2,8 +2,7 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
 use super::level::{
-    devices_at_position, door_kind_for_step, is_walkable, room_at_position, room_center,
-    room_exits, Position,
+    devices_at_position, door_kind_for_step, is_walkable, room_at_position, Position,
 };
 
 /// Typed Space Game action accepted by the reusable Parlando server boundary.
@@ -12,10 +11,6 @@ use super::level::{
 pub enum SpaceAction {
     #[serde(rename = "moveStep")]
     MoveStep { player: String, direction: String },
-    #[serde(rename = "move")]
-    Move { player: String, room: String },
-    #[serde(rename = "reset")]
-    Reset { player: Option<String> },
     #[serde(rename = "toggleFuse")]
     ToggleFuse { player: String, color: String },
     #[serde(rename = "toggleBreaker")]
@@ -49,7 +44,6 @@ impl SpaceAction {
     pub fn player(&self) -> Option<&str> {
         match self {
             Self::MoveStep { player, .. }
-            | Self::Move { player, .. }
             | Self::ToggleFuse { player, .. }
             | Self::ToggleBreaker { player, .. }
             | Self::SetValve { player, .. }
@@ -61,7 +55,6 @@ impl SpaceAction {
             | Self::CycleRelay { player }
             | Self::RunDiagnostic { player }
             | Self::LaunchBeacon { player } => Some(player),
-            Self::Reset { player } => player.as_deref(),
         }
     }
 
@@ -69,8 +62,6 @@ impl SpaceAction {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::MoveStep { .. } => "moveStep",
-            Self::Move { .. } => "move",
-            Self::Reset { .. } => "reset",
             Self::ToggleFuse { .. } => "toggleFuse",
             Self::ToggleBreaker { .. } => "toggleBreaker",
             Self::SetValve { .. } => "setValve",
@@ -392,10 +383,7 @@ pub fn validate_action(state: &SpaceGameState, action: &SpaceAction, player: &st
             action.player().unwrap_or("?")
         );
     }
-    if matches!(
-        action,
-        SpaceAction::MoveStep { .. } | SpaceAction::Move { .. } | SpaceAction::Reset { .. }
-    ) {
+    if matches!(action, SpaceAction::MoveStep { .. }) {
         return Ok(());
     }
     if !available_actions(state, player).contains(action) {
@@ -406,9 +394,6 @@ pub fn validate_action(state: &SpaceGameState, action: &SpaceAction, player: &st
 
 /// Applies one typed action and returns the next immutable game state.
 pub fn apply_action(state: &SpaceGameState, action: &SpaceAction) -> Result<SpaceGameState> {
-    if matches!(action, SpaceAction::Reset { .. }) {
-        return Ok(initial_state());
-    }
     let before = derive_systems(state);
     let mut next = state.clone();
     let mut effects = vec![];
@@ -416,7 +401,6 @@ pub fn apply_action(state: &SpaceGameState, action: &SpaceAction) -> Result<Spac
         SpaceAction::MoveStep { player, direction } => {
             apply_move_step(&mut next, &before, player, direction)
         }
-        SpaceAction::Move { player, room } => apply_move(&mut next, &before, player, room),
         SpaceAction::ToggleFuse { player, color } => {
             toggle_fuse(&mut next, player, color, &mut effects)
         }
@@ -447,7 +431,7 @@ pub fn apply_action(state: &SpaceGameState, action: &SpaceAction) -> Result<Spac
             reveal(&mut next, player, diagnostic);
         }
         SpaceAction::LaunchBeacon { player } => launch_beacon(&mut next, &before, player),
-        SpaceAction::TogglePlate { .. } | SpaceAction::Reset { .. } => {}
+        SpaceAction::TogglePlate { .. } => {}
     }
     Ok(finalize(next, before, effects))
 }
@@ -474,22 +458,6 @@ fn apply_move_step(state: &mut SpaceGameState, before: &Systems, player: &str, d
         player_state.position = target;
         player_state.room = target_room.to_string();
         player_state.plate_held = target.x == 7 && target.y == 2;
-    }
-}
-
-// Moves directly between adjacent named rooms for legacy/client compatibility.
-fn apply_move(state: &mut SpaceGameState, before: &Systems, player: &str, room: &str) {
-    let current_room = player_state(state, player).room.clone();
-    if room_exits(&current_room).contains(&room) && (room != "airlock" || before.door_access) {
-        let player_state = player_state_mut(state, player);
-        player_state.room = room.to_string();
-        player_state.position = room_center(room);
-    } else if room == "airlock" {
-        reveal(
-            state,
-            player,
-            "The airlock hatch needs oxygen pressure, door power, and the floor plate.",
-        );
     }
 }
 
@@ -779,7 +747,7 @@ fn next_relay(relay: &str) -> &'static str {
     }
 }
 
-// Returns the immutable player state for a role, defaulting to A for legacy input.
+// Returns the immutable player state after action validation has constrained the role.
 fn player_state<'a>(state: &'a SpaceGameState, player: &str) -> &'a PlayerState {
     if player == "B" {
         &state.players.b
@@ -788,7 +756,7 @@ fn player_state<'a>(state: &'a SpaceGameState, player: &str) -> &'a PlayerState 
     }
 }
 
-// Returns the mutable player state for a role, defaulting to A for legacy input.
+// Returns the mutable player state after action validation has constrained the role.
 fn player_state_mut<'a>(state: &'a mut SpaceGameState, player: &str) -> &'a mut PlayerState {
     if player == "B" {
         &mut state.players.b

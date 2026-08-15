@@ -33,7 +33,9 @@ Completion summaries are game-specific. Design them deliberately: include succes
 
 ## Operator Monitor
 
-Use `/admin/experiments` for quick inspection during a study run. The dashboard reads from the database, lists experiments and their sessions, and shows a compact session timeline of actions, conversation messages, and transcripts. The older `/admin/games` route remains as a compatibility alias.
+Use `/admin/experiments` for quick inspection during a study run. The dashboard shows the one experiment configured for this server process, controls whether intake is active, lists its sessions, and presents a compact timeline of actions, conversation messages, and transcripts. It does not create or clone experiment records; change the experiment configuration and start a separate process for a different experiment.
+
+The lifecycle has two states: `inactive` and `active`. Startup always chooses `inactive`. While inactive, the server rejects new participants, room creation, and room joins with HTTP 503. Deactivation does not terminate existing room or WebSocket activity, so an administrator can close recruitment without disrupting sessions already underway.
 
 The dashboard intentionally summarizes event rows. Use export when you need full structured payloads.
 

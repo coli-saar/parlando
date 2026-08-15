@@ -26,7 +26,6 @@ export {
   type ConversationOrigin,
   type ParticipantCreateResponse,
   type PublicConfigResponse,
-  type RoomMode,
   type RoomResponse,
   type ServerMessage
 } from "./protocol.js";

@@ -281,10 +281,6 @@ function normalizeSeat(value: unknown): PresenceState["A"] {
   };
 }
 
-function bothPlayersConnected(presence: PresenceState): boolean {
-  return Boolean(presence.A?.connected && presence.B?.connected);
-}
-
 function appendConversation(current: ConversationMessage[], message: ConversationMessage): ConversationMessage[] {
   if (current.some((candidate) => candidate.id === message.id)) return current;
   return [...current, message].slice(-50);
@@ -746,7 +742,6 @@ function deviceStateClass(
 function actionIcon(action: GameAction): string {
   const icons: Record<GameAction["type"], string> = {
     moveStep: "↕",
-    move: "↗",
     toggleFuse: "▮",
     toggleBreaker: "⏻",
     setValve: "◌",
@@ -757,8 +752,7 @@ function actionIcon(action: GameAction): string {
     setRelay: "⌁",
     cycleRelay: "⌁",
     runDiagnostic: "?",
-    launchBeacon: "▲",
-    reset: "↺"
+    launchBeacon: "▲"
   };
   return icons[action.type];
 }

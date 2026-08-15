@@ -140,8 +140,8 @@ Validation rule: the UI can guide users, but `validate_action` must be the autho
 
 Generate a `main.rs` that follows the Parlando server pattern:
 
-- parse `--config`, `--host`, `--port`, and optional `--experiment-id`
-- load `ExperimentConfig::from_yaml` or defaults
+- parse required `--config` plus `--host` and `--port`
+- load the one process-owned experiment with `ExperimentConfig::from_yaml`
 - create the game adapter
 - create an agent factory from config when the generated project includes agent support
 - call `parlando_server::serve`

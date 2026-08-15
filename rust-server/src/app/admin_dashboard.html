@@ -1,0 +1,728 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Parlando Experimenter Dashboard</title>
+  <style>
+    :root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #182026; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; }
+    button { font: inherit; }
+    .app-header { align-items: center; background: #fff; border-bottom: 1px solid #dde2e7; display: flex; justify-content: space-between; min-height: 64px; padding: 12px 24px; }
+    .header-link { background: #fff; border: 1px solid #c9d2da; border-radius: 6px; color: #31404c; font-size: 13px; font-weight: 750; padding: 8px 11px; text-decoration: none; }
+    .header-link:hover { background: #f1f7fb; border-color: #185f8f; }
+    .menu-button { align-items: center; background: #fff; border: 1px solid #c9d2da; border-radius: 6px; cursor: pointer; display: none; font-weight: 800; height: 36px; justify-content: center; width: 40px; }
+    .shell { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); min-height: calc(100vh - 64px); }
+    .sidebar { border-right: 1px solid #dde2e7; background: #fff; padding: 18px; overflow: auto; }
+    .main { padding: 24px; overflow: auto; }
+    .brand { display: grid; gap: 3px; }
+    .brand .game-name { font-size: 20px; font-weight: 800; line-height: 1.15; }
+    .brand .dashboard-name { color: #65717c; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .workspace-header { align-items: end; display: flex; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+    .workspace-title { display: grid; gap: 6px; min-width: 0; }
+    .workspace-title h2 { font-size: 26px; margin: 0; overflow-wrap: anywhere; }
+    .workspace-stats { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+    .tabs { border-bottom: 1px solid #dce2e8; display: flex; gap: 4px; margin-bottom: 16px; }
+    .tab { background: transparent; border: 0; border-bottom: 3px solid transparent; color: #5b6873; cursor: pointer; font-weight: 750; padding: 10px 12px; }
+    .tab.active { border-bottom-color: #185f8f; color: #14202a; }
+    .tab-panel[hidden] { display: none; }
+    .sessions-layout { align-items: start; display: grid; gap: 16px; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); }
+    .session-picker { background: #eef3f7; border-color: #cfd9e2; box-shadow: inset 0 1px 0 rgba(255,255,255,0.72); margin-bottom: 0; max-width: 100%; position: sticky; top: 16px; }
+    .session-toolbar { align-items: center; display: flex; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .session-detail { min-width: 0; }
+    .topline { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+    .section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 18px 0 10px; }
+    h1 { font-size: 22px; line-height: 1.2; margin: 0; }
+    h2 { font-size: 18px; margin: 0 0 12px; }
+    .muted { color: #65717c; }
+    .small { font-size: 12px; }
+    .refresh, .primary, .secondary, .danger, select, input { border: 1px solid #c9d2da; background: #fff; border-radius: 6px; padding: 7px 10px; }
+    .refresh, .primary { cursor: pointer; }
+    .primary { background: #185f8f; border-color: #185f8f; color: #fff; font-weight: 700; }
+    .secondary { color: #31404c; cursor: pointer; font-weight: 650; }
+    .danger { border-color: #b42318; color: #b42318; cursor: pointer; font-weight: 700; }
+    .refresh:hover, .primary:hover, .secondary:hover { filter: brightness(0.97); }
+    .control-grid { display: grid; gap: 8px; }
+    .control-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+    .toggle-row { align-items: center; color: #4e5b66; display: inline-flex; font-size: 13px; gap: 8px; white-space: nowrap; }
+    .toggle-row input { height: 16px; width: 16px; }
+    .experiment-list { display: grid; gap: 8px; }
+    .experiment { width: 100%; text-align: left; border: 1px solid #185f8f; border-radius: 8px; background: #f1f7fb; padding: 12px; }
+    .warning { border: 1px solid #f2c36b; background: #fff8e8; color: #694500; border-radius: 8px; padding: 10px; margin-top: 10px; }
+    .session-list { display: grid; gap: 6px; max-height: calc(100vh - 230px); overflow: auto; padding-right: 2px; }
+    .session { width: 100%; text-align: left; border: 1px solid #d5dee6; border-radius: 6px; background: rgba(255,255,255,0.72); padding: 9px; cursor: pointer; }
+    .session:hover, .session.active { border-color: #2773a8; background: #fff; }
+    .session strong { display: block; color: #151b20; margin-bottom: 4px; overflow-wrap: anywhere; }
+    .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .pill { border: 1px solid #d7dee5; border-radius: 999px; padding: 3px 8px; background: #fff; color: #44515c; font-size: 12px; }
+    .pill.warning-pill { border-color: #e5b35a; background: #fff8e8; color: #6f4700; }
+    .panel { background: #fff; border: 1px solid #dce2e8; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .summary-line { display: none; }
+    .summary-head { align-items: start; display: flex; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .summary-head h2 { margin: 0; }
+    .session-participants { border-top: 1px solid #e3e8ed; margin-top: 12px; padding-top: 12px; }
+    .label { font-size: 12px; color: #66737f; margin-bottom: 4px; }
+    .value { font-weight: 650; overflow-wrap: anywhere; }
+    .participants { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .participant { border: 1px solid #dde4ea; border-radius: 8px; padding: 12px; background: #fbfcfd; display: flex; align-items: center; gap: 12px; }
+    .participant-body { min-width: 0; }
+    .participant-collapse summary { align-items: center; cursor: pointer; display: flex; flex-wrap: wrap; gap: 8px 12px; list-style: none; }
+    .participant-collapse summary::-webkit-details-marker { display: none; }
+    .participant-collapse summary::after { color: #65717c; content: "Details"; font-size: 12px; font-weight: 700; margin-left: auto; }
+    .participant-collapse[open] summary::after { content: "Hide details"; }
+    .participant-summary-list { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+    .participant-details { margin-top: 12px; }
+    .timeline { display: grid; gap: 8px; }
+    .event { border-left: 4px solid #9bb6c8; background: #fff; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 0 rgba(20, 34, 45, 0.05); }
+    .event.action { border-left-color: #287a5c; }
+    .event.transcript { border-left-color: #8b5a20; }
+    .event.error { border-left-color: #b42318; }
+    .event.problem { border-color: #b42318; background: #fff8f7; }
+    .event-line { display: grid; grid-template-columns: auto minmax(140px, 1fr) minmax(0, 2fr) auto; align-items: center; gap: 10px; }
+    .role-badge { align-items: center; border-radius: 6px; display: inline-flex; font-weight: 800; height: 28px; justify-content: center; min-width: 28px; padding: 0 8px; }
+    .role-a { background: #dceef8; color: #135276; }
+    .role-b { background: #faead1; color: #73480d; }
+    .role-system { background: #e8edf2; color: #4c5964; font-size: 11px; letter-spacing: 0.02em; }
+    .event-main { min-width: 0; }
+    .event-meta { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 210px; }
+    .event-title { font-weight: 700; }
+    .event-text { color: #252f38; overflow: hidden; text-overflow: ellipsis; white-space: normal; }
+    .event-text:empty { display: none; }
+    .problem-badge { background: #b42318; border-radius: 999px; color: #fff; display: inline-flex; font-size: 11px; font-weight: 800; margin-left: 6px; padding: 2px 7px; text-transform: uppercase; }
+    .problem-reason { color: #9f1d16; font-size: 12px; font-weight: 650; margin-top: 5px; overflow-wrap: anywhere; }
+    .bundle-steps { color: #66737f; font-size: 12px; margin-top: 4px; }
+    .structured-action { display: grid; gap: 3px; min-width: 0; }
+    .action-type { color: #151b20; font-weight: 850; margin-bottom: 2px; }
+    .action-row { display: grid; grid-template-columns: minmax(76px, auto) minmax(0, 1fr); gap: 8px; }
+    .action-key { color: #185f8f; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; font-weight: 800; }
+    .action-value { color: #27323a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
+    .event-json-block { border-top: 1px solid #dce2e8; padding-top: 10px; margin-top: 10px; }
+    .event-json-title { color: #4e5b66; font-size: 12px; font-weight: 800; margin-bottom: 6px; }
+    .expand { border: 1px solid #c9d2da; background: #fff; border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 12px; line-height: 1.2; }
+    .expand:hover { background: #f0f4f7; }
+    .event-json { white-space: pre-wrap; overflow-wrap: anywhere; background: #f5f7f9; border-radius: 6px; padding: 10px; margin: 10px 0 0; font-size: 12px; }
+    .event-json pre { margin: 0; white-space: pre-wrap; }
+    .event-json[hidden] { display: none; }
+    .empty { padding: 28px; text-align: center; color: #66737f; }
+    @media (max-width: 860px) {
+      .app-header { align-items: center; padding: 10px 14px; }
+      .menu-button { display: inline-flex; }
+      .brand .game-name { font-size: 17px; }
+      .brand .dashboard-name { font-size: 11px; }
+      .shell { grid-template-columns: 1fr; }
+      .sidebar { border-right: 1px solid #dde2e7; border-bottom: 0; bottom: 0; box-shadow: 0 16px 50px rgba(20, 34, 45, 0.22); left: 0; max-height: none; max-width: 86vw; position: fixed; top: 57px; transform: translateX(-102%); transition: transform 160ms ease; width: 340px; z-index: 10; }
+      body.sidebar-open .sidebar { transform: translateX(0); }
+      .sessions-layout { display: flex; flex-direction: column; gap: 10px; }
+      .session-picker { position: static; }
+      .session-toolbar { margin-bottom: 8px; }
+      .session-list { display: flex; gap: 8px; max-height: none; overflow-x: auto; padding: 0 0 4px; }
+      .session { flex: 0 0 168px; padding: 8px; }
+      .session strong { margin-bottom: 2px; }
+      .session .meta { gap: 5px; margin-top: 6px; }
+      .grid, .participants { grid-template-columns: 1fr; }
+      .control-row { grid-template-columns: 1fr; }
+      .main { padding: 10px 14px 14px; }
+      .workspace-header { align-items: stretch; display: grid; }
+      .workspace-title h2 { font-size: 19px; }
+      .workspace-stats { justify-content: flex-start; }
+      .tabs { margin-bottom: 10px; overflow-x: auto; }
+      .tab { padding: 9px 10px; white-space: nowrap; }
+      .panel { padding: 12px; margin-bottom: 10px; }
+      .session-detail { margin-top: 0; }
+      .summary-grid { display: none; }
+      .summary-head { display: grid; gap: 8px; margin-bottom: 8px; }
+      .summary-line { color: #4e5b66; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+      .summary-line .pill { background: #f8fafc; }
+      .participants { gap: 8px; }
+      .participant { align-items: center; padding: 10px; }
+      .participant .meta { gap: 6px; margin-top: 4px; }
+      .participant .pill { padding: 2px 7px; }
+      .participant-collapse summary { align-items: flex-start; display: grid; gap: 8px; }
+      .participant-collapse summary::after { margin-left: 0; }
+      .events-header { align-items: center; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
+      .events-header h2 { margin: 0; }
+      .events-header .toggle-row span { display: none; }
+      .events-header .small { white-space: nowrap; }
+      .event-line { grid-template-columns: 34px minmax(0, 1fr); align-items: start; gap: 9px; }
+      .role-badge { grid-column: 1; width: 28px; min-width: 28px; padding: 0; }
+      .event-main { grid-column: 2; }
+      .event-title { display: block; line-height: 1.18; }
+      .event-text { grid-column: 2; white-space: normal; overflow-wrap: anywhere; }
+      .event-meta { grid-column: 2; justify-content: space-between; min-width: 0; width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <button id="menuButton" class="menu-button" type="button" aria-expanded="false" aria-controls="experimentSidebar" title="Experiment">☰</button>
+    <div class="brand">
+      <div id="gameName" class="game-name">Game</div>
+      <div class="dashboard-name">Experimenter Dashboard</div>
+    </div>
+    <a class="header-link" href="/admin/privacy">Privacy status</a>
+  </header>
+  <div class="shell">
+    <aside id="experimentSidebar" class="sidebar">
+      <div class="topline">
+        <h1>Experiment</h1>
+      </div>
+      <section class="control-grid" aria-label="Experiment">
+        <div id="experimentList" class="experiment-list"><div class="empty">Loading experiment...</div></div>
+      </section>
+    </aside>
+    <main class="main">
+      <section class="workspace-header">
+        <div id="experimentHeader" class="workspace-title">
+          <span class="muted small">Experiment</span>
+          <h2>Loading…</h2>
+        </div>
+        <div id="experimentStats" class="workspace-stats"></div>
+      </section>
+      <nav class="tabs" aria-label="Experiment workspace">
+        <button class="tab active" type="button" data-tab="sessions">Sessions</button>
+        <button class="tab" type="button" data-tab="export">Export</button>
+        <button class="tab" type="button" data-tab="details">Experiment Details</button>
+      </nav>
+      <section id="sessionsPanel" class="tab-panel">
+        <div class="sessions-layout">
+          <aside class="panel session-picker">
+            <div class="session-toolbar">
+              <h2>Sessions</h2>
+              <select id="sessionStatusFilter" title="Filter sessions by status">
+                <option value="">All</option>
+                <option value="waiting">Waiting</option>
+                <option value="playing">Active</option>
+                <option value="completed">Completed</option>
+              </select>
+            </div>
+            <div id="sessionList" class="session-list"><div class="empty">Loading sessions...</div></div>
+          </aside>
+          <div id="sessionDetail" class="session-detail" hidden>
+            <section class="panel" id="summary"><div class="empty">Select a session to inspect metadata and events.</div></section>
+            <section>
+              <div class="topline events-header">
+                <h2>Important Events</h2>
+                <label class="toggle-row" title="Show participant, session, and voice setup events">
+                  <input id="showHousekeeping" type="checkbox">
+                  <span>Show setup</span>
+                </label>
+                <span id="liveStatus" class="muted small">Idle</span>
+              </div>
+              <div id="timeline" class="timeline"></div>
+            </section>
+          </div>
+        </div>
+      </section>
+      <section id="exportPanel" class="tab-panel" hidden>
+        <section class="panel">
+          <div class="topline">
+            <h2>Export</h2>
+            <span id="experimentLabel" class="muted small">Configured experiment</span>
+          </div>
+          <div class="control-grid">
+            <div class="control-row">
+              <select id="exportVariant" title="Export variant">
+                <option value="research">Research (pseudonymized)</option>
+                <option value="corpus">Corpus candidate</option>
+                <option value="full">Full internal</option>
+              </select>
+              <select id="exportScope" title="Export scope">
+                <option value="experiment">Experiment</option>
+                <option value="session">Selected session</option>
+              </select>
+              <select id="exportFormat" title="Export format">
+                <option value="json">JSON</option>
+                <option value="yaml">YAML</option>
+                <option value="csv">CSV</option>
+              </select>
+            </div>
+            <div class="control-row">
+              <input id="eventTypeFilter" placeholder="Optional event type filter">
+              <button class="primary" id="downloadExport">Download export</button>
+            </div>
+          </div>
+        </section>
+      </section>
+      <section id="detailsPanel" class="tab-panel" hidden>
+        <section class="panel" id="reproducibility"><div class="empty">Loading experiment details...</div></section>
+      </section>
+    </main>
+  </div>
+  <script>
+    const state = { experiment: null, sessions: [], selected: null, selectedSession: null, events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, csrfToken: null, activeTab: 'sessions' };
+    const experimentList = document.getElementById('experimentList');
+    const menuButton = document.getElementById('menuButton');
+    const experimentHeader = document.getElementById('experimentHeader');
+    const experimentStats = document.getElementById('experimentStats');
+    const sessionList = document.getElementById('sessionList');
+    const sessionDetail = document.getElementById('sessionDetail');
+    const summary = document.getElementById('summary');
+    const timeline = document.getElementById('timeline');
+    const liveStatus = document.getElementById('liveStatus');
+    const reproducibility = document.getElementById('reproducibility');
+    const gameName = document.getElementById('gameName');
+    const experimentLabel = document.getElementById('experimentLabel');
+    const sessionStatusFilter = document.getElementById('sessionStatusFilter');
+    const showHousekeeping = document.getElementById('showHousekeeping');
+    const tabButtons = Array.from(document.querySelectorAll('.tab'));
+    const tabPanels = {
+      sessions: document.getElementById('sessionsPanel'),
+      export: document.getElementById('exportPanel'),
+      details: document.getElementById('detailsPanel')
+    };
+
+    function fmtTime(value) {
+      if (!value) return '-';
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+
+    function renderExperiment() {
+      const experiment = state.experiment;
+      if (!experiment) {
+        experimentList.innerHTML = '<div class="empty">Experiment unavailable.</div>';
+        return;
+      }
+      experimentList.innerHTML = `
+        <div class="experiment active">
+          <strong>${escapeHtml(experiment.study_name || experiment.experiment_id)}</strong>
+          ${experiment.study_name ? `<span class="muted small">${escapeHtml(experiment.experiment_id)}</span>` : ''}
+          <span class="meta">
+            <span class="pill">${escapeHtml(experiment.status)}</span>
+            <span class="pill">${experiment.session_count} sessions</span>
+            <span class="pill">${experiment.completed_session_count} completed</span>
+          </span>
+        </div>
+      `;
+    }
+
+    function renderExperimentHeader() {
+      const experiment = state.experiment;
+      if (!experiment) {
+        experimentHeader.innerHTML = '<span class="muted small">Experiment</span><h2>Unavailable</h2>';
+        experimentStats.innerHTML = '';
+        return;
+      }
+      experimentHeader.innerHTML = `
+        <span class="muted small">Experiment</span>
+        <h2>${escapeHtml(experiment.study_name || experiment.experiment_id)}</h2>
+        ${experiment.study_name ? `<span class="muted small">${escapeHtml(experiment.experiment_id)}</span>` : ''}
+      `;
+      experimentStats.innerHTML = `
+        <span class="pill">${experiment.status === 'active' ? 'Accepting participants' : 'Intake inactive'}</span>
+        <span class="pill">${experiment.session_count} sessions</span>
+        <span class="pill">${experiment.completed_session_count} completed</span>
+        <button class="${experiment.status === 'active' ? 'secondary' : 'primary'}" id="lifecycleButton" type="button">
+          ${experiment.status === 'active' ? 'Deactivate intake' : 'Activate experiment'}
+        </button>
+      `;
+      document.getElementById('lifecycleButton').addEventListener('click', () => {
+        updateExperimentStatus(experiment.status === 'active' ? 'inactive' : 'active');
+      });
+    }
+
+    function renderExperimentDetails() {
+      const experiment = state.experiment;
+      const manifest = experiment?.version_manifest || state.versionManifest || {};
+      const warnings = manifest.warnings || [];
+      gameName.textContent = displayGameName(manifest.game);
+      experimentLabel.textContent = experiment ? `Experiment ${experiment.experiment_id}` : 'Experiment unavailable';
+      reproducibility.innerHTML = `
+        <h2>Experiment Details</h2>
+        <div class="grid">
+          <div><div class="label">Server</div><div class="value">${escapeHtml(manifest.server?.version || experiment?.server_version || '-')}</div></div>
+          <div><div class="label">Server Git</div><div class="value">${escapeHtml(shortSha(manifest.server?.git_sha))}</div></div>
+          <div><div class="label">Game</div><div class="value">${escapeHtml(manifest.game?.version || '-')}</div></div>
+          <div><div class="label">Game Git</div><div class="value">${escapeHtml(shortSha(manifest.game?.git_sha))}</div></div>
+          <div><div class="label">Client</div><div class="value">${escapeHtml(manifest.game?.client?.version || '-')}</div></div>
+          <div><div class="label">Client SDK</div><div class="value">${escapeHtml(manifest.game?.client?.package_version || '-')}</div></div>
+        </div>
+        ${warnings.length ? warnings.map(warning => `<div class="warning">${escapeHtml(warning.message || warning.dependency || JSON.stringify(warning))}</div>`).join('') : '<p class="muted small">No local development dependency warnings recorded.</p>'}
+      `;
+    }
+
+    function shortSha(value) {
+      if (!value) return '-';
+      return String(value).slice(0, 12);
+    }
+
+    function displayGameName(game) {
+      const name = game?.display_name || game?.name || 'Game';
+      return String(name).replace(/^parlando-/, '').replace(/-/g, ' ');
+    }
+
+    function renderSessions() {
+      if (!state.sessions.length) {
+        sessionList.innerHTML = '<div class="empty">No sessions in this experiment yet.</div>';
+        return;
+      }
+      sessionList.innerHTML = state.sessions.map(session => `
+        <button class="session ${state.selected === session.session_id ? 'active' : ''}" data-session="${session.session_id}">
+          <strong>${escapeHtml(session.dialogue_id || `Session #${session.session_id}`)}</strong>
+          <span class="muted small">Session #${session.session_id} · ${escapeHtml(fmtTime(session.created_at))}</span>
+          <span class="meta">
+            <span class="pill">${escapeHtml(session.status)}</span>
+            <span class="pill">${session.participant_count} players</span>
+            <span class="pill">${session.event_count} events</span>
+          </span>
+        </button>
+      `).join('');
+      sessionList.querySelectorAll('.session').forEach(button => {
+        button.addEventListener('click', () => selectSession(Number(button.dataset.session)));
+      });
+    }
+
+    async function loadSessions() {
+      const params = new URLSearchParams({ limit: '80' });
+      if (sessionStatusFilter.value) params.set('status', sessionStatusFilter.value);
+      const response = await fetch(`/api/admin/sessions?${params}`);
+      const data = await response.json();
+      state.sessions = data.sessions || [];
+      if (state.selected && !state.sessions.some(session => session.session_id === state.selected)) {
+        state.selected = null;
+        state.selectedSession = null;
+        sessionDetail.hidden = true;
+      }
+      renderSessions();
+      if (!state.selected && state.sessions[0]) selectSession(state.sessions[0].session_id);
+    }
+
+    async function loadExperiment() {
+      const response = await fetch('/api/admin/experiment');
+      if (!response.ok) throw new Error(await response.text());
+      const data = await response.json();
+      state.experiment = data.experiment || null;
+      state.versionManifest = data.version_manifest || null;
+      state.csrfToken = data.csrf_token || null;
+      renderExperiment();
+      renderExperimentHeader();
+      renderExperimentDetails();
+    }
+
+    // Changes whether the process-owned experiment accepts new participant intake.
+    async function updateExperimentStatus(status) {
+      const button = document.getElementById('lifecycleButton');
+      if (button) button.disabled = true;
+      const response = await fetch('/api/admin/experiment/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
+        body: JSON.stringify({ status })
+      });
+      if (!response.ok) {
+        if (button) button.disabled = false;
+        window.alert(await response.text());
+        return;
+      }
+      await loadExperiment();
+    }
+
+    async function selectSession(sessionId) {
+      state.selected = sessionId;
+      state.lastEventIndex = 0;
+      renderSessions();
+      liveStatus.textContent = 'Loading';
+      const response = await fetch(`/api/admin/sessions/${sessionId}`);
+      const data = await response.json();
+      state.selectedSession = data.session;
+      renderSummary(data.session, data.participants || []);
+      sessionDetail.hidden = false;
+      state.events = [];
+      state.eventBundles = data.event_bundles || [];
+      mergeEvents(data.events || []);
+      renderEventBundles();
+      liveStatus.textContent = 'Live';
+    }
+
+    function renderTabs() {
+      tabButtons.forEach(button => button.classList.toggle('active', button.dataset.tab === state.activeTab));
+      Object.entries(tabPanels).forEach(([name, panel]) => {
+        panel.hidden = name !== state.activeTab;
+      });
+    }
+
+    function closeExperimentMenu() {
+      document.body.classList.remove('sidebar-open');
+      menuButton.setAttribute('aria-expanded', 'false');
+    }
+
+    function toggleExperimentMenu() {
+      const open = !document.body.classList.contains('sidebar-open');
+      document.body.classList.toggle('sidebar-open', open);
+      menuButton.setAttribute('aria-expanded', String(open));
+    }
+
+    function renderSummary(session, participantRows) {
+      summary.innerHTML = `
+        <div class="summary-head">
+          <h2>${escapeHtml(session.dialogue_id || `Session #${session.session_id}`)}</h2>
+          ${participantSummaryInline(participantRows)}
+        </div>
+        <div class="summary-line">
+          <span class="pill">Session #${escapeHtml(session.session_id)}</span>
+          <span class="pill">${escapeHtml(session.mode)}</span>
+          <span class="pill">${escapeHtml(session.status)}</span>
+          <span class="pill">${escapeHtml(fmtTime(session.created_at))}</span>
+        </div>
+        <div class="grid summary-grid">
+          <div><div class="label">Dialogue ID</div><div class="value">${escapeHtml(session.dialogue_id)}</div></div>
+          <div><div class="label">Mode</div><div class="value">${escapeHtml(session.mode)}</div></div>
+          <div><div class="label">Status</div><div class="value">${escapeHtml(session.status)}</div></div>
+          <div><div class="label">Created</div><div class="value">${escapeHtml(fmtTime(session.created_at))}</div></div>
+        </div>
+        ${participantDetailsInline(participantRows)}
+      `;
+    }
+
+    function participantLabel(row) {
+      return row.research_id || row.participant_kind || 'Participant';
+    }
+
+    function participantSummary(rows) {
+      return rows.map(row => `<span class="pill">${escapeHtml(row.role || 'SYS')} ${escapeHtml(participantLabel(row))}</span>`).join('');
+    }
+
+    function participantSummaryInline(rows) {
+      if (!rows.length) return '<span class="muted small">No players recorded.</span>';
+      return `<span class="participant-summary-list">${participantSummary(rows)}</span>`;
+    }
+
+    function participantCards(rows) {
+      return rows.map(row => `
+        <div class="participant">
+          ${roleBadge(row.role)}
+          <div class="participant-body">
+            <div class="label">Participant ID</div>
+            <div class="value">${escapeHtml(participantLabel(row))}</div>
+            <div class="meta">
+              <span class="pill">${escapeHtml(row.connection_status)}</span>
+              <span class="pill">${escapeHtml(row.participant_kind || 'participant')}</span>
+              ${agentParticipantPills(row)}
+            </div>
+            ${row.participant_kind !== 'agent' && row.research_id ? `<button class="danger delete-participant" data-research-id="${escapeHtml(row.research_id)}" type="button">Delete participant data</button>` : ''}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function participantDetailsInline(rows) {
+      if (!rows.length) {
+        return '';
+      }
+      const cards = participantCards(rows);
+      return `
+        <details class="participant-collapse session-participants">
+          <summary>
+            <span class="muted small">Player details</span>
+          </summary>
+          <div class="participants participant-details">${cards}</div>
+        </details>
+      `;
+    }
+
+    function agentParticipantPills(row) {
+      if (row.participant_kind !== 'agent') return '';
+      const metadata = row.metadata || {};
+      const type = metadata.agent_type || metadata.agent_name;
+      const version = metadata.agent_version;
+      return `
+        <span class="pill ${type ? '' : 'warning-pill'}">Agent: ${escapeHtml(type || 'type missing')}</span>
+        <span class="pill ${version ? '' : 'warning-pill'}">Version: ${escapeHtml(version || 'missing')}</span>
+      `;
+    }
+
+    // Previews and confirms deletion of one human participant's stored data.
+    async function deleteParticipantData(researchId) {
+      if (!state.experiment) return;
+      const path = `/api/admin/participants/${encodeURIComponent(researchId)}/deletion`;
+      const previewResponse = await fetch(path);
+      if (!previewResponse.ok) throw new Error(await previewResponse.text());
+      const preview = (await previewResponse.json()).preview;
+      const confirmed = window.confirm(
+        `Delete ${researchId}? This removes ${preview.content_event_count} message/transcript events and ${preview.consent_count} consent declarations, and anonymizes ${preview.other_event_count} other event references. This cannot be undone.`
+      );
+      if (!confirmed) return;
+      const response = await fetch(path, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': state.csrfToken || '' }
+      });
+      if (!response.ok) throw new Error(await response.text());
+      await selectSession(state.selected);
+    }
+
+    function eventClass(bundle) {
+      if (bundle.problem) return 'problem';
+      if (bundle.kind === 'action') return 'action';
+      if (bundle.kind === 'voice' || bundle.kind === 'transcript') return 'transcript';
+      return '';
+    }
+
+    // Returns the event's participant role when the durable row exposes one.
+    function eventRole(event) {
+      return event.actor_role || event.detail?.player || event.detail?.sender_role || event.detail?.role || '';
+    }
+
+    // Renders compact participant role markers for rows and event timeline entries.
+    function roleBadge(role) {
+      const normalized = role === 'A' || role === 'B' ? role : '';
+      if (!normalized) return '<span class="role-badge role-system">SYS</span>';
+      return `<span class="role-badge role-${normalized.toLowerCase()}">${escapeHtml(normalized)}</span>`;
+    }
+
+    // Returns only extra event text that is not already implied by the title and badge.
+    function mergeEvents(events) {
+      const known = new Set(state.events.map(event => `${event.event_id}:${event.event_index}`));
+      for (const event of events) {
+        const key = `${event.event_id}:${event.event_index}`;
+        if (known.has(key)) continue;
+        known.add(key);
+        state.events.push(event);
+        state.lastEventIndex = Math.max(state.lastEventIndex, event.event_index);
+      }
+      state.events.sort((left, right) => left.event_index - right.event_index);
+    }
+
+    function renderEventBundles() {
+      const bundles = (state.eventBundles || []).filter(bundle => showHousekeeping.checked || !bundle.housekeeping);
+      timeline.innerHTML = '';
+      for (const bundle of bundles) {
+        const jsonId = `event-bundle-${bundle.first_index}-${bundle.last_index}`;
+        const rawHtml = bundle.events.map(event => `
+          <div class="event-json-block">
+            <div class="event-json-title">#${event.event_index} ${escapeHtml(event.title || event.event_type)} · ${escapeHtml(fmtTime(event.created_at))}</div>
+            ${actionFromEvent(event) ? `<div class="structured-action">${prettyAction(actionFromEvent(event), eventRole(event))}</div>` : ''}
+            <pre>${escapeHtml(JSON.stringify(event.raw || event, null, 2))}</pre>
+          </div>
+        `).join('');
+        timeline.insertAdjacentHTML('beforeend', `
+          <article class="event ${eventClass(bundle)}">
+            <div class="event-line">
+              ${roleBadge(bundle.role)}
+              <div class="event-main">
+                <span class="event-title">${escapeHtml(bundle.title)}${bundle.problem ? '<span class="problem-badge">Problem</span>' : ''}</span>
+                <span class="muted small">#${bundle.first_index}${bundle.first_index === bundle.last_index ? '' : `-${bundle.last_index}`}</span>
+                ${bundle.steps ? `<div class="bundle-steps">${escapeHtml(bundle.steps)}</div>` : ''}
+                ${bundle.problem_reason ? `<div class="problem-reason">${escapeHtml(bundle.problem_reason)}</div>` : ''}
+              </div>
+              <div class="event-text">${bundle.action ? `<div class="structured-action">${prettyAction(bundle.action, bundle.role)}</div>` : escapeHtml(bundle.text || '')}</div>
+              <div class="event-meta">
+                <span class="muted small">${escapeHtml(fmtTime(bundle.created_at))}</span>
+                <button class="expand" type="button" aria-expanded="false" aria-controls="${jsonId}" data-target="${jsonId}">JSON</button>
+              </div>
+            </div> 
+            <div class="event-json" id="${jsonId}" hidden>${rawHtml}</div>
+          </article>
+        `);
+      }
+      if (!timeline.children.length) timeline.innerHTML = '<div class="empty">No action or message events recorded yet.</div>';
+    }
+
+    function actionFromEvent(event) {
+      return event.detail?.action || event.raw?.payload?.action || event.payload?.action || null;
+    }
+
+    function prettyAction(action, role) {
+      if (!action || typeof action !== 'object') return escapeHtml(String(action ?? ''));
+      const type = action.type;
+      const rows = Object.entries(action).filter(([key, value]) => {
+        if (key === 'type') return false;
+        if (key === 'player' && role && value === role) return false;
+        return true;
+      }).map(([key, value]) => `
+        <div class="action-row">
+          <span class="action-key">${escapeHtml(key)}</span>
+          <span class="action-value">${escapeHtml(formatActionValue(value))}</span>
+        </div>
+      `).join('');
+      return `${type ? `<strong class="action-type">${escapeHtml(type)}</strong>` : ''}${rows}`;
+    }
+
+    function formatActionValue(value) {
+      if (value === null) return 'null';
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+      return JSON.stringify(value);
+    }
+
+    async function refreshEvents() {
+      if (!state.selected) return;
+      const params = new URLSearchParams({ after: String(state.lastEventIndex) });
+      const response = await fetch(`/api/admin/sessions/${state.selected}/events?${params}`);
+      const data = await response.json();
+      state.eventBundles = data.event_bundles || state.eventBundles;
+      mergeEvents(data.events || []);
+      renderEventBundles();
+      liveStatus.textContent = `Last checked ${new Date().toLocaleTimeString()}`;
+    }
+
+    showHousekeeping.addEventListener('change', renderEventBundles);
+    menuButton.addEventListener('click', toggleExperimentMenu);
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') closeExperimentMenu();
+    });
+    document.addEventListener('click', event => {
+      if (!document.body.classList.contains('sidebar-open')) return;
+      if (event.target.closest('#experimentSidebar') || event.target.closest('#menuButton')) return;
+      closeExperimentMenu();
+    });
+    tabButtons.forEach(button => {
+      button.addEventListener('click', () => {
+        state.activeTab = button.dataset.tab;
+        renderTabs();
+      });
+    });
+    sessionStatusFilter.addEventListener('change', () => {
+      state.selected = null;
+      state.selectedSession = null;
+      sessionDetail.hidden = true;
+      loadSessions();
+    });
+    document.getElementById('downloadExport').addEventListener('click', () => {
+      if (!state.experiment) return;
+      const params = new URLSearchParams({
+        format: document.getElementById('exportFormat').value,
+        variant: document.getElementById('exportVariant').value
+      });
+      if (document.getElementById('exportScope').value === 'session' && state.selected) {
+        params.set('session_id', String(state.selected));
+      }
+      const eventType = document.getElementById('eventTypeFilter').value.trim();
+      if (eventType) params.set('event_type', eventType);
+      window.location.href = `/api/admin/export?${params}`;
+    });
+    summary.addEventListener('click', event => {
+      const button = event.target.closest('.delete-participant');
+      if (!button) return;
+      button.disabled = true;
+      deleteParticipantData(button.dataset.researchId).catch(error => {
+        window.alert(error.message);
+        button.disabled = false;
+      });
+    });
+    timeline.addEventListener('click', event => {
+      const button = event.target.closest('.expand');
+      if (!button) return;
+      const panel = document.getElementById(button.dataset.target);
+      if (!panel) return;
+      const expanded = button.getAttribute('aria-expanded') === 'true';
+      button.setAttribute('aria-expanded', String(!expanded));
+      button.textContent = expanded ? 'JSON' : 'Hide';
+      panel.hidden = expanded;
+    });
+    loadExperiment().then(loadSessions).catch(error => {
+      sessionList.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+    });
+    renderTabs();
+    setInterval(() => {
+      loadExperiment().then(loadSessions).catch(error => {
+        liveStatus.textContent = error.message;
+      });
+    }, 5000);
+    state.timer = setInterval(refreshEvents, 1500);
+  </script>
+</body>
+</html>

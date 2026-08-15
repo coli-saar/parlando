@@ -1,12 +1,14 @@
 export interface ParticipantCreateResponse {
   participant_session_id: string;
   participant_credential: string;
-  source: "direct" | "prolific" | "admin" | "test" | "agent";
+  source: "direct";
   participant_id: string;
 }
 
 export interface PublicConfigResponse {
   study_name: string;
+  /** Lifecycle state of the one experiment served by this process. */
+  experiment_status: "inactive" | "active";
   /** Institution operating the study, when the server exposes one. */
   institution?: string | null;
   participant_information_version?: string | null;
@@ -22,16 +24,10 @@ export interface PublicConfigResponse {
   transcription?: {
     enabled?: boolean;
     language?: string;
-    store_audio?: boolean;
   };
   tts?: {
     enabled?: boolean;
     voice_name?: string | null;
-    worker_autostart?: boolean;
-  };
-  conversation?: {
-    enabled?: boolean;
-    max_history_messages?: number;
   };
   agents?: {
     mode?: "human_vs_human" | "human_vs_agent" | string;
@@ -49,7 +45,8 @@ export interface PublicConfigResponse {
 export interface ConsentItem {
   id: string;
   title: string;
-  body_html: string;
+  /** Plain-text consent copy. */
+  body: string;
   required: boolean;
 }
 
@@ -64,8 +61,6 @@ export interface RoomResponse<TState = unknown, TObservation = TState, TAction =
   events?: TEvent[];
   conversation?: ConversationMessage[];
 }
-
-export type RoomMode = "direct" | string;
 
 export type AudioSinkPurpose = "partner-audio" | "transcription";
 
@@ -147,12 +142,12 @@ export function apiBase(): string {
 
 export function socketUrl(websocketUrl: string, token: string): string {
   const base = new URL(websocketUrl);
-  base.search = new URLSearchParams({ token }).toString();
+  base.searchParams.set("token", token);
   return base.toString();
 }
 
 export class ExperimentApiClient {
-  private readonly participantCredentials = new Map<string, string>();
+  private participantCredential: string | null = null;
 
   constructor(private readonly baseUrl = apiBase()) {}
 
@@ -163,53 +158,37 @@ export class ExperimentApiClient {
   async createParticipant(): Promise<ParticipantCreateResponse> {
     const participant = await this.post<ParticipantCreateResponse>(
       "/api/participants",
-      { source: "direct" }
+      {}
     );
-    this.participantCredentials.set(participant.participant_session_id, participant.participant_credential);
+    this.participantCredential = participant.participant_credential;
     return participant;
   }
 
-  submitConsent(participantSessionId: string, decisions: Record<string, boolean>): Promise<void> {
-    return this.post("/api/consent", { participant_session_id: participantSessionId, decisions }, participantSessionId);
+  submitConsent(decisions: Record<string, boolean>): Promise<void> {
+    return this.postAuthenticated("/api/consent", { decisions });
   }
 
-  createRoom<TState = unknown, TObservation = TState, TAction = unknown, TEvent = unknown>(
-    participantSessionId: string,
-    mode: RoomMode = "direct"
-  ): Promise<RoomResponse<TState, TObservation, TAction, TEvent>> {
-    return this.post("/api/rooms", { participant_session_id: participantSessionId, mode }, participantSessionId);
+  createRoom<TState = unknown, TObservation = TState, TAction = unknown, TEvent = unknown>(): Promise<RoomResponse<TState, TObservation, TAction, TEvent>> {
+    return this.postAuthenticated("/api/rooms", {});
   }
 
-  joinRoom<TState = unknown, TObservation = TState, TAction = unknown, TEvent = unknown>(
-    roomId: string,
-    participantSessionId: string
-  ): Promise<RoomResponse<TState, TObservation, TAction, TEvent>> {
-    return this.post(`/api/rooms/${roomId}/join`, { participant_session_id: participantSessionId }, participantSessionId);
+  getAudioSession(roomId: string): Promise<AudioSessionPlan> {
+    return this.postAuthenticated(`/api/rooms/${roomId}/audio-session`, {});
   }
 
-  getAudioSession(roomId: string, participantSessionId: string): Promise<AudioSessionPlan> {
-    return this.post(
-      `/api/rooms/${roomId}/audio-session`,
-      { participant_session_id: participantSessionId },
-      participantSessionId
-    );
-  }
-
-  getGameSession(roomId: string, participantSessionId: string): Promise<GameSessionPlan> {
-    return this.post(`/api/rooms/${roomId}/game-session`, {}, participantSessionId);
+  getGameSession(roomId: string): Promise<GameSessionPlan> {
+    return this.postAuthenticated(`/api/rooms/${roomId}/game-session`, {});
   }
 
   postVoiceDiagnostic(
     roomId: string,
-    participantSessionId: string,
     event: string,
     metadata: Record<string, unknown> = {}
   ): void {
     void fetch(`${this.baseUrl}/api/rooms/${roomId}/voice-diagnostics`, {
       method: "POST",
-      headers: this.authHeaders(participantSessionId),
+      headers: this.authHeaders(),
       body: JSON.stringify({
-        participant_session_id: participantSessionId,
         event,
         metadata
       }),
@@ -233,20 +212,28 @@ export class ExperimentApiClient {
     return checkedJson(fetch(`${this.baseUrl}${path}`));
   }
 
-  private post<T>(path: string, body: unknown, participantSessionId?: string): Promise<T> {
+  private post<T>(path: string, body: unknown): Promise<T> {
     return checkedJson(
       fetch(`${this.baseUrl}${path}`, {
         method: "POST",
-        headers: participantSessionId
-          ? this.authHeaders(participantSessionId)
-          : { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
       })
     );
   }
 
-  private authHeaders(participantSessionId: string): Record<string, string> {
-    const credential = this.participantCredentials.get(participantSessionId);
+  private postAuthenticated<T>(path: string, body: unknown): Promise<T> {
+    return checkedJson(
+      fetch(`${this.baseUrl}${path}`, {
+        method: "POST",
+        headers: this.authHeaders(),
+        body: JSON.stringify(body)
+      })
+    );
+  }
+
+  private authHeaders(): Record<string, string> {
+    const credential = this.participantCredential;
     if (!credential) throw new Error("No participant credential is available for this session.");
     return {
       "Content-Type": "application/json",

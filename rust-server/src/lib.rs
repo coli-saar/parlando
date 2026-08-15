@@ -1,15 +1,15 @@
 pub mod agents;
-pub mod app;
+mod app;
 pub mod audio;
 pub mod audio_publisher;
 mod auth;
 pub mod config;
 pub mod game;
-pub mod identity;
-pub mod protocol;
-pub mod readable_id;
+mod identity;
+mod protocol;
+mod readable_id;
 pub mod remote_agent;
-pub mod storage;
+mod storage;
 pub mod transcription;
 pub mod tts;
 
@@ -17,8 +17,8 @@ pub use agents::{
     AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResponse, AgentUtteranceKind,
     GameAgent,
 };
-pub use app::{build_router, serve, AppState, ServeOptions};
-pub use audio_publisher::{AgentAudioPublisher, AudioPublishSummary, RoomAgentAudioPublisher};
-pub use config::{AgentOptionConfig as AdminAgentOption, ExperimentConfig};
+pub use app::{build_router, serve, ServeOptions};
+pub use audio_publisher::{AgentAudioPublisher, AudioPublishSummary};
+pub use config::ExperimentConfig;
 pub use game::{GameAdapter, PlayerRole, Seat};
 pub use remote_agent::{RemoteGrpcAgentConfig, RemoteGrpcAgentFactory};

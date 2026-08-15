@@ -3,7 +3,8 @@ import { AudioSessionController } from "./audio/audioSessionController.js";
 import { ParlandoAudioSink } from "./audio/parlandoAudioSink.js";
 import { MicrophoneSource } from "./audio/microphoneSource.js";
 import { initialVoicePreflight, initialVoiceStatus, type VoicePreflight, type VoiceStatus } from "./audio/types.js";
-import { requiredConsentsAccepted, transcriptionProgressForStatus, type PresenceState } from "./helpers.js";
+import { requiredConsentsAccepted, type PresenceState } from "./helpers.js";
+import { MicLevelMeter, TranscriptionProgress } from "./voiceComponents.js";
 import {
   ExperimentApiClient,
   type ConversationMessage,
@@ -136,7 +137,9 @@ export function ParlandoStartupGate<
   const automaticVoiceAttemptRef = useRef("");
   const consentReady = requiredConsentsAccepted(publicConfig, consentDecisions);
   const voiceEnabled = isVoiceEnabled(publicConfig);
-  const canEnter = Boolean(publicConfig && consentReady && (!voiceEnabled || voicePreflight.ready));
+  const canEnter = Boolean(
+    publicConfig?.experiment_status === "active" && consentReady && (!voiceEnabled || voicePreflight.ready)
+  );
   const startupTitle = resolveStartupTitle(publicConfig);
 
   const refreshAudioInputs = useCallback(async () => {
@@ -163,7 +166,7 @@ export function ParlandoStartupGate<
 
   const connectRoom = useCallback(
     async (room: RoomResponse<TState, TObservation, TAction, TEvent>) => {
-      const gameSession = await apiClient.getGameSession(room.room_id, room.participant_session_id);
+      const gameSession = await apiClient.getGameSession(room.room_id);
       const socket = new WebSocket(apiClient.socketUrl(gameSession));
       setSession({
         roomId: room.room_id,
@@ -187,7 +190,15 @@ export function ParlandoStartupGate<
         setSession((current) => (current?.socket === socket ? { ...current, connected: true } : current));
       });
       socket.addEventListener("message", (event) => {
-        const message = JSON.parse(event.data) as ServerMessage<TState, TObservation, TAction, TEvent, TSummary>;
+        let message: ServerMessage<TState, TObservation, TAction, TEvent, TSummary>;
+        try {
+          if (typeof event.data !== "string") throw new Error("non-text message");
+          message = JSON.parse(event.data) as ServerMessage<TState, TObservation, TAction, TEvent, TSummary>;
+        } catch {
+          setError("The server sent an invalid game message.");
+          socket.close(1002, "Invalid server message");
+          return;
+        }
         if (message.type === "roleAssigned") {
           setSession((current) =>
             current?.socket === socket
@@ -263,18 +274,17 @@ export function ParlandoStartupGate<
     if (!requiredConsentsAccepted(publicConfig, consentDecisions)) {
       throw new Error("Please accept all required consents before entering the waiting room.");
     }
-    const participant = await apiClient.createParticipant();
+    await apiClient.createParticipant();
     if (publicConfig.consents.length > 0) {
-      await apiClient.submitConsent(participant.participant_session_id, consentDecisions);
+      await apiClient.submitConsent(consentDecisions);
     }
-    return participant.participant_session_id;
   }, [apiClient, consentDecisions, publicConfig]);
 
   const createDirectRoom = useCallback(async () => {
     try {
       setError("");
-      const participantSessionId = await ensureParticipant();
-      await connectRoom(await apiClient.createRoom<TState, TObservation, TAction, TEvent>(participantSessionId, "direct"));
+      await ensureParticipant();
+      await connectRoom(await apiClient.createRoom<TState, TObservation, TAction, TEvent>());
     } catch (caught) {
       setError(errorMessage(caught, "Could not create the waiting room."));
     }
@@ -301,7 +311,7 @@ export function ParlandoStartupGate<
     if (!session) return;
     const selectedAudioInput = audioInputs.find((device) => device.deviceId === selectedAudioInputId);
     const logVoice = (event: string, metadata: Record<string, unknown> = {}) => {
-      apiClient.postVoiceDiagnostic(session.roomId, session.participantSessionId, event, metadata);
+      apiClient.postVoiceDiagnostic(session.roomId, event, metadata);
     };
     await audioController.toggle(
       {
@@ -310,7 +320,7 @@ export function ParlandoStartupGate<
         role: session.role,
         selectedAudioInputId,
         selectedAudioInputLabel: selectedAudioInput?.label || null,
-        getAudioSession: () => apiClient.getAudioSession(session.roomId, session.participantSessionId),
+        getAudioSession: () => apiClient.getAudioSession(session.roomId),
         logVoice,
         onVoiceStatus: (status) => audioController.updateVoiceStatus(status)
       }
@@ -344,6 +354,18 @@ export function ParlandoStartupGate<
       cancelled = true;
     };
   }, [apiClient]);
+
+  // Rechecks closed intake so a waiting visitor can proceed after an administrator activates it.
+  useEffect(() => {
+    if (publicConfig?.experiment_status !== "inactive" || session) return;
+    const timer = window.setInterval(() => {
+      void apiClient
+        .getPublicConfig()
+        .then(setPublicConfig)
+        .catch((caught) => setError(errorMessage(caught, "Could not refresh experiment status.")));
+    }, 5_000);
+    return () => window.clearInterval(timer);
+  }, [apiClient, publicConfig?.experiment_status, session]);
 
   useEffect(() => {
     void refreshAudioInputs();
@@ -431,7 +453,7 @@ export function ParlandoStartupGate<
         error={error}
       >
         <ReadinessBoard voiceEnabled={voiceEnabled} presence={session.presence} voiceStatus={voiceStatus} />
-        {voiceEnabled && <StartupTranscriptionProgress voiceStatus={voiceStatus} />}
+        {voiceEnabled && <TranscriptionProgress voiceStatus={voiceStatus} />}
         <div className="voice-preflight">
           <div>
             <strong>Voice chat</strong>
@@ -442,6 +464,18 @@ export function ParlandoStartupGate<
           <button onClick={leave}>Leave waiting room</button>
         </div>
       </StartupShell>
+    );
+  }
+
+  if (publicConfig.experiment_status === "inactive") {
+    return (
+      <StartupShell
+        title={startupTitle}
+        institution={publicConfig.institution}
+        heading="Experiment inactive"
+        body="The experiment is not accepting new participants. Please return after the experimenter opens intake."
+        error={error}
+      />
     );
   }
 
@@ -473,7 +507,7 @@ export function ParlandoStartupGate<
                   {consent.title}
                   {consent.required && " (required)"}
                 </strong>
-                <span dangerouslySetInnerHTML={{ __html: consent.body_html }} />
+                <span>{consent.body}</span>
               </span>
             </label>
           ))}
@@ -568,28 +602,6 @@ function ReadinessBoard({
   );
 }
 
-function StartupTranscriptionProgress({ voiceStatus }: { voiceStatus: VoiceStatus }) {
-  const progress = transcriptionProgressForStatus(voiceStatus.transcriptionMessage, voiceStatus.transcriptionReady);
-  return (
-    <div className="transcription-progress" aria-label="Transcription service progress">
-      <div>
-        <strong>{voiceStatus.transcriptionReady ? "Transcription ready" : "Waiting for transcription service"}</strong>
-        <span>{voiceStatus.transcriptionMessage}</span>
-      </div>
-      <div className="transcription-progress-track" aria-hidden="true">
-        <span style={{ transform: `scaleX(${progress.value})` }} />
-      </div>
-      <ol>
-        {progress.steps.map((step) => (
-          <li className={step.done ? "done" : ""} key={step.label}>
-            {step.label}
-          </li>
-        ))}
-      </ol>
-    </div>
-  );
-}
-
 export function createDefaultAudioController(): AudioSessionController {
   return new AudioSessionController({
     microphone: new MicrophoneSource(),
@@ -649,17 +661,6 @@ export function VoicePreparationControls({
         </button>
       )}
     </>
-  );
-}
-
-function MicLevelMeter({ active, label, level }: { active: boolean; label: string; level: number }) {
-  return (
-    <div className="mic-meter">
-      <span>{label}</span>
-      <div className="mic-meter-track" aria-hidden="true">
-        <span style={{ transform: `scaleX(${active ? level : 0})` }} />
-      </div>
-    </div>
   );
 }
 

@@ -38,7 +38,11 @@ Useful routes:
 - `GET /admin/privacy`
 - `GET /api/admin/export`
 
-`/admin/games` remains available as a compatibility alias for older deployments.
+Each server process owns exactly one configured experiment. Every process start resets
+that experiment to **inactive**, including restarts against an existing database. After
+signing in, open `/admin/experiments` and select **Activate experiment** before admitting
+participants. **Deactivate intake** stops new participant creation and room entry without
+disconnecting sessions that are already running.
 
 ### First administrator setup
 
@@ -70,13 +74,12 @@ The main sections are:
 - `study`: study name and waiting/reconnect timing.
 - `server`: public base URL, CORS origins, optional `client_dist_path`.
 - `database`: SQLite URL.
-- `direct`: room-code and consent settings.
+- `direct`: participant intake and consent settings.
 - `agents`: human-vs-human or human-vs-agent mode and agent selection.
 - `voice`: Parlando audio-relay format and buffering settings.
 - `speechmatics`: server-side STT credentials and realtime options.
 - `transcription`: provider-neutral transcription settings.
 - `tts`: agent text-to-speech settings.
-- `conversation`: conversation-history settings.
 - `privacy`: Privacy Contract version plus the four persistence switches for full game state, typed messages, final transcripts, and minimized voice diagnostics.
 
 For local development without paid audio services, keep `voice.enabled`, `transcription.enabled`, and `tts.enabled` false. For voice studies, keep Speechmatics and ElevenLabs credentials in a private YAML include rather than in checked-in config or frontend build variables.

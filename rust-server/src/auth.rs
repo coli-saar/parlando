@@ -1,6 +1,9 @@
 //! Authentication primitives for the administrator and participant trust planes.
 
-use std::{collections::HashMap, env};
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+};
 
 use anyhow::{anyhow, Result};
 use argon2::{
@@ -100,13 +103,21 @@ impl ParticipantAuthenticator {
         })
     }
 
-    /// Removes expired or revoked credential records from transient process state.
-    pub async fn cleanup(&self) {
+    /// Removes expired credentials and returns sessions with no remaining active credential.
+    pub async fn cleanup(&self) -> HashSet<String> {
         let now = now_timestamp();
-        self.records
-            .write()
-            .await
-            .retain(|_, record| !record.revoked && record.expires_at > now);
+        let mut records = self.records.write().await;
+        let expired = records
+            .values()
+            .filter(|record| record.revoked || record.expires_at <= now)
+            .map(|record| record.participant_session_id.clone())
+            .collect::<HashSet<_>>();
+        records.retain(|_, record| !record.revoked && record.expires_at > now);
+        let active = records
+            .values()
+            .map(|record| record.participant_session_id.clone())
+            .collect::<HashSet<_>>();
+        expired.difference(&active).cloned().collect()
     }
 }
 
@@ -460,15 +471,15 @@ fn now_timestamp() -> i64 {
 
 #[cfg(test)]
 mod admin_setup_tests {
-    use std::sync::Arc;
-
     use super::*;
-    use crate::storage::MemoryExperimentStore;
+    use crate::storage::experiment_store_from_url;
 
     /// Confirms setup hashes the password, closes setup, and enables authentication.
     #[tokio::test]
     async fn first_admin_setup_hashes_password_and_authenticates() {
-        let store: SharedExperimentStore = Arc::new(MemoryExperimentStore::default());
+        let store = experiment_store_from_url("sqlite:///:memory:")
+            .await
+            .unwrap();
         let auth = AdminAuthenticator::load(store.clone()).await.unwrap();
 
         assert!(!auth.is_configured().await);
@@ -497,7 +508,9 @@ mod admin_setup_tests {
     /// Confirms the browser setup path enforces the minimum password length server-side.
     #[tokio::test]
     async fn admin_setup_rejects_short_passwords() {
-        let store: SharedExperimentStore = Arc::new(MemoryExperimentStore::default());
+        let store = experiment_store_from_url("sqlite:///:memory:")
+            .await
+            .unwrap();
         let auth = AdminAuthenticator::load(store).await.unwrap();
 
         assert!(auth.setup("researcher", "too-short").await.is_err());

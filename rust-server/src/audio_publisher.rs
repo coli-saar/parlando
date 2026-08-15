@@ -35,14 +35,14 @@ pub trait AgentAudioPublisher: Send + Sync {
 }
 
 /// Agent audio publisher backed by the process-local Parlando audio room registry.
-pub struct RoomAgentAudioPublisher {
+pub(crate) struct RoomAgentAudioPublisher {
     rooms: SharedAudioRooms,
     prebuffer_frames: usize,
 }
 
 impl RoomAgentAudioPublisher {
     /// Creates a publisher using the browser's configured initial jitter-buffer target.
-    pub fn new(rooms: SharedAudioRooms, jitter_buffer_ms: u16) -> Self {
+    pub(crate) fn new(rooms: SharedAudioRooms, jitter_buffer_ms: u16) -> Self {
         Self {
             rooms,
             prebuffer_frames: usize::from(jitter_buffer_ms)

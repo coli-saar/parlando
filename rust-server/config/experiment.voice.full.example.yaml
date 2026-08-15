@@ -25,7 +25,6 @@ transcription:
   provider: speechmatics
   model: enhanced
   language: en
-  store_audio: false
 
 tts:
   enabled: true
@@ -35,4 +34,3 @@ tts:
   voice_name: Agent Voice
   api_key: ${ELEVENLABS_API_KEY}
   output_format: pcm_24000
-  worker_autostart: true

@@ -101,7 +101,6 @@ transcription:
   provider: speechmatics
   model: enhanced
   language: en
-  store_audio: false
 
 tts:
   enabled: true

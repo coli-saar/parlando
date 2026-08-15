@@ -13,24 +13,22 @@
 
 direct:
   enabled: true
-  allow_room_codes: true
   participant_information_version: "{{LOCAL_INFORMATION_VERSION}}"
   participant_information_url: "{{PARTICIPANT_INFORMATION_URL}}"
   consents:
     - id: eligibility_and_information_v1_0
       title: Eligibility and study information
       required: true
-      body_html: >-
+      body: >-
         I confirm that I am at least 18 years old. I have read and understood
-        the <a href="{{PARTICIPANT_INFORMATION_URL}}" target="_blank"
-        rel="noopener noreferrer">Participant Information and Privacy Notice,
-        version {{LOCAL_INFORMATION_VERSION}}</a>, and I have had the
+        the Participant Information and Privacy Notice, version
+        {{LOCAL_INFORMATION_VERSION}}, linked above, and I have had the
         opportunity to ask questions.
 
     - id: research_data_consent_v1_0
       title: Voluntary participation and research data
       required: true
-      body_html: >-
+      body: >-
         I voluntarily agree to participate and consent to {{INSTITUTION_NAME}}
         processing the study-specific identifiers, game actions, timing,
         results, and the messages or final transcripts enabled for this study.
@@ -43,7 +41,7 @@ direct:
     - id: participant_privacy_rules_v1_0
       title: Communication and privacy rules
       required: true
-      body_html: >-
+      body: >-
         I will discuss only the fictional task. I will not disclose contact
         details, credentials, or sensitive real-world information, and I will
         not record, identify, copy, or redistribute another participant's
@@ -53,7 +51,7 @@ direct:
     - id: voice_and_transcription_v1_0
       title: Live voice and transcription
       required: true
-      body_html: >-
+      body: >-
         I consent to my live microphone audio being transmitted to the other
         participant and, when transcription is enabled, to
         {{SPEECHMATICS_ENTITY_AND_SERVICE}} in

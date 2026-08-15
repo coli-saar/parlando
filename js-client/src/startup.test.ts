@@ -18,10 +18,10 @@ import { requiredConsentsAccepted } from "./helpers";
 function publicConfig(overrides: Partial<PublicConfigResponse> = {}): PublicConfigResponse {
   return {
     study_name: "Startup Test",
+    experiment_status: "active",
     consents: [],
     voice: { enabled: false },
     transcription: { enabled: false, provider: "speechmatics" },
-    conversation: { enabled: true },
     agents: { mode: "human_vs_human", human_vs_agent: false },
     ...overrides
   };
@@ -52,7 +52,7 @@ describe("Parlando startup helpers", () => {
   it("derives consent readiness from configured items alone", () => {
     expect(requiredConsentsAccepted({ consents: [] }, {})).toBe(true);
     const configured = {
-      consents: [{ id: "study", title: "Study", body_html: "Agree?", required: true }]
+      consents: [{ id: "study", title: "Study", body: "Agree?", required: true }]
     };
     expect(requiredConsentsAccepted(configured, {})).toBe(false);
     expect(requiredConsentsAccepted(configured, { study: true })).toBe(true);

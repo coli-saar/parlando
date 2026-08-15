@@ -16,9 +16,9 @@ use parlando_server::{
     agents::{AgentFactory, AgentInitContext, AgentResponse, GameAgent},
     build_router,
     config::{
-        AgentsConfig, AgentsMode, ConsentItemConfig, ConversationConfig, DatabaseConfig,
-        DirectConfig, ExperimentConfig, ExperimentIdentityConfig, HumanVsAgentConfig,
-        SpeechmaticsConfig, TranscriptionConfig, VoiceConfig,
+        AgentsConfig, AgentsMode, ConsentItemConfig, DatabaseConfig, DirectConfig,
+        ExperimentConfig, ExperimentIdentityConfig, HumanVsAgentConfig, SpeechmaticsConfig,
+        TranscriptionConfig, VoiceConfig,
     },
     game::{GameAdapter, PlayerRole},
     remote_agent::{
@@ -395,7 +395,18 @@ async fn spawn_server(
         url: format!("sqlite:///{}", temp.path().join("mock-client.db").display()),
     };
     let router = build_router(DummyAdapter, config, options).await?;
-    spawn_router(router, temp).await
+    let server = spawn_router(router, temp).await?;
+    let client = reqwest::Client::new();
+    let admin = admin_login(&client, &server.base_url).await?;
+    let response = client
+        .post(format!("{}/api/admin/experiment/status", server.base_url))
+        .header(reqwest::header::COOKIE, admin.cookie)
+        .header("x-csrf-token", admin.csrf_token)
+        .json(&json!({"status": "active"}))
+        .send()
+        .await?;
+    anyhow::ensure!(response.status().is_success(), "test activation failed");
+    Ok(server)
 }
 
 fn configure_test_administrator() -> Result<()> {
@@ -425,6 +436,12 @@ async fn spawn_router(router: Router, temp: TempDir) -> Result<TestServer> {
 }
 
 fn config(mode: AgentsMode) -> ExperimentConfig {
+    let human_vs_agent = (mode == AgentsMode::HumanVsAgent).then(|| HumanVsAgentConfig {
+        factory: Some("mock".to_string()),
+        act_timeout_seconds: 2.0,
+        invalid_action_limit: 2,
+        ..HumanVsAgentConfig::default()
+    });
     ExperimentConfig {
         experiment: ExperimentIdentityConfig {
             id: Some("mock-client-smoke".to_string()),
@@ -436,7 +453,7 @@ fn config(mode: AgentsMode) -> ExperimentConfig {
             consents: vec![ConsentItemConfig {
                 id: "study".to_string(),
                 title: "Study consent".to_string(),
-                body_html: "I agree".to_string(),
+                body: "I agree".to_string(),
                 required: true,
             }],
             ..DirectConfig::default()
@@ -451,19 +468,9 @@ fn config(mode: AgentsMode) -> ExperimentConfig {
             provider: "speechmatics".to_string(),
             ..TranscriptionConfig::default()
         },
-        conversation: ConversationConfig {
-            enabled: true,
-            max_history_messages: 50,
-        },
         agents: AgentsConfig {
             mode,
-            human_vs_agent: Some(HumanVsAgentConfig {
-                factory: Some("mock".to_string()),
-                act_timeout_seconds: 2.0,
-                invalid_action_limit: 2,
-                ..HumanVsAgentConfig::default()
-            }),
-            ..AgentsConfig::default()
+            human_vs_agent,
         },
         ..ExperimentConfig::default()
     }
@@ -481,7 +488,7 @@ async fn create_participant(
 ) -> Result<TestParticipant> {
     let response = client
         .post(format!("{base_url}/api/participants"))
-        .json(&json!({"source": "direct"}))
+        .json(&json!({}))
         .send()
         .await?
         .error_for_status()?
@@ -508,7 +515,6 @@ async fn consent(
         .post(format!("{base_url}/api/consent"))
         .bearer_auth(&participant.credential)
         .json(&json!({
-            "participant_session_id": participant.id,
             "decisions": {"study": true}
         }))
         .send()
@@ -525,24 +531,7 @@ async fn create_room(
     Ok(client
         .post(format!("{base_url}/api/rooms"))
         .bearer_auth(&participant.credential)
-        .json(&json!({"participant_session_id": participant.id, "mode": "direct"}))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?)
-}
-
-async fn join_room(
-    client: &reqwest::Client,
-    base_url: &str,
-    room_id: &str,
-    participant: &TestParticipant,
-) -> Result<Value> {
-    Ok(client
-        .post(format!("{base_url}/api/rooms/{room_id}/join"))
-        .bearer_auth(&participant.credential)
-        .json(&json!({"participant_session_id": participant.id}))
+        .json(&json!({}))
         .send()
         .await?
         .error_for_status()?
@@ -671,7 +660,10 @@ async fn public_security_boundaries_reject_anonymous_and_cross_participant_reque
         }))
         .send()
         .await?;
-    assert_eq!(impersonation.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(
+        impersonation.status(),
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    );
 
     let anonymous_export = client
         .get(format!("{}/api/admin/export", server.base_url))
@@ -684,22 +676,25 @@ async fn public_security_boundaries_reject_anonymous_and_cross_participant_reque
         .json(&json!({"source": "agent"}))
         .send()
         .await?;
-    assert_eq!(privileged_source.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(
+        privileged_source.status(),
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    );
 
     let admin = admin_login(&client, &server.base_url).await?;
     let missing_csrf = client
-        .post(format!("{}/api/admin/experiments", server.base_url))
+        .post(format!("{}/api/admin/experiment/status", server.base_url))
         .header(reqwest::header::COOKIE, &admin.cookie)
-        .json(&json!({"study_name": "forged"}))
+        .json(&json!({"status": "inactive"}))
         .send()
         .await?;
     assert_eq!(missing_csrf.status(), reqwest::StatusCode::FORBIDDEN);
 
     let valid_csrf = client
-        .post(format!("{}/api/admin/experiments", server.base_url))
+        .post(format!("{}/api/admin/experiment/status", server.base_url))
         .header(reqwest::header::COOKIE, &admin.cookie)
         .header("x-csrf-token", &admin.csrf_token)
-        .json(&json!({"study_name": "Authorized draft"}))
+        .json(&json!({"status": "active"}))
         .send()
         .await?;
     assert_eq!(valid_csrf.status(), reqwest::StatusCode::OK);
@@ -720,7 +715,7 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
     assert_eq!(room["role"], "A");
     assert!(room["available_actions"].is_null());
     let room_id = room["room_id"].as_str().unwrap().to_string();
-    let joined = join_room(&client, &server.base_url, &room_id, &b).await?;
+    let joined = create_room(&client, &server.base_url, &b).await?;
     assert_eq!(joined["role"], "B");
     assert!(joined["available_actions"].is_null());
 
@@ -730,7 +725,7 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
             server.base_url
         ))
         .bearer_auth(&a.credential)
-        .json(&json!({"participant_session_id": a.id}))
+        .json(&json!({}))
         .send()
         .await?
         .error_for_status()?

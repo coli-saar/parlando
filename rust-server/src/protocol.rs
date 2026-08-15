@@ -1,27 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ParticipantCreateRequest {
-    #[serde(default = "default_direct")]
-    pub source: String,
-    pub study_id: Option<String>,
-    pub external_id: Option<String>,
-    #[serde(default)]
-    pub metadata: Value,
-}
-
-fn default_direct() -> String {
-    "direct".to_string()
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct DirectStartRequest {
-    pub study_id: Option<String>,
-    pub external_id: Option<String>,
-    #[serde(default)]
-    pub metadata: Value,
-}
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ParticipantCreateRequest {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ParticipantCreateResponse {
@@ -34,19 +16,20 @@ pub struct ParticipantCreateResponse {
     pub participant_id: String,
 }
 
-pub type DirectStartResponse = ParticipantCreateResponse;
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ConsentItemResponse {
     pub id: String,
     pub title: String,
-    pub body_html: String,
+    /// Plain-text consent copy safe to render directly.
+    pub body: String,
     pub required: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PublicConfigResponse {
     pub study_name: String,
+    /// Lifecycle state of the one experiment served by this process.
+    pub experiment_status: String,
     /// Institution displayed with the Parlando platform identity, when configured.
     pub institution: Option<String>,
     pub participant_information_version: Option<String>,
@@ -55,14 +38,13 @@ pub struct PublicConfigResponse {
     pub voice: Value,
     pub transcription: Value,
     pub tts: Value,
-    pub conversation: Value,
     pub agents: Value,
     pub privacy: Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConsentRequest {
-    pub participant_session_id: String,
     pub room_id: Option<String>,
     #[serde(default)]
     pub decisions: std::collections::HashMap<String, bool>,
@@ -70,17 +52,7 @@ pub struct ConsentRequest {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct CreateRoomRequest {
-    pub participant_session_id: String,
-    #[serde(default = "default_direct")]
-    pub mode: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct JoinRoomRequest {
-    pub participant_session_id: String,
-}
+pub struct CreateRoomRequest {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RoomResponse {
@@ -102,12 +74,10 @@ pub struct RoomResponse {
 }
 
 pub type CreateRoomResponse = RoomResponse;
-pub type JoinRoomResponse = RoomResponse;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct AudioSessionRequest {
-    pub participant_session_id: String,
-}
+#[serde(deny_unknown_fields)]
+pub struct AudioSessionRequest {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AudioSessionPlanResponse {
@@ -155,8 +125,8 @@ impl AudioSessionPlanResponse {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct VoiceDiagnosticIn {
-    pub participant_session_id: String,
     pub event: String,
     #[serde(default)]
     pub metadata: Value,

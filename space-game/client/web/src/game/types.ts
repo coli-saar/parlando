@@ -24,7 +24,6 @@ export interface Position {
 
 export type GameAction =
   | { type: "moveStep"; player: PlayerId; direction: Direction }
-  | { type: "move"; player: PlayerId; room: RoomId }
   | { type: "toggleFuse"; player: PlayerId; color: FuseColor }
   | { type: "toggleBreaker"; player: PlayerId; breaker: BreakerId }
   | { type: "setValve"; player: PlayerId; valve: ValveId; open: boolean }
@@ -35,8 +34,7 @@ export type GameAction =
   | { type: "setRelay"; player: PlayerId; mode: RelayMode }
   | { type: "cycleRelay"; player: PlayerId }
   | { type: "runDiagnostic"; player: PlayerId }
-  | { type: "launchBeacon"; player: PlayerId }
-  | { type: "reset" };
+  | { type: "launchBeacon"; player: PlayerId };
 
 export interface PlayerState {
   room: RoomId;

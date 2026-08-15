@@ -60,7 +60,7 @@ The server creates one mutable agent instance per agent participant. If an agent
 The demo game's factory selector lives in `space-game/server/src/agents.rs`. It currently supports:
 
 - `space_game.back_and_forth`: deterministic in-process demo agent.
-- `remote_grpc` or `parlando.remote_grpc`: remote gRPC bridge for Python or another language.
+- `remote_grpc`: remote gRPC bridge for Python or another language.
 
 ## Python Agents Over gRPC
 
