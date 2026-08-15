@@ -1,184 +1,260 @@
 # Parlando
 
-Parlando helps researchers build and run browser-based dialogue game experiments. It gives you reusable infrastructure for rooms, roles, WebSockets, voice, agents, persistence, monitoring, and export, while keeping the actual game mechanics under your control.
+Parlando is a platform for running online dialogue-game experiments. A dialogue
+game is a shared task in which two players must communicate while they act in a
+changing environment—for example, a map task, reference game, negotiation,
+collaborative puzzle, or asymmetric-information problem.
 
-Use it when the object of study is an interactive task carried by dialogue: participants see role-specific information, act in a shared world, coordinate through text or speech, and leave behind a structured record of what happened.
+You build the game your research requires: the complete participant-facing web
+application as well as the task mechanics behind it. The interface can be a map,
+board, simulated world, set of cards, chat-centered task, or any other browser
+experience. Parlando provides the surrounding research infrastructure:
+participant setup, consent, matchmaking, live communication, agents, data
+collection, privacy controls, monitoring, and export.
 
-Parlando is currently aimed at research teams that want to prototype, deploy, and analyze controlled dialogue games without rebuilding the surrounding study infrastructure every time.
+## Features
 
-## What You Can Study With It
+- Freedom to build a purpose-designed browser game with custom layouts, controls,
+  visualizations, instructions, animations, and audio.
+- Two-player browser sessions with server-assigned roles, waiting rooms,
+  readiness, and reconnection.
+- A typed connection between the browser game and its Rust game mechanics,
+  including actions, player-specific observations, events, and completion data.
+- Human–human and human–agent conditions that use the same game rules and data
+  model.
+- Typed chat and optional live voice, server-side Speechmatics transcription,
+  and ElevenLabs speech synthesis.
+- SQLite storage for experiment configuration, consent evidence, participants,
+  sessions, actions, messages, transcripts, agent behavior, and outcomes.
+- An authenticated experimenter dashboard for configuring experiments, opening
+  and closing participant intake, monitoring sessions, deleting participant data,
+  and downloading exports.
+- Privacy-conscious collection with configurable storage, pseudonymous research
+  identifiers, participant-data deletion, and purpose-specific exports.
 
-Parlando is a good fit for experiments where the task state and the conversation shape each other. Examples include:
+## Try the example game
 
-- asymmetric-information coordination tasks where each participant sees a different view of the same world.
-- map tasks, reference games, repair games, negotiation games, and collaborative puzzles.
-- human-vs-human and human-vs-agent comparisons using the same game rules.
-- studies that need text chat, speech, transcript data, typed game actions, and task outcomes in one export.
-- controlled pilot studies where researchers want a custom task UI but do not want to write room, reconnect, consent, admin, and export infrastructure from scratch.
+The repository includes Space Game, a two-player task in which participants move
+through a space station and coordinate repairs. It demonstrates private
+information, typed actions, chat, voice, agents, completion, and export.
 
-Parlando is less useful for single-participant surveys, reaction-time tasks, or round-based economic games where live shared state and dialogue are not central.
+### Requirements
 
-## What Parlando Provides
+- a current stable Rust toolchain;
+- Node.js 20.19 or newer, or Node.js 22.12 or newer;
+- npm; and
+- GNU Make.
 
-- Run two-player dialogue games in the browser with server-owned room creation, role assignment, reconnect handling, and waiting-room readiness.
-- Keep game state authoritative in Rust, with typed actions, observations, validation, transition events, and completion summaries.
-- Let each player receive a role-specific view of the same underlying game, which is useful for asymmetric information, coordination tasks, repair games, map tasks, reference games, and other interactive dialogue settings.
-- Provide a reusable browser protocol and JavaScript client package for participants, room setup, WebSockets, audio-session setup, and typed game payloads.
-- Support human-vs-human and human-vs-agent studies from the same experiment configuration.
-- Include infrastructure for direct studies and server-owned matchmaking; recruitment-provider integration remains experiment-specific.
-- Provide optional voice infrastructure through a server-owned PCM audio relay, server-side Speechmatics transcription, and ElevenLabs text-to-speech.
-- Persist evaluation data in SQLite: experiments, durable participants, sessions, consent declarations, ordered actions, state changes, transcripts, conversation messages, agent events, and diagnostics.
-- Serve a bundled browser client when a built frontend is available, while keeping API and WebSocket routes usable for separately deployed clients.
-- Expose an authenticated DB-backed operator monitor at `/admin/experiments`, fixed `research`, `corpus`, and `full` exports at `/api/admin/export`, manual participant deletion, and an installation-wide privacy status at `/admin/privacy`.
-- Connect custom agents when needed, either inside the Rust game crate or as Python services over gRPC.
-- Deploy as a Docker web service, with `space-game/render.yaml` and a Render-safe example config included.
+### Run it
 
-## The Core Idea
-
-A Parlando game is a small Rust adapter around your experiment logic:
-
-```rust
-impl GameAdapter for MyGameAdapter {
-    type State = MyState;
-    type Action = MyAction;
-    type Observation = MyObservation;
-    type Event = MyEvent;
-    type Summary = MySummary;
-
-    fn initial_state(&self) -> Self::State {
-        initial_state()
-    }
-
-    fn validate_action(&self, state: &Self::State, action: &Self::Action, player: PlayerRole) -> anyhow::Result<()> {
-        validate_action(state, action, player)
-    }
-
-    fn apply_action(&self, state: &Self::State, action: &Self::Action) -> anyhow::Result<Self::State> {
-        apply_action(state, action)
-    }
-
-    fn observe_state(&self, state: &Self::State, player: PlayerRole) -> Self::Observation {
-        observe_state_for_player(state, player)
-    }
-
-    fn events_for_action(&self, before: &Self::State, after: &Self::State, action: &Self::Action, player: PlayerRole) -> Vec<Self::Event> {
-        events_visible_to_player(before, after, action, player)
-    }
-
-    fn is_complete(&self, state: &Self::State) -> bool {
-        state.finished
-    }
-
-    fn completion_summary(&self, state: &Self::State) -> Self::Summary {
-        summarize(state)
-    }
-}
-```
-
-That adapter is enough for the reusable server to handle rooms, WebSockets, persistence, export, and agents. The game crate stays typed; JSON appears only at the browser, database, and remote-agent boundaries.
-
-The included `generate-parlando-game` skill makes this workflow more accessible: experiment authors can describe the game, state, actions, and interface they want, then use the skill to generate and revise the Rust adapter and JavaScript client. Understanding Rust or JavaScript still helps with review and debugging, but is not required to produce a first implementation.
-
-## Compared With Other Platforms
-
-Parlando sits near existing experiment systems, but it is optimized for a narrower design point: interactive dialogue games with authoritative state, role-specific views, voice/conversation data, and deployable evaluation records.
-
-| Platform | Good fit | How Parlando differs |
-| --- | --- | --- |
-| [Slurk](https://github.com/clp-research/slurk) | Dialogue experiments centered on typed chat, with rooms, bots, layouts, and optional JavaScript task components. | Parlando puts the JavaScript game itself in the foreground and treats dialogue as the communication layer around that game. Voice is designed to stay out of the way of the task UI, while the server owns typed state transitions, readiness, persistence, export, and a YAML setup story for local and deployed studies. |
-| [Empirica](https://docs.empirica.ly/) | Multiplayer browser experiments and games with an admin panel, batches, treatments, and React/JavaScript app structure. | Parlando is less general-purpose but more focused on dialogue game data: role-specific observations, conversation/transcript persistence, voice-session planning, and Rust-authoritative state transitions are core concepts rather than app-level conventions. |
-| [oTree](https://www.otree.org/) | Behavioral and economic experiments, especially structured rounds, surveys, games, and participant payments. | Parlando targets continuous interactive dialogue sessions rather than page/round-oriented studies. It emphasizes live WebSocket state, voice/chat traces, custom game clients, and game-specific observations. |
-| [Dallinger](https://dallinger.readthedocs.io/) | Crowd-sourced behavioral experiments with recruitment automation, networks, bots, and data management. | Parlando does not attempt to replace a general recruitment platform. Its core runtime focuses on the live dialogue game: room readiness, typed actions, state changes, voice/chat traces, transcripts, conversations, and export. |
-| [jsPsych](https://www.jspsych.org/latest/) and [lab.js](https://lab.js.org/) | Browser-based single-participant tasks, surveys, timing-sensitive stimuli, and online study building. | Parlando is for multi-participant or human-agent interaction where a server must coordinate shared state, private views, live communication, and durable session events. |
-
-The tradeoff is deliberate. If your study is a conventional survey, reaction-time task, or round-based economic game, one of the established platforms may be a better fit. Parlando is meant for cases where the dialogue and the evolving shared task state are the experiment.
-
-## Agents When You Need Them
-
-Agents are important but not required. A Parlando study can be human-vs-human, human-vs-agent, or both across different configurations. Python agents can connect without writing gRPC code:
-
-```python
-from parlando_agent_sdk import AgentResponse, GameAgent, serve_agent
-
-class FirstAvailableAction(GameAgent):
-    async def maybe_act(self, available_actions):
-        if available_actions:
-            return AgentResponse.action_with_message(
-                available_actions[0],
-                "I will try the first available move.",
-            )
-        return None
-
-serve_agent(FirstAvailableAction, host="127.0.0.1", port=50051)
-```
-
-Point an experiment config at that service with `agents.human_vs_agent.factory: remote_grpc`, and the Rust server treats the Python process like a participant. Returned actions are still validated by the game server before they change state.
-
-## Repository Layout
-
-- `rust-server`: reusable Rust runtime for config, rooms, WebSockets, persistence, audio-session planning, TTS, agent execution, remote gRPC agents, admin views, and export.
-- `space-game`: demo Space Game browser app, Rust server binary, adapter, configs, and deployment files.
-- `js-client`: reusable TypeScript browser runtime for setup, HTTP helpers, WebSockets, audio-session setup, and React startup components.
-- `rust-server/python/parlando-agent-sdk`: Python wrapper for remote gRPC agents.
-- `space-game/config/experiment.render.example.yaml`: deployable example experiment config with an optional Render secret-file overlay.
-- `space-game/render.yaml`: Render web-service example.
-- `docs/`: GitHub-rendered technical documentation for architecture, games, browser protocol, agents, deployment, and data export.
-
-The Space Game browser app lives in `space-game/client`. The Rust server can serve a built client directory through `server.client_dist_path`.
-
-## Voice And Audio Privacy
-
-Voice-enabled browsers connect directly to Parlando over an authenticated WebSocket. Parlando relays fixed 24 kHz mono PCM frames to the other player, independently streams the speaker's frames to the configured server-side transcription provider, and sends agent TTS through the same room relay. The browser receives no transcription or TTS provider credentials and does not contact those providers directly.
-
-The current Speechmatics integration is hosted, so microphone audio sent for transcription still leaves the Parlando server. The provider-neutral server interface is designed so a later local recognizer can keep that audio entirely on controlled infrastructure without changing games or browser clients. Raw audio is not persisted by the current relay.
-
-See [Audio Transport](docs/audio-transport.md) for the binary protocol, authentication, buffering, TTS pacing, privacy boundary, and deployment constraints.
-
-## System Requirements
-
-Parlando builds a Rust server and a TypeScript browser client. Install these tools before running the demo or packaging a game:
-
-- Rust stable toolchain with Cargo. The repository does not pin a `rust-toolchain` file, so use a current stable Rust installation from `rustup`.
-- Node.js `20.19.0` or newer, or Node.js `22.12.0` or newer. The Space Game browser build uses Vite 7, whose published engine requirement excludes older Node 20 and early Node 22 releases. Use the matching `npm` that ships with that Node version.
-- GNU Make. The top-level and Space Game workflows are documented as `make` targets.
-- macOS only: the standard Apple Command Line Tools required by the Rust toolchain.
-- Linux only: a standard C/C++ build toolchain and system libraries sufficient for Rust crates with native dependencies. The included Dockerfile uses Debian Bookworm as the reference Linux build environment.
-
-## Run The Demo Server
-
-Build and test the reusable Rust server crate:
+From the repository root:
 
 ```sh
-cd rust-server
-cargo test
-cd ..
-cargo run --manifest-path space-game/server/Cargo.toml -- --host 127.0.0.1 --port 8000
+make -C space-game run
 ```
 
-The normal `cargo test` suite is credential-free and never contacts Speechmatics. The standalone ten-minute stress dashboard defaults to a production-shaped workload and runs with `cargo run --release --features stress-tui --bin audio-stress-tui`; its realistic, saturation, and impaired CLI modes are documented in [Audio Testing](docs/audio-testing.md).
+The first run builds the Rust server, the shared JavaScript client, and the Space
+Game browser application. When the server is ready:
 
-Each server process requires one experiment YAML file:
+1. Open [http://127.0.0.1:8000/admin](http://127.0.0.1:8000/admin).
+2. Create an administrator account for the local database.
+3. Select the starter experiment and configure it in the dashboard.
+4. Activate the experiment to open participant intake.
+5. Open the participant link shown by the dashboard in two browser windows.
+
+The two participants enter the same waiting pool, receive roles `A` and `B`, and
+start when both are ready. Their actions and messages appear in the dashboard and
+in the experiment export.
+
+![Space Game participant interface with a station map, private role information,
+system status, recent events, and text chat](docs/images/space-game-interface.jpg)
+
+Run the server test suite with:
 
 ```sh
-cargo run --manifest-path space-game/server/Cargo.toml -- \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --config space-game/config/experiment.render.example.yaml
+cargo test --manifest-path rust-server/Cargo.toml
 ```
 
-The main service endpoints are:
+## Build any dialogue game
 
-- `GET /health`
-- `GET /api/config`
-- `POST /api/participants`
-- `POST /api/rooms` (server-owned matchmaking)
-- `POST /api/rooms/{room_id}/game-session`, followed by `GET /ws/game/{room_id}?token=...` with the returned one-use ticket
-- `GET /ws/audio/{room_id}?token=...`
-- `GET /admin` (first-run setup or administrator login)
-- `GET /admin/experiments`
-- `GET /admin/privacy`
-- `GET /api/admin/export`
+A Parlando game combines two components that you design. The **browser game** is
+everything participants see and use. The **game mechanics** define how the task
+behaves. Parlando connects them and supplies the services that are common across
+experiments.
 
-## Learn More
+```mermaid
+flowchart LR
+    subgraph game["The game you build"]
+        client["Browser game<br/>interface and interaction"]
+        rules["Rust game mechanics<br/>state, actions, and outcomes"]
+    end
 
-Start with [the documentation index](docs/README.md) for architecture, game design, browser protocol, custom agents, local development, Render deployment, and data export. The demo implementation in `space-game/server` shows a complete game adapter and agent selector; `space-game/client` shows the matching participant UI.
+    subgraph parlando["Parlando"]
+        runtime["Session runtime<br/>setup, matchmaking, and communication"]
+        research["Research workflow<br/>dashboard, storage, and export"]
+    end
+
+    client -->|"participant actions"| runtime
+    runtime -->|"proposed actions"| rules
+    rules -->|"observations and events"| runtime
+    runtime -->|"live updates"| client
+    research <--> runtime
+```
+
+### Design the participant experience
+
+The browser game is a first-class part of the study, not a fixed Parlando screen.
+You decide what the world looks like, what each role can see, how participants
+act, and how progress and completion are presented. A client might render a
+spatial environment, a card table, a document, a dialogue interface, or a custom
+interactive visualization. It can use ordinary web technologies and any
+game-specific assets or interaction design the study needs.
+
+The reusable `@coli-saar/parlando-client` package handles the connection to
+Parlando. Its React components can provide the standard setup sequence—study
+information, consent, microphone preparation, matchmaking, and readiness—before
+handing control to your game UI. The client then receives player-specific game
+updates and sends typed actions. For lower-level control, a client can use the
+[documented HTTP and WebSocket protocol](docs/client-protocol.md) directly.
+
+### Implement the mechanics
+
+The Rust side defines the task semantics that all participants and agents share.
+Its `GameAdapter` specifies:
+
+- the complete game state;
+- the actions that participants and agents may propose;
+- the observation visible to each role;
+- validation and state transitions;
+- events shown to participants or stored for analysis; and
+- the condition under which a session ends, together with its completion summary.
+
+This division does not constrain what the browser game can be. It gives the study
+one consistent implementation of the rules and lets the game send a different
+observation to each role when the task contains private information.
+
+Start with [Building a Game](docs/building-games.md), or use the included
+`generate-parlando-game` skill to generate a game crate and React client from a
+task description. The Space Game implementation in `space-game/server` and
+`space-game/client` is a complete reference.
+
+### Configure the experiments
+
+Once the game server is running, create experiments in `/admin/experiments`. An
+experiment selects the study title, consent text, participant mode, agent, voice,
+transcription, speech synthesis, and data-storage settings. Configuration is
+stored in SQLite, and each save creates a numbered revision.
+
+The dashboard can host several experiments for the same game. Each experiment
+has its own participant link, intake status, waiting rooms, live sessions, and
+exports. You can clone an experiment to create a new condition without changing
+the original.
+
+Parlando records the game version and configuration revision used for every
+session. If you rebuild the game with a new version, clone an earlier experiment
+before running it with the new code. Historical sessions remain attached to the
+version that produced them.
+
+## Participant workflow
+
+For a typical direct study, a participant:
+
+1. opens the experiment-specific link;
+2. reads the study information and submits any required consent declarations;
+3. prepares the microphone if voice is enabled;
+4. enters the server-managed waiting room;
+5. plays from the observation assigned to role `A` or `B`; and
+6. receives the game-specific completion screen when the task ends.
+
+The public participant endpoint does not integrate with recruitment platforms by
+itself. A study that uses Prolific, MTurk, or another recruitment provider must add
+a server-controlled integration that maps recruitment identities to Parlando
+participants.
+
+## Agents and voice
+
+An agent occupies one of the same player roles as a human. Its proposed actions
+pass through the normal game validation and persistence path. Simple agents can
+run inside the Rust game server; Python and other external agents can connect over
+gRPC. See [Agents](docs/agents.md).
+
+Voice-enabled browsers connect only to Parlando and never receive credentials for
+speech providers. Parlando relays authenticated 24 kHz PCM audio to the other
+player, may stream it to Speechmatics for transcription, and sends synthesized
+agent speech back through the same connection. See [Audio
+Transport](docs/audio-transport.md).
+
+## Privacy-conscious data and export
+
+Privacy controls are part of the study workflow from participant entry through
+publication. Parlando records consent evidence, keeps participant credentials
+out of URLs and browser persistence, assigns experiment-scoped pseudonyms, and
+supports confirmed participant-data deletion. Experimenters can independently
+choose whether to store full game state, typed messages, final transcripts, and
+minimized voice diagnostics.
+
+Parlando does not persist raw microphone audio. If transcription is enabled, it
+streams audio to the configured service and can retain the resulting final text
+only when the experiment permits transcript storage. The administrator privacy
+page reports the effective storage choices, external speech services, consent
+settings, deletion support, and export capabilities for the installation.
+
+The resulting SQLite record preserves the order and provenance needed for
+research while limiting unnecessary data. It can contain actions, selected state
+changes, messages, transcripts, agent events, completion summaries, and minimized
+voice diagnostics according to the experiment's settings.
+
+The dashboard offers three export variants:
+
+- `research` for normal pseudonymous analysis;
+- `corpus` for preparing a publication candidate without internal identifiers or
+  absolute timestamps; and
+- `full` for restricted administration and audit.
+
+The `research` and `corpus` projections use explicit, stable schemas, so new
+internal database fields do not silently enter them. A corpus export is labelled
+as a publication candidate because no software can guarantee that free dialogue
+contains no identifying remarks. The final release step is therefore a focused
+review of participant-authored text and any external recruitment mapping. See
+[Data and Monitoring](docs/data-and-monitoring.md) for the complete privacy model,
+export boundaries, and participant-deletion behavior.
+
+## How Parlando is organized
+
+One running Parlando server contains one compiled game—its browser application
+and Rust mechanics—and a catalogue of experiments using that game. A session is
+one play-through within one experiment. This separation lets researchers create
+new conditions in the dashboard while keeping the exact game implementation and
+version explicit.
+
+The repository is divided accordingly:
+
+- `rust-server`: reusable Rust runtime, persistence, administration, audio, and
+  agent infrastructure;
+- `js-client`: reusable TypeScript client and React startup components;
+- `space-game/server`: example game state, adapter, agents, and server binary;
+- `space-game/client`: example participant interface; and
+- `rust-server/python/parlando-agent-sdk`: SDK for external Python agents.
+
+## Current scope
+
+- Games currently use two active roles, `A` and `B`.
+- SQLite is the implemented durable store.
+- Different compiled games run as separate server processes and should use
+  separate databases.
+- Every server restart closes participant intake until an administrator activates
+  an experiment again.
+- Deactivating an experiment stops new intake but does not terminate sessions that
+  are already running.
+- Voice rooms are process-local; multi-replica deployments require sticky routing.
+
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Architecture](docs/architecture.md)
+- [Building a Game](docs/building-games.md)
+- [Running and Deployment](docs/running-and-deployment.md)
+- [Browser Client Protocol](docs/client-protocol.md)
+- [Data and Monitoring](docs/data-and-monitoring.md)
+- [Audio Transport](docs/audio-transport.md)
+- [Agents](docs/agents.md)

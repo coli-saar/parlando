@@ -6,7 +6,6 @@ includes:
 
 study:
   name: Space Game
-  institution: Saarland University
   waiting_room_timeout_seconds: 300
   reconnect_grace_seconds: 90
 

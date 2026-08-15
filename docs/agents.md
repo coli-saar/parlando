@@ -64,7 +64,8 @@ The demo game's factory selector lives in `space-game/server/src/agents.rs`. It 
 
 ## Python Agents Over gRPC
 
-Remote agents let researchers write policies in Python while keeping the Rust server authoritative.
+Remote agents let researchers write policies in Python while the game continues
+to use the same typed actions, observations, and validation as a browser player.
 
 Install the SDK dependencies in your Python environment, generate protobuf modules from a checkout, and run an agent service:
 
@@ -89,26 +90,32 @@ class FirstActionAgent(GameAgent):
 serve_agent(FirstActionAgent, host="127.0.0.1", port=50051)
 ```
 
-Configure the game server to use it:
+Select the remote agent in the inactive experiment's dashboard configuration. The
+stored value has this shape:
 
-```yaml
-agents:
-  mode: human_vs_agent
-  human_vs_agent:
-    factory: remote_grpc
-    act_timeout_seconds: 5
-    invalid_action_limit: 3
-    config:
-      endpoint: http://127.0.0.1:50051
-      agent_name: first-action-agent
-      agent_version: dev
-      protocol_version: parlando-agent-v2
+```json
+{
+  "agents": {
+    "mode": "human_vs_agent",
+    "human_vs_agent": {
+      "factory": "remote_grpc",
+      "act_timeout_seconds": 5,
+      "invalid_action_limit": 3,
+      "config": {
+        "endpoint": "http://127.0.0.1:50051",
+        "agent_name": "first-action-agent",
+        "agent_version": "dev",
+        "protocol_version": "parlando-agent-v2"
+      }
+    }
+  }
+}
 ```
 
 The gRPC create request contains:
 
 - the role controlled by the agent.
-- the seed and agent config from YAML.
+- the seed and agent configuration from the experiment's stored revision.
 
 The observation RPCs contain:
 
@@ -136,7 +143,10 @@ For hosted deployments, the gRPC endpoint must use HTTPS, its hostname must appe
 
 Record the agent name and version in config. Parlando persists remote-agent participant metadata as `identity_provider = remote_grpc` and `external_id = <agent_name>@<agent_version>`. The participant identifier shown in administration and exports also exposes the transport type, agent name, and version, for example `agent:remote_grpc:my-agent@v1`. A missing version is visibly marked `unversioned`.
 
-If the agent uses an LLM or another hosted model, keep provider credentials in the agent process or server-side configuration. Do not put model credentials in browser code or public config.
+If the agent uses an LLM or another hosted model, keep provider credentials in
+the agent process or server-side configuration. The browser and public
+experiment configuration need only the resulting game interaction, not those
+credentials.
 
 ## Reference Files
 

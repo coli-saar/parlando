@@ -38,7 +38,8 @@ export class ParlandoAudioSink implements LocalAudioSink {
     };
     this.source.connect(this.capture);
     this.playback.connect(audio.destination);
-    const url = new URL(plan.websocket_url);
+    const url = new URL(plan.websocket_url, window.location.origin);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.searchParams.set("token", plan.token);
     const socket = new WebSocket(url);
     socket.binaryType = "arraybuffer";

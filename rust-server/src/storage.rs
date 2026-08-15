@@ -107,6 +107,8 @@ fn participant_identifier_candidate(participant: &ParticipantRecord, attempt: us
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ExperimentRecord {
     pub experiment_id: String,
+    /// Exact semantic version of the compiled game which owns this experiment.
+    pub game_version: String,
     pub config: Value,
     pub server_version: Option<String>,
     pub version_manifest: Option<Value>,
@@ -118,15 +120,68 @@ pub struct ExperimentRecord {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StoredExperimentSummary {
     pub experiment_id: String,
+    /// Exact semantic version required for activation.
+    pub game_version: String,
     pub study_name: Option<String>,
     pub created_at: String,
     pub status: String,
     pub server_version: Option<String>,
     pub version_manifest: Option<Value>,
     pub notes: Option<String>,
+    /// Whether the experiment should sort ahead of ordinary inactive experiments.
+    pub pinned: bool,
+    /// Whether the experiment should be visually de-emphasized as obsolete.
+    pub obsolete: bool,
+    /// Immutable configuration revision currently selected by the experiment.
+    pub config_revision: i64,
     pub session_count: i64,
     pub completed_session_count: i64,
     pub last_session_at: Option<String>,
+}
+
+/// Complete durable experiment definition used to construct an in-process runtime.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StoredExperimentDefinition {
+    /// Stable experiment identifier used in participant routes and stored data.
+    pub experiment_id: String,
+    /// Exact game version required for activation.
+    pub game_version: String,
+    /// Current normalized, secret-free experiment configuration.
+    pub config: Value,
+    /// Current immutable configuration revision number.
+    pub config_revision: i64,
+    /// Current two-state intake lifecycle.
+    pub status: String,
+    /// Optional researcher-authored catalogue notes.
+    pub notes: Option<String>,
+    /// Whether this experiment is pinned in the dashboard.
+    pub pinned: bool,
+    /// Whether this experiment has been marked obsolete.
+    pub obsolete: bool,
+}
+
+/// One immutable stored configuration revision.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StoredExperimentRevision {
+    /// Stable experiment identifier owning the revision.
+    pub experiment_id: String,
+    /// Monotonically increasing experiment-local revision number.
+    pub revision: i64,
+    /// Normalized, secret-free configuration JSON.
+    pub config: Value,
+    /// UTC creation time.
+    pub created_at: String,
+    /// Optional administrator-supplied summary of the change.
+    pub change_summary: Option<String>,
+}
+
+/// Settings shared by every experiment hosted by one compiled game process.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct StoredGameSettings {
+    /// Institution displayed by every experiment of this game process.
+    pub institution: String,
+    /// Optimistic-concurrency revision for dashboard updates.
+    pub revision: i64,
 }
 
 /// Input for upserting a durable participant identity.
@@ -144,6 +199,10 @@ pub struct ParticipantRecord {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SessionRecord {
     pub experiment_id: String,
+    /// Configuration revision selected when the session was created.
+    pub config_revision: i64,
+    /// Exact game version which executed the session.
+    pub game_version: String,
     pub room_id: String,
     pub mode: String,
     pub status: String,
@@ -209,6 +268,10 @@ pub struct StoredSessionSummary {
     pub dialogue_id: String,
     pub mode: String,
     pub status: String,
+    /// Immutable experiment configuration revision used for this session.
+    pub config_revision: i64,
+    /// Exact compiled game version which executed this session.
+    pub game_version: String,
     pub created_at: String,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
@@ -275,6 +338,44 @@ pub trait ExperimentStore: Send + Sync {
     async fn create_admin_credential(&self, credential: StoredAdminCredential) -> Result<bool>;
     /// Ensures the process-owned experiment exists, resets it inactive, and returns that status.
     async fn ensure_experiment(&self, experiment: ExperimentRecord) -> Result<String>;
+    /// Lists all experiments owned by the compiled game process.
+    async fn list_experiments(&self, limit: i64) -> Result<Vec<StoredExperimentSummary>>;
+    /// Loads the complete current definition needed to construct a runtime.
+    async fn experiment_definition(
+        &self,
+        experiment_id: &str,
+    ) -> Result<Option<StoredExperimentDefinition>>;
+    /// Creates a new inactive experiment and its immutable first configuration revision.
+    async fn create_experiment(&self, experiment: ExperimentRecord) -> Result<()>;
+    /// Stores a new immutable configuration revision using optimistic concurrency.
+    async fn save_experiment_revision(
+        &self,
+        experiment_id: &str,
+        expected_revision: i64,
+        config: Value,
+        change_summary: Option<String>,
+    ) -> Result<i64>;
+    /// Lists immutable configuration revisions newest first.
+    async fn experiment_revisions(
+        &self,
+        experiment_id: &str,
+    ) -> Result<Vec<StoredExperimentRevision>>;
+    /// Updates researcher-facing catalogue metadata independently of lifecycle.
+    async fn update_experiment_catalogue(
+        &self,
+        experiment_id: &str,
+        pinned: bool,
+        obsolete: bool,
+        notes: Option<String>,
+    ) -> Result<()>;
+    /// Loads settings shared by all experiments in this game process.
+    async fn game_settings(&self) -> Result<StoredGameSettings>;
+    /// Updates shared game settings when the caller edited the current revision.
+    async fn update_game_settings(
+        &self,
+        expected_revision: i64,
+        institution: String,
+    ) -> Result<i64>;
     /// Returns the process-owned experiment with compact session aggregates.
     async fn experiment_summary(
         &self,
@@ -403,9 +504,6 @@ impl SqliteExperimentStore {
 
     /// Creates the relational evaluation schema.
     async fn ensure_schema(&self) -> Result<()> {
-        if self.schema_version().await? >= 1 {
-            return Ok(());
-        }
         for statement in [
             r#"
             create table if not exists administrator_credential (
@@ -426,11 +524,34 @@ impl SqliteExperimentStore {
             create table if not exists experiments (
                 experiment_id text primary key,
                 created_at text not null,
+                game_version text not null default 'legacy',
                 config_json text not null,
+                config_revision integer not null default 1,
                 server_version text,
                 version_manifest_json text,
                 status text not null default 'inactive',
-                notes text
+                notes text,
+                pinned integer not null default 0,
+                obsolete integer not null default 0
+            )
+            "#,
+            r#"
+            create table if not exists experiment_config_revisions (
+                experiment_id text not null,
+                revision integer not null,
+                config_json text not null,
+                created_at text not null,
+                change_summary text,
+                primary key (experiment_id, revision),
+                foreign key (experiment_id) references experiments(experiment_id)
+            )
+            "#,
+            r#"
+            create table if not exists game_settings (
+                singleton integer primary key check (singleton = 1),
+                institution text not null default '',
+                revision integer not null default 1,
+                updated_at text not null
             )
             "#,
             r#"
@@ -457,6 +578,8 @@ impl SqliteExperimentStore {
                 started_at text,
                 completed_at text,
                 completion_json text,
+                config_revision integer not null default 1,
+                game_version text not null default 'legacy',
                 primary key (experiment_id, session_id),
                 foreign key (experiment_id) references experiments(experiment_id)
             )
@@ -517,71 +640,169 @@ impl SqliteExperimentStore {
         Ok(())
     }
 
-    /// Reads the applied schema version without mutating an already-current database.
-    async fn schema_version(&self) -> Result<i64> {
-        let migrations_table_exists = sqlx::query_scalar::<_, i64>(
-            "select count(*) from sqlite_master where type = 'table' and name = 'schema_migrations'",
-        )
-        .fetch_one(&self.pool)
-        .await?
-            > 0;
-        if !migrations_table_exists {
-            return Ok(0);
-        }
-        Ok(
-            sqlx::query_scalar::<_, Option<i64>>("select max(version) from schema_migrations")
-                .fetch_one(&self.pool)
-                .await?
-                .unwrap_or(0),
-        )
-    }
-
     /// Applies each historical compatibility migration once per database.
     async fn apply_pending_migrations(&self) -> Result<()> {
-        let version =
+        let mut version =
             sqlx::query_scalar::<_, Option<i64>>("select max(version) from schema_migrations")
                 .fetch_one(&self.pool)
                 .await?
                 .unwrap_or(0);
-        if version >= 1 {
-            return Ok(());
-        }
-        self.ensure_column("experiments", "version_manifest_json", "text")
-            .await?;
-        self.ensure_column("experiments", "status", "text not null default 'inactive'")
-            .await?;
-        self.ensure_column("participants", "research_id", "text")
-            .await?;
-        self.ensure_column("participants", "experiment_id", "text")
-            .await?;
-        self.ensure_column("sessions", "dialogue_id", "text")
-            .await?;
-        sqlx::query("drop index if exists idx_participants_provider_external")
+        if version < 1 {
+            self.ensure_column("experiments", "version_manifest_json", "text")
+                .await?;
+            self.ensure_column("experiments", "status", "text not null default 'inactive'")
+                .await?;
+            self.ensure_column("participants", "research_id", "text")
+                .await?;
+            self.ensure_column("participants", "experiment_id", "text")
+                .await?;
+            self.ensure_column("sessions", "dialogue_id", "text")
+                .await?;
+            sqlx::query("drop index if exists idx_participants_provider_external")
+                .execute(&self.pool)
+                .await?;
+            self.scope_legacy_participants().await?;
+            sqlx::query(
+                "create unique index if not exists idx_participants_experiment_provider_external on participants(experiment_id, identity_provider, external_id) where external_id is not null",
+            )
             .execute(&self.pool)
             .await?;
-        self.scope_legacy_participants().await?;
-        sqlx::query(
-            "create unique index if not exists idx_participants_experiment_provider_external on participants(experiment_id, identity_provider, external_id) where external_id is not null",
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            "create unique index if not exists idx_participants_research_id on participants(research_id) where research_id is not null",
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            "create unique index if not exists idx_sessions_dialogue_id on sessions(dialogue_id) where dialogue_id is not null",
-        )
-        .execute(&self.pool)
-        .await?;
-        self.backfill_readable_ids().await?;
-        self.drop_column_if_exists("participants", "display_name")
+            sqlx::query(
+                "create unique index if not exists idx_participants_research_id on participants(research_id) where research_id is not null",
+            )
+            .execute(&self.pool)
             .await?;
-        sqlx::query("insert into schema_migrations (version, applied_at) values (1, ?)")
+            sqlx::query(
+                "create unique index if not exists idx_sessions_dialogue_id on sessions(dialogue_id) where dialogue_id is not null",
+            )
+            .execute(&self.pool)
+            .await?;
+            self.backfill_readable_ids().await?;
+            self.drop_column_if_exists("participants", "display_name")
+                .await?;
+            sqlx::query("insert into schema_migrations (version, applied_at) values (1, ?)")
+                .bind(now_iso())
+                .execute(&self.pool)
+                .await?;
+            version = 1;
+        }
+        if version < 2 {
+            self.ensure_column(
+                "experiments",
+                "game_version",
+                "text not null default 'legacy'",
+            )
+            .await?;
+            self.ensure_column(
+                "experiments",
+                "config_revision",
+                "integer not null default 1",
+            )
+            .await?;
+            self.ensure_column("experiments", "pinned", "integer not null default 0")
+                .await?;
+            self.ensure_column("experiments", "obsolete", "integer not null default 0")
+                .await?;
+            self.ensure_column("sessions", "config_revision", "integer not null default 1")
+                .await?;
+            self.ensure_column("sessions", "game_version", "text not null default 'legacy'")
+                .await?;
+            self.backfill_game_versions().await?;
+            sqlx::query(
+                r#"
+                create table if not exists experiment_config_revisions (
+                    experiment_id text not null,
+                    revision integer not null,
+                    config_json text not null,
+                    created_at text not null,
+                    change_summary text,
+                    primary key (experiment_id, revision),
+                    foreign key (experiment_id) references experiments(experiment_id)
+                )
+                "#,
+            )
+            .execute(&self.pool)
+            .await?;
+            sqlx::query(
+                r#"
+                insert or ignore into experiment_config_revisions
+                    (experiment_id, revision, config_json, created_at, change_summary)
+                select experiment_id, 1, config_json, created_at, 'Migrated initial configuration'
+                from experiments
+                "#,
+            )
+            .execute(&self.pool)
+            .await?;
+            sqlx::query(
+                r#"
+                create table if not exists game_settings (
+                    singleton integer primary key check (singleton = 1),
+                    institution text not null default '',
+                    revision integer not null default 1,
+                    updated_at text not null
+                )
+                "#,
+            )
+            .execute(&self.pool)
+            .await?;
+            sqlx::query(
+                "insert or ignore into game_settings (singleton, institution, revision, updated_at) values (1, '', 1, ?)",
+            )
             .bind(now_iso())
             .execute(&self.pool)
             .await?;
+            sqlx::query("insert into schema_migrations (version, applied_at) values (2, ?)")
+                .bind(now_iso())
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Recovers exact historical game versions from stored manifests when available.
+    async fn backfill_game_versions(&self) -> Result<()> {
+        let rows = sqlx::query_as::<_, (String, Option<String>)>(
+            "select experiment_id, version_manifest_json from experiments where game_version = 'legacy'",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        for (experiment_id, manifest) in rows {
+            let version = manifest
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                .and_then(|value| {
+                    value
+                        .get("game")
+                        .and_then(|game| game.get("version"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                });
+            if let Some(version) = version {
+                sqlx::query("update experiments set game_version = ? where experiment_id = ?")
+                    .bind(version)
+                    .bind(experiment_id)
+                    .execute(&self.pool)
+                    .await?;
+            }
+        }
+        sqlx::query(
+            r#"
+            update sessions
+            set game_version = coalesce(
+                    (select game_version from experiments
+                     where experiments.experiment_id = sessions.experiment_id),
+                    'legacy'
+                ),
+                config_revision = coalesce(
+                    (select config_revision from experiments
+                     where experiments.experiment_id = sessions.experiment_id),
+                    1
+                )
+            where game_version = 'legacy'
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -840,21 +1061,25 @@ impl ExperimentStore for SqliteExperimentStore {
     }
 
     async fn ensure_experiment(&self, experiment: ExperimentRecord) -> Result<String> {
+        let config_json = serde_json::to_string(&experiment.config)?;
+        let created_at = now_iso();
         let status = sqlx::query_scalar::<_, String>(
             r#"
-            insert into experiments (experiment_id, created_at, config_json, server_version, version_manifest_json, status, notes)
-            values (?, ?, ?, ?, ?, ?, ?)
+            insert into experiments
+                (experiment_id, created_at, game_version, config_json, config_revision,
+                 server_version, version_manifest_json, status, notes)
+            values (?, ?, ?, ?, 1, ?, ?, ?, ?)
             on conflict(experiment_id) do update set
-                config_json = excluded.config_json,
                 server_version = excluded.server_version,
                 version_manifest_json = excluded.version_manifest_json,
                 status = 'inactive'
             returning status
             "#,
         )
-        .bind(experiment.experiment_id)
-        .bind(now_iso())
-        .bind(serde_json::to_string(&experiment.config)?)
+        .bind(&experiment.experiment_id)
+        .bind(&created_at)
+        .bind(&experiment.game_version)
+        .bind(&config_json)
         .bind(experiment.server_version)
         .bind(
             experiment
@@ -866,7 +1091,251 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(experiment.notes)
         .fetch_one(&self.pool)
         .await?;
+        sqlx::query(
+            r#"
+            insert or ignore into experiment_config_revisions
+                (experiment_id, revision, config_json, created_at, change_summary)
+            values (?, 1, ?, ?, 'Initial configuration')
+            "#,
+        )
+        .bind(experiment.experiment_id)
+        .bind(config_json)
+        .bind(created_at)
+        .execute(&self.pool)
+        .await?;
         Ok(status)
+    }
+
+    async fn list_experiments(&self, limit: i64) -> Result<Vec<StoredExperimentSummary>> {
+        let experiment_ids = sqlx::query_scalar::<_, String>(
+            r#"
+            select experiment_id
+            from experiments
+            order by case when status = 'active' then 0 else 1 end,
+                     pinned desc, obsolete asc, created_at desc
+            limit ?
+            "#,
+        )
+        .bind(limit.clamp(1, 1_000))
+        .fetch_all(&self.pool)
+        .await?;
+        let mut experiments = Vec::with_capacity(experiment_ids.len());
+        for experiment_id in experiment_ids {
+            if let Some(experiment) = self.experiment_summary(&experiment_id).await? {
+                experiments.push(experiment);
+            }
+        }
+        Ok(experiments)
+    }
+
+    async fn experiment_definition(
+        &self,
+        experiment_id: &str,
+    ) -> Result<Option<StoredExperimentDefinition>> {
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                i64,
+                String,
+                Option<String>,
+                bool,
+                bool,
+            ),
+        >(
+            r#"
+            select experiment_id, game_version, config_json, config_revision, status,
+                   notes, pinned, obsolete
+            from experiments where experiment_id = ?
+            "#,
+        )
+        .bind(experiment_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            Ok(StoredExperimentDefinition {
+                experiment_id: row.0,
+                game_version: row.1,
+                config: serde_json::from_str(&row.2)?,
+                config_revision: row.3,
+                status: row.4,
+                notes: row.5,
+                pinned: row.6,
+                obsolete: row.7,
+            })
+        })
+        .transpose()
+    }
+
+    async fn create_experiment(&self, experiment: ExperimentRecord) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        let created_at = now_iso();
+        let config_json = serde_json::to_string(&experiment.config)?;
+        let version_manifest = experiment
+            .version_manifest
+            .map(|value| serde_json::to_string(&value))
+            .transpose()?;
+        sqlx::query(
+            r#"
+            insert into experiments
+                (experiment_id, created_at, game_version, config_json, config_revision,
+                 server_version, version_manifest_json, status, notes, pinned, obsolete)
+            values (?, ?, ?, ?, 1, ?, ?, 'inactive', ?, 0, 0)
+            "#,
+        )
+        .bind(&experiment.experiment_id)
+        .bind(&created_at)
+        .bind(&experiment.game_version)
+        .bind(&config_json)
+        .bind(experiment.server_version)
+        .bind(version_manifest)
+        .bind(experiment.notes)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            insert into experiment_config_revisions
+                (experiment_id, revision, config_json, created_at, change_summary)
+            values (?, 1, ?, ?, 'Initial configuration')
+            "#,
+        )
+        .bind(experiment.experiment_id)
+        .bind(config_json)
+        .bind(created_at)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn save_experiment_revision(
+        &self,
+        experiment_id: &str,
+        expected_revision: i64,
+        config: Value,
+        change_summary: Option<String>,
+    ) -> Result<i64> {
+        let mut tx = self.pool.begin().await?;
+        let next_revision = expected_revision + 1;
+        let config_json = serde_json::to_string(&config)?;
+        let result = sqlx::query(
+            r#"
+            update experiments set config_json = ?, config_revision = ?
+            where experiment_id = ? and config_revision = ? and status = 'inactive'
+            "#,
+        )
+        .bind(&config_json)
+        .bind(next_revision)
+        .bind(experiment_id)
+        .bind(expected_revision)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            bail!("experiment configuration changed concurrently or experiment is active");
+        }
+        sqlx::query(
+            r#"
+            insert into experiment_config_revisions
+                (experiment_id, revision, config_json, created_at, change_summary)
+            values (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(experiment_id)
+        .bind(next_revision)
+        .bind(config_json)
+        .bind(now_iso())
+        .bind(change_summary)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(next_revision)
+    }
+
+    async fn experiment_revisions(
+        &self,
+        experiment_id: &str,
+    ) -> Result<Vec<StoredExperimentRevision>> {
+        let rows = sqlx::query_as::<_, (String, i64, String, String, Option<String>)>(
+            r#"
+            select experiment_id, revision, config_json, created_at, change_summary
+            from experiment_config_revisions
+            where experiment_id = ? order by revision desc
+            "#,
+        )
+        .bind(experiment_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(StoredExperimentRevision {
+                    experiment_id: row.0,
+                    revision: row.1,
+                    config: serde_json::from_str(&row.2)?,
+                    created_at: row.3,
+                    change_summary: row.4,
+                })
+            })
+            .collect()
+    }
+
+    async fn update_experiment_catalogue(
+        &self,
+        experiment_id: &str,
+        pinned: bool,
+        obsolete: bool,
+        notes: Option<String>,
+    ) -> Result<()> {
+        let result = sqlx::query(
+            "update experiments set pinned = ?, obsolete = ?, notes = ? where experiment_id = ?",
+        )
+        .bind(pinned)
+        .bind(obsolete)
+        .bind(notes)
+        .bind(experiment_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() != 1 {
+            bail!("experiment not found");
+        }
+        Ok(())
+    }
+
+    async fn game_settings(&self) -> Result<StoredGameSettings> {
+        let row = sqlx::query_as::<_, (String, i64)>(
+            "select institution, revision from game_settings where singleton = 1",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(StoredGameSettings {
+            institution: row.0,
+            revision: row.1,
+        })
+    }
+
+    async fn update_game_settings(
+        &self,
+        expected_revision: i64,
+        institution: String,
+    ) -> Result<i64> {
+        let next_revision = expected_revision + 1;
+        let result = sqlx::query(
+            r#"
+            update game_settings set institution = ?, revision = ?, updated_at = ?
+            where singleton = 1 and revision = ?
+            "#,
+        )
+        .bind(institution.trim())
+        .bind(next_revision)
+        .bind(now_iso())
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() != 1 {
+            bail!("game settings changed concurrently");
+        }
+        Ok(next_revision)
     }
 
     async fn experiment_summary(
@@ -879,18 +1348,23 @@ impl ExperimentStore for SqliteExperimentStore {
                 String,
                 String,
                 String,
+                String,
                 Option<String>,
                 Option<String>,
                 String,
                 Option<String>,
+                bool,
+                bool,
+                i64,
                 i64,
                 i64,
                 Option<String>,
             ),
         >(
             r#"
-            select e.experiment_id, e.created_at, e.config_json, e.server_version,
-                   e.version_manifest_json, e.status, e.notes,
+            select e.experiment_id, e.game_version, e.created_at, e.config_json, e.server_version,
+                   e.version_manifest_json, e.status, e.notes, e.pinned, e.obsolete,
+                   e.config_revision,
                    count(s.session_id) as session_count,
                    sum(case when s.status = 'completed' then 1 else 0 end) as completed_session_count,
                    max(s.created_at) as last_session_at
@@ -906,7 +1380,8 @@ impl ExperimentStore for SqliteExperimentStore {
         row.map(|row| {
             Ok(StoredExperimentSummary {
                 experiment_id: row.0,
-                study_name: serde_json::from_str::<Value>(&row.2)
+                game_version: row.1,
+                study_name: serde_json::from_str::<Value>(&row.3)
                     .ok()
                     .and_then(|config| {
                         config
@@ -915,17 +1390,20 @@ impl ExperimentStore for SqliteExperimentStore {
                             .and_then(Value::as_str)
                             .map(str::to_string)
                     }),
-                created_at: row.1,
-                server_version: row.3,
+                created_at: row.2,
+                server_version: row.4,
                 version_manifest: row
-                    .4
+                    .5
                     .map(|raw| serde_json::from_str::<Value>(&raw))
                     .transpose()?,
-                status: row.5,
-                notes: row.6,
-                session_count: row.7,
-                completed_session_count: row.8,
-                last_session_at: row.9,
+                status: row.6,
+                notes: row.7,
+                pinned: row.8,
+                obsolete: row.9,
+                config_revision: row.10,
+                session_count: row.11,
+                completed_session_count: row.12,
+                last_session_at: row.13,
             })
         })
         .transpose()
@@ -1016,8 +1494,9 @@ impl ExperimentStore for SqliteExperimentStore {
         sqlx::query(
             r#"
             insert into sessions
-            (experiment_id, session_id, room_id, dialogue_id, mode, status, created_at)
-            values (?, ?, ?, ?, ?, ?, ?)
+            (experiment_id, session_id, room_id, dialogue_id, mode, status, created_at,
+             config_revision, game_version)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(session.experiment_id)
@@ -1027,6 +1506,8 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(session.mode)
         .bind(session.status)
         .bind(now_iso())
+        .bind(session.config_revision)
+        .bind(session.game_version)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -1243,6 +1724,8 @@ impl ExperimentStore for SqliteExperimentStore {
                 String,
                 String,
                 String,
+                i64,
+                String,
                 String,
                 Option<String>,
                 Option<String>,
@@ -1254,7 +1737,8 @@ impl ExperimentStore for SqliteExperimentStore {
         >(
             r#"
             select s.experiment_id, s.session_id, s.room_id, s.dialogue_id, s.mode, s.status,
-                   s.created_at, s.started_at, s.completed_at, s.completion_json,
+                   s.config_revision, s.game_version, s.created_at, s.started_at,
+                   s.completed_at, s.completion_json,
                    count(distinct sp.participant_id) as participant_count,
                    count(distinct se.event_id) as event_count,
                    max(se.created_at) as last_event_at
@@ -1282,16 +1766,18 @@ impl ExperimentStore for SqliteExperimentStore {
                 dialogue_id: row.3,
                 mode: row.4,
                 status: row.5,
-                created_at: row.6,
-                started_at: row.7,
-                completed_at: row.8,
+                config_revision: row.6,
+                game_version: row.7,
+                created_at: row.8,
+                started_at: row.9,
+                completed_at: row.10,
                 completion: row
-                    .9
+                    .11
                     .map(|raw| serde_json::from_str::<Value>(&raw))
                     .transpose()?,
-                participant_count: row.10,
-                event_count: row.11,
-                last_event_at: row.12,
+                participant_count: row.12,
+                event_count: row.13,
+                last_event_at: row.14,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -1532,28 +2018,47 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
     let experiment = if experiment_id.is_empty() {
         json!(null)
     } else {
-        let row = sqlx::query_as::<_, (String, String, String, Option<String>, Option<String>, String, Option<String>)>(
-            "select experiment_id, created_at, config_json, server_version, version_manifest_json, status, notes from experiments where experiment_id = ?",
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                i64,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                String,
+                Option<String>,
+                bool,
+                bool,
+            ),
+        >(
+            "select experiment_id, game_version, config_revision, created_at, config_json, server_version, version_manifest_json, status, notes, pinned, obsolete from experiments where experiment_id = ?",
         )
         .bind(experiment_id)
         .fetch_optional(pool)
         .await?;
         json!(row.map(
-            |(id, created_at, config_json, server_version, version_manifest_json, status, notes)| json!({
+            |(id, game_version, config_revision, created_at, config_json, server_version, version_manifest_json, status, notes, pinned, obsolete)| json!({
                 "experiment_id": id,
+                "game_version": game_version,
+                "config_revision": config_revision,
                 "created_at": created_at,
                 "config": serde_json::from_str::<Value>(&config_json).unwrap_or(Value::Null),
                 "server_version": server_version,
                 "version_manifest": version_manifest_json.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
                 "status": status,
                 "notes": notes,
+                "pinned": pinned,
+                "obsolete": obsolete,
             })
         ))
     };
     let sessions_sql = if session_id.is_some() {
-        "select experiment_id, session_id, room_id, dialogue_id, mode, status, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? and session_id = ? order by session_id"
+        "select experiment_id, session_id, room_id, dialogue_id, mode, status, config_revision, game_version, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? and session_id = ? order by session_id"
     } else {
-        "select experiment_id, session_id, room_id, dialogue_id, mode, status, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? order by session_id"
+        "select experiment_id, session_id, room_id, dialogue_id, mode, status, config_revision, game_version, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? order by session_id"
     };
     let mut sessions_query = sqlx::query_as::<
         _,
@@ -1563,6 +2068,8 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
             String,
             String,
             String,
+            String,
+            i64,
             String,
             String,
             Option<String>,
@@ -1586,10 +2093,12 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
                 "dialogue_id": row.3,
                 "mode": row.4,
                 "status": row.5,
-                "created_at": row.6,
-                "started_at": row.7,
-                "completed_at": row.8,
-                "completion": row.9.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
+                "config_revision": row.6,
+                "game_version": row.7,
+                "created_at": row.8,
+                "started_at": row.9,
+                "completed_at": row.10,
+                "completion": row.11.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
             })
         })
         .collect::<Vec<_>>();

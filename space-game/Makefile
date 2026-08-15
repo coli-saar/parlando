@@ -10,12 +10,12 @@ NPM_CACHE ?= $(PARLANDO_DIR)/.local/npm-cache
 
 HOST ?= 127.0.0.1
 PORT ?= 8000
-CONFIG ?= $(SPACE_GAME_DIR)/config/experiment.local-rust.yaml
+DATABASE_URL ?= sqlite:///$(SPACE_GAME_DIR)/.local/parlando.sqlite
 SERVER_BIN ?= $(LOCAL_BIN)/parlando-space-game
 CLIENT_PACKAGE ?= @coli-saar/parlando-client
 LOCAL_CLIENT_PACKAGE := $(JS_CLIENT_DIR)
 
-.PHONY: all install-local install-server prepare-client-local check-server check-client-package install-client-deps build-client build run run-solo-voice clean-client clean
+.PHONY: all install-local install-server prepare-client-local check-server check-client-package install-client-deps build-client build run clean-client clean
 
 # Default workflow: build the Space Game browser client and verify the server binary.
 all: build
@@ -57,14 +57,10 @@ build-client: install-client-deps
 # Prepare local dependencies, build the browser client, and verify the server binary.
 build: install-local build-client check-server
 
-# Run the Space Game server/client stack; override HOST, PORT, CONFIG, or SERVER_BIN as needed.
+# Run the Space Game server/client stack; experiments are configured in the dashboard.
 run: build
 	mkdir -p "$(SPACE_GAME_DIR)/.local"
-	"$(SERVER_BIN)" --host "$(HOST)" --port "$(PORT)" --config "$(CONFIG)"
-
-# Run the Space Game in the solo voice configuration.
-run-solo-voice:
-	$(MAKE) run CONFIG="$(SPACE_GAME_DIR)/config/experiment.local-back-and-forth-voice.yaml"
+	"$(SERVER_BIN)" --host "$(HOST)" --port "$(PORT)" --database-url "$(DATABASE_URL)" --client-dist "$(CLIENT_DIR)/dist"
 
 # Remove generated browser-client dependencies and build output.
 clean-client:

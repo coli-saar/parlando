@@ -2,6 +2,40 @@ use anyhow::Result;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
+/// Immutable identity of the one game implementation compiled into a server process.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct GameDescriptor {
+    /// Stable machine-readable identifier shared by releases of this game.
+    pub id: String,
+    /// Human-readable game name displayed throughout the administrator dashboard.
+    pub display_name: String,
+    /// Exact semantic version used to decide whether an experiment can be activated.
+    pub version: semver::Version,
+    /// Diagnostic build provenance which does not affect activation compatibility.
+    pub build_manifest: Value,
+}
+
+impl GameDescriptor {
+    /// Validates the stable process identity before the server opens its dashboard.
+    pub fn validate(&self) -> Result<()> {
+        if self.id.is_empty()
+            || self.id.chars().count() > 128
+            || !self
+                .id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        {
+            anyhow::bail!(
+                "game id must contain 1 to 128 letters, digits, dots, dashes, or underscores"
+            );
+        }
+        if self.display_name.trim().is_empty() {
+            anyhow::bail!("game display name must not be empty");
+        }
+        Ok(())
+    }
+}
+
 /// Identifies one of the two active player roles in a room.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum PlayerRole {

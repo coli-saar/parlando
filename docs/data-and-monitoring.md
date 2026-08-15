@@ -1,56 +1,166 @@
-# Data And Monitoring
+# Data and monitoring
 
-Parlando records study data as durable session events in SQLite. The event stream is intended to support later analysis without relying on active runtime memory or browser-local state.
+Parlando builds a structured research record while an experiment runs. SQLite
+stores ordered game actions, messages, selected transcripts, agent behavior, and
+completion outcomes according to the experiment's storage settings. The
+dashboard supports live monitoring; the database-backed export is the durable
+record for analysis.
 
-For researchers, the important rule is simple: analyze the export, not what a browser happened to show at the end of a session. The export is reconstructed from persisted rows and includes the ordered history needed to recover actions, messages, transcripts, agent behavior, and completion outcomes.
+## Preserve provenance
 
-## Terms
+Every session records three identifiers that should remain attached during
+analysis:
 
-- **Game** means the binary/client/adapter/agent implementation being run.
-- **Experiment** means one data-collection campaign using that game.
-- **Session** means one play-through inside an experiment.
+- the experiment id;
+- the experiment configuration revision; and
+- the exact semantic game version.
 
-## Persisted Data
+The configuration revision identifies the settings in force when the session was
+created. Later dashboard edits create another revision rather than rewriting that
+history. The game version identifies the compiled state machine that interpreted
+the actions.
 
-Parlando stores durable study data through the reusable `ExperimentStore` abstraction. The current implementation uses SQLite.
+An experiment from an earlier game version remains inspectable and exportable. It
+cannot be activated under a different version. Cloning copies its configuration
+into a new experiment for the current version; it does not alter the historical
+experiment or its sessions.
 
-Depending on the four `privacy` switches, event categories can include:
+## Monitor an experiment
 
-- participant joins and consent declarations.
-- accepted game actions.
-- state changes.
-- completion summaries.
-- transcript segments.
-- conversation messages.
-- agent startup, action proposals, and errors.
+Open `/admin/experiments`. The dashboard header identifies the compiled game and
+version, and the catalogue lists every experiment stored for that game process.
+Use pinning for experiments that should remain prominent and obsolete status for
+entries that should be retained but de-emphasized.
+
+After selecting an experiment, the dashboard provides:
+
+- lifecycle control;
+- database-backed configuration and revision history;
+- session status and participant roles;
+- a compact event timeline for actions, messages, transcripts, and diagnostics;
+- export controls; and
+- counted participant-data deletion.
+
+![Experiment dashboard identifying the compiled Space Game version and its
+inactive starter experiment](images/parlando-dashboard.jpg)
+
+The dashboard is deliberately game-scoped. Different compiled games use different
+processes and dashboards, usually distinguished by port or hostname.
+
+### Interpret lifecycle state
+
+An experiment is either `inactive` or `active`. `Active` permits new participant
+and room creation. `Inactive` rejects new intake with HTTP 503.
+
+Every process start resets all experiments to `inactive`. Deactivation also leaves
+existing room and WebSocket activity running, so it is suitable for closing
+recruitment without interrupting participants. It is not a session kill switch.
+
+### Interpret the timeline
+
+The dashboard groups durable rows into a compact operational view. Use it to find
+stalled rooms, rejected actions, transcript activity, agent failures, and
+completion events. Use an export when analysis depends on complete structured
+payloads or exact ordering; the dashboard is a summary, not an alternative data
+source.
+
+When `privacy.store_voice_diagnostics` is enabled, playback underruns appear as
+`voice_diagnostic` events. They contain an event name, cumulative connection-local
+count, and remaining buffered source samples. Parlando discards device ids, device
+labels, user agents, and arbitrary browser error messages. Sustained underruns may
+justify increasing `voice.jitter_buffer_ms`, but a larger buffer also delays
+playback startup.
+
+## Choose what to retain
+
+Four experiment-level privacy switches let researchers collect the data their
+analysis requires without retaining every available stream. They independently
+control full game state, typed messages, final transcripts, and minimized voice
+diagnostics. The dashboard displays the effective choices, and disabled data
+types are not written to SQLite or included in later exports.
+
+Other durable records can include:
+
+- participant creation and role assignment;
+- consent declarations and participant-information evidence;
+- accepted and rejected actions;
+- game state changes and completion summaries;
+- conversation messages and transcript segments;
+- agent startup, proposals, messages, and errors; and
 - TTS and voice diagnostics.
 
-When `privacy.store_voice_diagnostics` is enabled, browser playback underruns are persisted as `voice_diagnostic` events with event name `audio_playback_underrun`, a cumulative connection-local count, and the remaining buffered source-sample count. Device identifiers, device labels, user agents, and free error messages are discarded. These events are useful for deciding whether a deployment needs a larger `voice.jitter_buffer_ms`; do not increase the buffer solely from anecdotal latency reports because it directly delays playback startup.
+Completion summaries are game-specific. Define them to contain the terminal
+outcome, score or condition labels, and any final task state required by the
+analysis. Do not rely on reconstructing an essential outcome solely from browser
+presentation.
 
-Room ids and participant-session ids are useful during live play. At creation time, Parlando also assigns three-word identifiers to human participants and dialogues. Human participant identifiers end in an animal noun; dialogue identifiers end in a place or object noun. Agent participants instead receive a descriptive identifier such as `agent:space_game.back_and_forth:BackAndForthAgent@0.2.0`, built from their configured type, implementation name when available, and version. These identifiers remain unchanged across repeated exports of the same experiment so separately produced datasets can be joined. Human participant identifiers are experiment-scoped: the same recruitment identity receives an independently generated identifier in each experiment.
+### Research identifiers
 
-Completion summaries are game-specific. Design them deliberately: include success or failure, score or outcome labels, final task state needed for interpretation, and any condition labels required by downstream scripts.
+Parlando assigns readable three-word identifiers to human participants and
+dialogues. Human identifiers end in an animal noun; dialogue identifiers end in a
+place or object noun. These identifiers remain stable across repeated exports of
+the same experiment.
 
-## Operator Monitor
+Human identifiers are experiment-scoped. The same recruited person receives an
+independent identifier in another experiment. Agent identifiers instead record
+their type, implementation name, and version, for example
+`agent:space_game.back_and_forth:BackAndForthAgent@0.2.0`.
 
-Use `/admin/experiments` for quick inspection during a study run. The dashboard shows the one experiment configured for this server process, controls whether intake is active, lists its sessions, and presents a compact timeline of actions, conversation messages, and transcripts. It does not create or clone experiment records; change the experiment configuration and start a separate process for a different experiment.
+These labels support pseudonymous analysis without carrying a name or recruitment
+identifier into normal exports. Data remain pseudonymous while an external
+recruitment mapping or identifying dialogue content can still link them to a
+person.
 
-The lifecycle has two states: `inactive` and `active`. Startup always chooses `inactive`. While inactive, the server rejects new participants, room creation, and room joins with HTTP 503. Deactivation does not terminate existing room or WebSocket activity, so an administrator can close recruitment without disrupting sessions already underway.
+## Choose an export
 
-The dashboard intentionally summarizes event rows. Use export when you need full structured payloads.
+The dashboard export action calls
+`/api/admin/runtime/{experiment_id}/export`. It reconstructs data from SQLite and
+supports JSON, YAML, and CSV encodings.
 
-The global dashboard header links to `/admin/privacy`, an installation-wide privacy status derived from the running server version and effective configuration. The page is protected by the same administrator session as the experiment dashboard and offers Markdown and JSON downloads. It reports the configured Privacy Contract version, effective storage switches, external services, exports, deletion support, and consent-evidence configuration. It does not claim that a DPO has approved the installation.
+Use the variants as follows:
 
-## Export
+| Variant | Intended use | Deliberate boundary |
+| --- | --- | --- |
+| `research` | Normal pseudonymous analysis | Omits recruitment identity, consent evidence, and internal runtime identifiers |
+| `corpus` | Preparation for a dialogue-data release | Removes additional internal identifiers and absolute timestamps, but remains a `corpus_candidate` requiring linkage removal and content review |
+| `full` | Restricted administration, audit, or recovery | Contains internal administrative records and should not be used as the ordinary analysis export |
 
-Use `/api/admin/export` to retrieve export data reconstructed from persisted rows, not active in-memory rooms. `variant=research` is the default and contains pseudonymized research data without recruitment identity or consent evidence. `variant=corpus` produces a publication-oriented `corpus_candidate`, not an automatically anonymous corpus. Both variants retain the experiment-specific readable participant and dialogue identifiers while omitting internal database, room, session, and participant-session identifiers. `variant=full` is the internal administrative export. JSON, YAML, and CSV encodings remain available.
+Both public-facing variants retain the experiment-specific participant and
+dialogue labels so repeated exports can be joined. They also retain session game
+version and configuration revision. New internal database fields do not
+automatically enter the fixed research and corpus projections.
 
-The export is the right source for downstream scripts that compute task success, timing, utterance counts, action sequences, agent metadata, transcription diagnostics, or exclusion flags.
+Use export data for task success, action sequences, utterance counts, timing,
+agent comparisons, transcription diagnostics, and exclusion decisions.
 
-## Practical Notes
+## Delete participant data
 
-- Treat the SQLite file as study data. Back it up before deleting or redeploying a service.
-- On Render, use a persistent disk for `/data` and configure `database.url` as `sqlite:////data/parlando.sqlite`.
-- Record agent names and versions in config so exported participant metadata can distinguish policies.
-- Keep deployment-level access controls as defense in depth; Parlando also requires an authenticated administrator session, role checks, and CSRF tokens on mutations.
-- Human participant cards in a session show their experiment-specific random participant identifier and provide a counted, confirmed deletion action. Parlando deliberately performs no automatic retention deletion.
+Human participant cards provide a preview and confirmed deletion action. Deletion
+removes consent evidence plus authored messages and transcripts, clears direct
+identity fields, and removes participant references where this can be done without
+destroying the shared fictitious game record. Shared actions needed to interpret
+the other participant's session remain with a deleted-participant marker.
+
+Parlando performs no automatic retention deletion. The institution must define
+retention, backups, and treatment of data already exported or released.
+
+## Review the installation privacy status
+
+`/admin/privacy` reports the effective Privacy Contract version, storage switches,
+external speech services, export capabilities, deletion support, and consent
+evidence settings. It can be downloaded as Markdown or JSON.
+
+This report makes the platform's technical behavior inspectable and downloadable.
+The institution adds the decisions that software cannot infer: controller,
+legal basis, provider contracts, retention policy, DPO approval, and the release
+assessment for a corpus candidate.
+
+## Operational checklist
+
+- Back up the SQLite file before migration, deletion, or redeployment.
+- Put hosted deployments on persistent storage; the Render example uses
+  `sqlite:////data/parlando.sqlite`.
+- Record agent type and version so exports distinguish experimental policies.
+- Treat process health and active intake as separate monitoring signals.
+- Protect administrator routes at the deployment boundary as defense in depth;
+  Parlando still requires its own authenticated session, roles, and CSRF tokens.

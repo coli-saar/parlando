@@ -28,7 +28,7 @@ pub struct ConsentItemResponse {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PublicConfigResponse {
     pub study_name: String,
-    /// Lifecycle state of the one experiment served by this process.
+    /// Lifecycle state of the experiment selected by the participant route.
     pub experiment_status: String,
     /// Institution displayed with the Parlando platform identity, when configured.
     pub institution: Option<String>,

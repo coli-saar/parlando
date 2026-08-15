@@ -13,7 +13,7 @@ Before generating code, read the bundled references that match the requested gam
 
 - `references/server-adapter.md` for the Rust `GameAdapter`, server binary, manifest, and test shape.
 - `references/browser-client.md` for JSON naming, HTTP flow, WebSocket messages, actions, and React client wiring.
-- `references/config-deployment.md` for experiment YAML, local run, Docker, and Render conventions.
+- `references/config-deployment.md` for dashboard-owned experiment configuration, bootstrap arguments, local run, Docker, and Render conventions.
 - `references/agents.md` only when the generated project needs server-side agent support, an in-process Rust agent, or remote gRPC agents.
 
 These references are intended to be sufficient for normal game generation. Do not browse or search GitHub documentation for Parlando game-generation details; if the bundled references do not cover something needed for a game, stop and report the missing topic so the skill can be updated.
@@ -63,9 +63,6 @@ Generate both halves of the game and all build/run files:
 <game-slug>/
 |-- README.md
 |-- Makefile
-|-- config/
-|   |-- experiment.local.yaml
-|   `-- experiment.render.example.yaml
 |-- server/
 |   |-- Cargo.toml
 |   |-- build.rs
@@ -140,11 +137,12 @@ Validation rule: the UI can guide users, but `validate_action` must be the autho
 
 Generate a `main.rs` that follows the Parlando server pattern:
 
-- parse required `--config` plus `--host` and `--port`
-- load the one process-owned experiment with `ExperimentConfig::from_yaml`
+- parse `--host`, required `--port`, `--database-url`, and `--client-dist`; keep `--config` optional for legacy migration only
+- define a stable `GameDescriptor` with the game's id, display name, exact Cargo semantic version, and build manifest
+- construct a secret-aware default bootstrap configuration when no migration YAML is supplied
 - create the game adapter
-- create an agent factory from config when the generated project includes agent support
-- call `parlando_server::serve`
+- create an agent factory from each experiment's stored configuration when the generated project includes agent support
+- call `parlando_server::serve_game` so one compiled game process can isolate multiple experiment runtimes
 - read `PORT` from the environment when `--port` is absent
 
 Do not construct an audio publisher in the game binary. When `voice.enabled` and `tts.enabled` are true, `parlando-server` publishes agent audio through its room relay automatically.
@@ -204,26 +202,17 @@ Keep the startup screen visually consistent with the generated game's theme, but
 
 When styling `MicLevelMeter`, ensure the scaled bar is visible. The SDK renders a child element inside `.mic-meter-track` and updates it with `transform: scaleX(...)`; generated CSS must give that child `display: block`, `width: 100%`, `height: 100%`, `transform-origin: left center`, and a visible background color. Without those dimensions, the mic meter can stay invisible even while audio levels update.
 
-## Config Files
+## Configuration
 
-Generate `config/experiment.local.yaml` with:
+Do not make YAML the normal editing surface. Generate defaults that seed the first inactive
+experiment, then direct researchers to `/admin/experiments` for all experiment options,
+including intake, consent, agents, voice, transcription, TTS, conversation, and privacy.
+The institution is a game-level dashboard setting shared by every experiment.
 
-- local experiment id
-- `direct.enabled: true`
-- `server.public_base_url: http://localhost:8000`
-- `server.client_dist_path: client/dist`
-- local SQLite under `.local/`
-- voice, transcription, and TTS disabled unless requested
-- when voice is requested, `voice`, server-side Speechmatics, and ElevenLabs fields via a private overlay
-- consent items under `direct.consents`; an empty list skips consent
-- conversation enabled by default
-
-Generate `config/experiment.render.example.yaml` with:
-
-- env vars for public URL, experiment id, and secrets
-- SQLite path on `/data`
-- `server.client_dist_path: /app/client-dist`
-- safe comments explaining which secrets are required only for voice deployments
+Keep listener host/port, database URL, browser bundle path, and provider credentials in the
+process bootstrap. Read provider keys from server environment variables and never persist or
+display them in an experiment revision. An optional `config/experiment.migration.yaml` may be
+included only when an existing YAML deployment must be imported.
 
 ## Build Files
 
@@ -237,7 +226,7 @@ Generate:
 
 The local Makefile should install dependencies from the registries by default. It should install the generated server binary with Cargo, build the browser client with npm, and run that installed binary.
 
-The production image should build the client, copy the client `dist` to `/app/client-dist`, build/install the generated server binary with Cargo, and start the binary with `--host 0.0.0.0 --config /app/config/experiment.yaml`.
+The production image should build the client, copy the client `dist` to `/app/client-dist`, build/install the generated server binary with Cargo, and start the binary with `--host 0.0.0.0 --port 8000`; set database and client paths through their bootstrap environment variables.
 
 ## Validation
 
@@ -264,7 +253,7 @@ End with:
 - files/directories created or changed
 - commands run and whether they passed
 - exact local run command
-- exact config YAML path to edit for local settings, and if voice/TTS/transcription is enabled, the private YAML/secret path that should hold Speechmatics and ElevenLabs values
+- the `/admin/experiments` URL for experiment editing, plus the server environment variables used for Speechmatics and ElevenLabs secrets when enabled
 - deployment notes for the requested target
 - agent run commands when generating a Rust or Python gRPC agent
 - confirmation that the browser client delegates startup to `ParlandoStartupGate` from `@coli-saar/parlando-client/react`

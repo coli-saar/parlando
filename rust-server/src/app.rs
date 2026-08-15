@@ -7,19 +7,21 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use axum::{
     extract::{
         ws::{Message, WebSocket},
         ConnectInfo, Extension, Path, Query, Request, State, WebSocketUpgrade,
     },
     http::{
-        header::{AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, ORIGIN, SET_COOKIE},
+        header::{
+            AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, HOST, ORIGIN, SET_COOKIE,
+        },
         HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
     },
     middleware::{self, Next},
     response::{Html, IntoResponse, Redirect, Response},
-    routing::{get, post},
+    routing::{any, get, post},
     Json, Router,
 };
 use futures_util::{SinkExt, StreamExt as FuturesStreamExt};
@@ -50,14 +52,14 @@ use crate::{
         UpgradePurpose, UpgradeTicketClaims, UpgradeTicketStore,
     },
     config::{AgentsMode, ExperimentConfig},
-    game::{GameAdapter, PlayerRole, Seat},
+    game::{GameAdapter, GameDescriptor, PlayerRole, Seat},
     identity::{new_id, room_code},
     protocol::*,
     storage::{
         experiment_store_from_url, generated_experiment_id, now_iso, ConsentDeclarationRecord,
         ExperimentRecord, GameRoom, MemoryState, ParticipantRecord, RoomParticipant,
         SessionEventRecord, SessionParticipantRecord, SessionRecord, SharedExperimentStore,
-        TranscriptSegment,
+        StoredGameSettings, TranscriptSegment,
     },
     transcription::{
         FinalTranscriptUtterance, SpeechmaticsTranscriptionProvider, TranscriptionEvent,
@@ -69,6 +71,8 @@ use crate::{
 /// Optional runtime components supplied by the game-specific binary.
 #[derive(Clone)]
 pub struct ServeOptions<A: GameAdapter> {
+    /// Identity of the one game implementation compiled into this server process.
+    pub game_descriptor: Option<GameDescriptor>,
     /// Factory used to create one fresh agent per agent participant.
     pub agent_factory: Option<Arc<dyn AgentFactory<A>>>,
     /// Streaming TTS provider used for agent-origin conversation messages.
@@ -85,6 +89,7 @@ impl<A: GameAdapter> Default for ServeOptions<A> {
     /// Creates serve options with no agent factory configured.
     fn default() -> Self {
         Self {
+            game_descriptor: None,
             agent_factory: None,
             tts_provider: None,
             audio_publisher: None,
@@ -97,8 +102,67 @@ impl<A: GameAdapter> Default for ServeOptions<A> {
 /// Produces the only configuration representation allowed to enter durable storage.
 fn persistable_config_json(config: &ExperimentConfig) -> Result<Value> {
     let mut value = serde_json::to_value(config)?;
+    if let Some(object) = value.as_object_mut() {
+        object.remove("experiment");
+        object.remove("server");
+        object.remove("database");
+    }
+    if let Some(study) = value.get_mut("study").and_then(Value::as_object_mut) {
+        study.remove("institution");
+    }
+    for provider in ["speechmatics", "tts"] {
+        if let Some(settings) = value.get_mut(provider).and_then(Value::as_object_mut) {
+            settings.remove("api_key");
+        }
+    }
     redact_secret_fields(&mut value);
     Ok(value)
+}
+
+/// Restores bootstrap-only fields before strict experiment configuration validation.
+fn experiment_config_from_json(
+    mut value: Value,
+    bootstrap: &ExperimentConfig,
+    experiment_id: &str,
+) -> Result<ExperimentConfig> {
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("experiment configuration must be a JSON object"))?;
+    object.insert(
+        "server".to_string(),
+        serde_json::to_value(&bootstrap.server)?,
+    );
+    object.insert(
+        "database".to_string(),
+        serde_json::to_value(&bootstrap.database)?,
+    );
+    let experiment = object
+        .entry("experiment")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("experiment configuration identity must be an object"))?;
+    experiment.insert("id".to_string(), Value::String(experiment_id.to_string()));
+    let speechmatics = object
+        .entry("speechmatics")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("speechmatics configuration must be an object"))?;
+    speechmatics.insert(
+        "api_key".to_string(),
+        Value::String(bootstrap.speechmatics.api_key.clone()),
+    );
+    let tts = object
+        .entry("tts")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("TTS configuration must be an object"))?;
+    tts.insert(
+        "api_key".to_string(),
+        Value::String(bootstrap.tts.api_key.clone()),
+    );
+    let config: ExperimentConfig = serde_json::from_value(value)?;
+    config.validate()?;
+    Ok(config)
 }
 
 /// Recursively removes credential-shaped fields as a defense-in-depth serialization boundary.
@@ -120,7 +184,7 @@ fn redact_secret_fields(value: &mut Value) {
                         "api_key" | "apikey" | "password" | "password_hash" | "token" | "secret"
                     )
                 {
-                    *child = Value::Null;
+                    *child = Value::String(String::new());
                 } else {
                     redact_secret_fields(child);
                 }
@@ -205,14 +269,13 @@ fn validate_websocket_origin(
     config: &ExperimentConfig,
     headers: &HeaderMap,
 ) -> Result<(), AppError> {
+    let origin = headers.get(ORIGIN).and_then(|value| value.to_str().ok());
+    if origin.is_some_and(|origin| origin_matches_request_host(origin, headers)) {
+        return Ok(());
+    }
     let public_origin = canonical_origin(&config.server.public_base_url)
         .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-    let origin = headers.get(ORIGIN).and_then(|value| value.to_str().ok());
-    if origin.is_none()
-        && (public_origin.starts_with("http://localhost")
-            || public_origin.starts_with("http://127.0.0.1")
-            || public_origin.starts_with("http://[::1]"))
-    {
+    if origin.is_none() && is_loopback_origin(&public_origin) {
         return Ok(());
     }
     let Some(origin) = origin else {
@@ -244,16 +307,16 @@ fn validate_admin_request_origin(
     let Some(origin) = headers.get(ORIGIN).and_then(|value| value.to_str().ok()) else {
         let public_origin = canonical_origin(&config.server.public_base_url)
             .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-        if public_origin.starts_with("http://localhost")
-            || public_origin.starts_with("http://127.0.0.1")
-            || public_origin.starts_with("http://[::1]")
-        {
+        if is_loopback_origin(&public_origin) {
             return Ok(());
         }
         return Err(AppError::forbidden(
             "Administrator Origin header is required",
         ));
     };
+    if origin_matches_request_host(origin, headers) {
+        return Ok(());
+    }
     let mut allowed = config.server.allowed_origins.clone();
     allowed.push(
         canonical_origin(&config.server.public_base_url)
@@ -264,6 +327,37 @@ fn validate_admin_request_origin(
     } else {
         Err(AppError::forbidden("Administrator origin is not allowed"))
     }
+}
+
+/// Returns whether an Origin represents the same authority as the HTTP Host header.
+fn origin_matches_request_host(origin: &str, headers: &HeaderMap) -> bool {
+    let Some(host) = headers.get(HOST).and_then(|value| value.to_str().ok()) else {
+        return false;
+    };
+    origin
+        .parse::<http::Uri>()
+        .ok()
+        .and_then(|uri| uri.authority().map(ToString::to_string))
+        .is_some_and(|authority| authority.eq_ignore_ascii_case(host))
+}
+
+/// Returns whether a canonical HTTP origin names a local loopback host.
+fn is_loopback_origin(origin: &str) -> bool {
+    origin.starts_with("http://localhost")
+        || origin.starts_with("http://127.0.0.1")
+        || origin.starts_with("http://[::1]")
+}
+
+/// Builds an origin-independent WebSocket path under the experiment route prefix.
+fn websocket_path(config: &ExperimentConfig, suffix: &str) -> String {
+    let route_prefix = config
+        .server
+        .public_base_url
+        .parse::<http::Uri>()
+        .ok()
+        .map(|uri| uri.path().trim_end_matches('/').to_string())
+        .unwrap_or_default();
+    format!("{route_prefix}/{}", suffix.trim_start_matches('/'))
 }
 
 /// Adds browser hardening headers to every normal HTTP response.
@@ -313,14 +407,16 @@ async fn security_headers<A: GameAdapter>(
 }
 
 /// Runs bounded periodic cleanup for transient credentials, sessions, and tickets.
-fn spawn_security_cleanup<A: GameAdapter>(state: Arc<AppState<A>>) {
+fn spawn_security_cleanup<A: GameAdapter>(state: Arc<AppState<A>>, clean_admin_sessions: bool) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
             let expired_participants = state.participant_auth.cleanup().await;
             state.upgrade_tickets.cleanup().await;
-            state.admin_auth.cleanup().await;
+            if clean_admin_sessions {
+                state.admin_auth.cleanup().await;
+            }
             cleanup_transient_rooms(&state).await;
             let participant_ids_in_rooms = state
                 .memory
@@ -752,6 +848,12 @@ pub struct AppState<A: GameAdapter> {
     pub adapter: A,
     pub config: ExperimentConfig,
     pub experiment_id: String,
+    /// Identity of the one compiled game which owns this experiment.
+    pub game_descriptor: GameDescriptor,
+    /// Settings shared by every experiment of this compiled game.
+    pub game_settings: Arc<RwLock<StoredGameSettings>>,
+    /// Immutable configuration revision used for newly created sessions.
+    pub config_revision: i64,
     experiment_lifecycle: RwLock<ExperimentLifecycle>,
     pub memory: RwLock<MemoryState<A::State>>,
     pub store: SharedExperimentStore,
@@ -766,7 +868,7 @@ pub struct AppState<A: GameAdapter> {
     committed_transcripts: RwLock<HashSet<String>>,
     participant_auth: ParticipantAuthenticator,
     upgrade_tickets: UpgradeTicketStore,
-    admin_auth: AdminAuthenticator,
+    admin_auth: Arc<AdminAuthenticator>,
     participant_creation_window: RwLock<ParticipantCreationRate>,
     game_connection_limit: Arc<Semaphore>,
     audio_connection_limit: Arc<Semaphore>,
@@ -1088,7 +1190,7 @@ impl IntoResponse for AppError {
 }
 
 mod routing;
-pub use routing::{build_router, serve};
+pub use routing::{build_game_router, build_router, serve, serve_game};
 
 async fn health() -> Json<Value> {
     Json(json!({"status": "ok"}))
@@ -1101,7 +1203,7 @@ async fn public_config<A: GameAdapter>(
     Json(PublicConfigResponse {
         study_name: config.study.name.clone(),
         experiment_status: state.experiment_lifecycle.read().await.as_str().to_string(),
-        institution: nonempty_string(&config.study.institution),
+        institution: nonempty_string(&state.game_settings.read().await.institution),
         participant_information_version: nonempty_string(
             &config.direct.participant_information_version,
         ),
@@ -1339,6 +1441,8 @@ where
                     .store
                     .create_session(SessionRecord {
                         experiment_id: state.experiment_id.clone(),
+                        config_revision: state.config_revision,
+                        game_version: state.game_descriptor.version.to_string(),
                         room_id: room_id.clone(),
                         mode: requested_mode.clone(),
                         status: "waiting".to_string(),
@@ -1369,6 +1473,8 @@ where
                 .store
                 .create_session(SessionRecord {
                     experiment_id: state.experiment_id.clone(),
+                    config_revision: state.config_revision,
+                    game_version: state.game_descriptor.version.to_string(),
                     room_id: room_id.clone(),
                     mode: requested_mode.clone(),
                     status: "waiting".to_string(),
@@ -1709,16 +1815,12 @@ async fn audio_session<A: GameAdapter>(
         expires_at: 0,
     };
     let token = state.upgrade_tickets.issue(claims).await;
-    let websocket_base = state
-        .config
-        .server
-        .public_base_url
-        .trim_end_matches('/')
-        .replacen("https://", "wss://", 1)
-        .replacen("http://", "ws://", 1);
     Ok(Json(AudioSessionPlanResponse {
         enabled: true,
-        websocket_url: Some(format!("{websocket_base}/ws/audio/{room_id}")),
+        websocket_url: Some(websocket_path(
+            &state.config,
+            &format!("ws/audio/{room_id}"),
+        )),
         token: Some(token),
         protocol_version: AUDIO_PROTOCOL_VERSION,
         sample_rate_hz: AUDIO_SAMPLE_RATE,
@@ -1746,15 +1848,8 @@ async fn game_session<A: GameAdapter>(
             expires_at: 0,
         })
         .await;
-    let websocket_base = state
-        .config
-        .server
-        .public_base_url
-        .trim_end_matches('/')
-        .replacen("https://", "wss://", 1)
-        .replacen("http://", "ws://", 1);
     Ok(Json(GameSessionPlanResponse {
-        websocket_url: format!("{websocket_base}/ws/game/{room_id}"),
+        websocket_url: websocket_path(&state.config, &format!("ws/game/{room_id}")),
         token,
     }))
 }
@@ -2045,6 +2140,45 @@ struct AdminEventsQuery {
 #[derive(Clone, Debug, Deserialize)]
 struct AdminUpdateExperimentStatusRequest {
     status: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdminCreateExperimentRequest {
+    experiment_id: String,
+    study_name: Option<String>,
+    config: Option<Value>,
+    notes: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdminCloneExperimentRequest {
+    experiment_id: String,
+    notes: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdminSaveExperimentConfigRequest {
+    expected_revision: i64,
+    config: Value,
+    change_summary: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdminCatalogueRequest {
+    pinned: bool,
+    obsolete: bool,
+    notes: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdminGameSettingsRequest {
+    expected_revision: i64,
+    institution: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2479,6 +2613,228 @@ fn yes_no(value: bool) -> &'static str {
     }
 }
 
+/// Returns the catalogue of experiments owned by this compiled game process.
+async fn admin_experiments<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Extension(admin_session): Extension<AdminSession>,
+) -> Result<Json<Value>, AppError> {
+    let experiments = state.store.list_experiments(1_000).await?;
+    let game_settings = state.game_settings.read().await.clone();
+    Ok(Json(json!({
+        "game": state.game_descriptor,
+        "game_settings": game_settings,
+        "experiments": experiments,
+        "running_experiment_id": state.experiment_id,
+        "csrf_token": admin_session.csrf_token,
+    })))
+}
+
+/// Creates one inactive experiment for the exact game version compiled into this process.
+async fn admin_create_experiment<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Json(request): Json<AdminCreateExperimentRequest>,
+) -> Result<Json<Value>, AppError> {
+    validate_new_experiment_id(&request.experiment_id)?;
+    let mut config = if let Some(value) = request.config {
+        experiment_config_from_json(value, &state.config, &request.experiment_id)
+            .map_err(|error| AppError::bad_request(error.to_string()))?
+    } else {
+        state.config.clone()
+    };
+    config.experiment.id = Some(request.experiment_id.clone());
+    if let Some(study_name) = request.study_name {
+        config.study.name = study_name;
+    }
+    config
+        .validate()
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    let persisted = persistable_config_json(&config)?;
+    state
+        .store
+        .create_experiment(ExperimentRecord {
+            experiment_id: request.experiment_id.clone(),
+            game_version: state.game_descriptor.version.to_string(),
+            config: persisted,
+            server_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            version_manifest: Some(state.version_manifest.clone()),
+            status: "inactive".to_string(),
+            notes: request.notes,
+        })
+        .await
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    Ok(Json(json!({
+        "experiment_id": request.experiment_id,
+        "game_version": state.game_descriptor.version,
+        "status": "inactive",
+    })))
+}
+
+/// Clones a historical configuration into a new current-version inactive experiment.
+async fn admin_clone_experiment<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Path(source_experiment_id): Path<String>,
+    Json(request): Json<AdminCloneExperimentRequest>,
+) -> Result<Json<Value>, AppError> {
+    validate_new_experiment_id(&request.experiment_id)?;
+    let source = state
+        .store
+        .experiment_definition(&source_experiment_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("Source experiment not found."))?;
+    let mut config =
+        experiment_config_from_json(source.config, &state.config, &request.experiment_id).map_err(
+            |error| {
+                AppError::bad_request(format!(
+                    "Source configuration is not valid for the current game version: {error}"
+                ))
+            },
+        )?;
+    config.experiment.id = Some(request.experiment_id.clone());
+    config
+        .validate()
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    state
+        .store
+        .create_experiment(ExperimentRecord {
+            experiment_id: request.experiment_id.clone(),
+            game_version: state.game_descriptor.version.to_string(),
+            config: persistable_config_json(&config)?,
+            server_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            version_manifest: Some(state.version_manifest.clone()),
+            status: "inactive".to_string(),
+            notes: request.notes,
+        })
+        .await
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    Ok(Json(json!({
+        "experiment_id": request.experiment_id,
+        "source_experiment_id": source_experiment_id,
+        "game_version": state.game_descriptor.version,
+        "status": "inactive",
+    })))
+}
+
+/// Returns the current normalized configuration for one catalogue experiment.
+async fn admin_experiment_config<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Path(experiment_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let experiment = state
+        .store
+        .experiment_definition(&experiment_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("Experiment not found."))?;
+    Ok(Json(json!({ "experiment": experiment })))
+}
+
+/// Validates and saves a new immutable configuration revision for an inactive experiment.
+async fn admin_save_experiment_config<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Path(experiment_id): Path<String>,
+    Json(request): Json<AdminSaveExperimentConfigRequest>,
+) -> Result<Json<Value>, AppError> {
+    let experiment = state
+        .store
+        .experiment_definition(&experiment_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("Experiment not found."))?;
+    if experiment.game_version != state.game_descriptor.version.to_string() {
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            "Clone this experiment before editing it under the current game version",
+        ));
+    }
+    let mut config = experiment_config_from_json(request.config, &state.config, &experiment_id)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    config.experiment.id = Some(experiment_id.clone());
+    config
+        .validate()
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    let revision = state
+        .store
+        .save_experiment_revision(
+            &experiment_id,
+            request.expected_revision,
+            persistable_config_json(&config)?,
+            request.change_summary,
+        )
+        .await
+        .map_err(|error| AppError::new(StatusCode::CONFLICT, error.to_string()))?;
+    Ok(Json(
+        json!({ "experiment_id": experiment_id, "revision": revision }),
+    ))
+}
+
+/// Lists immutable configuration revisions for one experiment.
+async fn admin_experiment_revisions<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Path(experiment_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    Ok(Json(json!({
+        "experiment_id": experiment_id.clone(),
+        "revisions": state.store.experiment_revisions(&experiment_id).await?,
+    })))
+}
+
+/// Updates pinning, obsolescence, and notes without changing runtime configuration.
+async fn admin_update_experiment_catalogue<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Path(experiment_id): Path<String>,
+    Json(request): Json<AdminCatalogueRequest>,
+) -> Result<Json<Value>, AppError> {
+    state
+        .store
+        .update_experiment_catalogue(
+            &experiment_id,
+            request.pinned,
+            request.obsolete,
+            request.notes,
+        )
+        .await
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    Ok(Json(json!({ "experiment_id": experiment_id, "ok": true })))
+}
+
+/// Returns settings shared by every experiment of the compiled game.
+async fn admin_game_settings<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+) -> Json<StoredGameSettings> {
+    Json(state.game_settings.read().await.clone())
+}
+
+/// Updates the shared institution with optimistic concurrency.
+async fn admin_update_game_settings<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    Json(request): Json<AdminGameSettingsRequest>,
+) -> Result<Json<Value>, AppError> {
+    let institution = request.institution.trim().to_string();
+    let revision = state
+        .store
+        .update_game_settings(request.expected_revision, institution.clone())
+        .await
+        .map_err(|error| AppError::new(StatusCode::CONFLICT, error.to_string()))?;
+    *state.game_settings.write().await = StoredGameSettings {
+        institution,
+        revision,
+    };
+    Ok(Json(json!({ "revision": revision })))
+}
+
+/// Validates a dashboard-supplied experiment id using the public configuration contract.
+fn validate_new_experiment_id(experiment_id: &str) -> Result<(), AppError> {
+    if experiment_id.is_empty()
+        || experiment_id.chars().count() > 128
+        || !experiment_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(AppError::bad_request(
+            "experiment_id must contain 1 to 128 letters, digits, dots, dashes, or underscores",
+        ));
+    }
+    Ok(())
+}
+
 /// Returns the process-owned experiment with dashboard aggregates.
 async fn admin_experiment<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
@@ -2491,6 +2847,8 @@ async fn admin_experiment<A: GameAdapter>(
         .ok_or_else(|| AppError::not_found("Configured experiment not found."))?;
     Ok(Json(json!({
         "experiment": experiment,
+        "game": state.game_descriptor,
+        "game_settings": state.game_settings.read().await.clone(),
         "version_manifest": state.version_manifest,
         "csrf_token": admin_session.csrf_token,
     })))
@@ -2502,6 +2860,19 @@ async fn admin_update_experiment_status<A: GameAdapter>(
     Json(request): Json<AdminUpdateExperimentStatusRequest>,
 ) -> Result<Json<Value>, AppError> {
     let lifecycle = ExperimentLifecycle::parse(&request.status)?;
+    let stored = state
+        .store
+        .experiment_definition(&state.experiment_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("Configured experiment not found."))?;
+    if lifecycle == ExperimentLifecycle::Active
+        && stored.game_version != state.game_descriptor.version.to_string()
+    {
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            "This experiment belongs to another game version; clone it before activation",
+        ));
+    }
     let mut current_lifecycle = state.experiment_lifecycle.write().await;
     state
         .store
@@ -3502,6 +3873,8 @@ fn research_export(exported: Value, privacy_contract_version: &str) -> Value {
         .map(|row| {
             json!({
                 "dialogue_id": row.get("dialogue_id"),
+                "config_revision": row.get("config_revision"),
+                "game_version": row.get("game_version"),
                 "mode": row.get("mode"),
                 "status": row.get("status"),
                 "created_at": row.get("created_at"),
@@ -3543,6 +3916,13 @@ fn research_export(exported: Value, privacy_contract_version: &str) -> Value {
         "export_variant": "research",
         "generated_at": now_iso(),
         "privacy_contract_version": privacy_contract_version,
+        "experiment": {
+            "experiment_id": exported.get("experiment").and_then(|value| value.get("experiment_id")),
+            "game_version": exported.get("experiment").and_then(|value| value.get("game_version")),
+            "config_revision": exported.get("experiment").and_then(|value| value.get("config_revision")),
+            "server_version": exported.get("experiment").and_then(|value| value.get("server_version")),
+            "version_manifest": exported.get("experiment").and_then(|value| value.get("version_manifest")),
+        },
         "participants": participants,
         "sessions": sessions,
         "session_participants": session_participants,
@@ -3683,6 +4063,12 @@ fn corpus_export(research: Value) -> Value {
         "export_variant": "corpus",
         "release_status": "corpus_candidate",
         "content_review_required": true,
+        "experiment": research.get("experiment"),
+        "sessions": research.get("sessions").and_then(Value::as_array).into_iter().flatten().map(|row| json!({
+            "dialogue_id": row.get("dialogue_id"),
+            "config_revision": row.get("config_revision"),
+            "game_version": row.get("game_version"),
+        })).collect::<Vec<_>>(),
         "participants": participants,
         "events": events,
         "messages": messages,

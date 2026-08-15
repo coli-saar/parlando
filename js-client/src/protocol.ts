@@ -7,7 +7,7 @@ export interface ParticipantCreateResponse {
 
 export interface PublicConfigResponse {
   study_name: string;
-  /** Lifecycle state of the one experiment served by this process. */
+  /** Lifecycle state of the experiment selected by this client's route. */
   experiment_status: "inactive" | "active";
   /** Institution operating the study, when the server exposes one. */
   institution?: string | null;
@@ -137,11 +137,13 @@ export type ServerMessage<
   | { type: "error"; room_id?: string; message?: string };
 
 export function apiBase(): string {
-  return window.location.origin;
+  const experimentPath = window.location.pathname.match(/^\/e\/[^/]+/)?.[0] || "";
+  return `${window.location.origin}${experimentPath}`;
 }
 
 export function socketUrl(websocketUrl: string, token: string): string {
-  const base = new URL(websocketUrl);
+  const base = new URL(websocketUrl, window.location.origin);
+  base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
   base.searchParams.set("token", token);
   return base.toString();
 }

@@ -38,6 +38,14 @@
     .muted { color: #65717c; }
     .small { font-size: 12px; }
     .refresh, .primary, .secondary, .danger, select, input { border: 1px solid #c9d2da; background: #fff; border-radius: 6px; padding: 7px 10px; }
+    textarea { background: #fff; border: 1px solid #c9d2da; border-radius: 6px; color: #182026; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; min-height: 360px; padding: 10px; resize: vertical; width: 100%; }
+    .config-form { display: grid; gap: 14px; }
+    .config-group { border: 1px solid #dce2e8; border-radius: 8px; display: grid; gap: 10px; margin: 0; padding: 12px; }
+    .config-group legend { color: #31404c; font-size: 13px; font-weight: 800; padding: 0 5px; }
+    .config-field { display: grid; gap: 5px; }
+    .config-field > span { color: #596873; font-size: 12px; font-weight: 700; }
+    .config-field input[type="checkbox"] { height: 18px; justify-self: start; width: 18px; }
+    .config-field textarea { min-height: 88px; }
     .refresh, .primary { cursor: pointer; }
     .primary { background: #185f8f; border-color: #185f8f; color: #fff; font-weight: 700; }
     .secondary { color: #31404c; cursor: pointer; font-weight: 650; }
@@ -166,7 +174,8 @@
   <div class="shell">
     <aside id="experimentSidebar" class="sidebar">
       <div class="topline">
-        <h1>Experiment</h1>
+        <h1>Experiments</h1>
+        <button class="primary" id="createExperimentButton" type="button">New experiment</button>
       </div>
       <section class="control-grid" aria-label="Experiment">
         <div id="experimentList" class="experiment-list"><div class="empty">Loading experiment...</div></div>
@@ -247,11 +256,24 @@
       </section>
       <section id="detailsPanel" class="tab-panel" hidden>
         <section class="panel" id="reproducibility"><div class="empty">Loading experiment details...</div></section>
+        <section class="panel" id="gameSettingsPanel">
+          <h2>Game settings</h2>
+          <label class="label" for="institutionInput">Institution shared by every experiment</label>
+          <div class="control-row"><input id="institutionInput" placeholder="Optional institution"><button class="secondary" id="saveGameSettings" type="button">Save game settings</button></div>
+        </section>
+        <section class="panel" id="configurationPanel">
+          <div class="topline"><h2>Experiment configuration</h2><span id="configRevision" class="muted small"></span></div>
+          <p class="muted small">All experiment options are stored in the database. The server validates these fields and saves every change as an immutable revision. Structured list and map values use JSON.</p>
+          <div id="configForm" class="config-form" aria-label="Experiment configuration"></div>
+          <div class="control-row"><input id="changeSummary" placeholder="Optional change summary"><button class="primary" id="saveConfiguration" type="button">Save new revision</button></div>
+          <div class="section-title"><h2>Revision history</h2></div>
+          <div id="revisionHistory" class="experiment-list"></div>
+        </section>
       </section>
     </main>
   </div>
   <script>
-    const state = { experiment: null, sessions: [], selected: null, selectedSession: null, events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, csrfToken: null, activeTab: 'sessions' };
+    const state = { experiment: null, experiments: [], game: null, gameSettings: null, sessions: [], selected: null, selectedSession: null, events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, csrfToken: null, activeTab: 'sessions', loadedConfigKey: null };
     const experimentList = document.getElementById('experimentList');
     const menuButton = document.getElementById('menuButton');
     const experimentHeader = document.getElementById('experimentHeader');
@@ -266,6 +288,11 @@
     const experimentLabel = document.getElementById('experimentLabel');
     const sessionStatusFilter = document.getElementById('sessionStatusFilter');
     const showHousekeeping = document.getElementById('showHousekeeping');
+    const configForm = document.getElementById('configForm');
+    const configRevision = document.getElementById('configRevision');
+    const revisionHistory = document.getElementById('revisionHistory');
+    const saveConfiguration = document.getElementById('saveConfiguration');
+    const institutionInput = document.getElementById('institutionInput');
     const tabButtons = Array.from(document.querySelectorAll('.tab'));
     const tabPanels = {
       sessions: document.getElementById('sessionsPanel'),
@@ -285,21 +312,25 @@
 
     function renderExperiment() {
       const experiment = state.experiment;
-      if (!experiment) {
-        experimentList.innerHTML = '<div class="empty">Experiment unavailable.</div>';
+      if (!state.experiments.length) {
+        experimentList.innerHTML = '<div class="empty">No experiments yet.</div>';
         return;
       }
-      experimentList.innerHTML = `
-        <div class="experiment active">
-          <strong>${escapeHtml(experiment.study_name || experiment.experiment_id)}</strong>
-          ${experiment.study_name ? `<span class="muted small">${escapeHtml(experiment.experiment_id)}</span>` : ''}
+      experimentList.innerHTML = state.experiments.map(item => `
+        <button class="experiment ${experiment?.experiment_id === item.experiment_id ? 'active' : ''}" data-experiment="${escapeHtml(item.experiment_id)}" type="button">
+          <strong>${item.pinned ? '★ ' : ''}${escapeHtml(item.study_name || item.experiment_id)}</strong>
+          ${item.study_name ? `<span class="muted small">${escapeHtml(item.experiment_id)}</span>` : ''}
           <span class="meta">
-            <span class="pill">${escapeHtml(experiment.status)}</span>
-            <span class="pill">${experiment.session_count} sessions</span>
-            <span class="pill">${experiment.completed_session_count} completed</span>
+            <span class="pill">${escapeHtml(item.status)}</span>
+            <span class="pill">v${escapeHtml(item.game_version)}</span>
+            <span class="pill">${item.session_count} sessions</span>
+            ${item.obsolete ? '<span class="pill">obsolete</span>' : ''}
           </span>
-        </div>
-      `;
+        </button>
+      `).join('');
+      experimentList.querySelectorAll('[data-experiment]').forEach(button => {
+        button.addEventListener('click', () => selectExperiment(button.dataset.experiment));
+      });
     }
 
     function renderExperimentHeader() {
@@ -316,22 +347,30 @@
       `;
       experimentStats.innerHTML = `
         <span class="pill">${experiment.status === 'active' ? 'Accepting participants' : 'Intake inactive'}</span>
+        <span class="pill">Game ${escapeHtml(experiment.game_version)}</span>
         <span class="pill">${experiment.session_count} sessions</span>
         <span class="pill">${experiment.completed_session_count} completed</span>
-        <button class="${experiment.status === 'active' ? 'secondary' : 'primary'}" id="lifecycleButton" type="button">
+        <button class="secondary" id="cloneButton" type="button">Clone</button>
+        <button class="secondary" id="pinButton" type="button">${experiment.pinned ? 'Unpin' : 'Pin'}</button>
+        <button class="secondary" id="obsoleteButton" type="button">${experiment.obsolete ? 'Restore from obsolete' : 'Mark obsolete'}</button>
+        <a class="header-link" href="/e/${encodeURIComponent(experiment.experiment_id)}/" target="_blank" rel="noopener">Participant page</a>
+        <button class="${experiment.status === 'active' ? 'secondary' : 'primary'}" id="lifecycleButton" type="button" ${experiment.game_version !== state.game?.version ? 'disabled title="Clone this experiment to use the current game version"' : ''}>
           ${experiment.status === 'active' ? 'Deactivate intake' : 'Activate experiment'}
         </button>
       `;
       document.getElementById('lifecycleButton').addEventListener('click', () => {
         updateExperimentStatus(experiment.status === 'active' ? 'inactive' : 'active');
       });
+      document.getElementById('cloneButton').addEventListener('click', cloneSelectedExperiment);
+      document.getElementById('pinButton').addEventListener('click', () => updateCatalogue({ pinned: !experiment.pinned }));
+      document.getElementById('obsoleteButton').addEventListener('click', () => updateCatalogue({ obsolete: !experiment.obsolete }));
     }
 
     function renderExperimentDetails() {
       const experiment = state.experiment;
       const manifest = experiment?.version_manifest || state.versionManifest || {};
       const warnings = manifest.warnings || [];
-      gameName.textContent = displayGameName(manifest.game);
+      gameName.textContent = `${state.game?.display_name || displayGameName(manifest.game)} · ${state.game?.version || '-'}`;
       experimentLabel.textContent = experiment ? `Experiment ${experiment.experiment_id}` : 'Experiment unavailable';
       reproducibility.innerHTML = `
         <h2>Experiment Details</h2>
@@ -379,9 +418,10 @@
     }
 
     async function loadSessions() {
+      if (!state.experiment) return;
       const params = new URLSearchParams({ limit: '80' });
       if (sessionStatusFilter.value) params.set('status', sessionStatusFilter.value);
-      const response = await fetch(`/api/admin/sessions?${params}`);
+      const response = await fetch(`${runtimeApi('sessions')}?${params}`);
       const data = await response.json();
       state.sessions = data.sessions || [];
       if (state.selected && !state.sessions.some(session => session.session_id === state.selected)) {
@@ -394,22 +434,29 @@
     }
 
     async function loadExperiment() {
-      const response = await fetch('/api/admin/experiment');
+      const response = await fetch('/api/admin/experiments');
       if (!response.ok) throw new Error(await response.text());
       const data = await response.json();
-      state.experiment = data.experiment || null;
-      state.versionManifest = data.version_manifest || null;
+      state.experiments = data.experiments || [];
+      state.game = data.game || null;
+      state.gameSettings = data.game_settings || null;
       state.csrfToken = data.csrf_token || null;
+      const selectedId = state.experiment?.experiment_id || data.running_experiment_id;
+      state.experiment = state.experiments.find(item => item.experiment_id === selectedId) || state.experiments[0] || null;
+      state.versionManifest = state.experiment?.version_manifest || null;
       renderExperiment();
       renderExperimentHeader();
       renderExperimentDetails();
+      institutionInput.value = state.gameSettings?.institution || '';
+      const configKey = state.experiment ? `${state.experiment.experiment_id}:${state.experiment.config_revision}` : null;
+      if (configKey && configKey !== state.loadedConfigKey) await loadConfiguration();
     }
 
     // Changes whether the process-owned experiment accepts new participant intake.
     async function updateExperimentStatus(status) {
       const button = document.getElementById('lifecycleButton');
       if (button) button.disabled = true;
-      const response = await fetch('/api/admin/experiment/status', {
+      const response = await fetch(runtimeApi('experiment/status'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
         body: JSON.stringify({ status })
@@ -422,12 +469,223 @@
       await loadExperiment();
     }
 
+    // Selects one experiment and scopes all subsequent monitoring requests to its runtime.
+    async function selectExperiment(experimentId) {
+      state.experiment = state.experiments.find(item => item.experiment_id === experimentId) || null;
+      state.selected = null;
+      state.selectedSession = null;
+      sessionDetail.hidden = true;
+      closeExperimentMenu();
+      renderExperiment();
+      renderExperimentHeader();
+      renderExperimentDetails();
+      await loadConfiguration();
+      await loadSessions();
+    }
+
+    // Returns an authenticated runtime API path for the selected experiment.
+    function runtimeApi(path) {
+      if (!state.experiment) throw new Error('No experiment selected.');
+      return `/api/admin/runtime/${encodeURIComponent(state.experiment.experiment_id)}/${path.replace(/^\//, '')}`;
+    }
+
+    // Loads the selected experiment's authoritative database-backed configuration.
+    async function loadConfiguration() {
+      if (!state.experiment) return;
+      const id = encodeURIComponent(state.experiment.experiment_id);
+      const response = await fetch(`/api/admin/experiments/${id}/config`);
+      if (!response.ok) throw new Error(await response.text());
+      const data = await response.json();
+      renderConfigurationForm(data.experiment.config);
+      configRevision.textContent = `Revision ${data.experiment.config_revision}`;
+      state.loadedConfigKey = `${data.experiment.experiment_id}:${data.experiment.config_revision}`;
+      await loadRevisionHistory();
+      const readOnly = state.experiment.status === 'active' || state.experiment.game_version !== state.game?.version;
+      configForm.querySelectorAll('input, textarea').forEach(control => { control.disabled = readOnly; });
+      saveConfiguration.disabled = readOnly;
+    }
+
+    // Loads compact immutable revision metadata for the selected experiment.
+    async function loadRevisionHistory() {
+      const id = encodeURIComponent(state.experiment.experiment_id);
+      const response = await fetch(`/api/admin/experiments/${id}/revisions`);
+      if (!response.ok) throw new Error(await response.text());
+      const data = await response.json();
+      revisionHistory.innerHTML = (data.revisions || []).map(revision => `
+        <div class="session">
+          <strong>Revision ${revision.revision}</strong>
+          <span class="muted small">${escapeHtml(fmtTime(revision.created_at))}</span>
+          ${revision.change_summary ? `<div class="small">${escapeHtml(revision.change_summary)}</div>` : ''}
+        </div>
+      `).join('') || '<div class="empty">No revisions stored.</div>';
+    }
+
+    // Renders every persisted configuration value as a typed browser control.
+    function renderConfigurationForm(config) {
+      configForm.replaceChildren();
+      Object.entries(config).forEach(([key, value]) => {
+        if (value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length) {
+          const group = document.createElement('fieldset');
+          group.className = 'config-group';
+          const legend = document.createElement('legend');
+          legend.textContent = key;
+          group.appendChild(legend);
+          appendConfigurationFields(group, value, [key]);
+          configForm.appendChild(group);
+        } else {
+          appendConfigurationField(configForm, key, value, [key]);
+        }
+      });
+    }
+
+    // Recursively appends leaf controls while retaining their exact object paths.
+    function appendConfigurationFields(parent, object, path) {
+      Object.entries(object).forEach(([key, value]) => {
+        const fieldPath = [...path, key];
+        if (value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length) {
+          const group = document.createElement('fieldset');
+          group.className = 'config-group';
+          const legend = document.createElement('legend');
+          legend.textContent = key;
+          group.appendChild(legend);
+          appendConfigurationFields(group, value, fieldPath);
+          parent.appendChild(group);
+        } else {
+          appendConfigurationField(parent, key, value, fieldPath);
+        }
+      });
+    }
+
+    // Creates one boolean, number, string, or structured JSON configuration control.
+    function appendConfigurationField(parent, labelText, value, path) {
+      const label = document.createElement('label');
+      label.className = 'config-field';
+      const caption = document.createElement('span');
+      caption.textContent = labelText;
+      const structured = value === null || typeof value === 'object';
+      const control = structured ? document.createElement('textarea') : document.createElement('input');
+      control.dataset.configPath = JSON.stringify(path);
+      if (structured) {
+        control.dataset.configType = 'json';
+        control.value = JSON.stringify(value, null, 2);
+      } else if (typeof value === 'boolean') {
+        control.type = 'checkbox';
+        control.dataset.configType = 'boolean';
+        control.checked = value;
+      } else if (typeof value === 'number') {
+        control.type = 'number';
+        control.step = 'any';
+        control.dataset.configType = 'number';
+        control.value = String(value);
+      } else {
+        control.type = 'text';
+        control.dataset.configType = 'string';
+        control.value = String(value);
+      }
+      label.append(caption, control);
+      parent.appendChild(label);
+    }
+
+    // Reconstructs normalized configuration JSON from the generated controls.
+    function configurationFromForm() {
+      const config = {};
+      configForm.querySelectorAll('[data-config-path]').forEach(control => {
+        const path = JSON.parse(control.dataset.configPath);
+        let value;
+        if (control.dataset.configType === 'boolean') value = control.checked;
+        else if (control.dataset.configType === 'number') value = Number(control.value);
+        else if (control.dataset.configType === 'json') value = JSON.parse(control.value);
+        else value = control.value;
+        let target = config;
+        path.slice(0, -1).forEach(segment => { target = target[segment] ||= {}; });
+        target[path.at(-1)] = value;
+      });
+      return config;
+    }
+
+    // Creates an inactive experiment from the compiled game's current defaults.
+    async function createExperiment() {
+      const experimentId = window.prompt('New experiment id');
+      if (!experimentId) return;
+      const studyName = window.prompt('Study name', experimentId) || experimentId;
+      const response = await fetch('/api/admin/experiments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
+        body: JSON.stringify({ experiment_id: experimentId, study_name: studyName })
+      });
+      if (!response.ok) throw new Error(await response.text());
+      state.experiment = { experiment_id: experimentId };
+      await loadExperiment();
+      await selectExperiment(experimentId);
+    }
+
+    // Clones the selected configuration into a current-version inactive experiment.
+    async function cloneSelectedExperiment() {
+      const source = state.experiment;
+      if (!source) return;
+      const experimentId = window.prompt('Id for the cloned experiment', `${source.experiment_id}-copy`);
+      if (!experimentId) return;
+      const response = await fetch(`/api/admin/experiments/${encodeURIComponent(source.experiment_id)}/clone`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
+        body: JSON.stringify({ experiment_id: experimentId })
+      });
+      if (!response.ok) throw new Error(await response.text());
+      state.experiment = { experiment_id: experimentId };
+      await loadExperiment();
+      await selectExperiment(experimentId);
+    }
+
+    // Updates catalogue metadata without changing runtime configuration.
+    async function updateCatalogue(changes) {
+      const experiment = state.experiment;
+      if (!experiment) return;
+      const response = await fetch(`/api/admin/experiments/${encodeURIComponent(experiment.experiment_id)}/catalogue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
+        body: JSON.stringify({
+          pinned: changes.pinned ?? experiment.pinned,
+          obsolete: changes.obsolete ?? experiment.obsolete,
+          notes: changes.notes ?? experiment.notes
+        })
+      });
+      if (!response.ok) throw new Error(await response.text());
+      await loadExperiment();
+    }
+
+    // Validates and stores the editor contents as a new immutable revision.
+    async function saveConfigRevision() {
+      const expectedRevision = Number(configRevision.textContent.replace(/\D/g, ''));
+      let config;
+      try { config = configurationFromForm(); }
+      catch (error) { window.alert(`Invalid structured value: ${error.message}`); return; }
+      const id = encodeURIComponent(state.experiment.experiment_id);
+      const response = await fetch(`/api/admin/experiments/${id}/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
+        body: JSON.stringify({ expected_revision: expectedRevision, config, change_summary: document.getElementById('changeSummary').value || null })
+      });
+      if (!response.ok) { window.alert(await response.text()); return; }
+      await loadExperiment();
+    }
+
+    // Saves the institution shared by all experiments of this compiled game.
+    async function saveSharedGameSettings() {
+      const response = await fetch('/api/admin/game/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
+        body: JSON.stringify({ expected_revision: state.gameSettings.revision, institution: institutionInput.value })
+      });
+      if (!response.ok) { window.alert(await response.text()); return; }
+      await loadExperiment();
+    }
+
     async function selectSession(sessionId) {
       state.selected = sessionId;
       state.lastEventIndex = 0;
       renderSessions();
       liveStatus.textContent = 'Loading';
-      const response = await fetch(`/api/admin/sessions/${sessionId}`);
+      const response = await fetch(runtimeApi(`sessions/${sessionId}`));
       const data = await response.json();
       state.selectedSession = data.session;
       renderSummary(data.session, data.participants || []);
@@ -539,7 +797,7 @@
     // Previews and confirms deletion of one human participant's stored data.
     async function deleteParticipantData(researchId) {
       if (!state.experiment) return;
-      const path = `/api/admin/participants/${encodeURIComponent(researchId)}/deletion`;
+      const path = runtimeApi(`participants/${encodeURIComponent(researchId)}/deletion`);
       const previewResponse = await fetch(path);
       if (!previewResponse.ok) throw new Error(await previewResponse.text());
       const preview = (await previewResponse.json()).preview;
@@ -651,7 +909,7 @@
     async function refreshEvents() {
       if (!state.selected) return;
       const params = new URLSearchParams({ after: String(state.lastEventIndex) });
-      const response = await fetch(`/api/admin/sessions/${state.selected}/events?${params}`);
+      const response = await fetch(`${runtimeApi(`sessions/${state.selected}/events`)}?${params}`);
       const data = await response.json();
       state.eventBundles = data.event_bundles || state.eventBundles;
       mergeEvents(data.events || []);
@@ -660,6 +918,11 @@
     }
 
     showHousekeeping.addEventListener('change', renderEventBundles);
+    document.getElementById('createExperimentButton').addEventListener('click', () => {
+      createExperiment().catch(error => window.alert(error.message));
+    });
+    saveConfiguration.addEventListener('click', saveConfigRevision);
+    document.getElementById('saveGameSettings').addEventListener('click', saveSharedGameSettings);
     menuButton.addEventListener('click', toggleExperimentMenu);
     document.addEventListener('keydown', event => {
       if (event.key === 'Escape') closeExperimentMenu();
@@ -692,7 +955,7 @@
       }
       const eventType = document.getElementById('eventTypeFilter').value.trim();
       if (eventType) params.set('event_type', eventType);
-      window.location.href = `/api/admin/export?${params}`;
+      window.location.href = `${runtimeApi('export')}?${params}`;
     });
     summary.addEventListener('click', event => {
       const button = event.target.closest('.delete-participant');

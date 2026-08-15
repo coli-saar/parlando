@@ -1,29 +1,67 @@
 # Parlando Documentation
 
-These pages explain how to build, run, deploy, and analyze dialogue-game experiments with Parlando. The root [README](../README.md) gives the quick research overview; this directory is the user-facing technical manual.
+Parlando lets researchers build a complete browser-based dialogue game and run
+multiple experiments with it. You design both the participant experience and the
+game mechanics. Parlando supplies reusable setup, communication, administration,
+privacy, and data infrastructure around them.
 
-If you are starting a new experiment, read these pages in order:
+One process runs one compiled game version—browser client and Rust mechanics—and
+hosts a database-backed catalogue of experiments for that game. Each session
+records the experiment revision and game version that produced it.
 
-1. [Architecture](architecture.md): how the reusable server, game crate, browser client, storage, audio services, and agents fit together.
-2. [Building A Game](building-games.md): how to model state, actions, observations, validation, transitions, events, and completion.
-3. [Browser Client Protocol](client-protocol.md): what JSON the JavaScript client sends and receives, including role-specific observations and actions.
-4. [Audio Transport](audio-transport.md): server relay, PCM framing, authentication, transcription, TTS playback, buffering, privacy, and scaling.
-5. [Audio Testing](audio-testing.md): fast credential-free checks plus realistic, saturation, and impaired modes in the standalone ten-minute stress dashboard.
-6. [Agents](agents.md): how to add in-process Rust agents or connect Python agents over gRPC.
-7. [Running And Deployment](running-and-deployment.md): local development, configuration, frontend serving, Docker, Render, and remote-agent deployment.
-8. [Data And Monitoring](data-and-monitoring.md): persisted evaluation data, operator monitoring, and export.
-9. [Unterlage zur datenschutzrechtlichen Plattformbewertung](datenschutz-pruefvorlage.md): German basis for a reusable DPO assessment of self-hosted Parlando deployments.
-10. [Umgesetzte Datenschutz-Roadmap](datenschutz-code-roadmap.md): concise record of the six implemented privacy functions, including experiment-scoped identifiers, fixed exports, deletion, and the configuration-derived privacy status page.
+Choose a path according to the task you need to perform.
 
-Maintenance reference:
+## Create a dialogue game
 
-- [Publishing Packages](publishing-packages.md): local package smoke tests and online publishing for `parlando-server` and `@coli-saar/parlando-client`.
-- [Participant Information and Privacy Notice v1.0](participant-information-v1.0.md): versioned English participant-facing template.
-- [Consent Items v1.0](consent-items-v1.0.yaml): matching machine-readable English consent-item template.
+1. Use [Building a Game](building-games.md) to design the participant experience,
+   define the game mechanics, and connect the two.
+2. Use [Browser Client Protocol](client-protocol.md) when implementing or
+   debugging the participant client.
+3. Read [Architecture](architecture.md) for the game–experiment–session model and
+   the boundaries between the runtime, game crate, browser, and store.
+4. Add an in-process or remote policy with [Agents](agents.md) when the study has
+   a human–agent condition.
 
-Use the demo game as a worked example:
+The `space-game/server` and `space-game/client` directories form one complete
+worked example. The `generate-parlando-game` skill can generate the same project
+shape from a game description.
 
-- `space-game/server` shows a complete adapter, state engine, server binary, and agent selector.
-- `space-game/client` shows a browser UI built on the reusable JavaScript client.
+## Configure and run experiments
 
-The demo is intentionally not the center of the platform. A real study should define its own state, actions, observations, participant UI, and analysis-oriented completion summary.
+1. Use [Running and Deployment](running-and-deployment.md) to start the compiled
+   game process, choose its port and database, establish the first administrator,
+   and deploy it with Docker or Render.
+2. Open `/admin/experiments` to create, clone, edit, activate, and monitor
+   experiments. Normal configuration is database-backed; YAML is only a migration
+   input for older installations.
+3. Use [Data and Monitoring](data-and-monitoring.md) to interpret lifecycle state,
+   configuration revisions, session provenance, exports, and participant-data
+   deletion.
+
+For voice studies, read [Audio Transport](audio-transport.md) before deployment.
+It defines the authentication, PCM format, transcription boundary, TTS path,
+buffering behavior, and process-local scaling constraint. Use
+[Audio Testing](audio-testing.md) to test the transport without paid-provider
+credentials and under sustained or impaired workloads.
+
+## Privacy and institutional review
+
+- [Unterlage zur datenschutzrechtlichen Plattformbewertung](datenschutz-pruefvorlage.md)
+  is the German basis for a reusable DPO assessment of a self-hosted deployment.
+- [Umgesetzte Datenschutz-Roadmap](datenschutz-code-roadmap.md) records the
+  implemented privacy functions and their technical boundaries.
+- [Participant Information and Privacy Notice v1.0](participant-information-v1.0.md)
+  is the English participant-facing template.
+- [Consent Items v1.0](consent-items-v1.0.yaml) contains the corresponding
+  machine-readable consent template.
+
+Together, these materials provide a concrete starting point for institutional
+review: they document the implemented safeguards, expose the effective settings
+of a running installation, and supply reusable participant-information text. The
+deploying institution completes the study-specific decisions, including
+controller, legal basis, retention, provider agreements, and release approval.
+
+## Maintainer reference
+
+[Publishing Packages](publishing-packages.md) covers local package smoke tests and
+publishing for `parlando-server` and `@coli-saar/parlando-client`.

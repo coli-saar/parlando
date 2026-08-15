@@ -1,9 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ExperimentApiClient } from "./protocol";
+import { ExperimentApiClient, socketUrl } from "./protocol";
 
 describe("ExperimentApiClient room helpers", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("resolves experiment-relative WebSocket paths against the current origin", () => {
+    vi.stubGlobal("window", { location: { origin: "https://study.example" } });
+
+    expect(socketUrl("/e/pilot/ws/game/ROOM1", "ticket")).toBe(
+      "wss://study.example/e/pilot/ws/game/ROOM1?token=ticket"
+    );
   });
 
   it("creates a direct room for a participant", async () => {

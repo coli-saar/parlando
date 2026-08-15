@@ -1,22 +1,18 @@
 # Parlando Config And Deployment Reference
 
-## Experiment YAML
+## Dashboard-owned experiment configuration
 
-Generated games should include `config/experiment.local.yaml` and, when deployment is requested, `config/experiment.render.example.yaml`.
+Generated games use one process for one compiled game and any number of that game's
+experiments. Researchers create, clone, and edit experiments in `/admin/experiments`.
+Each save creates an immutable database revision; YAML is not the ongoing source of truth.
 
-When voice, transcription, or TTS is requested, tell the user exactly where the generated YAML expects those values:
-
-- Local runs read `config/experiment.local.yaml` by default through `make run` or `--config config/experiment.local.yaml`.
-- If secrets are needed locally, generate or document an uncommitted overlay such as `config/experiment.voice.private.yaml`, include it from `config/experiment.local.yaml`, and add it to `.gitignore`.
-- Render/Docker deployments should read the checked-in base file, usually `config/experiment.render.example.yaml`, plus a secret overlay mounted at deployment time. State the exact mount path used by the generated Docker/Render config.
-- Put non-secret defaults in checked-in YAML. Put `SPEECHMATICS_API_KEY`, `ELEVENLABS_API_KEY`, and other private values in the local private overlay or deployment secret file.
-
-`ExperimentConfig::from_yaml` supports includes, environment-variable substitution, and relative path resolution. Main sections:
+The process must receive only bootstrap values needed before the dashboard exists:
+`--host`, required `--port`, `--database-url`, `--client-dist`, and provider secret
+environment variables. `--config` may remain as an optional one-time migration input.
+Main experiment sections shown in the dashboard are:
 
 - `experiment`: durable experiment id.
-- `study`: game title, optional operating institution, and waiting/reconnect timing.
-- `server`: public base URL, CORS origins, optional `client_dist_path`.
-- `database`: SQLite URL.
+- `study`: study title and waiting/reconnect timing.
 - `direct`: room-code and consent settings.
 - `agents`: human-vs-human or human-vs-agent mode and agent selection.
 - `voice`: server audio-relay format and buffering settings.
@@ -25,7 +21,7 @@ When voice, transcription, or TTS is requested, tell the user exactly where the 
 - `tts`: agent text-to-speech settings.
 - `conversation`: conversation-history settings.
 
-For local non-voice studies, keep `voice.enabled`, `transcription.enabled`, and `tts.enabled` false. For voice studies, enable the Parlando relay and the requested Speechmatics/ElevenLabs features. Keep service credentials in a private YAML include or secret file.
+The institution is game-level configuration shared by every experiment. For local non-voice studies, keep `voice.enabled`, `transcription.enabled`, and `tts.enabled` false. For voice studies, enable the Parlando relay and the requested Speechmatics/ElevenLabs features in the dashboard, while supplying credentials through `SPEECHMATICS_API_KEY` and `ELEVENLABS_API_KEY`.
 
 Voice enablement is a server/config decision. The generated game adapter and game-specific browser UI must not decide whether voice is enabled; they should consume the capability metadata and controls exposed by `parlando-server` and `@coli-saar/parlando-client`.
 
@@ -33,7 +29,7 @@ Protocol version 1 is fixed at 24 kHz mono PCM16 in 20 ms frames. Keep `sample_r
 
 TTS enablement is also a server/config decision. When `tts.enabled` is true, generated agents should return participant-facing utterances in `AgentResponse.message`; `parlando-server` handles synthesis, diagnostics, and audio publishing. Browser clients should display the conversation message as usual and must not call TTS providers directly.
 
-## Local Config Template
+## Legacy migration template
 
 ```yaml
 experiment:
@@ -41,16 +37,6 @@ experiment:
 
 study:
   name: "<Game Name>"
-  institution: "<Institution Name>"
-
-server:
-  public_base_url: http://localhost:8000
-  allowed_origins:
-    - http://localhost:5173
-  client_dist_path: client/dist
-
-database:
-  url: sqlite:///.local/parlando.sqlite
 
 direct:
   enabled: true
@@ -72,7 +58,7 @@ tts:
 
 ## Consent Config
 
-Consent items live in the same config file the server reads at startup, normally `config/experiment.local.yaml` for local runs and `config/experiment.render.example.yaml` plus deployment secret overlay for Render.
+Consent items live in the selected experiment's database-backed dashboard configuration.
 
 Use:
 
@@ -96,23 +82,19 @@ The presence of one or more `direct.consents` items enables the consent screen a
 
 ## Voice Infrastructure Config
 
-Only configure Parlando's voice services; do not reimplement the relay, Speechmatics, or ElevenLabs integration. A generated game should set YAML keys, keep credentials private, and let `parlando-server` and `@coli-saar/parlando-client` handle runtime behavior.
+Only configure Parlando's voice services; do not reimplement the relay, Speechmatics, or ElevenLabs integration. A generated game should expose the standard dashboard settings, keep credentials in server environment variables, and let `parlando-server` and `@coli-saar/parlando-client` handle runtime behavior.
 
 If the server/session exposes voice capability, the game must allow that capability through the SDK-provided session controls/status. If voice capability is absent, the game should omit or disable voice UI from session state rather than from game-specific policy.
 
-When the user asks to enable conversational voice, generate the relay plus Speechmatics and ElevenLabs configuration. Use `rust-server/config/experiment.voice.full.example.yaml` as the canonical source template.
+When the user asks to enable conversational voice, use `rust-server/config/experiment.voice.full.example.yaml` as a field-value reference, then expose the non-secret settings through the normal dashboard editor.
 
 When voice or transcription is enabled, generated clients should delegate browser startup behavior to `ParlandoStartupGate` in `@coli-saar/parlando-client/react`.
 
 When transcription/STT is enabled, active game screens should display SDK voice status from the `ActiveParlandoSession`, including a microphone level meter and ASR status pill using `MicLevelMeter` and `TranscriptionStatusChip` from `@coli-saar/parlando-client/react`.
 
-Checked-in local config should include the private overlay as optional and keep services disabled by default if the overlay is absent:
+The initial stored defaults should keep services disabled:
 
 ```yaml
-include:
-  - path: config/experiment.voice.private.yaml
-    optional: true
-
 voice:
   enabled: false
 
@@ -123,7 +105,7 @@ tts:
   enabled: false
 ```
 
-The generated `config/experiment.voice.private.yaml` or deployment secret file should contain server-side provider fields:
+Researchers enable these non-secret experiment fields in the dashboard:
 
 ```yaml
 voice:
@@ -139,7 +121,6 @@ transcription:
   model: enhanced
 
 speechmatics:
-  api_key: ${SPEECHMATICS_API_KEY}
   realtime_url: wss://eu.rt.speechmatics.com/v2
   max_delay: 2.0
   enable_partials: true
@@ -151,31 +132,16 @@ tts:
   model: eleven_flash_v2_5
   voice_id: ${ELEVENLABS_VOICE_ID}
   voice_name: Agent Voice
-  api_key: ${ELEVENLABS_API_KEY}
   output_format: pcm_24000
 ```
 
 Validation requirements:
 
 - `voice.sample_rate_hz` must be `24000` and `voice.frame_duration_ms` must be `20` when voice is enabled.
-- `speechmatics.api_key` is required when `transcription.enabled` is true and `transcription.provider` is `speechmatics`.
-- `tts.voice_id` and `tts.api_key` are required when `tts.enabled` is true.
+- `SPEECHMATICS_API_KEY` must be present in the server environment when Speechmatics transcription is enabled.
+- `tts.voice_id` and `ELEVENLABS_API_KEY` are required when TTS is enabled.
 
-Use environment-variable placeholders or an uncommitted private include for credentials. Never put Speechmatics or ElevenLabs secrets in frontend code.
-
-Example local private overlay:
-
-```yaml
-# config/experiment.voice.private.yaml
-speechmatics:
-  api_key: your-speechmatics-api-key
-
-tts:
-  voice_id: your-elevenlabs-voice-id
-  api_key: your-elevenlabs-api-key
-```
-
-If you generate this file, ensure `.gitignore` excludes it. If you instead use environment variables in YAML, the user must set those variables before starting the server.
+Never put Speechmatics or ElevenLabs secrets in experiment revisions, frontend code, or checked-in files.
 
 For human-vs-agent, set:
 
@@ -203,7 +169,7 @@ Useful targets:
 - `install-server`: run `cargo install --path server --root .local`.
 - `build`: install dependencies, build client, and install server.
 - `test`: run Rust tests and client tests.
-- `run`: run `.local/bin/<game-binary> --host 127.0.0.1 --port 8000 --config config/experiment.local.yaml`.
+- `run`: run `.local/bin/<game-binary> --host 127.0.0.1 --port 8000 --database-url sqlite:///.local/parlando.sqlite --client-dist client/dist`.
 - `clean`: remove local build artifacts where appropriate.
 
 Use one run target for every local mode:
@@ -212,32 +178,22 @@ Use one run target for every local mode:
 make run
 ```
 
-Do not generate separate `make run-voice`, `make run-no-voice`, or similar targets. Voice behavior is controlled by `config/experiment.local.yaml` and its optional private overlay.
+Do not generate separate `make run-voice`, `make run-no-voice`, or similar targets. Voice behavior is controlled by each experiment's dashboard configuration.
 
 Useful routes after start:
 
 - `GET /health`
-- `GET /api/config`
-- `GET /admin/games`
-- `GET /api/admin/export`
+- `GET /e/{experiment_id}/api/config`
+- `GET /admin/experiments`
+- `GET /api/admin/runtime/{experiment_id}/export`
 
 ## Frontend Serving
 
-When the browser build exists, configure:
+When the browser build exists, pass `--client-dist client/dist`.
 
-```yaml
-server:
-  client_dist_path: client/dist
-```
+The server serves the SPA beneath `/e/{experiment_id}/` while preserving scoped API and WebSocket paths.
 
-The server serves `/`, `/assets/*`, and SPA fallback paths from that directory while preserving `/api/*` and `/ws/*`.
-
-For production images, build the client and copy `client/dist` to `/app/client-dist`, then configure:
-
-```yaml
-server:
-  client_dist_path: /app/client-dist
-```
+For production images, build the client, copy `client/dist` to `/app/client-dist`, and set `PARLANDO_CLIENT_DIST=/app/client-dist`.
 
 ## Docker
 
@@ -248,7 +204,7 @@ Generated Dockerfiles should:
 3. Build the client with `npm install` and `npm run build`.
 4. Build/install the Rust game server binary.
 5. Copy the client dist to `/app/client-dist`.
-6. Start the binary with `--host 0.0.0.0 --config /app/config/experiment.yaml`.
+6. Start the binary with `--host 0.0.0.0 --port 8000`.
 
 ## Render
 
@@ -257,16 +213,8 @@ For Render deployment:
 - Use a Docker web service.
 - Mount a persistent disk at `/data`.
 - Store SQLite at `sqlite:////data/parlando.sqlite`.
-- Use a checked-in base config plus a Render Secret File for private overrides. If the generated app follows the Parlando convention, mount the secret file at `/etc/secrets/parlando-render.yaml` and include or merge it from the production config.
-- Keep Speechmatics and TTS credentials in secrets.
-- Set `server.public_base_url` to the deployed URL.
+- Set `PARLANDO_DATABASE_URL=sqlite:////data/parlando.sqlite`.
+- Keep Speechmatics and TTS credentials in secret environment variables.
 - Run one Parlando process or configure sticky room routing. Audio rooms and one-use audio credentials are process-local, so ordinary stateless balancing across instances will break voice sessions.
-
-Example production database config:
-
-```yaml
-database:
-  url: sqlite:////data/parlando.sqlite
-```
 
 The browser client should receive public capability metadata and room-scoped audio credentials through `@coli-saar/parlando-client`; do not bake voice service credentials into frontend environment variables.

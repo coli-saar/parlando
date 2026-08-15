@@ -29,10 +29,11 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=builder /app/space-game/server/target/release/parlando-space-game /usr/local/bin/parlando-space-game
 COPY --from=client-builder /app/space-game/client/dist /app/client-dist
-COPY space-game/config/experiment.render.example.yaml /app/config/experiment.yaml
-
 ENV RUST_LOG=info
+ENV PORT=8000
+ENV PARLANDO_DATABASE_URL=sqlite:////data/parlando.sqlite
+ENV PARLANDO_CLIENT_DIST=/app/client-dist
 EXPOSE 8000
 USER 10001:10001
 
-CMD ["parlando-space-game", "--host", "0.0.0.0", "--config", "/app/config/experiment.yaml"]
+CMD ["parlando-space-game", "--host", "0.0.0.0"]

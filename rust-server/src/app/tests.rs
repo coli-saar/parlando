@@ -158,9 +158,12 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(ADMIN_EXPERIMENT_HTML.contains("href=\"/admin/privacy\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Activate experiment"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Deactivate intake"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("/api/admin/experiment/status"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("New Experiment"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("/api/admin/runtime/"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("New experiment"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("experimentForm"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"configForm\""));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("configurationFromForm"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"institutionInput\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Experiment Details"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-tab=\"sessions\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-tab=\"export\""));
@@ -255,7 +258,8 @@ fn research_and_corpus_exports_apply_fixed_identity_boundaries() {
             "participant_kind": "human",
             "external_id": "recruitment-id"
         }],
-        "sessions": [{"session_id": 3, "dialogue_id": "softly-amber-harbor", "mode": "direct", "status": "completed", "created_at": "2026-01-01T00:00:00Z"}],
+        "experiment": {"experiment_id": "study", "game_version": "0.4.0", "config_revision": 2},
+        "sessions": [{"session_id": 3, "dialogue_id": "softly-amber-harbor", "config_revision": 2, "game_version": "0.4.0", "mode": "direct", "status": "completed", "created_at": "2026-01-01T00:00:00Z"}],
         "session_participants": [{"session_id": 3, "participant_id": 7, "participant_session_id": "ps_secret", "role": "A"}],
         "session_events": [{
             "session_id": 3,
@@ -273,6 +277,8 @@ fn research_and_corpus_exports_apply_fixed_identity_boundaries() {
     assert!(!encoded.contains("ps_secret"));
     assert!(encoded.contains("calm-blue-otter"));
     assert!(encoded.contains("softly-amber-harbor"));
+    assert_eq!(research["sessions"][0]["config_revision"], 2);
+    assert_eq!(research["experiment"]["game_version"], "0.4.0");
 
     let corpus = corpus_export(research);
     let encoded = serde_json::to_string(&corpus).unwrap();
@@ -282,6 +288,7 @@ fn research_and_corpus_exports_apply_fixed_identity_boundaries() {
     assert!(!encoded.contains("2026-01-01"));
     assert_eq!(corpus["messages"][0]["text"], "hello");
     assert_eq!(corpus["messages"][0]["time_from_session_start_ms"], 4_000);
+    assert_eq!(corpus["sessions"][0]["config_revision"], 2);
 }
 
 /// Confirms `/admin` reaches setup and the resulting login persists across router restarts.
@@ -404,6 +411,15 @@ async fn experiment_starts_inactive_and_admin_controls_intake() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 
     authenticate_test_admin(router.clone()).await.unwrap();
+
+    let (settings_status, _) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/game/settings",
+        json!({"expected_revision": 1, "institution": "Test University"}),
+    )
+    .await;
+    assert_eq!(settings_status, StatusCode::OK);
     let (status, activation) = json_request(
         router.clone(),
         http::Method::POST,
@@ -450,32 +466,241 @@ async fn experiment_starts_inactive_and_admin_controls_intake() {
     assert_eq!(experiment["experiment"]["status"], "inactive");
 }
 
-/// Confirms the dashboard exposes only the configured process-owned experiment.
+/// Confirms one compiled-game router can activate and isolate two experiment runtimes.
 #[tokio::test]
-async fn admin_api_has_no_experiment_record_creation_route() {
-    let (config, _tmp) = sqlite_config();
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
-        .await
-        .unwrap();
+async fn compiled_game_router_hosts_multiple_experiments() {
+    let mut config = step_five_config();
+    config.experiment.id = Some("primary".to_string());
+    let descriptor = GameDescriptor {
+        id: "tiny-game".to_string(),
+        display_name: "Tiny Game".to_string(),
+        version: semver::Version::parse("0.4.0").unwrap(),
+        build_manifest: json!({"name": "tiny-game", "version": "0.4.0"}),
+    };
+    let router = build_game_router(TinyAdapter, config.clone(), descriptor.clone(), |_config| {
+        Ok(ServeOptions::default())
+    })
+    .await
+    .unwrap();
+    authenticate_test_admin(router.clone()).await.unwrap();
 
-    let (status, _) = json_request(
+    let (settings_status, _) = json_request(
         router.clone(),
         http::Method::POST,
+        "/api/admin/game/settings",
+        json!({"expected_revision": 1, "institution": "Test University"}),
+    )
+    .await;
+    assert_eq!(settings_status, StatusCode::OK);
+
+    let (create_status, created) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiments",
+        json!({"experiment_id": "secondary", "study_name": "Second condition"}),
+    )
+    .await;
+    assert_eq!(create_status, StatusCode::OK);
+    assert_eq!(created["game_version"], "0.4.0");
+    let (config_status, mut stored_config) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments/secondary/config",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(config_status, StatusCode::OK);
+    stored_config["experiment"]["config"]["study"]["name"] =
+        Value::String("Edited second condition".to_string());
+    let (save_status, saved) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiments/secondary/config",
+        json!({
+            "expected_revision": stored_config["experiment"]["config_revision"],
+            "config": stored_config["experiment"]["config"],
+            "change_summary": "Edited in the dashboard"
+        }),
+    )
+    .await;
+    assert_eq!(save_status, StatusCode::OK, "config save failed: {saved}");
+    assert_eq!(saved["revision"], 2);
+
+    for experiment_id in ["primary", "secondary"] {
+        let (status, body) = json_request(
+            router.clone(),
+            http::Method::POST,
+            &format!("/api/admin/runtime/{experiment_id}/experiment/status"),
+            json!({"status": "active"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "activation failed: {body}");
+    }
+
+    let (_, primary_participant) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/e/primary/api/participants",
+        json!({}),
+    )
+    .await;
+    let (_, secondary_participant) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/e/secondary/api/participants",
+        json!({}),
+    )
+    .await;
+    assert_ne!(
+        primary_participant["participant_session_id"],
+        secondary_participant["participant_session_id"]
+    );
+    for participant in [&primary_participant, &secondary_participant] {
+        TEST_PARTICIPANT_CREDENTIALS.lock().unwrap().insert(
+            participant["participant_session_id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+            participant["participant_credential"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+    }
+    let primary_id = primary_participant["participant_session_id"]
+        .as_str()
+        .unwrap();
+    let (consent_status, _) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/e/primary/api/consent",
+        json!({"participant_session_id": primary_id, "decisions": {"study": true}}),
+    )
+    .await;
+    assert_eq!(consent_status, StatusCode::OK);
+    let (room_status, room) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/e/primary/api/rooms",
+        json!({"participant_session_id": primary_id}),
+    )
+    .await;
+    assert_eq!(room_status, StatusCode::OK);
+    let room_id = room["room_id"].as_str().unwrap();
+    let (session_status, session) = json_request(
+        router.clone(),
+        http::Method::POST,
+        &format!("/e/primary/api/rooms/{room_id}/game-session"),
+        json!({"participant_session_id": primary_id}),
+    )
+    .await;
+    assert_eq!(session_status, StatusCode::OK);
+    assert_eq!(
+        session["websocket_url"],
+        format!("/e/primary/ws/game/{room_id}")
+    );
+    let (_, secondary_config) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/e/secondary/api/config",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(secondary_config["institution"], "Test University");
+    assert_eq!(secondary_config["study_name"], "Edited second condition");
+
+    let (_, catalogue) = json_request(
+        router,
+        http::Method::GET,
         "/api/admin/experiments",
         Value::Null,
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(catalogue["game"]["display_name"], "Tiny Game");
+    assert_eq!(catalogue["experiments"].as_array().unwrap().len(), 2);
+}
 
-    let (status, current) = json_request(
+/// Confirms old game versions remain inspectable but must be cloned before activation.
+#[tokio::test]
+async fn compiled_game_router_requires_exact_version_and_clones_forward() {
+    let (mut config, _tmp) = sqlite_config();
+    config.experiment.id = Some("current".to_string());
+    let store = experiment_store_from_url(&config.database.url)
+        .await
+        .unwrap();
+    let mut old_config = config.clone();
+    old_config.experiment.id = Some("historical".to_string());
+    store
+        .create_experiment(ExperimentRecord {
+            experiment_id: "historical".to_string(),
+            game_version: "0.3.0".to_string(),
+            config: persistable_config_json(&old_config).unwrap(),
+            server_version: Some("0.2.0".to_string()),
+            version_manifest: Some(json!({"game": "tiny-game", "version": "0.3.0"})),
+            status: "inactive".to_string(),
+            notes: None,
+        })
+        .await
+        .unwrap();
+    let descriptor = GameDescriptor {
+        id: "tiny-game".to_string(),
+        display_name: "Tiny Game".to_string(),
+        version: semver::Version::parse("0.4.0").unwrap(),
+        build_manifest: json!({"name": "tiny-game", "version": "0.4.0"}),
+    };
+    let router = build_game_router(TinyAdapter, config.clone(), descriptor.clone(), |_config| {
+        Ok(ServeOptions::default())
+    })
+    .await
+    .unwrap();
+    authenticate_test_admin(router.clone()).await.unwrap();
+
+    let (activation_status, _) = json_request(
         router.clone(),
+        http::Method::POST,
+        "/api/admin/runtime/historical/experiment/status",
+        json!({"status": "active"}),
+    )
+    .await;
+    assert_eq!(activation_status, StatusCode::CONFLICT);
+
+    let (clone_status, clone) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiments/historical/clone",
+        json!({"experiment_id": "historical-on-0.4"}),
+    )
+    .await;
+    assert_eq!(clone_status, StatusCode::OK, "clone failed: {clone}");
+    assert_eq!(clone["game_version"], "0.4.0");
+    let (activation_status, _) = json_request(
+        router,
+        http::Method::POST,
+        "/api/admin/runtime/historical-on-0.4/experiment/status",
+        json!({"status": "active"}),
+    )
+    .await;
+    assert_eq!(activation_status, StatusCode::OK);
+
+    let restarted = build_game_router(TinyAdapter, config, descriptor, |_config| {
+        Ok(ServeOptions::default())
+    })
+    .await
+    .unwrap();
+    authenticate_test_admin(restarted.clone()).await.unwrap();
+    let (catalogue_status, catalogue) = json_request(
+        restarted,
         http::Method::GET,
-        "/api/admin/experiment",
+        "/api/admin/experiments",
         Value::Null,
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(current["experiment"]["status"], "active");
+    assert_eq!(catalogue_status, StatusCode::OK);
+    assert!(catalogue["experiments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|experiment| experiment["status"] == "inactive"));
 }
 
 #[test]
@@ -1748,7 +1973,6 @@ async fn consent_participant(router: Router, participant_session_id: &str) {
 async fn health_and_public_config_expose_client_bootstrap_shape() {
     let mut config = step_five_config();
     config.study.name = "Bootstrap Study".to_string();
-    config.study.institution = "Test University".to_string();
     config.voice.enabled = true;
     config.transcription.enabled = true;
     config.speechmatics.api_key = "test-key".to_string();
@@ -1769,7 +1993,7 @@ async fn health_and_public_config_expose_client_bootstrap_shape() {
         json_request(router, http::Method::GET, "/api/config", Value::Null).await;
     assert_eq!(config_status, StatusCode::OK);
     assert_eq!(public_config["study_name"], "Bootstrap Study");
-    assert_eq!(public_config["institution"], "Test University");
+    assert!(public_config["institution"].is_null());
     assert_eq!(public_config["consents"][0]["id"], "study");
     assert_eq!(public_config["voice"]["enabled"], true);
     assert_eq!(public_config["voice"]["transport"], "websocket");
@@ -1883,10 +2107,11 @@ async fn enabled_audio_session_returns_parlando_websocket_contract() {
     assert_eq!(audio["enabled"], true);
     assert_eq!(audio["protocol_version"], 1);
     assert_eq!(audio["sample_rate_hz"], 24000);
-    assert!(audio["websocket_url"]
-        .as_str()
-        .unwrap()
-        .ends_with(&format!("/ws/audio/{room_id}")));
+    assert_eq!(
+        audio["websocket_url"],
+        format!("/ws/audio/{room_id}"),
+        "the browser must resolve the path against its actual origin"
+    );
     assert!(audio["token"]
         .as_str()
         .is_some_and(|value| !value.is_empty()));

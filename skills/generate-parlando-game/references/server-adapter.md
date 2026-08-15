@@ -162,48 +162,59 @@ impl GameAdapter for MyGameAdapter {
 
 ## Main Binary
 
-Generated binaries should load config and call `parlando_server::serve`:
+Generated binaries should declare their compiled game and call `parlando_server::serve_game`:
 
 ```rust
-use std::{
-    net::{IpAddr, SocketAddr},
-    path::PathBuf,
-};
+use std::net::{IpAddr, SocketAddr};
 
 use anyhow::Result;
 use clap::Parser;
-use parlando_server::{serve, ExperimentConfig, ServeOptions};
+use parlando_server::{serve_game, ExperimentConfig, GameDescriptor, ServeOptions};
+use serde_json::json;
 
 #[derive(Debug, Parser)]
 struct Cli {
-    #[arg(long, short)]
-    config: PathBuf,
     #[arg(long, default_value = "127.0.0.1")]
     host: IpAddr,
-    #[arg(long)]
-    port: Option<u16>,
+    #[arg(long, env = "PORT")]
+    port: u16,
+    #[arg(long, env = "PARLANDO_DATABASE_URL", default_value = "sqlite:///.local/parlando.sqlite")]
+    database_url: String,
+    #[arg(long, env = "PARLANDO_CLIENT_DIST", default_value = "client/dist")]
+    client_dist: String,
 }
 
-/// Loads the required experiment configuration and starts its dedicated process.
+/// Starts one compiled game host with database-backed experiment runtimes.
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let cli = Cli::parse();
-    let config = ExperimentConfig::from_yaml(cli.config)?;
-    let port = cli
-        .port
-        .or_else(|| std::env::var("PORT").ok().and_then(|value| value.parse().ok()))
-        .unwrap_or(8000);
-    let agent_factory = factory_from_config(&config)?;
-    serve(
+    let mut bootstrap = ExperimentConfig::default();
+    bootstrap.experiment.id = Some("default".to_string());
+    bootstrap.study.name = "My Game".to_string();
+    bootstrap.database.url = cli.database_url;
+    bootstrap.server.client_dist_path = Some(cli.client_dist);
+    bootstrap.server.public_base_url = format!("http://127.0.0.1:{}", cli.port);
+    bootstrap.speechmatics.api_key = std::env::var("SPEECHMATICS_API_KEY").unwrap_or_default();
+    bootstrap.tts.api_key = std::env::var("ELEVENLABS_API_KEY").unwrap_or_default();
+    let descriptor = GameDescriptor {
+        id: "my-game".to_string(),
+        display_name: "My Game".to_string(),
+        version: semver::Version::parse(env!("CARGO_PKG_VERSION"))?,
+        build_manifest: json!({"version": env!("CARGO_PKG_VERSION")}),
+    };
+    serve_game(
         MyGameAdapter::new(),
-        config,
-        SocketAddr::new(cli.host, port),
-        ServeOptions {
-            agent_factory,
-            ..ServeOptions::default()
+        bootstrap,
+        descriptor,
+        SocketAddr::new(cli.host, cli.port),
+        |experiment_config| {
+            Ok(ServeOptions {
+                agent_factory: factory_from_config(experiment_config)?,
+                ..ServeOptions::default()
+            })
         },
     )
     .await

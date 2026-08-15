@@ -1,10 +1,39 @@
-# Building A Game
+# Building a game
 
-A Parlando game is a Rust adapter around your experiment mechanics. The adapter tells the reusable server how to create state, parse and validate actions, produce role-specific observations, emit events, and decide when the game is complete. The browser client then renders the JSON form of those observations and sends the JSON form of your actions back to the server.
+A Parlando game is a purpose-built browser application together with the Rust
+mechanics that drive it. The browser application gives participants the concrete
+world in which they interact: it may contain maps, cards, diagrams, documents,
+animations, chat, audio, or any other web interface suited to the study. The Rust
+game crate defines how that world changes and what each role may observe.
 
-Start with the research design before writing code. Identify what each role knows, what each role can do, what counts as progress, how the session ends, and what summary fields you need for analysis. Those choices map directly to Parlando's `State`, `Action`, `Observation`, `Event`, and `Summary` types.
+Start with the research design before writing code. Sketch the participant
+experience, identify what each role knows and can do, decide how progress and
+completion should appear, and list the outcomes needed for analysis. These
+choices become the client interface and the game's `State`, `Action`,
+`Observation`, `Event`, and `Summary` types.
 
-## Adapter Contract
+## Design the browser game
+
+The browser game owns all game-specific presentation and interaction. You can use
+React, another web framework, Canvas, SVG, WebGL, or ordinary HTML controls. The
+included Space Game uses React, but its station layout and controls are an
+example, not a template that other games must resemble.
+
+Most projects use `@coli-saar/parlando-client` for participant setup, consent,
+matchmaking, WebSockets, chat, and optional audio. Its React startup gate can
+carry participants through those shared stages and then hand the assigned role,
+observation, events, and connection to the custom game UI. Projects that need a
+different setup experience can use the lower-level SDK helpers or the documented
+protocol directly.
+
+Keep game-specific assets, language, visual state, and interaction logic in the
+game client. Define TypeScript types for every game value that crosses the
+browser boundary, and render the participant's role-specific `Observation`.
+
+![Space Game participant interface showing a custom map, controls, role-specific
+information, events, and communication](images/space-game-interface.jpg)
+
+## Define the adapter contract
 
 Every game implements `GameAdapter` from `rust-server/src/game.rs`.
 
@@ -32,7 +61,25 @@ Most games should use serde-serializable Rust structs and enums for all associat
 
 The Rust types are only half of the contract. For every game-specific Rust type that crosses the browser boundary, define the matching TypeScript type and check the serialized JSON names. See [Browser Client Protocol](client-protocol.md) for concrete examples.
 
-## Recommended Shape
+## Declare the compiled game
+
+The server binary must identify the one game implementation it contains with a
+`GameDescriptor`: a stable machine id, display name, semantic version, and build
+manifest. Use the game crate's package version as the semantic version rather than
+maintaining a second version string.
+
+This version is operational, not merely diagnostic. New experiments are bound to
+it, sessions record it, and a process refuses to activate experiments created for
+another version. When game code changes, build a new binary and clone any
+configuration that should be reused. Do not claim compatibility by reusing an old
+version number.
+
+The binary calls `serve_game`, passing the adapter, bootstrap settings,
+`GameDescriptor`, listener address, and a factory that constructs configuration-
+dependent runtime components such as agents. See
+`space-game/server/src/main.rs` for the complete entry point.
+
+## Keep the mechanics easy to test
 
 Keep the adapter thin. Put game semantics in pure functions and call those functions from the adapter.
 
@@ -76,9 +123,13 @@ impl GameAdapter for MyGameAdapter {
 
 This makes most of the game testable without starting the HTTP server.
 
-Keep browser convenience logic separate from authority. The UI can gray out controls, suggest likely actions, or animate possible moves, but the Rust adapter should still reject illegal or out-of-turn actions.
+Use the browser freely for responsive interaction: it can gray out controls,
+suggest likely actions, preview consequences, or animate possible moves. Keep the
+same validation in the Rust mechanics so browsers and agents follow one rule set
+and a stale client receives a clear rejection instead of changing the game
+incorrectly.
 
-## Action Flow
+## Follow an action through the game
 
 The normal action path is:
 
@@ -91,17 +142,23 @@ The normal action path is:
 7. The server sends targeted WebSocket messages to the affected participants.
 8. If `is_complete` is true, the server persists and broadcasts `completion_summary`.
 
-Agents do not bypass this path. A remote Python agent can return an invalid action, but the Rust game server still rejects it.
+Agents use the same path. If a remote Python agent proposes an invalid action, the
+game rejects it in the same way as an invalid browser action.
 
-## Observations And Private Information
+## Design observations and private information
 
-`observe_state` is where you decide what each participant can see. For asymmetric information experiments, do not send the full state and ask the client to hide fields. Build a role-specific observation on the server.
+`observe_state` is where you decide what each participant can see. For an
+asymmetric-information experiment, build a role-specific observation that
+contains exactly what the client needs. This gives the UI a clean model to render
+and keeps the other role's private task information outside the browser.
 
 In the demo game, each role sees shared device state but only its own private knowledge. The adapter filters private knowledge before sending observations to player A, player B, or an agent controlling either role.
 
-A useful rule: if a participant should not use a field, do not include it in that participant's observation. Do not depend on CSS, React state, or disabled UI controls to hide sensitive task information.
+A useful design rule is to omit fields that a participant should not use. CSS,
+React state, and disabled controls can shape the interface, while the observation
+itself establishes the information available to the role.
 
-## Available Actions
+## Offer available actions when useful
 
 `available_actions` is optional.
 
@@ -109,28 +166,36 @@ A useful rule: if a participant should not use a field, do not include it in tha
 - Return `Some(vec![])` when the game does provide action hints but this player currently has no listed legal moves.
 - Return `Some(actions)` when you want the UI or agent to receive a role-specific affordance.
 
-Available actions are hints, not authority. Always keep `validate_action` complete.
+Available actions are an interface affordance rather than a complete validator.
+Keep `validate_action` complete so it also covers typed actions, stale clients,
+and agents.
 
 This is useful for experiments where an agent or UI can choose from a controlled set of choices. It is less useful for free-form text or continuous actions.
 
-## Building A New Game Crate
+## Build a new game
 
-A typical new game crate needs:
+A typical new game project follows this sequence:
 
-1. Define `State`, `Action`, `Observation`, `Event`, and `Summary`.
-2. Write pure transition helpers for initial state, validation, state updates, observations, events, completion, and summary generation.
-3. Implement `GameAdapter` by delegating to those helpers.
-4. Add any in-process agents and a game-specific `factory_from_config`.
-5. Define matching TypeScript types for the JSON form of your action, observation, event, and summary values.
-6. Build a browser client using the Parlando JavaScript client package and your game-specific rendering and controls.
-7. Create a binary like `space-game/server/src/main.rs` that loads config and calls `serve`.
-8. Add integration tests that create rooms, connect sockets, submit actions, and inspect exports.
+1. Sketch the participant screens and interaction flow.
+2. Define matching Rust and TypeScript forms of `Action`, `Observation`, `Event`,
+   and `Summary`, plus the complete Rust `State`.
+3. Write pure transition helpers for initial state, validation, state updates,
+   observations, events, completion, and summary generation.
+4. Implement `GameAdapter` by delegating to those helpers.
+5. Build the browser game with the Parlando client package and your custom
+   rendering, controls, and assets.
+6. Add any in-process agents and a game-specific `factory_from_config`.
+7. Create a binary like `space-game/server/src/main.rs` that declares a stable
+   `GameDescriptor`, supplies process bootstrap settings, and calls `serve_game`.
+8. Add tests for the mechanics and integration tests that create rooms, connect
+   sockets, submit actions, and inspect exports.
 
-## Game Design Checklist
+## Game design checklist
 
 Before implementing, write down:
 
 - Roles: currently active player roles are `A` and `B`.
+- Participant screens, controls, instructions, and completion experience.
 - Participant-visible observation fields for each role.
 - Private fields that must never be sent to the other role.
 - Action schema and validation rules.
@@ -142,7 +207,7 @@ Before implementing, write down:
 
 This checklist is also the natural prompt shape for the included `generate-parlando-game` skill: describe the game in these terms, generate a first adapter/client, then iterate.
 
-## Reference Files
+## Reference files
 
 - `rust-server/src/game.rs`: game adapter trait.
 - `docs/client-protocol.md`: browser JSON contract.

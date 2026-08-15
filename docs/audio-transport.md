@@ -1,6 +1,10 @@
 # Audio Transport
 
-Parlando provides a small server-owned audio transport for two-player dialogue games. It carries live microphone audio between browsers, supplies the same incoming stream to server-side speech recognition, and returns synthesized agent speech to browsers. Game projects consume this capability through `parlando-server` and `@coli-saar/parlando-client`; they do not implement media transport themselves.
+Parlando provides a reusable audio transport for two-player dialogue games. It
+carries live microphone audio between browsers, supplies the same incoming stream
+to server-side speech recognition, and returns synthesized agent speech to
+browsers. Game authors can add voice without implementing media framing,
+buffering, provider credentials, or playback queues in each game.
 
 ## Data Flow
 
@@ -17,9 +21,11 @@ Partner relay, transcription, and agent playback are independent consumers. A sl
 
 ## Session And Authentication
 
-After joining a room, the browser requests `POST /api/rooms/{room_id}/audio-session` with its participant bearer credential; the server verifies that any accompanying participant-session id belongs to that principal. When voice is enabled, the response contains:
+After joining a room, the browser requests
+`POST /e/{experiment_id}/api/rooms/{room_id}/audio-session` with its participant
+bearer credential. When voice is enabled, the response contains:
 
-- the `/ws/audio/{room_id}` URL;
+- the relative `/e/{experiment_id}/ws/audio/{room_id}` path;
 - an opaque, random token valid for one minute and one WebSocket upgrade;
 - protocol version, sample rate, channel count, frame duration, and jitter-buffer target.
 
@@ -68,7 +74,11 @@ The server creates one `TranscriptionProvider` session per human microphone stre
 
 Only final utterances are durable. Parlando deduplicates provider results, persists a transcript event, adds a `voice_transcript` conversation message, broadcasts it on the game WebSocket, and calls `GameAgent::observe_message` with spoken modality. Speechmatics is the current hosted implementation and is contacted only by the server. Its API key is never returned to a browser. A future local recognizer can implement the same provider trait without changing browser or agent code.
 
-Raw audio is not persisted by the version 1 relay. Speechmatics still receives microphone audio when configured, so studies that require audio to remain entirely on their own infrastructure must use a future local provider.
+The version 1 relay does not persist raw audio. When Speechmatics is configured,
+it receives the live microphone stream for recognition. A study that requires
+all audio processing to remain on institutional infrastructure cannot yet use the
+included transcription provider; the provider-neutral interface leaves room for
+a local implementation.
 
 ## TTS Boundary
 
@@ -82,33 +92,13 @@ Bounded queues protect the game server from slow clients. When an outbound queue
 
 ## Configuration
 
-```yaml
-voice:
-  enabled: true
-  sample_rate_hz: 24000
-  frame_duration_ms: 20
-  jitter_buffer_ms: 100
+Configure non-secret audio settings in the inactive experiment's dashboard form.
+Enable `voice`, then enable `transcription` and `tts` only when the study requires
+them. Protocol version 1 fixes `voice.sample_rate_hz` at 24000,
+`voice.frame_duration_ms` at 20, mono PCM, and a TTS output format compatible with
+24 kHz PCM. The normal initial jitter target is 100 ms.
 
-speechmatics:
-  api_key: ${SPEECHMATICS_API_KEY}
-  realtime_url: wss://eu.rt.speechmatics.com/v2
-  max_delay: 2.0
-  enable_partials: true
-  end_of_utterance_silence_trigger: 1.2
-
-transcription:
-  enabled: true
-  provider: speechmatics
-  model: enhanced
-  language: en
-
-tts:
-  enabled: true
-  provider: elevenlabs
-  model: eleven_flash_v2_5
-  voice_id: ${ELEVENLABS_VOICE_ID}
-  api_key: ${ELEVENLABS_API_KEY}
-  output_format: pcm_24000
-```
-
-Protocol version 1 requires `sample_rate_hz: 24000`, `frame_duration_ms: 20`, mono PCM, and a TTS output format compatible with 24 kHz PCM.
+Supply `SPEECHMATICS_API_KEY` and `ELEVENLABS_API_KEY` in the game process
+environment. Configure the Speechmatics realtime options and ElevenLabs voice id
+in the dashboard. Provider keys are process bootstrap secrets: Parlando does not
+display them in the form or persist them in experiment revisions.

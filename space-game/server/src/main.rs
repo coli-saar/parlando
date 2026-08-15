@@ -5,50 +5,83 @@ use std::{
 
 use anyhow::Result;
 use clap::Parser;
-use parlando_server::{serve, ExperimentConfig, ServeOptions};
+use parlando_server::{serve_game, ExperimentConfig, GameDescriptor, ServeOptions};
 use parlando_space_game::{agents::factory_from_config, SpaceGameAdapter};
 use serde_json::{json, Value};
 
 #[derive(Debug, Parser)]
 #[command(name = "parlando-space-game")]
 struct Cli {
+    /// Optional legacy YAML used only to seed or migrate an installation.
     #[arg(long, short)]
-    config: PathBuf,
+    config: Option<PathBuf>,
     #[arg(long, default_value = "127.0.0.1")]
     host: IpAddr,
-    #[arg(long)]
-    port: Option<u16>,
+    /// Explicit listener port; hosting platforms may provide the `PORT` environment variable.
+    #[arg(long, env = "PORT")]
+    port: u16,
+    /// Durable SQLite location needed before dashboard-owned settings can be loaded.
+    #[arg(
+        long,
+        env = "PARLANDO_DATABASE_URL",
+        default_value = "sqlite:///./parlando-space-game.sqlite"
+    )]
+    database_url: String,
+    /// Compiled browser-client directory served for every experiment.
+    #[arg(long, env = "PARLANDO_CLIENT_DIST", default_value = "./client/dist")]
+    client_dist: String,
 }
 
-/// Loads the required experiment configuration and starts its dedicated process.
+/// Starts one compiled Space Game host with database-backed experiment runtimes.
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let cli = Cli::parse();
-    let config = ExperimentConfig::from_yaml(cli.config)?;
-    let port = cli
-        .port
-        .or_else(|| {
-            std::env::var("PORT")
-                .ok()
-                .and_then(|value| value.parse().ok())
-        })
-        .unwrap_or(8000);
-    let agent_factory = factory_from_config(&config)?;
+    let mut config = if let Some(path) = cli.config.as_ref() {
+        ExperimentConfig::from_yaml(path)?
+    } else {
+        default_bootstrap_config(&cli)
+    };
+    config.database.url = cli.database_url;
+    config.server.client_dist_path = Some(cli.client_dist);
+    config.server.public_base_url = format!("http://127.0.0.1:{}", cli.port);
     let adapter = SpaceGameAdapter::new();
-    serve(
+    let build_manifest = space_game_version_manifest();
+    let descriptor = GameDescriptor {
+        id: "space-game".to_string(),
+        display_name: "Space Game".to_string(),
+        version: semver::Version::parse(env!("CARGO_PKG_VERSION"))?,
+        build_manifest: build_manifest.clone(),
+    };
+    serve_game(
         adapter,
         config,
-        SocketAddr::new(cli.host, port),
-        ServeOptions {
-            agent_factory,
-            game_version_manifest: Some(space_game_version_manifest()),
-            ..ServeOptions::default()
+        descriptor,
+        SocketAddr::new(cli.host, cli.port),
+        move |experiment_config| {
+            Ok(ServeOptions {
+                agent_factory: factory_from_config(experiment_config)?,
+                game_version_manifest: Some(build_manifest.clone()),
+                ..ServeOptions::default()
+            })
         },
     )
     .await
+}
+
+/// Builds the secret-aware migration seed used when no experiment YAML is supplied.
+fn default_bootstrap_config(cli: &Cli) -> ExperimentConfig {
+    let mut config = ExperimentConfig::default();
+    config.experiment.id = Some("default".to_string());
+    config.study.name = "Space Game".to_string();
+    config.database.url = cli.database_url.clone();
+    config.server.public_base_url = format!("http://127.0.0.1:{}", cli.port);
+    config.server.client_dist_path = Some(cli.client_dist.clone());
+    config.speechmatics.api_key = std::env::var("SPEECHMATICS_API_KEY").unwrap_or_default();
+    config.tts.api_key = std::env::var("ELEVENLABS_API_KEY").unwrap_or_default();
+    config
 }
 
 fn space_game_version_manifest() -> Value {

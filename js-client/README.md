@@ -1,8 +1,11 @@
 # @coli-saar/parlando-client
 
-Reusable browser SDK for Parlando game clients. This package owns shared experiment-client infrastructure and must not depend on a concrete game. Game clients depend on this package; this package does not import game state engines, assets, routes, copy, or UI screens.
+Reusable browser building blocks for Parlando games. The package handles the
+parts that games share—participant setup, scoped API access, WebSockets, and
+audio—while each game remains free to define its own screens, visual world,
+controls, assets, language, and interaction model.
 
-## What belongs here
+## Shared capabilities
 
 - Protocol and response types for the Rust server HTTP and WebSocket APIs.
 - `ExperimentApiClient`, URL helpers, checked JSON helpers, and socket helpers.
@@ -10,12 +13,16 @@ Reusable browser SDK for Parlando game clients. This package owns shared experim
 - A provider-neutral browser audio sink for Parlando's server relay.
 - Reusable platform widgets and hooks under `@coli-saar/parlando-client/react`, such as microphone level, voice status, and transcription status components.
 
-## What does not belong here
+## Game-owned capabilities
 
-- Game-specific state, actions, observations, validation, rendering, assets, maps, levels, or scoring.
-- Demo app layout or Space Game-specific CSS.
-- Committed local checkout assumptions such as `file:../js-client` dependencies in consumers.
-- Private Speechmatics or TTS service configuration. The server is the source of truth and sends only public capability metadata and a short-lived room-audio credential to the browser.
+- Game-specific state, actions, observations, rendering, assets, maps, levels,
+  scoring, and participant-facing language belong in the game client.
+- Client-side interaction logic can be as rich as the study needs. The Rust game
+  mechanics retain the matching final validation used for browsers and agents.
+- Demo layouts and Space Game-specific CSS stay in `space-game/client` so the SDK
+  does not impose a visual design on other games.
+- Private Speechmatics or TTS configuration stays in the server process. The SDK
+  receives public capability metadata and a short-lived room-audio credential.
 
 ## Package entrypoints
 
@@ -27,11 +34,11 @@ import { VoiceStatusChip } from "@coli-saar/parlando-client/react";
 
 The root entrypoint contains protocol types, API helpers, WebSocket helpers, the audio-session controller and sink, microphone helpers, and non-React utility functions.
 
-For voice-enabled games, call `ExperimentApiClient.createRoom(...)` before rendering the readiness waiting room. The server pairs a human with an existing compatible waiting room or creates one; in human-agent mode it supplies Player B immediately. Once the client has `room_id` and `participant_session_id`, it can open the room WebSocket and request `/api/rooms/{room_id}/audio-session` while the UI still shows Player A, Player B/agent, and STT readiness.
+For voice-enabled games, call `ExperimentApiClient.createRoom(...)` before rendering the readiness waiting room. The server pairs a human with an existing compatible waiting room or creates one; in human-agent mode it supplies Player B immediately. The client derives `/e/{experiment_id}` from the participant page and scopes room, game-session, and audio-session requests to it.
 
 ## Speech configuration
 
-The SDK does not configure Speechmatics or TTS services directly. A game client reads public capability information from `/api/config`, then requests a room-specific Parlando audio credential from `/api/rooms/{room_id}/audio-session`. The Rust server owns provider selection, private API keys, transcription sessions, and TTS voice settings.
+The SDK does not configure Speechmatics or TTS services directly. A game client reads public capability information from the experiment-scoped configuration endpoint, then requests a room-specific Parlando audio credential through `ExperimentApiClient`. The Rust server owns provider selection, private API keys, transcription sessions, and TTS voice settings.
 
 `ParlandoAudioSink` captures and sends fixed 24 kHz PCM frames and plays partner or agent audio through an AudioWorklet. Playback uses the server-provided jitter target, linear device-rate interpolation, bounded stale-audio trimming, short underrun recovery, and diagnostic reporting. Game clients should normally let `ParlandoStartupGate` construct this sink rather than creating audio nodes or WebSockets themselves.
 
@@ -39,7 +46,10 @@ The SDK does not configure Speechmatics or TTS services directly. A game client 
 
 The SDK may include reusable platform widgets when they describe Parlando runtime state rather than game UI. Good examples are mic-level meters, voice join controls, consent controls, waiting-room indicators, connection status chips, and STT readiness chips.
 
-These widgets should stay generic. They should accept state and callbacks from the game app, avoid direct knowledge of a game's state model, and use CSS classes or explicit props so each game can style them. If default SDK styling is added later, it should be opt-in through a separate CSS export.
+These widgets stay generic: they accept state and callbacks from the game app,
+avoid knowledge of a particular state model, and expose CSS classes or props so
+each game can style them. This allows a game to use as much or as little of the
+shared presentation as fits its participant experience.
 
 ## Local development from a game checkout
 

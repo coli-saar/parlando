@@ -17,8 +17,8 @@ pub use agents::{
     AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResponse, AgentUtteranceKind,
     GameAgent,
 };
-pub use app::{build_router, serve, ServeOptions};
+pub use app::{build_game_router, build_router, serve, serve_game, ServeOptions};
 pub use audio_publisher::{AgentAudioPublisher, AudioPublishSummary};
 pub use config::ExperimentConfig;
-pub use game::{GameAdapter, PlayerRole, Seat};
+pub use game::{GameAdapter, GameDescriptor, PlayerRole, Seat};
 pub use remote_agent::{RemoteGrpcAgentConfig, RemoteGrpcAgentFactory};

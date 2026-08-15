@@ -132,7 +132,9 @@ async fn sqlite_schema_has_evaluation_and_administrator_tables() {
         vec![
             "administrator_credential",
             "consent_declarations",
+            "experiment_config_revisions",
             "experiments",
+            "game_settings",
             "participants",
             "schema_migrations",
             "session_events",
@@ -140,6 +142,46 @@ async fn sqlite_schema_has_evaluation_and_administrator_tables() {
             "sessions",
         ]
     );
+}
+
+/// Confirms the catalogue migration recovers an exact game version from old manifests.
+#[tokio::test]
+async fn sqlite_migration_recovers_historical_game_version() {
+    let temp = tempdir().expect("tempdir");
+    let database_url = format!(
+        "sqlite:///{}",
+        temp.path().join("versions.sqlite").display()
+    );
+    let store = SqliteExperimentStore::connect(&database_url).await.unwrap();
+    store
+        .create_experiment(ExperimentRecord {
+            experiment_id: "historical".to_string(),
+            game_version: "0.4.0".to_string(),
+            config: json!({}),
+            server_version: Some("0.2.0".to_string()),
+            version_manifest: Some(json!({"game": {"version": "0.4.0"}})),
+            status: "inactive".to_string(),
+            notes: None,
+        })
+        .await
+        .unwrap();
+    sqlx::query("update experiments set game_version = 'legacy'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("delete from schema_migrations where version = 2")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store.pool.close().await;
+
+    let reopened = SqliteExperimentStore::connect(&database_url).await.unwrap();
+    let definition = reopened
+        .experiment_definition("historical")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(definition.game_version, "0.4.0");
 }
 
 /// Confirms an existing installation loses the obsolete participant display-name column.
@@ -256,6 +298,7 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
     store
         .ensure_experiment(ExperimentRecord {
             experiment_id: "exp_eval".to_string(),
+            game_version: "0.4.0".to_string(),
             config: json!({"study": "demo"}),
             server_version: Some("test".to_string()),
             version_manifest: None,
@@ -289,6 +332,8 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
     let session_one = store
         .create_session(SessionRecord {
             experiment_id: "exp_eval".to_string(),
+            config_revision: 1,
+            game_version: "0.4.0".to_string(),
             room_id: "ROOM1".to_string(),
             mode: "direct".to_string(),
             status: "waiting".to_string(),
@@ -298,6 +343,8 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
     let session_two = store
         .create_session(SessionRecord {
             experiment_id: "exp_eval".to_string(),
+            config_revision: 1,
+            game_version: "0.4.0".to_string(),
             room_id: "ROOM2".to_string(),
             mode: "direct".to_string(),
             status: "waiting".to_string(),
@@ -418,6 +465,7 @@ async fn sqlite_allows_returning_participant_in_multiple_sessions_with_different
     store
         .ensure_experiment(ExperimentRecord {
             experiment_id: "exp_returning".to_string(),
+            game_version: "0.4.0".to_string(),
             config: json!({"condition": "repeat-play"}),
             server_version: None,
             version_manifest: None,
@@ -439,6 +487,7 @@ async fn sqlite_allows_returning_participant_in_multiple_sessions_with_different
     store
         .ensure_experiment(ExperimentRecord {
             experiment_id: "exp_other".to_string(),
+            game_version: "0.4.0".to_string(),
             config: Value::Null,
             server_version: None,
             version_manifest: None,
@@ -468,6 +517,8 @@ async fn sqlite_allows_returning_participant_in_multiple_sessions_with_different
     let first_session = store
         .create_session(SessionRecord {
             experiment_id: "exp_returning".to_string(),
+            config_revision: 1,
+            game_version: "0.4.0".to_string(),
             room_id: "ROOM_A".to_string(),
             mode: "human_vs_human".to_string(),
             status: "playing".to_string(),
@@ -477,6 +528,8 @@ async fn sqlite_allows_returning_participant_in_multiple_sessions_with_different
     let second_session = store
         .create_session(SessionRecord {
             experiment_id: "exp_returning".to_string(),
+            config_revision: 1,
+            game_version: "0.4.0".to_string(),
             room_id: "ROOM_B".to_string(),
             mode: "role_swap_replay".to_string(),
             status: "playing".to_string(),
@@ -536,6 +589,7 @@ async fn sqlite_holds_mixed_participant_and_event_shapes_for_weird_experiments()
     store
         .ensure_experiment(ExperimentRecord {
             experiment_id: "exp_weird".to_string(),
+            game_version: "0.4.0".to_string(),
             config: json!({
                 "conditions": ["voice", "agent", "worker"],
                 "nested": {"levels": [{"id": 1}, {"id": 2}]}
@@ -603,6 +657,8 @@ async fn sqlite_holds_mixed_participant_and_event_shapes_for_weird_experiments()
     let session_id = store
         .create_session(SessionRecord {
             experiment_id: "exp_weird".to_string(),
+            config_revision: 1,
+            game_version: "0.4.0".to_string(),
             room_id: "ROOM_WEIRD".to_string(),
             mode: "human_agent_with_worker".to_string(),
             status: "playing".to_string(),
@@ -715,6 +771,79 @@ async fn sqlite_holds_mixed_participant_and_event_shapes_for_weird_experiments()
         experiment["consent_declarations"].as_array().unwrap().len(),
         2
     );
+}
+
+/// Confirms catalogue metadata and immutable revisions support dashboard-owned configuration.
+#[tokio::test]
+async fn sqlite_stores_multi_experiment_catalogue_and_revisions() {
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+    store
+        .create_experiment(ExperimentRecord {
+            experiment_id: "pilot".to_string(),
+            game_version: "0.4.0".to_string(),
+            config: json!({"study": {"name": "Pilot"}}),
+            server_version: Some("0.2.0".to_string()),
+            version_manifest: None,
+            status: "inactive".to_string(),
+            notes: None,
+        })
+        .await
+        .unwrap();
+
+    let revision = store
+        .save_experiment_revision(
+            "pilot",
+            1,
+            json!({"study": {"name": "Revised pilot"}}),
+            Some("Clarified title".to_string()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revision, 2);
+    assert!(store
+        .save_experiment_revision("pilot", 1, Value::Null, None)
+        .await
+        .is_err());
+
+    store
+        .update_experiment_catalogue("pilot", true, false, Some("Important".to_string()))
+        .await
+        .unwrap();
+    let experiments = store.list_experiments(100).await.unwrap();
+    assert_eq!(experiments.len(), 1);
+    assert_eq!(experiments[0].game_version, "0.4.0");
+    assert_eq!(experiments[0].config_revision, 2);
+    assert!(experiments[0].pinned);
+    assert_eq!(experiments[0].notes.as_deref(), Some("Important"));
+
+    let revisions = store.experiment_revisions("pilot").await.unwrap();
+    assert_eq!(revisions.len(), 2);
+    assert_eq!(revisions[0].revision, 2);
+    assert_eq!(revisions[1].revision, 1);
+}
+
+/// Confirms shared institution settings use optimistic concurrency.
+#[tokio::test]
+async fn sqlite_game_settings_reject_stale_updates() {
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+    let settings = store.game_settings().await.unwrap();
+    let revision = store
+        .update_game_settings(settings.revision, "Saarland University".to_string())
+        .await
+        .unwrap();
+    assert_eq!(revision, settings.revision + 1);
+    assert_eq!(
+        store.game_settings().await.unwrap().institution,
+        "Saarland University"
+    );
+    assert!(store
+        .update_game_settings(settings.revision, "Stale".to_string())
+        .await
+        .is_err());
 }
 
 #[tokio::test]

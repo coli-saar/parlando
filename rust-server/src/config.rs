@@ -13,8 +13,6 @@ use serde_json::Value;
 #[serde(default, deny_unknown_fields)]
 pub struct StudyConfig {
     pub name: String,
-    /// Optional name of the institution operating the participant-facing study.
-    pub institution: String,
     pub waiting_room_timeout_seconds: i64,
     pub reconnect_grace_seconds: i64,
 }
@@ -23,7 +21,6 @@ impl Default for StudyConfig {
     fn default() -> Self {
         Self {
             name: "experiment".to_string(),
-            institution: String::new(),
             waiting_room_timeout_seconds: 300,
             reconnect_grace_seconds: 90,
         }
