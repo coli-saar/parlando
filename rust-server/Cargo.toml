@@ -23,8 +23,10 @@ axum = { version = "0.7", features = ["ws", "macros"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
+fs2 = "0.4"
 http = "1"
 hmac = "0.12"
+ipnet = "2"
 prost = "0.13"
 prost-types = "0.13"
 regex = "1"

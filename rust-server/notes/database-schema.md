@@ -160,8 +160,8 @@ The intended event vocabulary includes:
 - `game_action_submitted`
 - `game_action_accepted`
 - `game_action_rejected`
-- `state_changed`
-- `transcript_segment`
+- `chat_message_rejected`
+- `client_message_rejected`
 - `conversation_message`
 - `voice_diagnostic`
 - `agent_started`
@@ -169,8 +169,17 @@ The intended event vocabulary includes:
 - `agent_error`
 - `tts_diagnostic`
 - `session_completed`
+- `session_expired`
 
-Accepted game actions store the actor, typed action payload, game events, full resulting game state, and timestamp.
+Each accepted game action stores the actor, typed action payload, generated game
+events, optional full resulting game state, and timestamp exactly once. Live
+`stateChanged` WebSocket messages are presentation protocol and do not create a
+second durable state-snapshot event. Repeated equivalent rejections are stored as
+bounded aggregates with stable reasons and occurrence counts.
+
+Typed and spoken utterances each use one `conversation_message` row. Spoken rows
+use origin `voice_transcript` and carry segment timing/provider metadata; Parlando
+does not write a duplicate transcript event.
 
 The `voice_diagnostic` payload may include browser `audio_playback_underrun` events with cumulative underrun and buffered-sample measurements. Raw PCM is not stored in the event stream.
 

@@ -65,7 +65,46 @@
     .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
     .pill { border: 1px solid #d7dee5; border-radius: 999px; padding: 3px 8px; background: #fff; color: #44515c; font-size: 12px; }
     .pill.warning-pill { border-color: #e5b35a; background: #fff8e8; color: #6f4700; }
+    .liveness { align-items: center; display: inline-flex; gap: 6px; white-space: nowrap; }
+    .liveness::before { background: #87939d; border-radius: 50%; content: ""; height: 8px; width: 8px; }
+    .liveness.live::before { background: #16865b; box-shadow: 0 0 0 3px #d9f3e8; }
+    .liveness.delayed::before { background: #c17b00; box-shadow: 0 0 0 3px #fff0c9; }
+    .liveness.stale::before, .liveness.disconnected::before { background: #b42318; box-shadow: 0 0 0 3px #fde2df; }
+    .liveness.waiting::before { background: #2773a8; box-shadow: 0 0 0 3px #dceef8; }
+    .liveness.completed::before { background: #65717c; }
+    .liveness.server::before { background: #7057a3; box-shadow: 0 0 0 3px #ebe5f7; }
     .panel { background: #fff; border: 1px solid #dce2e8; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    .load-overview { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 16px; }
+    .metric-card { background: #fff; border: 1px solid #dce2e8; border-radius: 8px; padding: 14px; }
+    .metric-card .metric { font-size: 24px; font-weight: 820; margin: 4px 0; }
+    .load-layout { align-items: start; display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .capacity-list { display: grid; gap: 14px; }
+    .capacity-head { align-items: baseline; display: flex; justify-content: space-between; gap: 10px; }
+    .gauge { background: #e9eef2; border-radius: 999px; height: 9px; margin-top: 6px; overflow: hidden; }
+    .gauge > span { background: #2773a8; display: block; height: 100%; min-width: 2px; }
+    .gauge > span.high { background: #c17b00; }
+    .gauge > span.full { background: #b42318; }
+    .load-chart { min-height: 250px; overflow-x: auto; }
+    .load-chart svg { display: block; height: auto; min-width: 620px; width: 100%; }
+    .chart-grid { stroke: #e2e8ed; stroke-width: 1; }
+    .chart-axis { fill: #65717c; font-size: 11px; }
+    .chart-active { fill: none; stroke: #185f8f; stroke-width: 3; }
+    .chart-game { fill: none; stroke: #16865b; stroke-width: 2.5; }
+    .chart-audio { fill: none; stroke: #9b5c12; stroke-width: 2.5; }
+    .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 8px; }
+    .legend span { align-items: center; display: inline-flex; font-size: 12px; gap: 6px; }
+    .legend i { background: #185f8f; display: inline-block; height: 3px; width: 18px; }
+    .legend .game i { background: #16865b; }
+    .legend .audio i { background: #9b5c12; }
+    .load-table { border-collapse: collapse; min-width: 760px; width: 100%; }
+    #livenessTable { overflow-x: auto; }
+    #trafficMetrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .participant-liveness + .participant-liveness { margin-top: 7px; }
+    .load-table th, .load-table td { border-bottom: 1px solid #e3e8ed; padding: 9px 7px; text-align: left; vertical-align: top; }
+    .load-table th { color: #5b6873; font-size: 12px; }
+    .load-session { cursor: pointer; }
+    .load-session:hover { background: #f5f8fa; }
+    .span-two { grid-column: 1 / -1; }
     .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
     .summary-line { display: none; }
     .summary-head { align-items: start; display: flex; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
@@ -130,6 +169,9 @@
       .session strong { margin-bottom: 2px; }
       .session .meta { gap: 5px; margin-top: 6px; }
       .grid, .participants { grid-template-columns: 1fr; }
+      .load-overview, .load-layout { grid-template-columns: 1fr; }
+      #trafficMetrics { grid-template-columns: 1fr; }
+      .span-two { grid-column: auto; }
       .control-row { grid-template-columns: 1fr; }
       .main { padding: 10px 14px 14px; }
       .workspace-header { align-items: stretch; display: grid; }
@@ -191,6 +233,7 @@
       </section>
       <nav class="tabs" aria-label="Experiment workspace">
         <button class="tab active" type="button" data-tab="sessions">Sessions</button>
+        <button class="tab" type="button" data-tab="load">Load</button>
         <button class="tab" type="button" data-tab="export">Export</button>
         <button class="tab" type="button" data-tab="details">Experiment Details</button>
       </nav>
@@ -222,6 +265,29 @@
               <div id="timeline" class="timeline"></div>
             </section>
           </div>
+        </div>
+      </section>
+      <section id="loadPanel" class="tab-panel" hidden>
+        <div id="loadOverview" class="load-overview"><div class="empty">Collecting operational samples…</div></div>
+        <div class="load-layout">
+          <section class="panel">
+            <h2>Capacity and storage</h2>
+            <div id="capacityList" class="capacity-list"></div>
+          </section>
+          <section class="panel">
+            <div class="topline"><h2>Traffic</h2><span id="loadUpdated" class="muted small"></span></div>
+            <div id="trafficMetrics" class="grid"></div>
+          </section>
+          <section class="panel span-two">
+            <h2>Rolling load</h2>
+            <div class="legend"><span><i></i>Reserved sessions</span><span class="game"><i></i>Game sockets</span><span class="audio"><i></i>Audio sockets</span></div>
+            <div id="loadChart" class="load-chart"></div>
+          </section>
+          <section class="panel span-two">
+            <div class="topline"><h2>Runtime session liveness</h2><span class="muted small">Heartbeat data is operational only and is not stored or exported.</span></div>
+            <p class="muted small">Live: message within 5 seconds · delayed: within 15 seconds · stale: socket remains registered until the 90-second timeout. Audio silence is shown as an age, not treated as failure.</p>
+            <div id="livenessTable"></div>
+          </section>
         </div>
       </section>
       <section id="exportPanel" class="tab-panel" hidden>
@@ -259,7 +325,11 @@
         <section class="panel" id="gameSettingsPanel">
           <h2>Game settings</h2>
           <label class="label" for="institutionInput">Institution shared by every experiment</label>
-          <div class="control-row"><input id="institutionInput" placeholder="Optional institution"><button class="secondary" id="saveGameSettings" type="button">Save game settings</button></div>
+          <div class="control-row"><input id="institutionInput" placeholder="Optional institution"></div>
+          <label class="label" for="adminAllowedIpRangesInput">Administrator IP ranges</label>
+          <textarea id="adminAllowedIpRangesInput" rows="3" placeholder="One CIDR range per line; empty allows every direct peer"></textarea>
+          <p class="muted small">This application-level list uses the direct network peer. When a reverse proxy hides the client address, enforce the equivalent range at that trusted proxy instead.</p>
+          <div class="control-row"><button class="secondary" id="saveGameSettings" type="button">Save game settings</button></div>
         </section>
         <section class="panel" id="configurationPanel">
           <div class="topline"><h2>Experiment configuration</h2><span id="configRevision" class="muted small"></span></div>
@@ -273,7 +343,7 @@
     </main>
   </div>
   <script>
-    const state = { experiment: null, experiments: [], game: null, gameSettings: null, sessions: [], selected: null, selectedSession: null, events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, csrfToken: null, activeTab: 'sessions', loadedConfigKey: null };
+    const state = { experiment: null, experiments: [], game: null, gameSettings: null, storageCapacity: null, runtimeCapacity: null, load: null, sessions: [], selected: null, selectedSession: null, selectedParticipants: [], events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, csrfToken: null, activeTab: 'sessions', loadedConfigKey: null };
     const experimentList = document.getElementById('experimentList');
     const menuButton = document.getElementById('menuButton');
     const experimentHeader = document.getElementById('experimentHeader');
@@ -293,9 +363,17 @@
     const revisionHistory = document.getElementById('revisionHistory');
     const saveConfiguration = document.getElementById('saveConfiguration');
     const institutionInput = document.getElementById('institutionInput');
+    const adminAllowedIpRangesInput = document.getElementById('adminAllowedIpRangesInput');
+    const loadOverview = document.getElementById('loadOverview');
+    const capacityList = document.getElementById('capacityList');
+    const trafficMetrics = document.getElementById('trafficMetrics');
+    const loadUpdated = document.getElementById('loadUpdated');
+    const loadChart = document.getElementById('loadChart');
+    const livenessTable = document.getElementById('livenessTable');
     const tabButtons = Array.from(document.querySelectorAll('.tab'));
     const tabPanels = {
       sessions: document.getElementById('sessionsPanel'),
+      load: document.getElementById('loadPanel'),
       export: document.getElementById('exportPanel'),
       details: document.getElementById('detailsPanel')
     };
@@ -308,6 +386,192 @@
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+
+    // Returns the runtime-only liveness row corresponding to one durable session.
+    function sessionLiveness(sessionId) {
+      return (state.load?.sessions || []).find(row => row.session_id === sessionId) || null;
+    }
+
+    // Renders a consistent status marker for session and participant health.
+    function livenessBadge(health, detail = '') {
+      const normalized = ['live', 'delayed', 'stale', 'disconnected', 'waiting', 'completed', 'server'].includes(health) ? health : 'disconnected';
+      const title = detail ? ` title="${escapeHtml(detail)}"` : '';
+      return `<span class="pill liveness ${normalized}"${title}>${escapeHtml(normalized)}</span>`;
+    }
+
+    // Formats an operational timestamp as an age without pretending it is research activity.
+    function formatAge(timestampMs) {
+      if (!timestampMs) return 'never';
+      const seconds = Math.max(0, Math.round((Date.now() - timestampMs) / 1000));
+      if (seconds < 60) return `${seconds}s ago`;
+      if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+      return `${Math.floor(seconds / 3600)}h ago`;
+    }
+
+    // Formats byte quantities for storage and throughput labels.
+    function formatBytes(bytes) {
+      if (!Number.isFinite(Number(bytes))) return '-';
+      const value = Number(bytes);
+      if (value >= 1073741824) return `${(value / 1073741824).toFixed(1)} GB`;
+      if (value >= 1048576) return `${(value / 1048576).toFixed(1)} MB`;
+      if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+      return `${value} B`;
+    }
+
+    // Renders one current-versus-limit capacity gauge with escalating color only near its ceiling.
+    function capacityGauge(label, current, limit, note = '') {
+      const ratio = limit > 0 ? current / limit : 0;
+      const percent = Math.max(0, Math.min(100, ratio * 100));
+      const level = ratio >= 1 ? 'full' : ratio >= 0.8 ? 'high' : '';
+      return `<div>
+        <div class="capacity-head"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(current)} / ${escapeHtml(limit)}</span></div>
+        <div class="gauge" role="meter" aria-label="${escapeHtml(label)}" aria-valuemin="0" aria-valuemax="${escapeHtml(limit)}" aria-valuenow="${escapeHtml(current)}"><span class="${level}" style="width:${percent.toFixed(1)}%"></span></div>
+        ${note ? `<div class="muted small">${escapeHtml(note)}</div>` : ''}
+      </div>`;
+    }
+
+    // Calculates a per-second rate over up to the most recent minute of cumulative samples.
+    function recentRate(counter) {
+      const history = state.load?.history || [];
+      if (history.length < 2) return 0;
+      const last = history.at(-1);
+      const earliestMs = last.sampled_at_ms - 60000;
+      const first = history.find(sample => sample.sampled_at_ms >= earliestMs) || history[0];
+      const seconds = Math.max(1, (last.sampled_at_ms - first.sampled_at_ms) / 1000);
+      return Math.max(0, ((last.counters[counter] || 0) - (first.counters[counter] || 0)) / seconds);
+    }
+
+    // Converts chronological samples into one SVG polyline.
+    function chartPoints(samples, valueFor, maximum) {
+      if (!samples.length) return '';
+      const width = 760;
+      const height = 190;
+      return samples.map((sample, index) => {
+        const x = 32 + (samples.length === 1 ? 0 : index / (samples.length - 1)) * width;
+        const y = 12 + height - (valueFor(sample) / maximum) * height;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(' ');
+    }
+
+    // Draws the bounded rolling history without requiring a charting dependency.
+    function renderLoadChart() {
+      const history = state.load?.history || [];
+      if (!history.length) {
+        loadChart.innerHTML = '<div class="empty">The first five-second sample has not arrived yet.</div>';
+        return;
+      }
+      const maximum = Math.max(1, ...history.flatMap(sample => [
+        sample.capacity.active_reserved_sessions,
+        sample.connections.game_connections,
+        sample.connections.audio_connections
+      ]));
+      const start = fmtTime(history[0].sampled_at);
+      const end = fmtTime(history.at(-1).sampled_at);
+      loadChart.innerHTML = `<svg viewBox="0 0 824 230" role="img" aria-labelledby="loadChartTitle loadChartDescription">
+        <title id="loadChartTitle">Rolling server load</title>
+        <desc id="loadChartDescription">Reserved sessions, game sockets, and audio sockets over the retained hour.</desc>
+        <line class="chart-grid" x1="32" y1="12" x2="32" y2="202"></line>
+        <line class="chart-grid" x1="32" y1="202" x2="792" y2="202"></line>
+        <line class="chart-grid" x1="32" y1="107" x2="792" y2="107"></line>
+        <text class="chart-axis" x="4" y="16">${maximum}</text><text class="chart-axis" x="17" y="205">0</text>
+        <text class="chart-axis" x="32" y="222">${escapeHtml(start)}</text><text class="chart-axis" x="792" y="222" text-anchor="end">${escapeHtml(end)}</text>
+        <polyline class="chart-active" points="${chartPoints(history, sample => sample.capacity.active_reserved_sessions, maximum)}"></polyline>
+        <polyline class="chart-game" points="${chartPoints(history, sample => sample.connections.game_connections, maximum)}"></polyline>
+        <polyline class="chart-audio" points="${chartPoints(history, sample => sample.connections.audio_connections, maximum)}"></polyline>
+      </svg>`;
+    }
+
+    // Renders the current capacity, throughput, transport health, and storage footprint.
+    function renderLoad() {
+      const load = state.load;
+      const current = load?.current;
+      if (!current) return;
+      const capacity = current.capacity;
+      const connections = current.connections;
+      const counters = current.counters;
+      const averageLatency = counters.requests_total ? counters.request_duration_ms_total / counters.requests_total : 0;
+      loadOverview.innerHTML = `
+        <div class="metric-card"><div class="label">Reserved sessions</div><div class="metric">${capacity.active_reserved_sessions}</div><div class="muted small">${capacity.waiting_sessions} waiting · ${capacity.completed_retained_sessions} completed retained · ${capacity.active_agents} agents</div></div>
+        <div class="metric-card"><div class="label">Game liveness</div><div class="metric">${connections.game_live}/${connections.game_connections}</div><div class="muted small">${connections.game_delayed} delayed · ${connections.game_stale} stale</div></div>
+        <div class="metric-card"><div class="label">HTTP work</div><div class="metric">${counters.requests_in_flight}</div><div class="muted small">in flight · ${averageLatency.toFixed(1)} ms mean</div></div>
+        <div class="metric-card"><div class="label">SQLite footprint</div><div class="metric">${formatBytes(current.storage?.database_total_bytes || current.storage?.database_bytes || 0)}</div><div class="muted small">${formatBytes(current.storage?.available_bytes)} filesystem free</div></div>`;
+      capacityList.innerHTML = [
+        capacityGauge('Active/retained sessions', capacity.active_reserved_sessions, capacity.active_session_limit, `${capacity.completed_retained_sessions} completed sessions remain during cleanup grace`),
+        capacityGauge('Waiting rooms', capacity.waiting_sessions, capacity.waiting_session_limit),
+        capacityGauge('Unattached participants', capacity.unattached_participants, capacity.unattached_participant_limit),
+        capacityGauge('ASR streams reserved', capacity.transcription_streams_reserved, capacity.transcription_stream_limit),
+        current.storage ? capacityGauge('Filesystem used', current.storage.total_bytes - current.storage.available_bytes, current.storage.total_bytes, `${formatBytes(current.storage.available_bytes)} free; admission reserve ${formatBytes(capacity.storage_reserve_bytes)} · WAL ${formatBytes(current.storage.wal_bytes)}`) : '<div class="muted small">Storage capacity is unavailable for the in-memory database.</div>'
+      ].join('');
+      trafficMetrics.innerHTML = `
+        <div><div class="label">HTTP requests/s</div><div class="value">${recentRate('requests_total').toFixed(1)}</div></div>
+        <div><div class="label">Game messages/s</div><div class="value">${recentRate('game_messages_total').toFixed(1)}</div></div>
+        <div><div class="label">Heartbeats/s</div><div class="value">${recentRate('heartbeats_total').toFixed(1)}</div></div>
+        <div><div class="label">Audio frames/s</div><div class="value">${recentRate('audio_frames_total').toFixed(1)}</div></div>
+        <div><div class="label">Actions accepted/s</div><div class="value">${recentRate('actions_accepted_total').toFixed(1)}</div></div>
+        <div><div class="label">Chats accepted/s</div><div class="value">${recentRate('chat_messages_accepted_total').toFixed(1)}</div></div>
+        <div><div class="label">Input rejections</div><div class="value">${counters.actions_rejected_total + counters.chat_messages_rejected_total + counters.transport_messages_rejected_total}</div><div class="muted small">${current.pending_rejections} awaiting aggregate flush</div></div>
+        <div><div class="label">HTTP errors</div><div class="value">${counters.request_client_errors_total} / ${counters.request_server_errors_total}</div><div class="muted small">4xx / 5xx</div></div>
+        <div><div class="label">Peak HTTP latency</div><div class="value">${counters.request_duration_ms_max} ms</div></div>
+        <div><div class="label">ASR backpressure</div><div class="value">${counters.asr_backpressure_total}</div></div>
+        <div><div class="label">Audio drops</div><div class="value">${counters.audio_frames_dropped_total}</div></div>
+        <div><div class="label">Reconnect replacements</div><div class="value">${counters.reconnections_total}</div></div>
+        <div><div class="label">TTS</div><div class="value">${counters.tts_in_flight} active</div><div class="muted small">${counters.tts_messages_total} total · ${counters.tts_failures_total} failed</div></div>`;
+      loadUpdated.textContent = `Sampled ${fmtTime(current.sampled_at)} · process uptime ${Math.floor(counters.uptime_seconds / 60)} min`;
+      renderLoadChart();
+      renderLivenessTable();
+    }
+
+    // Clears runtime-only telemetry when a historical configuration cannot be started.
+    function renderLoadUnavailable() {
+      loadOverview.innerHTML = '<div class="empty">Runtime telemetry is unavailable for this historical experiment configuration. Stored sessions and exports remain available.</div>';
+      capacityList.innerHTML = '';
+      trafficMetrics.innerHTML = '';
+      loadChart.innerHTML = '<div class="empty">No runtime samples are available.</div>';
+      livenessTable.innerHTML = '<div class="empty">Historical sessions are not loaded into process memory.</div>';
+      loadUpdated.textContent = 'Historical configuration';
+    }
+
+    // Renders every in-memory session with transport ages and its next cleanup deadline.
+    function renderLivenessTable() {
+      const sessions = state.load?.sessions || [];
+      if (!sessions.length) {
+        livenessTable.innerHTML = '<div class="empty">No sessions currently occupy runtime memory.</div>';
+        return;
+      }
+      livenessTable.innerHTML = `<table class="load-table"><thead><tr><th>Session</th><th>Liveness</th><th>Participants</th><th>Meaningful activity</th><th>Next lifecycle deadline</th></tr></thead><tbody>${sessions.map(session => `
+        <tr class="load-session" data-session="${session.session_id}">
+          <td><strong>#${session.session_id}</strong><div class="muted small">${escapeHtml(session.status)}</div></td>
+          <td>${livenessBadge(session.health)}</td>
+          <td>${session.participants.map(participant => participant.source === 'agent' ? `<div class="participant-liveness">${escapeHtml(participant.role)} ${livenessBadge('server', 'Trusted server-side agent')}</div>` : `<div class="participant-liveness">${escapeHtml(participant.role)} ${livenessBadge(participant.game_health, participant.game ? `Last game message ${formatAge(participant.game.last_message_at_ms)}` : 'No current game socket')}<div class="muted small">game ${participant.game ? formatAge(participant.game.last_message_at_ms) : 'disconnected'} · audio ${participant.audio ? formatAge(participant.audio.last_message_at_ms) : 'disconnected'}</div></div>`).join('')}</td>
+          <td>${escapeHtml(formatAge(new Date(session.meaningful_activity_at).getTime()))}</td>
+          <td>${session.lifecycle_deadline_at ? `${escapeHtml(fmtTime(session.lifecycle_deadline_at))}<div class="muted small">${escapeHtml(session.deadline_reason)}</div>` : '—'}</td>
+        </tr>`).join('')}</tbody></table>`;
+      livenessTable.querySelectorAll('[data-session]').forEach(row => {
+        row.addEventListener('click', () => {
+          state.activeTab = 'sessions';
+          renderTabs();
+          selectSession(Number(row.dataset.session));
+        });
+      });
+    }
+
+    // Fetches operational telemetry for the selected isolated experiment runtime.
+    async function loadLoad() {
+      if (!state.experiment) return;
+      const response = await fetch(runtimeApi('load'));
+      if (!response.ok) {
+        state.load = null;
+        renderLoadUnavailable();
+        renderExperimentHeader();
+        renderSessions();
+        return;
+      }
+      state.load = await response.json();
+      renderLoad();
+      renderExperimentHeader();
+      renderSessions();
+      if (state.selectedSession) renderSummary(state.selectedSession, state.selectedParticipants);
     }
 
     function renderExperiment() {
@@ -335,6 +599,7 @@
 
     function renderExperimentHeader() {
       const experiment = state.experiment;
+      const operational = state.load?.current;
       if (!experiment) {
         experimentHeader.innerHTML = '<span class="muted small">Experiment</span><h2>Unavailable</h2>';
         experimentStats.innerHTML = '';
@@ -350,6 +615,8 @@
         <span class="pill">Game ${escapeHtml(experiment.game_version)}</span>
         <span class="pill">${experiment.session_count} sessions</span>
         <span class="pill">${experiment.completed_session_count} completed</span>
+        ${operational ? `<span class="pill">${operational.capacity.active_reserved_sessions} active/retained · ${operational.capacity.waiting_sessions} waiting · ${operational.capacity.transcription_streams_reserved} ASR reserved</span>` : state.runtimeCapacity ? `<span class="pill">${state.runtimeCapacity.active_sessions} active · ${state.runtimeCapacity.waiting_sessions} waiting · ${state.runtimeCapacity.reserved_transcription_streams} ASR reserved</span>` : ''}
+        ${operational?.storage ? `<span class="pill">${formatBytes(operational.storage.available_bytes)} disk free · ${formatBytes(operational.storage.database_total_bytes || operational.storage.database_bytes)} SQLite</span>` : state.storageCapacity ? `<span class="pill">${formatBytes(state.storageCapacity.available_bytes)} disk free · ${formatBytes(state.storageCapacity.database_total_bytes || state.storageCapacity.database_bytes)} SQLite</span>` : ''}
         <button class="secondary" id="cloneButton" type="button">Clone</button>
         <button class="secondary" id="pinButton" type="button">${experiment.pinned ? 'Unpin' : 'Pin'}</button>
         <button class="secondary" id="obsoleteButton" type="button">${experiment.obsolete ? 'Restore from obsolete' : 'Mark obsolete'}</button>
@@ -401,17 +668,21 @@
         sessionList.innerHTML = '<div class="empty">No sessions in this experiment yet.</div>';
         return;
       }
-      sessionList.innerHTML = state.sessions.map(session => `
+      sessionList.innerHTML = state.sessions.map(session => {
+        const live = sessionLiveness(session.session_id);
+        const health = live?.health || (session.status === 'completed' ? 'completed' : 'disconnected');
+        return `
         <button class="session ${state.selected === session.session_id ? 'active' : ''}" data-session="${session.session_id}">
           <strong>${escapeHtml(session.dialogue_id || `Session #${session.session_id}`)}</strong>
           <span class="muted small">Session #${session.session_id} · ${escapeHtml(fmtTime(session.created_at))}</span>
           <span class="meta">
             <span class="pill">${escapeHtml(session.status)}</span>
+            ${livenessBadge(health, live ? '' : 'Session is not present in this process runtime')}
             <span class="pill">${session.participant_count} players</span>
             <span class="pill">${session.event_count} events</span>
           </span>
         </button>
-      `).join('');
+      `}).join('');
       sessionList.querySelectorAll('.session').forEach(button => {
         button.addEventListener('click', () => selectSession(Number(button.dataset.session)));
       });
@@ -422,11 +693,13 @@
       const params = new URLSearchParams({ limit: '80' });
       if (sessionStatusFilter.value) params.set('status', sessionStatusFilter.value);
       const response = await fetch(`${runtimeApi('sessions')}?${params}`);
+      if (!response.ok) throw new Error(await response.text());
       const data = await response.json();
       state.sessions = data.sessions || [];
       if (state.selected && !state.sessions.some(session => session.session_id === state.selected)) {
         state.selected = null;
         state.selectedSession = null;
+        state.selectedParticipants = [];
         sessionDetail.hidden = true;
       }
       renderSessions();
@@ -440,6 +713,8 @@
       state.experiments = data.experiments || [];
       state.game = data.game || null;
       state.gameSettings = data.game_settings || null;
+      state.storageCapacity = data.storage_capacity || null;
+      state.runtimeCapacity = data.runtime_capacity || null;
       state.csrfToken = data.csrf_token || null;
       const selectedId = state.experiment?.experiment_id || data.running_experiment_id;
       state.experiment = state.experiments.find(item => item.experiment_id === selectedId) || state.experiments[0] || null;
@@ -448,6 +723,7 @@
       renderExperimentHeader();
       renderExperimentDetails();
       institutionInput.value = state.gameSettings?.institution || '';
+      adminAllowedIpRangesInput.value = (state.gameSettings?.admin_allowed_ip_ranges || []).join('\n');
       const configKey = state.experiment ? `${state.experiment.experiment_id}:${state.experiment.config_revision}` : null;
       if (configKey && configKey !== state.loadedConfigKey) await loadConfiguration();
     }
@@ -474,13 +750,15 @@
       state.experiment = state.experiments.find(item => item.experiment_id === experimentId) || null;
       state.selected = null;
       state.selectedSession = null;
+      state.selectedParticipants = [];
+      state.load = null;
       sessionDetail.hidden = true;
       closeExperimentMenu();
       renderExperiment();
       renderExperimentHeader();
       renderExperimentDetails();
       await loadConfiguration();
-      await loadSessions();
+      await Promise.all([loadSessions(), loadLoad()]);
     }
 
     // Returns an authenticated runtime API path for the selected experiment.
@@ -669,12 +947,16 @@
       await loadExperiment();
     }
 
-    // Saves the institution shared by all experiments of this compiled game.
+    // Saves installation-wide game and administrator-network settings.
     async function saveSharedGameSettings() {
+      const adminAllowedIpRanges = adminAllowedIpRangesInput.value
+        .split(/[\n,]/)
+        .map(value => value.trim())
+        .filter(Boolean);
       const response = await fetch('/api/admin/game/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
-        body: JSON.stringify({ expected_revision: state.gameSettings.revision, institution: institutionInput.value })
+        body: JSON.stringify({ expected_revision: state.gameSettings.revision, institution: institutionInput.value, admin_allowed_ip_ranges: adminAllowedIpRanges })
       });
       if (!response.ok) { window.alert(await response.text()); return; }
       await loadExperiment();
@@ -686,9 +968,11 @@
       renderSessions();
       liveStatus.textContent = 'Loading';
       const response = await fetch(runtimeApi(`sessions/${sessionId}`));
+      if (!response.ok) throw new Error(await response.text());
       const data = await response.json();
       state.selectedSession = data.session;
-      renderSummary(data.session, data.participants || []);
+      state.selectedParticipants = data.participants || [];
+      renderSummary(data.session, state.selectedParticipants);
       sessionDetail.hidden = false;
       state.events = [];
       state.eventBundles = data.event_bundles || [];
@@ -716,10 +1000,12 @@
     }
 
     function renderSummary(session, participantRows) {
+      const live = sessionLiveness(session.session_id);
+      const health = live?.health || (session.status === 'completed' ? 'completed' : 'disconnected');
       summary.innerHTML = `
         <div class="summary-head">
           <h2>${escapeHtml(session.dialogue_id || `Session #${session.session_id}`)}</h2>
-          ${participantSummaryInline(participantRows)}
+          <span>${livenessBadge(health, live ? `Meaningful activity ${formatAge(new Date(live.meaningful_activity_at).getTime())}` : 'Session is not present in this process runtime')} ${participantSummaryInline(participantRows)}</span>
         </div>
         <div class="summary-line">
           <span class="pill">Session #${escapeHtml(session.session_id)}</span>
@@ -751,7 +1037,10 @@
     }
 
     function participantCards(rows) {
-      return rows.map(row => `
+      const live = state.selected ? sessionLiveness(state.selected) : null;
+      return rows.map(row => {
+        const participantLive = live?.participants.find(participant => participant.role === row.role);
+        return `
         <div class="participant">
           ${roleBadge(row.role)}
           <div class="participant-body">
@@ -759,13 +1048,15 @@
             <div class="value">${escapeHtml(participantLabel(row))}</div>
             <div class="meta">
               <span class="pill">${escapeHtml(row.connection_status)}</span>
+              ${participantLive ? livenessBadge(participantLive.game_health, participantLive.game ? `Last heartbeat ${formatAge(participantLive.game.last_heartbeat_at_ms || participantLive.game.last_message_at_ms)}` : 'No current game socket') : ''}
               <span class="pill">${escapeHtml(row.participant_kind || 'participant')}</span>
+              ${participantLive?.audio ? `<span class="pill">audio ${escapeHtml(formatAge(participantLive.audio.last_message_at_ms))}</span>` : ''}
               ${agentParticipantPills(row)}
             </div>
             ${row.participant_kind !== 'agent' && row.research_id ? `<button class="danger delete-participant" data-research-id="${escapeHtml(row.research_id)}" type="button">Delete participant data</button>` : ''}
           </div>
         </div>
-      `).join('');
+      `}).join('');
     }
 
     function participantDetailsInline(rows) {
@@ -910,6 +1201,7 @@
       if (!state.selected) return;
       const params = new URLSearchParams({ after: String(state.lastEventIndex) });
       const response = await fetch(`${runtimeApi(`sessions/${state.selected}/events`)}?${params}`);
+      if (!response.ok) throw new Error(await response.text());
       const data = await response.json();
       state.eventBundles = data.event_bundles || state.eventBundles;
       mergeEvents(data.events || []);
@@ -941,6 +1233,7 @@
     sessionStatusFilter.addEventListener('change', () => {
       state.selected = null;
       state.selectedSession = null;
+      state.selectedParticipants = [];
       sessionDetail.hidden = true;
       loadSessions();
     });
@@ -976,12 +1269,12 @@
       button.textContent = expanded ? 'JSON' : 'Hide';
       panel.hidden = expanded;
     });
-    loadExperiment().then(loadSessions).catch(error => {
+    loadExperiment().then(() => Promise.all([loadSessions(), loadLoad()])).catch(error => {
       sessionList.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
     });
     renderTabs();
     setInterval(() => {
-      loadExperiment().then(loadSessions).catch(error => {
+      loadExperiment().then(() => Promise.all([loadSessions(), loadLoad()])).catch(error => {
         liveStatus.textContent = error.message;
       });
     }, 5000);

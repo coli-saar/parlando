@@ -75,6 +75,9 @@ export interface GameInputSession {
   completed: boolean;
 }
 
+/** Game-channel transport heartbeat cadence; heartbeats are never research activity. */
+export const CLIENT_HEARTBEAT_INTERVAL_MS = 1_000;
+
 /** Returns the state update applied when the server announces game completion. */
 export function completedSessionPatch<TSummary>(summary: TSummary | undefined): {
   completed: true;
@@ -133,8 +136,14 @@ export function ParlandoStartupGate<
   const [selectedAudioInputId, setSelectedAudioInputId] = useState("");
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>(initialVoiceStatus);
   const [voicePreflight, setVoicePreflight] = useState<VoicePreflight>(initialVoicePreflight);
+  const [voiceReconnectGeneration, setVoiceReconnectGeneration] = useState(0);
   const sessionRef = useRef<RoomSession<TState, TObservation, TAction, TEvent, TSummary> | null>(null);
-  const automaticVoiceAttemptRef = useRef("");
+  const connectRoomRef = useRef<(room: RoomResponse<TState, TObservation, TAction, TEvent>) => Promise<void>>(async () => {});
+  const scheduleGameReconnectRef = useRef<(room: RoomResponse<TState, TObservation, TAction, TEvent>) => void>(() => {});
+  const reconnectEnabledRef = useRef(false);
+  const reconnectStartedAtRef = useRef(0);
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef<number | null>(null);
   const consentReady = requiredConsentsAccepted(publicConfig, consentDecisions);
   const voiceEnabled = isVoiceEnabled(publicConfig);
   const canEnter = Boolean(
@@ -151,6 +160,9 @@ export function ParlandoStartupGate<
   }, []);
 
   const endCurrentSession = useCallback(() => {
+    reconnectEnabledRef.current = false;
+    if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current);
+    reconnectTimerRef.current = null;
     void audioController.disconnect(true);
     closeSessionSocket(sessionRef.current);
   }, [audioController]);
@@ -164,28 +176,60 @@ export function ParlandoStartupGate<
     setError("");
   }, [endCurrentSession]);
 
+  const scheduleGameReconnect = useCallback(
+    (room: RoomResponse<TState, TObservation, TAction, TEvent>) => {
+      const current = sessionRef.current;
+      if (!reconnectEnabledRef.current || !current || current.completed || reconnectTimerRef.current !== null) return;
+      if (reconnectStartedAtRef.current === 0) reconnectStartedAtRef.current = Date.now();
+      if (Date.now() - reconnectStartedAtRef.current >= 5 * 60_000) {
+        setError("The five-minute reconnection window expired. Please leave and start a new session.");
+        return;
+      }
+      const delays = [1_000, 2_000, 5_000, 10_000];
+      const delay = delays[Math.min(reconnectAttemptsRef.current, delays.length - 1)];
+      reconnectAttemptsRef.current += 1;
+      reconnectTimerRef.current = window.setTimeout(() => {
+        reconnectTimerRef.current = null;
+        void connectRoomRef.current(room).catch((caught) => {
+          setError(errorMessage(caught, "Could not reconnect to the game channel."));
+          scheduleGameReconnectRef.current(room);
+        });
+      }, delay);
+    },
+    []
+  );
+  scheduleGameReconnectRef.current = scheduleGameReconnect;
+
   const connectRoom = useCallback(
     async (room: RoomResponse<TState, TObservation, TAction, TEvent>) => {
       const gameSession = await apiClient.getGameSession(room.room_id);
       const socket = new WebSocket(apiClient.socketUrl(gameSession));
-      setSession({
-        roomId: room.room_id,
-        participantSessionId: room.participant_session_id,
-        role: room.role,
-        state: room.state ?? null,
-        observation: room.observation ?? null,
-        availableActions: room.available_actions ?? [],
-        events: room.events ?? [],
-        socket,
-        connected: false,
-        active: false,
-        completed: false,
-        completionSummary: null,
-        presence: normalizePresence(room.presence),
-        conversation: room.conversation ?? []
+      setSession((current) => {
+        const next = current?.roomId === room.room_id
+          ? { ...current, socket, connected: false }
+          : {
+            roomId: room.room_id,
+            participantSessionId: room.participant_session_id,
+            role: room.role,
+            state: room.state ?? null,
+            observation: room.observation ?? null,
+            availableActions: room.available_actions ?? [],
+            events: room.events ?? [],
+            socket,
+            connected: false,
+            active: false,
+            completed: false,
+            completionSummary: null,
+            presence: normalizePresence(room.presence),
+            conversation: room.conversation ?? []
+            };
+        sessionRef.current = next;
+        return next;
       });
 
       socket.addEventListener("open", () => {
+        reconnectStartedAtRef.current = 0;
+        reconnectAttemptsRef.current = 0;
         socket.send(JSON.stringify({ type: "ready" }));
         setSession((current) => (current?.socket === socket ? { ...current, connected: true } : current));
       });
@@ -263,11 +307,19 @@ export function ParlandoStartupGate<
         }
       });
       socket.addEventListener("close", () => {
-        setSession((current) => (current?.socket === socket ? { ...current, connected: false } : current));
+        setSession((current) => {
+          const next = current?.socket === socket ? { ...current, connected: false } : current;
+          sessionRef.current = next;
+          return next;
+        });
+        const current = sessionRef.current;
+        if (!reconnectEnabledRef.current || current?.socket !== socket || current.completed) return;
+        scheduleGameReconnectRef.current(room);
       });
     },
     [apiClient, audioController]
   );
+  connectRoomRef.current = connectRoom;
 
   const ensureParticipant = useCallback(async () => {
     if (!publicConfig) throw new Error("Experiment config has not loaded.");
@@ -284,8 +336,10 @@ export function ParlandoStartupGate<
     try {
       setError("");
       await ensureParticipant();
+      reconnectEnabledRef.current = true;
       await connectRoom(await apiClient.createRoom<TState, TObservation, TAction, TEvent>());
     } catch (caught) {
+      reconnectEnabledRef.current = false;
       setError(errorMessage(caught, "Could not create the waiting room."));
     }
   }, [apiClient, connectRoom, ensureParticipant]);
@@ -334,6 +388,7 @@ export function ParlandoStartupGate<
       await toggleVoice();
     } catch (caught) {
       setError(errorMessage(caught, "Could not start voice chat."));
+      setVoiceReconnectGeneration((generation) => generation + 1);
     }
   }, [toggleVoice]);
 
@@ -381,8 +436,23 @@ export function ParlandoStartupGate<
   }), [audioController]);
 
   useEffect(() => {
+    if (voiceStatus.connected) setVoiceReconnectGeneration(0);
+  }, [voiceStatus.connected]);
+
+  useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  // One-second transport heartbeat. It is deliberately not research activity and
+  // therefore never extends the server's meaningful session-idle deadline.
+  useEffect(() => {
+    if (!session) return;
+    const socket = session.socket;
+    const timer = window.setInterval(() => {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "heartbeat" }));
+    }, CLIENT_HEARTBEAT_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [session?.socket]);
 
   useEffect(() => () => {
     endCurrentSession();
@@ -399,12 +469,14 @@ export function ParlandoStartupGate<
   }, [endCurrentSession]);
 
   useEffect(() => {
-    if (!session || !voiceEnabled || !voicePreflight.ready || voiceStatus.connected || voiceStatus.connecting) return;
-    const attemptKey = `${session.roomId}:${session.participantSessionId}`;
-    if (automaticVoiceAttemptRef.current === attemptKey) return;
-    automaticVoiceAttemptRef.current = attemptKey;
-    void connectVoice();
-  }, [connectVoice, session, voiceEnabled, voicePreflight.ready, voiceStatus.connected, voiceStatus.connecting]);
+    if (!session?.connected || !voiceEnabled || !voicePreflight.ready || voiceStatus.connected || voiceStatus.connecting) return;
+    const delays = [1_000, 2_000, 5_000, 10_000];
+    const timer = window.setTimeout(
+      () => void connectVoice(),
+      delays[Math.min(voiceReconnectGeneration, delays.length - 1)]
+    );
+    return () => window.clearTimeout(timer);
+  }, [connectVoice, session?.connected, voiceEnabled, voicePreflight.ready, voiceStatus.connected, voiceStatus.connecting, voiceReconnectGeneration]);
 
   if (configLoading || !publicConfig) {
     return (

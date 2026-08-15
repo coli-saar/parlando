@@ -1,18 +1,23 @@
-use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use crate::{
     game::Seat,
     identity::new_id,
     readable_id::{dialogue_id, participant_id as readable_participant_id},
 };
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
-    SqlitePool,
+    Connection, SqlitePool,
 };
 
 /// Returns the current UTC timestamp in ISO-8601/RFC3339 form.
@@ -180,6 +185,8 @@ pub struct StoredExperimentRevision {
 pub struct StoredGameSettings {
     /// Institution displayed by every experiment of this game process.
     pub institution: String,
+    /// Direct-peer CIDR ranges allowed to access administrator surfaces.
+    pub admin_allowed_ip_ranges: Vec<String>,
     /// Optimistic-concurrency revision for dashboard updates.
     pub revision: i64,
 }
@@ -327,9 +334,30 @@ pub struct StoredAdminCredential {
     pub role: String,
 }
 
+/// Filesystem and database size information used to stop only new session admission.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct StorageCapacity {
+    /// Total bytes on the filesystem containing SQLite.
+    pub total_bytes: u64,
+    /// Bytes currently available to the server process.
+    pub available_bytes: u64,
+    /// Current main SQLite database file size.
+    pub database_bytes: u64,
+    /// Current SQLite write-ahead log size, which can be substantial under load.
+    pub wal_bytes: u64,
+    /// Current SQLite shared-memory sidecar size.
+    pub shm_bytes: u64,
+    /// Total current SQLite footprint including the main file and sidecars.
+    pub database_total_bytes: u64,
+}
+
 /// Backend-neutral storage interface centered on experiment evaluation.
 #[async_trait]
 pub trait ExperimentStore: Send + Sync {
+    /// Confirms the SQLite store can acquire a write transaction and execute a read.
+    async fn health_check(&self) -> Result<()>;
+    /// Reports disk capacity for file-backed SQLite, or `None` for in-memory tests.
+    async fn storage_capacity(&self) -> Result<Option<StorageCapacity>>;
     /// Loads the singleton administrator credential, if initial setup is complete.
     async fn admin_credential(&self) -> Result<Option<StoredAdminCredential>>;
     /// Atomically creates the singleton administrator credential.
@@ -375,6 +403,7 @@ pub trait ExperimentStore: Send + Sync {
         &self,
         expected_revision: i64,
         institution: String,
+        admin_allowed_ip_ranges: Vec<String>,
     ) -> Result<i64>;
     /// Returns the process-owned experiment with compact session aggregates.
     async fn experiment_summary(
@@ -408,6 +437,13 @@ pub trait ExperimentStore: Send + Sync {
         &self,
         events: Vec<SessionEventRecord>,
         completion: Option<Value>,
+    ) -> Result<()>;
+    /// Marks an unfinished session expired and appends its bounded terminal reason.
+    async fn expire_session(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+        reason: &str,
     ) -> Result<()>;
     /// Returns ordered events for one session, optionally filtered by event type.
     async fn session_events(
@@ -466,6 +502,7 @@ fn sqlite_unique_constraint_for(error: &sqlx::Error, column: &str) -> bool {
 /// SQLite implementation of the evaluation-oriented experiment store.
 pub struct SqliteExperimentStore {
     pool: SqlitePool,
+    database_path: Option<PathBuf>,
 }
 
 impl SqliteExperimentStore {
@@ -476,7 +513,10 @@ impl SqliteExperimentStore {
                 .max_connections(1)
                 .connect("sqlite::memory:")
                 .await?;
-            let store = Self { pool };
+            let store = Self {
+                pool,
+                database_path: None,
+            };
             store.ensure_schema().await?;
             return Ok(store);
         }
@@ -497,7 +537,10 @@ impl SqliteExperimentStore {
             .max_connections(1)
             .connect_with(options)
             .await?;
-        let store = Self { pool };
+        let store = Self {
+            pool,
+            database_path: Some(PathBuf::from(path)),
+        };
         store.ensure_schema().await?;
         Ok(store)
     }
@@ -550,6 +593,7 @@ impl SqliteExperimentStore {
             create table if not exists game_settings (
                 singleton integer primary key check (singleton = 1),
                 institution text not null default '',
+                admin_allowed_ip_ranges_json text not null default '[]',
                 revision integer not null default 1,
                 updated_at text not null
             )
@@ -738,6 +782,7 @@ impl SqliteExperimentStore {
                 create table if not exists game_settings (
                     singleton integer primary key check (singleton = 1),
                     institution text not null default '',
+                    admin_allowed_ip_ranges_json text not null default '[]',
                     revision integer not null default 1,
                     updated_at text not null
                 )
@@ -752,6 +797,19 @@ impl SqliteExperimentStore {
             .execute(&self.pool)
             .await?;
             sqlx::query("insert into schema_migrations (version, applied_at) values (2, ?)")
+                .bind(now_iso())
+                .execute(&self.pool)
+                .await?;
+            version = 2;
+        }
+        if version < 3 {
+            self.ensure_column(
+                "game_settings",
+                "admin_allowed_ip_ranges_json",
+                "text not null default '[]'",
+            )
+            .await?;
+            sqlx::query("insert into schema_migrations (version, applied_at) values (3, ?)")
                 .bind(now_iso())
                 .execute(&self.pool)
                 .await?;
@@ -1027,8 +1085,322 @@ impl SqliteExperimentStore {
     }
 }
 
+/// Row counts used to verify a complete game-catalogue merge.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct CatalogueRowCounts {
+    /// Experiment catalogue rows.
+    pub experiments: i64,
+    /// Immutable experiment-configuration revisions.
+    pub experiment_config_revisions: i64,
+    /// Experiment-scoped participant identities.
+    pub participants: i64,
+    /// Research sessions.
+    pub sessions: i64,
+    /// Participant memberships in sessions.
+    pub session_participants: i64,
+    /// Consent declarations.
+    pub consent_declarations: i64,
+    /// Ordered research events.
+    pub session_events: i64,
+}
+
+impl CatalogueRowCounts {
+    /// Adds corresponding table counts for post-merge verification.
+    fn checked_add(self, other: Self) -> Result<Self> {
+        Ok(Self {
+            experiments: self
+                .experiments
+                .checked_add(other.experiments)
+                .context("experiment count overflow")?,
+            experiment_config_revisions: self
+                .experiment_config_revisions
+                .checked_add(other.experiment_config_revisions)
+                .context("configuration revision count overflow")?,
+            participants: self
+                .participants
+                .checked_add(other.participants)
+                .context("participant count overflow")?,
+            sessions: self
+                .sessions
+                .checked_add(other.sessions)
+                .context("session count overflow")?,
+            session_participants: self
+                .session_participants
+                .checked_add(other.session_participants)
+                .context("session-participant count overflow")?,
+            consent_declarations: self
+                .consent_declarations
+                .checked_add(other.consent_declarations)
+                .context("consent count overflow")?,
+            session_events: self
+                .session_events
+                .checked_add(other.session_events)
+                .context("event count overflow")?,
+        })
+    }
+}
+
+/// Verification report for a dry-run or applied SQLite catalogue merge.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct CatalogueMergeReport {
+    /// Target rows before importing the source catalogue.
+    pub target_before: CatalogueRowCounts,
+    /// Source rows expected to be imported.
+    pub source: CatalogueRowCounts,
+    /// Target rows observed inside the verified merge transaction.
+    pub target_after: CatalogueRowCounts,
+    /// Whether the verified transaction was committed instead of rolled back.
+    pub applied: bool,
+}
+
+/// Merges experiment-scoped rows from one SQLite catalogue into another.
+///
+/// Both databases are upgraded through the ordinary schema migrations first.
+/// Installation-wide administrator credentials, game settings, and migration
+/// bookkeeping remain owned by the target. The operation rejects all stable-id
+/// collisions and remaps source participant primary keys in one transaction.
+/// Callers should pass a consistent backup as `source_database_url` when the
+/// historical source file itself must remain untouched.
+pub async fn merge_sqlite_catalogues(
+    target_database_url: &str,
+    source_database_url: &str,
+    apply: bool,
+) -> Result<CatalogueMergeReport> {
+    ensure!(
+        target_database_url != source_database_url,
+        "source and target database URLs must differ"
+    );
+    let source_store = SqliteExperimentStore::connect(source_database_url)
+        .await
+        .context("could not migrate the source catalogue")?;
+    let source_path = source_store
+        .database_path
+        .clone()
+        .context("source catalogue must be file-backed SQLite")?;
+    drop(source_store);
+    let target_store = SqliteExperimentStore::connect(target_database_url)
+        .await
+        .context("could not migrate the target catalogue")?;
+    ensure!(
+        target_store.database_path.as_ref() != Some(&source_path),
+        "source and target database paths must differ"
+    );
+    let mut connection = target_store.pool.acquire().await?;
+    sqlx::query("attach database ? as merge_source")
+        .bind(source_path.to_string_lossy().as_ref())
+        .execute(&mut *connection)
+        .await
+        .context("could not attach the source catalogue")?;
+    reject_catalogue_collisions(&mut connection).await?;
+    let target_before = catalogue_counts(&mut connection, "main").await?;
+    let source = catalogue_counts(&mut connection, "merge_source").await?;
+    let participant_offset = sqlx::query_scalar::<_, i64>(
+        "select coalesce(max(participant_id), 0) from main.participants",
+    )
+    .fetch_one(&mut *connection)
+    .await?;
+
+    let mut transaction = connection.begin().await?;
+    for statement in [
+        r#"insert into main.experiments
+               (experiment_id, created_at, game_version, config_json, config_revision,
+                server_version, version_manifest_json, status, notes, pinned, obsolete)
+           select experiment_id, created_at, game_version, config_json, config_revision,
+                  server_version, version_manifest_json, status, notes, pinned, obsolete
+           from merge_source.experiments"#,
+        r#"insert into main.experiment_config_revisions
+               (experiment_id, revision, config_json, created_at, change_summary)
+           select experiment_id, revision, config_json, created_at, change_summary
+           from merge_source.experiment_config_revisions"#,
+        r#"insert into main.participants
+               (participant_id, research_id, experiment_id, participant_kind,
+                identity_provider, external_id, metadata_json, created_at)
+           select participant_id + ?1, research_id, experiment_id, participant_kind,
+                  identity_provider, external_id, metadata_json, created_at
+           from merge_source.participants"#,
+        r#"insert into main.sessions
+               (experiment_id, session_id, room_id, dialogue_id, mode, status, created_at,
+                started_at, completed_at, completion_json, config_revision, game_version)
+           select experiment_id, session_id, room_id, dialogue_id, mode, status, created_at,
+                  started_at, completed_at, completion_json, config_revision, game_version
+           from merge_source.sessions"#,
+        r#"insert into main.session_participants
+               (experiment_id, session_id, participant_id, participant_session_id,
+                role, joined_at, left_at, connection_status)
+           select experiment_id, session_id, participant_id + ?1, participant_session_id,
+                  role, joined_at, left_at, connection_status
+           from merge_source.session_participants"#,
+        r#"insert into main.consent_declarations
+               (experiment_id, session_id, participant_id, consent_item_id, accepted,
+                declared_at, consent_text_hash, metadata_json)
+           select experiment_id, session_id, participant_id + ?1, consent_item_id, accepted,
+                  declared_at, consent_text_hash, metadata_json
+           from merge_source.consent_declarations"#,
+        r#"insert into main.session_events
+               (experiment_id, session_id, event_index, event_type, actor_participant_id,
+                actor_role, payload_json, game_state_json, created_at)
+           select experiment_id, session_id, event_index, event_type,
+                  case when actor_participant_id is null then null else actor_participant_id + ?1 end,
+                  actor_role, payload_json, game_state_json, created_at
+           from merge_source.session_events
+           order by event_id"#,
+    ] {
+        let mut query = sqlx::query(statement);
+        if statement.contains("?1") {
+            query = query.bind(participant_offset);
+        }
+        query
+            .execute(&mut *transaction)
+            .await
+            .with_context(|| format!("catalogue merge statement failed: {statement}"))?;
+    }
+    let target_after = catalogue_counts(&mut transaction, "main").await?;
+    let expected = target_before.checked_add(source)?;
+    ensure!(
+        target_after == expected,
+        "catalogue row-count verification failed: expected {expected:?}, observed {target_after:?}"
+    );
+    if apply {
+        transaction.commit().await?;
+    } else {
+        transaction.rollback().await?;
+    }
+    sqlx::query("detach database merge_source")
+        .execute(&mut *connection)
+        .await?;
+    Ok(CatalogueMergeReport {
+        target_before,
+        source,
+        target_after,
+        applied: apply,
+    })
+}
+
+/// Counts every experiment-scoped table in one attached SQLite schema.
+async fn catalogue_counts(
+    connection: &mut sqlx::SqliteConnection,
+    schema: &str,
+) -> Result<CatalogueRowCounts> {
+    ensure!(
+        matches!(schema, "main" | "merge_source"),
+        "unsupported SQLite schema name"
+    );
+    async fn count(
+        connection: &mut sqlx::SqliteConnection,
+        schema: &str,
+        table: &str,
+    ) -> Result<i64> {
+        Ok(
+            sqlx::query_scalar::<_, i64>(&format!("select count(*) from {schema}.{table}"))
+                .fetch_one(&mut *connection)
+                .await?,
+        )
+    }
+    Ok(CatalogueRowCounts {
+        experiments: count(connection, schema, "experiments").await?,
+        experiment_config_revisions: count(connection, schema, "experiment_config_revisions")
+            .await?,
+        participants: count(connection, schema, "participants").await?,
+        sessions: count(connection, schema, "sessions").await?,
+        session_participants: count(connection, schema, "session_participants").await?,
+        consent_declarations: count(connection, schema, "consent_declarations").await?,
+        session_events: count(connection, schema, "session_events").await?,
+    })
+}
+
+/// Rejects stable identifiers that would make an import ambiguous or lossy.
+async fn reject_catalogue_collisions(
+    connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+) -> Result<()> {
+    for (label, source_column, target_column, table, condition) in [
+        (
+            "experiment id",
+            "experiment_id",
+            "experiment_id",
+            "experiments",
+            "1 = 1",
+        ),
+        (
+            "participant research id",
+            "research_id",
+            "research_id",
+            "participants",
+            "source.research_id is not null",
+        ),
+        ("room id", "room_id", "room_id", "sessions", "1 = 1"),
+        (
+            "dialogue id",
+            "dialogue_id",
+            "dialogue_id",
+            "sessions",
+            "source.dialogue_id is not null",
+        ),
+        (
+            "participant session id",
+            "participant_session_id",
+            "participant_session_id",
+            "session_participants",
+            "1 = 1",
+        ),
+    ] {
+        let query = format!(
+            "select source.{source_column} from merge_source.{table} source join main.{table} target on target.{target_column} = source.{source_column} where {condition} limit 1"
+        );
+        if let Some(value) = sqlx::query_scalar::<_, String>(&query)
+            .fetch_optional(&mut **connection)
+            .await?
+        {
+            bail!("cannot merge catalogues: duplicate {label} {value:?}");
+        }
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl ExperimentStore for SqliteExperimentStore {
+    async fn health_check(&self) -> Result<()> {
+        let mut connection = self.pool.acquire().await?;
+        sqlx::query("begin immediate")
+            .execute(&mut *connection)
+            .await?;
+        let check = sqlx::query_scalar::<_, i64>("select 1")
+            .fetch_one(&mut *connection)
+            .await;
+        let rollback = sqlx::query("rollback").execute(&mut *connection).await;
+        check?;
+        rollback?;
+        Ok(())
+    }
+
+    async fn storage_capacity(&self) -> Result<Option<StorageCapacity>> {
+        let Some(path) = self.database_path.clone() else {
+            return Ok(None);
+        };
+        tokio::task::spawn_blocking(move || {
+            let filesystem_path = path.parent().unwrap_or(Path::new("."));
+            let database_bytes = std::fs::metadata(&path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            let wal_bytes = std::fs::metadata(format!("{}-wal", path.display()))
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            let shm_bytes = std::fs::metadata(format!("{}-shm", path.display()))
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            Ok(Some(StorageCapacity {
+                total_bytes: fs2::total_space(filesystem_path)?,
+                available_bytes: fs2::available_space(filesystem_path)?,
+                database_bytes,
+                wal_bytes,
+                shm_bytes,
+                database_total_bytes: database_bytes
+                    .saturating_add(wal_bytes)
+                    .saturating_add(shm_bytes),
+            }))
+        })
+        .await?
+    }
+
     async fn admin_credential(&self) -> Result<Option<StoredAdminCredential>> {
         Ok(sqlx::query_as::<_, (String, String, String)>(
             "select username, password_hash, role from administrator_credential where singleton = 1",
@@ -1303,14 +1675,15 @@ impl ExperimentStore for SqliteExperimentStore {
     }
 
     async fn game_settings(&self) -> Result<StoredGameSettings> {
-        let row = sqlx::query_as::<_, (String, i64)>(
-            "select institution, revision from game_settings where singleton = 1",
+        let row = sqlx::query_as::<_, (String, String, i64)>(
+            "select institution, admin_allowed_ip_ranges_json, revision from game_settings where singleton = 1",
         )
         .fetch_one(&self.pool)
         .await?;
         Ok(StoredGameSettings {
             institution: row.0,
-            revision: row.1,
+            admin_allowed_ip_ranges: serde_json::from_str(&row.1)?,
+            revision: row.2,
         })
     }
 
@@ -1318,15 +1691,17 @@ impl ExperimentStore for SqliteExperimentStore {
         &self,
         expected_revision: i64,
         institution: String,
+        admin_allowed_ip_ranges: Vec<String>,
     ) -> Result<i64> {
         let next_revision = expected_revision + 1;
         let result = sqlx::query(
             r#"
-            update game_settings set institution = ?, revision = ?, updated_at = ?
+            update game_settings set institution = ?, admin_allowed_ip_ranges_json = ?, revision = ?, updated_at = ?
             where singleton = 1 and revision = ?
             "#,
         )
         .bind(institution.trim())
+        .bind(serde_json::to_string(&admin_allowed_ip_ranges)?)
         .bind(next_revision)
         .bind(now_iso())
         .bind(expected_revision)
@@ -1666,6 +2041,61 @@ impl ExperimentStore for SqliteExperimentStore {
             .execute(&mut *tx)
             .await?;
         }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn expire_session(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+        reason: &str,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        let status = sqlx::query_scalar::<_, String>(
+            "select status from sessions where experiment_id = ? and session_id = ?",
+        )
+        .bind(experiment_id)
+        .bind(session_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(status) = status else {
+            bail!("session not found");
+        };
+        if matches!(status.as_str(), "completed" | "expired") {
+            tx.rollback().await?;
+            return Ok(());
+        }
+        let event_index = sqlx::query_scalar::<_, i64>(
+            "select coalesce(max(event_index), 0) + 1 from session_events where experiment_id = ? and session_id = ?",
+        )
+        .bind(experiment_id)
+        .bind(session_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            insert into session_events
+            (experiment_id, session_id, event_index, event_type, actor_participant_id,
+             actor_role, payload_json, game_state_json, created_at)
+            values (?, ?, ?, 'session_expired', null, null, ?, null, ?)
+            "#,
+        )
+        .bind(experiment_id)
+        .bind(session_id)
+        .bind(event_index)
+        .bind(serde_json::to_string(&json!({"reason": reason}))?)
+        .bind(now_iso())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "update sessions set status = 'expired', completed_at = ? where experiment_id = ? and session_id = ?",
+        )
+        .bind(now_iso())
+        .bind(experiment_id)
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -2281,6 +2711,8 @@ pub struct RoomParticipant {
     pub source: String,
     pub role: Seat,
     pub connected: bool,
+    /// Whether the browser declared its game channel ready at least once.
+    pub ready_declared: bool,
     /// Whether this participant has completed required audio/STT setup for this room.
     pub audio_ready: bool,
     pub consent_decisions: HashMap<String, bool>,

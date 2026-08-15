@@ -5,7 +5,7 @@ FROM rust:1-bookworm AS builder
 WORKDIR /app
 COPY rust-server ./rust-server
 COPY space-game/server ./space-game/server
-RUN cargo build --release --manifest-path space-game/server/Cargo.toml
+RUN cargo build --release --locked --manifest-path space-game/server/Cargo.toml
 
 FROM node:22-bookworm-slim AS client-builder
 

@@ -56,6 +56,24 @@ against an existing database. This provides a deliberate checkpoint before
 recruitment reopens. Deactivation closes new participant and room creation while
 allowing sessions already in progress to finish.
 
+Each experiment also has explicit room-lifecycle bounds. Waiting rooms expire
+after `study.waiting_room_timeout_seconds`; disconnected rooms after
+`study.reconnect_grace_seconds`; active but idle sessions after
+`study.session_idle_timeout_seconds`; and every unfinished session after
+`study.session_max_lifetime_seconds`. Expiration closes live transports and stores
+a `session_expired` event with a stable reason.
+
+The bundled client sends an in-memory game heartbeat once per second. The server
+closes a transport after 90 seconds without any game-channel message; the client
+then obtains a fresh one-use ticket and retries during the configured reconnect
+grace. Heartbeats neither write SQLite nor extend the meaningful idle deadline.
+
+The authenticated dashboard's Load page visualizes the corresponding per-role
+health bands, the earliest session lifecycle deadline, current capacity, recent
+throughput, audio/ASR pressure, and SQLite plus WAL growth. Its five-second
+samples are held in memory for one hour and reset on restart; use host-level
+monitoring as well when alerting must survive a process failure.
+
 ## Choose bootstrap settings
 
 Only settings needed before the dashboard opens belong to process bootstrap:
@@ -83,8 +101,15 @@ Use `/admin/experiments` for normal configuration. The dashboard separates:
 
 - **game settings**, currently the institution shared by all experiments;
 - **catalogue metadata**, including pinning and obsolete status; and
-- **experiment configuration**, including study, consent, agents, voice,
-  transcription, TTS, conversation, and privacy settings.
+- **experiment configuration**, including study, consent, agents, capacity,
+  voice, transcription, TTS, conversation, and privacy settings.
+
+Capacity is admitted per research session rather than independently per endpoint.
+Configure active and waiting sessions, unattached participant credentials, and
+reserved transcription streams in the dashboard. Agent TTS is trusted study
+behavior and has no application quota. File-backed SQLite pauses only new
+sessions at the dashboard-configured disk reserve (256 MiB by default); already
+admitted sessions may continue.
 
 An experiment must be inactive before its effective configuration can be edited.
 Each successful save creates an immutable numbered revision and uses optimistic
@@ -122,19 +147,18 @@ exists. Complete it before exposing a new service to participants or the public
 internet. Concurrent setup attempts are resolved by an atomic database insert, so
 only the first successful request creates the account.
 
-For automated deployment or credential recovery, environment variables can
-override the database credential without rewriting it:
+Administrator credentials and roles are database-backed and are not configured
+through environment variables. If the database password is lost, recover the
+database from backup or deliberately replace its credential row while the service
+is stopped; reinstalling the binary does not reset authentication.
 
-```sh
-export PARLANDO_ADMIN_USERNAME="admin"
-export PARLANDO_ADMIN_PASSWORD_HASH='<Argon2id PHC hash>'
-export PARLANDO_ADMIN_ROLE="administrator" # or "operator"
-```
-
-Removing the override restores database authentication on the next start. If the
-database password is lost and no override is available, recover the database from
-backup or deliberately replace its credential data; reinstalling the binary does
-not reset authentication.
+After signing in, configure **Administrator IP ranges** under Game settings in
+the dashboard. Enter one IPv4 or IPv6 CIDR per line. The setting is stored in
+SQLite and shared by every experiment in the game process; it is not an
+environment variable. An empty list permits every direct network peer. Parlando
+does not trust forwarding headers for this decision, so a deployment behind a
+reverse proxy that hides client addresses must enforce the equivalent
+institutional or VPN range at that trusted proxy.
 
 ## Serve the participant client
 
@@ -170,10 +194,33 @@ For Render:
    experiment features are enabled.
 6. Deploy, complete administrator setup, configure an experiment, and activate it
    before distributing its participant URL.
+7. Configure the administrator network range in the dashboard or at the trusted
+   ingress proxy.
+8. Set a disk-usage alert and arrange an encrypted off-service SQLite backup.
+9. Deploy a reviewed clean Git commit and record the resulting image digest with
+   the study materials.
 
 Provider secrets remain in the process environment. The browser receives only
 public capability metadata, its participant credential, and distinct one-use
 game and audio tickets.
+
+The Render blueprint checks `/health`, which acquires a SQLite write transaction
+and performs a read before reporting success. A live-process response therefore
+does not hide a missing, locked, or read-only study database.
+
+Parlando emits HSTS on every application response. Browsers honor it only when
+the response arrives over HTTPS, so local HTTP development is unaffected while a
+TLS-terminating production proxy can pass the policy through unchanged.
+
+## Back up collected data
+
+The attached SQLite disk is the live copy, not a backup. Before intake, create an
+off-service backup using SQLite's online backup mechanism or a provider snapshot,
+then restore it into a separate test installation and verify that the dashboard,
+session list, and an export open successfully. Repeat backups during collection
+at an interval appropriate to the recruitment rate. Keep backup access at least
+as restricted as administrator export access, and include backup deletion in the
+study retention plan.
 
 ## Operate voice deployments
 

@@ -44,6 +44,15 @@ buffering behavior, and process-local scaling constraint. Use
 [Audio Testing](audio-testing.md) to test the transport without paid-provider
 credentials and under sustained or impaired workloads.
 
+## Security model
+
+[Security Ground Rules and Threat Model](security-ground-rules.md) is the
+authoritative source for Parlando's security objectives, accepted product choices,
+realistic attackers, and finding-severity rules. In particular, it records
+first-visitor administrator setup as an accepted bootstrap ceremony and treats
+person-level repeat participation in anonymous recruitment as a study-design
+matter rather than a software vulnerability.
+
 ## Privacy and institutional review
 
 - [Unterlage zur datenschutzrechtlichen Plattformbewertung](datenschutz-pruefvorlage.md)

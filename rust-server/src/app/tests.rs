@@ -42,19 +42,47 @@ struct AdminTestSession {
     csrf_token: String,
 }
 
-/// Confirms one transport peer cannot consume the process-wide creation allowance.
+/// Confirms the coarse process ceiling tolerates a realistic crowdsourcing burst.
 #[test]
-fn participant_creation_rate_limits_each_peer_before_global_capacity() {
+fn participant_creation_rate_uses_only_a_high_process_ceiling() {
     let mut rate = ParticipantCreationRate::default();
-    let first_peer: IpAddr = "192.0.2.10".parse().unwrap();
-    let second_peer: IpAddr = "192.0.2.11".parse().unwrap();
-
-    for _ in 0..30 {
-        assert!(rate.record(Some(first_peer), 1_000));
+    for _ in 0..300 {
+        assert!(rate.record(1_000));
     }
-    assert!(!rate.record(Some(first_peer), 1_000));
-    assert!(rate.record(Some(second_peer), 1_000));
-    assert!(rate.record(Some(first_peer), 1_061));
+    assert!(!rate.record(1_000));
+    assert!(rate.record(1_061));
+}
+
+/// Confirms chat pacing permits realistic bursts and refills without limiting game actions.
+#[test]
+fn chat_submission_budget_allows_burst_then_refills() {
+    let mut budget = TokenBucket::new(20.0, 1.0);
+    for _ in 0..20 {
+        assert!(budget.consume());
+    }
+    assert!(!budget.consume());
+    budget.last_refill -= Duration::from_secs(1);
+    assert!(budget.consume());
+}
+
+/// Confirms dashboard CIDRs match only direct peers inside a configured range.
+#[test]
+fn administrator_network_policy_matches_ipv4_and_ipv6_cidrs() {
+    assert!(admin_network_allows(&[], None));
+    let ranges = vec!["192.0.2.0/24".to_string(), "2001:db8::/32".to_string()];
+    assert!(admin_network_allows(
+        &ranges,
+        Some("192.0.2.44".parse().unwrap())
+    ));
+    assert!(admin_network_allows(
+        &ranges,
+        Some("2001:db8::7".parse().unwrap())
+    ));
+    assert!(!admin_network_allows(
+        &ranges,
+        Some("198.51.100.4".parse().unwrap())
+    ));
+    assert!(!admin_network_allows(&ranges, None));
 }
 
 /// Builds an active test router so unrelated protocol tests retain their narrow setup.
@@ -166,9 +194,13 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"institutionInput\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Experiment Details"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-tab=\"sessions\""));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("data-tab=\"load\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-tab=\"export\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-tab=\"details\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"sessionsPanel\""));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"loadPanel\""));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Runtime session liveness"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("renderLoadChart"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"exportPanel\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"exportVariant\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Dialogue ID"));
@@ -199,6 +231,27 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
         .and_then(|html| html.split("id=\"exportPanel\"").next())
         .unwrap();
     assert!(!sessions_panel.contains("<h2>Players</h2>"));
+}
+
+/// Confirms the protected load endpoint exposes bounded operational telemetry.
+#[tokio::test]
+async fn admin_load_exposes_capacity_counters_and_liveness_policy() {
+    let (config, _tmp) = sqlite_config();
+    let router = build_router(TinyAdapter, config, ServeOptions::default())
+        .await
+        .unwrap();
+    let response = admin_raw_request(router, http::Method::GET, "/api/admin/load").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let load: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(load["sampling"]["interval_seconds"], 5);
+    assert_eq!(load["sampling"]["retention_seconds"], 3_600);
+    assert_eq!(load["liveness_thresholds_ms"]["live"], 5_000);
+    assert_eq!(load["liveness_thresholds_ms"]["socket_timeout"], 90_000);
+    assert_eq!(load["current"]["capacity"]["active_reserved_sessions"], 0);
+    assert!(load["current"]["counters"]["requests_total"].is_number());
+    assert!(load["history"].is_array());
+    assert!(load["sessions"].is_array());
 }
 
 /// Confirms the protected privacy routes render one truthful installation-wide status.
@@ -416,7 +469,7 @@ async fn experiment_starts_inactive_and_admin_controls_intake() {
         router.clone(),
         http::Method::POST,
         "/api/admin/game/settings",
-        json!({"expected_revision": 1, "institution": "Test University"}),
+        json!({"expected_revision": 1, "institution": "Test University", "admin_allowed_ip_ranges": []}),
     )
     .await;
     assert_eq!(settings_status, StatusCode::OK);
@@ -482,13 +535,55 @@ async fn compiled_game_router_hosts_multiple_experiments() {
     })
     .await
     .unwrap();
+
+    let root = router
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert!(root.status().is_redirection());
+    assert_eq!(
+        root.headers()
+            .get(http::header::LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("/admin/experiments")
+    );
+    let unauthenticated_dashboard = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/experiments")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(unauthenticated_dashboard.status().is_redirection());
+    assert_eq!(
+        unauthenticated_dashboard
+            .headers()
+            .get(http::header::LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("/admin/login")
+    );
+    let unauthenticated_api = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/admin/experiments")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated_api.status(), StatusCode::UNAUTHORIZED);
     authenticate_test_admin(router.clone()).await.unwrap();
 
     let (settings_status, _) = json_request(
         router.clone(),
         http::Method::POST,
         "/api/admin/game/settings",
-        json!({"expected_revision": 1, "institution": "Test University"}),
+        json!({"expected_revision": 1, "institution": "Test University", "admin_allowed_ip_ranges": []}),
     )
     .await;
     assert_eq!(settings_status, StatusCode::OK);
@@ -1988,6 +2083,7 @@ async fn health_and_public_config_expose_client_bootstrap_shape() {
         json_request(router.clone(), http::Method::GET, "/health", Value::Null).await;
     assert_eq!(health_status, StatusCode::OK);
     assert_eq!(health["status"], "ok");
+    assert_eq!(health["storage"], "read_write");
 
     let (config_status, public_config) =
         json_request(router, http::Method::GET, "/api/config", Value::Null).await;
@@ -2220,16 +2316,24 @@ async fn audio_websocket_relays_pcm_and_commits_one_final_utterance() {
             break;
         }
     }
-    let export = wait_for_export_event(router, "transcript_segment").await;
+    let export = wait_for_export_event(router, "conversation_message").await;
     assert_eq!(
         export["session_events"]
             .as_array()
             .unwrap()
             .iter()
-            .filter(|event| event["event_type"] == "transcript_segment")
+            .filter(|event| {
+                event["event_type"] == "conversation_message"
+                    && event["payload"]["origin"] == "voice_transcript"
+            })
             .count(),
         1
     );
+    assert!(!export["session_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event["event_type"] == "transcript_segment"));
     server.abort();
 }
 
@@ -2307,8 +2411,7 @@ async fn replacement_audio_connection_revokes_the_older_socket_generation() {
     let (a, b, room_id) = create_joined_room(router.clone()).await;
     let old_a = request_audio_plan(router.clone(), &room_id, &a).await;
     let plan_b = request_audio_plan(router.clone(), &room_id, &b).await;
-    let new_a = request_audio_plan(router.clone(), &room_id, &a).await;
-    let (base_url, server) = spawn_test_server(router).await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
     let host = base_url.trim_start_matches("http://");
     let (mut socket_b, _) = connect_async(format!(
         "ws://{host}/ws/audio/{room_id}?token={}",
@@ -2323,6 +2426,7 @@ async fn replacement_audio_connection_revokes_the_older_socket_generation() {
     .await
     .unwrap();
     wait_for_audio_control(&mut old_socket_a).await;
+    let new_a = request_audio_plan(router, &room_id, &a).await;
     let (mut new_socket_a, _) = connect_async(format!(
         "ws://{host}/ws/audio/{room_id}?token={}",
         new_a["token"].as_str().unwrap()
@@ -2764,6 +2868,89 @@ async fn websocket_rejects_actions_until_both_players_are_connected() {
     server.abort();
 }
 
+/// Rejected oversized actions retain bounded analytical metadata, not attacker input.
+#[tokio::test]
+async fn oversized_action_rejection_is_bounded_and_analyzable() {
+    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+        .await
+        .unwrap();
+    let (a, b, room_id) = create_joined_room(router.clone()).await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
+    let (mut socket_a, _) = connect_async(game_socket_url(&base_url, &room_id, &a).await)
+        .await
+        .unwrap();
+    let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &room_id, &b).await)
+        .await
+        .unwrap();
+    let _assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
+    let _assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await;
+
+    send_ws_json(
+        &mut socket_a,
+        json!({"type": "submitAction", "action": {"padding": "x".repeat(5_000)}}),
+    )
+    .await;
+    let error = read_ws_type(&mut socket_a, "error").await;
+    assert!(error["message"].as_str().unwrap().contains("too large"));
+
+    let (export_status, export) =
+        json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
+    assert_eq!(export_status, StatusCode::OK);
+    let rejected = export["session_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["event_type"] == "game_action_rejected")
+        .unwrap();
+    assert_eq!(rejected["payload"]["reason_code"], "action_too_large");
+    assert!(rejected["payload"]["submitted_bytes"].as_u64().unwrap() > 4_096);
+    assert_eq!(
+        rejected["payload"]["action_sha256"].as_str().unwrap().len(),
+        64
+    );
+    assert!(!rejected["payload"].to_string().contains(&"x".repeat(100)));
+    server.abort();
+}
+
+/// Disabling full-state storage removes both the state column and embedded pre-state.
+#[tokio::test]
+async fn privacy_switch_removes_all_full_game_state_copies() {
+    let mut config = step_five_config();
+    config.privacy.store_full_game_state = false;
+    let router = build_router(TinyAdapter, config, ServeOptions::default())
+        .await
+        .unwrap();
+    let (a, b, room_id) = create_joined_room(router.clone()).await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
+    let (mut socket_a, _) = connect_async(game_socket_url(&base_url, &room_id, &a).await)
+        .await
+        .unwrap();
+    let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &room_id, &b).await)
+        .await
+        .unwrap();
+    let _assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
+    let _assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await;
+    send_ws_json(
+        &mut socket_a,
+        json!({"type": "submitAction", "action": {"finish": true}}),
+    )
+    .await;
+    let _completed = read_ws_type(&mut socket_a, "completed").await;
+
+    let (export_status, export) =
+        json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
+    assert_eq!(export_status, StatusCode::OK);
+    let accepted = export["session_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["event_type"] == "game_action_accepted")
+        .unwrap();
+    assert!(accepted["game_state"].is_null());
+    assert!(accepted["payload"].get("before").is_none());
+    server.abort();
+}
+
 #[tokio::test]
 async fn human_human_game_accepts_actions_after_second_human_connects() {
     let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
@@ -2867,7 +3054,7 @@ async fn websocket_accepts_actions_chat_completion_and_persists_state_changes() 
         .collect::<Vec<_>>();
     assert!(event_types.contains(&"conversation_message"));
     assert!(event_types.contains(&"game_action_accepted"));
-    assert!(event_types.contains(&"state_changed"));
+    assert!(!event_types.contains(&"state_changed"));
     assert!(event_types.contains(&"session_completed"));
     server.abort();
 }
@@ -3153,7 +3340,7 @@ async fn admin_sessions_api_reads_actions_from_database() {
     .await;
     assert_eq!(sessions_status, StatusCode::OK);
     let session_id = sessions["sessions"][0]["session_id"].as_i64().unwrap();
-    assert!(sessions["sessions"][0]["event_count"].as_i64().unwrap() >= 8);
+    assert!(sessions["sessions"][0]["event_count"].as_i64().unwrap() >= 6);
 
     let (detail_status, detail) = json_request(
         router.clone(),
@@ -3654,7 +3841,7 @@ async fn agent_tts_records_diagnostics_for_agent_messages() {
         .collect::<Vec<_>>();
     assert!(diagnostics.contains(&"tts_message_started"));
     assert!(diagnostics.contains(&"tts_first_audio"));
-    assert!(diagnostics.contains(&"tts_audio_chunk"));
+    assert!(diagnostics.contains(&"tts_audio_summary"));
     assert!(diagnostics.contains(&"tts_publish_started"));
     assert!(diagnostics.contains(&"tts_publish_completed"));
     assert!(diagnostics.contains(&"tts_message_completed"));

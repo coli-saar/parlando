@@ -18,7 +18,9 @@ export class ParlandoAudioSink implements LocalAudioSink {
   private sequence = 0;
   private startedAt = 0;
 
+  /** Replaces any stale transport before obtaining a fresh one-use audio ticket. */
   async connect(input: MicrophoneInput, context: AudioSessionContext): Promise<void> {
+    await this.disconnect();
     const plan = await context.getAudioSession();
     if (!plan.enabled || !plan.websocket_url || !plan.token) { context.onVoiceStatus({ connecting: false, message: "Voice is disabled for this study" }); return; }
     const audio = new AudioContext();
@@ -62,7 +64,10 @@ export class ParlandoAudioSink implements LocalAudioSink {
       this.playback?.port.postMessage(pcm, [pcm]);
       context.onVoiceStatus({ remoteAudio: true, message: "Voice connected" });
     });
-    socket.addEventListener("close", () => context.onVoiceStatus({ connected: false, microphoneEnabled: false, remoteAudio: false, message: "Voice disconnected", transcriptionReady: false, transcriptionMessage: "ASR idle" }));
+    socket.addEventListener("close", () => {
+      if (this.socket !== socket) return;
+      context.onVoiceStatus({ connected: false, microphoneEnabled: false, remoteAudio: false, message: "Voice disconnected", transcriptionReady: false, transcriptionMessage: "ASR idle" });
+    });
   }
 
   async setInputEnabled(enabled: boolean): Promise<void> { this.enabled = enabled; }

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  CLIENT_HEARTBEAT_INTERVAL_MS,
   canSendGameMessage,
   completedSessionPatch,
   isVoiceEnabled,
@@ -33,6 +34,10 @@ function audioInput(deviceId: string, label: string): MediaDeviceInfo {
 }
 
 describe("Parlando startup helpers", () => {
+  it("uses the reviewed one-second transport heartbeat", () => {
+    expect(CLIENT_HEARTBEAT_INTERVAL_MS).toBe(1_000);
+  });
+
   it("resolves startup titles from public study config", () => {
     expect(resolveStartupTitle(publicConfig({ study_name: "Configured Study" }))).toBe("Configured Study");
     expect(resolveStartupTitle(null)).toBe("Parlando Experiment");

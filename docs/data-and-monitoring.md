@@ -37,6 +37,7 @@ After selecting an experiment, the dashboard provides:
 - lifecycle control;
 - database-backed configuration and revision history;
 - session status and participant roles;
+- a process-local Load page for capacity, transport liveness, throughput, and storage;
 - a compact event timeline for actions, messages, transcripts, and diagnostics;
 - export controls; and
 - counted participant-data deletion.
@@ -46,6 +47,33 @@ inactive starter experiment](images/parlando-dashboard.jpg)
 
 The dashboard is deliberately game-scoped. Different compiled games use different
 processes and dashboards, usually distinguished by port or hostname.
+
+### Interpret load and liveness
+
+The Load page samples the experiment runtime every five seconds and retains at
+most one hour in memory. It shows admitted and waiting sessions, unattached
+participants, reserved ASR streams, active agents, game/audio connections, HTTP
+work, input rates and rejections, audio drops, ASR backpressure, TTS activity,
+and the main SQLite, WAL, and shared-memory footprint. The history resets when
+the process restarts. It is operational telemetry, not a durable research table,
+and it does not appear in exports.
+
+Each runtime session and participant role has a game-transport indicator. `live`
+means a heartbeat or game message arrived within five seconds, `delayed` means
+five to fifteen seconds, and `stale` means the socket is still registered but has
+been quiet for more than fifteen seconds. `Disconnected` means there is no
+current game socket. The server still allows up to 90 seconds before closing a
+quiet socket, so a brief delayed or stale indication is diagnostic rather than a
+declaration that the research session has failed. Audio is shown separately as
+connected plus the age of its last frame; a participant may simply be muted, so
+quiet audio is not classified as stale.
+
+Heartbeat liveness and meaningful game activity are deliberately separate. A
+healthy heartbeat proves that the browser transport is responsive, but it does
+not extend the waiting, idle, reconnect, or maximum-lifetime deadline. The
+liveness table shows the meaningful-activity age and the earliest applicable
+lifecycle deadline so researchers can distinguish a connected but inactive
+participant from a lost browser.
 
 ### Interpret lifecycle state
 
@@ -84,10 +112,16 @@ Other durable records can include:
 - participant creation and role assignment;
 - consent declarations and participant-information evidence;
 - accepted and rejected actions;
-- game state changes and completion summaries;
-- conversation messages and transcript segments;
+- accepted transitions, with their action, generated events, and resulting state stored once;
+- typed and final spoken conversation messages, each stored once with modality metadata;
 - agent startup, proposals, messages, and errors; and
 - TTS and voice diagnostics.
+
+Rejected actions use bounded analytical records rather than retaining arbitrary
+attacker-controlled payloads. Each record includes a stable `reason_code`, a
+bounded error description, and—when an action body existed—its byte count and
+SHA-256 fingerprint. Repeated equivalent violations are coalesced into bounded
+per-minute aggregates so rejection monitoring cannot itself fill the database.
 
 Completion summaries are game-specific. Define them to contain the terminal
 outcome, score or condition labels, and any final task state required by the
@@ -159,7 +193,7 @@ assessment for a corpus candidate.
 
 - Back up the SQLite file before migration, deletion, or redeployment.
 - Put hosted deployments on persistent storage; the Render example uses
-  `sqlite:////data/parlando.sqlite`.
+  `sqlite:////data/parlando.sqlite` on a 10 GB disk.
 - Record agent type and version so exports distinguish experimental policies.
 - Treat process health and active intake as separate monitoring signals.
 - Protect administrator routes at the deployment boundary as defense in depth;

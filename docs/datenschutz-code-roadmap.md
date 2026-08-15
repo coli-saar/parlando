@@ -2,7 +2,7 @@
 
 **Stand:** 14. August 2026<br>
 **Status:** Die vereinbarten sechs Änderungen sind umgesetzt.<br>
-**Bezug:** [`datenschutz-pruefvorlage.md`](datenschutz-pruefvorlage.md) und [`security-remediation-plan.md`](../notes/security-remediation-plan.md)
+**Bezug:** [`datenschutz-pruefvorlage.md`](datenschutz-pruefvorlage.md) und die maßgeblichen [`security-ground-rules.md`](security-ground-rules.md)
 
 ## Ziel und Grenzen
 

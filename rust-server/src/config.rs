@@ -15,14 +15,53 @@ pub struct StudyConfig {
     pub name: String,
     pub waiting_room_timeout_seconds: i64,
     pub reconnect_grace_seconds: i64,
+    /// Maximum inactivity allowed after a room starts before it is expired.
+    pub session_idle_timeout_seconds: i64,
+    /// Maximum wall-clock lifetime of a room, including waiting time.
+    pub session_max_lifetime_seconds: i64,
 }
 
 impl Default for StudyConfig {
     fn default() -> Self {
         Self {
             name: "experiment".to_string(),
-            waiting_room_timeout_seconds: 300,
-            reconnect_grace_seconds: 90,
+            waiting_room_timeout_seconds: 10 * 60,
+            reconnect_grace_seconds: 5 * 60,
+            session_idle_timeout_seconds: 30 * 60,
+            session_max_lifetime_seconds: 4 * 60 * 60,
+        }
+    }
+}
+
+/// Installation capacity reserved coherently when a research session is admitted.
+///
+/// These values are ordinary experiment configuration. They are edited through the
+/// administrator dashboard and persisted with the experiment revision; deployments
+/// must not introduce environment-variable overrides for them.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CapacityConfig {
+    /// Sessions that may be playing or retained during their reconnect grace period.
+    pub max_active_sessions: usize,
+    /// Human-human rooms that may wait for their second participant.
+    pub max_waiting_sessions: usize,
+    /// Participant credentials that may exist before they have joined a room.
+    pub max_unattached_participants: usize,
+    /// Browser ASR streams reserved across waiting and active sessions.
+    pub max_transcription_streams: usize,
+    /// Free disk space kept available before new sessions are paused.
+    pub storage_reserve_megabytes: u64,
+}
+
+impl Default for CapacityConfig {
+    /// Uses conservative defaults suitable for one modest self-hosted research server.
+    fn default() -> Self {
+        Self {
+            max_active_sessions: 30,
+            max_waiting_sessions: 60,
+            max_unattached_participants: 120,
+            max_transcription_streams: 32,
+            storage_reserve_megabytes: 256,
         }
     }
 }
@@ -212,7 +251,6 @@ impl Default for TtsConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct HumanVsAgentConfig {
     pub factory: Option<String>,
-    pub max_concurrent_games: usize,
     pub act_timeout_seconds: f64,
     pub invalid_action_limit: usize,
     pub seed: Option<u64>,
@@ -223,7 +261,6 @@ impl Default for HumanVsAgentConfig {
     fn default() -> Self {
         Self {
             factory: None,
-            max_concurrent_games: 20,
             act_timeout_seconds: 10.0,
             invalid_action_limit: 3,
             seed: None,
@@ -260,6 +297,7 @@ pub struct ExperimentConfig {
     pub transcription: TranscriptionConfig,
     pub tts: TtsConfig,
     pub agents: AgentsConfig,
+    pub capacity: CapacityConfig,
     pub privacy: PrivacyConfig,
 }
 
@@ -271,7 +309,6 @@ impl ExperimentConfig {
         })?;
         let mut data = load_yaml_with_includes(&path, &mut vec![])?;
         resolve_relative_paths(&mut data, &config_base_path(&path));
-        apply_env_overrides(&mut data);
         let config: Self = serde_json::from_value(data)?;
         config.validate()?;
         Ok(config)
@@ -298,6 +335,22 @@ impl ExperimentConfig {
         }
         if self.study.reconnect_grace_seconds < 0 {
             bail!("study.reconnect_grace_seconds must not be negative");
+        }
+        if self.study.session_idle_timeout_seconds <= 0 {
+            bail!("study.session_idle_timeout_seconds must be positive");
+        }
+        if self.study.session_max_lifetime_seconds < self.study.session_idle_timeout_seconds {
+            bail!(
+                "study.session_max_lifetime_seconds must be at least study.session_idle_timeout_seconds"
+            );
+        }
+        if self.capacity.max_active_sessions == 0
+            || self.capacity.max_waiting_sessions == 0
+            || self.capacity.max_unattached_participants == 0
+            || self.capacity.max_transcription_streams == 0
+            || self.capacity.storage_reserve_megabytes == 0
+        {
+            bail!("capacity limits must be positive");
         }
         validate_http_url("server.public_base_url", &self.server.public_base_url)?;
         for origin in &self.server.allowed_origins {
@@ -368,9 +421,6 @@ impl ExperimentConfig {
             }
         }
         if let Some(agent) = &self.agents.human_vs_agent {
-            if agent.max_concurrent_games == 0 {
-                bail!("agents.human_vs_agent.max_concurrent_games must be positive");
-            }
             if !agent.act_timeout_seconds.is_finite() || agent.act_timeout_seconds <= 0.0 {
                 bail!("agents.human_vs_agent.act_timeout_seconds must be finite and positive");
             }
@@ -601,21 +651,6 @@ fn resolve_relative_paths(data: &mut Value, base: &Path) {
     }
 }
 
-fn apply_env_overrides(data: &mut Value) {
-    if let Ok(mode) = env::var("EXPERIMENT_AGENTS_MODE") {
-        if !mode.is_empty() {
-            let root = data.as_object_mut().expect("config root must be object");
-            let agents = root
-                .entry("agents")
-                .or_insert_with(|| Value::Object(Default::default()));
-            agents
-                .as_object_mut()
-                .expect("agents must be object")
-                .insert("mode".to_string(), Value::String(mode));
-        }
-    }
-}
-
 /// Expands required environment placeholders and reports missing variables.
 fn expand_env(text: &str) -> Result<String> {
     let pattern = Regex::new(r"\$\{([A-Z0-9_]+)\}").expect("valid env regex");
@@ -651,7 +686,6 @@ mod tests {
     fn yaml_extends_includes_env_and_relative_paths_match_expected_behavior() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         env::set_var("PARLANDO_TEST_STUDY", "Env Study");
-        env::set_var("EXPERIMENT_AGENTS_MODE", "human_vs_agent");
 
         let temp = tempdir().expect("tempdir");
         let project = temp.path();
@@ -687,6 +721,7 @@ includes:
 study:
   name: ${PARLANDO_TEST_STUDY}
 agents:
+  mode: human_vs_agent
   human_vs_agent:
     factory: space_game.back_and_forth
 "#,
@@ -718,7 +753,6 @@ agents:
         );
 
         env::remove_var("PARLANDO_TEST_STUDY");
-        env::remove_var("EXPERIMENT_AGENTS_MODE");
     }
 
     #[test]

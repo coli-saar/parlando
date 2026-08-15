@@ -38,7 +38,7 @@ Open `http://127.0.0.1:8000/admin`, configure the inactive starter experiment or
 
 ### Administrator login
 
-Open `http://localhost:8000/admin` after starting the game. On the first visit for the game database, choose an administrator username and a password of at least 12 characters. Parlando stores only an Argon2id password hash in SQLite and shows the ordinary login form afterward. The credential survives server restarts and binary reinstalls. See [Running and Deployment](../docs/running-and-deployment.md#establish-administrator-access) for persistence, first-visitor behavior, and recovery overrides.
+Open `http://localhost:8000/admin` after starting the game. On the first visit for the game database, choose an administrator username and a password of at least 12 characters. Parlando stores only an Argon2id password hash in SQLite and shows the ordinary login form afterward. The credential survives server restarts and binary reinstalls. See [Running and Deployment](../docs/running-and-deployment.md#establish-administrator-access) for persistence, first-visitor behavior, dashboard IP ranges, and recovery.
 
 ## Local install
 
@@ -76,6 +76,16 @@ The Rust and browser manifests point directly at the sibling `rust-server` and `
 
 ## Solo voice test
 
+For the deterministic local voice setup, run:
+
+```bash
+make run-solo-voice
+```
+
+This compatibility target seeds the named development experiment from
+`config/experiment.local-back-and-forth-voice.yaml`; subsequent configuration
+changes are made through the dashboard.
+
 Create or clone an inactive experiment in the dashboard and configure:
 
 - `agents.mode = human_vs_agent`
@@ -86,7 +96,7 @@ Create or clone an inactive experiment in the dashboard and configure:
 
 The deterministic agent also answers typed or spoken questions about its visible world, including player locations, launch readiness, battery, fuses, breakers, valves, relay state, and its private hints. This makes the configured experiment an end-to-end microphone → transcription → agent → TTS smoke test without requiring an LLM provider.
 
-Set `SPEECHMATICS_API_KEY` and `ELEVENLABS_API_KEY` in the server environment before `make run`; configure the ElevenLabs voice id in the experiment form. The browser only receives public capability metadata and a short-lived credential for Parlando's audio relay.
+Set `SPEECHMATICS_API_KEY` and `ELEVENLABS_API_KEY` in the server environment before starting the target; configure the ElevenLabs voice id in the experiment form. The browser only receives public capability metadata and a short-lived credential for Parlando's audio relay.
 
 The shared SDK owns PCM framing, output-rate interpolation, jitter buffering, and underrun recovery; the demo game contains no media transport code. See [`docs/audio-transport.md`](../docs/audio-transport.md) for the protocol and operational model.
 

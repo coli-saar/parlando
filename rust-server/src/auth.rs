@@ -1,9 +1,6 @@
 //! Authentication primitives for the administrator and participant trust planes.
 
-use std::{
-    collections::{HashMap, HashSet},
-    env,
-};
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Result};
 use argon2::{
@@ -15,7 +12,10 @@ use hmac::{Hmac, Mac};
 use rand::{rngs::OsRng, RngCore};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
-use tokio::sync::RwLock;
+use tokio::{
+    sync::{RwLock, Semaphore},
+    task,
+};
 
 use crate::storage::{SharedExperimentStore, StoredAdminCredential};
 
@@ -119,6 +119,14 @@ impl ParticipantAuthenticator {
             .collect::<HashSet<_>>();
         expired.difference(&active).cloned().collect()
     }
+
+    /// Revokes every credential for one abandoned unattached participant session.
+    pub async fn revoke_participant_session(&self, participant_session_id: &str) {
+        self.records
+            .write()
+            .await
+            .retain(|_, record| record.participant_session_id != participant_session_id);
+    }
 }
 
 /// Purpose assigned to a one-use browser WebSocket upgrade ticket.
@@ -170,6 +178,11 @@ impl UpgradeTicketStore {
         let now = now_timestamp();
         let mut tickets = self.tickets.write().await;
         tickets.retain(|_, existing| existing.expires_at > now);
+        tickets.retain(|_, existing| {
+            existing.room_id != claims.room_id
+                || existing.participant_session_id != claims.participant_session_id
+                || existing.purpose != claims.purpose
+        });
         tickets.insert(token_digest(&ticket, &self.pepper), claims);
         ticket
     }
@@ -218,7 +231,7 @@ impl AdminRole {
             "operator" => Ok(Self::Operator),
             "administrator" => Ok(Self::Administrator),
             _ => Err(anyhow!(
-                "PARLANDO_ADMIN_ROLE must be operator or administrator"
+                "administrator role must be operator or administrator"
             )),
         }
     }
@@ -261,40 +274,33 @@ pub(crate) struct AdminAuthenticator {
     store: SharedExperimentStore,
     sessions: RwLock<HashMap<[u8; 32], AdminSession>>,
     session_pepper: [u8; 32],
-    failed_attempts: RwLock<Vec<i64>>,
+    login_slots: Semaphore,
+}
+
+/// Result of one bounded administrator password-verification request.
+pub(crate) enum AdminLoginResult {
+    /// The credential was valid and a server-side session was created.
+    Authenticated(String, AdminSession),
+    /// The supplied username or password was invalid.
+    Invalid,
+    /// Both password-verification slots are already occupied.
+    Busy,
 }
 
 impl AdminAuthenticator {
-    /// Loads the durable credential, with environment variables as a recovery override.
+    /// Loads the database-backed administrator credential, if setup is complete.
     pub async fn load(store: SharedExperimentStore) -> Result<Self> {
-        let username = env::var("PARLANDO_ADMIN_USERNAME").ok();
-        let password_hash = env::var("PARLANDO_ADMIN_PASSWORD_HASH").ok();
-        let credential = match (username, password_hash) {
-            (None, None) => store
-                .admin_credential()
-                .await?
-                .map(Self::credential_from_stored)
-                .transpose()?,
-            (Some(username), Some(password_hash)) => Some(Self::validated_credential(
-                username,
-                password_hash,
-                AdminRole::parse(
-                    &env::var("PARLANDO_ADMIN_ROLE")
-                        .unwrap_or_else(|_| "administrator".to_string()),
-                )?,
-            )?),
-            _ => {
-                return Err(anyhow!(
-                    "PARLANDO_ADMIN_USERNAME and PARLANDO_ADMIN_PASSWORD_HASH must be set together"
-                ))
-            }
-        };
+        let credential = store
+            .admin_credential()
+            .await?
+            .map(Self::credential_from_stored)
+            .transpose()?;
         Ok(Self {
             credential: RwLock::new(credential),
             store,
             sessions: RwLock::new(HashMap::new()),
             session_pepper: random_bytes(),
-            failed_attempts: RwLock::new(Vec::new()),
+            login_slots: Semaphore::new(2),
         })
     }
 
@@ -365,35 +371,32 @@ impl AdminAuthenticator {
     }
 
     /// Verifies credentials with Argon2 and creates a random server-side session.
-    pub async fn login(
-        &self,
-        username: &str,
-        password: &str,
-    ) -> Result<Option<(String, AdminSession)>> {
+    pub async fn login(&self, username: &str, password: &str) -> Result<AdminLoginResult> {
+        let Ok(_slot) = self.login_slots.try_acquire() else {
+            return Ok(AdminLoginResult::Busy);
+        };
         let now = now_timestamp();
-        {
-            let mut attempts = self.failed_attempts.write().await;
-            attempts.retain(|timestamp| *timestamp > now - 60);
-            if attempts.len() >= 10 {
-                return Ok(None);
-            }
-        }
         let credential = self.credential.read().await.clone();
         let Some(credential) = credential else {
-            return Ok(None);
+            return Ok(AdminLoginResult::Invalid);
         };
-        let parsed = PasswordHash::new(&credential.password_hash)
-            .map_err(|error| anyhow!("administrator password hash is invalid: {error}"))?;
         let username_valid: bool = token_digest(username, &self.session_pepper)
             .ct_eq(&token_digest(&credential.username, &self.session_pepper))
             .into();
-        let password_valid = Argon2::default()
-            .verify_password(password.as_bytes(), &parsed)
-            .is_ok();
+        let password_hash = credential.password_hash.clone();
+        let password = password.to_string();
+        let password_valid = task::spawn_blocking(move || -> Result<bool> {
+            let parsed = PasswordHash::new(&password_hash)
+                .map_err(|error| anyhow!("administrator password hash is invalid: {error}"))?;
+            Ok(Argon2::default()
+                .verify_password(password.as_bytes(), &parsed)
+                .is_ok())
+        })
+        .await
+        .map_err(|error| anyhow!("administrator password task failed: {error}"))??;
         let valid = username_valid & password_valid;
         if !valid {
-            self.failed_attempts.write().await.push(now);
-            return Ok(None);
+            return Ok(AdminLoginResult::Invalid);
         }
         let token = random_token("adm_");
         let session = AdminSession {
@@ -406,7 +409,7 @@ impl AdminAuthenticator {
             .write()
             .await
             .insert(token_digest(&token, &self.session_pepper), session.clone());
-        Ok(Some((token, session)))
+        Ok(AdminLoginResult::Authenticated(token, session))
     }
 
     /// Validates a session token and refreshes its idle timestamp.
@@ -489,16 +492,16 @@ mod admin_setup_tests {
             .unwrap());
         assert!(auth.is_configured().await);
         assert!(!auth.setup("second", "another-test-password").await.unwrap());
-        assert!(auth
-            .login("researcher", "a-long-test-password")
-            .await
-            .unwrap()
-            .is_some());
-        assert!(auth
-            .login("researcher", "wrong-password")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(matches!(
+            auth.login("researcher", "a-long-test-password")
+                .await
+                .unwrap(),
+            AdminLoginResult::Authenticated(_, _)
+        ));
+        assert!(matches!(
+            auth.login("researcher", "wrong-password").await.unwrap(),
+            AdminLoginResult::Invalid
+        ));
 
         let stored = store.admin_credential().await.unwrap().unwrap();
         assert_ne!(stored.password_hash, "a-long-test-password");

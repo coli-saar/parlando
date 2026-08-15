@@ -15,7 +15,8 @@ use axum::{
     },
     http::{
         header::{
-            AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, HOST, ORIGIN, SET_COOKIE,
+            AUTHORIZATION, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
+            SET_COOKIE,
         },
         HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
     },
@@ -28,7 +29,7 @@ use futures_util::{SinkExt, StreamExt as FuturesStreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::{broadcast, mpsc, Mutex, RwLock, Semaphore};
+use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
@@ -48,8 +49,8 @@ use crate::{
     },
     audio_publisher::{AgentAudioPublisher, RoomAgentAudioPublisher},
     auth::{
-        AdminAuthenticator, AdminSession, ParticipantAuthenticator, ParticipantPrincipal,
-        UpgradePurpose, UpgradeTicketClaims, UpgradeTicketStore,
+        AdminAuthenticator, AdminLoginResult, AdminSession, ParticipantAuthenticator,
+        ParticipantPrincipal, UpgradePurpose, UpgradeTicketClaims, UpgradeTicketStore,
     },
     config::{AgentsMode, ExperimentConfig},
     game::{GameAdapter, GameDescriptor, PlayerRole, Seat},
@@ -366,14 +367,19 @@ struct CspNonce(String);
 
 /// Adds browser hardening headers and a request-specific script nonce.
 async fn security_headers<A: GameAdapter>(
-    State(state): State<Arc<AppState<A>>>,
+    State(_state): State<Arc<AppState<A>>>,
     mut request: Request,
     next: Next,
 ) -> Response {
+    let no_store =
+        request.uri().path().starts_with("/api/") || request.uri().path().starts_with("/admin");
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     request.extensions_mut().insert(CspNonce(nonce.clone()));
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
+    if no_store {
+        headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     headers.insert(
         HeaderName::from_static("content-security-policy"),
         HeaderValue::from_str(&format!(
@@ -381,12 +387,10 @@ async fn security_headers<A: GameAdapter>(
         ))
         .expect("generated CSP nonce is valid header text"),
     );
-    if state.config.server.public_base_url.starts_with("https://") {
-        headers.insert(
-            HeaderName::from_static("strict-transport-security"),
-            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
-        );
-    }
+    headers.insert(
+        HeaderName::from_static("strict-transport-security"),
+        HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+    );
     headers.insert(
         HeaderName::from_static("x-content-type-options"),
         HeaderValue::from_static("nosniff"),
@@ -435,42 +439,149 @@ fn spawn_security_cleanup<A: GameAdapter>(state: Arc<AppState<A>>, clean_admin_s
                     !expired_participants.contains(participant_id)
                         || participant_ids_in_rooms.contains(participant_id)
                 });
+            let unattached_timeout = state.config.study.waiting_room_timeout_seconds.max(1);
+            let stale_unattached = {
+                let now = chrono::Utc::now();
+                let mut memory = state.memory.write().await;
+                let stale = memory
+                    .participants
+                    .iter()
+                    .filter(|(participant_id, participant)| {
+                        !participant_ids_in_rooms.contains(*participant_id)
+                            && chrono::DateTime::parse_from_rfc3339(&participant.updated_at)
+                                .ok()
+                                .is_some_and(|updated| {
+                                    updated.with_timezone(&chrono::Utc)
+                                        < now - chrono::Duration::seconds(unattached_timeout)
+                                })
+                    })
+                    .map(|(participant_id, _)| participant_id.clone())
+                    .collect::<Vec<_>>();
+                for participant_id in &stale {
+                    memory.participants.remove(participant_id);
+                }
+                stale
+            };
+            for participant_id in &stale_unattached {
+                state
+                    .participant_auth
+                    .revoke_participant_session(participant_id)
+                    .await;
+            }
+            if !stale_unattached.is_empty() {
+                let stale = stale_unattached.iter().collect::<HashSet<_>>();
+                state
+                    .chat_submission_budgets
+                    .write()
+                    .await
+                    .retain(|participant_id, _| !stale.contains(participant_id));
+                state.rejection_windows.write().await.retain(|key, _| {
+                    !stale_unattached
+                        .iter()
+                        .any(|participant_id| key.contains(participant_id))
+                });
+            }
         }
     });
 }
 
-/// Removes abandoned transient room registries after configured waiting/reconnect bounds.
+/// Removes or expires transient rooms after configured waiting, idle, and lifetime bounds.
 async fn cleanup_transient_rooms<A: GameAdapter>(state: &Arc<AppState<A>>) {
     let now = chrono::Utc::now();
     let waiting_timeout = state.config.study.waiting_room_timeout_seconds.max(1);
     let reconnect_grace = state.config.study.reconnect_grace_seconds.max(1);
-    let removed = {
-        let mut memory = state.memory.write().await;
-        let removed = memory
+    let idle_timeout = state.config.study.session_idle_timeout_seconds.max(1);
+    let max_lifetime = state.config.study.session_max_lifetime_seconds.max(1);
+    let candidates = {
+        let memory = state.memory.read().await;
+        memory
             .rooms
             .iter()
             .filter_map(|(room_id, room)| {
+                let created = chrono::DateTime::parse_from_rfc3339(&room.created_at)
+                    .ok()?
+                    .with_timezone(&chrono::Utc);
                 let updated = chrono::DateTime::parse_from_rfc3339(&room.updated_at)
                     .ok()?
                     .with_timezone(&chrono::Utc);
-                let timeout = if room.status == "waiting" {
-                    waiting_timeout
-                } else {
-                    reconnect_grace
-                };
                 let has_connection = room
                     .participants
                     .values()
                     .any(|participant| participant.connected);
-                (!has_connection && updated < now - chrono::Duration::seconds(timeout))
-                    .then(|| room_id.clone())
+                let disconnected_since = room
+                    .participants
+                    .values()
+                    .filter_map(|participant| {
+                        chrono::DateTime::parse_from_rfc3339(&participant.updated_at)
+                            .ok()
+                            .map(|timestamp| timestamp.with_timezone(&chrono::Utc))
+                    })
+                    .max()
+                    .unwrap_or(updated);
+                let reason = if room.status != "completed"
+                    && created < now - chrono::Duration::seconds(max_lifetime)
+                {
+                    Some("maximum_lifetime")
+                } else if room.status == "waiting"
+                    && updated < now - chrono::Duration::seconds(waiting_timeout)
+                {
+                    Some("waiting_timeout")
+                } else if room.status == "playing"
+                    && updated < now - chrono::Duration::seconds(idle_timeout)
+                {
+                    Some("idle_timeout")
+                } else if room.status != "completed"
+                    && !has_connection
+                    && disconnected_since < now - chrono::Duration::seconds(reconnect_grace)
+                {
+                    Some("reconnect_timeout")
+                } else if room.status == "completed"
+                    && !has_connection
+                    && disconnected_since < now - chrono::Duration::seconds(reconnect_grace)
+                {
+                    Some("completed_cleanup")
+                } else {
+                    None
+                }?;
+                Some((
+                    room_id.clone(),
+                    room.experiment_id.clone(),
+                    room.session_id,
+                    room.updated_at.clone(),
+                    reason,
+                ))
             })
-            .collect::<Vec<_>>();
-        for room_id in &removed {
-            memory.rooms.remove(room_id);
-        }
-        removed
+            .collect::<Vec<_>>()
     };
+    let mut removed = Vec::new();
+    for (room_id, experiment_id, session_id, observed_updated_at, reason) in candidates {
+        let removed_current_room = {
+            let mut memory = state.memory.write().await;
+            if memory
+                .rooms
+                .get(&room_id)
+                .is_some_and(|room| room.updated_at == observed_updated_at)
+            {
+                memory.rooms.remove(&room_id);
+                true
+            } else {
+                false
+            }
+        };
+        if !removed_current_room {
+            continue;
+        }
+        if reason != "completed_cleanup" && session_id > 0 {
+            persist_event(
+                "session_expired",
+                state
+                    .store
+                    .expire_session(&experiment_id, session_id, reason),
+            )
+            .await;
+        }
+        removed.push(room_id);
+    }
     if removed.is_empty() {
         return;
     }
@@ -505,24 +616,23 @@ async fn cleanup_transient_rooms<A: GameAdapter>(state: &Arc<AppState<A>>) {
             .iter()
             .any(|room_id| key.starts_with(&format!("{room_id}:")))
     });
+    state.rejection_windows.write().await.retain(|key, _| {
+        !removed
+            .iter()
+            .any(|room_id| key.starts_with(&format!("{room_id}\0")))
+    });
 }
 
 /// Applies a process-wide safety ceiling to unauthenticated participant creation bursts.
-async fn enforce_creation_rate<A: GameAdapter>(
-    state: &Arc<AppState<A>>,
-    client_ip: Option<IpAddr>,
-) -> Result<(), AppError> {
+async fn enforce_creation_rate<A: GameAdapter>(state: &Arc<AppState<A>>) -> Result<(), AppError> {
     let now = chrono::Utc::now().timestamp();
     let mut attempts = state.participant_creation_window.write().await;
-    attempts
-        .record(client_ip, now)
-        .then_some(())
-        .ok_or_else(|| {
-            AppError::new(
-                StatusCode::TOO_MANY_REQUESTS,
-                "Participant creation rate limit exceeded",
-            )
-        })
+    attempts.record(now).then_some(()).ok_or_else(|| {
+        AppError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Participant creation rate limit exceeded",
+        )
+    })
 }
 
 /// Authenticates participant API requests and attaches the resolved principal.
@@ -542,24 +652,83 @@ async fn require_participant_auth<A: GameAdapter>(
     Ok(next.run(request).await)
 }
 
+/// Restricts all administrator surfaces to configured direct-peer CIDR ranges.
+async fn require_admin_network<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    request: Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    let ranges = state
+        .game_settings
+        .read()
+        .await
+        .admin_allowed_ip_ranges
+        .clone();
+    if ranges.is_empty() {
+        return Ok(next.run(request).await);
+    }
+    let client_ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|peer| peer.0.ip());
+    let allowed = admin_network_allows(&ranges, client_ip);
+    if !allowed {
+        tracing::warn!(?client_ip, "administrator network policy rejected request");
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Administrator access is not available from this network",
+        ));
+    }
+    Ok(next.run(request).await)
+}
+
+/// Applies a validated CIDR list to one direct network peer.
+fn admin_network_allows(ranges: &[String], client_ip: Option<IpAddr>) -> bool {
+    ranges.is_empty()
+        || client_ip.is_some_and(|client_ip| {
+            ranges.iter().any(|range| {
+                range
+                    .parse::<ipnet::IpNet>()
+                    .is_ok_and(|network| network.contains(&client_ip))
+            })
+        })
+}
+
 /// Authenticates every administrator route and enforces role and CSRF on mutations.
 async fn require_admin_auth<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, AppError> {
-    let token = cookie_value(request.headers(), "parlando_admin")
-        .ok_or_else(|| AppError::new(StatusCode::UNAUTHORIZED, "Authentication required"))?;
+    let browser_page =
+        request.method() == Method::GET && request.uri().path().starts_with("/admin/");
+    let Some(token) = cookie_value(request.headers(), "parlando_admin") else {
+        if browser_page {
+            return Ok(Redirect::temporary("/admin/login").into_response());
+        }
+        return Err(AppError::new(
+            StatusCode::UNAUTHORIZED,
+            "Authentication required",
+        ));
+    };
     if !state.admin_auth.is_configured().await {
+        if browser_page {
+            return Ok(Redirect::temporary("/admin/login").into_response());
+        }
         return Err(AppError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "Administrator authentication is not configured",
         ));
     }
-    let session =
-        state.admin_auth.authenticate(token).await.ok_or_else(|| {
-            AppError::new(StatusCode::UNAUTHORIZED, "Invalid administrator session")
-        })?;
+    let Some(session) = state.admin_auth.authenticate(token).await else {
+        if browser_page {
+            return Ok(Redirect::temporary("/admin/login").into_response());
+        }
+        return Err(AppError::new(
+            StatusCode::UNAUTHORIZED,
+            "Invalid administrator session",
+        ));
+    };
     if request.method() != Method::GET {
         validate_admin_request_origin(&state.config, request.headers())?;
         let csrf = request
@@ -800,17 +969,27 @@ async fn admin_login_response<A: GameAdapter>(
     username: &str,
     password: &str,
 ) -> Result<Response, AppError> {
-    let Some((token, session)) = state
+    let login = state
         .admin_auth
         .login(username, password)
         .await
-        .map_err(AppError::from)?
-    else {
-        tracing::warn!(username, "administrator login failed");
-        return Err(AppError::new(
-            StatusCode::UNAUTHORIZED,
-            "Invalid administrator credentials",
-        ));
+        .map_err(AppError::from)?;
+    let (token, session) = match login {
+        AdminLoginResult::Authenticated(token, session) => (token, session),
+        AdminLoginResult::Invalid => {
+            tracing::warn!(username, "administrator login failed");
+            return Err(AppError::new(
+                StatusCode::UNAUTHORIZED,
+                "Invalid administrator credentials",
+            ));
+        }
+        AdminLoginResult::Busy => {
+            tracing::warn!("administrator login concurrency limit reached");
+            return Err(AppError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Administrator login is busy; try again shortly",
+            ));
+        }
     };
     tracing::info!(username, role = ?session.role, "administrator login succeeded");
     let mut response = Json(json!({"ok": true, "csrf_token": session.csrf_token})).into_response();
@@ -870,13 +1049,27 @@ pub struct AppState<A: GameAdapter> {
     upgrade_tickets: UpgradeTicketStore,
     admin_auth: Arc<AdminAuthenticator>,
     participant_creation_window: RwLock<ParticipantCreationRate>,
-    game_connection_limit: Arc<Semaphore>,
-    audio_connection_limit: Arc<Semaphore>,
-    provider_connection_limit: Arc<Semaphore>,
+    chat_submission_budgets: RwLock<HashMap<String, TokenBucket>>,
+    rejection_windows: RwLock<HashMap<String, RejectionWindow>>,
+    telemetry: Arc<RuntimeTelemetry>,
     room_transition_locks: RwLock<HashMap<String, Arc<Mutex<()>>>>,
     game_connections: RwLock<HashMap<String, ConnectionControl>>,
     audio_connections: RwLock<HashMap<String, ConnectionControl>>,
     pub version_manifest: Value,
+}
+
+/// Selects a historical experiment for storage-only administrator handlers.
+#[derive(Clone)]
+struct AdminExperimentScope(String);
+
+/// Returns the explicitly routed experiment or the runtime's own experiment.
+fn admin_experiment_id<A: GameAdapter>(
+    state: &AppState<A>,
+    scope: Option<&Extension<AdminExperimentScope>>,
+) -> String {
+    scope
+        .map(|Extension(scope)| scope.0.clone())
+        .unwrap_or_else(|| state.experiment_id.clone())
 }
 
 /// Sliding-window participant-creation counters bounded by cleanup on each request.
@@ -884,35 +1077,69 @@ pub struct AppState<A: GameAdapter> {
 struct ParticipantCreationRate {
     /// Process-wide creation timestamps used as a final safety ceiling.
     global: Vec<i64>,
-    /// Creation timestamps for each trusted transport peer address.
-    by_ip: HashMap<IpAddr, Vec<i64>>,
 }
 
 impl ParticipantCreationRate {
     /// Records one allowed attempt after pruning the bounded sixty-second window.
-    fn record(&mut self, client_ip: Option<IpAddr>, now: i64) -> bool {
+    fn record(&mut self, now: i64) -> bool {
         self.global.retain(|timestamp| *timestamp > now - 60);
-        self.by_ip.retain(|_, timestamps| {
-            timestamps.retain(|timestamp| *timestamp > now - 60);
-            !timestamps.is_empty()
-        });
         if self.global.len() >= 300 {
             return false;
-        }
-        if let Some(client_ip) = client_ip {
-            let client_attempts = self.by_ip.entry(client_ip).or_default();
-            if client_attempts.len() >= 30 {
-                return false;
-            }
-            client_attempts.push(now);
         }
         self.global.push(now);
         true
     }
 }
 
+/// In-memory token bucket for inexpensive pacing that never disconnects a session.
+struct TokenBucket {
+    capacity: f64,
+    refill_per_second: f64,
+    tokens: f64,
+    last_refill: Instant,
+}
+
+impl TokenBucket {
+    /// Creates a full bucket with the supplied burst and sustained rates.
+    fn new(capacity: f64, refill_per_second: f64) -> Self {
+        Self {
+            capacity,
+            refill_per_second,
+            tokens: capacity,
+            last_refill: Instant::now(),
+        }
+    }
+
+    /// Consumes one token after refilling from elapsed wall time.
+    fn consume(&mut self) -> bool {
+        let now = Instant::now();
+        self.tokens = (self.tokens
+            + now.duration_since(self.last_refill).as_secs_f64() * self.refill_per_second)
+            .min(self.capacity);
+        self.last_refill = now;
+        if self.tokens < 1.0 {
+            return false;
+        }
+        self.tokens -= 1.0;
+        true
+    }
+}
+
+/// Coalescing state for repeated rejected inputs from the same participant and reason.
+struct RejectionWindow {
+    first_seen: i64,
+    last_seen: i64,
+    last_persisted: i64,
+    occurrences: u64,
+}
+
 mod lifecycle;
 use lifecycle::{require_active_experiment, ExperimentLifecycle};
+mod telemetry;
+use telemetry::{
+    CapacitySample, ConnectionLiveness, ConnectionLivenessSnapshot, ConnectionSample, LoadSample,
+    ParticipantLiveness, RuntimeTelemetry, SessionLiveness,
+};
 
 /// Event delivered to one started agent instance.
 enum AgentObservation<A: GameAdapter> {
@@ -934,6 +1161,7 @@ enum AgentObservation<A: GameAdapter> {
 struct ConnectionControl {
     generation: String,
     shutdown: mpsc::Sender<()>,
+    liveness: Arc<ConnectionLiveness>,
 }
 
 impl<A: GameAdapter> AppState<A> {
@@ -1080,11 +1308,19 @@ async fn room_transition_lock<A: GameAdapter>(
         .clone()
 }
 
+/// Refreshes a room's meaningful-activity timestamp without treating heartbeats as activity.
+async fn touch_room_activity<A: GameAdapter>(state: &Arc<AppState<A>>, room_id: &str) {
+    if let Some(room) = state.memory.write().await.rooms.get_mut(room_id) {
+        room.updated_at = now_iso();
+    }
+}
+
 /// Registers one role-owned connection and immediately cancels the previous owner.
 async fn register_connection(
     connections: &RwLock<HashMap<String, ConnectionControl>>,
     key: String,
-) -> (String, mpsc::Receiver<()>) {
+    liveness: Arc<ConnectionLiveness>,
+) -> (String, mpsc::Receiver<()>, bool) {
     let generation = new_id("connection");
     let (shutdown, receiver) = mpsc::channel(1);
     if let Some(previous) = connections.write().await.insert(
@@ -1092,11 +1328,13 @@ async fn register_connection(
         ConnectionControl {
             generation: generation.clone(),
             shutdown,
+            liveness,
         },
     ) {
         let _ = previous.shutdown.try_send(());
+        return (generation, receiver, true);
     }
-    (generation, receiver)
+    (generation, receiver, false)
 }
 
 /// Removes a connection control only when the finishing socket still owns its generation.
@@ -1115,6 +1353,364 @@ async fn unregister_connection(
     } else {
         false
     }
+}
+
+/// Classifies one current game transport from its most recent heartbeat or message.
+fn game_connection_health(snapshot: &ConnectionLivenessSnapshot, now_ms: i64) -> &'static str {
+    let observed_at = snapshot
+        .last_heartbeat_at_ms
+        .unwrap_or(snapshot.last_message_at_ms);
+    match now_ms.saturating_sub(observed_at) {
+        0..=5_000 => "live",
+        5_001..=15_000 => "delayed",
+        _ => "stale",
+    }
+}
+
+/// Takes a short-lock snapshot of current runtime capacity and operational counters.
+async fn build_load_sample<A: GameAdapter>(state: &Arc<AppState<A>>) -> LoadSample {
+    let now = chrono::Utc::now();
+    let now_ms = now.timestamp_millis();
+    let (waiting, active, completed, unattached, transcription) = {
+        let memory = state.memory.read().await;
+        let waiting = memory
+            .rooms
+            .values()
+            .filter(|room| room.status == "waiting" && room.participants.len() < 2)
+            .count();
+        let completed = memory
+            .rooms
+            .values()
+            .filter(|room| room.status == "completed")
+            .count();
+        let active = memory.rooms.len().saturating_sub(waiting);
+        let attached = memory
+            .rooms
+            .values()
+            .flat_map(|room| room.participants.keys().cloned())
+            .collect::<HashSet<_>>();
+        let unattached = memory
+            .participants
+            .keys()
+            .filter(|participant_id| !attached.contains(*participant_id))
+            .count();
+        let transcription = if speechmatics_readiness_required(&state.config) {
+            memory
+                .rooms
+                .values()
+                .flat_map(|room| room.participants.values())
+                .filter(|participant| participant.source != "agent")
+                .count()
+        } else {
+            0
+        };
+        (waiting, active, completed, unattached, transcription)
+    };
+    let game_snapshots = state
+        .game_connections
+        .read()
+        .await
+        .values()
+        .map(|control| control.liveness.snapshot())
+        .collect::<Vec<_>>();
+    let game_live = game_snapshots
+        .iter()
+        .filter(|snapshot| game_connection_health(snapshot, now_ms) == "live")
+        .count();
+    let game_delayed = game_snapshots
+        .iter()
+        .filter(|snapshot| game_connection_health(snapshot, now_ms) == "delayed")
+        .count();
+    let game_stale = game_snapshots.len() - game_live - game_delayed;
+    let audio_connections = state.audio_connections.read().await.len();
+    let pending_rejections = state
+        .rejection_windows
+        .read()
+        .await
+        .values()
+        .map(|window| window.occurrences)
+        .sum();
+    let storage = match state.store.storage_capacity().await {
+        Ok(storage) => storage,
+        Err(error) => {
+            tracing::warn!(%error, "could not sample storage capacity for load telemetry");
+            None
+        }
+    };
+    LoadSample {
+        sampled_at: now.to_rfc3339(),
+        sampled_at_ms: now_ms,
+        counters: state.telemetry.counters(),
+        capacity: CapacitySample {
+            active_reserved_sessions: active,
+            active_session_limit: state.config.capacity.max_active_sessions,
+            waiting_sessions: waiting,
+            waiting_session_limit: state.config.capacity.max_waiting_sessions,
+            completed_retained_sessions: completed,
+            unattached_participants: unattached,
+            unattached_participant_limit: state.config.capacity.max_unattached_participants,
+            transcription_streams_reserved: transcription,
+            transcription_stream_limit: state.config.capacity.max_transcription_streams,
+            active_agents: state.started_agents.read().await.len(),
+            storage_reserve_bytes: state
+                .config
+                .capacity
+                .storage_reserve_megabytes
+                .saturating_mul(1024 * 1024),
+        },
+        connections: ConnectionSample {
+            game_connections: game_snapshots.len(),
+            game_live,
+            game_delayed,
+            game_stale,
+            audio_connections,
+        },
+        pending_rejections,
+        storage,
+    }
+}
+
+/// Adds one candidate timeout and keeps the earliest deadline affecting a room.
+fn retain_earliest_deadline(
+    current: &mut Option<(chrono::DateTime<chrono::Utc>, String)>,
+    timestamp: &str,
+    seconds: i64,
+    reason: &str,
+) {
+    let Some(base) = chrono::DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|value| value.with_timezone(&chrono::Utc))
+    else {
+        return;
+    };
+    let candidate = (
+        base + chrono::Duration::seconds(seconds.max(1)),
+        reason.to_string(),
+    );
+    if current
+        .as_ref()
+        .is_none_or(|(deadline, _)| candidate.0 < *deadline)
+    {
+        *current = Some(candidate);
+    }
+}
+
+/// Minimal participant projection copied while taking a liveness snapshot.
+struct ParticipantOperationalSnapshot {
+    role: Seat,
+    source: String,
+    connected: bool,
+    audio_ready: bool,
+    updated_at: String,
+}
+
+/// Minimal room projection that intentionally excludes potentially large game state.
+struct RoomOperationalSnapshot {
+    session_id: i64,
+    room_id: String,
+    status: String,
+    created_at: String,
+    updated_at: String,
+    participants: Vec<ParticipantOperationalSnapshot>,
+}
+
+/// Builds participant and lifecycle liveness without writing heartbeat data to storage.
+async fn build_session_liveness<A: GameAdapter>(state: &Arc<AppState<A>>) -> Vec<SessionLiveness> {
+    let rooms = {
+        let memory = state.memory.read().await;
+        memory
+            .rooms
+            .values()
+            .map(|room| RoomOperationalSnapshot {
+                session_id: room.session_id,
+                room_id: room.id.clone(),
+                status: room.status.clone(),
+                created_at: room.created_at.clone(),
+                updated_at: room.updated_at.clone(),
+                participants: room
+                    .participants
+                    .values()
+                    .map(|participant| ParticipantOperationalSnapshot {
+                        role: participant.role,
+                        source: participant.source.clone(),
+                        connected: participant.connected,
+                        audio_ready: participant.audio_ready,
+                        updated_at: participant.updated_at.clone(),
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let game = state
+        .game_connections
+        .read()
+        .await
+        .iter()
+        .map(|(key, control)| (key.clone(), control.liveness.snapshot()))
+        .collect::<HashMap<_, _>>();
+    let audio = state
+        .audio_connections
+        .read()
+        .await
+        .iter()
+        .map(|(key, control)| (key.clone(), control.liveness.snapshot()))
+        .collect::<HashMap<_, _>>();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut sessions = rooms
+        .into_iter()
+        .map(|room| {
+            let mut deadline = None;
+            if room.status == "waiting" {
+                retain_earliest_deadline(
+                    &mut deadline,
+                    &room.updated_at,
+                    state.config.study.waiting_room_timeout_seconds,
+                    "waiting timeout",
+                );
+            } else if room.status == "playing" {
+                retain_earliest_deadline(
+                    &mut deadline,
+                    &room.updated_at,
+                    state.config.study.session_idle_timeout_seconds,
+                    "idle timeout",
+                );
+            }
+            if room.status != "completed" {
+                retain_earliest_deadline(
+                    &mut deadline,
+                    &room.created_at,
+                    state.config.study.session_max_lifetime_seconds,
+                    "maximum lifetime",
+                );
+            }
+            if room.status != "completed" && room.participants.iter().all(|row| !row.connected) {
+                if let Some(latest) = room
+                    .participants
+                    .iter()
+                    .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
+                {
+                    retain_earliest_deadline(
+                        &mut deadline,
+                        &latest.updated_at,
+                        state.config.study.reconnect_grace_seconds,
+                        "reconnect timeout",
+                    );
+                }
+            }
+            let participants = room
+                .participants
+                .iter()
+                .map(|participant| {
+                    let key = format!("{}:{}", room.room_id, participant.role.as_str());
+                    let game_transport = game.get(&key).cloned();
+                    let game_health = if participant.source == "agent" {
+                        "server"
+                    } else {
+                        game_transport
+                            .as_ref()
+                            .map(|snapshot| game_connection_health(snapshot, now_ms))
+                            .unwrap_or(if room.status == "waiting" {
+                                "waiting"
+                            } else {
+                                "disconnected"
+                            })
+                    };
+                    ParticipantLiveness {
+                        role: participant.role.as_str().to_string(),
+                        source: participant.source.clone(),
+                        game_health: game_health.to_string(),
+                        game: game_transport,
+                        audio: audio.get(&key).cloned(),
+                        audio_ready: participant.audio_ready,
+                    }
+                })
+                .collect::<Vec<_>>();
+            let browser_participants = participants
+                .iter()
+                .filter(|participant| participant.source != "agent")
+                .collect::<Vec<_>>();
+            let health = if room.status == "completed" {
+                "completed"
+            } else if browser_participants
+                .iter()
+                .any(|participant| participant.game_health == "stale")
+            {
+                "stale"
+            } else if browser_participants
+                .iter()
+                .any(|participant| participant.game_health == "delayed")
+            {
+                "delayed"
+            } else if room.status == "playing"
+                && browser_participants
+                    .iter()
+                    .any(|participant| participant.game_health == "disconnected")
+            {
+                "disconnected"
+            } else if browser_participants
+                .iter()
+                .any(|participant| participant.game_health == "live")
+            {
+                "live"
+            } else if room.status == "waiting" {
+                "waiting"
+            } else {
+                "disconnected"
+            };
+            SessionLiveness {
+                session_id: room.session_id,
+                room_id: room.room_id,
+                status: room.status,
+                health: health.to_string(),
+                meaningful_activity_at: room.updated_at,
+                lifecycle_deadline_at: deadline.as_ref().map(|(value, _)| value.to_rfc3339()),
+                deadline_reason: deadline.map(|(_, reason)| reason),
+                participants,
+            }
+        })
+        .collect::<Vec<_>>();
+    sessions.sort_by_key(|session| session.session_id);
+    sessions
+}
+
+/// Samples bounded one-hour operational history every five seconds.
+fn spawn_load_sampler<A: GameAdapter>(state: Arc<AppState<A>>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            let sample = build_load_sample(&state).await;
+            state.telemetry.push_sample(sample).await;
+        }
+    });
+}
+
+/// Returns the current snapshot, one-hour history, and runtime session liveness.
+async fn admin_load<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+) -> Result<Json<Value>, AppError> {
+    let current = build_load_sample(&state).await;
+    let history = state.telemetry.history().await;
+    let sessions = build_session_liveness(&state).await;
+    Ok(Json(json!({
+        "current": current,
+        "history": history,
+        "sessions": sessions,
+        "sampling": { "interval_seconds": 5, "retention_seconds": 3600 },
+        "liveness_thresholds_ms": { "live": 5000, "delayed": 15000, "socket_timeout": 90000 },
+    })))
+}
+
+/// Measures HTTP concurrency, response classes, and latency for the load dashboard.
+async fn track_request_load<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let guard = state.telemetry.begin_request();
+    let response = next.run(request).await;
+    guard.finish(response.status());
+    response
 }
 
 /// Persists one participant's session-local role and connection status.
@@ -1192,8 +1788,17 @@ impl IntoResponse for AppError {
 mod routing;
 pub use routing::{build_game_router, build_router, serve, serve_game};
 
-async fn health() -> Json<Value> {
-    Json(json!({"status": "ok"}))
+async fn health<A: GameAdapter>(
+    State(state): State<Arc<AppState<A>>>,
+) -> Result<Json<Value>, AppError> {
+    tokio::time::timeout(Duration::from_secs(2), state.store.health_check())
+        .await
+        .map_err(|_| AppError::new(StatusCode::SERVICE_UNAVAILABLE, "storage check timed out"))?
+        .map_err(|error| {
+            tracing::error!(%error, "health check could not acquire SQLite write transaction");
+            AppError::new(StatusCode::SERVICE_UNAVAILABLE, "storage unavailable")
+        })?;
+    Ok(Json(json!({"status": "ok", "storage": "read_write"})))
 }
 
 async fn public_config<A: GameAdapter>(
@@ -1250,29 +1855,35 @@ async fn public_config<A: GameAdapter>(
 
 async fn create_participant<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
-    client: Option<ConnectInfo<SocketAddr>>,
     Json(request): Json<ParticipantCreateRequest>,
 ) -> Result<Json<ParticipantCreateResponse>, AppError> {
-    create_participant_inner(state, client.map(|peer| peer.0.ip()), request)
-        .await
-        .map(Json)
+    create_participant_inner(state, request).await.map(Json)
 }
 
 async fn create_participant_inner<A: GameAdapter>(
     state: Arc<AppState<A>>,
-    client_ip: Option<IpAddr>,
     _request: ParticipantCreateRequest,
 ) -> Result<ParticipantCreateResponse, AppError> {
     let _intake_guard = require_active_experiment(&state).await?;
-    enforce_creation_rate(&state, client_ip).await?;
+    enforce_creation_rate(&state).await?;
     if !state.config.direct.enabled {
         return Err(AppError::not_found("Direct mode is disabled."));
     }
     let mut memory = state.memory.write().await;
-    if memory.participants.len() >= 10_000 {
+    let attached_participants = memory
+        .rooms
+        .values()
+        .flat_map(|room| room.participants.keys())
+        .collect::<HashSet<_>>();
+    let unattached_participants = memory
+        .participants
+        .keys()
+        .filter(|participant_id| !attached_participants.contains(participant_id))
+        .count();
+    if unattached_participants >= state.config.capacity.max_unattached_participants {
         return Err(AppError::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            "Participant capacity reached",
+            "Participant intake is temporarily full",
         ));
     }
     let participant_id = state
@@ -1330,14 +1941,26 @@ async fn consent<A: GameAdapter>(
     {
         return Err(AppError::bad_request("Unknown consent item"));
     }
-    let participant_id = state
-        .memory
-        .read()
-        .await
-        .participants
-        .get(&participant_session_id)
-        .ok_or_else(|| AppError::not_found("Participant session not found."))?
-        .participant_id;
+    let (participant_id, current_decisions) = {
+        let memory = state.memory.read().await;
+        let participant = memory
+            .participants
+            .get(&participant_session_id)
+            .ok_or_else(|| AppError::not_found("Participant session not found."))?;
+        (
+            participant.participant_id,
+            participant.consent_decisions.clone(),
+        )
+    };
+    let changed_decisions = request
+        .decisions
+        .iter()
+        .filter(|(item_id, accepted)| current_decisions.get(*item_id) != Some(*accepted))
+        .map(|(item_id, accepted)| (item_id.clone(), *accepted))
+        .collect::<HashMap<_, _>>();
+    if changed_decisions.is_empty() {
+        return Ok(Json(json!({"ok": true})));
+    }
     let session_id = if let Some(room_id) = request.room_id.as_ref() {
         state
             .memory
@@ -1354,7 +1977,7 @@ async fn consent<A: GameAdapter>(
         "participant_information_version": nonempty_string(&state.config.direct.participant_information_version),
         "participant_information_url": nonempty_string(&state.config.direct.participant_information_url),
     });
-    for (consent_item_id, accepted) in &request.decisions {
+    for (consent_item_id, accepted) in &changed_decisions {
         state
             .store
             .record_consent_declaration(ConsentDeclarationRecord {
@@ -1375,7 +1998,7 @@ async fn consent<A: GameAdapter>(
         .ok_or_else(|| AppError::not_found("Participant session not found."))?;
     participant
         .consent_decisions
-        .extend(request.decisions.clone());
+        .extend(changed_decisions.clone());
     participant.updated_at = now_iso();
     for room in memory.rooms.values_mut() {
         if request
@@ -1388,7 +2011,7 @@ async fn consent<A: GameAdapter>(
         if let Some(room_participant) = room.participants.get_mut(&participant_session_id) {
             room_participant
                 .consent_decisions
-                .extend(request.decisions.clone());
+                .extend(changed_decisions.clone());
             room_participant.updated_at = now_iso();
         }
     }
@@ -1406,21 +2029,17 @@ where
     let _intake_guard = require_active_experiment(&state).await?;
     let participant_session_id = authenticated_participant_id(principal)?;
     require_consent(&state, &participant_session_id).await?;
+    require_session_storage_reserve(&state).await?;
     let requested_mode = "direct".to_string();
     let paired_or_created: Result<(String, Seat, bool), AppError> = {
         let mut memory = state.memory.write().await;
-        if memory.rooms.len() >= 1_000 {
-            return Err(AppError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Room capacity reached",
-            ));
-        }
         if state.config.agents.mode == AgentsMode::HumanVsHuman {
             if let Some(room_id) = open_human_room_for_pairing(
                 &memory,
                 &requested_mode,
                 Some(state.config.study.name.as_str()),
             ) {
+                ensure_session_capacity(&state.config, &memory, SessionAdmission::Active, 1)?;
                 let role = add_human_participant_to_room_locked(
                     &state,
                     &mut memory,
@@ -1429,6 +2048,7 @@ where
                 )?;
                 Ok((room_id, role, false))
             } else {
+                ensure_session_capacity(&state.config, &memory, SessionAdmission::Waiting, 1)?;
                 let (room_id, role) = create_room_locked(
                     &state,
                     &mut memory,
@@ -1461,6 +2081,7 @@ where
                 Ok((room_id, role, true))
             }
         } else {
+            ensure_session_capacity(&state.config, &memory, SessionAdmission::Active, 1)?;
             let (room_id, role) = create_room_locked(
                 &state,
                 &mut memory,
@@ -1521,6 +2142,87 @@ where
     }
     let response = room_response(&state, &room_id, &participant_session_id, role, vec![]).await?;
     Ok(Json(response))
+}
+
+/// Pauses only new session admission before SQLite exhausts its filesystem.
+async fn require_session_storage_reserve<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+) -> Result<(), AppError> {
+    let Some(capacity) = state.store.storage_capacity().await? else {
+        return Ok(());
+    };
+    let reserve = state
+        .config
+        .capacity
+        .storage_reserve_megabytes
+        .saturating_mul(1024 * 1024);
+    if capacity.available_bytes <= reserve {
+        return Err(AppError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "New sessions are paused because storage reserve has been reached",
+        ));
+    }
+    Ok(())
+}
+
+/// Admission class used by the single session-capacity policy.
+#[derive(Clone, Copy)]
+enum SessionAdmission {
+    /// A human-human room still waiting for its second participant.
+    Waiting,
+    /// A fully allocated human-human or human-agent research session.
+    Active,
+}
+
+/// Reserves room and ASR capacity before any durable session is created.
+fn ensure_session_capacity<S>(
+    config: &ExperimentConfig,
+    memory: &MemoryState<S>,
+    admission: SessionAdmission,
+    transcription_streams_to_add: usize,
+) -> Result<(), AppError> {
+    let (waiting, active) = memory
+        .rooms
+        .values()
+        .fold((0_usize, 0_usize), |counts, room| {
+            if room.status == "waiting" && room.participants.len() < 2 {
+                (counts.0 + 1, counts.1)
+            } else {
+                (counts.0, counts.1 + 1)
+            }
+        });
+    match admission {
+        SessionAdmission::Waiting if waiting >= config.capacity.max_waiting_sessions => {
+            return Err(AppError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Waiting-room capacity is temporarily full",
+            ));
+        }
+        SessionAdmission::Active if active >= config.capacity.max_active_sessions => {
+            return Err(AppError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Active-session capacity is temporarily full",
+            ));
+        }
+        _ => {}
+    }
+    if speechmatics_readiness_required(config) {
+        let reserved_streams = memory
+            .rooms
+            .values()
+            .flat_map(|room| room.participants.values())
+            .filter(|participant| participant.source != "agent")
+            .count();
+        if reserved_streams + transcription_streams_to_add
+            > config.capacity.max_transcription_streams
+        {
+            return Err(AppError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Transcription capacity is temporarily full",
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn add_agent_to_room<A: GameAdapter>(
@@ -1598,6 +2300,7 @@ async fn add_agent_to_room<A: GameAdapter>(
                 source: "agent".to_string(),
                 role: Seat::B,
                 connected: true,
+                ready_declared: true,
                 audio_ready: true,
                 consent_decisions: HashMap::new(),
                 joined_at: now_iso(),
@@ -1674,6 +2377,7 @@ fn add_human_participant_to_room_locked<A: GameAdapter>(
             source: "direct".to_string(),
             role,
             connected: false,
+            ready_declared: false,
             audio_ready: !speechmatics_readiness_required(&state.config),
             consent_decisions: participant.consent_decisions,
             joined_at: now_iso(),
@@ -1709,6 +2413,7 @@ fn create_room_locked<A: GameAdapter>(
             source: participant.source,
             role,
             connected: false,
+            ready_declared: false,
             audio_ready: !speechmatics_readiness_required(&state.config),
             consent_decisions: participant.consent_decisions,
             joined_at: now_iso(),
@@ -1914,15 +2619,6 @@ async fn commit_final_transcript<A: GameAdapter>(
         persist_session_event_required(
             state,
             room_id,
-            Some(&stored.participant_session_id),
-            "transcript_segment",
-            serde_json::to_value(&stored).unwrap(),
-            None,
-        )
-        .await?;
-        persist_session_event_required(
-            state,
-            room_id,
             message.sender_participant_session_id.as_deref(),
             "conversation_message",
             serde_json::to_value(&message).unwrap(),
@@ -1940,6 +2636,7 @@ async fn commit_final_transcript<A: GameAdapter>(
             .remove(&idempotency_key);
         return Err(AppError::from(error));
     }
+    touch_room_activity(state, room_id).await;
     let _ = state.room_bus(room_id).await.send(ServerMessage {
         conversation_message: Some(message),
         room_id: Some(room_id.to_string()),
@@ -2082,11 +2779,15 @@ async fn add_conversation<A: GameAdapter>(
         )
         .await?;
     }
+    touch_room_activity(&state, &room_id).await;
     let _ = state.room_bus(&room_id).await.send(ServerMessage {
         room_id: Some(room_id.clone()),
         conversation_message: Some(message.clone()),
         ..ServerMessage::new("conversationMessageAdded")
     });
+    if message.origin == "typed" {
+        state.telemetry.record_chat_accepted();
+    }
     if let Some(speaker) = message
         .sender_role
         .as_deref()
@@ -2179,6 +2880,7 @@ struct AdminCatalogueRequest {
 struct AdminGameSettingsRequest {
     expected_revision: i64,
     institution: String,
+    admin_allowed_ip_ranges: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2620,11 +3322,34 @@ async fn admin_experiments<A: GameAdapter>(
 ) -> Result<Json<Value>, AppError> {
     let experiments = state.store.list_experiments(1_000).await?;
     let game_settings = state.game_settings.read().await.clone();
+    let storage_capacity = state.store.storage_capacity().await?;
+    let (waiting_sessions, active_sessions, reserved_transcription_streams) = {
+        let memory = state.memory.read().await;
+        let waiting = memory
+            .rooms
+            .values()
+            .filter(|room| room.status == "waiting" && room.participants.len() < 2)
+            .count();
+        let active = memory.rooms.len().saturating_sub(waiting);
+        let transcription = memory
+            .rooms
+            .values()
+            .flat_map(|room| room.participants.values())
+            .filter(|participant| participant.source != "agent")
+            .count();
+        (waiting, active, transcription)
+    };
     Ok(Json(json!({
         "game": state.game_descriptor,
         "game_settings": game_settings,
         "experiments": experiments,
         "running_experiment_id": state.experiment_id,
+        "storage_capacity": storage_capacity,
+        "runtime_capacity": {
+            "waiting_sessions": waiting_sessions,
+            "active_sessions": active_sessions,
+            "reserved_transcription_streams": reserved_transcription_streams,
+        },
         "csrf_token": admin_session.csrf_token,
     })))
 }
@@ -2808,13 +3533,29 @@ async fn admin_update_game_settings<A: GameAdapter>(
     Json(request): Json<AdminGameSettingsRequest>,
 ) -> Result<Json<Value>, AppError> {
     let institution = request.institution.trim().to_string();
+    let admin_allowed_ip_ranges = request
+        .admin_allowed_ip_ranges
+        .into_iter()
+        .map(|range| range.trim().to_string())
+        .filter(|range| !range.is_empty())
+        .collect::<Vec<_>>();
+    for range in &admin_allowed_ip_ranges {
+        range.parse::<ipnet::IpNet>().map_err(|error| {
+            AppError::bad_request(format!("Invalid administrator IP range {range:?}: {error}"))
+        })?;
+    }
     let revision = state
         .store
-        .update_game_settings(request.expected_revision, institution.clone())
+        .update_game_settings(
+            request.expected_revision,
+            institution.clone(),
+            admin_allowed_ip_ranges.clone(),
+        )
         .await
         .map_err(|error| AppError::new(StatusCode::CONFLICT, error.to_string()))?;
     *state.game_settings.write().await = StoredGameSettings {
         institution,
+        admin_allowed_ip_ranges,
         revision,
     };
     Ok(Json(json!({ "revision": revision })))
@@ -2889,9 +3630,10 @@ async fn admin_update_experiment_status<A: GameAdapter>(
 /// Returns recent database sessions for the experiment dashboard.
 async fn admin_sessions<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
+    scope: Option<Extension<AdminExperimentScope>>,
     Query(query): Query<AdminSessionsQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let experiment_id = state.experiment_id.clone();
+    let experiment_id = admin_experiment_id(&state, scope.as_ref());
     let sessions = state
         .store
         .recent_sessions(&experiment_id, query.limit.unwrap_or(50))
@@ -2914,9 +3656,10 @@ async fn admin_sessions<A: GameAdapter>(
 /// Returns one database session's metadata and important event timeline.
 async fn admin_session_detail<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
+    scope: Option<Extension<AdminExperimentScope>>,
     Path(session_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let experiment_id = state.experiment_id.clone();
+    let experiment_id = admin_experiment_id(&state, scope.as_ref());
     let exported = state
         .store
         .export_session(&experiment_id, session_id)
@@ -2957,11 +3700,12 @@ async fn admin_session_detail<A: GameAdapter>(
 /// Returns important database events after an optional event index.
 async fn admin_session_events<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
+    scope: Option<Extension<AdminExperimentScope>>,
     Path(session_id): Path<i64>,
     Query(query): Query<AdminEventsQuery>,
 ) -> Result<Json<Value>, AppError> {
     let after = query.after.unwrap_or(0);
-    let experiment_id = state.experiment_id.clone();
+    let experiment_id = admin_experiment_id(&state, scope.as_ref());
     let all_events = state
         .store
         .session_events(&experiment_id, session_id, None)
@@ -3049,7 +3793,7 @@ struct AdminEventBundle {
 fn admin_event_is_terminal_boundary(event: &Value) -> bool {
     matches!(
         admin_event_type(event).as_str(),
-        "session_completed" | "participant_disconnected"
+        "session_completed" | "session_expired" | "participant_disconnected"
     )
 }
 
@@ -3287,7 +4031,7 @@ fn admin_bundle_title(bundle: &AdminEventBundle) -> String {
         "voice" => "Voice".to_string(),
         "transcript" => "Voice Message".to_string(),
         "conversation" => "Message".to_string(),
-        "session_created" | "session_completed" => "Session".to_string(),
+        "session_created" | "session_completed" | "session_expired" => "Session".to_string(),
         _ => bundle
             .events
             .first()
@@ -3464,6 +4208,7 @@ fn is_important_admin_event(event: &crate::storage::StoredSessionEvent) -> bool 
             | "ready"
             | "session_completed"
             | "session_created"
+            | "session_expired"
             | "transcript_segment"
             | "voice_diagnostic"
     )
@@ -3519,6 +4264,7 @@ fn admin_event_title(event_type: &str, payload: &Value) -> &'static str {
         "ready" => "Participant ready",
         "session_completed" => "Session completed",
         "session_created" => "Session created",
+        "session_expired" => "Session expired",
         "transcript_segment" => "Transcript segment",
         "voice_diagnostic" => "Voice diagnostic",
         _ => "Event",
@@ -3538,6 +4284,10 @@ fn admin_event_text(event_type: &str, payload: &Value) -> Option<String> {
             .or_else(|| Some(compact_json(payload))),
         "game_action_rejected" => payload
             .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "session_expired" => payload
+            .get("reason")
             .and_then(Value::as_str)
             .map(str::to_string),
         _ => None,
@@ -3590,12 +4340,14 @@ fn agent_event_metadata(metadata: &Value) -> Value {
 
 async fn admin_export<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
+    scope: Option<Extension<AdminExperimentScope>>,
     Query(query): Query<AdminExportQuery>,
 ) -> Result<Response, AppError>
 where
     A::State: Serialize,
 {
-    let mut value = filtered_export(&state, &query).await?;
+    let experiment_id = admin_experiment_id(&state, scope.as_ref());
+    let mut value = filtered_export(&state, &experiment_id, &query).await?;
     value = match query.variant.as_deref().unwrap_or("research") {
         "full" => value,
         "research" => research_export(value, &state.config.privacy.contract_version),
@@ -3609,7 +4361,7 @@ where
             )))
         }
     };
-    tracing::info!(experiment_id = %state.experiment_id, session_id = ?query.session_id, "administrator requested export");
+    tracing::info!(experiment_id, session_id = ?query.session_id, "administrator requested export");
     redact_secret_fields(&mut value);
     if value
         .get("session_events")
@@ -3669,9 +4421,10 @@ async fn participant_id_for_research_id<A: GameAdapter>(
 /// Previews the bounded records affected by manual participant-data deletion.
 async fn admin_participant_deletion_preview<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
+    scope: Option<Extension<AdminExperimentScope>>,
     Path(requested): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let experiment_id = state.experiment_id.clone();
+    let experiment_id = admin_experiment_id(&state, scope.as_ref());
     let participant_id = participant_id_for_research_id(&state, &experiment_id, &requested)
         .await?
         .ok_or_else(|| AppError::not_found("Participant not found."))?;
@@ -3685,9 +4438,10 @@ async fn admin_participant_deletion_preview<A: GameAdapter>(
 /// Executes confirmed participant-data deletion and returns its audit counts.
 async fn admin_delete_participant_data<A: GameAdapter>(
     State(state): State<Arc<AppState<A>>>,
+    scope: Option<Extension<AdminExperimentScope>>,
     Path(requested): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let experiment_id = state.experiment_id.clone();
+    let experiment_id = admin_experiment_id(&state, scope.as_ref());
     let Some(participant_id) =
         participant_id_for_research_id(&state, &experiment_id, &requested).await?
     else {
@@ -3759,6 +4513,7 @@ fn local_dependency_warnings(manifest_dir: &str, cargo_toml: &str) -> Vec<Value>
 
 async fn filtered_export<A: GameAdapter>(
     state: &Arc<AppState<A>>,
+    experiment_id: &str,
     query: &AdminExportQuery,
 ) -> Result<Value, AppError>
 where
@@ -3767,10 +4522,10 @@ where
     let mut exported = if let Some(session_id) = query.session_id {
         state
             .store
-            .export_session(&state.experiment_id, session_id)
+            .export_session(experiment_id, session_id)
             .await?
     } else {
-        state.store.export_experiment(&state.experiment_id).await?
+        state.store.export_experiment(experiment_id).await?
     };
     if let Some(status) = query.status.as_deref() {
         filter_array_by_string(&mut exported, "sessions", "status", status);
@@ -4211,21 +4966,10 @@ where
             "Game ticket role no longer matches participant",
         ));
     }
-    let permit = state
-        .game_connection_limit
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| {
-            AppError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Game connection capacity reached",
-            )
-        })?;
     Ok(ws
         .max_frame_size(32 * 1024)
         .max_message_size(64 * 1024)
         .on_upgrade(move |socket| async move {
-            let _permit = permit;
             websocket_loop(state, socket, room_id, participant_session_id, role).await;
         }))
 }
@@ -4266,21 +5010,10 @@ where
             "Audio token role no longer matches participant",
         ));
     }
-    let permit = state
-        .audio_connection_limit
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| {
-            AppError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Audio connection capacity reached",
-            )
-        })?;
     Ok(ws
         .max_frame_size(8 * 1024)
         .max_message_size(8 * 1024)
         .on_upgrade(move |socket| async move {
-            let _permit = permit;
             audio_websocket_loop(state, socket, claims).await;
         }))
 }
@@ -4297,8 +5030,16 @@ async fn audio_websocket_loop<A: GameAdapter>(
     let role = claims.role.clone();
     let participant_session_id = claims.participant_session_id.clone();
     let connection_key = format!("{room_id}:{role}");
-    let (connection_generation, mut shutdown) =
-        register_connection(&state.audio_connections, connection_key.clone()).await;
+    let liveness = Arc::new(ConnectionLiveness::new());
+    let (connection_generation, mut shutdown, replaced) = register_connection(
+        &state.audio_connections,
+        connection_key.clone(),
+        liveness.clone(),
+    )
+    .await;
+    if replaced {
+        state.telemetry.record_reconnection();
+    }
     let (generation, mut outbound) = state.audio_rooms.connect(&room_id, &role).await;
     let (mut sender, mut incoming) = socket.split();
     let send_task = tokio::spawn(async move {
@@ -4313,31 +5054,21 @@ async fn audio_websocket_loop<A: GameAdapter>(
         }
     });
 
-    let provider_permit = if state.transcription_provider.is_some() {
-        state
-            .provider_connection_limit
-            .clone()
-            .try_acquire_owned()
-            .ok()
-    } else {
-        None
-    };
-    let transcription = if let (Some(provider), Some(_permit)) = (
-        state.transcription_provider.clone(),
-        provider_permit.as_ref(),
-    ) {
-        match provider
-            .start_session(TranscriptionSessionContext {
+    let transcription = if let Some(provider) = state.transcription_provider.clone() {
+        match tokio::time::timeout(
+            Duration::from_secs(10),
+            provider.start_session(TranscriptionSessionContext {
                 room_id: room_id.clone(),
                 participant_session_id: participant_session_id.clone(),
                 role: role.clone(),
                 language: state.config.transcription.language.clone(),
                 model: state.config.transcription.model.clone(),
-            })
-            .await
+            }),
+        )
+        .await
         {
-            Ok(session) => Some(session),
-            Err(error) => {
+            Ok(Ok(session)) => Some(session),
+            Ok(Err(error)) => {
                 tracing::warn!(%error, %room_id, "could not start transcription session");
                 state
                     .audio_rooms
@@ -4347,6 +5078,15 @@ async fn audio_websocket_loop<A: GameAdapter>(
                         json!({"type":"transcriptionStatus","ready":false,"message":"ASR unavailable"}).to_string(),
                     )
                     .await;
+                None
+            }
+            Err(_) => {
+                tracing::warn!(%room_id, "timed out starting transcription session");
+                state.audio_rooms.send_control(
+                    &room_id,
+                    &role,
+                    json!({"type":"transcriptionStatus","ready":false,"message":"ASR startup timed out"}).to_string(),
+                ).await;
                 None
             }
         }
@@ -4399,28 +5139,44 @@ async fn audio_websocket_loop<A: GameAdapter>(
         maybe_start_game(state.clone(), &room_id).await;
     }
 
-    let mut rate_window_started = Instant::now();
-    let mut messages_in_window = 0_u32;
+    let mut last_activity_touch = Instant::now();
+    let media_started = Instant::now();
+    let mut first_timestamp_ms = None;
+    let mut last_sequence = None;
+    let mut last_timestamp_ms = None;
+    let mut dropped_audio_frames = 0_u64;
     loop {
         let next_message = tokio::select! {
             _ = shutdown.recv() => break,
-            _ = tokio::time::sleep(Duration::from_secs(30)) => break,
             message = incoming.next() => message,
         };
         let Some(Ok(message)) = next_message else {
             break;
         };
-        if rate_window_started.elapsed() >= Duration::from_secs(10) {
-            rate_window_started = Instant::now();
-            messages_in_window = 0;
-        }
-        messages_in_window += 1;
-        if messages_in_window > 750 {
-            break;
-        }
         match message {
             Message::Binary(bytes) => match AudioFrame::decode(&bytes) {
                 Ok(frame) => {
+                    liveness.touch_message(true);
+                    let stream_origin = *first_timestamp_ms.get_or_insert(frame.timestamp_ms);
+                    let media_elapsed_ms = frame.timestamp_ms.saturating_sub(stream_origin);
+                    let wall_elapsed_ms = media_started.elapsed().as_millis() as u64;
+                    let timing_valid = last_sequence
+                        .is_none_or(|sequence| frame.sequence > sequence)
+                        && last_timestamp_ms
+                            .is_none_or(|timestamp| frame.timestamp_ms >= timestamp)
+                        && media_elapsed_ms
+                            <= wall_elapsed_ms.saturating_mul(2).saturating_add(5_000);
+                    if !timing_valid {
+                        dropped_audio_frames += 1;
+                        state.telemetry.record_audio_frame_dropped();
+                        continue;
+                    }
+                    last_sequence = Some(frame.sequence);
+                    last_timestamp_ms = Some(frame.timestamp_ms);
+                    if last_activity_touch.elapsed() >= Duration::from_secs(30) {
+                        touch_room_activity(&state, &room_id).await;
+                        last_activity_touch = Instant::now();
+                    }
                     if !state
                         .audio_rooms
                         .is_current(&room_id, &role, &generation)
@@ -4432,14 +5188,18 @@ async fn audio_websocket_loop<A: GameAdapter>(
                         .audio_rooms
                         .relay_partner(&room_id, &role, bytes)
                         .await;
+                    state.telemetry.record_audio_frame();
                     if let Some(input) = &transcription_input {
                         if input.try_send(TranscriptionInput::Audio(frame)).is_err() {
+                            state.telemetry.record_asr_backpressure();
                             state.audio_rooms.send_control(&room_id, &role, json!({"type":"transcriptionStatus","ready":false,"message":"ASR is falling behind"}).to_string()).await;
                         }
                     }
                 }
                 Err(error) => {
-                    tracing::warn!(%error, %room_id, "rejected invalid browser audio frame")
+                    dropped_audio_frames += 1;
+                    state.telemetry.record_audio_frame_dropped();
+                    tracing::debug!(%error, %room_id, "dropped invalid browser audio frame")
                 }
             },
             Message::Close(_) => break,
@@ -4447,7 +5207,22 @@ async fn audio_websocket_loop<A: GameAdapter>(
         }
     }
     if let Some(input) = transcription_input {
-        let _ = input.send(TranscriptionInput::Finish).await;
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            input.send(TranscriptionInput::Finish),
+        )
+        .await;
+    }
+    if dropped_audio_frames > 0 && state.config.privacy.store_voice_diagnostics {
+        persist_session_event(
+            &state,
+            &room_id,
+            Some(&participant_session_id),
+            "voice_input_dropped",
+            json!({"frames": dropped_audio_frames, "reason": "invalid_or_ahead_of_realtime"}),
+            None,
+        )
+        .await;
     }
     state
         .audio_rooms
@@ -4461,7 +5236,13 @@ async fn audio_websocket_loop<A: GameAdapter>(
     .await;
     send_task.abort();
     if let Some(task) = event_task {
-        let _ = task.await;
+        let mut task = task;
+        if tokio::time::timeout(Duration::from_secs(5), &mut task)
+            .await
+            .is_err()
+        {
+            task.abort();
+        }
     }
 }
 
@@ -4475,8 +5256,16 @@ async fn websocket_loop<A: GameAdapter>(
     A::State: Serialize,
 {
     let connection_key = format!("{room_id}:{}", role.as_str());
-    let (connection_generation, mut shutdown) =
-        register_connection(&state.game_connections, connection_key.clone()).await;
+    let liveness = Arc::new(ConnectionLiveness::new());
+    let (connection_generation, mut shutdown, replaced) = register_connection(
+        &state.game_connections,
+        connection_key.clone(),
+        liveness.clone(),
+    )
+    .await;
+    if replaced {
+        state.telemetry.record_reconnection();
+    }
     {
         let mut memory = state.memory.write().await;
         if let Some(room) = memory.rooms.get_mut(&room_id) {
@@ -4533,37 +5322,48 @@ async fn websocket_loop<A: GameAdapter>(
             }
         }
     });
-    let mut rate_window_started = Instant::now();
-    let mut messages_in_window = 0_u32;
+    let mut transport_budget = TokenBucket::new(200.0, 100.0);
     loop {
         let next_message = tokio::select! {
             _ = shutdown.recv() => break,
-            _ = tokio::time::sleep(Duration::from_secs(120)) => break,
+            _ = tokio::time::sleep(Duration::from_secs(90)) => break,
             message = FuturesStreamExt::next(&mut incoming) => message,
         };
         let Some(Ok(message)) = next_message else {
             break;
         };
-        if rate_window_started.elapsed() >= Duration::from_secs(10) {
-            rate_window_started = Instant::now();
-            messages_in_window = 0;
-        }
-        messages_in_window += 1;
-        if messages_in_window > 120 {
-            let _ = bus.send(error_message(&room_id, "Game message rate limit exceeded"));
-            break;
-        }
         let Message::Text(text) = message else {
             continue;
         };
+        state.telemetry.record_game_message();
         if text.len() > 64 * 1024 {
             let _ = bus.send(error_message(&room_id, "Client message is too large"));
             break;
+        }
+        if !transport_budget.consume() {
+            state.telemetry.record_transport_rejected();
+            persist_rejected_input(
+                &state,
+                &room_id,
+                &participant_session_id,
+                "client_message_rejected",
+                "transport_pacing",
+                "Game channel exceeded 100 messages per second after a burst of 200",
+                Some(text.as_bytes()),
+            )
+            .await;
+            continue;
         }
         let Ok(client_message) = serde_json::from_str::<ClientMessage>(&text) else {
             let _ = bus.send(error_message(&room_id, "Invalid client message JSON"));
             continue;
         };
+        if client_message.message_type == "heartbeat" {
+            liveness.touch_heartbeat();
+            state.telemetry.record_heartbeat();
+        } else {
+            liveness.touch_message(true);
+        }
         handle_client_message(
             state.clone(),
             &bus,
@@ -4584,6 +5384,7 @@ async fn websocket_loop<A: GameAdapter>(
     if !still_owner {
         return;
     }
+    flush_rejected_input_aggregates(&state, &room_id, &participant_session_id).await;
     {
         let mut memory = state.memory.write().await;
         if let Some(room) = memory.rooms.get_mut(&room_id) {
@@ -4630,12 +5431,28 @@ async fn handle_client_message<A: GameAdapter>(
 {
     match message.message_type.as_str() {
         "heartbeat" => {
-            let _ = bus.send(ServerMessage {
-                room_id: Some(room_id.to_string()),
-                ..ServerMessage::new("presenceChanged")
-            });
+            // Transport liveness only: heartbeats intentionally cause no database write,
+            // room-activity refresh, presence broadcast, or research event.
         }
         "ready" => {
+            let first_declaration = {
+                let mut memory = state.memory.write().await;
+                memory
+                    .rooms
+                    .get_mut(room_id)
+                    .and_then(|room| room.participants.get_mut(participant_session_id))
+                    .is_some_and(|participant| {
+                        if participant.ready_declared {
+                            return false;
+                        }
+                        participant.ready_declared = true;
+                        participant.updated_at = now_iso();
+                        true
+                    })
+            };
+            if !first_declaration {
+                return;
+            }
             if let Err(error) = persist_session_event_required(
                 &state,
                 room_id,
@@ -4646,10 +5463,21 @@ async fn handle_client_message<A: GameAdapter>(
             )
             .await
             {
+                if let Some(participant) = state
+                    .memory
+                    .write()
+                    .await
+                    .rooms
+                    .get_mut(room_id)
+                    .and_then(|room| room.participants.get_mut(participant_session_id))
+                {
+                    participant.ready_declared = false;
+                }
                 tracing::error!(%error, room_id, "could not durably record readiness");
                 let _ = bus.send(error_message(room_id, "Could not durably record readiness"));
                 return;
             }
+            touch_room_activity(&state, room_id).await;
             if let Some(message) = presence_message(&state, room_id).await {
                 let _ = bus.send(message);
             }
@@ -4671,7 +5499,41 @@ async fn handle_client_message<A: GameAdapter>(
         "sendChatMessage" => {
             let text = message.text.unwrap_or_default();
             if text.chars().count() > 4_000 {
+                persist_rejected_input(
+                    &state,
+                    room_id,
+                    participant_session_id,
+                    "chat_message_rejected",
+                    "message_too_large",
+                    "Chat message exceeds 4000 characters",
+                    Some(text.as_bytes()),
+                )
+                .await;
                 let _ = bus.send(error_message(room_id, "Chat message is too long"));
+                return;
+            }
+            let chat_allowed = state
+                .chat_submission_budgets
+                .write()
+                .await
+                .entry(participant_session_id.to_string())
+                .or_insert_with(|| TokenBucket::new(20.0, 1.0))
+                .consume();
+            if !chat_allowed {
+                persist_rejected_input(
+                    &state,
+                    room_id,
+                    participant_session_id,
+                    "chat_message_rejected",
+                    "human_pacing",
+                    "Chat burst exceeded twenty messages; retry after one second",
+                    Some(text.as_bytes()),
+                )
+                .await;
+                let _ = bus.send(error_message(
+                    room_id,
+                    "Please wait a moment before sending another chat message",
+                ));
                 return;
             }
             let input = ConversationMessageIn {
@@ -4688,42 +5550,57 @@ async fn handle_client_message<A: GameAdapter>(
         }
         "submitAction" => {
             let Some(raw_action) = message.action else {
-                persist_session_event(
+                persist_rejected_action(
                     &state,
                     room_id,
-                    Some(participant_session_id),
-                    "game_action_rejected",
-                    json!({"error": "submitAction requires action"}),
+                    participant_session_id,
+                    "missing_action",
+                    "submitAction requires action",
                     None,
                 )
                 .await;
                 let _ = bus.send(error_message(room_id, "submitAction requires action"));
                 return;
             };
-            if let Err(error) = persist_session_event_required(
-                &state,
-                room_id,
-                Some(participant_session_id),
-                "game_action_submitted",
-                json!({"action": raw_action.clone()}),
-                None,
-            )
-            .await
-            {
-                tracing::error!(%error, room_id, "could not durably record submitted action");
-                let _ = bus.send(error_message(room_id, "Could not durably record action"));
+            let raw_action_bytes = match serde_json::to_vec(&raw_action) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    persist_rejected_action(
+                        &state,
+                        room_id,
+                        participant_session_id,
+                        "invalid_action_json",
+                        &error.to_string(),
+                        None,
+                    )
+                    .await;
+                    let _ = bus.send(error_message(room_id, "Action could not be encoded"));
+                    return;
+                }
+            };
+            if raw_action_bytes.len() > 4 * 1024 {
+                persist_rejected_action(
+                    &state,
+                    room_id,
+                    participant_session_id,
+                    "action_too_large",
+                    "Action payload exceeds 4096 bytes",
+                    Some(&raw_action_bytes),
+                )
+                .await;
+                let _ = bus.send(error_message(room_id, "Action payload is too large"));
                 return;
             }
             let action = match state.adapter.parse_action(raw_action) {
                 Ok(action) => action,
                 Err(error) => {
-                    persist_session_event(
+                    persist_rejected_action(
                         &state,
                         room_id,
-                        Some(participant_session_id),
-                        "game_action_rejected",
-                        json!({"error": error.to_string()}),
-                        None,
+                        participant_session_id,
+                        "invalid_action",
+                        &error.to_string(),
+                        Some(&raw_action_bytes),
                     )
                     .await;
                     let _ = bus.send(error_message(room_id, &error.to_string()));
@@ -4743,13 +5620,13 @@ async fn handle_client_message<A: GameAdapter>(
                     }
                 }
                 Err(error) => {
-                    persist_session_event(
+                    persist_rejected_action(
                         &state,
                         room_id,
-                        Some(participant_session_id),
-                        "game_action_rejected",
-                        json!({"error": error.to_string()}),
-                        None,
+                        participant_session_id,
+                        "game_rule",
+                        &error.to_string(),
+                        Some(&raw_action_bytes),
                     )
                     .await;
                     let _ = bus.send(error_message(room_id, &error.to_string()));
@@ -4762,6 +5639,145 @@ async fn handle_client_message<A: GameAdapter>(
                 &format!("Unknown message type: {other}"),
             ));
         }
+    }
+}
+
+/// Persists one analyzable, size-bounded rejected-action event.
+async fn persist_rejected_action<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+    room_id: &str,
+    participant_session_id: &str,
+    reason_code: &'static str,
+    error: &str,
+    raw_action: Option<&[u8]>,
+) {
+    persist_rejected_input(
+        state,
+        room_id,
+        participant_session_id,
+        "game_action_rejected",
+        reason_code,
+        error,
+        raw_action,
+    )
+    .await;
+}
+
+/// Persists the first and then one periodic aggregate for repeated rejected inputs.
+async fn persist_rejected_input<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+    room_id: &str,
+    participant_session_id: &str,
+    event_type: &'static str,
+    reason_code: &'static str,
+    error: &str,
+    raw_input: Option<&[u8]>,
+) {
+    match event_type {
+        "game_action_rejected" => state.telemetry.record_action_rejected(),
+        "chat_message_rejected" => state.telemetry.record_chat_rejected(),
+        _ => {}
+    }
+    let now = chrono::Utc::now().timestamp();
+    let key = format!("{room_id}\0{participant_session_id}\0{event_type}\0{reason_code}");
+    let aggregate = {
+        let mut windows = state.rejection_windows.write().await;
+        let window = windows.entry(key).or_insert(RejectionWindow {
+            first_seen: now,
+            last_seen: now,
+            last_persisted: now - 61,
+            occurrences: 0,
+        });
+        window.occurrences += 1;
+        window.last_seen = now;
+        if window.last_persisted > now - 60 {
+            return;
+        }
+        let aggregate = (window.first_seen, window.last_seen, window.occurrences);
+        window.first_seen = now;
+        window.last_persisted = now;
+        window.occurrences = 0;
+        aggregate
+    };
+    let mut payload = json!({
+        "reason_code": reason_code,
+        "error": error.chars().take(512).collect::<String>(),
+        "first_seen_at": aggregate.0,
+        "last_seen_at": aggregate.1,
+        "occurrences": aggregate.2,
+    });
+    if let Some(raw_input) = raw_input {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("submitted_bytes".to_string(), json!(raw_input.len()));
+            object.insert(
+                if event_type == "game_action_rejected" {
+                    "action_sha256"
+                } else {
+                    "input_sha256"
+                }
+                .to_string(),
+                json!(format!("{:x}", Sha256::digest(raw_input))),
+            );
+        }
+    }
+    persist_session_event(
+        state,
+        room_id,
+        Some(participant_session_id),
+        event_type,
+        payload,
+        None,
+    )
+    .await;
+}
+
+/// Flushes suppressed rejection counts when the participant's current game transport ends.
+async fn flush_rejected_input_aggregates<A: GameAdapter>(
+    state: &Arc<AppState<A>>,
+    room_id: &str,
+    participant_session_id: &str,
+) {
+    let prefix = format!("{room_id}\0{participant_session_id}\0");
+    let aggregates = {
+        let mut windows = state.rejection_windows.write().await;
+        let keys = windows
+            .keys()
+            .filter(|key| key.starts_with(&prefix))
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.into_iter()
+            .filter_map(|key| {
+                let window = windows.remove(&key)?;
+                let mut parts = key.split('\0');
+                let _room = parts.next()?;
+                let _participant = parts.next()?;
+                let event_type = match parts.next()? {
+                    "game_action_rejected" => "game_action_rejected",
+                    "chat_message_rejected" => "chat_message_rejected",
+                    "client_message_rejected" => "client_message_rejected",
+                    _ => return None,
+                };
+                let reason_code = parts.next()?.to_string();
+                (window.occurrences > 0).then_some((event_type, reason_code, window))
+            })
+            .collect::<Vec<_>>()
+    };
+    for (event_type, reason_code, window) in aggregates {
+        persist_session_event(
+            state,
+            room_id,
+            Some(participant_session_id),
+            event_type,
+            json!({
+                "reason_code": reason_code,
+                "first_seen_at": window.first_seen,
+                "last_seen_at": window.last_seen,
+                "occurrences": window.occurrences,
+                "coalesced": true,
+            }),
+            None,
+        )
+        .await;
     }
 }
 
@@ -4778,7 +5794,7 @@ where
     let player = role.player_role();
     let transition_lock = room_transition_lock(&state, room_id).await;
     let _transition_guard = transition_lock.lock().await;
-    let (before, after, events, completed, summary) = {
+    let (after, events, completed, summary) = {
         let memory = state.memory.read().await;
         let room = memory
             .rooms
@@ -4807,7 +5823,7 @@ where
             .events_for_action(&before, &after, &action, player);
         let completed = state.adapter.is_complete(&after);
         let summary = completed.then(|| state.adapter.completion_summary(&after));
-        (before, after, events, completed, summary)
+        (after, events, completed, summary)
     };
     let after_json = protocol_json(&after)?;
     let stored_game_state = state
@@ -4816,27 +5832,18 @@ where
         .store_full_game_state
         .then(|| after_json.clone());
     let summary = summary.map(|summary| protocol_json(&summary)).transpose()?;
+    let accepted_payload = json!({
+        "action": protocol_json(&action)?,
+        "events": protocol_json(&events)?,
+    });
     let mut durable_events = vec![
         session_event_record(
             &state,
             room_id,
             Some(participant_session_id),
             "game_action_accepted",
-            json!({
-                "action": protocol_json(&action)?,
-                "before": protocol_json(&before)?,
-                "events": protocol_json(&events)?,
-            }),
-            stored_game_state.clone(),
-        )
-        .await?,
-        session_event_record(
-            &state,
-            room_id,
-            Some(participant_session_id),
-            "state_changed",
-            json!({"events": protocol_json(&events)?}),
-            stored_game_state.clone(),
+            accepted_payload,
+            stored_game_state,
         )
         .await?,
     ];
@@ -4848,7 +5855,7 @@ where
                 Some(participant_session_id),
                 "session_completed",
                 summary.clone().unwrap_or(Value::Null),
-                stored_game_state,
+                None,
             )
             .await?,
         );
@@ -4864,6 +5871,7 @@ where
         tracing::error!(%error, room_id, "could not commit game transition");
         return Err(anyhow!("Action could not be committed."));
     }
+    state.telemetry.record_action_accepted();
     {
         let mut memory = state.memory.write().await;
         let room = memory
@@ -5157,7 +6165,7 @@ where
     Ok(Some(outcome))
 }
 
-// Converts one agent message to speech immediately after the agent emits it.
+/// Converts one trusted agent message to speech with a network timeout but no application quota.
 async fn speak_agent_message<A: GameAdapter>(
     state: &Arc<AppState<A>>,
     room_id: &str,
@@ -5166,25 +6174,22 @@ async fn speak_agent_message<A: GameAdapter>(
     let Some(provider) = state.tts_provider.clone() else {
         return;
     };
-    let Ok(_provider_permit) = state.provider_connection_limit.try_acquire() else {
-        persist_tts_diagnostic(
-            state,
-            room_id,
-            "tts_capacity_rejected",
-            json!({"message_id": message.id}),
-        )
-        .await;
-        return;
-    };
+    state.telemetry.begin_tts();
+    let mut failed = false;
     persist_tts_diagnostic(
         state,
         room_id,
         "tts_message_started",
-        json!({"message_id": message.id, "text": message.text}),
+        json!({"message_id": message.id}),
     )
     .await;
-    match provider.synthesize(&message.text, &message.id).await {
-        Ok(chunks) => {
+    match tokio::time::timeout(
+        Duration::from_secs(60),
+        provider.synthesize(&message.text, &message.id),
+    )
+    .await
+    {
+        Ok(Ok(chunks)) => {
             let mut saw_audio = false;
             for chunk in &chunks {
                 if !chunk.data.is_empty() && !saw_audio {
@@ -5201,20 +6206,20 @@ async fn speak_agent_message<A: GameAdapter>(
                     )
                     .await;
                 }
-                persist_tts_diagnostic(
-                    state,
-                    room_id,
-                    "tts_audio_chunk",
-                    json!({
-                        "message_id": message.id,
-                        "bytes": chunk.data.len(),
-                        "sample_rate": chunk.sample_rate,
-                        "channels": chunk.channels,
-                        "final": chunk.final_chunk,
-                    }),
-                )
-                .await;
             }
+            persist_tts_diagnostic(
+                state,
+                room_id,
+                "tts_audio_summary",
+                json!({
+                    "message_id": message.id,
+                    "chunks": chunks.len(),
+                    "bytes": chunks.iter().map(|chunk| chunk.data.len()).sum::<usize>(),
+                    "sample_rate": chunks.first().map(|chunk| chunk.sample_rate),
+                    "channels": chunks.first().map(|chunk| chunk.channels),
+                }),
+            )
+            .await;
             if let Some(publisher) = state.audio_publisher.clone() {
                 persist_tts_diagnostic(
                     state,
@@ -5240,6 +6245,7 @@ async fn speak_agent_message<A: GameAdapter>(
                         .await;
                     }
                     Err(error) => {
+                        failed = true;
                         persist_tts_diagnostic(
                             state,
                             room_id,
@@ -5258,7 +6264,8 @@ async fn speak_agent_message<A: GameAdapter>(
             )
             .await;
         }
-        Err(error) => {
+        Ok(Err(error)) => {
+            failed = true;
             persist_tts_diagnostic(
                 state,
                 room_id,
@@ -5267,7 +6274,18 @@ async fn speak_agent_message<A: GameAdapter>(
             )
             .await;
         }
+        Err(_) => {
+            failed = true;
+            persist_tts_diagnostic(
+                state,
+                room_id,
+                "tts_message_failed",
+                json!({"message_id": message.id, "error": "TTS network timeout"}),
+            )
+            .await;
+        }
     }
+    state.telemetry.finish_tts(failed);
 }
 
 // Persists one TTS diagnostic event into the evaluation event stream.
@@ -5285,7 +6303,6 @@ async fn persist_tts_diagnostic<A: GameAdapter>(
         json!({
             "event": event,
             "metadata": metadata,
-            "created_at": now_iso(),
         }),
         None,
     )
@@ -5306,14 +6323,7 @@ async fn maybe_start_agent<A: GameAdapter>(
     let key = format!("{room_id}:{participant_session_id}");
     {
         let mut started = state.started_agents.write().await;
-        let maximum = state
-            .config
-            .agents
-            .human_vs_agent
-            .as_ref()
-            .map(|config| config.max_concurrent_games)
-            .unwrap_or(20);
-        if started.len() >= maximum || !started.insert(key.clone()) {
+        if !started.insert(key.clone()) {
             return;
         }
     }

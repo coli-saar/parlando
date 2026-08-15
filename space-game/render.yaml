@@ -4,14 +4,8 @@ services:
     runtime: docker
     plan: starter
     dockerfilePath: ./space-game/Dockerfile
-    envVars:
-      - key: PARLANDO_ADMIN_USERNAME
-        sync: false
-      - key: PARLANDO_ADMIN_PASSWORD_HASH
-        sync: false
-      - key: PARLANDO_ADMIN_ROLE
-        value: administrator
+    healthCheckPath: /health
     disk:
       name: parlando-data
       mountPath: /data
-      sizeGB: 1
+      sizeGB: 10

@@ -5,10 +5,6 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Result};
-use argon2::{
-    password_hash::{PasswordHasher, SaltString},
-    Argon2,
-};
 use async_trait::async_trait;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
@@ -388,7 +384,6 @@ async fn spawn_server(
     config: ExperimentConfig,
     options: ServeOptions<DummyAdapter>,
 ) -> Result<TestServer> {
-    configure_test_administrator()?;
     let temp = TempDir::new()?;
     let mut config = config;
     config.database = DatabaseConfig {
@@ -397,7 +392,7 @@ async fn spawn_server(
     let router = build_router(DummyAdapter, config, options).await?;
     let server = spawn_router(router, temp).await?;
     let client = reqwest::Client::new();
-    let admin = admin_login(&client, &server.base_url).await?;
+    let admin = admin_setup(&client, &server.base_url).await?;
     let response = client
         .post(format!("{}/api/admin/experiment/status", server.base_url))
         .header(reqwest::header::COOKIE, admin.cookie)
@@ -407,18 +402,6 @@ async fn spawn_server(
         .await?;
     anyhow::ensure!(response.status().is_success(), "test activation failed");
     Ok(server)
-}
-
-fn configure_test_administrator() -> Result<()> {
-    let salt = SaltString::encode_b64(b"parlando-smoke-test-salt")
-        .map_err(|error| anyhow!(error.to_string()))?;
-    let hash = Argon2::default()
-        .hash_password(b"test-password", &salt)
-        .map_err(|error| anyhow!(error.to_string()))?
-        .to_string();
-    std::env::set_var("PARLANDO_ADMIN_USERNAME", "smoke-admin");
-    std::env::set_var("PARLANDO_ADMIN_PASSWORD_HASH", hash);
-    Ok(())
 }
 
 async fn spawn_router(router: Router, temp: TempDir) -> Result<TestServer> {
@@ -573,9 +556,23 @@ struct TestAdminSession {
     csrf_token: String,
 }
 
+async fn admin_setup(client: &reqwest::Client, base_url: &str) -> Result<TestAdminSession> {
+    admin_auth_request(client, base_url, "setup").await
+}
+
+/// Signs in to an administrator credential already created by the test.
 async fn admin_login(client: &reqwest::Client, base_url: &str) -> Result<TestAdminSession> {
+    admin_auth_request(client, base_url, "login").await
+}
+
+/// Submits one setup or login request and extracts its session capability.
+async fn admin_auth_request(
+    client: &reqwest::Client,
+    base_url: &str,
+    operation: &str,
+) -> Result<TestAdminSession> {
     let response = client
-        .post(format!("{base_url}/api/admin/login"))
+        .post(format!("{base_url}/api/admin/{operation}"))
         .json(&json!({"username": "smoke-admin", "password": "test-password"}))
         .send()
         .await?

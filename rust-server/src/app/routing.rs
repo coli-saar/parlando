@@ -1,4 +1,5 @@
 use super::*;
+use tokio::sync::Semaphore;
 use tower::ServiceExt;
 
 /// Shared factory for runtime components which may vary with experiment configuration.
@@ -24,6 +25,39 @@ struct GameHost<A: GameAdapter + Clone> {
     options_factory: ServeOptionsFactory<A>,
     routers: RwLock<HashMap<String, Router>>,
     primary_experiment_id: String,
+    health_slots: Semaphore,
+}
+
+/// Checks installation storage without constructing an additional experiment runtime.
+async fn game_health<A: GameAdapter + Clone>(State(host): State<Arc<GameHost<A>>>) -> Response {
+    let Ok(_slot) = host.health_slots.try_acquire() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"status": "busy", "storage": "check_in_progress"})),
+        )
+            .into_response();
+    };
+    match tokio::time::timeout(Duration::from_secs(2), host.store.health_check()).await {
+        Ok(Ok(())) => Json(json!({"status": "ok", "storage": "read_write"})).into_response(),
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"status": "unavailable", "storage": "health_check_timeout"})),
+        )
+            .into_response(),
+        Ok(Err(error)) => {
+            tracing::error!(%error, "game host health check could not acquire SQLite write transaction");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"status": "unavailable", "storage": "unavailable"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Sends the unscoped game root to the administrator workspace.
+async fn game_root() -> Redirect {
+    Redirect::temporary("/admin/experiments")
 }
 
 impl<A: GameAdapter + Clone> GameHost<A>
@@ -122,7 +156,7 @@ where
     dispatch_to_experiment(&host, &experiment_id, "", request).await
 }
 
-/// Proxies an experiment-scoped administrator request to its runtime.
+/// Proxies an experiment-scoped administrator request to runtime or shared storage.
 async fn dispatch_admin_runtime_request<A: GameAdapter + Clone>(
     State(host): State<Arc<GameHost<A>>>,
     Path((experiment_id, path)): Path<(String, String)>,
@@ -132,7 +166,22 @@ where
     A::State: Serialize,
 {
     let child_path = format!("api/admin/{path}");
-    dispatch_to_experiment(&host, &experiment_id, &child_path, request).await
+    let storage_only = path == "sessions"
+        || path.starts_with("sessions/")
+        || path == "export"
+        || path.starts_with("participants/");
+    if storage_only {
+        dispatch_to_experiment_scoped(
+            &host,
+            &host.primary_experiment_id,
+            &child_path,
+            request,
+            Some(AdminExperimentScope(experiment_id)),
+        )
+        .await
+    } else {
+        dispatch_to_experiment(&host, &experiment_id, &child_path, request).await
+    }
 }
 
 /// Proxies configuration reads and invalidates an inactive runtime after a successful save.
@@ -184,7 +233,21 @@ async fn dispatch_to_experiment<A: GameAdapter + Clone>(
     host: &Arc<GameHost<A>>,
     experiment_id: &str,
     path: &str,
+    request: Request,
+) -> Response
+where
+    A::State: Serialize,
+{
+    dispatch_to_experiment_scoped(host, experiment_id, path, request, None).await
+}
+
+/// Rewrites one outer path and optionally attaches a storage experiment scope.
+async fn dispatch_to_experiment_scoped<A: GameAdapter + Clone>(
+    host: &Arc<GameHost<A>>,
+    experiment_id: &str,
+    path: &str,
     mut request: Request,
+    admin_scope: Option<AdminExperimentScope>,
 ) -> Response
 where
     A::State: Serialize,
@@ -225,6 +288,9 @@ where
     *request.extensions_mut() = http::Extensions::new();
     if let Some(connect_info) = connect_info {
         request.extensions_mut().insert(connect_info);
+    }
+    if let Some(admin_scope) = admin_scope {
+        request.extensions_mut().insert(admin_scope);
     }
     router
         .oneshot(request)
@@ -288,9 +354,11 @@ where
         options_factory: Arc::new(options_factory),
         routers: RwLock::new(HashMap::new()),
         primary_experiment_id,
+        health_slots: Semaphore::new(1),
     });
     let _primary_router = host.experiment_router(&host.primary_experiment_id).await?;
     Ok(Router::new()
+        .route("/", get(game_root))
         .route("/e/:experiment_id", any(dispatch_experiment_root::<A>))
         .route("/e/:experiment_id/", any(dispatch_experiment_index::<A>))
         .route(
@@ -311,7 +379,12 @@ where
         .route("/admin/experiments", any(dispatch_primary_root::<A>))
         .route("/admin/privacy", any(dispatch_primary_root::<A>))
         .route("/api/admin/*path", any(dispatch_primary_request::<A>))
-        .route("/health", get(health))
+        .layer(ConcurrencyLimitLayer::new(256))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(30),
+        ))
+        .route("/health", get(game_health::<A>))
         .with_state(host))
 }
 
@@ -502,9 +575,9 @@ where
         upgrade_tickets: UpgradeTicketStore::default(),
         admin_auth,
         participant_creation_window: RwLock::new(ParticipantCreationRate::default()),
-        game_connection_limit: Arc::new(Semaphore::new(1_000)),
-        audio_connection_limit: Arc::new(Semaphore::new(200)),
-        provider_connection_limit: Arc::new(Semaphore::new(32)),
+        chat_submission_budgets: RwLock::new(HashMap::new()),
+        rejection_windows: RwLock::new(HashMap::new()),
+        telemetry: Arc::new(RuntimeTelemetry::default()),
         room_transition_locks: RwLock::new(HashMap::new()),
         game_connections: RwLock::new(HashMap::new()),
         audio_connections: RwLock::new(HashMap::new()),
@@ -512,14 +585,19 @@ where
     });
 
     let public_routes = Router::new()
-        .route("/health", get(health))
+        .route("/health", get(health::<A>))
         .route("/api/config", get(public_config::<A>))
-        .route("/api/participants", post(create_participant::<A>))
+        .route("/api/participants", post(create_participant::<A>));
+    let public_admin_routes = Router::new()
         .route("/admin", get(admin_entry))
         .route("/admin/", get(admin_entry))
         .route("/admin/login", get(admin_login_page::<A>))
         .route("/api/admin/setup", post(admin_setup::<A>))
-        .route("/api/admin/login", post(admin_login::<A>));
+        .route("/api/admin/login", post(admin_login::<A>))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_admin_network::<A>,
+        ));
     let participant_routes = Router::new()
         .route("/api/consent", post(consent::<A>))
         .route("/api/rooms", post(create_room::<A>))
@@ -578,6 +656,7 @@ where
             post(admin_update_experiment_status::<A>),
         )
         .route("/api/admin/sessions", get(admin_sessions::<A>))
+        .route("/api/admin/load", get(admin_load::<A>))
         .route(
             "/api/admin/sessions/:session_id",
             get(admin_session_detail::<A>),
@@ -595,17 +674,22 @@ where
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_admin_auth::<A>,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_admin_network::<A>,
         ));
     let websocket_routes = Router::new()
         .route("/ws/game/:room_id", get(game_socket::<A>))
         .route("/ws/audio/:room_id", get(audio_socket::<A>));
     let api = Router::new()
         .merge(public_routes)
+        .merge(public_admin_routes)
         .merge(participant_routes)
         .merge(admin_routes)
         .merge(websocket_routes)
         .layer(RequestBodyLimitLayer::new(64 * 1024))
-        .layer(ConcurrencyLimitLayer::new(2_048))
+        .layer(ConcurrencyLimitLayer::new(256))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(30),
@@ -614,10 +698,15 @@ where
             state.clone(),
             security_headers::<A>,
         ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            track_request_load::<A>,
+        ))
         .layer(cors)
         .with_state(state.clone());
 
-    spawn_security_cleanup(state, clean_admin_sessions);
+    spawn_security_cleanup(state.clone(), clean_admin_sessions);
+    spawn_load_sampler(state);
 
     if let Some(dist) = client_dist.filter(|path| path.join("index.html").is_file()) {
         let index = dist.join("index.html");

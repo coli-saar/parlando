@@ -6,16 +6,15 @@ includes:
 
 study:
   name: Space Game
-  waiting_room_timeout_seconds: 300
-  reconnect_grace_seconds: 90
+  waiting_room_timeout_seconds: 600
+  reconnect_grace_seconds: 300
+  session_idle_timeout_seconds: 1800
+  session_max_lifetime_seconds: 14400
 
 server:
   public_base_url: http://localhost:8000
   allowed_origins: []
   client_dist_path: client/dist
-
-database:
-  url: sqlite:///.local/parlando-back-and-forth-voice.sqlite
 
 direct:
   enabled: true
@@ -29,3 +28,10 @@ agents:
     invalid_action_limit: 3
     seed: 1
     config: {}
+
+capacity:
+  max_active_sessions: 30
+  max_waiting_sessions: 60
+  max_unattached_participants: 120
+  max_transcription_streams: 32
+  storage_reserve_megabytes: 256

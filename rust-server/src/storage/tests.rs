@@ -169,7 +169,7 @@ async fn sqlite_migration_recovers_historical_game_version() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("delete from schema_migrations where version = 2")
+    sqlx::query("delete from schema_migrations where version >= 2")
         .execute(&store.pool)
         .await
         .unwrap();
@@ -832,7 +832,11 @@ async fn sqlite_game_settings_reject_stale_updates() {
         .unwrap();
     let settings = store.game_settings().await.unwrap();
     let revision = store
-        .update_game_settings(settings.revision, "Saarland University".to_string())
+        .update_game_settings(
+            settings.revision,
+            "Saarland University".to_string(),
+            vec!["192.0.2.0/24".to_string()],
+        )
         .await
         .unwrap();
     assert_eq!(revision, settings.revision + 1);
@@ -840,10 +844,57 @@ async fn sqlite_game_settings_reject_stale_updates() {
         store.game_settings().await.unwrap().institution,
         "Saarland University"
     );
+    assert_eq!(
+        store.game_settings().await.unwrap().admin_allowed_ip_ranges,
+        vec!["192.0.2.0/24"]
+    );
     assert!(store
-        .update_game_settings(settings.revision, "Stale".to_string())
+        .update_game_settings(settings.revision, "Stale".to_string(), vec![])
         .await
         .is_err());
+}
+
+/// Confirms lifecycle expiry is terminal, durable, and analytically classified.
+#[tokio::test]
+async fn sqlite_session_expiry_records_reason_and_status_atomically() {
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+    store
+        .create_experiment(ExperimentRecord {
+            experiment_id: "expiry".to_string(),
+            game_version: "0.4.0".to_string(),
+            config: json!({}),
+            server_version: None,
+            version_manifest: None,
+            status: "inactive".to_string(),
+            notes: None,
+        })
+        .await
+        .unwrap();
+    let session_id = store
+        .create_session(SessionRecord {
+            experiment_id: "expiry".to_string(),
+            config_revision: 1,
+            game_version: "0.4.0".to_string(),
+            room_id: "EXPIRING".to_string(),
+            mode: "direct".to_string(),
+            status: "playing".to_string(),
+        })
+        .await
+        .unwrap();
+
+    store
+        .expire_session("expiry", session_id, "idle_timeout")
+        .await
+        .unwrap();
+    let exported = store.export_session("expiry", session_id).await.unwrap();
+    assert_eq!(exported["sessions"][0]["status"], "expired");
+    assert_eq!(exported["session_events"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        exported["session_events"][0]["payload"]["reason"],
+        "idle_timeout"
+    );
 }
 
 #[tokio::test]
