@@ -261,6 +261,7 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(!ADMIN_EXPERIMENT_HTML.contains("experiment.study_name"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("catalogueResizer"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("sessionResizer"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Object.assign(state.selectedSession, refreshed)"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("experimentForm"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"configForm\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("configurationFromForm"));

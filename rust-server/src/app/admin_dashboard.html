@@ -987,8 +987,12 @@
         state.selectedSession = null;
         state.selectedParticipants = [];
         sessionDetail.hidden = true;
+      } else if (state.selectedSession) {
+        const refreshed = state.sessions.find(session => session.session_id === state.selected);
+        if (refreshed) Object.assign(state.selectedSession, refreshed);
       }
       renderSessions();
+      if (state.selectedSession) renderSummary(state.selectedSession, state.selectedParticipants);
       if (!state.selected && state.sessions[0]) selectSession(state.sessions[0].session_id);
     }
 

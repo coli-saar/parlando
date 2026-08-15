@@ -1,5 +1,23 @@
 # Technical Decisions
 
+## 2026-08-15: Reliability tests are invariant-driven and deterministic
+
+Context: The Rust server already has broad happy-path integration coverage, while the JavaScript client primarily tests pure helpers. The remaining reliability risk is concentrated in durable-write failures, asynchronous replacement and cleanup races, provider backpressure, browser lifecycle interleavings, and cross-language protocol drift. A line-coverage target alone would not prove these behaviors and timing-based sleeps would make the most important tests flaky.
+
+Decision: Organize the comprehensive suite around explicit authorization, durability, exactly-once transition, isolation, bounded-queue, generation-ownership, timer, and wire-contract invariants. Use paused clocks, barriers, controlled futures, local fake providers, and a fault-injecting storage implementation to force each important interleaving. Use line and branch coverage as a ratcheted omission detector, with stricter branch coverage on authentication, lifecycle, redaction, framing, and client generation guards. Keep paid providers out of automated tests; exercise production adapters against local protocol peers and reserve real browser/network conditions for browser and scheduled soak lanes. The complete catalogue and acceptance rules live in `notes/comprehensive-test-design.md`.
+
+Tradeoffs: The harness requires additional test-only dependencies and explicit injection points, and deterministic race tests take more design work than broad end-to-end scripts. In return, failures identify a violated property and remain reproducible. Browser and soak lanes take longer than the ordinary unit suite, so CI is split into fast, integration, browser, and scheduled lanes instead of running every workload on every edit.
+
+Follow-up risks: Coverage thresholds must be introduced as a ratchet from a measured baseline rather than as an arbitrary one-time gate. Mutation and fuzz results are diagnostic and require triage; they must not become noisy release metrics. If a production path cannot be controlled deterministically in a test, extract the clock, id source, queue, or persistence boundary rather than adding longer sleeps.
+
+## 2026-08-15: Session polling refreshes durable metadata and runtime health together
+
+Context: the dashboard polls durable session summaries and game-wide runtime health every five seconds. It rerendered the session list from the durable response but retained a separate selected-session object loaded only when the row was clicked. After an intentional departure, health could therefore become `Unavailable` while the selected header continued showing the stale lifecycle `Running` until a full page reload.
+
+Decision: whenever the durable session catalogue refreshes, merge the matching summary into the selected-session object and rerender its metadata header. Keep runtime health independently sourced from the load endpoint, but present both values from the same polling cycle. If a status filter removes the transitioned session, clear the selection as before rather than displaying an item outside the chosen filter.
+
+Tradeoff: the compact summary refreshes lifecycle, timestamps, and counts without refetching the full participant and event payload every five seconds. Participant rows remain refreshed on explicit selection, while the existing 1.5-second event poll handles new log entries.
+
 ## 2026-08-15: Session start is a durable `running` transition
 
 Context: rooms were created durably as `waiting`, while `maybe_start_game` changed only the process-local room to `playing`. The dashboard reads SQLite, so a session could be visibly running for participants yet remain `waiting` until a terminal completion, abandonment, or expiry overwrote it.
