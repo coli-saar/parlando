@@ -3,7 +3,6 @@ import { type ConversationMessage, type VoicePreflight, type VoiceStatus } from 
 import {
   MicLevelMeter,
   ParlandoStartupGate,
-  TranscriptionStatusChip,
   MicrophoneMuteButton,
   participantMicrophoneLabel,
   type ActiveParlandoSession
@@ -513,20 +512,18 @@ export function CommunicationPanel({
 
   const microphoneMuted = voiceStatus.connected && !voiceStatus.microphoneEnabled;
   const microphoneLive = voiceStatus.connected && voiceStatus.microphoneEnabled;
-  const microphoneLabel = microphoneMuted
-    ? "Microphone muted"
+  const microphoneStateLabel = microphoneMuted
+    ? "Muted"
     : microphoneLive
-      ? "Microphone live"
+      ? "Live"
       : voiceStatus.connecting
-        ? "Microphone connecting"
-        : "Microphone disconnected";
-
+        ? "Connecting"
+        : "Offline";
   return (
     <section className={`communication-panel ${microphoneMuted ? "microphone-muted" : ""}`} aria-label="Voice chat">
       <div className="communication-header">
         <div>
-          <p className="eyebrow">Comms</p>
-          <h3>{voiceStatus.message}</h3>
+          <p className="eyebrow">Microphone</p>
         </div>
         <MicrophoneMuteButton
           voiceEnabled={voiceEnabled}
@@ -536,21 +533,26 @@ export function CommunicationPanel({
       </div>
       <div className="voice-feedback" aria-label="Voice diagnostics">
         <div className="meter-stack">
-          <span
-            aria-live="polite"
-            className={`microphone-state-label ${microphoneLive ? "live" : "muted"}`}
-          >
-            {microphoneLabel}
-          </span>
-          <span className="mic-device-label">{participantMicrophoneLabel(voicePreflight.deviceLabel)}</span>
+          <div className="microphone-name-row">
+            <span className="mic-device-label">{participantMicrophoneLabel(voicePreflight.deviceLabel)}</span>
+            <span className={`microphone-name-state ${microphoneStateLabel.toLowerCase()}`}>
+              {microphoneStateLabel}
+            </span>
+          </div>
           <MicLevelMeter
             active={voicePreflight.micProbeActive}
             label="Level"
             level={voicePreflight.micLevel}
             muted={!microphoneLive}
           />
+          <div
+            aria-live="polite"
+            className={`microphone-status-chip ${microphoneStateLabel.toLowerCase()}`}
+          >
+            <span aria-hidden="true" />
+            {microphoneStateLabel}
+          </div>
         </div>
-        <TranscriptionStatusChip voiceStatus={voiceStatus} />
       </div>
       {voiceStatus.error && <p className="voice-error" role="alert">{voiceStatus.error}</p>}
     </section>
