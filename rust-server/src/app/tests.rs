@@ -197,6 +197,9 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(!ADMIN_EXPERIMENT_HTML.contains("Experiment name"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("escapeHtml(factory.name)"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("escapeHtml(factory.display_name)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"emptyExperimentWorkspace\""));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("<h1>No experiments yet</h1>"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("createFirstExperimentButton"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-scope=\"experiments\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-scope=\"operations\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-scope=\"game\""));
@@ -407,6 +410,15 @@ async fn administrator_can_store_and_explicitly_reveal_experiment_secrets() {
     .await
     .unwrap();
     authenticate_test_admin(router.clone()).await.unwrap();
+
+    let (status, _) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiments",
+        json!({"experiment_id": "secret-config"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
 
     let (status, current) = json_request(
         router.clone(),
@@ -999,6 +1011,28 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         .unwrap();
     assert_eq!(unauthenticated_api.status(), StatusCode::UNAUTHORIZED);
     authenticate_test_admin(router.clone()).await.unwrap();
+
+    let (_, empty_catalogue) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments",
+        Value::Null,
+    )
+    .await;
+    assert!(empty_catalogue["experiments"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    let (create_status, created) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiments",
+        json!({"experiment_id": "primary"}),
+    )
+    .await;
+    assert_eq!(create_status, StatusCode::OK);
+    assert_eq!(created["experiment_id"], "primary");
 
     let (settings_status, _) = json_request(
         router.clone(),

@@ -199,7 +199,8 @@ where
             &child_path,
             request,
             Some(AdminExperimentScope(experiment_id)),
-        ).await
+        )
+        .await
     } else {
         dispatch_to_experiment(&host, &experiment_id, &child_path, request).await
     }
@@ -266,7 +267,7 @@ async fn dispatch_to_experiment_scoped<A: Game>(
     host: &Arc<GameHost<A>>,
     experiment_id: &str,
     path: &str,
-    mut request: Request,
+    request: Request,
     admin_scope: Option<AdminExperimentScope>,
 ) -> Response
 where
@@ -329,7 +330,10 @@ async fn dispatch_to_router(
     if let Some(admin_scope) = admin_scope {
         request.extensions_mut().insert(admin_scope);
     }
-    router.oneshot(request).await.unwrap_or_else(|error| match error {})
+    router
+        .oneshot(request)
+        .await
+        .unwrap_or_else(|error| match error {})
 }
 
 /// Builds one compiled game's multi-experiment router around a migration seed configuration.
@@ -391,7 +395,8 @@ where
         admin_options,
         Some(shared),
         false,
-    ).await?;
+    )
+    .await?;
     let host = Arc::new(GameHost {
         adapter,
         bootstrap,
@@ -642,6 +647,7 @@ where
             .write()
             .await
             .insert(state.experiment_id.clone(), Arc::downgrade(&state));
+    } else if !clean_admin_sessions {
         spawn_load_sampler(state.clone());
     }
 

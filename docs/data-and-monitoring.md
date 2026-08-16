@@ -43,7 +43,7 @@ After selecting an experiment, the dashboard provides:
 - counted participant-data deletion.
 
 ![Experiment dashboard identifying the compiled Space Game version and its
-inactive starter experiment](images/parlando-dashboard.jpg)
+experiment catalogue](images/parlando-dashboard.jpg)
 
 The dashboard is deliberately game-scoped. Different compiled games use different
 processes and dashboards, usually distinguished by port or hostname.

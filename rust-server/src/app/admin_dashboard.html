@@ -89,6 +89,10 @@
     .workspace-facts { align-items: center; display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 4px; }
     .workspace-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
     .workspace-navigation { border-bottom: 1px solid var(--strong-line); display: flex; gap: 3px; margin: 20px 0 0; }
+    .empty-experiment-workspace { align-items: center; align-self: center; display: grid; gap: 14px; justify-items: center; margin: auto; max-width: 520px; padding: 56px 24px; text-align: center; }
+    .empty-experiment-workspace[hidden], .workspace-header[hidden], .workspace-navigation[hidden] { display: none; }
+    .empty-experiment-workspace .large-icon { color: var(--accent); height: 32px; width: 32px; }
+    .empty-experiment-workspace h1, .empty-experiment-workspace p { margin: 0; }
     .session-workspace { display: grid; flex: 1; grid-template-columns: var(--session-width) 7px minmax(0, 1fr); min-height: 500px; padding-top: 20px; }
     .session-picker { background: transparent; border: 0; box-shadow: none; margin: 0; min-width: 0; padding-right: 24px; position: static; }
     .session-toolbar { margin-bottom: 12px; }
@@ -384,11 +388,16 @@
       <button class="column-resizer" id="catalogueResizer" type="button" aria-label="Resize experiment catalogue"><span aria-hidden="true"></span></button>
 
       <section class="experiment-workspace">
-        <header class="workspace-header">
+        <header id="experimentWorkspaceHeader" class="workspace-header">
           <div id="experimentHeader" class="workspace-title"><h1>Loading…</h1></div>
           <div id="experimentStats" class="workspace-actions"></div>
         </header>
-        <nav class="tabs workspace-navigation" aria-label="Experiment workspace">
+        <section id="emptyExperimentWorkspace" class="empty-experiment-workspace" hidden>
+          <svg class="icon large-icon" aria-hidden="true"><use href="#icon-flask"></use></svg>
+          <h1>No experiments yet</h1>
+          <p class="muted">Use “New experiment” in the catalogue to configure participant access, collect sessions, and export research data.</p>
+        </section>
+        <nav id="experimentWorkspaceTabs" class="tabs workspace-navigation" aria-label="Experiment workspace">
           <button class="tab active" type="button" data-tab="sessions">Sessions</button>
           <button class="tab" type="button" data-tab="export">Export</button>
           <button class="tab" type="button" data-tab="details">Configuration</button>
@@ -483,6 +492,9 @@
     const menuButton = document.getElementById('menuButton');
     const experimentHeader = document.getElementById('experimentHeader');
     const experimentStats = document.getElementById('experimentStats');
+    const experimentWorkspaceHeader = document.getElementById('experimentWorkspaceHeader');
+    const emptyExperimentWorkspace = document.getElementById('emptyExperimentWorkspace');
+    const experimentWorkspaceTabs = document.getElementById('experimentWorkspaceTabs');
     const sessionList = document.getElementById('sessionList');
     const sessionDetail = document.getElementById('sessionDetail');
     const summary = document.getElementById('summary');
@@ -896,6 +908,19 @@
       });
     }
 
+    // Shows a dedicated creation prompt instead of experiment controls when the catalogue is empty.
+    function renderExperimentWorkspaceState() {
+      const hasExperiment = Boolean(state.experiment);
+      experimentWorkspaceHeader.hidden = !hasExperiment;
+      emptyExperimentWorkspace.hidden = hasExperiment;
+      experimentWorkspaceTabs.hidden = !hasExperiment;
+      if (hasExperiment) {
+        renderTabs();
+        return;
+      }
+      Object.values(tabPanels).forEach(panel => { panel.hidden = true; });
+    }
+
     // Returns state-appropriate intake and completion controls for one experiment.
     function lifecycleActions(experiment) {
       const incompatible = experiment.game_version !== state.game?.version;
@@ -1009,8 +1034,24 @@
       state.csrfToken = data.csrf_token || null;
       const selectedId = state.experiment?.experiment_id || state.experiments.find(item => ['active', 'testing'].includes(item.status))?.experiment_id;
       state.experiment = state.experiments.find(item => item.experiment_id === selectedId) || state.experiments[0] || null;
+      if (!state.experiment) {
+        state.selected = null;
+        state.selectedSession = null;
+        state.selectedParticipants = [];
+        state.sessions = [];
+        state.events = [];
+        state.eventBundles = [];
+        state.load = null;
+        state.privacy = null;
+        state.activationIssues = [];
+        state.loadedConfigKey = null;
+        state.configValue = null;
+        sessionDetail.hidden = true;
+        sessionList.innerHTML = '<div class="empty">No experiment selected.</div>';
+      }
       renderExperiment();
       renderExperimentHeader();
+      renderExperimentWorkspaceState();
       renderExperimentDetails();
       institutionInput.value = state.gameSettings?.institution || '';
       adminAllowedIpRangesInput.value = (state.gameSettings?.admin_allowed_ip_ranges || []).join('\n');
@@ -1837,6 +1878,10 @@
 
     // Switches among the selected experiment's sessions, export, and configuration views.
     function renderTabs() {
+      if (!state.experiment) {
+        Object.values(tabPanels).forEach(panel => { panel.hidden = true; });
+        return;
+      }
       tabButtons.forEach(button => button.classList.toggle('active', button.dataset.tab === state.activeTab));
       Object.entries(tabPanels).forEach(([name, panel]) => {
         panel.hidden = name !== state.activeTab;

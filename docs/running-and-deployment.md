@@ -36,8 +36,8 @@ The port is required. This makes simultaneous local game processes explicit:
 for example, one game can use port 8000 and another port 8001.
 
 Open `http://127.0.0.1:8000/admin`. On a new database, create the first
-administrator, then configure the inactive starter experiment or create a new
-experiment. Activate it only when participant intake should begin. Its participant
+administrator and then create an experiment with its permanent experiment ID.
+Starting a game process never creates an experiment. Activate the experiment only when participant intake should begin. Its participant
 page is `http://127.0.0.1:8000/e/{experiment_id}/`.
 
 ![Space Game experiment dashboard after first-time administrator

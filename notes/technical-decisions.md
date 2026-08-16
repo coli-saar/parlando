@@ -713,3 +713,15 @@ Tradeoffs: Correcting an ID after creation requires cloning to a newly chosen ID
 Follow-up risks: Any future need for experiment-specific participant branding should be modeled as an explicit presentation requirement rather than reintroducing Study or a generic experiment name. Database migrations must continue to distinguish configuration objects from stored session entities.
 
 Implementation correction: Agent selector labels use the public `AgentDefinition.name` field. The dashboard must not retain the removed `display_name` wire-field spelling, because doing so produces a valid option with an empty visible label.
+
+## 2026-08-16: Process startup does not create catalogue experiments
+
+Context: The multi-experiment router retained a synthetic “primary experiment” so it could reuse an experiment runtime to serve administrator routes. When no bootstrap ID existed, every game-process start generated and persisted a new catalogue row. This contradicted dashboard-owned experiment identity and made process startup look like researcher intent.
+
+Decision: Build a non-persistent administrator shell from compiled defaults and shared installation resources. It serves authentication, catalogue, configuration, monitoring, and creation routes but is never inserted into the experiment catalogue or runtime registry. Construct durable experiment runtimes lazily only for IDs already stored by an explicit authenticated create or clone action. Process startup still closes intake for previously open experiments.
+
+Tradeoffs: A fresh installation has an empty catalogue after administrator setup, so the researcher must choose an experiment ID before configuring or running anything. The administrator shell carries default configuration internally solely as the template for explicit creation; it is not an experiment and has no participant URL or stored revision.
+
+Follow-up risks: Administrator handlers currently share the same application-state type as experiment handlers. The non-persistent shell keeps that implementation reuse contained, but a future server decomposition could introduce a dedicated installation administration state.
+
+Dashboard behavior: An empty catalogue is a normal first-run state. The experiment workspace hides experiment-only headers, lifecycle actions, tabs, and panels, clears any stale selection data, and explains that the catalogue's standard “New experiment” control starts creation. Do not duplicate that action inside the empty workspace. Game-level settings and operations remain available independently.
