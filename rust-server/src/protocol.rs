@@ -24,6 +24,8 @@ pub struct ConsentItemResponse {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PublicConfigResponse {
+    /// Human-readable name of the compiled game shown during participant startup.
+    pub game_name: String,
     /// Lifecycle state of the experiment selected by the participant route.
     pub experiment_status: String,
     /// Institution displayed with the Parlando platform identity, when configured.

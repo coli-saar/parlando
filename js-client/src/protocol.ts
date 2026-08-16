@@ -23,6 +23,8 @@ export interface PlayerPresence {
 export type Presence = Partial<Record<PlayerRole, PlayerPresence>>;
 
 export interface ExperimentInfo {
+  /** Human-readable name of the compiled game used for participant-facing identity. */
+  gameName: string;
   /** Lifecycle state of the experiment selected by this client's route. */
   status: "inactive" | "testing" | "active" | "completed" | "archived";
   /** Institution operating the experiment, when the server exposes one. */
@@ -34,6 +36,7 @@ export interface ExperimentInfo {
 }
 
 interface ExperimentResponse {
+  game_name: string;
   experiment_status: ExperimentInfo["status"];
   institution?: string | null;
   participant_information_version?: string | null;
@@ -179,6 +182,7 @@ export class ParticipantClient {
   async getExperiment(): Promise<ExperimentInfo> {
     const experiment = await this.get<ExperimentResponse>("/api/config");
     return {
+      gameName: experiment.game_name,
       status: experiment.experiment_status,
       institution: experiment.institution,
       participantInformationVersion: experiment.participant_information_version,

@@ -572,6 +572,7 @@ function ParticipantAppRuntime<
   if (session) {
     return (
       <StartupShell
+        gameName={publicConfig.gameName}
         institution={publicConfig.institution}
         heading="Starting session"
         body="The game starts when all required participants and services are ready."
@@ -600,6 +601,7 @@ function ParticipantAppRuntime<
   if (!experimentAllowsIntake(publicConfig.status)) {
     return (
       <StartupShell
+        gameName={publicConfig.gameName}
         institution={publicConfig.institution}
         heading="Experiment not accepting participants"
         body="The experiment is not accepting new participants. Please return after the experimenter opens intake."
@@ -610,6 +612,7 @@ function ParticipantAppRuntime<
 
   return (
     <StartupShell
+      gameName={publicConfig.gameName}
       institution={publicConfig.institution}
       heading="Join experiment"
       error={error}
@@ -671,12 +674,14 @@ function StartupShell({
   body,
   children,
   error,
+  gameName,
   heading,
   institution
 }: {
   body?: string;
   children?: ReactNode;
   error: string;
+  gameName?: string;
   heading?: string;
   institution?: string | null;
 }) {
@@ -684,6 +689,7 @@ function StartupShell({
     <section className="lobby-panel">
       <div className="lobby-heading">
         <p className="platform-label">{platformLabel(institution)}</p>
+        {gameName && <p className="game-name">{gameName}</p>}
         {heading && <h1>{heading}</h1>}
       </div>
       {body && (

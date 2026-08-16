@@ -2116,6 +2116,7 @@ async fn public_config<A: Game>(
     let config = &state.config;
     let game_settings = state.game_settings.read().await.clone();
     Json(PublicConfigResponse {
+        game_name: state.game_descriptor.name.clone(),
         experiment_status: state.experiment_lifecycle.read().await.as_str().to_string(),
         institution: nonempty_string(&game_settings.institution),
         participant_information_version: nonempty_string(

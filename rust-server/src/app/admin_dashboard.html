@@ -478,7 +478,7 @@
 
   </main>
   <script>
-    const state = { experiment: null, experiments: [], game: null, gameSettings: null, load: null, privacy: null, activationIssues: [], sessions: [], selected: null, selectedSession: null, selectedParticipants: [], events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, csrfToken: null, activeScope: 'experiments', activeTab: 'sessions', loadedConfigKey: null, configValue: null, configuredSecrets: [], gameSecretKeys: [], secretDeletions: new Set(), agentFactories: [], gameProviderSecrets: [], gameProviderSecretDeletions: new Set(), gameProviderSecretUpdates: new Map(), gameSettingsConfirmationTimer: null };
+    const state = { experiment: null, experiments: [], game: null, gameSettings: null, load: null, privacy: null, activationIssues: [], sessions: [], selected: null, selectedSession: null, selectedParticipants: [], events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, csrfToken: null, activeScope: 'experiments', activeTab: 'sessions', loadedConfigKey: null, configLoadFailed: false, configValue: null, configuredSecrets: [], gameSecretKeys: [], secretDeletions: new Set(), agentFactories: [], gameProviderSecrets: [], gameProviderSecretDeletions: new Set(), gameProviderSecretUpdates: new Map(), gameSettingsConfirmationTimer: null };
     const experimentList = document.getElementById('experimentList');
     const menuButton = document.getElementById('menuButton');
     const experimentHeader = document.getElementById('experimentHeader');
@@ -1017,7 +1017,7 @@
       speechmaticsRealtimeUrlInput.value = state.gameSettings?.speechmatics_realtime_url || 'wss://eu.rt.speechmatics.com/v2';
       renderGameProviderSecrets();
       const configKey = state.experiment ? `${state.experiment.experiment_id}:${state.experiment.config_revision}` : null;
-      if (configKey && configKey !== state.loadedConfigKey) await loadConfiguration();
+      if (configKey && configKey !== state.loadedConfigKey) await loadConfigurationSafely();
       updateConfigurationEditability();
     }
 
@@ -1052,8 +1052,7 @@
       renderExperiment();
       renderExperimentHeader();
       renderExperimentDetails();
-      await loadConfiguration();
-      await Promise.all([loadSessions(), loadLoad()]);
+      await Promise.all([loadConfigurationSafely(), loadSessions(), loadLoad()]);
       if (state.activeTab === 'privacy') await loadPrivacy();
     }
 
@@ -1070,6 +1069,7 @@
       const response = await fetch(`/api/admin/experiments/${id}/config`);
       if (!response.ok) throw new Error(await response.text());
       const data = await response.json();
+      state.configLoadFailed = false;
       state.agentFactories = data.agent_factories || [];
       state.configuredSecrets = data.configured_secrets || [];
       state.activationIssues = data.activation_issues || [];
@@ -1092,9 +1092,24 @@
       updateConfigurationEditability(authoritativeExperiment);
     }
 
+    // Keeps session browsing available and prevents stale configuration saves after a load error.
+    async function loadConfigurationSafely() {
+      try {
+        await loadConfiguration();
+      } catch (error) {
+        state.configLoadFailed = true;
+        state.loadedConfigKey = null;
+        state.configValue = null;
+        configRevision.textContent = 'Unavailable';
+        configForm.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+        revisionHistory.innerHTML = '';
+        saveConfiguration.disabled = true;
+      }
+    }
+
     // Reapplies editor availability after lifecycle-only refreshes that do not reload configuration data.
     function updateConfigurationEditability(experiment = state.experiment) {
-      const readOnly = !experiment || experiment.status !== 'inactive' || experiment.game_version !== state.game?.version;
+      const readOnly = state.configLoadFailed || !experiment || experiment.status !== 'inactive' || experiment.game_version !== state.game?.version;
       configForm.querySelectorAll('input, textarea, select, button:not([data-reveal-secret])').forEach(control => { control.disabled = readOnly; });
       saveConfiguration.disabled = readOnly;
     }
@@ -1214,12 +1229,13 @@
     function renderConfigurationForm(config, gameYaml = '{}\n') {
       state.configValue = structuredClone(config);
       const activationWarning = `<div id="activationWarning" class="activation-warning" role="alert" ${state.activationIssues.length ? '' : 'hidden'}><strong>This experiment cannot be started yet.</strong><span id="activationWarningItems">${state.activationIssues.map(issue => escapeHtml(issue)).join(' ')}</span></div>`;
+      const identity = `<section class="config-group"><header class="config-group-copy"><h3>Experiment</h3><p class="muted small">The unique researcher-facing identifier chosen when the experiment was created.</p></header><div class="config-fields"><label class="config-field"><span>Experiment ID</span><input value="${escapeHtml(state.experiment?.experiment_id || '')}" disabled><span class="config-help">Experiment IDs are immutable after creation.</span></label></div></section>`;
       const sections = PARLANDO_CONFIG_SECTIONS.map(section => `
         <section class="config-group">
           <header class="config-group-copy"><h3>${escapeHtml(section.title)}</h3><p class="muted small">${escapeHtml(section.description)}</p></header>
           <div class="config-fields">${section.fields.map(field => renderConfigField(field, config)).join('')}</div>
         </section>`).join('');
-      configForm.innerHTML = `${activationWarning}${sections}
+      configForm.innerHTML = `${activationWarning}${identity}${sections}
         <section class="config-group">
           <header class="config-group-copy"><h3>Game configuration</h3><p class="muted small">Game-owned options. YAML is parsed and validated by the compiled game before it can be saved.</p></header>
           <div class="config-fields">
@@ -1281,7 +1297,7 @@
       return `<div class="config-field agent-editor" data-agent-editor>
         <label class="config-field"><span>Participant pairing</span><select data-agent-mode><option value="human_vs_human" ${humanVsAgent ? '' : 'selected'}>Human vs human</option><option value="human_vs_agent" ${humanVsAgent ? 'selected' : ''} ${state.agentFactories.length ? '' : 'disabled'}>Human vs agent</option></select><span class="config-help">${escapeHtml(field.help || '')}</span></label>
         <div class="agent-settings" data-agent-settings ${humanVsAgent ? '' : 'hidden'}>
-          <label class="config-field"><span>Agent</span><select data-agent-factory>${state.agentFactories.map(factory => `<option value="${escapeHtml(factory.id)}" ${factory.id === descriptor?.id ? 'selected' : ''}>${escapeHtml(factory.display_name)}</option>`).join('')}</select><span class="config-help" data-agent-description>${escapeHtml(descriptor?.description || 'Select one of the agent implementations compiled into this game binary.')}</span></label>
+          <label class="config-field"><span>Agent</span><select data-agent-factory>${state.agentFactories.map(factory => `<option value="${escapeHtml(factory.id)}" ${factory.id === descriptor?.id ? 'selected' : ''}>${escapeHtml(factory.name)}</option>`).join('')}</select><span class="config-help" data-agent-description>${escapeHtml(descriptor?.description || 'Select one of the agent implementations compiled into this game binary.')}</span></label>
           <div class="agent-specific-fields" data-agent-specific-fields>${agentFactoryFieldsMarkup(descriptor, configured.config || {})}</div>
           <label class="config-field"><span>Action timeout (seconds)</span><input data-agent-timeout type="text" inputmode="decimal" value="${escapeHtml(configured.act_timeout_seconds ?? 30)}"><span class="config-help">Maximum time allowed for the agent to choose one action.</span></label>
           <label class="config-field"><span>Invalid-action limit</span><input data-agent-invalid-limit type="number" min="1" step="1" value="${escapeHtml(configured.invalid_action_limit ?? 3)}"><span class="config-help">End the session after this many invalid agent actions.</span></label>
@@ -1609,7 +1625,7 @@
 
     // Creates an inactive experiment from the compiled game's current defaults.
     async function createExperiment() {
-      const experimentId = window.prompt('New experiment id');
+      const experimentId = window.prompt('Experiment ID (unique and immutable after creation)');
       if (!experimentId) return;
       const response = await fetch('/api/admin/experiments', {
         method: 'POST',
@@ -1626,7 +1642,7 @@
     async function cloneSelectedExperiment() {
       const source = state.experiment;
       if (!source) return;
-      const experimentId = window.prompt('Id for the cloned experiment', `${source.experiment_id}-copy`);
+      const experimentId = window.prompt('Experiment ID for the clone (unique and immutable)', `${source.experiment_id}-copy`);
       if (!experimentId) return;
       const response = await fetch(`/api/admin/experiments/${encodeURIComponent(source.experiment_id)}/clone`, {
         method: 'POST',

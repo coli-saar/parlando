@@ -30,7 +30,7 @@ struct GameHost<A: Game> {
     telemetry: Arc<RuntimeTelemetry>,
     runtime_registry: Arc<RwLock<HashMap<String, Weak<AppState<A>>>>>,
     bootstrap_secrets: Arc<HashMap<String, String>>,
-    primary_experiment_id: String,
+    admin_router: Router,
     health_slots: Semaphore,
 }
 
@@ -113,6 +113,7 @@ where
                 runtime_registry: self.runtime_registry.clone(),
                 bootstrap_secrets: self.bootstrap_secrets.clone(),
             }),
+            true,
         )
         .await?;
         let mut routers = self.routers.write().await;
@@ -193,14 +194,12 @@ where
         || path == "export"
         || path.starts_with("participants/");
     if storage_only {
-        dispatch_to_experiment_scoped(
-            &host,
-            &host.primary_experiment_id,
+        dispatch_to_router(
+            host.admin_router.clone(),
             &child_path,
             request,
             Some(AdminExperimentScope(experiment_id)),
-        )
-        .await
+        ).await
     } else {
         dispatch_to_experiment(&host, &experiment_id, &child_path, request).await
     }
@@ -217,8 +216,7 @@ where
 {
     let mutation = request.method() != Method::GET;
     let child_path = format!("api/admin/experiments/{experiment_id}/config");
-    let response =
-        dispatch_to_experiment(&host, &host.primary_experiment_id, &child_path, request).await;
+    let response = dispatch_to_router(host.admin_router.clone(), &child_path, request, None).await;
     if mutation && response.status().is_success() {
         host.routers.write().await.remove(&experiment_id);
     }
@@ -235,7 +233,7 @@ where
     A::State: Serialize,
 {
     let child_path = format!("api/admin/{path}");
-    dispatch_to_experiment(&host, &host.primary_experiment_id, &child_path, request).await
+    dispatch_to_router(host.admin_router.clone(), &child_path, request, None).await
 }
 
 /// Proxies a fixed administrator root path through the primary experiment router.
@@ -247,7 +245,7 @@ where
     A::State: Serialize,
 {
     let path = request.uri().path().trim_start_matches('/').to_string();
-    dispatch_to_experiment(&host, &host.primary_experiment_id, &path, request).await
+    dispatch_to_router(host.admin_router.clone(), &path, request, None).await
 }
 
 /// Rewrites one outer path and invokes a fully layered child Axum router.
@@ -284,6 +282,16 @@ where
                 .into_response()
         }
     };
+    dispatch_to_router(router, path, request, admin_scope).await
+}
+
+/// Rewrites one outer request and invokes an already constructed child router.
+async fn dispatch_to_router(
+    router: Router,
+    path: &str,
+    mut request: Request,
+    admin_scope: Option<AdminExperimentScope>,
+) -> Response {
     let query = request
         .uri()
         .query()
@@ -321,10 +329,7 @@ where
     if let Some(admin_scope) = admin_scope {
         request.extensions_mut().insert(admin_scope);
     }
-    router
-        .oneshot(request)
-        .await
-        .unwrap_or_else(|error| match error {})
+    router.oneshot(request).await.unwrap_or_else(|error| match error {})
 }
 
 /// Builds one compiled game's multi-experiment router around a migration seed configuration.
@@ -359,22 +364,6 @@ where
             }
         }
     });
-    let primary_experiment_id = bootstrap
-        .experiment
-        .id
-        .clone()
-        .unwrap_or_else(generated_experiment_id);
-    store
-        .ensure_experiment(ExperimentRecord {
-            experiment_id: primary_experiment_id.clone(),
-            game_version: descriptor.version.to_string(),
-            config: persistable_config_json(&bootstrap)?,
-            server_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            version_manifest: Some(version_manifest(Some(descriptor.build_manifest.clone()))),
-            status: "inactive".to_string(),
-            notes: None,
-        })
-        .await?;
     let deactivated_experiments = store.deactivate_open_experiments().await?;
     if deactivated_experiments > 0 {
         tracing::info!(
@@ -382,30 +371,42 @@ where
             "closed experiment intake after game-process startup"
         );
     }
+    let adapter = Arc::new(adapter);
+    let options_factory: ServeOptionsFactory<A> = Arc::new(options_factory);
+    let shared = RuntimeShared {
+        store: store.clone(),
+        admin_auth: admin_auth.clone(),
+        game_settings: game_settings.clone(),
+        telemetry: telemetry.clone(),
+        runtime_registry: runtime_registry.clone(),
+        bootstrap_secrets: bootstrap_secrets.clone(),
+    };
+    let mut admin_config = bootstrap.clone();
+    admin_config.experiment.id = Some("__dashboard__".to_string());
+    let mut admin_options = options_factory(&admin_config)?;
+    admin_options.game_descriptor = Some(descriptor.clone());
+    let admin_router = build_router_with_resources(
+        adapter.clone(),
+        admin_config,
+        admin_options,
+        Some(shared),
+        false,
+    ).await?;
     let host = Arc::new(GameHost {
-        adapter: Arc::new(adapter),
+        adapter,
         bootstrap,
         descriptor,
         store,
         admin_auth,
         game_settings,
-        options_factory: Arc::new(options_factory),
+        options_factory,
         routers: RwLock::new(HashMap::new()),
         telemetry,
         runtime_registry,
         bootstrap_secrets,
-        primary_experiment_id,
+        admin_router,
         health_slots: Semaphore::new(1),
     });
-    let _primary_router = host.experiment_router(&host.primary_experiment_id).await?;
-    let primary_state = host
-        .runtime_registry
-        .read()
-        .await
-        .get(&host.primary_experiment_id)
-        .and_then(Weak::upgrade)
-        .ok_or_else(|| anyhow!("primary experiment runtime did not register"))?;
-    spawn_load_sampler(primary_state);
     Ok(Router::new()
         .route("/", get(game_root))
         .route("/e/:experiment_id", any(dispatch_experiment_root::<A>))
@@ -470,7 +471,7 @@ pub async fn build_router<A: Game>(
 where
     A::State: Serialize,
 {
-    build_router_with_resources(Arc::new(adapter), config, options, None).await
+    build_router_with_resources(Arc::new(adapter), config, options, None, true).await
 }
 
 /// Builds one experiment router with optional installation-owned storage and authentication.
@@ -479,6 +480,7 @@ async fn build_router_with_resources<A: Game>(
     mut config: ExperimentConfig,
     options: ServeOptions<A>,
     shared: Option<RuntimeShared<A>>,
+    persist_experiment: bool,
 ) -> Result<Router>
 where
     A::State: Serialize,
@@ -515,21 +517,26 @@ where
         .clone()
         .unwrap_or_else(generated_experiment_id);
     let version_manifest = version_manifest(options.game_version_manifest.clone());
-    let lifecycle = store
-        .ensure_experiment(ExperimentRecord {
-            experiment_id: experiment_id.clone(),
-            game_version: game_descriptor.version.to_string(),
-            config: persistable_config_json(&config)?,
-            server_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            version_manifest: Some(version_manifest.clone()),
-            status: "inactive".to_string(),
-            notes: None,
-        })
-        .await?;
-    let stored_experiment = store
-        .experiment_definition(&experiment_id)
-        .await?
-        .ok_or_else(|| anyhow!("configured experiment was not stored"))?;
+    let (lifecycle, config_revision) = if persist_experiment {
+        let lifecycle = store
+            .ensure_experiment(ExperimentRecord {
+                experiment_id: experiment_id.clone(),
+                game_version: game_descriptor.version.to_string(),
+                config: persistable_config_json(&config)?,
+                server_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                version_manifest: Some(version_manifest.clone()),
+                status: "inactive".to_string(),
+                notes: None,
+            })
+            .await?;
+        let stored_experiment = store
+            .experiment_definition(&experiment_id)
+            .await?
+            .ok_or_else(|| anyhow!("configured experiment was not stored"))?;
+        (lifecycle, stored_experiment.config_revision)
+    } else {
+        ("inactive".to_string(), 0)
+    };
     let client_dist = config.server.client_dist_path.as_ref().map(PathBuf::from);
     let tts_provider_is_override = options.tts_provider.is_some();
     let transcription_provider_is_override = options.transcription_provider.is_some();
@@ -598,7 +605,7 @@ where
         game_descriptor,
         game_settings,
         bootstrap_secrets,
-        config_revision: stored_experiment.config_revision,
+        config_revision,
         experiment_lifecycle: RwLock::new(
             ExperimentLifecycle::parse(&lifecycle).map_err(|error| anyhow!(error.message))?,
         ),
@@ -630,10 +637,13 @@ where
         audio_connections: RwLock::new(HashMap::new()),
         version_manifest,
     });
-    runtime_registry
-        .write()
-        .await
-        .insert(state.experiment_id.clone(), Arc::downgrade(&state));
+    if persist_experiment {
+        runtime_registry
+            .write()
+            .await
+            .insert(state.experiment_id.clone(), Arc::downgrade(&state));
+        spawn_load_sampler(state.clone());
+    }
 
     let public_routes = Router::new()
         .route("/health", get(health::<A>))

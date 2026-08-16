@@ -84,6 +84,7 @@ describe("ParticipantClient room helpers", () => {
   it("runs the supported experiment, consent, audio, and game-plan lifecycle", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({
+        game_name: "Tiny Game",
         experiment_status: "active",
         consents: [],
         voice: { enabled: true }
@@ -106,7 +107,7 @@ describe("ParticipantClient room helpers", () => {
       }), { status: 200 }));
     const client = new ParticipantClient({ baseUrl: "http://server.test" });
 
-    await expect(client.getExperiment()).resolves.toMatchObject({ status: "active" });
+    await expect(client.getExperiment()).resolves.toMatchObject({ gameName: "Tiny Game", status: "active" });
     await client.register();
     await client.acceptConsents({ research: true });
     await expect(client.getAudioSession("ROOM1")).resolves.toEqual({

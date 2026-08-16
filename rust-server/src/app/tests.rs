@@ -192,6 +192,11 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(ADMIN_EXPERIMENT_HTML.contains("gameVersion"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("gameGit"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("gameBuild"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Experiment IDs are immutable after creation."));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Experiment ID (unique and immutable after creation)"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("Experiment name"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("escapeHtml(factory.name)"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("escapeHtml(factory.display_name)"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-scope=\"experiments\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-scope=\"operations\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-scope=\"game\""));
@@ -2509,6 +2514,7 @@ async fn health_and_public_config_expose_client_bootstrap_shape() {
     let (config_status, public_config) =
         json_request(router, http::Method::GET, "/api/config", Value::Null).await;
     assert_eq!(config_status, StatusCode::OK);
+    assert_eq!(public_config["game_name"], "Embedded game");
     assert!(public_config.get("participant_title").is_none());
     assert!(public_config["institution"].is_null());
     assert_eq!(public_config["consents"][0]["id"], "study");

@@ -17,6 +17,7 @@ import { experimentAllowsIntake, requiredConsentsAccepted, transcriptionProgress
 
 function publicConfig(overrides: Partial<ExperimentInfo> = {}): ExperimentInfo {
   return {
+    gameName: "Tiny Game",
     status: "active",
     consents: [],
     voice: { enabled: false },

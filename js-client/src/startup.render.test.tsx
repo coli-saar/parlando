@@ -69,6 +69,7 @@ class FakeAudioController {
 /** Creates a public config suitable for rendered startup tests. */
 function config(overrides: Partial<ExperimentInfo> = {}): ExperimentInfo {
   return {
+    gameName: "Tiny Game",
     status: "active",
     consents: [],
     voice: { enabled: false },
@@ -138,6 +139,7 @@ describe("ParticipantApp rendered state machine", () => {
     render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
     expect(screen.getByRole("heading", { name: "Loading experiment" })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Experiment not accepting participants" })).toBeInTheDocument();
+    expect(screen.getByText("Tiny Game")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Enter waiting room" })).not.toBeInTheDocument();
   });
 

@@ -701,3 +701,15 @@ The participant protocol itself permits a non-React or separately hosted fronten
 Smaller deferred refinements are deliberately not part of this cleanup: make agent cleanup and first-decision ordering unconditional when readiness is redesigned; replace raw agent settings and browser-shaped string field kinds with typed semantic configuration if real consumers require it; move `internal-tools` behind a physically private crate if the feature boundary becomes burdensome; and introduce status or error codes only when localization or another frontend requires them. English participant status text is acceptable for now.
 
 The server no longer accepts a bootstrap experiment YAML file. The dashboard's revisioned database configuration is the only active experiment source of truth, so the unused include/environment-expansion loader, Space Game YAML examples, and broken `--config` development target were removed. An older YAML file is migration reference material: transfer its values through the dashboard and apply the documented `study` to `session` transformation.
+
+## 2026-08-16: Experiment identity is the immutable catalogue key
+
+Context: Removing the unmodeled Study concept left legacy `study.name` values and made the roles of experiment identity and participant-facing presentation ambiguous. An experiment still needs a unique researcher-selected catalogue identity, but a second experiment name would duplicate that identity. Participants need to know which compiled game they are entering, not an independently configurable study title.
+
+Decision: Let the researcher choose the unique `experiment_id` during experiment creation or cloning and treat it as immutable afterward. Show it as a disabled identity field in the configuration view, and do not add a rename operation or separate experiment-name field. Expose the compiled `GameMetadata.name` in participant-visible experiment information and display it during startup. Migrate legacy configuration by discarding `study.name`, moving only the remaining session-lifecycle fields into `session`, and leaving all stored session records untouched.
+
+Tradeoffs: Correcting an ID after creation requires cloning to a newly chosen ID rather than renaming it. The participant-facing game name is fixed by the compiled game and therefore cannot vary between experiments, which keeps configuration and catalogue identity unambiguous.
+
+Follow-up risks: Any future need for experiment-specific participant branding should be modeled as an explicit presentation requirement rather than reintroducing Study or a generic experiment name. Database migrations must continue to distinguish configuration objects from stored session entities.
+
+Implementation correction: Agent selector labels use the public `AgentDefinition.name` field. The dashboard must not retain the removed `display_name` wire-field spelling, because doing so produces a valid option with an empty visible label.
