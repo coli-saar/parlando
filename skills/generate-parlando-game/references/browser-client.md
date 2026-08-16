@@ -2,6 +2,8 @@
 
 Consume published `@coli-saar/parlando-client`; do not use a local Parlando path.
 
+Use the same discovered Parlando release as the Rust runtime.
+
 ```tsx
 import { ParticipantApp, type GameSession } from "@coli-saar/parlando-client/react";
 

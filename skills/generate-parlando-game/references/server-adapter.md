@@ -2,6 +2,8 @@
 
 Consume the published `parlando` crate. The supported author API is `Game`, `GameMetadata`, `PlayerRole`, `ActionRejection`, `Server`, and the optional `agent` namespace.
 
+Use the same discovered Parlando release as the browser client. Do not substitute the obsolete `parlando-server` package, which implements the removed 0.2 API.
+
 ## Contract
 
 ```rust

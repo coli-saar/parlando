@@ -9,7 +9,7 @@ Generate a complete two-player game using published registry packages. Read `ref
 
 ## Discover versions
 
-Query crates.io for `parlando` and npm for `@coli-saar/parlando-client`. If unavailable, use the repository's current package versions and disclose that fallback.
+Query crates.io for `parlando` and npm for `@coli-saar/parlando-client`. Use the newest release available from both registries, and never mix different Parlando minor versions. Only when the user explicitly requests work on an unpublished future release, use the repository's matching manifest versions for release preparation and disclose that external registry builds remain blocked until both packages are published.
 
 ## Clarify only domain choices
 
@@ -42,7 +42,7 @@ Start with `Server::new(game, metadata)`, set database and optional participant 
 
 Implement `agent::Agent<G>` and `agent::Factory<G>`. Factory creation receives role, seed, and agent-owned settings before game delivery. Store the first observation in `start`; observe later accepted actions in `observe_transition`; observe other-player text in `observe_message`; receive the shared terminal result in `finish`; and decide in `respond`.
 
-Return a non-empty `Response::action`, `Response::message`, or `Response::action_and_message`. A message does not change game state. For remote agents, register `agent::grpc::Factory::<G>::new()` and use the Python `Agent`, `Response`, and `serve` API.
+Return a non-empty `Response::action`, `Response::message`, or `Response::action_and_message`. A message does not change game state. Release per-session resources in `shutdown`. For remote agents, register `agent::grpc::Factory::<G>::new()` and use the Python `Agent`, `Context`, `Response`, and `serve` API; Python combines outputs with `Response.action_with_message`.
 
 Do not solve model readiness with game messages. The current construction-ready rule is completion of factory creation; explicit readiness and blocking-load isolation are deferred runtime work.
 
