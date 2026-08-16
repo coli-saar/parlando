@@ -1,0 +1,7 @@
+# Cargo records SQLx's optional MySQL dependency tree even though Parlando enables
+# only the SQLite driver. `cargo tree -i rsa` is empty for the hardened server,
+# and Parlando neither holds RSA private keys nor performs RSA operations.
+# Remove this exception if MySQL support becomes reachable or RustCrypto publishes
+# a patched release selected by SQLx.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]
