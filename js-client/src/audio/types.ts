@@ -4,8 +4,10 @@ export interface VoiceStatus {
   connected: boolean;
   connecting: boolean;
   microphoneEnabled: boolean;
+  microphoneChanging: boolean;
   remoteAudio: boolean;
   message: string;
+  error: string | null;
   transcriptionMessage: string;
   transcriptionReady: boolean;
 }
@@ -45,6 +47,7 @@ export interface LocalAudioSink {
   provider: string;
   purposes: ReadonlyArray<"partner-audio" | "transcription">;
   connect(input: MicrophoneInput, context: AudioSessionContext): Promise<void>;
+  /** Enables or mutes the transport-owned microphone track without affecting playback. */
   setInputEnabled(enabled: boolean): Promise<void>;
   disconnect(): Promise<void>;
 }
@@ -58,8 +61,10 @@ export const initialVoiceStatus: VoiceStatus = {
   connected: false,
   connecting: false,
   microphoneEnabled: false,
+  microphoneChanging: false,
   remoteAudio: false,
   message: "Voice not connected",
+  error: null,
   transcriptionMessage: "ASR idle",
   transcriptionReady: false
 };

@@ -1225,6 +1225,18 @@ p {
   font-size: 0.95rem;
 }
 
+.microphone-mute-button.muted {
+  background: linear-gradient(180deg, #e2e5e7, #aeb6bc);
+  border-color: #f5f7f8;
+  color: #10161a;
+}
+
+.microphone-mute-button.muted:hover,
+.microphone-mute-button.muted:focus-visible {
+  background: linear-gradient(180deg, #f4f5f6, #c4cacf);
+  border-color: #ffffff;
+}
+
 .voice-feedback {
   align-items: center;
   display: grid;
@@ -1235,6 +1247,18 @@ p {
 .meter-stack {
   display: grid;
   gap: 0.35rem;
+}
+
+.microphone-state-label {
+  color: #9fb0bb;
+  font-size: 0.72rem;
+  font-weight: 950;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.microphone-state-label.muted {
+  color: #f1f3f4;
 }
 
 .mic-meter {
@@ -1266,6 +1290,21 @@ p {
   transform-origin: left center;
   transition: transform 90ms linear;
   width: 100%;
+}
+
+.mic-meter.muted .mic-meter-track {
+  background: #171b1e;
+  border-color: #69737a;
+}
+
+.mic-meter.muted .mic-meter-track span {
+  background: linear-gradient(90deg, #727a80, #c5c9cc);
+}
+
+.voice-error {
+  color: #f0b6ae;
+  font-size: 0.78rem;
+  font-weight: 800;
 }
 
 .transcription-chip {

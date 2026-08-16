@@ -7,8 +7,8 @@ import type { AudioSessionSnapshot, VoiceStatus } from "./audio/types";
 import { initialVoicePreflight, initialVoiceStatus } from "./audio/types";
 import {
   DeviceSelect,
+  MicrophoneMuteButton,
   TranscriptionStatusChip,
-  VoiceJoinButton,
   VoiceStatusChip,
   useVoiceController
 } from "./react";
@@ -68,17 +68,23 @@ function HookProbe({ controller }: { controller: FakeController }) {
 }
 
 describe("voice React components", () => {
-  it("labels and disables the voice button for each transport state", () => {
-    const toggle = vi.fn();
-    const { rerender } = render(<VoiceJoinButton voiceEnabled={false} onToggleVoice={toggle} />);
-    expect(screen.getByRole("button", { name: "Join voice" })).toBeDisabled();
+  it("labels, disables, and reports the microphone mute button state", () => {
+    const changeMuted = vi.fn();
+    const { rerender } = render(<MicrophoneMuteButton voiceEnabled={false} onMicrophoneMutedChange={changeMuted} />);
+    expect(screen.getByRole("button", { name: "Microphone unavailable" })).toBeDisabled();
 
-    rerender(<VoiceJoinButton voiceEnabled onToggleVoice={toggle} voiceStatus={status({ connecting: true })} />);
+    rerender(<MicrophoneMuteButton voiceEnabled onMicrophoneMutedChange={changeMuted} voiceStatus={status({ connecting: true })} />);
     expect(screen.getByRole("button", { name: "Connecting" })).toBeDisabled();
 
-    rerender(<VoiceJoinButton voiceEnabled onToggleVoice={toggle} voiceStatus={status({ connected: true, microphoneEnabled: true })} />);
+    rerender(<MicrophoneMuteButton voiceEnabled onMicrophoneMutedChange={changeMuted} voiceStatus={status({ connected: true, microphoneEnabled: true })} />);
     fireEvent.click(screen.getByRole("button", { name: "Mute mic" }));
-    expect(toggle).toHaveBeenCalledOnce();
+    expect(changeMuted).toHaveBeenCalledWith(true);
+
+    rerender(<MicrophoneMuteButton voiceEnabled onMicrophoneMutedChange={changeMuted} voiceStatus={status({ connected: true, microphoneEnabled: false })} />);
+    expect(screen.getByRole("button", { name: "Unmute mic" })).toHaveAttribute("aria-pressed", "true");
+
+    rerender(<MicrophoneMuteButton voiceEnabled onMicrophoneMutedChange={changeMuted} voiceStatus={status({ connected: true, microphoneEnabled: false, microphoneChanging: true })} />);
+    expect(screen.getByRole("button", { name: "Unmuting…" })).toBeDisabled();
   });
 
   it("renders fallback device labels and emits the selected id once", () => {
@@ -110,6 +116,9 @@ describe("voice React components", () => {
     expect(container.querySelector(".mic-meter-track span")).toHaveStyle({ transform: "scaleX(0)" });
     rerender(<MicLevelMeter active={false} label="Input" level={0.7} />);
     expect(container.querySelector(".mic-meter-track span")).toHaveStyle({ transform: "scaleX(0)" });
+    rerender(<MicLevelMeter active label="Input" level={0.7} muted />);
+    expect(container.querySelector(".mic-meter")).toHaveClass("muted");
+    expect(container.querySelector(".mic-meter-track span")).toHaveStyle({ transform: "scaleX(0.7)" });
   });
 
   it("renders transcription headings for game, transport, and ready states", () => {

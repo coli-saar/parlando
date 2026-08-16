@@ -47,7 +47,9 @@ export function transcriptionProgressForStatus(
   };
 }
 
-export function voiceButtonLabel(status: VoiceStatus): string {
-  if (status.connected) return status.microphoneEnabled ? "Mute mic" : "Unmute mic";
-  return status.connecting ? "Connecting" : "Join voice";
+/** Returns the action label for the explicit microphone mute control. */
+export function microphoneMuteButtonLabel(status: VoiceStatus): string {
+  if (!status.connected) return status.connecting ? "Connecting" : "Microphone unavailable";
+  if (status.microphoneChanging) return status.microphoneEnabled ? "Muting…" : "Unmuting…";
+  return status.microphoneEnabled ? "Mute mic" : "Unmute mic";
 }

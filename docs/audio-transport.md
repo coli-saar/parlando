@@ -52,6 +52,7 @@ The same binary shape is used in both directions. Browsers may therefore receive
 
 - a capture AudioWorklet converts the selected microphone to 24 kHz PCM16 frames;
 - the WebSocket sends complete frames only while the microphone is enabled;
+- participant muting gates outbound frames and disables the transport-owned cloned track while leaving playback and the local level probe active;
 - a playback AudioWorklet converts 24 kHz PCM to the output-device rate with linear interpolation;
 - worklet entry modules are self-contained so consumer bundlers can emit them as standalone assets or data/blob modules;
 - playback starts after the configured jitter target, normally 100 ms;
@@ -60,6 +61,8 @@ The same binary shape is used in both directions. Browsers may therefore receive
 - every playback underrun is recorded as an `audio_playback_underrun` voice diagnostic.
 
 Microphone preparation happens before room entry. Waiting-room startup reuses that prepared input for one audio-transport connection attempt; a WebSocket or worklet failure cleans up only the partial transport and never reacquires the microphone in a retry loop.
+
+Mute is a participant-controlled transport preference rather than a voice disconnect. The browser preserves it across automatic audio reconnection, continues to play partner or agent audio, and shows the still-local microphone level in a colorless meter with an explicit muted label. Quiet audio does not determine transport liveness; the game channel owns heartbeat-based liveness independently. A deliberate leave resets the next session to the default live-microphone state.
 
 Agent TTS is finite audio rather than a naturally clocked microphone. The server sends the initial jitter-buffer window immediately, then schedules later frames against absolute 20 ms deadlines. Absolute deadlines prevent per-frame processing and timer overhead from accumulating until the browser buffer runs dry.
 

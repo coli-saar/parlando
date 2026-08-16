@@ -44,9 +44,10 @@ class FakeWebSocket extends EventTarget {
 }
 
 class FakeAudioController {
+  connect = vi.fn(async () => undefined);
   disconnect = vi.fn(async () => undefined);
   prepare = vi.fn(async () => undefined);
-  toggle = vi.fn(async () => undefined);
+  setMicrophoneMuted = vi.fn(async () => undefined);
   updateVoiceStatus = vi.fn();
   private snapshotValue: AudioSessionSnapshot = {
     voiceStatus: initialVoiceStatus,

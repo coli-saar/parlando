@@ -70,8 +70,8 @@ class FakeSocket extends EventTarget {
 
 /** Creates one cloned microphone stream owned by the sink. */
 function input() {
-  const track = { stop: vi.fn() } as unknown as MediaStreamTrack;
-  const mediaStream = { getTracks: () => [track] } as unknown as MediaStream;
+  const track = { enabled: true, stop: vi.fn() } as unknown as MediaStreamTrack;
+  const mediaStream = { getAudioTracks: () => [track], getTracks: () => [track] } as unknown as MediaStream;
   return {
     value: {
       deviceId: "mic",
@@ -154,7 +154,7 @@ describe("ParlandoAudioSink integration", () => {
     socket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "transcriptionStatus", ready: true, message: "ASR ready" }) }));
     socket.dispatchEvent(new MessageEvent("message", { data: new ArrayBuffer(973) }));
     expect(session.onVoiceStatus).toHaveBeenCalledWith({ transcriptionReady: true, transcriptionMessage: "ASR ready" });
-    expect(session.onVoiceStatus).toHaveBeenCalledWith({ remoteAudio: true, message: "Voice connected" });
+    expect(session.onVoiceStatus).toHaveBeenCalledWith({ remoteAudio: true });
 
     await sink.disconnect();
     expect(microphone.track.stop).toHaveBeenCalledOnce();
@@ -163,15 +163,21 @@ describe("ParlandoAudioSink integration", () => {
 
   it("mutes capture without disconnecting and resumes on unmute", async () => {
     const sink = new ParlandoAudioSink();
-    const connecting = sink.connect(input().value, context());
+    const microphone = input();
+    const inputTrack = microphone.track;
+    const connecting = sink.connect(microphone.value, context());
     await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1));
     const socket = FakeSocket.instances[0];
     socket.open();
     await connecting;
     await sink.setInputEnabled(false);
+    expect(inputTrack.enabled).toBe(false);
     FakeNode.instances[0].port.onmessage!(new MessageEvent("message", { data: new ArrayBuffer(960) }));
     expect(socket.send).not.toHaveBeenCalled();
+    socket.dispatchEvent(new MessageEvent("message", { data: new ArrayBuffer(973) }));
+    expect(FakeNode.instances[1].port.postMessage).toHaveBeenCalledTimes(2);
     await sink.setInputEnabled(true);
+    expect(inputTrack.enabled).toBe(true);
     FakeNode.instances[0].port.onmessage!(new MessageEvent("message", { data: new ArrayBuffer(960) }));
     expect(socket.send).toHaveBeenCalledOnce();
   });

@@ -8,6 +8,7 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ### Added
 
+- Added a deterministic cross-language mute contract that connects the built JavaScript audio sink to the production Rust WebSocket and verifies partner relay, transcription suppression, continued playback, and unmute recovery.
 - Added a game-scoped experiment catalogue to each compiled game server, with dashboard creation and cloning, pin/obsolete metadata, immutable configuration revisions, shared institution settings, and isolated participant runtimes at `/e/{experiment_id}`.
 - Added exact semantic game-version binding for experiments and sessions. Historical experiments stay visible, while cloning creates a new experiment for the currently compiled game version.
 - Added Privacy Contract version 1 with four persistence switches, versioned participant-information evidence, fixed `research`, `corpus`, and `full` exports, an authenticated installation-wide privacy status, and counted manual participant deletion in the admin dashboard.
@@ -16,6 +17,7 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ### Changed
 
+- Replaced the ambiguous client `toggleVoice` operation with explicit reconnect-safe microphone muting. Muting now gates PCM and the cloned transport track while retaining playback and a live, colorless local level meter with an explicit participant-facing state label.
 - Made each server process own one compiled game implementation and any number of experiments for that exact game version. Startup resets every experiment to `inactive`; the authenticated dashboard explicitly activates or deactivates each intake, and deactivation leaves existing sessions connected.
 - Moved experiment configuration into database-backed dashboard editing. Listener port, database location, client bundle, and provider credentials remain process bootstrap settings rather than experiment revisions.
 - Simplified the JavaScript startup gate to show only the configured study title and current platform tasks; removed arbitrary startup-label, eyebrow, setup-copy, and game-hint customization.

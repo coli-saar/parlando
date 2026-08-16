@@ -16,7 +16,9 @@ export class AudioSessionController {
   private voiceStatus: VoiceStatus = initialVoiceStatus;
   private voicePreflight: VoicePreflight = initialVoicePreflight;
   private listeners = new Set<Listener>();
-  private toggleInFlight: Promise<void> | null = null;
+  private connectInFlight: Promise<void> | null = null;
+  private muteInFlight: Promise<void> | null = null;
+  private desiredMicrophoneEnabled = true;
   private transportGeneration = 0;
 
   /** Creates a controller for Parlando's single provider-neutral audio transport. */
@@ -54,39 +56,29 @@ export class AudioSessionController {
     }
   }
 
-  /** Toggles mute for a connected session or connects the already prepared microphone. */
-  toggle(context: AudioSessionContext): Promise<void> {
-    if (this.toggleInFlight) return this.toggleInFlight;
-    const operation = this.performToggle(context);
-    this.toggleInFlight = operation;
+  /** Connects the prepared microphone while preserving the desired mute state across reconnects. */
+  connect(context: AudioSessionContext): Promise<void> {
+    if (this.connectInFlight) return this.connectInFlight;
+    const operation = this.performConnect(context);
+    this.connectInFlight = operation;
     void operation.finally(() => {
-      if (this.toggleInFlight === operation) this.toggleInFlight = null;
+      if (this.connectInFlight === operation) this.connectInFlight = null;
     }).catch(() => undefined);
     return operation;
   }
 
-  /** Performs one transport transition while public callers coalesce repeated requests. */
-  private async performToggle(context: AudioSessionContext): Promise<void> {
-    if (this.voiceStatus.connected) {
-      const nextEnabled = !this.voiceStatus.microphoneEnabled;
-      context.logVoice("microphone_toggle_requested", { enabled: nextEnabled });
-      await this.sink.setInputEnabled(nextEnabled);
-      context.logVoice("microphone_toggle_succeeded", { enabled: nextEnabled });
-      this.updateVoiceStatus({
-        microphoneEnabled: nextEnabled,
-        message: nextEnabled ? "Microphone live" : "Microphone muted"
-      });
-      return;
-    }
-
+  /** Performs one fresh transport connection using the controller-owned microphone preference. */
+  private async performConnect(context: AudioSessionContext): Promise<void> {
+    if (this.voiceStatus.connected) return;
     context.logVoice("voice_connect_requested", {
       user_agent: typeof navigator === "undefined" ? "" : navigator.userAgent,
       secure_context: typeof window !== "undefined" && window.isSecureContext
     });
-    this.updateVoiceStatus({ connecting: true, message: "Connecting voice..." });
+    this.updateVoiceStatus({ connecting: true, error: null, message: "Connecting voice..." });
     const generation = ++this.transportGeneration;
     try {
       const input = this.microphone.input();
+      await this.sink.setInputEnabled(this.desiredMicrophoneEnabled);
       await this.sink.connect(input, {
         ...context,
         onVoiceStatus: (status) => {
@@ -100,9 +92,51 @@ export class AudioSessionController {
     }
   }
 
+  /** Sets the participant's desired mute state and reconciles any request made during a transition. */
+  setMicrophoneMuted(muted: boolean, context: AudioSessionContext): Promise<void> {
+    this.desiredMicrophoneEnabled = !muted;
+    if (this.muteInFlight) return this.muteInFlight;
+    const operation = this.reconcileMicrophoneState(context);
+    this.muteInFlight = operation;
+    void operation.finally(() => {
+      if (this.muteInFlight === operation) this.muteInFlight = null;
+    }).catch(() => undefined);
+    return operation;
+  }
+
+  /** Applies the latest desired microphone state, including a preference changed mid-transition. */
+  private async reconcileMicrophoneState(context: AudioSessionContext): Promise<void> {
+    if (!this.voiceStatus.connected) return;
+    while (this.voiceStatus.microphoneEnabled !== this.desiredMicrophoneEnabled) {
+      const enabled = this.desiredMicrophoneEnabled;
+      context.logVoice("microphone_toggle_requested", { enabled });
+      this.updateVoiceStatus({ microphoneChanging: true, error: null });
+      try {
+        await this.sink.setInputEnabled(enabled);
+      } catch (error) {
+        const action = enabled ? "unmute" : "mute";
+        context.logVoice("microphone_toggle_failed", { enabled });
+        this.updateVoiceStatus({
+          microphoneChanging: false,
+          error: `Could not ${action} the microphone.`,
+          message: this.voiceStatus.microphoneEnabled ? "Microphone live" : "Microphone muted"
+        });
+        throw error;
+      }
+      context.logVoice("microphone_toggle_succeeded", { enabled });
+      this.updateVoiceStatus({
+        microphoneEnabled: enabled,
+        microphoneChanging: false,
+        message: enabled ? "Microphone live" : "Microphone muted"
+      });
+    }
+  }
+
   async disconnect(resetPreflight = false): Promise<void> {
     await this.disconnectTransport();
     if (resetPreflight) {
+      this.desiredMicrophoneEnabled = true;
+      await this.sink.setInputEnabled(true);
       this.microphone.reset();
     } else {
       this.microphone.stop();
@@ -114,7 +148,7 @@ export class AudioSessionController {
   private async disconnectTransport(): Promise<void> {
     this.transportGeneration += 1;
     await this.sink.disconnect();
-    this.voiceStatus = initialVoiceStatus;
+    this.voiceStatus = { ...initialVoiceStatus };
     this.emit();
   }
 

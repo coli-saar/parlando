@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { voiceButtonLabel } from "./helpers.js";
+import { microphoneMuteButtonLabel } from "./helpers.js";
 import type { AudioSessionController, AudioSessionSnapshot, VoiceStatus } from "./index.js";
 import { initialVoiceStatus } from "./index.js";
 
@@ -11,18 +11,26 @@ export function useVoiceController(controller: AudioSessionController): AudioSes
 
 export { MicLevelMeter, TranscriptionProgress } from "./voiceComponents.js";
 
-export function VoiceJoinButton({
+/** Renders the participant control for muting an already connected microphone. */
+export function MicrophoneMuteButton({
   voiceEnabled,
-  onToggleVoice,
+  onMicrophoneMutedChange,
   voiceStatus = initialVoiceStatus
 }: {
   voiceEnabled: boolean;
-  onToggleVoice: () => void;
+  onMicrophoneMutedChange: (muted: boolean) => void;
   voiceStatus?: VoiceStatus;
 }) {
+  const muted = voiceStatus.connected && !voiceStatus.microphoneEnabled;
   return (
-    <button disabled={!voiceEnabled || voiceStatus.connecting} onClick={onToggleVoice}>
-      {voiceButtonLabel(voiceStatus)}
+    <button
+      aria-pressed={muted}
+      className={`microphone-mute-button ${muted ? "muted" : "live"}`}
+      disabled={!voiceEnabled || !voiceStatus.connected || voiceStatus.microphoneChanging}
+      onClick={() => onMicrophoneMutedChange(!muted)}
+      type="button"
+    >
+      {microphoneMuteButtonLabel(voiceStatus)}
     </button>
   );
 }

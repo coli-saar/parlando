@@ -3,11 +3,21 @@ import type { VoiceStatus } from "./audio/types.js";
 import { initialVoiceStatus } from "./audio/types.js";
 import { transcriptionProgressForStatus } from "./helpers.js";
 
-/** Renders a normalized microphone level without exposing device details. */
-export function MicLevelMeter({ active, label, level }: { active: boolean; label: string; level: number }) {
+/** Renders a normalized local microphone level, with a colorless fill while transport-muted. */
+export function MicLevelMeter({
+  active,
+  label,
+  level,
+  muted = false
+}: {
+  active: boolean;
+  label: string;
+  level: number;
+  muted?: boolean;
+}) {
   const normalizedLevel = Number.isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
   return (
-    <div className="mic-meter">
+    <div className={`mic-meter ${muted ? "muted" : "live"}`}>
       <span>{label}</span>
       <div className="mic-meter-track" aria-hidden="true">
         <span style={{ transform: `scaleX(${active ? normalizedLevel : 0})` }} />

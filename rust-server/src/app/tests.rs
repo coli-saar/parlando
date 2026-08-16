@@ -2730,6 +2730,246 @@ impl TranscriptionProvider for DuplicateFinalTranscriptionProvider {
     }
 }
 
+/// Records canonical frames received from each role during the JavaScript mute contract.
+#[derive(Clone)]
+struct MuteContractTranscriptionProvider {
+    frames: Arc<Mutex<Vec<(String, u8)>>>,
+}
+
+#[async_trait]
+impl TranscriptionProvider for MuteContractTranscriptionProvider {
+    /// Starts a provider-neutral session that records the first byte of every input frame.
+    async fn start_session(
+        &self,
+        context: TranscriptionSessionContext,
+    ) -> Result<crate::transcription::TranscriptionSessionHandle> {
+        let (input, mut inputs) = mpsc::channel(32);
+        let (events, event_receiver) = mpsc::channel(4);
+        let frames = self.frames.clone();
+        tokio::spawn(async move {
+            let _ = events.send(TranscriptionEvent::Ready).await;
+            while let Some(message) = inputs.recv().await {
+                match message {
+                    TranscriptionInput::Audio(frame) => frames.lock().unwrap().push((
+                        context.role.clone(),
+                        frame.pcm.first().copied().unwrap_or(0),
+                    )),
+                    TranscriptionInput::Finish => break,
+                }
+            }
+        });
+        Ok(crate::transcription::TranscriptionSessionHandle {
+            input,
+            events: event_receiver,
+        })
+    }
+}
+
+/// Sends one line-delimited command to the JavaScript driver and reads its response.
+async fn javascript_mute_command(
+    input: &mut tokio::process::ChildStdin,
+    output: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    command: Value,
+) -> Value {
+    use tokio::io::AsyncWriteExt as _;
+
+    input
+        .write_all(format!("{command}\n").as_bytes())
+        .await
+        .unwrap();
+    input.flush().await.unwrap();
+    let line = tokio::time::timeout(Duration::from_secs(5), output.next_line())
+        .await
+        .expect("timed out waiting for JavaScript mute driver")
+        .expect("could not read JavaScript mute driver output")
+        .expect("JavaScript mute driver exited without a response");
+    serde_json::from_str(&line).expect("JavaScript mute driver returned invalid JSON")
+}
+
+/// Waits until transcription has observed all expected role-A frame markers.
+async fn wait_for_transcription_markers(frames: &Arc<Mutex<Vec<(String, u8)>>>, expected: &[u8]) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let observed = frames
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|(role, marker)| (role == "A").then_some(*marker))
+                .collect::<Vec<_>>();
+            if observed == expected {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("transcription did not receive the expected JavaScript frames");
+}
+
+/// Exercises the built JavaScript sink against the production Rust audio WebSocket.
+///
+/// This is ignored in ordinary Rust-only package tests because it requires Node and a freshly
+/// built `js-client/dist`. The repository `test-client-server` target owns those prerequisites.
+#[tokio::test]
+#[ignore = "run through make test-client-server after building js-client"]
+async fn javascript_sink_mute_contract_blocks_relay_and_transcription() {
+    use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+
+    let frames = Arc::new(Mutex::new(Vec::new()));
+    let mut config = voice_enabled_config();
+    config.transcription.enabled = true;
+    config.speechmatics.api_key = "contract-test-key".to_string();
+    let router = build_router(
+        TinyAdapter,
+        config,
+        ServeOptions {
+            transcription_provider: Some(Arc::new(MuteContractTranscriptionProvider {
+                frames: frames.clone(),
+            })),
+            ..ServeOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    let (participant_a, participant_b, room_id) = create_joined_room(router.clone()).await;
+    let plan_a = request_audio_plan(router.clone(), &room_id, &participant_a).await;
+    let plan_b = request_audio_plan(router.clone(), &room_id, &participant_b).await;
+    let (base_url, server) = spawn_test_server(router).await;
+    let host = base_url.trim_start_matches("http://");
+    let (mut socket_b, _) = connect_async(format!(
+        "ws://{host}/ws/audio/{room_id}?token={}",
+        plan_b["token"].as_str().unwrap()
+    ))
+    .await
+    .unwrap();
+
+    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let fixture = json!({
+        "origin": base_url,
+        "room_id": room_id,
+        "participant_session_id": participant_a,
+        "plan": plan_a,
+    });
+    let mut child = tokio::process::Command::new("node")
+        .arg(repository.join("js-client/tests/clientServerMuteContract.mjs"))
+        .current_dir(repository)
+        .env("PARLANDO_MUTE_CONTRACT", fixture.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("could not start JavaScript mute contract driver");
+    let mut child_input = child.stdin.take().unwrap();
+    let mut child_output = BufReader::new(child.stdout.take().unwrap()).lines();
+    let ready = tokio::time::timeout(Duration::from_secs(10), child_output.next_line())
+        .await
+        .expect("timed out connecting JavaScript audio sink")
+        .unwrap()
+        .expect("JavaScript audio sink exited before connecting");
+    assert_eq!(
+        serde_json::from_str::<Value>(&ready).unwrap()["type"],
+        "ready"
+    );
+
+    let live = javascript_mute_command(
+        &mut child_input,
+        &mut child_output,
+        json!({"type":"capture", "marker":1}),
+    )
+    .await;
+    assert_eq!(
+        live,
+        json!({"type":"captured", "marker":1, "track_enabled":true})
+    );
+    let live_frame = AudioFrame::decode(&read_audio_binary(&mut socket_b).await).unwrap();
+    assert_eq!(live_frame.pcm[0], 1);
+    wait_for_transcription_markers(&frames, &[1]).await;
+
+    let muted = javascript_mute_command(
+        &mut child_input,
+        &mut child_output,
+        json!({"type":"mute", "muted":true}),
+    )
+    .await;
+    assert_eq!(
+        muted,
+        json!({"type":"muteChanged", "muted":true, "track_enabled":false})
+    );
+    let muted_capture = javascript_mute_command(
+        &mut child_input,
+        &mut child_output,
+        json!({"type":"capture", "marker":2}),
+    )
+    .await;
+    assert_eq!(muted_capture["track_enabled"], false);
+    assert_no_audio_binary(&mut socket_b).await;
+    assert_eq!(
+        frames
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(role, marker)| (role == "A").then_some(*marker))
+            .collect::<Vec<_>>(),
+        vec![1]
+    );
+
+    let partner_frame = AudioFrame {
+        sequence: 0,
+        timestamp_ms: 0,
+        pcm: vec![9; crate::audio::AUDIO_FRAME_BYTES],
+    }
+    .encode();
+    socket_b
+        .send(TungsteniteMessage::Binary(partner_frame))
+        .await
+        .unwrap();
+    let playback = javascript_mute_command(
+        &mut child_input,
+        &mut child_output,
+        json!({"type":"waitForPlayback", "count":2}),
+    )
+    .await;
+    assert_eq!(playback, json!({"type":"playback", "count":2}));
+
+    let unmuted = javascript_mute_command(
+        &mut child_input,
+        &mut child_output,
+        json!({"type":"mute", "muted":false}),
+    )
+    .await;
+    assert_eq!(
+        unmuted,
+        json!({"type":"muteChanged", "muted":false, "track_enabled":true})
+    );
+    javascript_mute_command(
+        &mut child_input,
+        &mut child_output,
+        json!({"type":"capture", "marker":3}),
+    )
+    .await;
+    let resumed_frame = AudioFrame::decode(&read_audio_binary(&mut socket_b).await).unwrap();
+    assert_eq!(resumed_frame.pcm[0], 3);
+    wait_for_transcription_markers(&frames, &[1, 3]).await;
+
+    let disconnected = javascript_mute_command(
+        &mut child_input,
+        &mut child_output,
+        json!({"type":"disconnect"}),
+    )
+    .await;
+    assert_eq!(disconnected["type"], "disconnected");
+    child_input.shutdown().await.unwrap();
+    assert!(tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("JavaScript mute driver did not exit")
+        .unwrap()
+        .success());
+    server.abort();
+}
+
 #[tokio::test]
 async fn audio_websocket_relays_pcm_and_commits_one_final_utterance() {
     let mut config = voice_enabled_config();

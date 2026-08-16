@@ -11,7 +11,7 @@ controls, assets, language, and interaction model.
 - `ExperimentApiClient`, URL helpers, checked JSON helpers, and socket helpers.
 - Voice-session orchestration for microphone setup and sink lifecycle.
 - A provider-neutral browser audio sink for Parlando's server relay.
-- Reusable platform widgets and hooks under `@coli-saar/parlando-client/react`, such as microphone level, voice status, and transcription status components.
+- Reusable platform widgets and hooks under `@coli-saar/parlando-client/react`, such as microphone mute, local level, voice status, and transcription status components.
 
 ## Game-owned capabilities
 
@@ -44,7 +44,7 @@ The SDK does not configure Speechmatics or TTS services directly. A game client 
 
 ## Widgets
 
-The SDK may include reusable platform widgets when they describe Parlando runtime state rather than game UI. Good examples are mic-level meters, voice join controls, consent controls, waiting-room indicators, connection status chips, and STT readiness chips.
+The SDK may include reusable platform widgets when they describe Parlando runtime state rather than game UI. Good examples are mic-level meters, microphone mute controls, consent controls, waiting-room indicators, connection status chips, and STT readiness chips.
 
 These widgets stay generic: they accept state and callbacks from the game app,
 avoid knowledge of a particular state model, and expose CSS classes or props so

@@ -66,6 +66,7 @@ class FakeMicrophoneSource {
   }
 
   reset() {
+    this.prepared = false;
     return undefined;
   }
 }
@@ -78,6 +79,7 @@ class FakeSink implements LocalAudioSink {
   enabled: boolean[] = [];
   lastInput: MicrophoneInput | null = null;
   lastContext: AudioSessionContext | null = null;
+  currentEnabled = true;
 
   async connect(input: MicrophoneInput, context: AudioSessionContext) {
     this.connectCalls += 1;
@@ -86,12 +88,14 @@ class FakeSink implements LocalAudioSink {
     context.onVoiceStatus({
       connected: true,
       connecting: false,
-      microphoneEnabled: true,
-      message: "Microphone live"
+      microphoneEnabled: this.currentEnabled,
+      microphoneChanging: false,
+      message: this.currentEnabled ? "Microphone live" : "Microphone muted"
     });
   }
 
   async setInputEnabled(enabled: boolean) {
+    this.currentEnabled = enabled;
     this.enabled.push(enabled);
   }
 
@@ -141,14 +145,14 @@ describe("AudioSessionController", () => {
     });
 
     await controller.prepare("default", "Default microphone");
-    await controller.toggle(context());
+    await controller.connect(context());
 
     expect(microphone.calls).toBe(1);
     expect(sink.connectCalls).toBe(1);
     expect(sink.lastInput?.track).toBe(microphone["inputValue"].track);
   });
 
-  it("toggles one transport without reacquiring the microphone", async () => {
+  it("sets explicit mute state without reacquiring the microphone", async () => {
     const microphone = new FakeMicrophoneSource();
     const sink = new FakeSink();
     const controller = new AudioSessionController({
@@ -157,13 +161,13 @@ describe("AudioSessionController", () => {
     });
 
     await controller.prepare("default", "Default microphone");
-    await controller.toggle(context());
-    await controller.toggle(context());
-    await controller.toggle(context());
+    await controller.connect(context());
+    await controller.setMicrophoneMuted(true, context());
+    await controller.setMicrophoneMuted(false, context());
 
     expect(microphone.calls).toBe(1);
     expect(sink.connectCalls).toBe(1);
-    expect(sink.enabled).toEqual([false, true]);
+    expect(sink.enabled).toEqual([true, false, true]);
   });
 
   it("preserves the prepared microphone when transport connection fails", async () => {
@@ -175,7 +179,7 @@ describe("AudioSessionController", () => {
     const controller = new AudioSessionController({ microphone: microphone as any, sink });
     await controller.prepare("default", "Default microphone");
 
-    await expect(controller.toggle(context())).rejects.toThrow("worklet failed");
+    await expect(controller.connect(context())).rejects.toThrow("worklet failed");
 
     expect(microphone.calls).toBe(1);
     expect(microphone.prepared).toBe(true);
@@ -183,7 +187,7 @@ describe("AudioSessionController", () => {
     expect(controller.snapshot().voicePreflight.ready).toBe(true);
   });
 
-  it("coalesces simultaneous connect toggles into one transport operation", async () => {
+  it("coalesces simultaneous connection requests into one transport operation", async () => {
     const microphone = new FakeMicrophoneSource();
     const sink = new FakeSink();
     const gate = deferred();
@@ -197,10 +201,10 @@ describe("AudioSessionController", () => {
     const controller = new AudioSessionController({ microphone: microphone as any, sink });
     await controller.prepare("default");
 
-    const first = controller.toggle(context());
-    const second = controller.toggle(context());
+    const first = controller.connect(context());
+    const second = controller.connect(context());
     expect(first).toBe(second);
-    expect(sink.connectCalls).toBe(1);
+    await vi.waitFor(() => expect(sink.connectCalls).toBe(1));
     gate.resolve();
     await Promise.all([first, second]);
 
@@ -212,7 +216,7 @@ describe("AudioSessionController", () => {
     const sink = new FakeSink();
     const controller = new AudioSessionController({ microphone: microphone as any, sink });
     await controller.prepare("default");
-    await controller.toggle(context());
+    await controller.connect(context());
     const staleStatus = sink.lastContext!.onVoiceStatus;
 
     await controller.disconnect();
@@ -222,15 +226,73 @@ describe("AudioSessionController", () => {
     expect(controller.snapshot().voiceStatus.message).not.toBe("stale resurrection");
   });
 
-  it("leaves mute state unchanged when the sink rejects a toggle", async () => {
+  it("leaves mute state unchanged and exposes an error when the sink rejects muting", async () => {
     const microphone = new FakeMicrophoneSource();
     const sink = new FakeSink();
     const controller = new AudioSessionController({ microphone: microphone as any, sink });
     await controller.prepare("default");
-    await controller.toggle(context());
+    await controller.connect(context());
     sink.setInputEnabled = vi.fn(async () => { throw new Error("transport gone"); });
 
-    await expect(controller.toggle(context())).rejects.toThrow("transport gone");
+    await expect(controller.setMicrophoneMuted(true, context())).rejects.toThrow("transport gone");
     expect(controller.snapshot().voiceStatus.microphoneEnabled).toBe(true);
+    expect(controller.snapshot().voiceStatus).toMatchObject({
+      microphoneChanging: false,
+      error: "Could not mute the microphone."
+    });
+  });
+
+  it("preserves mute preference across an automatic transport reconnect", async () => {
+    const microphone = new FakeMicrophoneSource();
+    const sink = new FakeSink();
+    const controller = new AudioSessionController({ microphone: microphone as any, sink });
+    await controller.prepare("default");
+    await controller.connect(context());
+    await controller.setMicrophoneMuted(true, context());
+
+    sink.lastContext!.onVoiceStatus({ connected: false, microphoneEnabled: false, message: "Voice disconnected" });
+    await controller.connect(context());
+
+    expect(sink.connectCalls).toBe(2);
+    expect(sink.enabled).toEqual([true, false, false]);
+    expect(controller.snapshot().voiceStatus).toMatchObject({ connected: true, microphoneEnabled: false });
+  });
+
+  it("resets a muted preference for the next deliberately started session", async () => {
+    const microphone = new FakeMicrophoneSource();
+    const sink = new FakeSink();
+    const controller = new AudioSessionController({ microphone: microphone as any, sink });
+    await controller.prepare("default");
+    await controller.connect(context());
+    await controller.setMicrophoneMuted(true, context());
+
+    await controller.disconnect(true);
+    await controller.prepare("default");
+    await controller.connect(context());
+
+    expect(sink.enabled).toEqual([true, false, true, true]);
+    expect(controller.snapshot().voiceStatus).toMatchObject({ connected: true, microphoneEnabled: true });
+  });
+
+  it("reconciles a preference changed while muting is in flight", async () => {
+    const microphone = new FakeMicrophoneSource();
+    const sink = new FakeSink();
+    const gate = deferred();
+    const originalSetter = sink.setInputEnabled.bind(sink);
+    sink.setInputEnabled = vi.fn(async (enabled: boolean) => {
+      if (!enabled) await gate.promise;
+      await originalSetter(enabled);
+    });
+    const controller = new AudioSessionController({ microphone: microphone as any, sink });
+    await controller.prepare("default");
+    await controller.connect(context());
+
+    const muting = controller.setMicrophoneMuted(true, context());
+    const unmuting = controller.setMicrophoneMuted(false, context());
+    gate.resolve();
+    await Promise.all([muting, unmuting]);
+
+    expect(controller.snapshot().voiceStatus).toMatchObject({ microphoneEnabled: true, microphoneChanging: false });
+    expect(sink.enabled).toEqual([true, false, true]);
   });
 });

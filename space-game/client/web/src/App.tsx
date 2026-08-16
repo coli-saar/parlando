@@ -4,7 +4,7 @@ import {
   MicLevelMeter,
   ParlandoStartupGate,
   TranscriptionStatusChip,
-  VoiceJoinButton,
+  MicrophoneMuteButton,
   participantMicrophoneLabel,
   type ActiveParlandoSession
 } from "@coli-saar/parlando-client/react";
@@ -142,7 +142,7 @@ function ActiveSpaceGame({ session }: { session: SpaceGameSession }) {
             voiceEnabled={audioStudy}
             onChatDraftChange={setChatDraft}
             onSubmitChat={submitChat}
-            onToggleVoice={() => void session.toggleVoice()}
+            onMicrophoneMutedChange={(muted) => void session.setMicrophoneMuted(muted).catch(() => undefined)}
             voicePreflight={voicePreflight}
             voiceStatus={voiceStatus}
           />
@@ -448,13 +448,14 @@ function SharedConsole({
   );
 }
 
-function CommunicationPanel({
+/** Renders Space Game text or voice communication with explicit local mute feedback. */
+export function CommunicationPanel({
   chatDraft,
   conversation,
   voiceEnabled,
   onChatDraftChange,
   onSubmitChat,
-  onToggleVoice,
+  onMicrophoneMutedChange,
   voicePreflight,
   voiceStatus
 }: {
@@ -463,7 +464,7 @@ function CommunicationPanel({
   voiceEnabled: boolean;
   onChatDraftChange: (value: string) => void;
   onSubmitChat: () => void;
-  onToggleVoice: () => void;
+  onMicrophoneMutedChange: (muted: boolean) => void;
   voicePreflight: VoicePreflight;
   voiceStatus: VoiceStatus;
 }) {
@@ -510,22 +511,48 @@ function CommunicationPanel({
     );
   }
 
+  const microphoneMuted = voiceStatus.connected && !voiceStatus.microphoneEnabled;
+  const microphoneLive = voiceStatus.connected && voiceStatus.microphoneEnabled;
+  const microphoneLabel = microphoneMuted
+    ? "Microphone muted"
+    : microphoneLive
+      ? "Microphone live"
+      : voiceStatus.connecting
+        ? "Microphone connecting"
+        : "Microphone disconnected";
+
   return (
-    <section className="communication-panel" aria-label="Voice chat">
+    <section className={`communication-panel ${microphoneMuted ? "microphone-muted" : ""}`} aria-label="Voice chat">
       <div className="communication-header">
         <div>
           <p className="eyebrow">Comms</p>
           <h3>{voiceStatus.message}</h3>
         </div>
-        <VoiceJoinButton voiceEnabled={voiceEnabled} onToggleVoice={onToggleVoice} voiceStatus={voiceStatus} />
+        <MicrophoneMuteButton
+          voiceEnabled={voiceEnabled}
+          onMicrophoneMutedChange={onMicrophoneMutedChange}
+          voiceStatus={voiceStatus}
+        />
       </div>
       <div className="voice-feedback" aria-label="Voice diagnostics">
         <div className="meter-stack">
+          <span
+            aria-live="polite"
+            className={`microphone-state-label ${microphoneLive ? "live" : "muted"}`}
+          >
+            {microphoneLabel}
+          </span>
           <span className="mic-device-label">{participantMicrophoneLabel(voicePreflight.deviceLabel)}</span>
-          <MicLevelMeter active={voicePreflight.micProbeActive} label="Level" level={voicePreflight.micLevel} />
+          <MicLevelMeter
+            active={voicePreflight.micProbeActive}
+            label="Level"
+            level={voicePreflight.micLevel}
+            muted={!microphoneLive}
+          />
         </div>
         <TranscriptionStatusChip voiceStatus={voiceStatus} />
       </div>
+      {voiceStatus.error && <p className="voice-error" role="alert">{voiceStatus.error}</p>}
     </section>
   );
 }

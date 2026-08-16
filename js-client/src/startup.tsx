@@ -2,7 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { AudioSessionController } from "./audio/audioSessionController.js";
 import { ParlandoAudioSink } from "./audio/parlandoAudioSink.js";
 import { MicrophoneSource } from "./audio/microphoneSource.js";
-import { initialVoicePreflight, initialVoiceStatus, type VoicePreflight, type VoiceStatus } from "./audio/types.js";
+import {
+  initialVoicePreflight,
+  initialVoiceStatus,
+  type AudioSessionContext,
+  type VoicePreflight,
+  type VoiceStatus
+} from "./audio/types.js";
 import { experimentAllowsIntake, requiredConsentsAccepted, type PresenceState } from "./helpers.js";
 import { MicLevelMeter, TranscriptionProgress } from "./voiceComponents.js";
 import {
@@ -37,7 +43,7 @@ export interface ActiveParlandoSession<
   completionSummary: TSummary | null;
   sendAction(action: TAction): void;
   sendChatMessage(text: string): void;
-  toggleVoice(): Promise<void>;
+  setMicrophoneMuted(muted: boolean): Promise<void>;
   leave(): void;
 }
 
@@ -389,36 +395,44 @@ export function ParlandoStartupGate<
     }
   }, [audioController, audioInputs, refreshAudioInputs, voiceEnabled]);
 
-  const toggleVoice = useCallback(async () => {
-    if (!session) return;
+  /** Builds the current room-bound context shared by voice connection and mute operations. */
+  const currentAudioContext = useCallback((): AudioSessionContext | null => {
+    if (!session) return null;
     const selectedAudioInput = audioInputs.find((device) => device.deviceId === selectedAudioInputId);
     const logVoice = (event: string, metadata: Record<string, unknown> = {}) => {
       apiClient.postVoiceDiagnostic(session.roomId, event, metadata);
     };
-    await audioController.toggle(
-      {
-        roomId: session.roomId,
-        participantSessionId: session.participantSessionId,
-        role: session.role,
-        selectedAudioInputId,
-        selectedAudioInputLabel: selectedAudioInput?.label || null,
-        getAudioSession: () => apiClient.getAudioSession(session.roomId),
-        logVoice,
-        onVoiceStatus: (status) => audioController.updateVoiceStatus(status)
-      }
-    );
+    return {
+      roomId: session.roomId,
+      participantSessionId: session.participantSessionId,
+      role: session.role,
+      selectedAudioInputId,
+      selectedAudioInputLabel: selectedAudioInput?.label || null,
+      getAudioSession: () => apiClient.getAudioSession(session.roomId),
+      logVoice,
+      onVoiceStatus: (status) => audioController.updateVoiceStatus(status)
+    };
   }, [apiClient, audioController, audioInputs, selectedAudioInputId, session]);
 
-  /** Connects the prepared microphone to the room transport exactly once automatically. */
+  /** Connects the prepared microphone without changing the participant's desired mute state. */
   const connectVoice = useCallback(async () => {
+    const context = currentAudioContext();
+    if (!context) return;
     setError("");
     try {
-      await toggleVoice();
+      await audioController.connect(context);
     } catch (caught) {
       setError(errorMessage(caught, "Could not start voice chat."));
       setVoiceReconnectGeneration((generation) => generation + 1);
     }
-  }, [toggleVoice]);
+  }, [audioController, currentAudioContext]);
+
+  /** Applies a participant-requested mute state while retaining the live voice transport. */
+  const setMicrophoneMuted = useCallback(async (muted: boolean) => {
+    const context = currentAudioContext();
+    if (!context) return;
+    await audioController.setMicrophoneMuted(muted, context);
+  }, [audioController, currentAudioContext]);
 
   useEffect(() => {
     let cancelled = false;
@@ -537,7 +551,7 @@ export function ParlandoStartupGate<
       completionSummary: session.completionSummary,
       sendAction: (action) => sendActionIfGameActive(apiClient, session, action),
       sendChatMessage: (text) => sendChatMessageIfGameActive(apiClient, session, text),
-      toggleVoice,
+      setMicrophoneMuted,
       leave
     };
     return <>{renderGame(activeSession)}</>;

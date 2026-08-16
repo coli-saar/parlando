@@ -6,13 +6,13 @@ RUST_SERVER_DIR := $(PARLANDO_DIR)/rust-server
 JS_CLIENT_DIR := $(PARLANDO_DIR)/js-client
 NPM_CACHE ?= $(PARLANDO_DIR)/.local/npm-cache
 
-.PHONY: all test test-rust test-js-client test-python install-local install-js-client package-local package-rust-server-local package-js-client-local publish-dry-run publish-rust-server-dry-run publish-js-client-dry-run publish-rust-server publish-js-client
+.PHONY: all test test-rust test-js-client test-client-server test-python install-local install-js-client package-local package-rust-server-local package-js-client-local publish-dry-run publish-rust-server-dry-run publish-js-client-dry-run publish-rust-server publish-js-client
 
 # Default workflow: prepare the reusable JavaScript client for local development.
 all: install-local
 
 # Runs the complete reusable-server, browser-client, and Python-SDK test matrix.
-test: test-rust test-js-client test-python
+test: test-rust test-client-server test-python
 
 # Runs the Rust unit, integration, protocol, and documentation tests.
 test-rust:
@@ -23,6 +23,10 @@ test-js-client:
 	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" test
 	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" run build
 	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" run test:coverage
+
+# Runs the built JavaScript audio sink against the production Rust audio WebSocket.
+test-client-server: test-js-client
+	cd "$(RUST_SERVER_DIR)" && cargo test app::tests::javascript_sink_mute_contract_blocks_relay_and_transcription --lib -- --ignored --exact
 
 # Runs the Python SDK suite in an environment where its package dependencies are installed.
 test-python:

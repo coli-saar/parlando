@@ -100,7 +100,7 @@ The YAML `study.name` is the participant-facing title. The gate passes an `Activ
 Use these session fields in game UI as needed:
 
 - `role`, `observation`, `availableActions`, and `events` for role-specific game rendering.
-- `conversation`, `sendChatMessage`, `voiceStatus`, and `toggleVoice` for game-screen communication controls.
+- `conversation`, `sendChatMessage`, `voiceStatus`, and `setMicrophoneMuted` for game-screen communication controls.
 - `sendAction(action)` for game actions.
 - `completed`, `completionSummary`, `connected`, and `leave` for game-screen status and controls.
 
@@ -119,17 +119,17 @@ For active game screens that expose voice or STT state, prefer the reusable expo
 ```tsx
 import {
   MicLevelMeter,
-  TranscriptionStatusChip,
-  VoiceJoinButton
+  MicrophoneMuteButton,
+  TranscriptionStatusChip
 } from "@coli-saar/parlando-client/react";
 
 function VoiceStrip({ session }: { session: GameSession }) {
   const transcriptionEnabled = Boolean(session.publicConfig.transcription?.enabled);
   return (
     <div className="voice-strip">
-      <VoiceJoinButton
+      <MicrophoneMuteButton
         voiceEnabled={Boolean(session.publicConfig.voice?.enabled)}
-        onToggleVoice={session.toggleVoice}
+        onMicrophoneMutedChange={session.setMicrophoneMuted}
         voiceStatus={session.voiceStatus}
       />
       {transcriptionEnabled && (
@@ -138,6 +138,7 @@ function VoiceStrip({ session }: { session: GameSession }) {
             active={session.voicePreflight.micProbeActive}
             label="Mic"
             level={session.voicePreflight.micLevel}
+            muted={!session.voiceStatus.connected || !session.voiceStatus.microphoneEnabled}
           />
           <TranscriptionStatusChip voiceStatus={session.voiceStatus} />
         </>
