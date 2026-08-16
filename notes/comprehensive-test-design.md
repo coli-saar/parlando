@@ -12,7 +12,7 @@ As of 2026-08-15, the baseline is green:
 - the optional stress-TUI target contains three additional unit tests; and
 - `npm test` runs 28 JavaScript tests in five files.
 
-The server suite already exercises the main happy paths well. The largest gaps are deterministic failure injection, concurrent interleavings, lifecycle cleanup, security-boundary tables, remote-provider failures, catalogue merge behavior, and code that converts durable data for export. The client suite mostly tests pure helpers; it does not yet exercise the rendered startup state machine, `MicrophoneSource`, capture worklet, full audio sink lifecycle, browser teardown, or reconnect races. The Python SDK currently has no tests.
+The server suite already exercises the main happy paths well. The largest gaps are deterministic failure injection, concurrent interleavings, lifecycle cleanup, security-boundary tables, remote-provider failures, and code that converts durable data for export. The client suite mostly tests pure helpers; it does not yet exercise the rendered startup state machine, `MicrophoneSource`, capture worklet, full audio sink lifecycle, browser teardown, or reconnect races. The Python SDK currently has no tests.
 
 ## Reliability properties
 
@@ -103,7 +103,7 @@ Completion requires all P0 and P1 cases, no unexplained coverage regression, and
 
 1. Create a backend-neutral conformance suite for every `ExperimentStore` method. Run it against SQLite and any future implementation. Cover missing ids, empty results, legal status changes, repeated idempotent calls, invalid foreign references, limits, ordering, and metadata round trips.
 2. Concurrency: many parallel event appends produce gap-free unique event indexes; many session creates produce experiment-local monotonic ids; returning-participant upserts converge; stale configuration/game-setting revisions have one winner; session start has one winner; administrator setup has one winner; and terminal updates cannot overwrite each other.
-3. Transaction fault injection at every statement of configuration+secret saves, game-setting+secret saves, accepted action+completion, expiry, abandonment, participant deletion, and catalogue merge. After failure, assert no partial row, no advanced revision/index, no changed secret, no live state update, and a successful retry.
+3. Transaction fault injection at every statement of configuration+secret saves, game-setting+secret saves, accepted action+completion, expiry, abandonment, and participant deletion. After failure, assert no partial row, no advanced revision/index, no changed secret, no live state update, and a successful retry.
 4. Database restart tests for WAL recovery, active-experiment deactivation, immutable configuration/session provenance, administrator sessions, migration idempotency, and readable identifiers.
 5. Migration fixtures for every supported historical schema, not only selected migrations. Run each fixture directly to the current schema and through every intermediate version; compare schema, indexes, data, and a second no-op migration.
 6. Export scoping: two experiments with overlapping session ids and mixed test/research data; missing session; empty experiment; all JSON shapes; stable ordering; no cross-scope participants, consents, or events; and repeated byte-stable output where the API promises stability.
@@ -321,8 +321,7 @@ The following tests deserve first implementation because the current structure m
 8. chat/transcript arrival after `abandoned` or `expired` rather than only after `completed`;
 9. concurrent action/completion/leave/expiry with a required database failure inserted at each boundary;
 10. participant deletion where one participant-session id is a substring of unrelated stored text;
-11. catalogue merge dry-run, collision, participant-key remap, and rollback; and
-12. protobuf `Struct` conversion for integers outside the exactly representable double range.
+11. protobuf `Struct` conversion for integers outside the exactly representable double range.
 
 ## Implementation sequence
 

@@ -41,7 +41,6 @@ pub mod test_support {
     pub use crate::audio::*;
     pub use crate::config::*;
     pub use crate::remote_agent::pb as remote_agent_pb;
-    pub use crate::storage::{merge_sqlite_catalogues, CatalogueMergeReport, CatalogueRowCounts};
     pub use crate::transcription::*;
     pub use crate::tts::*;
 }

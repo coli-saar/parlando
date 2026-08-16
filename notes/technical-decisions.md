@@ -544,6 +544,8 @@ Tradeoffs: Stable identifier collisions abort a merge instead of guessing which 
 
 Follow-up risks: Future import tooling must retain the same preflight collision checks and atomic verification. Configuration migrations may later make selected historical experiments runnable again, but storage access must not become dependent on that migration.
 
+2026-08-16 correction: The catalogue merge was a one-time local consolidation and is not part of the 0.3 product or migration contract. Remove the `merge_sqlite_catalogues` binary, its internal storage implementation, and its dedicated tests instead of carrying database-import machinery with the reusable runtime. If a concrete import requirement appears later, design it from that requirement rather than preserving this historical tool.
+
 ## 2026-08-15: The administrator dashboard mirrors game, experiment, and session ownership (partly superseded)
 
 The 2026-08-16 public-API decision supersedes the participant-facing `study.name` references below. The ownership hierarchy and dashboard layout remain current.

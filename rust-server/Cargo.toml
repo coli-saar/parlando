@@ -57,11 +57,6 @@ name = "audio-stress-tui"
 path = "src/bin/audio_stress_tui.rs"
 required-features = ["stress-tui"]
 
-[[bin]]
-name = "merge_sqlite_catalogues"
-path = "src/bin/merge_sqlite_catalogues.rs"
-required-features = ["internal-tools"]
-
 [[test]]
 name = "mock_client_smoke"
 path = "tests/mock_client_smoke.rs"

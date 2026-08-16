@@ -95,7 +95,7 @@ The ordinary crate root should be close to four concepts: the game contract, gam
 | `RemoteGrpcAgent` and `remote_agent::pb` | Private | The per-session client and generated protocol types are implementation details. |
 | `AgentAudioPublisher` and `AudioPublishSummary` | Private | Their present use is runtime composition and testing, not a supported game-author task. |
 | `StreamingTtsProvider`, `TranscriptionProvider`, and provider DTOs | Private | A future provider API should be designed around a concrete external implementation rather than the current built-ins. |
-| `merge_sqlite_catalogues`, `CatalogueMergeReport`, and `CatalogueRowCounts` | Move to a private CLI module or maintenance crate | Database maintenance is not part of the reusable game-server API. |
+| `merge_sqlite_catalogues`, `CatalogueMergeReport`, and `CatalogueRowCounts` | Remove | The one-time local consolidation is complete, and database-import machinery is not part of the reusable runtime. |
 | Public storage records, `ExperimentStore`, `SqliteExperimentStore`, `AppState`, and `AppError` reachable through modules | `pub(crate)` | The dashboard and server can use them without imposing downstream compatibility. |
 
 ### 3.2 `Game` trait
