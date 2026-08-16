@@ -8,6 +8,14 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## [0.3.0] - 2026-08-16
 
+Version 0.3.0 introduces a number of major changes:
+
+- The public API was greatly simplified and classes and methods renamed. This is a breaking change that requires migration of existing code.
+- Clarified the ontology of experimentation: one Parlando server runs one game (e.g. the Space Game); many experiments can be configured for one game (e.g. human-human vs. human-agent, voice vs. typed); and many sessions can be collected for one experiment. This ontology is used consistently throughout the codebase.
+- The admin dashboard is the central way in which an experimenter interacts with a Parlando game. It was greatly improved in functionality and looks.
+- Security and privacy were greatly improved.
+
+
 ### Added
 
 - Added application-owned administrator authentication, roles, CSRF protection, participant bearer credentials, one-use game/audio upgrade tickets, exact origin enforcement, bounded resources, transactional action persistence, secret-redaction tooling, hardened container packaging, and authenticated TLS-capable remote agents.
