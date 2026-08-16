@@ -1435,9 +1435,9 @@ pub async fn merge_sqlite_catalogues(
            from merge_source.participants"#,
         r#"insert into main.sessions
                (experiment_id, session_id, room_id, dialogue_id, mode, status, created_at,
-                started_at, completed_at, completion_json, config_revision, game_version)
+                started_at, completed_at, completion_json, config_revision, game_version, purpose)
            select experiment_id, session_id, room_id, dialogue_id, mode, status, created_at,
-                  started_at, completed_at, completion_json, config_revision, game_version
+                  started_at, completed_at, completion_json, config_revision, game_version, purpose
            from merge_source.sessions"#,
         r#"insert into main.session_participants
                (experiment_id, session_id, participant_id, participant_session_id,
@@ -1447,9 +1447,9 @@ pub async fn merge_sqlite_catalogues(
            from merge_source.session_participants"#,
         r#"insert into main.consent_declarations
                (experiment_id, session_id, participant_id, consent_item_id, accepted,
-                declared_at, consent_text_hash, metadata_json)
+                declared_at, consent_text_hash, metadata_json, purpose)
            select experiment_id, session_id, participant_id + ?1, consent_item_id, accepted,
-                  declared_at, consent_text_hash, metadata_json
+                  declared_at, consent_text_hash, metadata_json, purpose
            from merge_source.consent_declarations"#,
         r#"insert into main.session_events
                (experiment_id, session_id, event_index, event_type, actor_participant_id,

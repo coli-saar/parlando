@@ -572,6 +572,7 @@ mod admin_setup_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     /// Confirms participant credentials are opaque, resolvable, and not stored as plaintext keys.
     #[tokio::test]
@@ -609,6 +610,161 @@ mod tests {
             .await;
         assert!(store
             .consume(&ticket, UpgradePurpose::Audio, "room")
+            .await
+            .is_none());
+        assert!(store
+            .consume(&ticket, UpgradePurpose::Game, "room")
+            .await
+            .is_none());
+    }
+
+    /// Confirms malformed, unknown, expired, and revoked participant credentials fail closed.
+    #[tokio::test]
+    async fn participant_credentials_fail_closed_at_every_invalid_state() {
+        let auth = ParticipantAuthenticator::default();
+        assert!(auth.authenticate("").await.is_none());
+        assert!(auth.authenticate("not-an-issued-token").await.is_none());
+
+        let expired = auth.issue("expired".to_string()).await;
+        auth.records
+            .write()
+            .await
+            .get_mut(&token_digest(&expired, &auth.pepper))
+            .unwrap()
+            .expires_at = now_timestamp();
+        assert!(auth.authenticate(&expired).await.is_none());
+
+        let revoked = auth.issue("revoked".to_string()).await;
+        auth.records
+            .write()
+            .await
+            .get_mut(&token_digest(&revoked, &auth.pepper))
+            .unwrap()
+            .revoked = true;
+        assert!(auth.authenticate(&revoked).await.is_none());
+    }
+
+    /// Confirms cleanup reports a participant only after its final active credential disappears.
+    #[tokio::test]
+    async fn credential_cleanup_preserves_active_sibling_credentials() {
+        let auth = ParticipantAuthenticator::default();
+        let expired = auth.issue("shared".to_string()).await;
+        let active = auth.issue("shared".to_string()).await;
+        auth.records
+            .write()
+            .await
+            .get_mut(&token_digest(&expired, &auth.pepper))
+            .unwrap()
+            .expires_at = now_timestamp();
+
+        assert!(auth.cleanup().await.is_empty());
+        assert!(auth.authenticate(&active).await.is_some());
+        auth.records
+            .write()
+            .await
+            .get_mut(&token_digest(&active, &auth.pepper))
+            .unwrap()
+            .revoked = true;
+        assert_eq!(auth.cleanup().await, HashSet::from(["shared".to_string()]));
+    }
+
+    /// Confirms revocation removes every capability associated with one participant session.
+    #[tokio::test]
+    async fn participant_session_revocation_removes_all_credentials() {
+        let auth = ParticipantAuthenticator::default();
+        let first = auth.issue("target".to_string()).await;
+        let second = auth.issue("target".to_string()).await;
+        let unrelated = auth.issue("other".to_string()).await;
+
+        auth.revoke_participant_session("target").await;
+
+        assert!(auth.authenticate(&first).await.is_none());
+        assert!(auth.authenticate(&second).await.is_none());
+        assert!(auth.authenticate(&unrelated).await.is_some());
+    }
+
+    /// Builds claims for ticket-scope tests without obscuring the scope under assertion.
+    fn claims(room_id: &str, participant: &str, purpose: UpgradePurpose) -> UpgradeTicketClaims {
+        UpgradeTicketClaims {
+            room_id: room_id.to_string(),
+            participant_session_id: participant.to_string(),
+            role: "A".to_string(),
+            generation: 7,
+            purpose,
+            expires_at: 0,
+        }
+    }
+
+    /// Confirms issuing a replacement invalidates only the matching room, participant, and purpose.
+    #[tokio::test]
+    async fn replacement_ticket_scope_is_exact() {
+        let store = UpgradeTicketStore::default();
+        let replaced = store
+            .issue(claims("room-a", "participant", UpgradePurpose::Game))
+            .await;
+        let audio = store
+            .issue(claims("room-a", "participant", UpgradePurpose::Audio))
+            .await;
+        let other_room = store
+            .issue(claims("room-b", "participant", UpgradePurpose::Game))
+            .await;
+        let replacement = store
+            .issue(claims("room-a", "participant", UpgradePurpose::Game))
+            .await;
+
+        assert!(store
+            .consume(&replaced, UpgradePurpose::Game, "room-a")
+            .await
+            .is_none());
+        assert!(store
+            .consume(&replacement, UpgradePurpose::Game, "room-a")
+            .await
+            .is_some());
+        assert!(store
+            .consume(&audio, UpgradePurpose::Audio, "room-a")
+            .await
+            .is_some());
+        assert!(store
+            .consume(&other_room, UpgradePurpose::Game, "room-b")
+            .await
+            .is_some());
+    }
+
+    /// Confirms atomically consuming one ticket under contention yields exactly one winner.
+    #[tokio::test]
+    async fn concurrent_ticket_consumption_has_exactly_one_winner() {
+        let store = Arc::new(UpgradeTicketStore::default());
+        let ticket = store
+            .issue(claims("room", "participant", UpgradePurpose::Game))
+            .await;
+        let mut attempts = Vec::new();
+        for _ in 0..32 {
+            let store = Arc::clone(&store);
+            let ticket = ticket.clone();
+            attempts.push(tokio::spawn(async move {
+                store
+                    .consume(&ticket, UpgradePurpose::Game, "room")
+                    .await
+                    .is_some()
+            }));
+        }
+        let mut winners = 0;
+        for attempt in attempts {
+            winners += usize::from(attempt.await.unwrap());
+        }
+        assert_eq!(winners, 1);
+    }
+
+    /// Locks in the fail-closed rule that a wrong-scope attempt also destroys a bearer ticket.
+    #[tokio::test]
+    async fn wrong_scope_consumption_burns_the_ticket() {
+        let store = UpgradeTicketStore::default();
+        let ticket = store
+            .issue(claims("room", "participant", UpgradePurpose::Game))
+            .await;
+
+        assert!(store
+            .consume(&ticket, UpgradePurpose::Game, "another-room")
             .await
             .is_none());
         assert!(store

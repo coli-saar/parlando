@@ -16,6 +16,8 @@ export class AudioSessionController {
   private voiceStatus: VoiceStatus = initialVoiceStatus;
   private voicePreflight: VoicePreflight = initialVoicePreflight;
   private listeners = new Set<Listener>();
+  private toggleInFlight: Promise<void> | null = null;
+  private transportGeneration = 0;
 
   /** Creates a controller for Parlando's single provider-neutral audio transport. */
   constructor({ microphone, sink }: { microphone: MicrophoneSource; sink: LocalAudioSink }) {
@@ -53,7 +55,18 @@ export class AudioSessionController {
   }
 
   /** Toggles mute for a connected session or connects the already prepared microphone. */
-  async toggle(context: AudioSessionContext): Promise<void> {
+  toggle(context: AudioSessionContext): Promise<void> {
+    if (this.toggleInFlight) return this.toggleInFlight;
+    const operation = this.performToggle(context);
+    this.toggleInFlight = operation;
+    void operation.finally(() => {
+      if (this.toggleInFlight === operation) this.toggleInFlight = null;
+    }).catch(() => undefined);
+    return operation;
+  }
+
+  /** Performs one transport transition while public callers coalesce repeated requests. */
+  private async performToggle(context: AudioSessionContext): Promise<void> {
     if (this.voiceStatus.connected) {
       const nextEnabled = !this.voiceStatus.microphoneEnabled;
       context.logVoice("microphone_toggle_requested", { enabled: nextEnabled });
@@ -71,11 +84,14 @@ export class AudioSessionController {
       secure_context: typeof window !== "undefined" && window.isSecureContext
     });
     this.updateVoiceStatus({ connecting: true, message: "Connecting voice..." });
+    const generation = ++this.transportGeneration;
     try {
       const input = this.microphone.input();
       await this.sink.connect(input, {
         ...context,
-        onVoiceStatus: (status) => this.updateVoiceStatus(status)
+        onVoiceStatus: (status) => {
+          if (generation === this.transportGeneration) this.updateVoiceStatus(status);
+        }
       });
     } catch (error) {
       context.logVoice("voice_connect_failed", { error: error instanceof Error ? error.message : String(error) });
@@ -96,6 +112,7 @@ export class AudioSessionController {
 
   /** Tears down only the room transport while preserving the prepared microphone input. */
   private async disconnectTransport(): Promise<void> {
+    this.transportGeneration += 1;
     await this.sink.disconnect();
     this.voiceStatus = initialVoiceStatus;
     this.emit();

@@ -23,51 +23,56 @@ export class ParlandoAudioSink implements LocalAudioSink {
     await this.disconnect();
     const plan = await context.getAudioSession();
     if (!plan.enabled || !plan.websocket_url || !plan.token) { context.onVoiceStatus({ connecting: false, message: "Voice is disabled for this study" }); return; }
-    const audio = new AudioContext();
-    this.audioContext = audio;
-    await Promise.all([
-      audio.audioWorklet.addModule(new URL("./captureWorklet.js", import.meta.url)),
-      audio.audioWorklet.addModule(new URL("./playbackWorklet.js", import.meta.url))
-    ]);
-    await audio.resume();
-    this.stream = input.createMediaStream("parlando-audio");
-    this.source = audio.createMediaStreamSource(this.stream);
-    this.capture = new AudioWorkletNode(audio, "parlando-capture", { numberOfOutputs: 0 });
-    this.playback = new AudioWorkletNode(audio, "parlando-playback", { numberOfInputs: 0, outputChannelCount: [1] });
-    this.playback.port.postMessage({ jitterSamples: Math.round(plan.sample_rate_hz * plan.jitter_buffer_ms / 1000) });
-    this.playback.port.onmessage = (event: MessageEvent<{ type?: string; count?: number; bufferedSamples?: number }>) => {
-      if (event.data.type === "playbackUnderrun") context.logVoice("audio_playback_underrun", { count: event.data.count, buffered_samples: event.data.bufferedSamples });
-    };
-    this.source.connect(this.capture);
-    this.playback.connect(audio.destination);
-    const url = new URL(plan.websocket_url, window.location.origin);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.searchParams.set("token", plan.token);
-    const socket = new WebSocket(url);
-    socket.binaryType = "arraybuffer";
-    this.socket = socket;
-    this.startedAt = performance.now();
-    await waitForSocketOpen(socket);
-    context.logVoice("parlando_audio_connected", { protocol_version: plan.protocol_version });
-    context.onVoiceStatus({ connected: true, connecting: false, microphoneEnabled: true, message: "Microphone live", transcriptionMessage: "Waiting for transcription service", transcriptionReady: false });
-    this.capture.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
-      if (this.enabled && socket.readyState === WebSocket.OPEN) socket.send(encodeFrame(this.sequence++, Math.round(performance.now() - this.startedAt), event.data));
-    };
-    socket.addEventListener("message", (event) => {
-      if (typeof event.data === "string") {
-        const status = JSON.parse(event.data) as { type?: string; ready?: boolean; message?: string };
-        if (status.type === "transcriptionStatus") context.onVoiceStatus({ transcriptionReady: Boolean(status.ready), transcriptionMessage: status.message ?? "ASR idle" });
-        return;
-      }
-      if (!(event.data instanceof ArrayBuffer) || event.data.byteLength !== HEADER_BYTES + PCM_BYTES) return;
-      const pcm = event.data.slice(HEADER_BYTES);
-      this.playback?.port.postMessage(pcm, [pcm]);
-      context.onVoiceStatus({ remoteAudio: true, message: "Voice connected" });
-    });
-    socket.addEventListener("close", () => {
-      if (this.socket !== socket) return;
-      context.onVoiceStatus({ connected: false, microphoneEnabled: false, remoteAudio: false, message: "Voice disconnected", transcriptionReady: false, transcriptionMessage: "ASR idle" });
-    });
+    try {
+      const audio = new AudioContext();
+      this.audioContext = audio;
+      await Promise.all([
+        audio.audioWorklet.addModule(new URL("./captureWorklet.js", import.meta.url)),
+        audio.audioWorklet.addModule(new URL("./playbackWorklet.js", import.meta.url))
+      ]);
+      await audio.resume();
+      this.stream = input.createMediaStream("parlando-audio");
+      this.source = audio.createMediaStreamSource(this.stream);
+      this.capture = new AudioWorkletNode(audio, "parlando-capture", { numberOfOutputs: 0 });
+      this.playback = new AudioWorkletNode(audio, "parlando-playback", { numberOfInputs: 0, outputChannelCount: [1] });
+      this.playback.port.postMessage({ jitterSamples: Math.round(plan.sample_rate_hz * plan.jitter_buffer_ms / 1000) });
+      this.playback.port.onmessage = (event: MessageEvent<{ type?: string; count?: number; bufferedSamples?: number }>) => {
+        if (event.data.type === "playbackUnderrun") context.logVoice("audio_playback_underrun", { count: event.data.count, buffered_samples: event.data.bufferedSamples });
+      };
+      this.source.connect(this.capture);
+      this.playback.connect(audio.destination);
+      const url = new URL(plan.websocket_url, window.location.origin);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      url.searchParams.set("token", plan.token);
+      const socket = new WebSocket(url);
+      socket.binaryType = "arraybuffer";
+      this.socket = socket;
+      this.startedAt = performance.now();
+      await waitForSocketOpen(socket);
+      context.logVoice("parlando_audio_connected", { protocol_version: plan.protocol_version });
+      context.onVoiceStatus({ connected: true, connecting: false, microphoneEnabled: true, message: "Microphone live", transcriptionMessage: "Waiting for transcription service", transcriptionReady: false });
+      this.capture.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
+        if (this.enabled && socket.readyState === WebSocket.OPEN) socket.send(encodeFrame(this.sequence++, Math.round(performance.now() - this.startedAt), event.data));
+      };
+      socket.addEventListener("message", (event) => {
+        if (typeof event.data === "string") {
+          const status = parseTranscriptionStatus(event.data);
+          if (status) context.onVoiceStatus(status);
+          return;
+        }
+        if (!(event.data instanceof ArrayBuffer) || event.data.byteLength !== HEADER_BYTES + PCM_BYTES) return;
+        const pcm = event.data.slice(HEADER_BYTES);
+        this.playback?.port.postMessage(pcm, [pcm]);
+        context.onVoiceStatus({ remoteAudio: true, message: "Voice connected" });
+      });
+      socket.addEventListener("close", () => {
+        if (this.socket !== socket) return;
+        context.onVoiceStatus({ connected: false, microphoneEnabled: false, remoteAudio: false, message: "Voice disconnected", transcriptionReady: false, transcriptionMessage: "ASR idle" });
+      });
+    } catch (error) {
+      await this.disconnect();
+      throw error;
+    }
   }
 
   async setInputEnabled(enabled: boolean): Promise<void> { this.enabled = enabled; }
@@ -80,8 +85,26 @@ export class ParlandoAudioSink implements LocalAudioSink {
   }
 }
 
+/** Parses provider control JSON without allowing malformed socket data to escape the event loop. */
+export function parseTranscriptionStatus(data: string): { transcriptionReady: boolean; transcriptionMessage: string } | null {
+  try {
+    const status = JSON.parse(data) as { type?: unknown; ready?: unknown; message?: unknown };
+    if (!status || status.type !== "transcriptionStatus") return null;
+    return {
+      transcriptionReady: Boolean(status.ready),
+      transcriptionMessage: typeof status.message === "string" ? status.message : "ASR idle"
+    };
+  } catch {
+    return null;
+  }
+}
+
 /// Resolves on WebSocket open and rejects if the transport errors or closes first.
 export function waitForSocketOpen(socket: WebSocket): Promise<void> {
+  if (socket.readyState === WebSocket.OPEN) return Promise.resolve();
+  if (socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) {
+    return Promise.reject(new Error("Parlando audio WebSocket is already closed."));
+  }
   return new Promise<void>((resolve, reject) => {
     const cleanup = () => {
       socket.removeEventListener("open", onOpen);
@@ -100,6 +123,12 @@ export function waitForSocketOpen(socket: WebSocket): Promise<void> {
 /// Encodes one versioned PCM WebSocket frame.
 export function encodeFrame(sequence: number, timestampMs: number, pcm: ArrayBuffer): ArrayBuffer {
   if (pcm.byteLength !== PCM_BYTES) throw new Error(`PCM frame must contain ${PCM_BYTES} bytes.`);
+  if (!Number.isInteger(sequence) || sequence < 0 || sequence > 0xffff_ffff) {
+    throw new Error("PCM frame sequence must be an unsigned 32-bit integer.");
+  }
+  if (!Number.isSafeInteger(timestampMs) || timestampMs < 0) {
+    throw new Error("PCM frame timestamp must be a non-negative safe integer.");
+  }
   const frame = new ArrayBuffer(HEADER_BYTES + PCM_BYTES);
   const view = new DataView(frame);
   view.setUint8(0, 1); view.setUint32(1, sequence, false); view.setBigUint64(5, BigInt(timestampMs), false);

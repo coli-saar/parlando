@@ -137,6 +137,7 @@ export function ParlandoStartupGate<
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>(initialVoiceStatus);
   const [voicePreflight, setVoicePreflight] = useState<VoicePreflight>(initialVoicePreflight);
   const [voiceReconnectGeneration, setVoiceReconnectGeneration] = useState(0);
+  const [entering, setEntering] = useState(false);
   const sessionRef = useRef<RoomSession<TState, TObservation, TAction, TEvent, TSummary> | null>(null);
   const connectRoomRef = useRef<(room: RoomResponse<TState, TObservation, TAction, TEvent>) => Promise<void>>(async () => {});
   const scheduleGameReconnectRef = useRef<(room: RoomResponse<TState, TObservation, TAction, TEvent>) => void>(() => {});
@@ -144,10 +145,11 @@ export function ParlandoStartupGate<
   const reconnectStartedAtRef = useRef(0);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
+  const voicePreparationGenerationRef = useRef(0);
   const consentReady = requiredConsentsAccepted(publicConfig, consentDecisions);
   const voiceEnabled = isVoiceEnabled(publicConfig);
   const canEnter = Boolean(
-    experimentAllowsIntake(publicConfig?.experiment_status) && consentReady && (!voiceEnabled || voicePreflight.ready)
+    !entering && experimentAllowsIntake(publicConfig?.experiment_status) && consentReady && (!voiceEnabled || voicePreflight.ready)
   );
   const startupTitle = resolveStartupTitle(publicConfig);
 
@@ -160,6 +162,7 @@ export function ParlandoStartupGate<
   }, []);
 
   const endCurrentSession = useCallback(() => {
+    voicePreparationGenerationRef.current += 1;
     reconnectEnabledRef.current = false;
     if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current);
     reconnectTimerRef.current = null;
@@ -229,6 +232,7 @@ export function ParlandoStartupGate<
       });
 
       socket.addEventListener("open", () => {
+        if (sessionRef.current?.socket !== socket) return;
         reconnectStartedAtRef.current = 0;
         reconnectAttemptsRef.current = 0;
         setError("");
@@ -236,9 +240,11 @@ export function ParlandoStartupGate<
         setSession((current) => (current?.socket === socket ? { ...current, connected: true } : current));
       });
       socket.addEventListener("error", () => {
+        if (sessionRef.current?.socket !== socket) return;
         setError("Could not connect to the game channel. Retrying…");
       });
       socket.addEventListener("message", (event) => {
+        if (sessionRef.current?.socket !== socket) return;
         let message: ServerMessage<TState, TObservation, TAction, TEvent, TSummary>;
         try {
           if (typeof event.data !== "string") throw new Error("non-text message");
@@ -346,6 +352,8 @@ export function ParlandoStartupGate<
   }, [apiClient, consentDecisions, publicConfig]);
 
   const createDirectRoom = useCallback(async () => {
+    if (entering) return;
+    setEntering(true);
     try {
       setError("");
       await ensureParticipant();
@@ -354,22 +362,29 @@ export function ParlandoStartupGate<
     } catch (caught) {
       reconnectEnabledRef.current = false;
       setError(errorMessage(caught, "Could not create the waiting room."));
+    } finally {
+      setEntering(false);
     }
-  }, [apiClient, connectRoom, ensureParticipant]);
+  }, [apiClient, connectRoom, ensureParticipant, entering]);
 
   const prepareVoice = useCallback(async (deviceId = ""): Promise<boolean> => {
     if (!voiceEnabled) return false;
+    const generation = ++voicePreparationGenerationRef.current;
     try {
       setError("");
       setSelectedAudioInputId(deviceId);
       await audioController.prepare(deviceId, selectedAudioInputLabel(audioInputs, deviceId));
+      if (generation !== voicePreparationGenerationRef.current) return false;
       const refreshedInputs = await refreshAudioInputs();
+      if (generation !== voicePreparationGenerationRef.current) return false;
       const activeDeviceLabel = audioController.snapshot().voicePreflight.deviceLabel;
       const activeDevice = refreshedInputs.find((device) => device.label === activeDeviceLabel);
       setSelectedAudioInputId(deviceId || activeDevice?.deviceId || "");
       return true;
     } catch (caught) {
-      setError(errorMessage(caught, "Microphone permission was not granted."));
+      if (generation === voicePreparationGenerationRef.current) {
+        setError(errorMessage(caught, "Microphone permission was not granted."));
+      }
       return false;
     }
   }, [audioController, audioInputs, refreshAudioInputs, voiceEnabled]);

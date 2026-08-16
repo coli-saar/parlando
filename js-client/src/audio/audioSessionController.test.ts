@@ -77,10 +77,12 @@ class FakeSink implements LocalAudioSink {
   connectCalls = 0;
   enabled: boolean[] = [];
   lastInput: MicrophoneInput | null = null;
+  lastContext: AudioSessionContext | null = null;
 
   async connect(input: MicrophoneInput, context: AudioSessionContext) {
     this.connectCalls += 1;
     this.lastInput = input;
+    this.lastContext = context;
     context.onVoiceStatus({
       connected: true,
       connecting: false,
@@ -118,6 +120,15 @@ function context(): AudioSessionContext {
     logVoice: vi.fn(),
     onVoiceStatus: vi.fn()
   };
+}
+
+// Creates an externally controlled operation for deterministic controller races.
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 describe("AudioSessionController", () => {
@@ -170,5 +181,56 @@ describe("AudioSessionController", () => {
     expect(microphone.prepared).toBe(true);
     expect(microphone.stops).toBe(0);
     expect(controller.snapshot().voicePreflight.ready).toBe(true);
+  });
+
+  it("coalesces simultaneous connect toggles into one transport operation", async () => {
+    const microphone = new FakeMicrophoneSource();
+    const sink = new FakeSink();
+    const gate = deferred();
+    sink.connect = vi.fn(async (input, sessionContext) => {
+      sink.connectCalls += 1;
+      sink.lastInput = input;
+      sink.lastContext = sessionContext;
+      await gate.promise;
+      sessionContext.onVoiceStatus({ connected: true, connecting: false, microphoneEnabled: true });
+    });
+    const controller = new AudioSessionController({ microphone: microphone as any, sink });
+    await controller.prepare("default");
+
+    const first = controller.toggle(context());
+    const second = controller.toggle(context());
+    expect(first).toBe(second);
+    expect(sink.connectCalls).toBe(1);
+    gate.resolve();
+    await Promise.all([first, second]);
+
+    expect(controller.snapshot().voiceStatus).toMatchObject({ connected: true, connecting: false });
+  });
+
+  it("ignores status callbacks owned by a disconnected transport generation", async () => {
+    const microphone = new FakeMicrophoneSource();
+    const sink = new FakeSink();
+    const controller = new AudioSessionController({ microphone: microphone as any, sink });
+    await controller.prepare("default");
+    await controller.toggle(context());
+    const staleStatus = sink.lastContext!.onVoiceStatus;
+
+    await controller.disconnect();
+    staleStatus({ connected: true, microphoneEnabled: true, message: "stale resurrection" });
+
+    expect(controller.snapshot().voiceStatus).not.toMatchObject({ connected: true });
+    expect(controller.snapshot().voiceStatus.message).not.toBe("stale resurrection");
+  });
+
+  it("leaves mute state unchanged when the sink rejects a toggle", async () => {
+    const microphone = new FakeMicrophoneSource();
+    const sink = new FakeSink();
+    const controller = new AudioSessionController({ microphone: microphone as any, sink });
+    await controller.prepare("default");
+    await controller.toggle(context());
+    sink.setInputEnabled = vi.fn(async () => { throw new Error("transport gone"); });
+
+    await expect(controller.toggle(context())).rejects.toThrow("transport gone");
+    expect(controller.snapshot().voiceStatus.microphoneEnabled).toBe(true);
   });
 });

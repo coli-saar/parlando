@@ -21,6 +21,9 @@ export class PcmPlaybackBuffer {
 
   /** Renders one output quantum using linear interpolation between source samples. */
   render(output: Float32Array, sourceSamplesPerOutput: number): PcmRenderResult {
+    if (!Number.isFinite(sourceSamplesPerOutput) || sourceSamplesPerOutput <= 0) {
+      throw new Error("sourceSamplesPerOutput must be finite and positive.");
+    }
     let renderedSamples = 0;
     for (let index = 0; index < output.length; index += 1) {
       const leftIndex = Math.floor(this.cursor);
@@ -40,7 +43,8 @@ export class PcmPlaybackBuffer {
 
   /** Drops oldest unplayed samples until no more than the requested amount remains. */
   trimTo(maxSamples: number): void {
-    const excess = this.availableSamples() - Math.max(0, maxSamples);
+    const boundedMaximum = Number.isFinite(maxSamples) ? Math.max(0, Math.floor(maxSamples)) : 0;
+    const excess = this.availableSamples() - boundedMaximum;
     if (excess <= 0) return;
     this.samples.splice(0, excess);
     this.cursor = Math.max(0, this.cursor - excess);

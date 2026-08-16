@@ -1,0 +1,197 @@
+// @vitest-environment happy-dom
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ParlandoAudioSink } from "./parlandoAudioSink";
+import type { AudioSessionContext, MicrophoneInput } from "./types";
+
+class FakePort {
+  onmessage: ((event: MessageEvent<any>) => void) | null = null;
+  postMessage = vi.fn();
+}
+
+class FakeNode {
+  static instances: FakeNode[] = [];
+  port = new FakePort();
+  connect = vi.fn();
+  disconnect = vi.fn();
+
+  /** Records the capture and playback worklet nodes in construction order. */
+  constructor(..._arguments: unknown[]) {
+    FakeNode.instances.push(this);
+  }
+}
+
+class FakeSource {
+  connect = vi.fn();
+  disconnect = vi.fn();
+}
+
+class FakeAudioContext {
+  static instances: FakeAudioContext[] = [];
+  static addModule = vi.fn(async () => undefined);
+  destination = {} as AudioDestinationNode;
+  source = new FakeSource();
+  audioWorklet = { addModule: FakeAudioContext.addModule };
+  resume = vi.fn(async () => undefined);
+  close = vi.fn(async () => undefined);
+  createMediaStreamSource = vi.fn(() => this.source as unknown as MediaStreamAudioSourceNode);
+
+  /** Records every context so partial-failure cleanup remains observable. */
+  constructor() {
+    FakeAudioContext.instances.push(this);
+  }
+}
+
+class FakeSocket extends EventTarget {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+  static instances: FakeSocket[] = [];
+  readyState = FakeSocket.CONNECTING;
+  binaryType = "blob";
+  send = vi.fn();
+  close = vi.fn(() => {
+    this.readyState = FakeSocket.CLOSED;
+  });
+
+  /** Records the authenticated URL selected by the audio sink. */
+  constructor(readonly url: URL) {
+    super();
+    FakeSocket.instances.push(this);
+  }
+
+  /** Opens the pending transport. */
+  open(): void {
+    this.readyState = FakeSocket.OPEN;
+    this.dispatchEvent(new Event("open"));
+  }
+}
+
+/** Creates one cloned microphone stream owned by the sink. */
+function input() {
+  const track = { stop: vi.fn() } as unknown as MediaStreamTrack;
+  const mediaStream = { getTracks: () => [track] } as unknown as MediaStream;
+  return {
+    value: {
+      deviceId: "mic",
+      deviceLabel: "Mic",
+      stream: mediaStream,
+      track,
+      createTrackClone: vi.fn(),
+      createMediaStream: vi.fn(() => mediaStream)
+    } as MicrophoneInput,
+    track
+  };
+}
+
+/** Creates one enabled audio-session context and its observable callbacks. */
+function context(overrides: Record<string, unknown> = {}) {
+  const value: AudioSessionContext = {
+    roomId: "room",
+    participantSessionId: "participant",
+    role: "A",
+    selectedAudioInputId: "mic",
+    selectedAudioInputLabel: "Mic",
+    getAudioSession: vi.fn(async () => ({
+      enabled: true,
+      websocket_url: "/ws/audio/room",
+      token: "secret ticket",
+      protocol_version: 1,
+      sample_rate_hz: 24_000,
+      channels: 1,
+      frame_duration_ms: 20,
+      jitter_buffer_ms: 100,
+      ...overrides
+    })),
+    logVoice: vi.fn(),
+    onVoiceStatus: vi.fn()
+  };
+  return value;
+}
+
+beforeEach(() => {
+  FakeNode.instances = [];
+  FakeSocket.instances = [];
+  FakeAudioContext.instances = [];
+  FakeAudioContext.addModule = vi.fn(async () => undefined);
+  vi.stubGlobal("AudioContext", FakeAudioContext);
+  vi.stubGlobal("AudioWorkletNode", FakeNode);
+  vi.stubGlobal("WebSocket", FakeSocket);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe("ParlandoAudioSink integration", () => {
+  it("short-circuits a disabled server plan before acquiring audio resources", async () => {
+    const sink = new ParlandoAudioSink();
+    const session = context({ enabled: false });
+    await sink.connect(input().value, session);
+    expect(FakeAudioContext.instances).toHaveLength(0);
+    expect(session.onVoiceStatus).toHaveBeenCalledWith({ connecting: false, message: "Voice is disabled for this study" });
+  });
+
+  it("connects the graph, sends capture frames, and accepts status and PCM messages", async () => {
+    const sink = new ParlandoAudioSink();
+    const microphone = input();
+    const session = context();
+    const connecting = sink.connect(microphone.value, session);
+    await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1));
+    const socket = FakeSocket.instances[0];
+    socket.open();
+    await connecting;
+
+    expect(socket.url.toString()).toContain("token=secret+ticket");
+    expect(socket.binaryType).toBe("arraybuffer");
+    expect(FakeNode.instances[1].port.postMessage).toHaveBeenCalledWith({ jitterSamples: 2_400 });
+    FakeNode.instances[0].port.onmessage!(new MessageEvent("message", { data: new ArrayBuffer(960) }));
+    expect(socket.send).toHaveBeenCalledOnce();
+    expect((socket.send.mock.calls[0][0] as ArrayBuffer).byteLength).toBe(973);
+
+    socket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "transcriptionStatus", ready: true, message: "ASR ready" }) }));
+    socket.dispatchEvent(new MessageEvent("message", { data: new ArrayBuffer(973) }));
+    expect(session.onVoiceStatus).toHaveBeenCalledWith({ transcriptionReady: true, transcriptionMessage: "ASR ready" });
+    expect(session.onVoiceStatus).toHaveBeenCalledWith({ remoteAudio: true, message: "Voice connected" });
+
+    await sink.disconnect();
+    expect(microphone.track.stop).toHaveBeenCalledOnce();
+    expect(FakeAudioContext.instances[0].close).toHaveBeenCalledOnce();
+  });
+
+  it("mutes capture without disconnecting and resumes on unmute", async () => {
+    const sink = new ParlandoAudioSink();
+    const connecting = sink.connect(input().value, context());
+    await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1));
+    const socket = FakeSocket.instances[0];
+    socket.open();
+    await connecting;
+    await sink.setInputEnabled(false);
+    FakeNode.instances[0].port.onmessage!(new MessageEvent("message", { data: new ArrayBuffer(960) }));
+    expect(socket.send).not.toHaveBeenCalled();
+    await sink.setInputEnabled(true);
+    FakeNode.instances[0].port.onmessage!(new MessageEvent("message", { data: new ArrayBuffer(960) }));
+    expect(socket.send).toHaveBeenCalledOnce();
+  });
+
+  it("releases an AudioContext when worklet loading fails", async () => {
+    FakeAudioContext.addModule = vi.fn(async () => { throw new Error("module failed"); });
+    const sink = new ParlandoAudioSink();
+    await expect(sink.connect(input().value, context())).rejects.toThrow("module failed");
+    expect(FakeAudioContext.instances[0].close).toHaveBeenCalledOnce();
+  });
+
+  it("cleans every partial resource when the WebSocket closes before open", async () => {
+    const sink = new ParlandoAudioSink();
+    const microphone = input();
+    const connecting = sink.connect(microphone.value, context());
+    await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1));
+    FakeSocket.instances[0].dispatchEvent(new Event("close"));
+    await expect(connecting).rejects.toThrow("closed before connecting");
+    expect(microphone.track.stop).toHaveBeenCalledOnce();
+    expect(FakeNode.instances.every((node) => node.disconnect.mock.calls.length === 1)).toBe(true);
+    expect(FakeAudioContext.instances[0].close).toHaveBeenCalledOnce();
+  });
+});

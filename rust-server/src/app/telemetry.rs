@@ -407,3 +407,150 @@ fn update_max(target: &AtomicU64, candidate: u64) {
 fn nonzero(value: i64) -> Option<i64> {
     (value > 0).then_some(value)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Creates the smallest complete load sample for history-retention tests.
+    fn sample(index: i64, telemetry: &RuntimeTelemetry) -> LoadSample {
+        LoadSample {
+            sampled_at: index.to_string(),
+            sampled_at_ms: index,
+            counters: telemetry.counters(),
+            capacity: CapacitySample {
+                active_reserved_sessions: 0,
+                active_session_limit: 1,
+                waiting_sessions: 0,
+                waiting_session_limit: 1,
+                completed_retained_sessions: 0,
+                unattached_participants: 0,
+                unattached_participant_limit: 1,
+                transcription_streams_reserved: 0,
+                transcription_stream_limit: 1,
+                active_agents: 0,
+                storage_reserve_bytes: 0,
+            },
+            connections: ConnectionSample {
+                game_connections: 0,
+                game_live: 0,
+                game_delayed: 0,
+                game_stale: 0,
+                audio_connections: 0,
+            },
+            pending_rejections: 0,
+            storage: None,
+        }
+    }
+
+    /// Verifies every semantic counter and TTS gauge is reflected in one snapshot.
+    #[test]
+    fn telemetry_records_all_runtime_events() {
+        let telemetry = RuntimeTelemetry::default();
+        telemetry.record_game_message();
+        telemetry.record_heartbeat();
+        telemetry.record_action_accepted();
+        telemetry.record_action_rejected();
+        telemetry.record_chat_accepted();
+        telemetry.record_chat_rejected();
+        telemetry.record_transport_rejected();
+        telemetry.record_audio_frame();
+        telemetry.record_audio_frame_dropped();
+        telemetry.record_asr_backpressure();
+        telemetry.record_reconnection();
+        telemetry.begin_tts();
+
+        let active = telemetry.counters();
+        assert_eq!(active.game_messages_total, 1);
+        assert_eq!(active.heartbeats_total, 1);
+        assert_eq!(active.actions_accepted_total, 1);
+        assert_eq!(active.actions_rejected_total, 1);
+        assert_eq!(active.chat_messages_accepted_total, 1);
+        assert_eq!(active.chat_messages_rejected_total, 1);
+        assert_eq!(active.transport_messages_rejected_total, 1);
+        assert_eq!(active.audio_frames_total, 1);
+        assert_eq!(active.audio_frames_dropped_total, 1);
+        assert_eq!(active.asr_backpressure_total, 1);
+        assert_eq!(active.reconnections_total, 1);
+        assert_eq!(active.tts_in_flight, 1);
+        assert_eq!(active.tts_messages_total, 1);
+
+        telemetry.finish_tts(true);
+        let finished = telemetry.counters();
+        assert_eq!(finished.tts_in_flight, 0);
+        assert_eq!(finished.tts_failures_total, 1);
+    }
+
+    /// Confirms request cancellation releases the gauge and completion classifies status codes.
+    #[test]
+    fn request_guard_is_cancellation_safe_and_classifies_responses() {
+        let telemetry = Arc::new(RuntimeTelemetry::default());
+        let cancelled = telemetry.begin_request();
+        assert_eq!(telemetry.counters().requests_in_flight, 1);
+        drop(cancelled);
+        assert_eq!(telemetry.counters().requests_in_flight, 0);
+        assert_eq!(telemetry.counters().requests_total, 0);
+
+        telemetry.begin_request().finish(StatusCode::BAD_REQUEST);
+        telemetry
+            .begin_request()
+            .finish(StatusCode::INTERNAL_SERVER_ERROR);
+        telemetry.begin_request().finish(StatusCode::NO_CONTENT);
+        let counters = telemetry.counters();
+        assert_eq!(counters.requests_in_flight, 0);
+        assert_eq!(counters.requests_total, 3);
+        assert_eq!(counters.request_client_errors_total, 1);
+        assert_eq!(counters.request_server_errors_total, 1);
+    }
+
+    /// Confirms history remains chronological and discards only the oldest overflow sample.
+    #[tokio::test]
+    async fn load_history_is_bounded() {
+        let telemetry = RuntimeTelemetry::default();
+        for index in 0..=LOAD_HISTORY_CAPACITY as i64 {
+            telemetry.push_sample(sample(index, &telemetry)).await;
+        }
+        let history = telemetry.history().await;
+        assert_eq!(history.len(), LOAD_HISTORY_CAPACITY);
+        assert_eq!(history.first().unwrap().sampled_at_ms, 1);
+        assert_eq!(
+            history.last().unwrap().sampled_at_ms,
+            LOAD_HISTORY_CAPACITY as i64
+        );
+    }
+
+    /// Verifies heartbeats and payloads update distinct liveness dimensions.
+    #[test]
+    fn connection_liveness_separates_heartbeat_and_payload_activity() {
+        let liveness = ConnectionLiveness::new();
+        let initial = liveness.snapshot();
+        assert_eq!(initial.messages_total, 0);
+        assert_eq!(initial.last_heartbeat_at_ms, None);
+        assert_eq!(initial.last_payload_at_ms, None);
+
+        liveness.touch_heartbeat();
+        let heartbeat = liveness.snapshot();
+        assert_eq!(heartbeat.messages_total, 1);
+        assert!(heartbeat.last_heartbeat_at_ms.is_some());
+        assert_eq!(heartbeat.last_payload_at_ms, None);
+
+        liveness.touch_message(true);
+        let payload = liveness.snapshot();
+        assert_eq!(payload.messages_total, 2);
+        assert!(payload.last_payload_at_ms.is_some());
+        assert!(payload.last_message_at_ms >= payload.connected_at_ms);
+    }
+
+    /// Covers the atomic maximum and zero-sentinel helpers at their boundaries.
+    #[test]
+    fn telemetry_atomic_helpers_preserve_maximum_and_absence() {
+        let maximum = AtomicU64::new(7);
+        update_max(&maximum, 3);
+        assert_eq!(maximum.load(Ordering::Relaxed), 7);
+        update_max(&maximum, 11);
+        assert_eq!(maximum.load(Ordering::Relaxed), 11);
+        assert_eq!(nonzero(-1), None);
+        assert_eq!(nonzero(0), None);
+        assert_eq!(nonzero(1), Some(1));
+    }
+}

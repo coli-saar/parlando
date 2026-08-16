@@ -380,11 +380,15 @@ impl ExperimentConfig {
             bail!("capacity limits must be positive");
         }
         validate_http_url("server.public_base_url", &self.server.public_base_url)?;
+        let mut allowed_origins = HashSet::new();
         for origin in &self.server.allowed_origins {
             validate_http_url("server.allowed_origins", origin)?;
             let uri: http::Uri = origin.parse()?;
             if uri.path() != "/" || uri.query().is_some() {
                 bail!("server.allowed_origins entries must not contain paths or queries");
+            }
+            if !allowed_origins.insert(origin.to_ascii_lowercase()) {
+                bail!("server.allowed_origins entries must be unique");
             }
         }
         if self.database.url.trim().is_empty() {
@@ -531,6 +535,12 @@ fn validate_http_url(field: &str, value: &str) -> Result<()> {
         .with_context(|| format!("{field} must be a valid URL"))?;
     if !matches!(uri.scheme_str(), Some("http" | "https")) || uri.authority().is_none() {
         bail!("{field} must use http or https and include a host");
+    }
+    if uri
+        .authority()
+        .is_some_and(|authority| authority.as_str().contains('@'))
+    {
+        bail!("{field} must not contain credentials");
     }
     Ok(())
 }
@@ -727,6 +737,13 @@ mod tests {
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    /// Returns a minimal valid configuration for one-field boundary mutations.
+    fn valid_config() -> ExperimentConfig {
+        let mut config = ExperimentConfig::default();
+        config.database.url = "sqlite:///:memory:".to_string();
+        config
+    }
+
     #[test]
     fn yaml_extends_includes_env_and_relative_paths_match_expected_behavior() {
         let _guard = ENV_LOCK.lock().expect("env lock");
@@ -897,5 +914,264 @@ agents:
         config
             .validate()
             .expect("the non-empty consent list is sufficient to enable consent");
+    }
+
+    /// Covers the complete experiment-id alphabet and character-count boundaries.
+    #[test]
+    fn validation_checks_experiment_identifier_boundaries() {
+        for accepted in ["a", "A-Z_09.test", &"x".repeat(128)] {
+            let mut config = valid_config();
+            config.experiment.id = Some(accepted.to_string());
+            config.validate().unwrap();
+        }
+        for rejected in ["", "white space", "ümlaut", &"x".repeat(129)] {
+            let mut config = valid_config();
+            config.experiment.id = Some(rejected.to_string());
+            assert!(config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("experiment.id"));
+        }
+    }
+
+    /// Covers exact timeout relations and all independently invalid timeout values.
+    #[test]
+    fn validation_checks_timeout_boundaries() {
+        let mut exact = valid_config();
+        exact.study.session_idle_timeout_seconds = 30;
+        exact.study.session_max_lifetime_seconds = 30;
+        exact.study.reconnect_grace_seconds = 0;
+        exact.validate().unwrap();
+
+        for mutate in [
+            |config: &mut ExperimentConfig| config.study.waiting_room_timeout_seconds = 0,
+            |config: &mut ExperimentConfig| config.study.reconnect_grace_seconds = -1,
+            |config: &mut ExperimentConfig| config.study.session_idle_timeout_seconds = 0,
+            |config: &mut ExperimentConfig| {
+                config.study.session_max_lifetime_seconds =
+                    config.study.session_idle_timeout_seconds - 1
+            },
+        ] {
+            let mut config = valid_config();
+            mutate(&mut config);
+            assert!(config.validate().is_err());
+        }
+    }
+
+    /// Confirms each capacity field independently rejects its zero value.
+    #[test]
+    fn validation_requires_every_capacity_to_be_positive() {
+        for mutate in [
+            |config: &mut ExperimentConfig| config.capacity.max_active_sessions = 0,
+            |config: &mut ExperimentConfig| config.capacity.max_waiting_sessions = 0,
+            |config: &mut ExperimentConfig| config.capacity.max_unattached_participants = 0,
+            |config: &mut ExperimentConfig| config.capacity.max_transcription_streams = 0,
+            |config: &mut ExperimentConfig| config.capacity.storage_reserve_megabytes = 0,
+        ] {
+            let mut config = valid_config();
+            mutate(&mut config);
+            assert!(config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("capacity"));
+        }
+    }
+
+    /// Confirms browser origins are host-only HTTP URLs without duplicates or credentials.
+    #[test]
+    fn validation_checks_origin_security_boundaries() {
+        for accepted in ["http://localhost:3000", "https://example.test/"] {
+            let mut config = valid_config();
+            config.server.allowed_origins = vec![accepted.to_string()];
+            config.validate().unwrap();
+        }
+        for rejected in [
+            "ws://example.test",
+            "https://example.test/path",
+            "https://example.test/?query=1",
+            "https://user:password@example.test",
+        ] {
+            let mut config = valid_config();
+            config.server.allowed_origins = vec![rejected.to_string()];
+            assert!(
+                config.validate().is_err(),
+                "origin {rejected:?} was accepted"
+            );
+        }
+        let mut duplicate = valid_config();
+        duplicate.server.allowed_origins = vec![
+            "https://EXAMPLE.test".to_string(),
+            "https://example.TEST".to_string(),
+        ];
+        assert!(duplicate
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("unique"));
+    }
+
+    /// Confirms protocol-one audio constants and jitter buffer endpoints are exact.
+    #[test]
+    fn validation_checks_voice_protocol_boundaries() {
+        for jitter in [20, 5_000] {
+            let mut config = valid_config();
+            config.voice.enabled = true;
+            config.voice.jitter_buffer_ms = jitter;
+            config.validate().unwrap();
+        }
+        for jitter in [19, 5_001] {
+            let mut config = valid_config();
+            config.voice.jitter_buffer_ms = jitter;
+            assert!(config.validate().is_err());
+        }
+        for mutate in [
+            |config: &mut ExperimentConfig| config.voice.sample_rate_hz = 48_000,
+            |config: &mut ExperimentConfig| config.voice.frame_duration_ms = 10,
+        ] {
+            let mut config = valid_config();
+            config.voice.enabled = true;
+            mutate(&mut config);
+            assert!(config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("protocol version 1"));
+        }
+    }
+
+    /// Confirms hosted transcription validation rejects every unsupported or unsafe value.
+    #[test]
+    fn validation_checks_transcription_provider_and_float_boundaries() {
+        let mut valid = valid_config();
+        valid.transcription.enabled = true;
+        valid.validate().unwrap();
+
+        for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mut config = valid.clone();
+            config.speechmatics.max_delay = invalid;
+            assert!(config.validate().is_err());
+            let mut config = valid.clone();
+            config.speechmatics.end_of_utterance_silence_trigger = invalid;
+            assert!(config.validate().is_err());
+        }
+        for (field, value) in [
+            ("provider", "other"),
+            ("model", "unsupported"),
+            ("language", ""),
+            ("url", "https://example.test"),
+        ] {
+            let mut config = valid.clone();
+            match field {
+                "provider" => config.transcription.provider = value.to_string(),
+                "model" => config.transcription.model = value.to_string(),
+                "language" => config.transcription.language = value.to_string(),
+                "url" => config.speechmatics.realtime_url = value.to_string(),
+                _ => unreachable!(),
+            }
+            assert!(config.validate().is_err());
+        }
+    }
+
+    /// Confirms agent mode/object consistency and decision limits are validated together.
+    #[test]
+    fn validation_checks_agent_configuration_matrix() {
+        let mut missing = valid_config();
+        missing.agents.mode = AgentsMode::HumanVsAgent;
+        assert!(missing.validate().is_err());
+
+        let mut unexpected = valid_config();
+        unexpected.agents.human_vs_agent = Some(HumanVsAgentConfig::default());
+        assert!(unexpected.validate().is_err());
+
+        for timeout in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mut config = valid_config();
+            config.agents.mode = AgentsMode::HumanVsAgent;
+            config.agents.human_vs_agent = Some(HumanVsAgentConfig {
+                act_timeout_seconds: timeout,
+                ..HumanVsAgentConfig::default()
+            });
+            assert!(config.validate().is_err());
+        }
+        let mut zero_limit = valid_config();
+        zero_limit.agents.mode = AgentsMode::HumanVsAgent;
+        zero_limit.agents.human_vs_agent = Some(HumanVsAgentConfig {
+            invalid_action_limit: 0,
+            ..HumanVsAgentConfig::default()
+        });
+        assert!(zero_limit.validate().is_err());
+    }
+
+    /// Confirms consent uniqueness, content bounds, and information-link pairing.
+    #[test]
+    fn validation_checks_consent_and_participant_information_boundaries() {
+        let valid_item = ConsentItemConfig {
+            id: "i".repeat(128),
+            title: "t".repeat(500),
+            body: "b".repeat(20_000),
+            required: true,
+        };
+        let mut config = valid_config();
+        config.direct.consents = vec![valid_item.clone()];
+        config.validate().unwrap();
+
+        for invalid in [
+            ConsentItemConfig {
+                id: " ".to_string(),
+                ..valid_item.clone()
+            },
+            ConsentItemConfig {
+                id: "i".repeat(129),
+                ..valid_item.clone()
+            },
+            ConsentItemConfig {
+                title: String::new(),
+                ..valid_item.clone()
+            },
+            ConsentItemConfig {
+                title: "t".repeat(501),
+                ..valid_item.clone()
+            },
+            ConsentItemConfig {
+                body: " ".to_string(),
+                ..valid_item.clone()
+            },
+            ConsentItemConfig {
+                body: "b".repeat(20_001),
+                ..valid_item.clone()
+            },
+        ] {
+            let mut config = valid_config();
+            config.direct.consents = vec![invalid];
+            assert!(config.validate().is_err());
+        }
+        let mut duplicate = valid_config();
+        duplicate.direct.consents = vec![valid_item.clone(), valid_item];
+        assert!(duplicate.validate().is_err());
+        for (version, url) in [("v1", ""), ("", "https://example.test/info")] {
+            let mut config = valid_config();
+            config.direct.participant_information_version = version.to_string();
+            config.direct.participant_information_url = url.to_string();
+            assert!(config.validate().is_err());
+        }
+    }
+
+    /// Confirms activation issues are complete, ordered, and whitespace-sensitive.
+    #[test]
+    fn activation_issues_are_stable_and_complete() {
+        let mut config = valid_config();
+        config.transcription.enabled = true;
+        config.speechmatics.api_key = "  ".to_string();
+        config.tts.enabled = true;
+        config.tts.api_key = "\t".to_string();
+        config.tts.voice_id = String::new();
+
+        let issues = config.activation_issues();
+
+        assert_eq!(issues.len(), 3);
+        assert!(issues[0].contains("Speechmatics"));
+        assert!(issues[1].contains("API key"));
+        assert!(issues[2].contains("voice id"));
     }
 }

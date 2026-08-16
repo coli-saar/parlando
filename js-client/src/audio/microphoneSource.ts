@@ -24,6 +24,7 @@ export class MicrophoneSource {
   private getAudioContextOverride?: () => typeof AudioContext | undefined;
   private requestAnimationFrameOverride?: (callback: FrameRequestCallback) => number;
   private cancelAnimationFrameOverride?: (handle: number) => void;
+  private generation = 0;
 
   constructor(options: MicrophoneSourceOptions = {}) {
     this.getUserMediaOverride = options.getUserMedia;
@@ -62,7 +63,8 @@ export class MicrophoneSource {
       return this.input();
     }
 
-    this.stop();
+    const generation = ++this.generation;
+    this.stopCurrentStream();
 
     if (!this.isSecureContext()) {
       const message = "Microphone access requires HTTPS, or localhost on the same computer.";
@@ -97,8 +99,13 @@ export class MicrophoneSource {
 
     try {
       const audio: MediaTrackConstraints | boolean = deviceId ? { deviceId: { exact: deviceId } } : true;
-      this.stream = await getUserMedia({ audio });
-      this.track = this.stream.getAudioTracks()[0] ?? null;
+      const stream = await getUserMedia({ audio });
+      if (generation !== this.generation) {
+        for (const track of stream.getTracks()) track.stop();
+        throw new Error("Microphone request was superseded.");
+      }
+      this.stream = stream;
+      this.track = stream.getAudioTracks()[0] ?? null;
       if (!this.track) {
         throw new Error("No microphone audio track was returned.");
       }
@@ -115,21 +122,29 @@ export class MicrophoneSource {
       });
       return this.input();
     } catch (error) {
-      this.stop();
-      this.update({
-        requested: false,
-        ready: false,
-        preparing: false,
-        message: "Microphone permission was not granted",
-        micLevel: 0,
-        micProbeActive: false,
-        deviceLabel: "Default microphone"
-      });
+      if (generation === this.generation) {
+        this.stopCurrentStream();
+        this.update({
+          requested: false,
+          ready: false,
+          preparing: false,
+          message: "Microphone permission was not granted",
+          micLevel: 0,
+          micProbeActive: false,
+          deviceLabel: "Default microphone"
+        });
+      }
       throw error;
     }
   }
 
   stop(): void {
+    this.generation += 1;
+    this.stopCurrentStream();
+  }
+
+  /** Releases the currently owned stream without changing request ownership. */
+  private stopCurrentStream(): void {
     this.cleanupProbe?.();
     this.cleanupProbe = null;
     for (const track of this.stream?.getTracks() ?? []) {
@@ -201,8 +216,8 @@ export class MicrophoneSource {
   }
 
   private getAudioContext(): typeof AudioContext | undefined {
+    if (this.getAudioContextOverride) return this.getAudioContextOverride();
     return (
-      this.getAudioContextOverride?.() ??
       window.AudioContext ??
       (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
     );

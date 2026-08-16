@@ -247,4 +247,63 @@ mod tests {
         rooms.disconnect("room", "A", &new_generation).await;
         assert!(!rooms.is_current("room", "A", &new_generation).await);
     }
+
+    /// Confirms a saturated peer queue drops new frames without blocking or harming another room.
+    #[tokio::test]
+    async fn saturated_partner_queue_is_bounded_and_room_local() {
+        let rooms = AudioRoomRegistry::default();
+        let (_, _a) = rooms.connect("busy", "A").await;
+        let (_, mut busy_b) = rooms.connect("busy", "B").await;
+        let (_, _other_a) = rooms.connect("other", "A").await;
+        let (_, mut other_b) = rooms.connect("other", "B").await;
+
+        for index in 0..AUDIO_OUTBOUND_QUEUE_CAPACITY + 5 {
+            rooms.relay_partner("busy", "A", vec![index as u8]).await;
+        }
+        rooms.relay_partner("other", "A", vec![99]).await;
+
+        let mut delivered = Vec::new();
+        while let Ok(AudioOutbound::Binary(bytes)) = busy_b.try_recv() {
+            delivered.push(bytes[0]);
+        }
+        assert_eq!(delivered.len(), AUDIO_OUTBOUND_QUEUE_CAPACITY);
+        assert_eq!(delivered[0], 0);
+        assert_eq!(delivered.last().copied(), Some(63));
+        assert!(matches!(
+            other_b.try_recv(),
+            Ok(AudioOutbound::Binary(bytes)) if bytes == vec![99]
+        ));
+    }
+
+    /// Verifies control messages target one role and agent audio fans out to every current peer.
+    #[tokio::test]
+    async fn control_is_targeted_and_agent_audio_fans_out() {
+        let rooms = AudioRoomRegistry::default();
+        let (_, mut a) = rooms.connect("room", "A").await;
+        let (_, mut b) = rooms.connect("room", "B").await;
+
+        rooms.send_control("room", "A", "ready".into()).await;
+        assert!(matches!(a.recv().await, Some(AudioOutbound::Text(text)) if text == "ready"));
+        assert!(b.try_recv().is_err());
+
+        rooms.publish_agent("room", vec![4, 2]).await;
+        assert!(
+            matches!(a.recv().await, Some(AudioOutbound::Binary(bytes)) if bytes == vec![4, 2])
+        );
+        assert!(
+            matches!(b.recv().await, Some(AudioOutbound::Binary(bytes)) if bytes == vec![4, 2])
+        );
+    }
+
+    /// Confirms missing rooms and invalid role names are safe no-ops.
+    #[tokio::test]
+    async fn missing_rooms_and_unknown_roles_are_noops() {
+        let rooms = AudioRoomRegistry::default();
+        let (_, mut a) = rooms.connect("room", "A").await;
+        rooms.relay_partner("missing", "A", vec![1]).await;
+        rooms.relay_partner("room", "spectator", vec![2]).await;
+        rooms.send_control("missing", "A", "ignored".into()).await;
+        rooms.publish_agent("missing", vec![3]).await;
+        assert!(a.try_recv().is_err());
+    }
 }

@@ -85,3 +85,73 @@ pub(super) async fn require_open_experiment<A: GameAdapter>(
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ExperimentLifecycle;
+
+    /// Verifies every lifecycle has one stable parse and serialization representation.
+    #[test]
+    fn lifecycle_wire_values_round_trip() {
+        for (wire, lifecycle) in [
+            ("inactive", ExperimentLifecycle::Inactive),
+            ("testing", ExperimentLifecycle::Testing),
+            ("active", ExperimentLifecycle::Active),
+            ("completed", ExperimentLifecycle::Completed),
+            ("archived", ExperimentLifecycle::Archived),
+        ] {
+            assert_eq!(ExperimentLifecycle::parse(wire).unwrap(), lifecycle);
+            assert_eq!(lifecycle.as_str(), wire);
+        }
+        for invalid in ["", "ACTIVE", " active", "running", "deleted"] {
+            assert!(ExperimentLifecycle::parse(invalid).is_err(), "{invalid:?}");
+        }
+    }
+
+    /// Exhaustively verifies the deliberate lifecycle-transition graph.
+    #[test]
+    fn lifecycle_transition_table_is_exhaustive() {
+        use ExperimentLifecycle::{Active, Archived, Completed, Inactive, Testing};
+
+        let states = [Inactive, Testing, Active, Completed, Archived];
+        let allowed = [
+            (Inactive, Testing),
+            (Inactive, Active),
+            (Inactive, Archived),
+            (Testing, Inactive),
+            (Testing, Active),
+            (Active, Inactive),
+            (Active, Completed),
+            (Completed, Archived),
+            (Archived, Inactive),
+        ];
+        for current in states {
+            for next in states {
+                let expected = current == next || allowed.contains(&(current, next));
+                assert_eq!(
+                    current.can_transition_to(next),
+                    expected,
+                    "unexpected transition result for {} -> {}",
+                    current.as_str(),
+                    next.as_str()
+                );
+            }
+        }
+    }
+
+    /// Confirms intake and immutable data-purpose classification agree with lifecycle policy.
+    #[test]
+    fn lifecycle_intake_and_data_purpose_are_consistent() {
+        use ExperimentLifecycle::{Active, Archived, Completed, Inactive, Testing};
+
+        assert!(!Inactive.allows_intake());
+        assert!(Testing.allows_intake());
+        assert!(Active.allows_intake());
+        assert!(!Completed.allows_intake());
+        assert!(!Archived.allows_intake());
+        assert_eq!(Testing.data_purpose(), "testing");
+        for lifecycle in [Inactive, Active, Completed, Archived] {
+            assert_eq!(lifecycle.data_purpose(), "research");
+        }
+    }
+}

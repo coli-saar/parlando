@@ -6,10 +6,27 @@ RUST_SERVER_DIR := $(PARLANDO_DIR)/rust-server
 JS_CLIENT_DIR := $(PARLANDO_DIR)/js-client
 NPM_CACHE ?= $(PARLANDO_DIR)/.local/npm-cache
 
-.PHONY: all install-local install-js-client package-local package-rust-server-local package-js-client-local publish-dry-run publish-rust-server-dry-run publish-js-client-dry-run publish-rust-server publish-js-client
+.PHONY: all test test-rust test-js-client test-python install-local install-js-client package-local package-rust-server-local package-js-client-local publish-dry-run publish-rust-server-dry-run publish-js-client-dry-run publish-rust-server publish-js-client
 
 # Default workflow: prepare the reusable JavaScript client for local development.
 all: install-local
+
+# Runs the complete reusable-server, browser-client, and Python-SDK test matrix.
+test: test-rust test-js-client test-python
+
+# Runs the Rust unit, integration, protocol, and documentation tests.
+test-rust:
+	cd "$(RUST_SERVER_DIR)" && cargo test --all-features
+
+# Runs browser-client tests, type compilation, and the coverage regression gate.
+test-js-client:
+	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" test
+	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" run build
+	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" run test:coverage
+
+# Runs the Python SDK suite in an environment where its package dependencies are installed.
+test-python:
+	cd "$(RUST_SERVER_DIR)/python/parlando-agent-sdk" && python3 -m unittest discover -s tests -v
 
 # Install all top-level local dependencies.
 install-local: install-js-client

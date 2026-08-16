@@ -8,7 +8,7 @@ import importlib
 import os
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
@@ -35,12 +35,33 @@ def _generated_modules() -> tuple[Any, Any]:
         ) from exc
 
 
-@dataclass(frozen=True)
 class AgentResponse:
     """Non-empty response returned by a Python agent decision call."""
 
-    action: Optional[dict[str, Any]] = None
-    message: Optional[str] = None
+    def __init__(
+        self,
+        action: Optional[dict[str, Any]] = None,
+        message: Optional[str] = None,
+    ) -> None:
+        """Creates an immutable response value without colliding with named constructors."""
+        object.__setattr__(self, "action", action)
+        object.__setattr__(self, "message", message)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Rejects mutation after construction like a frozen dataclass."""
+        raise FrozenInstanceError(f"cannot assign to field {name!r}")
+
+    def __eq__(self, other: object) -> bool:
+        """Compares response payloads structurally for application and test code."""
+        return (
+            isinstance(other, AgentResponse)
+            and self.action == other.action
+            and self.message == other.message
+        )
+
+    def __repr__(self) -> str:
+        """Returns a diagnostic representation without hiding either optional field."""
+        return f"AgentResponse(action={self.action!r}, message={self.message!r})"
 
     @staticmethod
     def action(action: dict[str, Any]) -> "AgentResponse":
@@ -107,6 +128,8 @@ class _AgentService:
         self._auth_token = auth_token
         self._max_agents = max_agents
         self._agents: dict[str, GameAgent] = {}
+        self._creating_agents = 0
+        self._agent_lock = asyncio.Lock()
         self._pb2, _pb2_grpc = _generated_modules()
 
     async def _authenticate(self, context: grpc.aio.ServicerContext) -> None:
@@ -121,8 +144,12 @@ class _AgentService:
     async def CreateAgent(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote CreateAgent request from the Rust server."""
         await self._authenticate(context)
-        if len(self._agents) >= self._max_agents:
-            await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "agent capacity reached")
+        async with self._agent_lock:
+            if len(self._agents) + self._creating_agents >= self._max_agents:
+                await context.abort(
+                    grpc.StatusCode.RESOURCE_EXHAUSTED, "agent capacity reached"
+                )
+            self._creating_agents += 1
         init_context = {
             "protocol_version": request.protocol_version,
             "agent_name": request.agent_name,
@@ -131,10 +158,17 @@ class _AgentService:
             "seed": request.seed if request.HasField("seed") else None,
             "config": _struct_to_dict(request.config),
         }
-        maybe_agent = self._factory(init_context)
-        agent = await maybe_agent if asyncio.iscoroutine(maybe_agent) else maybe_agent
-        agent_id = str(uuid.uuid4())
-        self._agents[agent_id] = agent
+        try:
+            maybe_agent = self._factory(init_context)
+            agent = (
+                await maybe_agent if asyncio.iscoroutine(maybe_agent) else maybe_agent
+            )
+            agent_id = str(uuid.uuid4())
+            async with self._agent_lock:
+                self._agents[agent_id] = agent
+        finally:
+            async with self._agent_lock:
+                self._creating_agents -= 1
         return self._pb2.CreateAgentResponse(agent_id=agent_id)
 
     async def ObserveState(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
@@ -194,7 +228,8 @@ class _AgentService:
     async def Shutdown(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote Shutdown request from the Rust server."""
         await self._authenticate(context)
-        agent = self._agents.pop(request.agent_id, None)
+        async with self._agent_lock:
+            agent = self._agents.pop(request.agent_id, None)
         if agent is not None:
             await agent.close()
         return self._pb2.ShutdownResponse()
@@ -211,6 +246,10 @@ async def serve_agent_async(
     max_agents: int = 128,
 ) -> None:
     """Starts a bounded gRPC server, requiring TLS for every non-loopback binding."""
+    if max_agents <= 0:
+        raise ValueError("max_agents must be greater than zero")
+    if not 0 <= port <= 65535:
+        raise ValueError("port must be between 0 and 65535")
     pb2, pb2_grpc = _generated_modules()
 
     def normalized_factory(context: dict[str, Any]) -> GameAgent | Awaitable[GameAgent]:

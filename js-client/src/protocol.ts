@@ -151,6 +151,7 @@ export function socketUrl(websocketUrl: string, token: string): string {
 
 export class ExperimentApiClient {
   private participantCredential: string | null = null;
+  private participantGeneration = 0;
 
   constructor(private readonly baseUrl = apiBase()) {}
 
@@ -159,11 +160,14 @@ export class ExperimentApiClient {
   }
 
   async createParticipant(): Promise<ParticipantCreateResponse> {
+    const generation = ++this.participantGeneration;
     const participant = await this.post<ParticipantCreateResponse>(
       "/api/participants",
       {}
     );
-    this.participantCredential = participant.participant_credential;
+    if (generation === this.participantGeneration) {
+      this.participantCredential = participant.participant_credential;
+    }
     return participant;
   }
 
@@ -200,11 +204,21 @@ export class ExperimentApiClient {
   }
 
   sendAction<TAction>(socket: WebSocket | null, action: TAction): void {
-    socket?.send(JSON.stringify({ type: "submitAction", action }));
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    try {
+      socket.send(JSON.stringify({ type: "submitAction", action }));
+    } catch {
+      // A close may race the ready-state check; the reconnect owner handles recovery.
+    }
   }
 
   sendChatMessage(socket: WebSocket | null, text: string): void {
-    socket?.send(JSON.stringify({ type: "sendChatMessage", text }));
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    try {
+      socket.send(JSON.stringify({ type: "sendChatMessage", text }));
+    } catch {
+      // A close may race the ready-state check; the reconnect owner handles recovery.
+    }
   }
 
   /** Declares an intentional participant departure before closing the game channel. */
@@ -256,5 +270,14 @@ export async function checkedJson<T>(responsePromise: Promise<Response> | Respon
     const detail = await response.text();
     throw new Error(detail || `Request failed with ${response.status}`);
   }
-  return response.json();
+  if (response.status === 204 || response.headers.get("Content-Length") === "0") {
+    return undefined as T;
+  }
+  const text = await response.text();
+  if (!text) return undefined as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(`Response contained invalid JSON (${response.status})`);
+  }
 }

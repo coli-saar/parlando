@@ -159,3 +159,63 @@ pub trait AgentFactory<A: GameAdapter>: Send + Sync + 'static {
 
 /// Shared trait-object handle used by the reusable server.
 pub type SharedAgentFactory<A> = Arc<dyn AgentFactory<A>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Verifies response emptiness distinguishes absent values from present empty values.
+    #[test]
+    fn agent_response_emptiness_uses_option_presence() {
+        assert!(AgentResponse::<Value> {
+            message: None,
+            action: None,
+        }
+        .is_empty());
+        assert!(!AgentResponse::<Value> {
+            message: Some(String::new()),
+            action: None,
+        }
+        .is_empty());
+        assert!(!AgentResponse {
+            message: None,
+            action: Some(Value::Null),
+        }
+        .is_empty());
+    }
+
+    /// Confirms durable identity helpers prefer explicit type and version metadata.
+    #[test]
+    fn agent_identity_helpers_follow_metadata_fallbacks() {
+        let default = AgentParticipantIdentity::default();
+        assert_eq!(default.identity_provider, "agent");
+        assert_eq!(default.agent_type(), None);
+        assert_eq!(default.agent_version(), None);
+
+        let identity = AgentParticipantIdentity {
+            identity_provider: "remote_grpc".into(),
+            external_id: Some("external".into()),
+            metadata: json!({"agent_name":"fallback", "agent_type":"typed", "agent_version":"v2"}),
+        };
+        assert_eq!(identity.agent_type(), Some("typed"));
+        assert_eq!(identity.agent_version(), Some("v2"));
+    }
+
+    /// Keeps every utterance kind's serialized wire name stable.
+    #[test]
+    fn utterance_kinds_use_snake_case_wire_values() {
+        assert_eq!(
+            serde_json::to_value(AgentUtteranceKind::Typed).unwrap(),
+            "typed"
+        );
+        assert_eq!(
+            serde_json::to_value(AgentUtteranceKind::Spoken).unwrap(),
+            "spoken"
+        );
+        assert_eq!(
+            serde_json::to_value(AgentUtteranceKind::Agent).unwrap(),
+            "agent"
+        );
+    }
+}

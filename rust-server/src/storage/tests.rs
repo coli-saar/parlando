@@ -1368,3 +1368,318 @@ async fn empty_database_url_is_rejected() {
 
     assert!(error.to_string().contains("database.url is required"));
 }
+
+/// Populates one file-backed catalogue with every experiment-scoped table used by merge tests.
+async fn populate_merge_catalogue(
+    store: &SqliteExperimentStore,
+    experiment_id: &str,
+    room_id: &str,
+    participant_session_id: &str,
+    purpose: &str,
+) -> (i64, i64) {
+    store
+        .create_experiment(ExperimentRecord {
+            experiment_id: experiment_id.to_string(),
+            game_version: "1.2.3".to_string(),
+            config: json!({"study": {"name": experiment_id}}),
+            server_version: Some("0.2.0".to_string()),
+            version_manifest: None,
+            status: "inactive".to_string(),
+            notes: Some(format!("notes for {experiment_id}")),
+        })
+        .await
+        .unwrap();
+    let participant_id = store
+        .upsert_participant(ParticipantRecord {
+            experiment_id: experiment_id.to_string(),
+            participant_kind: "agent".to_string(),
+            identity_provider: "merge-test".to_string(),
+            external_id: Some(format!("{experiment_id}-agent")),
+            metadata: json!({
+                "source": experiment_id,
+                "agent_type": format!("merge-test.{experiment_id}"),
+                "agent_name": experiment_id,
+                "agent_version": "fixture-1",
+            }),
+        })
+        .await
+        .unwrap();
+    let session_id = store
+        .create_session(SessionRecord {
+            experiment_id: experiment_id.to_string(),
+            config_revision: 1,
+            game_version: "1.2.3".to_string(),
+            room_id: room_id.to_string(),
+            mode: "direct".to_string(),
+            status: "running".to_string(),
+            purpose: purpose.to_string(),
+        })
+        .await
+        .unwrap();
+    store
+        .add_session_participant(SessionParticipantRecord {
+            experiment_id: experiment_id.to_string(),
+            session_id,
+            participant_id,
+            participant_session_id: participant_session_id.to_string(),
+            role: "A".to_string(),
+            connection_status: "connected".to_string(),
+        })
+        .await
+        .unwrap();
+    store
+        .record_consent_declaration(ConsentDeclarationRecord {
+            experiment_id: experiment_id.to_string(),
+            session_id: Some(session_id),
+            participant_id,
+            purpose: purpose.to_string(),
+            consent_item_id: "participate".to_string(),
+            accepted: true,
+            consent_text_hash: Some("sha256:test".to_string()),
+            metadata: json!({"fixture": true}),
+        })
+        .await
+        .unwrap();
+    store
+        .append_session_event(SessionEventRecord {
+            experiment_id: experiment_id.to_string(),
+            session_id,
+            event_type: "merge_fixture".to_string(),
+            actor_participant_id: Some(participant_id),
+            actor_role: Some("A".to_string()),
+            payload: json!({"participant_session_id": participant_session_id}),
+            game_state: Some(json!({"turn": 1})),
+        })
+        .await
+        .unwrap();
+    (participant_id, session_id)
+}
+
+/// Confirms a dry run verifies all rows while leaving both catalogues logically unchanged.
+#[tokio::test]
+async fn catalogue_merge_dry_run_is_non_mutating() {
+    let temp = tempdir().unwrap();
+    let target_url = format!("sqlite:///{}", temp.path().join("target.sqlite").display());
+    let source_url = format!("sqlite:///{}", temp.path().join("source.sqlite").display());
+    let target = SqliteExperimentStore::connect(&target_url).await.unwrap();
+    let source = SqliteExperimentStore::connect(&source_url).await.unwrap();
+    populate_merge_catalogue(
+        &target,
+        "target",
+        "TARGET_ROOM",
+        "target-session",
+        "research",
+    )
+    .await;
+    populate_merge_catalogue(
+        &source,
+        "source",
+        "SOURCE_ROOM",
+        "source-session",
+        "testing",
+    )
+    .await;
+    let target_before = target.export_experiment("target").await.unwrap();
+    let source_before = source.export_experiment("source").await.unwrap();
+    target.pool.close().await;
+    source.pool.close().await;
+
+    let report = merge_sqlite_catalogues(&target_url, &source_url, false)
+        .await
+        .unwrap();
+
+    assert!(!report.applied);
+    assert_eq!(
+        report.target_after,
+        report.target_before.checked_add(report.source).unwrap()
+    );
+    let target = SqliteExperimentStore::connect(&target_url).await.unwrap();
+    let source = SqliteExperimentStore::connect(&source_url).await.unwrap();
+    assert_eq!(
+        target.export_experiment("target").await.unwrap(),
+        target_before
+    );
+    assert!(target
+        .experiment_definition("source")
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        source.export_experiment("source").await.unwrap(),
+        source_before
+    );
+}
+
+/// Confirms an applied merge remaps participant keys and preserves immutable purpose fields.
+#[tokio::test]
+async fn catalogue_merge_applies_complete_relational_graph() {
+    let temp = tempdir().unwrap();
+    let target_url = format!("sqlite:///{}", temp.path().join("target.sqlite").display());
+    let source_url = format!("sqlite:///{}", temp.path().join("source.sqlite").display());
+    let target = SqliteExperimentStore::connect(&target_url).await.unwrap();
+    let source = SqliteExperimentStore::connect(&source_url).await.unwrap();
+    let (target_participant, _) = populate_merge_catalogue(
+        &target,
+        "target",
+        "TARGET_ROOM",
+        "target-session",
+        "research",
+    )
+    .await;
+    let (source_participant, _) = populate_merge_catalogue(
+        &source,
+        "source",
+        "SOURCE_ROOM",
+        "source-session",
+        "testing",
+    )
+    .await;
+    let source_before = source.export_experiment("source").await.unwrap();
+    target.pool.close().await;
+    source.pool.close().await;
+
+    let report = merge_sqlite_catalogues(&target_url, &source_url, true)
+        .await
+        .unwrap();
+
+    assert!(report.applied);
+    let target = SqliteExperimentStore::connect(&target_url).await.unwrap();
+    let imported = target.export_experiment("source").await.unwrap();
+    let imported_participant = imported["participants"][0]["participant_id"]
+        .as_i64()
+        .unwrap();
+    assert_eq!(
+        imported_participant,
+        source_participant + target_participant
+    );
+    assert_eq!(
+        imported["session_participants"][0]["participant_id"],
+        imported_participant
+    );
+    assert_eq!(
+        imported["consent_declarations"][0]["participant_id"],
+        imported_participant
+    );
+    assert_eq!(
+        imported["session_events"][0]["actor_participant_id"],
+        imported_participant
+    );
+    assert_eq!(imported["sessions"][0]["purpose"], "testing");
+    assert_eq!(imported["consent_declarations"][0]["purpose"], "testing");
+    let source = SqliteExperimentStore::connect(&source_url).await.unwrap();
+    assert_eq!(
+        source.export_experiment("source").await.unwrap(),
+        source_before
+    );
+}
+
+/// Confirms a stable-id collision aborts before writing any source rows.
+#[tokio::test]
+async fn catalogue_merge_collision_is_atomic() {
+    let temp = tempdir().unwrap();
+    let target_url = format!("sqlite:///{}", temp.path().join("target.sqlite").display());
+    let source_url = format!("sqlite:///{}", temp.path().join("source.sqlite").display());
+    let target = SqliteExperimentStore::connect(&target_url).await.unwrap();
+    let source = SqliteExperimentStore::connect(&source_url).await.unwrap();
+    populate_merge_catalogue(
+        &target,
+        "duplicate",
+        "TARGET_ROOM",
+        "target-session",
+        "research",
+    )
+    .await;
+    populate_merge_catalogue(
+        &source,
+        "duplicate",
+        "SOURCE_ROOM",
+        "source-session",
+        "research",
+    )
+    .await;
+    let target_before = target.export_experiment("duplicate").await.unwrap();
+    target.pool.close().await;
+    source.pool.close().await;
+
+    let error = merge_sqlite_catalogues(&target_url, &source_url, true)
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("duplicate experiment id"));
+    let target = SqliteExperimentStore::connect(&target_url).await.unwrap();
+    assert_eq!(
+        target.export_experiment("duplicate").await.unwrap(),
+        target_before
+    );
+    assert_eq!(target.list_experiments(10).await.unwrap().len(), 1);
+}
+
+/// Confirms concurrent event writers receive a unique gap-free session-local order.
+#[tokio::test]
+async fn concurrent_event_appends_are_gap_free() {
+    let store = Arc::new(
+        SqliteExperimentStore::connect("sqlite:///:memory:")
+            .await
+            .unwrap(),
+    );
+    store
+        .create_experiment(ExperimentRecord {
+            experiment_id: "concurrent-events".to_string(),
+            game_version: "1.0.0".to_string(),
+            config: json!({}),
+            server_version: None,
+            version_manifest: None,
+            status: "inactive".to_string(),
+            notes: None,
+        })
+        .await
+        .unwrap();
+    let session_id = store
+        .create_session(SessionRecord {
+            experiment_id: "concurrent-events".to_string(),
+            config_revision: 1,
+            game_version: "1.0.0".to_string(),
+            room_id: "CONCURRENT_EVENTS".to_string(),
+            mode: "direct".to_string(),
+            status: "running".to_string(),
+            purpose: "research".to_string(),
+        })
+        .await
+        .unwrap();
+    let mut writers = Vec::new();
+    for writer in 0..64 {
+        let store = Arc::clone(&store);
+        writers.push(tokio::spawn(async move {
+            store
+                .append_session_event(SessionEventRecord {
+                    experiment_id: "concurrent-events".to_string(),
+                    session_id,
+                    event_type: "parallel".to_string(),
+                    actor_participant_id: None,
+                    actor_role: None,
+                    payload: json!({"writer": writer}),
+                    game_state: None,
+                })
+                .await
+                .unwrap()
+        }));
+    }
+    let mut returned = Vec::new();
+    for writer in writers {
+        returned.push(writer.await.unwrap());
+    }
+    returned.sort_unstable();
+
+    assert_eq!(returned, (1..=64).collect::<Vec<_>>());
+    let stored = store
+        .session_events("concurrent-events", session_id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        stored
+            .iter()
+            .map(|event| event.event_index)
+            .collect::<Vec<_>>(),
+        returned
+    );
+}

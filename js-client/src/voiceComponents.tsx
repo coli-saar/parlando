@@ -5,11 +5,12 @@ import { transcriptionProgressForStatus } from "./helpers.js";
 
 /** Renders a normalized microphone level without exposing device details. */
 export function MicLevelMeter({ active, label, level }: { active: boolean; label: string; level: number }) {
+  const normalizedLevel = Number.isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
   return (
     <div className="mic-meter">
       <span>{label}</span>
       <div className="mic-meter-track" aria-hidden="true">
-        <span style={{ transform: `scaleX(${active ? level : 0})` }} />
+        <span style={{ transform: `scaleX(${active ? normalizedLevel : 0})` }} />
       </div>
     </div>
   );

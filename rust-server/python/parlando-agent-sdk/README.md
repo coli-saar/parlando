@@ -31,3 +31,9 @@ serve_agent(FirstActionAgent, host="127.0.0.1", port=50051)
 
 See [Agents](../../../docs/agents.md) for experiment configuration, deployment,
 authentication, and agent identity/version recording.
+
+Run the SDK unit and protocol-drift suite from an environment containing the package dependencies:
+
+```sh
+python -m unittest discover -s tests -v
+```
