@@ -175,7 +175,7 @@ The intended event vocabulary includes:
 
 Each accepted game action stores the actor, typed action payload, generated game
 events, optional full resulting game state, and timestamp exactly once. Live
-`stateChanged` WebSocket messages are presentation protocol and do not create a
+`transition` WebSocket messages are presentation protocol and do not create a
 second durable state-snapshot event. Repeated equivalent rejections are stored as
 bounded aggregates with stable reasons and occurrence counts.
 

@@ -1,157 +1,89 @@
 # Agents
 
-Parlando supports agents as first-class participants. An agent observes role-specific state, accepted actions, and conversation messages as they happen. After each observation, the runtime asks whether the agent wants to respond. Any returned action goes through the normal server validation path.
+An agent controls `PlayerRole::A` or `PlayerRole::B` under exactly the same game rules and information boundary as a human. It receives role-specific observations, accepted transitions, and messages from the other player. It never receives authoritative state or frontend events.
 
-Use agents when you want to compare human partners with automated partners, run controlled partner policies, prototype human-AI interaction, or keep a scripted participant available during development. You do not need an agent for a human-vs-human study.
+## Rust agents
 
-Agents can run in two ways:
-
-- in process, written in Rust and linked into the game binary.
-- out of process, written in Python or another language and connected over gRPC.
-
-## Rust Agents
-
-In-process Rust agents implement `GameAgent<A>` and are created by an `AgentFactory<A>`.
+Implement `agent::Agent<G>` and create session-local instances with `agent::Factory<G>`:
 
 ```rust
-#[async_trait::async_trait]
-impl GameAgent<MyAdapter> for MyAgent {
-    async fn observe_action(
-        &mut self,
-        actor: PlayerRole,
-        action: MyAction,
-        resulting_observation: MyObservation,
-    ) -> anyhow::Result<()> {
-        self.last_observation = Some(resulting_observation);
-        self.last_actor = Some(actor);
-        self.last_action = Some(action);
+use anyhow::Result;
+use async_trait::async_trait;
+use parlando_server::{
+    agent::{Agent, Context, Definition, Factory, Identity, Response},
+    PlayerRole,
+};
+
+struct MyAgent {
+    observation: Option<MyObservation>,
+}
+
+#[async_trait]
+impl Agent<MyGame> for MyAgent {
+    async fn start(&mut self, initial_observation: MyObservation) -> Result<()> {
+        self.observation = Some(initial_observation);
         Ok(())
     }
 
-    async fn observe_message(
+    async fn observe_transition(
         &mut self,
-        speaker: PlayerRole,
-        kind: AgentUtteranceKind,
-        text: String,
-    ) -> anyhow::Result<()> {
-        self.messages.push((speaker, kind, text));
+        _actor: PlayerRole,
+        _action: MyAction,
+        observation: MyObservation,
+    ) -> Result<()> {
+        self.observation = Some(observation);
         Ok(())
     }
 
-    async fn maybe_act(
+    async fn observe_message(&mut self, sender: PlayerRole, text: String) -> Result<()> {
+        remember_message(sender, text);
+        Ok(())
+    }
+
+    async fn respond(
         &mut self,
         available_actions: Option<Vec<MyAction>>,
-    ) -> anyhow::Result<Option<AgentResponse<MyAction>>> {
-        if let Some(actions) = available_actions {
-            if let Some(action) = actions.into_iter().next() {
-                return Ok(Some(AgentResponse {
-                    message: None,
-                    action: Some(action),
-                }));
-            }
-        }
-        Ok(None)
+    ) -> Result<Option<Response<MyAction>>> {
+        Ok(available_actions
+            .and_then(|actions| actions.into_iter().next())
+            .map(Response::action))
     }
 }
 ```
 
-The server creates one mutable agent instance per agent participant. If an agent needs memory, store it in that agent instance. The server intentionally does not pass room ids, participant-session ids, conversation history, invalid-action counts, or completion flags into the agent callbacks.
+A `Response` is always non-empty: action, message, or action and message. `None` means the agent declines to respond now. Messages communicate with the other player and do not change state. Every action is validated by the game.
 
-The demo game's factory selector lives in `space-game/server/src/agents.rs`. It currently supports:
+`Factory::create(Context { role, seed, settings }).await` constructs the agent before game state is delivered. After construction returns, the runtime creates the initial game state and calls `start(initial_observation)`. This ordering allows model or remote-resource initialization before the agent sees the game.
 
-- `space_game.back_and_forth`: deterministic in-process demo agent.
-- `remote_grpc`: remote gRPC bridge for Python or another language.
+A factory's `Definition` and `ConfigField` values populate the dashboard's compiled-agent selector. `identity(settings)` supplies the semantic name and optional version recorded for the automated participant. Register the factory with `Server::agent`.
 
-## Python Agents Over gRPC
+## Remote Python agents
 
-Remote agents let researchers write policies in Python while the game continues
-to use the same typed actions, observations, and validation as a browser player.
-
-Install the SDK dependencies in your Python environment, generate protobuf modules from a checkout, and run an agent service:
-
-```sh
-cd rust-server/python/parlando-agent-sdk
-python -m pip install -e .
-python -m parlando_agent_sdk.generate_protos
-python my_agent.py
-```
-
-Minimal `my_agent.py`:
+The supported Python authoring API mirrors Rust:
 
 ```python
-from parlando_agent_sdk import AgentResponse, GameAgent, serve_agent
+from parlando_agent_sdk import Agent, Response, serve
 
-class FirstActionAgent(GameAgent):
-    async def maybe_act(self, available_actions):
+class FirstActionAgent(Agent):
+    async def start(self, initial_observation):
+        self.observation = initial_observation
+
+    async def observe_transition(self, actor, action, observation):
+        self.observation = observation
+
+    async def observe_message(self, sender, text):
+        self.last_message = (sender, text)
+
+    async def respond(self, available_actions):
         if available_actions:
-            return AgentResponse.action(available_actions[0])
+            return Response.action(available_actions[0])
         return None
 
-serve_agent(FirstActionAgent, host="127.0.0.1", port=50051)
+serve(FirstActionAgent, host="127.0.0.1", port=50051)
 ```
 
-Select the remote agent in the inactive experiment's dashboard configuration. The
-stored value has this shape:
+Register `parlando_server::agent::grpc::Factory::<MyGame>::new()` on the Rust server and configure its endpoint and identity through the dashboard.
 
-```json
-{
-  "agents": {
-    "mode": "human_vs_agent",
-    "human_vs_agent": {
-      "factory": "remote_grpc",
-      "act_timeout_seconds": 5,
-      "invalid_action_limit": 3,
-      "config": {
-        "endpoint": "http://127.0.0.1:50051",
-        "agent_name": "first-action-agent",
-        "agent_version": "dev",
-        "protocol_version": "parlando-agent-v2"
-      }
-    }
-  }
-}
-```
+## Readiness follow-up
 
-The gRPC create request contains:
-
-- the role controlled by the agent.
-- the seed and agent configuration from the experiment's stored revision.
-
-The observation RPCs contain:
-
-- role-specific state snapshots.
-- accepted actions with actor role and resulting observation.
-- conversation messages with speaker role, modality, and text.
-
-Decision RPCs contain optional role-specific available actions. The response contains optional `message` and optional `action`; at least one must be present when a response is returned.
-
-Returned actions must be JSON-compatible dictionaries matching the game action schema. In the demo game, a movement action looks like:
-
-```python
-{"type": "moveStep", "player": "B", "direction": "up"}
-```
-
-## Deployment Notes
-
-For local experiments, the Rust server can call `http://127.0.0.1:50051` if the Python agent runs on the same machine.
-
-For hosted deployments, the gRPC endpoint must use HTTPS, its hostname must appear exactly in `PARLANDO_REMOTE_AGENT_ALLOWED_HOSTS`, and the Rust and Python processes must share `PARLANDO_REMOTE_AGENT_TOKEN` through runtime secret storage. The Python SDK rejects non-loopback cleartext binding, supports TLS and optional client-certificate verification, bounds gRPC message/stream resources, and checks bearer metadata on every RPC. Common deployment options are:
-
-- run the Python agent as a second service on the same private network.
-- package the agent into the same container and supervise both processes.
-- deploy the agent on a separate host with a private or protected endpoint.
-
-Record the agent name and version in config. Parlando persists remote-agent participant metadata as `identity_provider = remote_grpc` and `external_id = <agent_name>@<agent_version>`. The participant identifier shown in administration and exports also exposes the transport type, agent name, and version, for example `agent:remote_grpc:my-agent@v1`. A missing version is visibly marked `unversioned`.
-
-If the agent uses an LLM or another hosted model, keep provider credentials in
-the agent process or server-side configuration. The browser and public
-experiment configuration need only the resulting game interaction, not those
-credentials.
-
-## Reference Files
-
-- `rust-server/src/agents.rs`: local agent traits.
-- `rust-server/src/remote_agent.rs`: Rust gRPC bridge.
-- `rust-server/proto/parlando_agent_v1.proto`: remote-agent protocol.
-- `space-game/server/src/agents.rs`: demo local and remote agent selection.
-- `rust-server/python/parlando-agent-sdk`: Python agent SDK.
+Today the runtime considers an agent constructed when async factory creation, or remote `CreateAgent`, returns. `start` then delivers the initial observation. A separate readiness signal, initialization-specific timeout and cancellation, and isolation for synchronous model loading are not yet specified. They are the first planned lifecycle follow-up; agents should not emulate readiness with player messages or game actions.

@@ -87,13 +87,22 @@ const input = {
   createMediaStream: () => stream
 };
 const sink = new ParlandoAudioSink();
+const plan = {
+  enabled: fixture.plan.enabled,
+  websocketUrl: fixture.plan.websocket_url ?? null,
+  token: fixture.plan.token ?? null,
+  protocolVersion: fixture.plan.protocol_version,
+  sampleRateHz: fixture.plan.sample_rate_hz,
+  channels: fixture.plan.channels,
+  frameDurationMs: fixture.plan.frame_duration_ms,
+  jitterBufferMs: fixture.plan.jitter_buffer_ms
+};
 await sink.connect(input, {
   roomId: fixture.room_id,
-  participantSessionId: fixture.participant_session_id,
   role: "A",
   selectedAudioInputId: input.deviceId,
   selectedAudioInputLabel: input.deviceLabel,
-  getAudioSession: async () => fixture.plan,
+  getAudioSession: async () => plan,
   logVoice() {},
   onVoiceStatus() {}
 });

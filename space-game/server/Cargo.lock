@@ -1337,7 +1337,6 @@ dependencies = [
  "prost-types",
  "protoc-bin-vendored",
  "rand",
- "regex",
  "semver",
  "serde",
  "serde_json",

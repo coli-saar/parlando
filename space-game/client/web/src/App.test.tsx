@@ -1,9 +1,19 @@
 import { describe, expect, it } from "vitest";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { initialVoicePreflight, initialVoiceStatus } from "@coli-saar/parlando-client";
-import { ParlandoStartupGate } from "@coli-saar/parlando-client/react";
+import type { VoicePreflight, VoiceStatus } from "@coli-saar/parlando-client";
+import { ParticipantApp } from "@coli-saar/parlando-client/react";
 import { App, CommunicationPanel } from "./App";
+
+const initialVoicePreflight: VoicePreflight = {
+  requested: false, ready: false, preparing: false, message: "Voice not prepared",
+  micLevel: 0, micProbeActive: false, deviceLabel: "Default microphone"
+};
+const initialVoiceStatus: VoiceStatus = {
+  connected: false, connecting: false, microphoneEnabled: false, microphoneChanging: false,
+  remoteAudio: false, message: "Voice not connected", error: null,
+  transcriptionMessage: "ASR idle", transcriptionReady: false
+};
 
 describe("Space Game startup", () => {
   it("delegates Parlando setup and waiting-room startup to the SDK gate", () => {
@@ -13,7 +23,7 @@ describe("Space Game startup", () => {
     }>;
 
     expect(element.type).toBe("main");
-    expect(gate.type).toBe(ParlandoStartupGate);
+    expect(gate.type).toBe(ParticipantApp);
     expect(typeof gate.props.renderGame).toBe("function");
   });
 
@@ -22,12 +32,12 @@ describe("Space Game startup", () => {
       <CommunicationPanel
         chatDraft=""
         conversation={[]}
-        voiceEnabled
+        enabled
         onChatDraftChange={() => undefined}
         onSubmitChat={() => undefined}
-        onMicrophoneMutedChange={() => undefined}
+        onMutedChange={() => undefined}
         voicePreflight={{ ...initialVoicePreflight, micLevel: 0.62, micProbeActive: true }}
-        voiceStatus={{ ...initialVoiceStatus, connected: true, microphoneEnabled: false, message: "Microphone muted" }}
+        status={{ ...initialVoiceStatus, connected: true, microphoneEnabled: false, message: "Microphone muted" }}
       />
     );
 
@@ -46,12 +56,12 @@ describe("Space Game startup", () => {
       <CommunicationPanel
         chatDraft=""
         conversation={[]}
-        voiceEnabled
+        enabled
         onChatDraftChange={() => undefined}
         onSubmitChat={() => undefined}
-        onMicrophoneMutedChange={() => undefined}
+        onMutedChange={() => undefined}
         voicePreflight={{ ...initialVoicePreflight, deviceLabel: "Desk microphone", micProbeActive: true }}
-        voiceStatus={{
+        status={{
           ...initialVoiceStatus,
           connected: true,
           microphoneEnabled: true,

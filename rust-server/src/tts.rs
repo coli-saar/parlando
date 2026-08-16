@@ -14,8 +14,6 @@ pub struct AudioChunk {
     pub sample_rate: u32,
     /// Number of audio channels.
     pub channels: u16,
-    /// True when the provider has finished the message stream.
-    pub final_chunk: bool,
 }
 
 /// Streaming text-to-speech provider used by the agent voice runtime.
@@ -96,7 +94,6 @@ impl StreamingTtsProvider for ElevenLabsStreamingTtsProvider {
                         data: base64::engine::general_purpose::STANDARD.decode(audio)?,
                         sample_rate,
                         channels: 1,
-                        final_chunk: false,
                     });
                 }
             }
@@ -105,12 +102,6 @@ impl StreamingTtsProvider for ElevenLabsStreamingTtsProvider {
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false)
             {
-                chunks.push(AudioChunk {
-                    data: vec![],
-                    sample_rate,
-                    channels: 1,
-                    final_chunk: true,
-                });
                 break;
             }
         }
@@ -201,12 +192,10 @@ mod tests {
 
         let chunks = provider.synthesize("hello", "msg-1").await.unwrap();
 
-        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].data, vec![1, 2, 3]);
         assert_eq!(chunks[0].sample_rate, 16000);
         assert_eq!(chunks[0].channels, 1);
-        assert!(!chunks[0].final_chunk);
-        assert!(chunks[1].final_chunk);
         server.await.unwrap();
     }
 }

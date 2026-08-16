@@ -1,13 +1,8 @@
-import type { ConsentItem, PublicConfigResponse } from "./protocol.js";
+import type { ConsentItem, ExperimentInfo, Presence } from "./protocol.js";
 import type { VoiceStatus } from "./audio/types.js";
 
-export interface PresenceState {
-  A?: { participantSessionId?: string; connected?: boolean; audioReady?: boolean };
-  B?: { participantSessionId?: string; connected?: boolean; audioReady?: boolean };
-}
-
 export function requiredConsentsAccepted(
-  config: Pick<PublicConfigResponse, "consents"> | null,
+  config: Pick<ExperimentInfo, "consents"> | null,
   decisions: Record<string, boolean>
 ): boolean {
   if (!config) return true;
@@ -16,12 +11,12 @@ export function requiredConsentsAccepted(
 
 /** Reports whether the experiment lifecycle currently permits participant intake. */
 export function experimentAllowsIntake(
-  status: PublicConfigResponse["experiment_status"] | null | undefined
+  status: ExperimentInfo["status"] | null | undefined
 ): boolean {
   return status === "testing" || status === "active";
 }
 
-export function bothPlayersConnected(presence: PresenceState): boolean {
+export function bothPlayersConnected(presence: Presence): boolean {
   return Boolean(presence.A?.connected && presence.B?.connected);
 }
 

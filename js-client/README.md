@@ -1,92 +1,50 @@
 # @coli-saar/parlando-client
 
-Reusable browser building blocks for Parlando games. The package handles the
-parts that games share—participant setup, scoped API access, WebSockets, and
-audio—while each game remains free to define its own screens, visual world,
-controls, assets, language, and interaction model.
+Frontend-neutral browser support for Parlando participant applications. The Rust server does not depend on this package; it implements the versioned protocol documented in `docs/client-protocol.md`.
 
-## Shared capabilities
+## Entry points
 
-- Protocol and response types for the Rust server HTTP and WebSocket APIs.
-- `ExperimentApiClient`, URL helpers, checked JSON helpers, and socket helpers.
-- Voice-session orchestration for microphone setup and sink lifecycle.
-- A provider-neutral browser audio sink for Parlando's server relay.
-- Reusable platform widgets and hooks under `@coli-saar/parlando-client/react`, such as microphone mute, local level, voice status, and transcription status components.
-
-## Game-owned capabilities
-
-- Game-specific state, actions, observations, rendering, assets, maps, levels,
-  scoring, and participant-facing language belong in the game client.
-- Client-side interaction logic can be as rich as the study needs. The Rust game
-  mechanics retain the matching final validation used for browsers and agents.
-- Demo layouts and Space Game-specific CSS stay in `space-game/client` so the SDK
-  does not impose a visual design on other games.
-- Private Speechmatics or TTS configuration stays in the server process. The SDK
-  receives public capability metadata and a short-lived room-audio credential.
-
-## Package entrypoints
+The root exports the managed client and stable participant data types:
 
 ```ts
-import { ExperimentApiClient, socketUrl } from "@coli-saar/parlando-client";
-import { ParlandoAudioSink } from "@coli-saar/parlando-client";
-import { VoiceStatusChip } from "@coli-saar/parlando-client/react";
+import {
+  ParticipantClient,
+  type AudioSessionPlan,
+  type ExperimentInfo,
+  type GameSessionPlan,
+  type JoinedRoom,
+  type PlayerMessage,
+  type PlayerRole,
+  type VoicePreflight,
+  type VoiceStatus,
+} from "@coli-saar/parlando-client";
 ```
 
-The root entrypoint contains protocol types, API helpers, WebSocket helpers, the audio-session controller and sink, microphone helpers, and non-React utility functions.
+The React entry point exports the participant lifecycle and platform widgets:
 
-For voice-enabled games, call `ExperimentApiClient.createRoom(...)` before rendering the readiness waiting room. The server pairs a human with an existing compatible waiting room or creates one; in human-agent mode it supplies Player B immediately. The client derives `/e/{experiment_id}` from the participant page and scopes room, game-session, and audio-session requests to it.
-
-## Speech configuration
-
-The SDK does not configure Speechmatics or TTS services directly. A game client reads public capability information from the experiment-scoped configuration endpoint, then requests a room-specific Parlando audio credential through `ExperimentApiClient`. The Rust server owns provider selection, private API keys, transcription sessions, and TTS voice settings.
-
-`ParlandoAudioSink` captures and sends fixed 24 kHz PCM frames and plays partner or agent audio through an AudioWorklet. Playback uses the server-provided jitter target, linear device-rate interpolation, bounded stale-audio trimming, short underrun recovery, and diagnostic reporting. Game clients should normally let `ParlandoStartupGate` construct this sink rather than creating audio nodes or WebSockets themselves.
-
-## Widgets
-
-The SDK may include reusable platform widgets when they describe Parlando runtime state rather than game UI. Good examples are mic-level meters, microphone mute controls, consent controls, waiting-room indicators, connection status chips, and STT readiness chips.
-
-These widgets stay generic: they accept state and callbacks from the game app,
-avoid knowledge of a particular state model, and expose CSS classes or props so
-each game can style them. This allows a game to use as much or as little of the
-shared presentation as fits its participant experience.
-
-## Local development from a game checkout
-
-Normal game clients should depend on the released npm package:
-
-```json
-"@coli-saar/parlando-client": "^0.2.0"
+```tsx
+import {
+  ParticipantApp,
+  type GameSession,
+  MicrophoneMuteButton,
+  MicrophoneLevelMeter,
+  TranscriptionProgress,
+} from "@coli-saar/parlando-client/react";
 ```
 
-When debugging SDK changes from a separate local Parlando checkout, temporarily install that checkout by absolute path:
+`ParticipantApp` handles registration, consent, matchmaking, readiness, connection, and optional audio before handing a `GameSession` to the game renderer. The game owns its domain types, visual design, controls, language, assets, and completion presentation.
 
-From this directory:
+`GameSession` exposes role-specific `observation`, optional `availableActions`, conversation, presence, completion, voice capability, and high-level operations. It does not expose authoritative state, generic events, provider credentials, or dashboard configuration.
 
-```bash
-npm install
-npm run build
-```
+Use `new ParticipantClient({ baseUrl })` for the HTTP lifecycle of a custom non-React participant application. It retains the participant credential and returns presentation-neutral experiment, room, and authenticated one-use `GameSessionPlan` or `AudioSessionPlan` values with JavaScript-style field names. Implement the documented WebSocket protocol from that plan when the complete `ParticipantApp` lifecycle is unsuitable; raw server-message DTOs and socket helpers are intentionally not package exports.
 
-From a game client checkout:
+## Presentation boundary
 
-```bash
-npm install --no-save file:/absolute/path/to/parlando/js-client
-```
+The package supplies platform behavior, not game presentation. Human-readable labels, animation, maps, dialogue layout, and accessibility choices belong to the participant application. Rust games and agents exchange only structured domain observations, actions, messages, and completion.
 
-After SDK edits, rebuild the SDK and reinstall or rebuild the game client as needed:
+Speechmatics and TTS credentials and provider selection remain server-owned. Participant code receives only narrow capabilities and session status. Do not call provider APIs directly.
 
-```bash
-npm run build
-```
-
-Because `package.json` cannot contain comments, keep the normal registry dependency committed and use the `file:` dependency only as a temporary local edit or install command. Before committing a game release, restore the registry dependency and refresh `package-lock.json`.
-
-Committed consumer manifests should normally depend on a version, for example `"@coli-saar/parlando-client": "^0.2.0"`, not on `file:` paths.
-
-## Publishing
-
-Before publishing, test and build the package:
+## Local development
 
 ```bash
 npm install
@@ -94,7 +52,9 @@ npm test
 npm run build
 ```
 
-For an online package release, run the repository-level publishing dry run and publish target:
+A game normally depends on a published version. For temporary local development, install this checkout by absolute path and restore the versioned dependency before committing.
+
+## Publishing
 
 ```bash
 make publish-js-client-dry-run

@@ -39,10 +39,7 @@ use tower_http::{
 };
 
 use crate::{
-    agents::{
-        AgentFactory, AgentInitContext, AgentResponse, AgentUtteranceKind, GameAgent,
-        SharedAgentFactory,
-    },
+    agents::{Agent, AgentContext, AgentFactory, AgentResponse, SharedAgentFactory},
     audio::{
         AudioFrame, AudioOutbound, AudioRoomRegistry, SharedAudioRooms, AUDIO_CHANNELS,
         AUDIO_FRAME_DURATION_MS, AUDIO_PROTOCOL_VERSION, AUDIO_SAMPLE_RATE,
@@ -54,7 +51,9 @@ use crate::{
         ADMIN_ABSOLUTE_SECONDS,
     },
     config::{AgentsMode, ConsentItemConfig, ExperimentConfig},
-    game::{GameAdapter, GameDescriptor, PlayerRole, Seat},
+    game::{
+        parse_game_config, ActionRejection, AgentDefinition, Game, GameMetadata, PlayerRole, Seat,
+    },
     identity::{new_id, room_code},
     protocol::*,
     storage::{
@@ -72,11 +71,13 @@ use crate::{
 
 /// Optional runtime components supplied by the game-specific binary.
 #[derive(Clone)]
-pub struct ServeOptions<A: GameAdapter> {
+pub struct ServeOptions<A: Game> {
     /// Identity of the one game implementation compiled into this server process.
-    pub game_descriptor: Option<GameDescriptor>,
+    pub game_descriptor: Option<GameMetadata>,
     /// Factory used to create one fresh agent per agent participant.
     pub agent_factory: Option<Arc<dyn AgentFactory<A>>>,
+    /// Dashboard definitions for every agent factory registered with this server.
+    pub agent_definitions: Vec<AgentDefinition>,
     /// Streaming TTS provider used for agent-origin conversation messages.
     pub tts_provider: Option<Arc<dyn StreamingTtsProvider>>,
     /// Optional publisher used to send synthesized agent audio into the room relay.
@@ -87,12 +88,13 @@ pub struct ServeOptions<A: GameAdapter> {
     pub game_version_manifest: Option<Value>,
 }
 
-impl<A: GameAdapter> Default for ServeOptions<A> {
+impl<A: Game> Default for ServeOptions<A> {
     /// Creates serve options with no agent factory configured.
     fn default() -> Self {
         Self {
             game_descriptor: None,
             agent_factory: None,
+            agent_definitions: Vec::new(),
             tts_provider: None,
             audio_publisher: None,
             transcription_provider: None,
@@ -108,9 +110,6 @@ fn persistable_config_json(config: &ExperimentConfig) -> Result<Value> {
         object.remove("experiment");
         object.remove("server");
         object.remove("database");
-    }
-    if let Some(study) = value.get_mut("study").and_then(Value::as_object_mut) {
-        study.remove("institution");
     }
     for provider in ["speechmatics", "tts"] {
         if let Some(settings) = value.get_mut(provider).and_then(Value::as_object_mut) {
@@ -244,7 +243,7 @@ fn apply_game_provider_settings(
 }
 
 /// Loads one stored revision with process bootstrap settings and effective credentials applied.
-async fn hydrated_experiment_config<A: GameAdapter>(
+async fn hydrated_experiment_config<A: Game>(
     state: &Arc<AppState<A>>,
     experiment_id: &str,
 ) -> Result<ExperimentConfig, AppError> {
@@ -269,7 +268,7 @@ async fn hydrated_experiment_config<A: GameAdapter>(
 }
 
 /// Computes intake blockers while honoring providers injected by an embedding application.
-async fn experiment_activation_issues<A: GameAdapter>(
+async fn experiment_activation_issues<A: Game>(
     state: &Arc<AppState<A>>,
     experiment_id: &str,
 ) -> Result<Vec<String>, AppError> {
@@ -546,7 +545,7 @@ fn websocket_path(config: &ExperimentConfig, suffix: &str) -> String {
 struct CspNonce(String);
 
 /// Adds browser hardening headers and a request-specific script nonce.
-async fn security_headers<A: GameAdapter>(
+async fn security_headers<A: Game>(
     State(_state): State<Arc<AppState<A>>>,
     mut request: Request,
     next: Next,
@@ -591,7 +590,7 @@ async fn security_headers<A: GameAdapter>(
 }
 
 /// Runs bounded periodic cleanup for transient credentials, sessions, and tickets.
-fn spawn_security_cleanup<A: GameAdapter>(state: Arc<AppState<A>>, clean_admin_sessions: bool) {
+fn spawn_security_cleanup<A: Game>(state: Arc<AppState<A>>, clean_admin_sessions: bool) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
@@ -621,7 +620,7 @@ fn spawn_security_cleanup<A: GameAdapter>(state: Arc<AppState<A>>, clean_admin_s
                     !expired_participants.contains(participant_id)
                         || participant_ids_in_rooms.contains(participant_id)
                 });
-            let unattached_timeout = state.config.study.waiting_room_timeout_seconds.max(1);
+            let unattached_timeout = state.config.session.waiting_room_timeout_seconds.max(1);
             let stale_unattached = {
                 let now = chrono::Utc::now();
                 let mut memory = state.memory.write().await;
@@ -673,12 +672,12 @@ fn room_status_is_terminal(status: &str) -> bool {
 }
 
 /// Removes or expires transient rooms after configured waiting, idle, and lifetime bounds.
-async fn cleanup_transient_rooms<A: GameAdapter>(state: &Arc<AppState<A>>) {
+async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
     let now = chrono::Utc::now();
-    let waiting_timeout = state.config.study.waiting_room_timeout_seconds.max(1);
-    let reconnect_grace = state.config.study.reconnect_grace_seconds.max(1);
-    let idle_timeout = state.config.study.session_idle_timeout_seconds.max(1);
-    let max_lifetime = state.config.study.session_max_lifetime_seconds.max(1);
+    let waiting_timeout = state.config.session.waiting_room_timeout_seconds.max(1);
+    let reconnect_grace = state.config.session.reconnect_grace_seconds.max(1);
+    let idle_timeout = state.config.session.session_idle_timeout_seconds.max(1);
+    let max_lifetime = state.config.session.session_max_lifetime_seconds.max(1);
     let candidates = {
         let memory = state.memory.read().await;
         memory
@@ -793,6 +792,24 @@ async fn cleanup_transient_rooms<A: GameAdapter>(state: &Arc<AppState<A>>) {
             .iter()
             .any(|room_id| key.starts_with(&format!("{room_id}:")))
     });
+    let pending_agents = {
+        let mut pending = state.pending_agents.lock().await;
+        let keys = pending
+            .keys()
+            .filter(|key| {
+                removed
+                    .iter()
+                    .any(|room_id| key.starts_with(&format!("{room_id}:")))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.into_iter()
+            .filter_map(|key| pending.remove(&key))
+            .collect::<Vec<_>>()
+    };
+    for mut agent in pending_agents {
+        let _ = tokio::time::timeout(Duration::from_secs(5), agent.shutdown()).await;
+    }
     state.game_connections.write().await.retain(|key, _| {
         !removed
             .iter()
@@ -811,7 +828,7 @@ async fn cleanup_transient_rooms<A: GameAdapter>(state: &Arc<AppState<A>>) {
 }
 
 /// Applies a process-wide safety ceiling to unauthenticated participant creation bursts.
-async fn enforce_creation_rate<A: GameAdapter>(state: &Arc<AppState<A>>) -> Result<(), AppError> {
+async fn enforce_creation_rate<A: Game>(state: &Arc<AppState<A>>) -> Result<(), AppError> {
     let now = chrono::Utc::now().timestamp();
     let mut attempts = state.participant_creation_window.write().await;
     attempts.record(now).then_some(()).ok_or_else(|| {
@@ -823,7 +840,7 @@ async fn enforce_creation_rate<A: GameAdapter>(state: &Arc<AppState<A>>) -> Resu
 }
 
 /// Authenticates participant API requests and attaches the resolved principal.
-async fn require_participant_auth<A: GameAdapter>(
+async fn require_participant_auth<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     mut request: Request,
     next: Next,
@@ -840,7 +857,7 @@ async fn require_participant_auth<A: GameAdapter>(
 }
 
 /// Restricts all administrator surfaces to configured direct-peer CIDR ranges.
-async fn require_admin_network<A: GameAdapter>(
+async fn require_admin_network<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     request: Request,
     next: Next,
@@ -882,7 +899,7 @@ fn admin_network_allows(ranges: &[String], client_ip: Option<IpAddr>) -> bool {
 }
 
 /// Authenticates every administrator route and enforces role and CSRF on mutations.
-async fn require_admin_auth<A: GameAdapter>(
+async fn require_admin_auth<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     mut request: Request,
     next: Next,
@@ -975,7 +992,7 @@ async fn admin_entry() -> Redirect {
 }
 
 /// Renders first-run administrator setup or the normal login form.
-async fn admin_login_page<A: GameAdapter>(
+async fn admin_login_page<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Extension(nonce): Extension<CspNonce>,
 ) -> Html<String> {
@@ -1006,7 +1023,7 @@ async fn admin_login_page<A: GameAdapter>(
         (
             "Welcome back",
             "Administrator access",
-            "Sign in to manage experiments and review study sessions.",
+            "Sign in to manage experiments and review sessions.",
             "Sign in",
             "/api/admin/login",
             "",
@@ -1079,7 +1096,7 @@ async fn admin_login_page<A: GameAdapter>(
   <header class="app-header"><div class="brand"><span class="brand-name">Parlando</span><span class="brand-section">Experimenter dashboard</span></div></header>
   <main class="page">
     <section class="auth-shell" aria-labelledby="auth-title">
-      <aside class="context"><div class="context-copy"><div class="mark" aria-hidden="true">P</div><h2>Dialogue experiments, clearly managed.</h2><p>Configure studies, follow live sessions, and export research data from one focused workspace.</p></div><div class="context-footer">Secure administrator area</div></aside>
+      <aside class="context"><div class="context-copy"><div class="mark" aria-hidden="true">P</div><h2>Dialogue experiments, clearly managed.</h2><p>Configure experiments, follow live sessions, and export research data from one focused workspace.</p></div><div class="context-footer">Secure administrator area</div></aside>
       <div class="auth-panel">
         <div class="eyebrow">{eyebrow}</div>
         <h1 id="auth-title">{title}</h1>
@@ -1119,7 +1136,7 @@ struct AdminLoginRequest {
 }
 
 /// Persists the first administrator credential and signs that administrator in.
-async fn admin_setup<A: GameAdapter>(
+async fn admin_setup<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     headers: HeaderMap,
     Json(request): Json<AdminLoginRequest>,
@@ -1141,7 +1158,7 @@ async fn admin_setup<A: GameAdapter>(
 }
 
 /// Verifies the built-in administrator credential and issues a secure session cookie.
-async fn admin_login<A: GameAdapter>(
+async fn admin_login<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     headers: HeaderMap,
     Json(request): Json<AdminLoginRequest>,
@@ -1151,7 +1168,7 @@ async fn admin_login<A: GameAdapter>(
 }
 
 /// Verifies a credential and builds the secure browser-session response.
-async fn admin_login_response<A: GameAdapter>(
+async fn admin_login_response<A: Game>(
     state: &Arc<AppState<A>>,
     username: &str,
     password: &str,
@@ -1193,7 +1210,7 @@ async fn admin_login_response<A: GameAdapter>(
 }
 
 /// Revokes the current administrator session and expires its cookie.
-async fn admin_logout<A: GameAdapter>(
+async fn admin_logout<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
@@ -1220,12 +1237,14 @@ fn administrator_cookie(token: &str, max_age: i64, config: &ExperimentConfig) ->
 }
 
 /// Shared server state used by HTTP handlers, WebSocket tasks, and background agents.
-pub struct AppState<A: GameAdapter> {
-    pub adapter: A,
+pub struct AppState<A: Game> {
+    pub adapter: Arc<A>,
     pub config: ExperimentConfig,
+    /// Typed game-owned configuration validated when this experiment runtime is built.
+    pub game_config: A::Config,
     pub experiment_id: String,
     /// Identity of the one compiled game which owns this experiment.
-    pub game_descriptor: GameDescriptor,
+    pub game_descriptor: GameMetadata,
     /// Settings shared by every experiment of this compiled game.
     pub game_settings: Arc<RwLock<StoredGameSettings>>,
     /// Process bootstrap credentials used only when an experiment has no override.
@@ -1237,7 +1256,10 @@ pub struct AppState<A: GameAdapter> {
     pub store: SharedExperimentStore,
     pub room_buses: RwLock<HashMap<String, broadcast::Sender<ServerMessage>>>,
     pub agent_factory: Option<SharedAgentFactory<A>>,
+    /// Agent choices registered by the compiled server and rendered by the dashboard.
+    pub agent_definitions: Vec<AgentDefinition>,
     pub started_agents: RwLock<HashSet<String>>,
+    pending_agents: Mutex<HashMap<String, Box<dyn Agent<A> + Send>>>,
     agent_inboxes: RwLock<HashMap<String, mpsc::Sender<AgentObservation<A>>>>,
     pub tts_provider: Option<Arc<dyn StreamingTtsProvider>>,
     /// Whether the embedding application supplied TTS independently of dashboard credentials.
@@ -1268,7 +1290,7 @@ pub struct AppState<A: GameAdapter> {
 struct AdminExperimentScope(String);
 
 /// Returns the explicitly routed experiment or the runtime's own experiment.
-fn admin_experiment_id<A: GameAdapter>(
+fn admin_experiment_id<A: Game>(
     state: &AppState<A>,
     scope: Option<&Extension<AdminExperimentScope>>,
 ) -> String {
@@ -1338,6 +1360,19 @@ struct RejectionWindow {
     occurrences: u64,
 }
 
+/// Expected server-owned reason why an action cannot enter the game transition.
+#[derive(Debug)]
+struct SubmissionRejection(&'static str);
+
+impl std::fmt::Display for SubmissionRejection {
+    /// Formats the stable protocol code for logs.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for SubmissionRejection {}
+
 mod lifecycle;
 use lifecycle::{require_open_experiment, ExperimentLifecycle};
 mod telemetry;
@@ -1347,19 +1382,15 @@ use telemetry::{
 };
 
 /// Event delivered to one started agent instance.
-enum AgentObservation<A: GameAdapter> {
+enum AgentObservation<A: Game> {
     /// Accepted action plus role-specific state snapshot after the action.
     Action {
         actor: PlayerRole,
         action: A::Action,
         resulting_observation: A::Observation,
     },
-    /// Conversation utterance with known speaker role and modality.
-    Message {
-        speaker: PlayerRole,
-        kind: AgentUtteranceKind,
-        text: String,
-    },
+    /// Conversation message with its sender role.
+    Message { speaker: PlayerRole, text: String },
 }
 
 /// Cancellation handle for the single live connection that owns a participant room role.
@@ -1369,7 +1400,7 @@ struct ConnectionControl {
     liveness: Arc<ConnectionLiveness>,
 }
 
-impl<A: GameAdapter> AppState<A> {
+impl<A: Game> AppState<A> {
     async fn room_bus(&self, room_id: &str) -> broadcast::Sender<ServerMessage> {
         let mut buses = self.room_buses.write().await;
         buses
@@ -1390,7 +1421,7 @@ where
 }
 
 /// Appends a session event after resolving the session and optional actor from the active cache.
-async fn persist_session_event<A: GameAdapter>(
+async fn persist_session_event<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     participant_session_id: Option<&str>,
@@ -1438,7 +1469,7 @@ async fn persist_session_event<A: GameAdapter>(
 }
 
 /// Appends a session event and propagates any persistence failure to the caller.
-async fn persist_session_event_required<A: GameAdapter>(
+async fn persist_session_event_required<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     participant_session_id: Option<&str>,
@@ -1460,7 +1491,7 @@ async fn persist_session_event_required<A: GameAdapter>(
 }
 
 /// Resolves one session event record without writing it, for atomic transition batches.
-async fn session_event_record<A: GameAdapter>(
+async fn session_event_record<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     participant_session_id: Option<&str>,
@@ -1502,10 +1533,7 @@ async fn session_event_record<A: GameAdapter>(
 }
 
 /// Returns the serialization lock that orders durable transitions for one room.
-async fn room_transition_lock<A: GameAdapter>(
-    state: &Arc<AppState<A>>,
-    room_id: &str,
-) -> Arc<Mutex<()>> {
+async fn room_transition_lock<A: Game>(state: &Arc<AppState<A>>, room_id: &str) -> Arc<Mutex<()>> {
     let mut locks = state.room_transition_locks.write().await;
     locks
         .entry(room_id.to_string())
@@ -1514,7 +1542,7 @@ async fn room_transition_lock<A: GameAdapter>(
 }
 
 /// Refreshes a room's meaningful-activity timestamp without treating heartbeats as activity.
-async fn touch_room_activity<A: GameAdapter>(state: &Arc<AppState<A>>, room_id: &str) {
+async fn touch_room_activity<A: Game>(state: &Arc<AppState<A>>, room_id: &str) {
     if let Some(room) = state.memory.write().await.rooms.get_mut(room_id) {
         room.updated_at = now_iso();
     }
@@ -1573,7 +1601,7 @@ fn game_connection_health(snapshot: &ConnectionLivenessSnapshot, now_ms: i64) ->
 }
 
 /// Takes a short-lock snapshot of current runtime capacity and operational counters.
-async fn build_load_sample<A: GameAdapter>(state: &Arc<AppState<A>>) -> LoadSample {
+async fn build_load_sample<A: Game>(state: &Arc<AppState<A>>) -> LoadSample {
     let now = chrono::Utc::now();
     let now_ms = now.timestamp_millis();
     let (waiting, active, completed, unattached, transcription) = {
@@ -1720,7 +1748,7 @@ struct RoomOperationalSnapshot {
 }
 
 /// Builds participant and lifecycle liveness without writing heartbeat data to storage.
-async fn build_session_liveness<A: GameAdapter>(state: &Arc<AppState<A>>) -> Vec<SessionLiveness> {
+async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<SessionLiveness> {
     let rooms = {
         let memory = state.memory.read().await;
         memory
@@ -1769,14 +1797,14 @@ async fn build_session_liveness<A: GameAdapter>(state: &Arc<AppState<A>>) -> Vec
                 retain_earliest_deadline(
                     &mut deadline,
                     &room.updated_at,
-                    state.config.study.waiting_room_timeout_seconds,
+                    state.config.session.waiting_room_timeout_seconds,
                     "waiting timeout",
                 );
             } else if room.status == "running" {
                 retain_earliest_deadline(
                     &mut deadline,
                     &room.updated_at,
-                    state.config.study.session_idle_timeout_seconds,
+                    state.config.session.session_idle_timeout_seconds,
                     "idle timeout",
                 );
             }
@@ -1784,7 +1812,7 @@ async fn build_session_liveness<A: GameAdapter>(state: &Arc<AppState<A>>) -> Vec
                 retain_earliest_deadline(
                     &mut deadline,
                     &room.created_at,
-                    state.config.study.session_max_lifetime_seconds,
+                    state.config.session.session_max_lifetime_seconds,
                     "maximum lifetime",
                 );
             }
@@ -1799,7 +1827,7 @@ async fn build_session_liveness<A: GameAdapter>(state: &Arc<AppState<A>>) -> Vec
                     retain_earliest_deadline(
                         &mut deadline,
                         &latest.updated_at,
-                        state.config.study.reconnect_grace_seconds,
+                        state.config.session.reconnect_grace_seconds,
                         "reconnect timeout",
                     );
                 }
@@ -1886,7 +1914,7 @@ async fn build_session_liveness<A: GameAdapter>(state: &Arc<AppState<A>>) -> Vec
 }
 
 /// Returns strong references to every currently hosted experiment runtime.
-async fn hosted_runtime_states<A: GameAdapter>(state: &Arc<AppState<A>>) -> Vec<Arc<AppState<A>>> {
+async fn hosted_runtime_states<A: Game>(state: &Arc<AppState<A>>) -> Vec<Arc<AppState<A>>> {
     let mut runtimes = state
         .runtime_registry
         .read()
@@ -1899,7 +1927,7 @@ async fn hosted_runtime_states<A: GameAdapter>(state: &Arc<AppState<A>>) -> Vec<
 }
 
 /// Aggregates current capacity and transport use across every hosted experiment runtime.
-async fn build_game_load_sample<A: GameAdapter>(state: &Arc<AppState<A>>) -> LoadSample {
+async fn build_game_load_sample<A: Game>(state: &Arc<AppState<A>>) -> LoadSample {
     let runtimes = hosted_runtime_states(state).await;
     let mut samples = Vec::with_capacity(runtimes.len().max(1));
     if runtimes.is_empty() {
@@ -1940,9 +1968,7 @@ async fn build_game_load_sample<A: GameAdapter>(state: &Arc<AppState<A>>) -> Loa
 }
 
 /// Returns liveness for every in-memory session across the hosted game process.
-async fn build_game_session_liveness<A: GameAdapter>(
-    state: &Arc<AppState<A>>,
-) -> Vec<SessionLiveness> {
+async fn build_game_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<SessionLiveness> {
     let mut sessions = Vec::new();
     for runtime in hosted_runtime_states(state).await {
         sessions.extend(build_session_liveness(&runtime).await);
@@ -1956,7 +1982,7 @@ async fn build_game_session_liveness<A: GameAdapter>(
 }
 
 /// Samples bounded game-process operational history every five seconds.
-fn spawn_load_sampler<A: GameAdapter>(state: Arc<AppState<A>>) {
+fn spawn_load_sampler<A: Game>(state: Arc<AppState<A>>) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(5));
         loop {
@@ -1968,7 +1994,7 @@ fn spawn_load_sampler<A: GameAdapter>(state: Arc<AppState<A>>) {
 }
 
 /// Returns game-wide current load, one-hour history, and runtime session liveness.
-async fn admin_load<A: GameAdapter>(
+async fn admin_load<A: Game>(
     State(state): State<Arc<AppState<A>>>,
 ) -> Result<Json<Value>, AppError> {
     let current = build_game_load_sample(&state).await;
@@ -1984,7 +2010,7 @@ async fn admin_load<A: GameAdapter>(
 }
 
 /// Measures HTTP concurrency, response classes, and latency for the load dashboard.
-async fn track_request_load<A: GameAdapter>(
+async fn track_request_load<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     request: Request,
     next: Next,
@@ -1996,7 +2022,7 @@ async fn track_request_load<A: GameAdapter>(
 }
 
 /// Persists one participant's session-local role and connection status.
-async fn persist_session_participant<A: GameAdapter>(
+async fn persist_session_participant<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     participant_session_id: &str,
@@ -2068,11 +2094,11 @@ impl IntoResponse for AppError {
 }
 
 mod routing;
-pub use routing::{build_game_router, build_router, serve, serve_game};
+pub use routing::serve_game;
+#[cfg(any(test, feature = "internal-tools"))]
+pub use routing::{build_game_router, build_router};
 
-async fn health<A: GameAdapter>(
-    State(state): State<Arc<AppState<A>>>,
-) -> Result<Json<Value>, AppError> {
+async fn health<A: Game>(State(state): State<Arc<AppState<A>>>) -> Result<Json<Value>, AppError> {
     tokio::time::timeout(Duration::from_secs(2), state.store.health_check())
         .await
         .map_err(|_| AppError::new(StatusCode::SERVICE_UNAVAILABLE, "storage check timed out"))?
@@ -2083,13 +2109,12 @@ async fn health<A: GameAdapter>(
     Ok(Json(json!({"status": "ok", "storage": "read_write"})))
 }
 
-async fn public_config<A: GameAdapter>(
+async fn public_config<A: Game>(
     State(state): State<Arc<AppState<A>>>,
 ) -> Json<PublicConfigResponse> {
     let config = &state.config;
     let game_settings = state.game_settings.read().await.clone();
     Json(PublicConfigResponse {
-        study_name: config.study.name.clone(),
         experiment_status: state.experiment_lifecycle.read().await.as_str().to_string(),
         institution: nonempty_string(&game_settings.institution),
         participant_information_version: nonempty_string(
@@ -2107,41 +2132,18 @@ async fn public_config<A: GameAdapter>(
             .collect(),
         voice: json!({
             "enabled": config.voice.enabled,
-            "transport": "websocket",
-            "sample_rate_hz": config.voice.sample_rate_hz,
-            "frame_duration_ms": config.voice.frame_duration_ms,
-            "jitter_buffer_ms": config.voice.jitter_buffer_ms,
-        }),
-        transcription: json!({
-            "enabled": config.transcription.enabled,
-            "language": config.transcription.language,
-        }),
-        tts: json!({
-            "enabled": config.tts.enabled,
-            "voice_name": if config.tts.voice_name.is_empty() { None } else { Some(config.tts.voice_name.clone()) },
-        }),
-        agents: json!({
-            "mode": config.agents.mode,
-            "human_vs_agent": config.agents.human_vs_agent.is_some(),
-        }),
-        privacy: json!({
-            "contract_version": config.privacy.contract_version,
-            "store_full_game_state": config.privacy.store_full_game_state,
-            "store_typed_messages": config.privacy.store_typed_messages,
-            "store_final_transcripts": config.privacy.store_final_transcripts,
-            "store_voice_diagnostics": config.privacy.store_voice_diagnostics,
         }),
     })
 }
 
-async fn create_participant<A: GameAdapter>(
+async fn create_participant<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Json(request): Json<ParticipantCreateRequest>,
 ) -> Result<Json<ParticipantCreateResponse>, AppError> {
     create_participant_inner(state, request).await.map(Json)
 }
 
-async fn create_participant_inner<A: GameAdapter>(
+async fn create_participant_inner<A: Game>(
     state: Arc<AppState<A>>,
     _request: ParticipantCreateRequest,
 ) -> Result<ParticipantCreateResponse, AppError> {
@@ -2192,18 +2194,15 @@ async fn create_participant_inner<A: GameAdapter>(
         research_id,
         "direct".to_string(),
         _intake_guard.data_purpose().to_string(),
-        Some(state.config.study.name.clone()),
     );
     let participant_credential = state.participant_auth.issue(participant.id.clone()).await;
     Ok(ParticipantCreateResponse {
-        participant_session_id: participant.id,
         participant_credential,
-        source: participant.source,
         participant_id: participant.research_id,
     })
 }
 
-async fn consent<A: GameAdapter>(
+async fn consent<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     principal: Option<Extension<ParticipantPrincipal>>,
     Json(request): Json<ConsentRequest>,
@@ -2303,7 +2302,7 @@ async fn consent<A: GameAdapter>(
     Ok(Json(json!({"ok": true})))
 }
 
-async fn create_room<A: GameAdapter>(
+async fn create_room<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     principal: Option<Extension<ParticipantPrincipal>>,
     Json(_request): Json<CreateRoomRequest>,
@@ -2316,13 +2315,59 @@ where
     require_consent(&state, &participant_session_id).await?;
     require_session_storage_reserve(&state).await?;
     let requested_mode = "direct".to_string();
+    let mut prepared_agent = if state.config.agents.mode == AgentsMode::HumanVsAgent {
+        let room_seed = rand::random::<u64>();
+        let agent_seed = state
+            .config
+            .agents
+            .human_vs_agent
+            .as_ref()
+            .and_then(|config| config.seed)
+            .unwrap_or(room_seed);
+        let settings = state
+            .config
+            .agents
+            .human_vs_agent
+            .as_ref()
+            .map(|config| config.config.clone())
+            .unwrap_or(Value::Null);
+        let factory = state.agent_factory.clone().ok_or_else(|| {
+            AppError::new(StatusCode::SERVICE_UNAVAILABLE, "No agent is registered")
+        })?;
+        let timeout = state
+            .config
+            .agents
+            .human_vs_agent
+            .as_ref()
+            .map(|config| config.act_timeout_seconds)
+            .unwrap_or(10.0);
+        let context = AgentContext {
+            role: PlayerRole::B,
+            seed: agent_seed,
+            settings,
+        };
+        let agent =
+            match tokio::time::timeout(Duration::from_secs_f64(timeout), factory.create(context))
+                .await
+            {
+                Ok(Ok(agent)) => agent,
+                Ok(Err(_)) | Err(_) => {
+                    return Err(AppError::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "The configured agent could not be initialized",
+                    ));
+                }
+            };
+        Some((room_seed, agent))
+    } else {
+        None
+    };
     let paired_or_created: Result<(String, Seat, bool), AppError> = {
         let mut memory = state.memory.write().await;
         if state.config.agents.mode == AgentsMode::HumanVsHuman {
             if let Some(room_id) = open_human_room_for_pairing(
                 &memory,
                 &requested_mode,
-                Some(state.config.study.name.as_str()),
                 &memory
                     .participants
                     .get(&participant_session_id)
@@ -2345,7 +2390,7 @@ where
                     participant_session_id.clone(),
                     requested_mode.clone(),
                     Seat::A,
-                    Some(state.config.study.name.clone()),
+                    rand::random::<u64>(),
                 )?;
                 let session_id = match state
                     .store
@@ -2383,7 +2428,7 @@ where
                 participant_session_id.clone(),
                 requested_mode.clone(),
                 Seat::A,
-                Some(state.config.study.name.clone()),
+                prepared_agent.as_ref().expect("agent was prepared").0,
             )?;
             let session_id = match state
                 .store
@@ -2416,12 +2461,19 @@ where
     };
     let (room_id, role, created_room) = paired_or_created?;
     if created_room {
+        let seed = state
+            .memory
+            .read()
+            .await
+            .rooms
+            .get(&room_id)
+            .map(|room| room.seed);
         persist_session_event(
             &state,
             &room_id,
             None,
             "session_created",
-            json!({"room_id": room_id}),
+            json!({"room_id": room_id, "seed": seed}),
             None,
         )
         .await;
@@ -2437,15 +2489,20 @@ where
     )
     .await;
     if state.config.agents.mode == AgentsMode::HumanVsAgent {
-        add_agent_to_room(&state, &room_id).await?;
-        maybe_start_room_agents(state.clone(), &room_id).await;
+        let agent_id = add_agent_to_room(&state, &room_id).await?;
+        let (_, agent) = prepared_agent.take().expect("agent was prepared");
+        state
+            .pending_agents
+            .lock()
+            .await
+            .insert(agent_key(&room_id, &agent_id), agent);
     }
-    let response = room_response(&state, &room_id, &participant_session_id, role, vec![]).await?;
+    let response = room_response(&state, &room_id, role).await?;
     Ok(Json(response))
 }
 
 /// Pauses only new session admission before SQLite exhausts its filesystem.
-async fn require_session_storage_reserve<A: GameAdapter>(
+async fn require_session_storage_reserve<A: Game>(
     state: &Arc<AppState<A>>,
 ) -> Result<(), AppError> {
     let Some(capacity) = state.store.storage_capacity().await? else {
@@ -2525,7 +2582,7 @@ fn ensure_session_capacity<S>(
     Ok(())
 }
 
-async fn add_agent_to_room<A: GameAdapter>(
+async fn add_agent_to_room<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
 ) -> Result<String, AppError> {
@@ -2537,31 +2594,39 @@ async fn add_agent_to_room<A: GameAdapter>(
         .get(room_id)
         .map(|room| room.purpose.clone())
         .ok_or_else(|| AppError::not_found("Room not found."))?;
+    let configured_agent = state.config.agents.human_vs_agent.as_ref();
+    let agent_settings = configured_agent
+        .map(|config| config.config.clone())
+        .unwrap_or(Value::Null);
     let factory_identity = state
         .agent_factory
         .as_ref()
-        .map(|factory| factory.participant_identity())
-        .unwrap_or_default();
-    let configured_agent = state.config.agents.human_vs_agent.as_ref();
-    let external_id = factory_identity.external_id.clone().or_else(|| {
-        configured_agent
-            .and_then(|config| config.factory.clone())
-            .or_else(|| Some("agent".to_string()))
+        .map(|factory| factory.identity(&agent_settings))
+        .transpose()
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::new(StatusCode::SERVICE_UNAVAILABLE, "No agent is registered"))?;
+    let factory_definition = state
+        .agent_factory
+        .as_ref()
+        .map(|factory| factory.definition())
+        .ok_or_else(|| AppError::new(StatusCode::SERVICE_UNAVAILABLE, "No agent is registered"))?;
+    let external_id = Some(match factory_identity.version.as_deref() {
+        Some(version) => format!("{}@{}", factory_identity.name, version),
+        None => format!("{}@unversioned", factory_identity.name),
     });
-    let metadata = if factory_identity.metadata.is_null() {
-        configured_agent
-            .map(|config| config.config.clone())
-            .unwrap_or(Value::Null)
-    } else {
-        factory_identity.metadata.clone()
-    };
+    let metadata = json!({
+        "agent_name": factory_identity.name,
+        "agent_version": factory_identity.version,
+        "factory": factory_definition.id,
+        "config": agent_settings,
+    });
     let agent_metadata = metadata.clone();
     let agent_participant_db_id = state
         .store
         .upsert_participant(ParticipantRecord {
             experiment_id: state.experiment_id.clone(),
             participant_kind: "agent".to_string(),
-            identity_provider: factory_identity.identity_provider,
+            identity_provider: "agent".to_string(),
             external_id,
             metadata,
         })
@@ -2595,7 +2660,6 @@ async fn add_agent_to_room<A: GameAdapter>(
             agent_research_id,
             "agent".to_string(),
             purpose,
-            Some(state.config.study.name.clone()),
         );
         let room = memory
             .rooms
@@ -2639,7 +2703,6 @@ async fn add_agent_to_room<A: GameAdapter>(
 fn open_human_room_for_pairing<S>(
     memory: &MemoryState<S>,
     mode: &str,
-    study_id: Option<&str>,
     purpose: &str,
 ) -> Option<String> {
     memory
@@ -2648,7 +2711,6 @@ fn open_human_room_for_pairing<S>(
         .find(|(_, room)| {
             room.status == "waiting"
                 && room.mode == mode
-                && room.study_id.as_deref() == study_id
                 && room.purpose == purpose
                 && next_role(room) == Some(Seat::B)
                 && room
@@ -2660,7 +2722,7 @@ fn open_human_room_for_pairing<S>(
 }
 
 /// Adds a direct human participant to an existing room and returns its assigned seat.
-fn add_human_participant_to_room_locked<A: GameAdapter>(
+fn add_human_participant_to_room_locked<A: Game>(
     state: &AppState<A>,
     memory: &mut MemoryState<A::State>,
     room_id: &str,
@@ -2704,13 +2766,13 @@ fn add_human_participant_to_room_locked<A: GameAdapter>(
     Ok(role)
 }
 
-fn create_room_locked<A: GameAdapter>(
+fn create_room_locked<A: Game>(
     state: &AppState<A>,
     memory: &mut MemoryState<A::State>,
     participant_session_id: String,
     mode: String,
     role: Seat,
-    study_id: Option<String>,
+    seed: u64,
 ) -> Result<(String, Seat), AppError> {
     let participant = memory
         .participants
@@ -2745,12 +2807,12 @@ fn create_room_locked<A: GameAdapter>(
             session_id: 0,
             mode,
             purpose: participant.purpose,
+            seed,
             state: state
                 .adapter
-                .initial_state_with_config(&state.config.game)
+                .initial_state(&state.game_config, seed)
                 .map_err(|error| AppError::bad_request(error.to_string()))?,
             status: "waiting".to_string(),
-            study_id,
             participants,
             created_at: now_iso(),
             updated_at: now_iso(),
@@ -2759,17 +2821,15 @@ fn create_room_locked<A: GameAdapter>(
     Ok((room_id, role))
 }
 
-async fn room_response<A: GameAdapter>(
+async fn room_response<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
-    participant_session_id: &str,
     role: Seat,
-    events: Vec<Value>,
 ) -> Result<RoomResponse, AppError>
 where
     A::State: Serialize,
 {
-    let (presence, observation, available_actions, events) = {
+    let (presence, observation, available_actions) = {
         let memory = state.memory.read().await;
         let room = memory
             .rooms
@@ -2779,21 +2839,17 @@ where
         if room.status == "waiting" {
             return Ok(RoomResponse {
                 room_id: room_id.to_string(),
-                participant_session_id: participant_session_id.to_string(),
                 role: role.as_str().to_string(),
                 presence: Some(presence),
-                state: None,
                 observation: None,
                 available_actions: None,
-                events: vec![],
-                conversation: vec![],
             });
         }
         let player = role.player_role();
         (
             Some(presence),
             Some(protocol_json(
-                &state.adapter.observe_state(&room.state, player),
+                &state.adapter.observation(&room.state, player),
             )?),
             state
                 .adapter
@@ -2805,23 +2861,18 @@ where
                         .collect::<Result<Vec<_>, _>>()
                 })
                 .transpose()?,
-            events,
         )
     };
     Ok(RoomResponse {
         room_id: room_id.to_string(),
-        participant_session_id: participant_session_id.to_string(),
         role: role.as_str().to_string(),
         presence,
-        state: None,
         observation,
         available_actions,
-        events,
-        conversation: vec![],
     })
 }
 
-async fn audio_session<A: GameAdapter>(
+async fn audio_session<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(room_id): Path<String>,
     principal: Option<Extension<ParticipantPrincipal>>,
@@ -2857,7 +2908,7 @@ async fn audio_session<A: GameAdapter>(
 }
 
 /// Mints a purpose-bound, one-use game WebSocket upgrade ticket.
-async fn game_session<A: GameAdapter>(
+async fn game_session<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(room_id): Path<String>,
     Extension(principal): Extension<ParticipantPrincipal>,
@@ -2881,7 +2932,7 @@ async fn game_session<A: GameAdapter>(
 }
 
 /// Commits one final provider utterance to storage, conversation, and agents.
-async fn commit_final_transcript<A: GameAdapter>(
+async fn commit_final_transcript<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     participant_session_id: &str,
@@ -2958,26 +3009,24 @@ async fn commit_final_transcript<A: GameAdapter>(
         return Err(AppError::from(error));
     }
     touch_room_activity(state, room_id).await;
-    let _ = state.room_bus(room_id).await.send(ServerMessage {
-        conversation_message: Some(message),
-        room_id: Some(room_id.to_string()),
-        ..ServerMessage::new("conversationMessageAdded")
-    });
+    if let Some(player_message) = message.player_message() {
+        let _ =
+            state
+                .room_bus(room_id)
+                .await
+                .send(ServerMessage::broadcast(ServerPayload::Message {
+                    room_id: room_id.to_string(),
+                    message: player_message,
+                }));
+    }
     if let Some(speaker) = player_role_from_str(&stored.player) {
-        notify_agents_of_message(
-            state,
-            room_id,
-            speaker,
-            AgentUtteranceKind::Spoken,
-            stored.text.clone(),
-        )
-        .await;
+        notify_agents_of_message(state, room_id, speaker, stored.text.clone()).await;
     }
     Ok(Some(stored))
 }
 
 /// Accepts a bounded operational voice metric and persists it only when enabled.
-async fn add_voice_diagnostic<A: GameAdapter>(
+async fn add_voice_diagnostic<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(room_id): Path<String>,
     principal: Option<Extension<ParticipantPrincipal>>,
@@ -3044,7 +3093,7 @@ fn minimized_voice_diagnostic_metadata(metadata: &Value) -> Value {
 }
 
 /// Adds a conversation message while honoring the participant-message storage switch.
-async fn add_conversation<A: GameAdapter>(
+async fn add_conversation<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(room_id): Path<String>,
     Json(input): Json<ConversationMessageIn>,
@@ -3101,11 +3150,15 @@ async fn add_conversation<A: GameAdapter>(
         .await?;
     }
     touch_room_activity(&state, &room_id).await;
-    let _ = state.room_bus(&room_id).await.send(ServerMessage {
-        room_id: Some(room_id.clone()),
-        conversation_message: Some(message.clone()),
-        ..ServerMessage::new("conversationMessageAdded")
-    });
+    if let Some(player_message) = message.player_message() {
+        let _ = state
+            .room_bus(&room_id)
+            .await
+            .send(ServerMessage::broadcast(ServerPayload::Message {
+                room_id: room_id.clone(),
+                message: player_message,
+            }));
+    }
     if message.origin == "typed" {
         state.telemetry.record_chat_accepted();
     }
@@ -3114,20 +3167,13 @@ async fn add_conversation<A: GameAdapter>(
         .as_deref()
         .and_then(player_role_from_str)
     {
-        notify_agents_of_message(
-            &state,
-            &room_id,
-            speaker,
-            utterance_kind_from_origin(&message.origin),
-            message.text.clone(),
-        )
-        .await;
+        notify_agents_of_message(&state, &room_id, speaker, message.text.clone()).await;
     }
     Ok(Json(message))
 }
 
 /// Rejects participant game-channel input after a room has completed.
-async fn ensure_room_accepts_game_input<A: GameAdapter>(
+async fn ensure_room_accepts_game_input<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
 ) -> Result<(), AppError> {
@@ -3299,7 +3345,7 @@ async fn admin_experiments_page(Extension(nonce): Extension<CspNonce>) -> Html<S
 }
 
 /// Serves the installation-wide privacy status inside the protected administrator area.
-async fn admin_privacy_page<A: GameAdapter>(
+async fn admin_privacy_page<A: Game>(
     State(state): State<Arc<AppState<A>>>,
 ) -> Result<Html<String>, AppError> {
     Ok(Html(render_privacy_status_html(
@@ -3308,14 +3354,14 @@ async fn admin_privacy_page<A: GameAdapter>(
 }
 
 /// Returns the installation-wide privacy status as structured JSON for administrative tooling.
-async fn admin_privacy_json<A: GameAdapter>(
+async fn admin_privacy_json<A: Game>(
     State(state): State<Arc<AppState<A>>>,
 ) -> Result<Json<PrivacyStatus>, AppError> {
     Ok(Json(privacy_status(&state, None).await?))
 }
 
 /// Downloads the installation-wide privacy status as a pretty-printed JSON attachment.
-async fn admin_privacy_json_download<A: GameAdapter>(
+async fn admin_privacy_json_download<A: Game>(
     State(state): State<Arc<AppState<A>>>,
 ) -> Result<Response, AppError> {
     let body = serde_json::to_string_pretty(&privacy_status(&state, None).await?)
@@ -3328,7 +3374,7 @@ async fn admin_privacy_json_download<A: GameAdapter>(
 }
 
 /// Downloads the installation-wide privacy status as a Markdown attachment for review records.
-async fn admin_privacy_markdown_download<A: GameAdapter>(
+async fn admin_privacy_markdown_download<A: Game>(
     State(state): State<Arc<AppState<A>>>,
 ) -> Result<Response, AppError> {
     Ok(privacy_download_response(
@@ -3339,7 +3385,7 @@ async fn admin_privacy_markdown_download<A: GameAdapter>(
 }
 
 /// Returns the privacy status for one experiment selected in the dashboard workspace.
-async fn admin_experiment_privacy_json<A: GameAdapter>(
+async fn admin_experiment_privacy_json<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(experiment_id): Path<String>,
 ) -> Result<Json<PrivacyStatus>, AppError> {
@@ -3347,7 +3393,7 @@ async fn admin_experiment_privacy_json<A: GameAdapter>(
 }
 
 /// Downloads one experiment's privacy status as a pretty-printed JSON attachment.
-async fn admin_experiment_privacy_json_download<A: GameAdapter>(
+async fn admin_experiment_privacy_json_download<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(experiment_id): Path<String>,
 ) -> Result<Response, AppError> {
@@ -3362,7 +3408,7 @@ async fn admin_experiment_privacy_json_download<A: GameAdapter>(
 }
 
 /// Downloads one experiment's privacy status as Markdown for review records.
-async fn admin_experiment_privacy_markdown_download<A: GameAdapter>(
+async fn admin_experiment_privacy_markdown_download<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(experiment_id): Path<String>,
 ) -> Result<Response, AppError> {
@@ -3459,7 +3505,7 @@ fn privacy_feature_coverage(enabled: usize, total: usize, feature: &str) -> Stri
 }
 
 /// Builds a privacy report for one experiment or, for tooling, the complete game process.
-async fn privacy_status<A: GameAdapter>(
+async fn privacy_status<A: Game>(
     state: &Arc<AppState<A>>,
     experiment_id: Option<&str>,
 ) -> Result<PrivacyStatus, AppError> {
@@ -3868,7 +3914,7 @@ fn yes_no(value: bool) -> &'static str {
 }
 
 /// Returns the catalogue of experiments owned by this compiled game process.
-async fn admin_experiments<A: GameAdapter>(
+async fn admin_experiments<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Extension(admin_session): Extension<AdminSession>,
 ) -> Result<Json<Value>, AppError> {
@@ -3886,7 +3932,7 @@ async fn admin_experiments<A: GameAdapter>(
 }
 
 /// Creates one inactive experiment for the exact game version compiled into this process.
-async fn admin_create_experiment<A: GameAdapter>(
+async fn admin_create_experiment<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Json(request): Json<AdminCreateExperimentRequest>,
 ) -> Result<Json<Value>, AppError> {
@@ -3923,7 +3969,7 @@ async fn admin_create_experiment<A: GameAdapter>(
 }
 
 /// Clones a historical configuration into a new current-version inactive experiment.
-async fn admin_clone_experiment<A: GameAdapter>(
+async fn admin_clone_experiment<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(source_experiment_id): Path<String>,
     Json(request): Json<AdminCloneExperimentRequest>,
@@ -3968,7 +4014,7 @@ async fn admin_clone_experiment<A: GameAdapter>(
 }
 
 /// Returns the current normalized configuration for one catalogue experiment.
-async fn admin_experiment_config<A: GameAdapter>(
+async fn admin_experiment_config<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(experiment_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
@@ -4002,7 +4048,7 @@ async fn admin_experiment_config<A: GameAdapter>(
     Ok(Json(json!({
         "experiment": experiment,
         "game_yaml": game_yaml,
-        "agent_factories": state.adapter.agent_factories(),
+        "agent_factories": state.agent_definitions,
         "configured_secrets": configured_secrets,
         "activation_issues": activation_issues,
     })))
@@ -4065,7 +4111,7 @@ fn validate_secret_update(key: &str, value: Option<&str>) -> Result<(), AppError
 }
 
 /// Reveals one explicitly requested secret to an authenticated administrator.
-async fn admin_reveal_experiment_secret<A: GameAdapter>(
+async fn admin_reveal_experiment_secret<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(experiment_id): Path<String>,
     Json(request): Json<AdminRevealExperimentSecretRequest>,
@@ -4096,7 +4142,7 @@ async fn admin_reveal_experiment_secret<A: GameAdapter>(
 }
 
 /// Parses and validates game-owned YAML without saving a configuration revision.
-async fn admin_validate_game_config<A: GameAdapter>(
+async fn admin_validate_game_config<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(experiment_id): Path<String>,
     Json(request): Json<AdminValidateGameConfigRequest>,
@@ -4110,15 +4156,13 @@ async fn admin_validate_game_config<A: GameAdapter>(
         .map_err(|error| AppError::bad_request(format!("Invalid game YAML: {error}")))?;
     validate_game_config_contains_no_secrets(&game)
         .map_err(|error| AppError::bad_request(error.to_string()))?;
-    state
-        .adapter
-        .validate_config(&game)
+    parse_game_config(state.adapter.as_ref(), &game)
         .map_err(|error| AppError::bad_request(format!("Invalid game configuration: {error}")))?;
     Ok(Json(json!({"valid": true})))
 }
 
 /// Validates and saves a new immutable configuration revision for an inactive experiment.
-async fn admin_save_experiment_config<A: GameAdapter>(
+async fn admin_save_experiment_config<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(experiment_id): Path<String>,
     Json(request): Json<AdminSaveExperimentConfigRequest>,
@@ -4173,9 +4217,7 @@ async fn admin_save_experiment_config<A: GameAdapter>(
         .map_err(|error| AppError::bad_request(error.to_string()))?;
     validate_game_config_contains_no_secrets(&config.game)
         .map_err(|error| AppError::bad_request(error.to_string()))?;
-    state
-        .adapter
-        .validate_config(&config.game)
+    parse_game_config(state.adapter.as_ref(), &config.game)
         .map_err(|error| AppError::bad_request(format!("Invalid game configuration: {error}")))?;
     let revision = state
         .store
@@ -4195,7 +4237,7 @@ async fn admin_save_experiment_config<A: GameAdapter>(
 }
 
 /// Lists immutable configuration revisions for one experiment.
-async fn admin_experiment_revisions<A: GameAdapter>(
+async fn admin_experiment_revisions<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(experiment_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
@@ -4206,7 +4248,7 @@ async fn admin_experiment_revisions<A: GameAdapter>(
 }
 
 /// Updates pinning, obsolescence, and notes without changing runtime configuration.
-async fn admin_update_experiment_catalogue<A: GameAdapter>(
+async fn admin_update_experiment_catalogue<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(experiment_id): Path<String>,
     Json(request): Json<AdminCatalogueRequest>,
@@ -4220,14 +4262,14 @@ async fn admin_update_experiment_catalogue<A: GameAdapter>(
 }
 
 /// Returns settings shared by every experiment of the compiled game.
-async fn admin_game_settings<A: GameAdapter>(
+async fn admin_game_settings<A: Game>(
     State(state): State<Arc<AppState<A>>>,
 ) -> Json<StoredGameSettings> {
     Json(state.game_settings.read().await.clone())
 }
 
 /// Updates the shared institution with optimistic concurrency.
-async fn admin_update_game_settings<A: GameAdapter>(
+async fn admin_update_game_settings<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Json(request): Json<AdminGameSettingsRequest>,
 ) -> Result<Json<Value>, AppError> {
@@ -4304,7 +4346,7 @@ fn validate_game_provider_secret(key: &str, value: Option<&str>) -> Result<(), A
 }
 
 /// Reveals one game-wide provider credential after an explicit administrator action.
-async fn admin_reveal_game_secret<A: GameAdapter>(
+async fn admin_reveal_game_secret<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Json(request): Json<AdminRevealGameSecretRequest>,
 ) -> Result<Response, AppError> {
@@ -4343,7 +4385,7 @@ fn validate_new_experiment_id(experiment_id: &str) -> Result<(), AppError> {
 }
 
 /// Returns the process-owned experiment with dashboard aggregates.
-async fn admin_experiment<A: GameAdapter>(
+async fn admin_experiment<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Extension(admin_session): Extension<AdminSession>,
 ) -> Result<Json<Value>, AppError> {
@@ -4362,7 +4404,7 @@ async fn admin_experiment<A: GameAdapter>(
 }
 
 /// Updates a durable experiment lifecycle status.
-async fn admin_update_experiment_status<A: GameAdapter>(
+async fn admin_update_experiment_status<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Json(request): Json<AdminUpdateExperimentStatusRequest>,
 ) -> Result<Json<Value>, AppError> {
@@ -4412,7 +4454,7 @@ async fn admin_update_experiment_status<A: GameAdapter>(
 }
 
 /// Returns recent database sessions for the experiment dashboard.
-async fn admin_sessions<A: GameAdapter>(
+async fn admin_sessions<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     scope: Option<Extension<AdminExperimentScope>>,
     Query(query): Query<AdminSessionsQuery>,
@@ -4438,7 +4480,7 @@ async fn admin_sessions<A: GameAdapter>(
 }
 
 /// Returns one database session's metadata and important event timeline.
-async fn admin_session_detail<A: GameAdapter>(
+async fn admin_session_detail<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     scope: Option<Extension<AdminExperimentScope>>,
     Path(session_id): Path<i64>,
@@ -4482,7 +4524,7 @@ async fn admin_session_detail<A: GameAdapter>(
 }
 
 /// Returns important database events after an optional event index.
-async fn admin_session_events<A: GameAdapter>(
+async fn admin_session_events<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     scope: Option<Extension<AdminExperimentScope>>,
     Path(session_id): Path<i64>,
@@ -5126,7 +5168,7 @@ fn agent_event_metadata(metadata: &Value) -> Value {
     })
 }
 
-async fn admin_export<A: GameAdapter>(
+async fn admin_export<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     scope: Option<Extension<AdminExperimentScope>>,
     Query(query): Query<AdminExportQuery>,
@@ -5191,7 +5233,7 @@ where
 }
 
 /// Resolves an experiment-specific participant identifier without exposing database ids.
-async fn participant_id_for_research_id<A: GameAdapter>(
+async fn participant_id_for_research_id<A: Game>(
     state: &Arc<AppState<A>>,
     experiment_id: &str,
     requested: &str,
@@ -5207,7 +5249,7 @@ async fn participant_id_for_research_id<A: GameAdapter>(
 }
 
 /// Previews the bounded records affected by manual participant-data deletion.
-async fn admin_participant_deletion_preview<A: GameAdapter>(
+async fn admin_participant_deletion_preview<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     scope: Option<Extension<AdminExperimentScope>>,
     Path(requested): Path<String>,
@@ -5224,7 +5266,7 @@ async fn admin_participant_deletion_preview<A: GameAdapter>(
 }
 
 /// Executes confirmed participant-data deletion and returns its audit counts.
-async fn admin_delete_participant_data<A: GameAdapter>(
+async fn admin_delete_participant_data<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     scope: Option<Extension<AdminExperimentScope>>,
     Path(requested): Path<String>,
@@ -5299,7 +5341,7 @@ fn local_dependency_warnings(manifest_dir: &str, cargo_toml: &str) -> Vec<Value>
         .collect()
 }
 
-async fn filtered_export<A: GameAdapter>(
+async fn filtered_export<A: Game>(
     state: &Arc<AppState<A>>,
     experiment_id: &str,
     query: &AdminExportQuery,
@@ -5794,7 +5836,7 @@ fn csv_escape(value: &str) -> String {
 
 const ADMIN_EXPERIMENT_HTML: &str = include_str!("app/admin_dashboard.html");
 
-async fn game_socket<A: GameAdapter>(
+async fn game_socket<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(room_id): Path<String>,
     Query(query): Query<HashMap<String, String>>,
@@ -5845,7 +5887,7 @@ struct AudioSocketQuery {
 }
 
 /// Authenticates and upgrades one participant-owned audio transport.
-async fn audio_socket<A: GameAdapter>(
+async fn audio_socket<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(room_id): Path<String>,
     Query(query): Query<AudioSocketQuery>,
@@ -5884,7 +5926,7 @@ where
 }
 
 /// Relays browser PCM and consumes normalized server-side transcription events.
-async fn audio_websocket_loop<A: GameAdapter>(
+async fn audio_websocket_loop<A: Game>(
     state: Arc<AppState<A>>,
     socket: WebSocket,
     claims: UpgradeTicketClaims,
@@ -5923,8 +5965,6 @@ async fn audio_websocket_loop<A: GameAdapter>(
         match tokio::time::timeout(
             Duration::from_secs(10),
             provider.start_session(TranscriptionSessionContext {
-                room_id: room_id.clone(),
-                participant_session_id: participant_session_id.clone(),
                 role: role.clone(),
                 language: state.config.transcription.language.clone(),
                 model: state.config.transcription.model.clone(),
@@ -5978,7 +6018,6 @@ async fn audio_websocket_loop<A: GameAdapter>(
                             tracing::warn!(error = %error.message, %room_id, "failed to commit final transcript");
                         }
                     }
-                    TranscriptionEvent::Partial(_) => {}
                     TranscriptionEvent::Failed(error) => {
                         state.audio_rooms.send_control(&room_id, &role, json!({"type":"transcriptionStatus","ready":false,"message":"ASR error"}).to_string()).await;
                         tracing::warn!(%error, %room_id, "transcription session failed");
@@ -6111,7 +6150,7 @@ async fn audio_websocket_loop<A: GameAdapter>(
     }
 }
 
-async fn websocket_loop<A: GameAdapter>(
+async fn websocket_loop<A: Game>(
     state: Arc<AppState<A>>,
     socket: WebSocket,
     room_id: String,
@@ -6174,9 +6213,8 @@ async fn websocket_loop<A: GameAdapter>(
     let send_task = tokio::spawn(async move {
         while let Ok(message) = receiver.recv().await {
             if message
-                .participant_session_id
-                .as_ref()
-                .is_some_and(|target| target != &outbound_participant_session_id)
+                .recipient()
+                .is_some_and(|target| target != outbound_participant_session_id)
             {
                 continue;
             }
@@ -6202,7 +6240,12 @@ async fn websocket_loop<A: GameAdapter>(
         };
         state.telemetry.record_game_message();
         if text.len() > 64 * 1024 {
-            let _ = bus.send(error_message(&room_id, "Client message is too large"));
+            let _ = bus.send(error_message(
+                &participant_session_id,
+                &room_id,
+                "message_too_large",
+                true,
+            ));
             break;
         }
         if !transport_budget.consume() {
@@ -6220,10 +6263,15 @@ async fn websocket_loop<A: GameAdapter>(
             continue;
         }
         let Ok(client_message) = serde_json::from_str::<ClientMessage>(&text) else {
-            let _ = bus.send(error_message(&room_id, "Invalid client message JSON"));
+            let _ = bus.send(error_message(
+                &participant_session_id,
+                &room_id,
+                "invalid_message",
+                false,
+            ));
             continue;
         };
-        if client_message.message_type == "heartbeat" {
+        if matches!(&client_message, ClientMessage::Heartbeat) {
             liveness.touch_heartbeat();
             state.telemetry.record_heartbeat();
         } else {
@@ -6277,15 +6325,16 @@ async fn websocket_loop<A: GameAdapter>(
         None,
     )
     .await;
-    let _ = bus.send(
-        presence_message(&state, &room_id)
-            .await
-            .unwrap_or_else(|| ServerMessage::new("presenceChanged")),
-    );
+    let _ = bus.send(presence_message(&state, &room_id).await.unwrap_or_else(|| {
+        ServerMessage::broadcast(ServerPayload::Presence {
+            room_id: room_id.clone(),
+            presence: Value::Null,
+        })
+    }));
 }
 
 /// Atomically records an intentional departure and closes the room to further game input.
-async fn abandon_room<A: GameAdapter>(
+async fn abandon_room<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     participant_session_id: &str,
@@ -6320,7 +6369,7 @@ async fn abandon_room<A: GameAdapter>(
     Ok(true)
 }
 
-async fn handle_client_message<A: GameAdapter>(
+async fn handle_client_message<A: Game>(
     state: Arc<AppState<A>>,
     bus: &broadcast::Sender<ServerMessage>,
     room_id: &str,
@@ -6330,12 +6379,12 @@ async fn handle_client_message<A: GameAdapter>(
 ) where
     A::State: Serialize,
 {
-    match message.message_type.as_str() {
-        "heartbeat" => {
+    match message {
+        ClientMessage::Heartbeat => {
             // Transport liveness only: heartbeats intentionally cause no database write,
             // room-activity refresh, presence broadcast, or research event.
         }
-        "ready" => {
+        ClientMessage::Ready => {
             let first_declaration = {
                 let mut memory = state.memory.write().await;
                 memory
@@ -6375,7 +6424,12 @@ async fn handle_client_message<A: GameAdapter>(
                     participant.ready_declared = false;
                 }
                 tracing::error!(%error, room_id, "could not durably record readiness");
-                let _ = bus.send(error_message(room_id, "Could not durably record readiness"));
+                let _ = bus.send(error_message(
+                    participant_session_id,
+                    room_id,
+                    "readiness_failed",
+                    true,
+                ));
                 return;
             }
             touch_room_activity(&state, room_id).await;
@@ -6384,35 +6438,25 @@ async fn handle_client_message<A: GameAdapter>(
             }
             let _ = bus.send(voice_message(&state, room_id).await);
         }
-        "consentUpdated" => {
-            if let Some(consent_request) = message.consent {
-                let _ = consent(
-                    State(state.clone()),
-                    Some(Extension(ParticipantPrincipal {
-                        participant_session_id: participant_session_id.to_string(),
-                        generation: 1,
-                    })),
-                    Json(consent_request),
-                )
-                .await;
-            }
-        }
-        "leave" => match abandon_room(&state, room_id, participant_session_id).await {
+        ClientMessage::Leave => match abandon_room(&state, room_id, participant_session_id).await {
             Ok(true) => {
-                let _ = bus.send(ServerMessage {
-                    room_id: Some(room_id.to_string()),
-                    message: Some("This session ended because a participant left.".to_string()),
-                    ..ServerMessage::new("abandoned")
-                });
+                let _ = bus.send(ServerMessage::broadcast(ServerPayload::Abandoned {
+                    room_id: room_id.to_string(),
+                    code: "participant_left".to_string(),
+                }));
             }
             Ok(false) => {}
             Err(error) => {
                 tracing::error!(%error, room_id, "could not abandon session");
-                let _ = bus.send(error_message(room_id, "Could not end the session"));
+                let _ = bus.send(error_message(
+                    participant_session_id,
+                    room_id,
+                    "session_end_failed",
+                    false,
+                ));
             }
         },
-        "sendChatMessage" => {
-            let text = message.text.unwrap_or_default();
+        ClientMessage::Message { text } => {
             if text.chars().count() > 4_000 {
                 persist_rejected_input(
                     &state,
@@ -6424,7 +6468,12 @@ async fn handle_client_message<A: GameAdapter>(
                     Some(text.as_bytes()),
                 )
                 .await;
-                let _ = bus.send(error_message(room_id, "Chat message is too long"));
+                let _ = bus.send(error_message(
+                    participant_session_id,
+                    room_id,
+                    "message_too_large",
+                    false,
+                ));
                 return;
             }
             let chat_allowed = state
@@ -6446,8 +6495,10 @@ async fn handle_client_message<A: GameAdapter>(
                 )
                 .await;
                 let _ = bus.send(error_message(
+                    participant_session_id,
                     room_id,
-                    "Please wait a moment before sending another chat message",
+                    "message_rate_limited",
+                    false,
                 ));
                 return;
             }
@@ -6460,23 +6511,16 @@ async fn handle_client_message<A: GameAdapter>(
             if let Err(error) =
                 add_conversation(State(state.clone()), Path(room_id.to_string()), Json(input)).await
             {
-                let _ = bus.send(error_message(room_id, &error.message));
+                tracing::warn!(message = %error.message, room_id, "player message was rejected");
+                let _ = bus.send(error_message(
+                    participant_session_id,
+                    room_id,
+                    "message_rejected",
+                    false,
+                ));
             }
         }
-        "submitAction" => {
-            let Some(raw_action) = message.action else {
-                persist_rejected_action(
-                    &state,
-                    room_id,
-                    participant_session_id,
-                    "missing_action",
-                    "submitAction requires action",
-                    None,
-                )
-                .await;
-                let _ = bus.send(error_message(room_id, "submitAction requires action"));
-                return;
-            };
+        ClientMessage::Action { action: raw_action } => {
             let raw_action_bytes = match serde_json::to_vec(&raw_action) {
                 Ok(bytes) => bytes,
                 Err(error) => {
@@ -6489,7 +6533,12 @@ async fn handle_client_message<A: GameAdapter>(
                         None,
                     )
                     .await;
-                    let _ = bus.send(error_message(room_id, "Action could not be encoded"));
+                    let _ = bus.send(error_message(
+                        participant_session_id,
+                        room_id,
+                        "invalid_action",
+                        false,
+                    ));
                     return;
                 }
             };
@@ -6503,10 +6552,15 @@ async fn handle_client_message<A: GameAdapter>(
                     Some(&raw_action_bytes),
                 )
                 .await;
-                let _ = bus.send(error_message(room_id, "Action payload is too large"));
+                let _ = bus.send(error_message(
+                    participant_session_id,
+                    room_id,
+                    "action_too_large",
+                    false,
+                ));
                 return;
             }
-            let action = match state.adapter.parse_action(raw_action) {
+            let action = match serde_json::from_value(raw_action) {
                 Ok(action) => action,
                 Err(error) => {
                     persist_rejected_action(
@@ -6518,51 +6572,66 @@ async fn handle_client_message<A: GameAdapter>(
                         Some(&raw_action_bytes),
                     )
                     .await;
-                    let _ = bus.send(error_message(room_id, &error.to_string()));
+                    let _ = bus.send(error_message(
+                        participant_session_id,
+                        room_id,
+                        "invalid_action",
+                        false,
+                    ));
                     return;
                 }
             };
             match submit_action(state.clone(), room_id, participant_session_id, role, action).await
             {
-                Ok((completed, summary)) => {
-                    broadcast_player_views(state.clone(), room_id).await;
+                Ok((completed, completion)) => {
+                    broadcast_player_views(state.clone(), room_id, role.player_role()).await;
                     if completed {
-                        let _ = bus.send(ServerMessage {
-                            room_id: Some(room_id.to_string()),
-                            summary,
-                            ..ServerMessage::new("completed")
-                        });
+                        let _ = bus.send(ServerMessage::broadcast(ServerPayload::Completed {
+                            room_id: room_id.to_string(),
+                            completion: completion.unwrap_or(Value::Null),
+                        }));
                     }
                 }
                 Err(error) => {
+                    let rejection_code = error
+                        .downcast_ref::<ActionRejection>()
+                        .map(|rejection| rejection.code.as_str())
+                        .or_else(|| {
+                            error
+                                .downcast_ref::<SubmissionRejection>()
+                                .map(|rejection| rejection.0)
+                        });
+                    let Some(rejection_code) = rejection_code else {
+                        tracing::error!(%error, room_id, "action submission failed internally");
+                        let _ = bus.send(internal_error_message(participant_session_id, room_id));
+                        return;
+                    };
                     persist_rejected_action(
                         &state,
                         room_id,
                         participant_session_id,
-                        "game_rule",
-                        &error.to_string(),
+                        rejection_code,
+                        rejection_code,
                         Some(&raw_action_bytes),
                     )
                     .await;
-                    let _ = bus.send(error_message(room_id, &error.to_string()));
+                    let _ = bus.send(action_rejected_message(
+                        participant_session_id,
+                        room_id,
+                        rejection_code,
+                    ));
                 }
             }
-        }
-        other => {
-            let _ = bus.send(error_message(
-                room_id,
-                &format!("Unknown message type: {other}"),
-            ));
         }
     }
 }
 
 /// Persists one analyzable, size-bounded rejected-action event.
-async fn persist_rejected_action<A: GameAdapter>(
+async fn persist_rejected_action<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     participant_session_id: &str,
-    reason_code: &'static str,
+    reason_code: &str,
     error: &str,
     raw_action: Option<&[u8]>,
 ) {
@@ -6579,12 +6648,12 @@ async fn persist_rejected_action<A: GameAdapter>(
 }
 
 /// Persists the first and then one periodic aggregate for repeated rejected inputs.
-async fn persist_rejected_input<A: GameAdapter>(
+async fn persist_rejected_input<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     participant_session_id: &str,
     event_type: &'static str,
-    reason_code: &'static str,
+    reason_code: &str,
     error: &str,
     raw_input: Option<&[u8]>,
 ) {
@@ -6647,7 +6716,7 @@ async fn persist_rejected_input<A: GameAdapter>(
 }
 
 /// Flushes suppressed rejection counts when the participant's current game transport ends.
-async fn flush_rejected_input_aggregates<A: GameAdapter>(
+async fn flush_rejected_input_aggregates<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     participant_session_id: &str,
@@ -6696,7 +6765,7 @@ async fn flush_rejected_input_aggregates<A: GameAdapter>(
     }
 }
 
-async fn submit_action<A: GameAdapter>(
+async fn submit_action<A: Game>(
     state: Arc<AppState<A>>,
     room_id: &str,
     participant_session_id: &str,
@@ -6709,47 +6778,45 @@ where
     let player = role.player_role();
     let transition_lock = room_transition_lock(&state, room_id).await;
     let _transition_guard = transition_lock.lock().await;
-    let (after, events, completed, summary) = {
+    let (after, completion, transition_metadata) = {
         let memory = state.memory.read().await;
         let room = memory
             .rooms
             .get(room_id)
             .ok_or_else(|| anyhow!("Room not found."))?;
         if room_status_is_terminal(&room.status) {
-            return Err(anyhow!(
-                "Room has ended and no longer accepts game messages."
-            ));
+            return Err(anyhow!(SubmissionRejection("session_complete")));
         }
         if !room_ready_for_game::<A>(&state.config, room) {
             if speechmatics_readiness_required(&state.config) {
-                return Err(anyhow!(
-                    "Room is waiting for speech transcription to initialize."
-                ));
+                return Err(anyhow!(SubmissionRejection("transcription_not_ready")));
             }
-            return Err(anyhow!("Room is waiting for both players to connect."));
+            return Err(anyhow!(SubmissionRejection("players_not_ready")));
         }
-        let before = room.state.clone();
-        state
+        let after = state
             .adapter
-            .validate_action(&room.state, &action, player)?;
-        let after = state.adapter.apply_action(&room.state, &action)?;
-        let events = state
-            .adapter
-            .events_for_action(&before, &after, &action, player);
-        let completed = state.adapter.is_complete(&after);
-        let summary = completed.then(|| state.adapter.completion_summary(&after));
-        (after, events, completed, summary)
+            .apply_action(&room.state, &action, player)
+            .map_err(|rejection| anyhow!(rejection))?;
+        let completion = state.adapter.completion(&after);
+        let transition_metadata =
+            state
+                .adapter
+                .transition_metadata(&room.state, &after, &action, player);
+        (after, completion, transition_metadata)
     };
+    let completed = completion.is_some();
     let after_json = protocol_json(&after)?;
     let stored_game_state = state
         .config
         .privacy
         .store_full_game_state
         .then(|| after_json.clone());
-    let summary = summary.map(|summary| protocol_json(&summary)).transpose()?;
+    let completion_json = completion
+        .map(|completion| protocol_json(&completion))
+        .transpose()?;
     let accepted_payload = json!({
         "action": protocol_json(&action)?,
-        "events": protocol_json(&events)?,
+        "metadata": transition_metadata,
     });
     let mut durable_events = vec![
         session_event_record(
@@ -6769,7 +6836,7 @@ where
                 room_id,
                 Some(participant_session_id),
                 "session_completed",
-                summary.clone().unwrap_or(Value::Null),
+                completion_json.clone().unwrap_or(Value::Null),
                 None,
             )
             .await?,
@@ -6779,7 +6846,7 @@ where
         .store
         .commit_session_transition(
             durable_events,
-            completed.then(|| summary.clone().unwrap_or(Value::Null)),
+            completed.then(|| completion_json.clone().unwrap_or(Value::Null)),
         )
         .await
     {
@@ -6800,10 +6867,10 @@ where
         }
     }
     notify_agents_of_action(&state, room_id, player, action.clone()).await;
-    Ok((completed, summary))
+    Ok((completed, completion_json))
 }
 
-async fn broadcast_player_views<A: GameAdapter>(state: Arc<AppState<A>>, room_id: &str)
+async fn broadcast_player_views<A: Game>(state: Arc<AppState<A>>, room_id: &str, actor: PlayerRole)
 where
     A::State: Serialize,
 {
@@ -6822,24 +6889,23 @@ where
     };
     let bus = state.room_bus(room_id).await;
     for (participant_session_id, role) in participants {
-        if let Ok(response) =
-            room_response(&state, room_id, &participant_session_id, role, vec![]).await
-        {
-            let _ = bus.send(ServerMessage {
-                room_id: Some(room_id.to_string()),
-                participant_session_id: Some(participant_session_id.clone()),
-                role: Some(role.as_str().to_string()),
-                observation: response.observation,
-                available_actions: response.available_actions,
-                events: response.events,
-                conversation: response.conversation,
-                ..ServerMessage::new("stateChanged")
-            });
+        if let Ok(response) = room_response(&state, room_id, role).await {
+            if let Some(observation) = response.observation {
+                let _ = bus.send(ServerMessage::targeted(
+                    participant_session_id,
+                    ServerPayload::Transition {
+                        room_id: room_id.to_string(),
+                        actor: actor.as_str().to_string(),
+                        observation,
+                        available_actions: response.available_actions,
+                    },
+                ));
+            }
         }
     }
 }
 
-async fn maybe_start_room_agents<A: GameAdapter>(state: Arc<AppState<A>>, room_id: &str)
+async fn maybe_start_room_agents<A: Game>(state: Arc<AppState<A>>, room_id: &str)
 where
     A::State: Serialize,
 {
@@ -6861,13 +6927,18 @@ where
             .unwrap_or_default()
     };
     for (participant_session_id, role) in agents {
-        maybe_start_agent(
-            state.clone(),
-            room_id.to_string(),
-            participant_session_id,
-            role,
-        )
-        .await;
+        let key = agent_key(room_id, &participant_session_id);
+        let agent = state.pending_agents.lock().await.remove(&key);
+        if let Some(agent) = agent {
+            maybe_start_agent(
+                state.clone(),
+                room_id.to_string(),
+                participant_session_id,
+                role,
+                agent,
+            )
+            .await;
+        }
     }
 }
 
@@ -6885,17 +6956,8 @@ fn player_role_from_str(value: &str) -> Option<PlayerRole> {
     }
 }
 
-/// Converts a persisted conversation origin into the agent utterance kind.
-fn utterance_kind_from_origin(origin: &str) -> AgentUtteranceKind {
-    match origin {
-        "voice_transcript" => AgentUtteranceKind::Spoken,
-        "agent" => AgentUtteranceKind::Agent,
-        _ => AgentUtteranceKind::Typed,
-    }
-}
-
 /// Returns the currently available actions for an agent role in a room.
-async fn agent_available_actions<A: GameAdapter>(
+async fn agent_available_actions<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     role: Seat,
@@ -6911,7 +6973,7 @@ async fn agent_available_actions<A: GameAdapter>(
 }
 
 /// Sends an accepted-action observation to every started agent in the room.
-async fn notify_agents_of_action<A: GameAdapter>(
+async fn notify_agents_of_action<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     actor: PlayerRole,
@@ -6935,7 +6997,7 @@ async fn notify_agents_of_action<A: GameAdapter>(
                         action: action.clone(),
                         resulting_observation: state
                             .adapter
-                            .observe_state(&room.state, participant.role.player_role()),
+                            .observation(&room.state, participant.role.player_role()),
                     },
                 )
             })
@@ -6949,12 +7011,11 @@ async fn notify_agents_of_action<A: GameAdapter>(
     }
 }
 
-/// Sends a conversation-message observation to every started agent in the room.
-async fn notify_agents_of_message<A: GameAdapter>(
+/// Sends a player message only to agents controlling the other role.
+async fn notify_agents_of_message<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     speaker: PlayerRole,
-    kind: AgentUtteranceKind,
     text: String,
 ) {
     let keys = {
@@ -6964,7 +7025,9 @@ async fn notify_agents_of_message<A: GameAdapter>(
         };
         room.participants
             .values()
-            .filter(|participant| participant.source == "agent")
+            .filter(|participant| {
+                participant.source == "agent" && participant.role.player_role() != speaker
+            })
             .map(|participant| agent_key(room_id, &participant.participant_session_id))
             .collect::<Vec<_>>()
     };
@@ -6974,20 +7037,11 @@ async fn notify_agents_of_message<A: GameAdapter>(
             let _ = sender
                 .send(AgentObservation::Message {
                     speaker,
-                    kind: kind.clone(),
                     text: text.clone(),
                 })
                 .await;
         }
     }
-}
-
-/// Returns an error if an agent response contains no visible effect.
-fn validate_agent_response<Action>(response: &AgentResponse<Action>) -> Result<()> {
-    if response.is_empty() {
-        anyhow::bail!("agent returned an empty response");
-    }
-    Ok(())
 }
 
 /// Converts an agent timeout result into a normal anyhow result.
@@ -7002,7 +7056,7 @@ fn flatten_agent_timeout<T>(
 }
 
 /// Persists and applies one validated agent response.
-async fn handle_agent_response<A: GameAdapter>(
+async fn handle_agent_response<A: Game>(
     state: Arc<AppState<A>>,
     room_id: &str,
     participant_session_id: &str,
@@ -7012,8 +7066,7 @@ async fn handle_agent_response<A: GameAdapter>(
 where
     A::State: Serialize,
 {
-    validate_agent_response(&response)?;
-    let AgentResponse { message, action } = response;
+    let (action, message) = response.into_parts();
     let mut outcome = (false, None);
     if let Some(action) = action {
         persist_session_event(
@@ -7027,7 +7080,7 @@ where
         .await;
         outcome =
             submit_action(state.clone(), room_id, participant_session_id, role, action).await?;
-        broadcast_player_views(state.clone(), room_id).await;
+        broadcast_player_views(state.clone(), room_id, role.player_role()).await;
     }
     if let Some(text) = message {
         if let Ok(Json(message)) = add_conversation(
@@ -7049,9 +7102,9 @@ where
 }
 
 /// Asks one agent for an optional response and applies it when present.
-async fn request_agent_decision<A: GameAdapter>(
+async fn request_agent_decision<A: Game>(
     state: Arc<AppState<A>>,
-    agent: &mut Box<dyn GameAgent<A> + Send>,
+    agent: &mut Box<dyn Agent<A> + Send>,
     room_id: &str,
     participant_session_id: &str,
     role: Seat,
@@ -7063,10 +7116,10 @@ where
     let available_actions = agent_available_actions(&state, room_id, role).await?;
     let result = tokio::time::timeout(
         Duration::from_secs_f64(timeout),
-        agent.maybe_act(available_actions),
+        agent.respond(available_actions),
     )
     .await;
-    let Some(response) = flatten_agent_timeout(result, "agent maybe_act timeout")? else {
+    let Some(response) = flatten_agent_timeout(result, "agent respond timeout")? else {
         return Ok(None);
     };
     let outcome = handle_agent_response(
@@ -7081,7 +7134,7 @@ where
 }
 
 /// Converts one trusted agent message to speech with a network timeout but no application quota.
-async fn speak_agent_message<A: GameAdapter>(
+async fn speak_agent_message<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     message: &ConversationMessageResponse,
@@ -7204,7 +7257,7 @@ async fn speak_agent_message<A: GameAdapter>(
 }
 
 // Persists one TTS diagnostic event into the evaluation event stream.
-async fn persist_tts_diagnostic<A: GameAdapter>(
+async fn persist_tts_diagnostic<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     event: &str,
@@ -7224,11 +7277,12 @@ async fn persist_tts_diagnostic<A: GameAdapter>(
     .await;
 }
 
-async fn maybe_start_agent<A: GameAdapter>(
+async fn maybe_start_agent<A: Game>(
     state: Arc<AppState<A>>,
     room_id: String,
     participant_session_id: String,
     role: Seat,
+    mut agent: Box<dyn Agent<A> + Send>,
 ) where
     A::State: Serialize,
 {
@@ -7244,8 +7298,22 @@ async fn maybe_start_agent<A: GameAdapter>(
     }
     tokio::spawn(async move {
         let role_name = role.as_str().to_string();
-        let agent_identity = factory.participant_identity();
-        let agent_metadata = agent_identity.metadata.clone();
+        let agent_settings = state
+            .config
+            .agents
+            .human_vs_agent
+            .as_ref()
+            .map(|config| config.config.clone())
+            .unwrap_or(Value::Null);
+        let Ok(agent_identity) = factory.identity(&agent_settings) else {
+            return;
+        };
+        let definition = factory.definition();
+        let agent_metadata = json!({
+            "agent_name": agent_identity.name,
+            "agent_version": agent_identity.version,
+            "factory": definition.id,
+        });
         {
             let mut memory = state.memory.write().await;
             if let Some(room) = memory.rooms.get_mut(&room_id) {
@@ -7276,25 +7344,6 @@ async fn maybe_start_agent<A: GameAdapter>(
             None,
         )
         .await;
-        let context = AgentInitContext {
-            role: role_name.clone(),
-            seed: state
-                .config
-                .agents
-                .human_vs_agent
-                .as_ref()
-                .and_then(|c| c.seed),
-            config: state
-                .config
-                .agents
-                .human_vs_agent
-                .as_ref()
-                .map(|c| c.config.clone())
-                .unwrap_or(Value::Null),
-        };
-        let Ok(mut agent) = factory.create(context) else {
-            return;
-        };
         let (sender, mut receiver) = mpsc::channel(64);
         state
             .agent_inboxes
@@ -7327,18 +7376,27 @@ async fn maybe_start_agent<A: GameAdapter>(
             memory
                 .rooms
                 .get(&room_id)
-                .map(|room| state.adapter.observe_state(&room.state, role.player_role()))
+                .map(|room| state.adapter.observation(&room.state, role.player_role()))
         };
-        if let Some(initial_observation) = initial_observation {
-            let observed = tokio::time::timeout(
-                Duration::from_secs_f64(timeout),
-                agent.observe_state(initial_observation),
+        let Some(initial_observation) = initial_observation else {
+            return;
+        };
+        let started = tokio::time::timeout(
+            Duration::from_secs_f64(timeout),
+            agent.start(initial_observation),
+        )
+        .await;
+        if let Err(error) = flatten_agent_timeout(started, "agent start timeout") {
+            persist_session_event(
+                &state,
+                &room_id,
+                Some(&participant_session_id),
+                "agent_error",
+                json!({"last_error": error.to_string(), "phase": "start"}),
+                None,
             )
             .await;
-            if let Err(error) = flatten_agent_timeout(observed, "agent observe_state timeout") {
-                last_error = Some(error.to_string());
-                invalid_actions += 1;
-            }
+            return;
         }
         'agent_loop: loop {
             let limit = state
@@ -7358,23 +7416,37 @@ async fn maybe_start_agent<A: GameAdapter>(
             )
             .await
             {
-                Ok(Some((completed, summary))) => {
+                Ok(Some((completed, completion))) => {
                     if completed {
-                        let _ = state.room_bus(&room_id).await.send(ServerMessage {
-                            room_id: Some(room_id.clone()),
-                            participant_session_id: None,
-                            summary,
-                            ..ServerMessage::new("completed")
-                        });
+                        let _ = state
+                            .room_bus(&room_id)
+                            .await
+                            .send(ServerMessage::broadcast(ServerPayload::Completed {
+                                room_id: room_id.clone(),
+                                completion: completion.unwrap_or(Value::Null),
+                            }));
                         break;
                     }
                 }
                 Ok(None) => {}
                 Err(error) => {
                     last_error = Some(error.to_string());
-                    invalid_actions += 1;
-                    if invalid_actions < limit {
-                        continue;
+                    if error.downcast_ref::<ActionRejection>().is_some() {
+                        invalid_actions += 1;
+                        if invalid_actions < limit {
+                            continue;
+                        }
+                    } else {
+                        persist_session_event(
+                            &state,
+                            &room_id,
+                            Some(&participant_session_id),
+                            "agent_error",
+                            json!({"last_error": last_error, "phase": "runtime"}),
+                            None,
+                        )
+                        .await;
+                        break;
                     }
                 }
             }
@@ -7402,18 +7474,14 @@ async fn maybe_start_agent<A: GameAdapter>(
                 } => {
                     tokio::time::timeout(
                         Duration::from_secs_f64(timeout),
-                        agent.observe_action(actor, action, resulting_observation),
+                        agent.observe_transition(actor, action, resulting_observation),
                     )
                     .await
                 }
-                AgentObservation::Message {
-                    speaker,
-                    kind,
-                    text,
-                } => {
+                AgentObservation::Message { speaker, text } => {
                     tokio::time::timeout(
                         Duration::from_secs_f64(timeout),
-                        agent.observe_message(speaker, kind, text),
+                        agent.observe_message(speaker, text),
                     )
                     .await
                 }
@@ -7439,7 +7507,7 @@ async fn maybe_start_agent<A: GameAdapter>(
                 memory
                     .rooms
                     .get(&room_id)
-                    .is_none_or(|room| state.adapter.is_complete(&room.state))
+                    .is_none_or(|room| state.adapter.completion(&room.state).is_some())
             };
             if completed {
                 break;
@@ -7460,7 +7528,7 @@ async fn maybe_start_agent<A: GameAdapter>(
     });
 }
 
-async fn require_consent<A: GameAdapter>(
+async fn require_consent<A: Game>(
     state: &Arc<AppState<A>>,
     participant_session_id: &str,
 ) -> Result<(), AppError> {
@@ -7495,10 +7563,7 @@ async fn require_consent<A: GameAdapter>(
     Ok(())
 }
 
-async fn require_room<A: GameAdapter>(
-    state: &Arc<AppState<A>>,
-    room_id: &str,
-) -> Result<(), AppError> {
+async fn require_room<A: Game>(state: &Arc<AppState<A>>, room_id: &str) -> Result<(), AppError> {
     if state.memory.read().await.rooms.contains_key(room_id) {
         Ok(())
     } else {
@@ -7506,7 +7571,7 @@ async fn require_room<A: GameAdapter>(
     }
 }
 
-async fn participant_role<A: GameAdapter>(
+async fn participant_role<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     participant_session_id: &str,
@@ -7552,10 +7617,7 @@ fn participant_ready_for_game(config: &ExperimentConfig, participant: &RoomParti
 }
 
 /// Returns whether both player roles are connected and past required audio setup.
-fn room_ready_for_game<A: GameAdapter>(
-    config: &ExperimentConfig,
-    room: &GameRoom<A::State>,
-) -> bool {
+fn room_ready_for_game<A: Game>(config: &ExperimentConfig, room: &GameRoom<A::State>) -> bool {
     let ready_roles = room
         .participants
         .values()
@@ -7566,7 +7628,7 @@ fn room_ready_for_game<A: GameAdapter>(
 }
 
 /// Marks one participant's room-local audio/STT setup as complete.
-async fn mark_participant_audio_ready<A: GameAdapter>(
+async fn mark_participant_audio_ready<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     participant_session_id: &str,
@@ -7601,7 +7663,7 @@ async fn mark_participant_audio_ready<A: GameAdapter>(
 }
 
 /// Starts a room once all humans/agents and required audio setup are ready.
-async fn maybe_start_game<A: GameAdapter>(state: Arc<AppState<A>>, room_id: &str)
+async fn maybe_start_game<A: Game>(state: Arc<AppState<A>>, room_id: &str)
 where
     A::State: Serialize,
 {
@@ -7663,7 +7725,7 @@ where
 }
 
 /// Returns whether a room has already left the waiting-room phase.
-async fn room_has_started<A: GameAdapter>(state: &Arc<AppState<A>>, room_id: &str) -> bool {
+async fn room_has_started<A: Game>(state: &Arc<AppState<A>>, room_id: &str) -> bool {
     let memory = state.memory.read().await;
     memory
         .rooms
@@ -7672,7 +7734,7 @@ async fn room_has_started<A: GameAdapter>(state: &Arc<AppState<A>>, room_id: &st
 }
 
 /// Sends the targeted game-start payload for one participant.
-async fn send_role_assignment<A: GameAdapter>(
+async fn send_role_assignment<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     participant_session_id: &str,
@@ -7680,33 +7742,32 @@ async fn send_role_assignment<A: GameAdapter>(
 ) where
     A::State: Serialize,
 {
-    if let Ok(response) = room_response(state, room_id, participant_session_id, role, vec![]).await
-    {
+    if let Ok(response) = room_response(state, room_id, role).await {
         let bus = state.room_bus(room_id).await;
-        let _ = bus.send(ServerMessage {
-            room_id: Some(room_id.to_string()),
-            participant_session_id: Some(participant_session_id.to_string()),
-            role: Some(role.as_str().to_string()),
-            observation: response.observation,
-            available_actions: response.available_actions,
-            events: response.events,
-            conversation: response.conversation,
-            ..ServerMessage::new("roleAssigned")
-        });
+        if let Some(observation) = response.observation {
+            let _ = bus.send(ServerMessage::targeted(
+                participant_session_id,
+                ServerPayload::SessionStarted {
+                    room_id: room_id.to_string(),
+                    role: role.as_str().to_string(),
+                    observation,
+                    available_actions: response.available_actions,
+                },
+            ));
+        }
     }
 }
 
-async fn presence_message<A: GameAdapter>(
+async fn presence_message<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
 ) -> Option<ServerMessage> {
     let memory = state.memory.read().await;
     let room = memory.rooms.get(room_id)?;
-    Some(ServerMessage {
-        room_id: Some(room_id.to_string()),
-        presence: Some(room_presence(room)),
-        ..ServerMessage::new("presenceChanged")
-    })
+    Some(ServerMessage::broadcast(ServerPayload::Presence {
+        room_id: room_id.to_string(),
+        presence: room_presence(room),
+    }))
 }
 
 fn room_presence<S>(room: &GameRoom<S>) -> Value {
@@ -7725,7 +7786,7 @@ fn room_presence<S>(room: &GameRoom<S>) -> Value {
         .collect::<serde_json::Map<_, _>>())
 }
 
-async fn voice_message<A: GameAdapter>(state: &Arc<AppState<A>>, room_id: &str) -> ServerMessage {
+async fn voice_message<A: Game>(state: &Arc<AppState<A>>, room_id: &str) -> ServerMessage {
     let (audio_ready, game_ready) = state
         .memory
         .read()
@@ -7746,9 +7807,9 @@ async fn voice_message<A: GameAdapter>(state: &Arc<AppState<A>>, room_id: &str) 
         })
         .unwrap_or((false, false));
     let transcription_ready = !state.config.transcription.enabled || game_ready;
-    ServerMessage {
-        room_id: Some(room_id.to_string()),
-        voice: Some(json!({
+    ServerMessage::broadcast(ServerPayload::VoiceStatus {
+        room_id: room_id.to_string(),
+        voice: json!({
             "audioReady": audio_ready,
             "transcriptionReady": transcription_ready,
             "transcriptionStatus": if !state.config.transcription.enabled {
@@ -7758,17 +7819,36 @@ async fn voice_message<A: GameAdapter>(state: &Arc<AppState<A>>, room_id: &str) 
             } else {
                 "Initializing"
             },
-        })),
-        ..ServerMessage::new("voiceStatusChanged")
-    }
+        }),
+    })
 }
 
-fn error_message(room_id: &str, message: &str) -> ServerMessage {
-    ServerMessage {
-        room_id: Some(room_id.to_string()),
-        message: Some(message.to_string()),
-        ..ServerMessage::new("error")
-    }
+/// Builds one presentation-neutral runtime or transport failure.
+fn error_message(recipient: &str, room_id: &str, code: &str, fatal: bool) -> ServerMessage {
+    ServerMessage::targeted(
+        recipient,
+        ServerPayload::Error {
+            room_id: room_id.to_string(),
+            code: code.to_string(),
+            fatal,
+        },
+    )
+}
+
+/// Builds a machine-readable expected game-rule rejection.
+fn action_rejected_message(recipient: &str, room_id: &str, code: &str) -> ServerMessage {
+    ServerMessage::targeted(
+        recipient,
+        ServerPayload::ActionRejected {
+            room_id: room_id.to_string(),
+            code: code.to_string(),
+        },
+    )
+}
+
+/// Builds a presentation-neutral internal failure without exposing diagnostics.
+fn internal_error_message(recipient: &str, room_id: &str) -> ServerMessage {
+    error_message(recipient, room_id, "internal_error", true)
 }
 
 fn protocol_json<T: Serialize>(value: &T) -> Result<Value> {

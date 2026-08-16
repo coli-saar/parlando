@@ -76,15 +76,8 @@ The Rust and browser manifests point directly at the sibling `rust-server` and `
 
 ## Solo voice test
 
-For the deterministic local voice setup, run:
-
-```bash
-make run-solo-voice
-```
-
-This compatibility target seeds the named development experiment from
-`config/experiment.local-back-and-forth-voice.yaml`; subsequent configuration
-changes are made through the dashboard.
+Start the ordinary server with `make run`, then create or clone an inactive
+experiment in the dashboard and configure:
 
 Create or clone an inactive experiment in the dashboard and configure:
 
@@ -105,7 +98,11 @@ The shared SDK owns PCM framing, output-rate interpolation, jitter buffering, an
 This app can use SDK widgets for Parlando platform state, such as microphone readiness and transcription progress:
 
 ```tsx
-import { VoiceStatusChip, TranscriptionStatusChip } from "@coli-saar/parlando-client/react";
+import {
+  MicrophoneLevelMeter,
+  MicrophoneMuteButton,
+  TranscriptionProgress,
+} from "@coli-saar/parlando-client/react";
 ```
 
 Game-specific UI should stay here. For example, the station map, inventory/action controls, game status panels, and Space Game copy belong in this project, not in the SDK.

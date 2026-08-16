@@ -6,24 +6,24 @@ Parlando must support agents implemented outside the Rust server binary, especia
 
 ## Decision
 
-Use gRPC as the first remote-agent transport. Keep the Rust-side runtime transport-agnostic by adapting remote agents to the same `AgentFactory<A>` and `GameAgent<A>` traits used by in-process Rust agents.
+Use gRPC as the first remote-agent transport. Keep the Rust-side runtime transport-agnostic by adapting remote agents to the same `agent::Factory<A>` and `agent::Agent<A>` traits used by in-process Rust agents.
 
 The intended backends are:
 
 - Local Rust factories for built-in/simple agents.
-- `RemoteGrpcAgentFactory` for Python or other language agents running in a separate process.
+- `agent::grpc::Factory` for Python or other language agents running in a separate process.
 
 ## Protocol Shape
 
-The protobuf contract lives at `rust-server/proto/parlando_agent_v1.proto` and defines the `parlando.agent.v2` package for:
+The protobuf contract lives at `rust-server/proto/parlando_agent_v3.proto` and defines the `parlando.agent.v3` package for:
 
 - agent initialization, including role, seed, protocol version, agent name/version, and config.
 - observation requests for role-specific state snapshots, accepted actions, and messages.
 - decision requests with the same optional role-specific available actions that a human UI would receive.
-- decision responses with optional message and optional action.
+- non-empty decision responses containing an action, a player message, or both.
 - structured errors and optional cleanup/shutdown.
 
-Game-specific observations and actions cross the process boundary as protobuf `Struct` or equivalent JSON-compatible values. Inside the linked Rust binary they remain typed and are parsed/validated by the game adapter.
+Game-specific observations and actions cross the process boundary as protobuf `Struct` or equivalent JSON-compatible values. Inside the linked Rust binary they remain typed and are parsed/validated by the game.
 
 Do not expose room ids, participant-session ids, conversation history, invalid-action counts, last errors, or completion flags through the agent API. A remote agent process that needs memory should keep it in its own per-agent instance or stream/session state.
 
@@ -32,11 +32,11 @@ Do not expose room ids, participant-session ids, conversation history, invalid-a
 Python agent authors should not write gRPC plumbing. A Python SDK should expose a small API like:
 
 ```python
-class MyAgent(GameAgent):
-    async def maybe_act(self, available_actions):
+class MyAgent(Agent):
+    async def respond(self, available_actions):
         if not available_actions:
             return None
-        return AgentResponse.action(available_actions[0])
+        return Response.action(available_actions[0])
 ```
 
 The SDK owns protobuf conversion, request correlation, server startup, error mapping, and cleanup hooks.
@@ -54,12 +54,12 @@ WebSocket remains a possible future lightweight transport, but it should not be 
 
 ## Current Implementation
 
-- `parlando-server` exposes `RemoteGrpcAgentFactory<A>` and `RemoteGrpcAgentConfig`.
-- The factory implements the same `AgentFactory<A>` trait as in-process Rust agents.
-- `RemoteGrpcAgent` lazily connects to the configured gRPC endpoint, sends one `CreateAgent` request, forwards observations through `ObserveState`, `ObserveAction`, and `ObserveMessage`, and asks for responses through `MaybeAct` or `Act`.
+- `parlando-server` exposes `agent::grpc::Factory<A>`; its transport settings remain private.
+- The factory implements the same `agent::Factory<A>` trait as in-process Rust agents.
+- `RemoteGrpcAgent` lazily connects to the configured gRPC endpoint, sends one `CreateAgent` request, forwards observations through `Start`, `ObserveTransition`, and `ObserveMessage`, and asks for responses through `Respond`.
 - Returned actions are deserialized into the game-specific Rust action type and still pass through normal server validation before changing game state.
 - Remote gRPC factories export durable participant metadata as `participant_kind = agent`, `identity_provider = remote_grpc`, and `external_id = <agent_name>@<agent_version>`. Administration and research exports use a descriptive identifier such as `agent:remote_grpc:<agent_name>@<agent_version>` rather than a human-style random name; absent version metadata is marked `unversioned`.
-- The Python SDK wrapper lives in `python/parlando-agent-sdk`. It provides `GameAgent`, `AgentResponse`, `serve_agent`, a protobuf generation command, and a bundled copy of the protocol.
+- The Python SDK wrapper lives in `python/parlando-agent-sdk`. It provides `Agent`, `Response`, `serve`, a protobuf generation command, and a bundled copy of the protocol.
 - The mock-client integration suite starts an in-process tonic gRPC service and verifies remote-agent messages, actions, completion, and persisted session events through the real HTTP/WebSocket server.
 
 ## Remaining Risks

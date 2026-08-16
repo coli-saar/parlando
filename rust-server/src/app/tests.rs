@@ -19,11 +19,11 @@ use tokio::net::TcpListener;
 use tokio_tungstenite::{connect_async, tungstenite::Message as TungsteniteMessage};
 use tower::ServiceExt;
 
-use crate::agents::{AgentInitContext, AgentResponse, AgentUtteranceKind, GameAgent};
+use crate::agents::{Agent, AgentContext, AgentResponse};
 use crate::config::{
     AgentsConfig, AgentsMode, DatabaseConfig, DirectConfig, ExperimentIdentityConfig,
 };
-use crate::game::PlayerRole;
+use crate::game::{ActionRejection, AgentDefinition, PlayerRole};
 
 use super::*;
 
@@ -86,7 +86,7 @@ fn administrator_network_policy_matches_ipv4_and_ipv6_cidrs() {
 }
 
 /// Builds an active test router so unrelated protocol tests retain their narrow setup.
-async fn build_router<A: GameAdapter>(
+async fn build_router<A: Game>(
     adapter: A,
     config: ExperimentConfig,
     options: ServeOptions<A>,
@@ -257,8 +257,8 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(ADMIN_EXPERIMENT_HTML.contains("<time>${escapeHtml(fmtDate(item.created_at))}</time>"));
     assert!(!ADMIN_EXPERIMENT_HTML
         .contains("<time>Created ${escapeHtml(fmtDate(item.created_at))}</time>"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("item.study_name"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("experiment.study_name"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("item.participant_title"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("experiment.participant_title"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("catalogueResizer"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("sessionResizer"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Object.assign(state.selectedSession, refreshed)"));
@@ -390,9 +390,9 @@ async fn administrator_can_store_and_explicitly_reveal_experiment_secrets() {
     let (mut config, _tmp) = sqlite_config();
     config.experiment.id = Some("secret-config".to_string());
     config.speechmatics.api_key = "bootstrap-speech-secret".to_string();
-    let descriptor = GameDescriptor {
+    let descriptor = GameMetadata {
         id: "tiny-game".to_string(),
-        display_name: "Tiny Game".to_string(),
+        name: "Tiny Game".to_string(),
         version: semver::Version::parse("0.4.0").unwrap(),
         build_manifest: json!({}),
     };
@@ -792,7 +792,8 @@ async fn experiment_starts_inactive_and_admin_controls_intake() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(participant["participant_session_id"].is_string());
+    assert!(participant["participant_id"].is_string());
+    assert!(participant.get("participant_session_id").is_none());
 
     let (status, _) = json_request(
         router.clone(),
@@ -860,11 +861,11 @@ async fn hosted_voice_services_without_credentials_block_experiment_start() {
         .iter()
         .any(|issue| issue.as_str().unwrap().contains("Speechmatics API key")));
     assert_eq!(
-        dashboard_config["experiment"]["config"]["study"]["waiting_room_timeout_seconds"],
+        dashboard_config["experiment"]["config"]["session"]["waiting_room_timeout_seconds"],
         600
     );
     assert_eq!(
-        dashboard_config["experiment"]["config"]["study"]["session_max_lifetime_seconds"],
+        dashboard_config["experiment"]["config"]["session"]["session_max_lifetime_seconds"],
         14_400
     );
     assert_eq!(
@@ -939,9 +940,9 @@ fn export_filter_removes_testing_session_graph() {
 async fn compiled_game_router_hosts_multiple_experiments() {
     let mut config = step_five_config();
     config.experiment.id = Some("primary".to_string());
-    let descriptor = GameDescriptor {
+    let descriptor = GameMetadata {
         id: "tiny-game".to_string(),
-        display_name: "Tiny Game".to_string(),
+        name: "Tiny Game".to_string(),
         version: semver::Version::parse("0.4.0").unwrap(),
         build_manifest: json!({"name": "tiny-game", "version": "0.4.0"}),
     };
@@ -1020,8 +1021,8 @@ async fn compiled_game_router_hosts_multiple_experiments() {
     )
     .await;
     assert_eq!(config_status, StatusCode::OK);
-    stored_config["experiment"]["config"]["study"]["name"] =
-        Value::String("Edited second condition".to_string());
+    stored_config["experiment"]["config"]["session"]["waiting_room_timeout_seconds"] =
+        Value::Number(300.into());
     let (save_status, saved) = json_request(
         router.clone(),
         http::Method::POST,
@@ -1062,24 +1063,19 @@ async fn compiled_game_router_hosts_multiple_experiments() {
     )
     .await;
     assert_ne!(
-        primary_participant["participant_session_id"],
-        secondary_participant["participant_session_id"]
+        primary_participant["participant_id"],
+        secondary_participant["participant_id"]
     );
     for participant in [&primary_participant, &secondary_participant] {
         TEST_PARTICIPANT_CREDENTIALS.lock().unwrap().insert(
-            participant["participant_session_id"]
-                .as_str()
-                .unwrap()
-                .to_string(),
+            participant["participant_id"].as_str().unwrap().to_string(),
             participant["participant_credential"]
                 .as_str()
                 .unwrap()
                 .to_string(),
         );
     }
-    let primary_id = primary_participant["participant_session_id"]
-        .as_str()
-        .unwrap();
+    let primary_id = primary_participant["participant_id"].as_str().unwrap();
     let (consent_status, _) = json_request(
         router.clone(),
         http::Method::POST,
@@ -1117,7 +1113,7 @@ async fn compiled_game_router_hosts_multiple_experiments() {
     ))
     .await
     .expect("experiment dispatcher must preserve the WebSocket upgrade handle");
-    let presence = read_ws_type(&mut game_socket, "presenceChanged").await;
+    let presence = read_ws_type(&mut game_socket, "presence").await;
     assert_eq!(presence["presence"]["A"]["connected"], true);
     game_socket.close(None).await.unwrap();
     server.abort();
@@ -1142,7 +1138,8 @@ async fn compiled_game_router_hosts_multiple_experiments() {
     )
     .await;
     assert_eq!(secondary_config["institution"], "Test University");
-    assert_eq!(secondary_config["study_name"], "Edited second condition");
+    assert_eq!(secondary_config["experiment_status"], "testing");
+    assert!(secondary_config.get("participant_title").is_none());
 
     let (_, catalogue) = json_request(
         router.clone(),
@@ -1151,7 +1148,7 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         Value::Null,
     )
     .await;
-    assert_eq!(catalogue["game"]["display_name"], "Tiny Game");
+    assert_eq!(catalogue["game"]["name"], "Tiny Game");
     assert_eq!(catalogue["experiments"].as_array().unwrap().len(), 2);
     let (_, privacy) = json_request(
         router.clone(),
@@ -1204,9 +1201,9 @@ async fn compiled_game_router_requires_exact_version_and_clones_forward() {
         })
         .await
         .unwrap();
-    let descriptor = GameDescriptor {
+    let descriptor = GameMetadata {
         id: "tiny-game".to_string(),
-        display_name: "Tiny Game".to_string(),
+        name: "Tiny Game".to_string(),
         version: semver::Version::parse("0.4.0").unwrap(),
         build_manifest: json!({"name": "tiny-game", "version": "0.4.0"}),
     };
@@ -1539,11 +1536,6 @@ struct TinyObservation {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct TinyEvent {
-    name: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
 struct TinySummary {
     done: bool,
     outcome: String,
@@ -1563,8 +1555,8 @@ struct LossSummaryAdapter;
 struct NoopAgent;
 
 #[async_trait]
-impl GameAgent<TinyAdapter> for NoopAgent {
-    async fn maybe_act(
+impl Agent<TinyAdapter> for NoopAgent {
+    async fn respond(
         &mut self,
         _available_actions: Option<Vec<TinyAction>>,
     ) -> Result<Option<AgentResponse<TinyAction>>> {
@@ -1574,8 +1566,23 @@ impl GameAgent<TinyAdapter> for NoopAgent {
 
 struct NoopAgentFactory;
 
+/// Returns minimal metadata for runtime-only test agents.
+fn test_agent_definition() -> AgentDefinition {
+    AgentDefinition {
+        id: "test.agent".to_string(),
+        name: "Test agent".to_string(),
+        description: "Agent used by runtime tests.".to_string(),
+        config_fields: Vec::new(),
+    }
+}
+
+#[async_trait]
 impl AgentFactory<TinyAdapter> for NoopAgentFactory {
-    fn create(&self, _context: AgentInitContext) -> Result<Box<dyn GameAgent<TinyAdapter> + Send>> {
+    fn definition(&self) -> AgentDefinition {
+        test_agent_definition()
+    }
+
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
         Ok(Box::new(NoopAgent))
     }
 }
@@ -1585,8 +1592,8 @@ struct ScriptedAgent {
 }
 
 #[async_trait]
-impl GameAgent<TinyAdapter> for ScriptedAgent {
-    async fn maybe_act(
+impl Agent<TinyAdapter> for ScriptedAgent {
+    async fn respond(
         &mut self,
         _available_actions: Option<Vec<TinyAction>>,
     ) -> Result<Option<AgentResponse<TinyAction>>> {
@@ -1619,14 +1626,21 @@ fn scripted_response(
     message: Option<&str>,
     action: Option<TinyAction>,
 ) -> Option<AgentResponse<TinyAction>> {
-    Some(AgentResponse {
-        message: message.map(str::to_string),
-        action,
-    })
+    match (message, action) {
+        (Some(message), Some(action)) => Some(AgentResponse::action_and_message(action, message)),
+        (Some(message), None) => Some(AgentResponse::message(message)),
+        (None, Some(action)) => Some(AgentResponse::action(action)),
+        (None, None) => None,
+    }
 }
 
+#[async_trait]
 impl AgentFactory<TinyAdapter> for ScriptedAgentFactory {
-    fn create(&self, _context: AgentInitContext) -> Result<Box<dyn GameAgent<TinyAdapter> + Send>> {
+    fn definition(&self) -> AgentDefinition {
+        test_agent_definition()
+    }
+
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
         self.created.fetch_add(1, Ordering::SeqCst);
         let script = self.scripts.lock().unwrap().pop_front().unwrap_or_default();
         Ok(Box::new(ScriptedAgent {
@@ -1640,8 +1654,8 @@ struct RecordingActionsAgent {
 }
 
 #[async_trait]
-impl GameAgent<TinyAdapter> for RecordingActionsAgent {
-    async fn maybe_act(
+impl Agent<TinyAdapter> for RecordingActionsAgent {
+    async fn respond(
         &mut self,
         available_actions: Option<Vec<TinyAction>>,
     ) -> Result<Option<AgentResponse<TinyAction>>> {
@@ -1654,8 +1668,13 @@ struct RecordingActionsAgentFactory {
     seen_actions: Arc<Mutex<Vec<Option<Vec<TinyAction>>>>>,
 }
 
+#[async_trait]
 impl AgentFactory<TinyAdapter> for RecordingActionsAgentFactory {
-    fn create(&self, _context: AgentInitContext) -> Result<Box<dyn GameAgent<TinyAdapter> + Send>> {
+    fn definition(&self) -> AgentDefinition {
+        test_agent_definition()
+    }
+
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
         Ok(Box::new(RecordingActionsAgent {
             seen_actions: self.seen_actions.clone(),
         }))
@@ -1667,8 +1686,8 @@ struct RecordingObservationsAgent {
 }
 
 #[async_trait]
-impl GameAgent<TinyAdapter> for RecordingObservationsAgent {
-    async fn observe_state(&mut self, current_observation: TinyObservation) -> Result<()> {
+impl Agent<TinyAdapter> for RecordingObservationsAgent {
+    async fn start(&mut self, current_observation: TinyObservation) -> Result<()> {
         self.observations.lock().unwrap().push(format!(
             "state:{}:{}",
             current_observation.role, current_observation.done
@@ -1676,7 +1695,7 @@ impl GameAgent<TinyAdapter> for RecordingObservationsAgent {
         Ok(())
     }
 
-    async fn observe_action(
+    async fn observe_transition(
         &mut self,
         actor: PlayerRole,
         action: TinyAction,
@@ -1691,20 +1710,15 @@ impl GameAgent<TinyAdapter> for RecordingObservationsAgent {
         Ok(())
     }
 
-    async fn observe_message(
-        &mut self,
-        speaker: PlayerRole,
-        kind: AgentUtteranceKind,
-        text: String,
-    ) -> Result<()> {
+    async fn observe_message(&mut self, speaker: PlayerRole, text: String) -> Result<()> {
         self.observations
             .lock()
             .unwrap()
-            .push(format!("message:{}:{kind:?}:{text}", speaker.as_str()));
+            .push(format!("message:{}:{text}", speaker.as_str()));
         Ok(())
     }
 
-    async fn maybe_act(
+    async fn respond(
         &mut self,
         _available_actions: Option<Vec<TinyAction>>,
     ) -> Result<Option<AgentResponse<TinyAction>>> {
@@ -1716,8 +1730,13 @@ struct RecordingObservationsAgentFactory {
     observations: Arc<Mutex<Vec<String>>>,
 }
 
+#[async_trait]
 impl AgentFactory<TinyAdapter> for RecordingObservationsAgentFactory {
-    fn create(&self, _context: AgentInitContext) -> Result<Box<dyn GameAgent<TinyAdapter> + Send>> {
+    fn definition(&self) -> AgentDefinition {
+        test_agent_definition()
+    }
+
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
         Ok(Box::new(RecordingObservationsAgent {
             observations: self.observations.clone(),
         }))
@@ -1730,8 +1749,8 @@ struct SequencedDecisionAgent {
 }
 
 #[async_trait]
-impl GameAgent<TinyAdapter> for SequencedDecisionAgent {
-    async fn observe_action(
+impl Agent<TinyAdapter> for SequencedDecisionAgent {
+    async fn observe_transition(
         &mut self,
         actor: PlayerRole,
         _action: TinyAction,
@@ -1740,11 +1759,11 @@ impl GameAgent<TinyAdapter> for SequencedDecisionAgent {
         self.log
             .lock()
             .unwrap()
-            .push(format!("observe_action:{}", actor.as_str()));
+            .push(format!("observe_transition:{}", actor.as_str()));
         Ok(())
     }
 
-    async fn maybe_act(
+    async fn respond(
         &mut self,
         _available_actions: Option<Vec<TinyAction>>,
     ) -> Result<Option<AgentResponse<TinyAction>>> {
@@ -1752,7 +1771,7 @@ impl GameAgent<TinyAdapter> for SequencedDecisionAgent {
         self.log
             .lock()
             .unwrap()
-            .push(format!("maybe_act:{}", self.decisions));
+            .push(format!("respond:{}", self.decisions));
         if self.decisions == 1 {
             return Ok(scripted_response(
                 None,
@@ -1770,8 +1789,13 @@ struct SequencedDecisionAgentFactory {
     log: Arc<Mutex<Vec<String>>>,
 }
 
+#[async_trait]
 impl AgentFactory<TinyAdapter> for SequencedDecisionAgentFactory {
-    fn create(&self, _context: AgentInitContext) -> Result<Box<dyn GameAgent<TinyAdapter> + Send>> {
+    fn definition(&self) -> AgentDefinition {
+        test_agent_definition()
+    }
+
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
         Ok(Box::new(SequencedDecisionAgent {
             log: self.log.clone(),
             decisions: 0,
@@ -1799,20 +1823,11 @@ impl StreamingTtsProvider for MockTtsProvider {
         if self.fail_first && call == 0 {
             return Err(anyhow!("mock tts failure"));
         }
-        Ok(vec![
-            crate::tts::AudioChunk {
-                data: vec![1, 2, 3],
-                sample_rate: 24000,
-                channels: 1,
-                final_chunk: false,
-            },
-            crate::tts::AudioChunk {
-                data: vec![],
-                sample_rate: 24000,
-                channels: 1,
-                final_chunk: true,
-            },
-        ])
+        Ok(vec![crate::tts::AudioChunk {
+            data: vec![1, 2, 3],
+            sample_rate: 24000,
+            channels: 1,
+        }])
     }
 }
 
@@ -1834,36 +1849,32 @@ impl crate::audio_publisher::AgentAudioPublisher for MockAudioPublisher {
     }
 }
 
-impl GameAdapter for TinyAdapter {
+impl Game for TinyAdapter {
+    type Config = Value;
     type State = TinyState;
     type Action = TinyAction;
     type Observation = TinyObservation;
-    type Event = TinyEvent;
-    type Summary = TinySummary;
+    type Completion = TinySummary;
 
-    fn initial_state(&self) -> Self::State {
-        TinyState { done: false }
+    fn initial_state(&self, _config: &Self::Config, _seed: u64) -> Result<Self::State> {
+        Ok(TinyState { done: false })
     }
 
-    fn validate_action(
+    fn apply_action(
         &self,
         _state: &Self::State,
         action: &Self::Action,
-        _player: PlayerRole,
-    ) -> Result<()> {
+        _actor: PlayerRole,
+    ) -> std::result::Result<Self::State, ActionRejection> {
         if action.invalid {
-            return Err(anyhow!("invalid tiny action"));
+            return Err(ActionRejection::new("invalid_tiny_action"));
         }
-        Ok(())
-    }
-
-    fn apply_action(&self, _state: &Self::State, action: &Self::Action) -> Result<Self::State> {
         Ok(TinyState {
             done: action.finish,
         })
     }
 
-    fn observe_state(&self, state: &Self::State, player: PlayerRole) -> Self::Observation {
+    fn observation(&self, state: &Self::State, player: PlayerRole) -> Self::Observation {
         TinyObservation {
             done: state.done,
             role: player.as_str().to_string(),
@@ -1881,108 +1892,67 @@ impl GameAdapter for TinyAdapter {
         }])
     }
 
-    fn events_for_action(
-        &self,
-        _before: &Self::State,
-        _after: &Self::State,
-        _action: &Self::Action,
-        _player: PlayerRole,
-    ) -> Vec<Self::Event> {
-        vec![TinyEvent {
-            name: "acted".to_string(),
-        }]
-    }
-
-    fn is_complete(&self, state: &Self::State) -> bool {
-        state.done
-    }
-
-    fn completion_summary(&self, state: &Self::State) -> Self::Summary {
-        TinySummary {
+    fn completion(&self, state: &Self::State) -> Option<Self::Completion> {
+        state.done.then(|| TinySummary {
             done: state.done,
-            outcome: if state.done { "success" } else { "in_progress" }.to_string(),
-            dyad_score: if state.done { 10 } else { 0 },
-            player_scores: BTreeMap::from([
-                ("A".to_string(), if state.done { 6 } else { 0 }),
-                ("B".to_string(), if state.done { 4 } else { 0 }),
-            ]),
-        }
+            outcome: "success".to_string(),
+            dyad_score: 10,
+            player_scores: BTreeMap::from([("A".to_string(), 6), ("B".to_string(), 4)]),
+        })
     }
 }
 
-impl GameAdapter for NoAvailableActionsAdapter {
+impl Game for NoAvailableActionsAdapter {
+    type Config = Value;
     type State = TinyState;
     type Action = TinyAction;
     type Observation = TinyObservation;
-    type Event = TinyEvent;
-    type Summary = TinySummary;
+    type Completion = TinySummary;
 
-    fn initial_state(&self) -> Self::State {
-        TinyAdapter.initial_state()
+    fn initial_state(&self, config: &Self::Config, seed: u64) -> Result<Self::State> {
+        TinyAdapter.initial_state(config, seed)
     }
 
-    fn validate_action(
+    fn apply_action(
         &self,
         state: &Self::State,
         action: &Self::Action,
-        player: PlayerRole,
-    ) -> Result<()> {
-        TinyAdapter.validate_action(state, action, player)
+        actor: PlayerRole,
+    ) -> std::result::Result<Self::State, ActionRejection> {
+        TinyAdapter.apply_action(state, action, actor)
     }
 
-    fn apply_action(&self, state: &Self::State, action: &Self::Action) -> Result<Self::State> {
-        TinyAdapter.apply_action(state, action)
+    fn observation(&self, state: &Self::State, player: PlayerRole) -> Self::Observation {
+        TinyAdapter.observation(state, player)
     }
 
-    fn observe_state(&self, state: &Self::State, player: PlayerRole) -> Self::Observation {
-        TinyAdapter.observe_state(state, player)
-    }
-
-    fn events_for_action(
-        &self,
-        before: &Self::State,
-        after: &Self::State,
-        action: &Self::Action,
-        player: PlayerRole,
-    ) -> Vec<Self::Event> {
-        TinyAdapter.events_for_action(before, after, action, player)
-    }
-
-    fn is_complete(&self, state: &Self::State) -> bool {
-        TinyAdapter.is_complete(state)
-    }
-
-    fn completion_summary(&self, state: &Self::State) -> Self::Summary {
-        TinyAdapter.completion_summary(state)
+    fn completion(&self, state: &Self::State) -> Option<Self::Completion> {
+        TinyAdapter.completion(state)
     }
 }
 
-impl GameAdapter for LossSummaryAdapter {
+impl Game for LossSummaryAdapter {
+    type Config = Value;
     type State = TinyState;
     type Action = TinyAction;
     type Observation = TinyObservation;
-    type Event = TinyEvent;
-    type Summary = TinySummary;
+    type Completion = TinySummary;
 
-    fn initial_state(&self) -> Self::State {
-        TinyAdapter.initial_state()
+    fn initial_state(&self, config: &Self::Config, seed: u64) -> Result<Self::State> {
+        TinyAdapter.initial_state(config, seed)
     }
 
-    fn validate_action(
+    fn apply_action(
         &self,
         state: &Self::State,
         action: &Self::Action,
-        player: PlayerRole,
-    ) -> Result<()> {
-        TinyAdapter.validate_action(state, action, player)
+        actor: PlayerRole,
+    ) -> std::result::Result<Self::State, ActionRejection> {
+        TinyAdapter.apply_action(state, action, actor)
     }
 
-    fn apply_action(&self, state: &Self::State, action: &Self::Action) -> Result<Self::State> {
-        TinyAdapter.apply_action(state, action)
-    }
-
-    fn observe_state(&self, state: &Self::State, player: PlayerRole) -> Self::Observation {
-        TinyAdapter.observe_state(state, player)
+    fn observation(&self, state: &Self::State, player: PlayerRole) -> Self::Observation {
+        TinyAdapter.observation(state, player)
     }
 
     fn available_actions(
@@ -1993,30 +1963,15 @@ impl GameAdapter for LossSummaryAdapter {
         TinyAdapter.available_actions(state, player)
     }
 
-    fn events_for_action(
-        &self,
-        before: &Self::State,
-        after: &Self::State,
-        action: &Self::Action,
-        player: PlayerRole,
-    ) -> Vec<Self::Event> {
-        TinyAdapter.events_for_action(before, after, action, player)
-    }
-
-    fn is_complete(&self, state: &Self::State) -> bool {
-        TinyAdapter.is_complete(state)
-    }
-
-    fn completion_summary(&self, state: &Self::State) -> Self::Summary {
-        let mut summary = TinyAdapter.completion_summary(state);
-        if state.done {
-            summary.outcome = "loss".to_string();
-            summary.dyad_score = 0;
-            summary
+    fn completion(&self, state: &Self::State) -> Option<Self::Completion> {
+        TinyAdapter.completion(state).map(|mut completion| {
+            completion.outcome = "loss".to_string();
+            completion.dyad_score = 0;
+            completion
                 .player_scores
                 .extend([("A".to_string(), 0), ("B".to_string(), 0)]);
-        }
-        summary
+            completion
+        })
     }
 }
 
@@ -2215,10 +2170,7 @@ async fn create_direct_participant(router: Router, _name: &str) -> String {
     let (status, response) =
         json_request(router, http::Method::POST, "/api/participants", json!({})).await;
     assert_eq!(status, StatusCode::OK);
-    let participant_session_id = response["participant_session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let participant_session_id = response["participant_id"].as_str().unwrap().to_string();
     let credential = response["participant_credential"]
         .as_str()
         .unwrap()
@@ -2367,17 +2319,7 @@ async fn create_joined_room(router: Router) -> (String, String, String) {
     )
     .await;
     assert_eq!(joined["room_id"], room_id);
-    (
-        created["participant_session_id"]
-            .as_str()
-            .unwrap()
-            .to_string(),
-        joined["participant_session_id"]
-            .as_str()
-            .unwrap()
-            .to_string(),
-        room_id,
-    )
+    (a, b, room_id)
 }
 
 // Requests one participant-bound audio plan and verifies that it is enabled.
@@ -2468,13 +2410,7 @@ async fn create_human_vs_agent_room(router: Router, name: &str) -> (String, Stri
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(created["role"], "A");
-    (
-        created["participant_session_id"]
-            .as_str()
-            .unwrap()
-            .to_string(),
-        created["room_id"].as_str().unwrap().to_string(),
-    )
+    (human, created["room_id"].as_str().unwrap().to_string())
 }
 
 // Polls the evaluation export until an event type appears or the test times out.
@@ -2545,7 +2481,6 @@ async fn consent_participant(router: Router, participant_session_id: &str) {
 #[tokio::test]
 async fn health_and_public_config_expose_client_bootstrap_shape() {
     let mut config = step_five_config();
-    config.study.name = "Bootstrap Study".to_string();
     config.voice.enabled = true;
     config.transcription.enabled = true;
     config.speechmatics.api_key = "test-key".to_string();
@@ -2566,15 +2501,14 @@ async fn health_and_public_config_expose_client_bootstrap_shape() {
     let (config_status, public_config) =
         json_request(router, http::Method::GET, "/api/config", Value::Null).await;
     assert_eq!(config_status, StatusCode::OK);
-    assert_eq!(public_config["study_name"], "Bootstrap Study");
+    assert!(public_config.get("participant_title").is_none());
     assert!(public_config["institution"].is_null());
     assert_eq!(public_config["consents"][0]["id"], "study");
     assert_eq!(public_config["voice"]["enabled"], true);
-    assert_eq!(public_config["voice"]["transport"], "websocket");
-    assert_eq!(public_config["transcription"]["enabled"], true);
-    assert_eq!(public_config["tts"]["voice_name"], "Agent Voice");
-    assert_eq!(public_config["agents"]["mode"], "human_vs_human");
-    assert_eq!(public_config["agents"]["human_vs_agent"], false);
+    assert!(public_config.get("transcription").is_none());
+    assert!(public_config.get("tts").is_none());
+    assert!(public_config.get("agents").is_none());
+    assert!(public_config.get("privacy").is_none());
 }
 
 #[tokio::test]
@@ -2631,7 +2565,8 @@ async fn static_serving_returns_assets_spa_fallback_and_preserves_api_prefixes()
     )
     .await;
     assert_eq!(api_status, StatusCode::OK);
-    assert!(api_body.contains("study_name"));
+    assert!(api_body.contains("experiment_status"));
+    assert!(!api_body.contains("participant_title"));
     assert!(!api_body.contains("Parlando client"));
 
     let (_traversal_status, traversal_body, _) = raw_request(
@@ -3277,13 +3212,13 @@ async fn direct_room_creation_requires_consent_then_assigns_role_a() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(room["participant_session_id"], participant_session_id);
+    assert!(room.get("participant_session_id").is_none());
     assert_eq!(room["role"], "A");
     assert!(room["room_id"].as_str().is_some_and(|id| !id.is_empty()));
 }
 
 #[tokio::test]
-async fn room_response_omits_available_actions_when_game_does_not_provide_affordance() {
+async fn room_response_uses_null_when_game_does_not_enumerate_actions() {
     let router = build_router(
         NoAvailableActionsAdapter,
         step_five_config(),
@@ -3303,7 +3238,7 @@ async fn room_response_omits_available_actions_when_game_does_not_provide_afford
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(room.get("available_actions").is_none());
+    assert!(room["available_actions"].is_null());
 }
 
 #[tokio::test]
@@ -3390,16 +3325,14 @@ async fn two_independent_waiting_room_entries_pair_into_one_room() {
     assert_eq!(export_status, StatusCode::OK);
     assert_eq!(export["sessions"].as_array().unwrap().len(), 1);
     assert_eq!(export["session_participants"].as_array().unwrap().len(), 2);
-    assert!(export["session_participants"]
+    let roles = export["session_participants"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|row| row["participant_session_id"] == first && row["role"] == "A"));
-    assert!(export["session_participants"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|row| row["participant_session_id"] == second && row["role"] == "B"));
+        .map(|row| row["role"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(roles.contains(&"A"));
+    assert!(roles.contains(&"B"));
 }
 
 #[tokio::test]
@@ -3496,16 +3429,14 @@ async fn room_routes_persist_evaluation_session_and_join_events() {
     assert_eq!(export["sessions"].as_array().unwrap().len(), 1);
     assert_eq!(export["sessions"][0]["room_id"], room_id);
     assert_eq!(export["session_participants"].as_array().unwrap().len(), 2);
-    assert!(export["session_participants"]
+    let roles = export["session_participants"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|row| row["participant_session_id"] == a && row["role"] == "A"));
-    assert!(export["session_participants"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|row| row["participant_session_id"] == b && row["role"] == "B"));
+        .map(|row| row["role"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(roles.contains(&"A"));
+    assert!(roles.contains(&"B"));
     let event_types = export["session_events"]
         .as_array()
         .unwrap()
@@ -3532,18 +3463,16 @@ async fn websocket_role_assignment_is_targeted_to_one_connection() {
     let (mut socket_a, _) = connect_async(game_socket_url(&base_url, &room_id, &a).await)
         .await
         .unwrap();
-    assert_no_ws_type(&mut socket_a, "roleAssigned").await;
+    assert_no_ws_type(&mut socket_a, "session_started").await;
 
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &room_id, &b).await)
         .await
         .unwrap();
-    let assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
-    assert_eq!(assigned_a["participant_session_id"], a);
+    let assigned_a = read_ws_type(&mut socket_a, "session_started").await;
     assert_eq!(assigned_a["role"], "A");
-    let assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await;
-    assert_eq!(assigned_b["participant_session_id"], b);
+    let assigned_b = read_ws_type(&mut socket_b, "session_started").await;
     assert_eq!(assigned_b["role"], "B");
-    assert_no_ws_type(&mut socket_a, "roleAssigned").await;
+    assert_no_ws_type(&mut socket_a, "session_started").await;
     server.abort();
 }
 
@@ -3560,8 +3489,8 @@ async fn explicit_leave_abandons_session_and_notifies_partner() {
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &room_id, &b).await)
         .await
         .unwrap();
-    let _assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
-    let _assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await;
+    let _assigned_a = read_ws_type(&mut socket_a, "session_started").await;
+    let _assigned_b = read_ws_type(&mut socket_b, "session_started").await;
 
     let (export_status, running_export) = json_request(
         router.clone(),
@@ -3577,10 +3506,7 @@ async fn explicit_leave_abandons_session_and_notifies_partner() {
     send_ws_json(&mut socket_a, json!({"type": "leave"})).await;
     let abandoned = read_ws_type(&mut socket_b, "abandoned").await;
     assert_eq!(abandoned["room_id"], room_id);
-    assert!(abandoned["message"]
-        .as_str()
-        .unwrap()
-        .contains("participant left"));
+    assert_eq!(abandoned["code"], "participant_left");
 
     let export = wait_for_export_event(router, "session_abandoned").await;
     assert_eq!(export["sessions"][0]["status"], "abandoned");
@@ -3608,14 +3534,11 @@ async fn websocket_rejects_actions_until_both_players_are_connected() {
 
     send_ws_json(
         &mut socket_a,
-        json!({"type": "submitAction", "action": {"finish": false}}),
+        json!({"type": "action", "action": {"finish": false}}),
     )
     .await;
-    let error = read_ws_type(&mut socket_a, "error").await;
-    assert!(error["message"]
-        .as_str()
-        .unwrap()
-        .contains("waiting for both players"));
+    let error = read_ws_type(&mut socket_a, "action_rejected").await;
+    assert_eq!(error["code"], "players_not_ready");
 
     let (export_status, export) =
         json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
@@ -3626,10 +3549,7 @@ async fn websocket_rejects_actions_until_both_players_are_connected() {
         .iter()
         .any(|event| {
             event["event_type"] == "game_action_rejected"
-                && event["payload"]["error"]
-                    .as_str()
-                    .unwrap()
-                    .contains("waiting for both players")
+                && event["payload"]["reason_code"] == "players_not_ready"
         }));
     server.abort();
 }
@@ -3648,16 +3568,17 @@ async fn oversized_action_rejection_is_bounded_and_analyzable() {
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &room_id, &b).await)
         .await
         .unwrap();
-    let _assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
-    let _assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await;
+    let _assigned_a = read_ws_type(&mut socket_a, "session_started").await;
+    let _assigned_b = read_ws_type(&mut socket_b, "session_started").await;
 
     send_ws_json(
         &mut socket_a,
-        json!({"type": "submitAction", "action": {"padding": "x".repeat(5_000)}}),
+        json!({"type": "action", "action": {"padding": "x".repeat(5_000)}}),
     )
     .await;
     let error = read_ws_type(&mut socket_a, "error").await;
-    assert!(error["message"].as_str().unwrap().contains("too large"));
+    assert_eq!(error["code"], "action_too_large");
+    assert_no_ws_type(&mut socket_b, "error").await;
 
     let (export_status, export) =
         json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
@@ -3694,11 +3615,11 @@ async fn privacy_switch_removes_all_full_game_state_copies() {
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &room_id, &b).await)
         .await
         .unwrap();
-    let _assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
-    let _assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await;
+    let _assigned_a = read_ws_type(&mut socket_a, "session_started").await;
+    let _assigned_b = read_ws_type(&mut socket_b, "session_started").await;
     send_ws_json(
         &mut socket_a,
-        json!({"type": "submitAction", "action": {"finish": true}}),
+        json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
     let _completed = read_ws_type(&mut socket_a, "completed").await;
@@ -3727,31 +3648,28 @@ async fn human_human_game_accepts_actions_after_second_human_connects() {
     let (mut socket_a, _) = connect_async(game_socket_url(&base_url, &room_id, &a).await)
         .await
         .unwrap();
-    assert_no_ws_type(&mut socket_a, "roleAssigned").await;
+    assert_no_ws_type(&mut socket_a, "session_started").await;
 
     send_ws_json(
         &mut socket_a,
-        json!({"type": "submitAction", "action": {"finish": false}}),
+        json!({"type": "action", "action": {"finish": false}}),
     )
     .await;
-    let waiting_error = read_ws_type(&mut socket_a, "error").await;
-    assert!(waiting_error["message"]
-        .as_str()
-        .unwrap()
-        .contains("waiting for both players"));
+    let waiting_error = read_ws_type(&mut socket_a, "action_rejected").await;
+    assert_eq!(waiting_error["code"], "players_not_ready");
 
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &room_id, &b).await)
         .await
         .unwrap();
-    let _assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
-    let _assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await;
+    let _assigned_a = read_ws_type(&mut socket_a, "session_started").await;
+    let _assigned_b = read_ws_type(&mut socket_b, "session_started").await;
     send_ws_json(
         &mut socket_a,
-        json!({"type": "submitAction", "action": {"finish": true}}),
+        json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
     let completed = read_ws_type(&mut socket_a, "completed").await;
-    assert_eq!(completed["summary"]["done"], true);
+    assert_eq!(completed["completion"]["done"], true);
     server.abort();
 }
 
@@ -3768,46 +3686,46 @@ async fn websocket_accepts_actions_chat_completion_and_persists_state_changes() 
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &room_id, &b).await)
         .await
         .unwrap();
-    let _assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
-    let _assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await;
+    let _assigned_a = read_ws_type(&mut socket_a, "session_started").await;
+    let _assigned_b = read_ws_type(&mut socket_b, "session_started").await;
 
     send_ws_json(
         &mut socket_a,
-        json!({"type": "sendChatMessage", "text": "hello from A"}),
+        json!({"type": "message", "text": "hello from A"}),
     )
     .await;
-    let chat_a = read_ws_type(&mut socket_a, "conversationMessageAdded").await;
-    let chat_b = read_ws_type(&mut socket_b, "conversationMessageAdded").await;
-    assert_eq!(chat_a["conversation_message"]["text"], "hello from A");
-    assert_eq!(chat_b["conversation_message"]["origin"], "typed");
+    let chat_a = read_ws_type(&mut socket_a, "message").await;
+    let chat_b = read_ws_type(&mut socket_b, "message").await;
+    assert_eq!(chat_a["message"]["text"], "hello from A");
+    assert_eq!(chat_b["message"]["input"], "text");
 
     send_ws_json(
         &mut socket_a,
-        json!({"type": "submitAction", "action": {"finish": false}}),
+        json!({"type": "action", "action": {"finish": false}}),
     )
     .await;
-    let state_a = read_ws_type(&mut socket_a, "stateChanged").await;
-    let state_b = read_ws_type(&mut socket_b, "stateChanged").await;
-    assert_eq!(state_a["participant_session_id"], a);
-    assert_eq!(state_a["role"], "A");
-    assert_eq!(state_b["participant_session_id"], b);
-    assert_eq!(state_b["role"], "B");
+    let state_a = read_ws_type(&mut socket_a, "transition").await;
+    let state_b = read_ws_type(&mut socket_b, "transition").await;
+    assert_eq!(state_a["actor"], "A");
+    assert_eq!(state_b["actor"], "A");
+    assert!(state_a.get("action").is_none());
+    assert!(state_b.get("action").is_none());
     assert_eq!(state_a["observation"]["done"], false);
 
     send_ws_json(
         &mut socket_a,
-        json!({"type": "submitAction", "action": {"finish": true}}),
+        json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
     let completed_a = read_ws_type(&mut socket_a, "completed").await;
     let completed_b = read_ws_type(&mut socket_b, "completed").await;
-    assert_eq!(completed_a["summary"]["done"], true);
-    assert_eq!(completed_a["summary"]["outcome"], "success");
-    assert_eq!(completed_a["summary"]["dyad_score"], 10);
-    assert_eq!(completed_a["summary"]["player_scores"]["A"], 6);
-    assert_eq!(completed_a["summary"]["player_scores"]["B"], 4);
-    assert_eq!(completed_b["summary"]["done"], true);
-    assert_eq!(completed_b["summary"], completed_a["summary"]);
+    assert_eq!(completed_a["completion"]["done"], true);
+    assert_eq!(completed_a["completion"]["outcome"], "success");
+    assert_eq!(completed_a["completion"]["dyad_score"], 10);
+    assert_eq!(completed_a["completion"]["player_scores"]["A"], 6);
+    assert_eq!(completed_a["completion"]["player_scores"]["B"], 4);
+    assert_eq!(completed_b["completion"]["done"], true);
+    assert_eq!(completed_b["completion"], completed_a["completion"]);
 
     let (export_status, export) =
         json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
@@ -3826,7 +3744,7 @@ async fn websocket_accepts_actions_chat_completion_and_persists_state_changes() 
 }
 
 #[tokio::test]
-async fn loss_completion_summary_is_broadcast_and_exported() {
+async fn loss_completion_is_broadcast_and_exported() {
     let router = build_router(
         LossSummaryAdapter,
         step_five_config(),
@@ -3842,20 +3760,20 @@ async fn loss_completion_summary_is_broadcast_and_exported() {
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &room_id, &b).await)
         .await
         .unwrap();
-    let _assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
-    let _assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await;
+    let _assigned_a = read_ws_type(&mut socket_a, "session_started").await;
+    let _assigned_b = read_ws_type(&mut socket_b, "session_started").await;
 
     send_ws_json(
         &mut socket_a,
-        json!({"type": "submitAction", "action": {"finish": true}}),
+        json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
     let completed = read_ws_type(&mut socket_a, "completed").await;
-    assert_eq!(completed["summary"]["done"], true);
-    assert_eq!(completed["summary"]["outcome"], "loss");
-    assert_eq!(completed["summary"]["dyad_score"], 0);
-    assert_eq!(completed["summary"]["player_scores"]["A"], 0);
-    assert_eq!(completed["summary"]["player_scores"]["B"], 0);
+    assert_eq!(completed["completion"]["done"], true);
+    assert_eq!(completed["completion"]["outcome"], "loss");
+    assert_eq!(completed["completion"]["dyad_score"], 0);
+    assert_eq!(completed["completion"]["player_scores"]["A"], 0);
+    assert_eq!(completed["completion"]["player_scores"]["B"], 0);
 
     let (export_status, export) =
         json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
@@ -3884,38 +3802,32 @@ async fn completed_rooms_reject_late_game_channel_input() {
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &room_id, &b).await)
         .await
         .unwrap();
-    let _assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
-    let _assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await;
+    let _assigned_a = read_ws_type(&mut socket_a, "session_started").await;
+    let _assigned_b = read_ws_type(&mut socket_b, "session_started").await;
 
     send_ws_json(
         &mut socket_a,
-        json!({"type": "submitAction", "action": {"finish": true}}),
+        json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
     let _completed_a = read_ws_type(&mut socket_a, "completed").await;
 
     send_ws_json(
         &mut socket_a,
-        json!({"type": "submitAction", "action": {"finish": false}}),
+        json!({"type": "action", "action": {"finish": false}}),
     )
     .await;
-    let action_error = read_ws_type(&mut socket_a, "error").await;
-    assert!(action_error["message"]
-        .as_str()
-        .unwrap()
-        .contains("no longer accepts game messages"));
+    let action_error = read_ws_type(&mut socket_a, "action_rejected").await;
+    assert_eq!(action_error["code"], "session_complete");
 
     send_ws_json(
         &mut socket_a,
-        json!({"type": "sendChatMessage", "text": "late hello"}),
+        json!({"type": "message", "text": "late hello"}),
     )
     .await;
     let chat_error = read_ws_type(&mut socket_a, "error").await;
-    assert!(chat_error["message"]
-        .as_str()
-        .unwrap()
-        .contains("no longer accepts game messages"));
-    assert_no_ws_type(&mut socket_b, "conversationMessageAdded").await;
+    assert_eq!(chat_error["code"], "message_rejected");
+    assert_no_ws_type(&mut socket_b, "message").await;
 
     let (transcript_status, transcript_response) = json_request(
         router.clone(),
@@ -4071,16 +3983,16 @@ async fn admin_sessions_api_reads_actions_from_database() {
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &room_id, &b).await)
         .await
         .unwrap();
-    let _assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await;
-    let _assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await;
+    let _assigned_a = read_ws_type(&mut socket_a, "session_started").await;
+    let _assigned_b = read_ws_type(&mut socket_b, "session_started").await;
 
     send_ws_json(
         &mut socket_a,
-        json!({"type": "submitAction", "action": {"finish": false}}),
+        json!({"type": "action", "action": {"finish": false}}),
     )
     .await;
-    let _state_a = read_ws_type(&mut socket_a, "stateChanged").await;
-    let _state_b = read_ws_type(&mut socket_b, "stateChanged").await;
+    let _state_a = read_ws_type(&mut socket_a, "transition").await;
+    let _state_b = read_ws_type(&mut socket_b, "transition").await;
     let (transcript_status, _transcript) = json_request(
         router.clone(),
         http::Method::POST,
@@ -4207,8 +4119,8 @@ async fn agent_runtime_creates_one_fresh_agent_per_room() {
     let (mut socket_2, _) = connect_async(game_socket_url(&base_url, &room_2, &human_2).await)
         .await
         .unwrap();
-    let _ = read_ws_type(&mut socket_1, "roleAssigned").await;
-    let _ = read_ws_type(&mut socket_2, "roleAssigned").await;
+    let _ = read_ws_type(&mut socket_1, "session_started").await;
+    let _ = read_ws_type(&mut socket_2, "session_started").await;
 
     for _ in 0..20 {
         if factory.created_count() == 2 {
@@ -4241,7 +4153,7 @@ async fn agent_runtime_receives_same_available_action_affordance_as_ui() {
     let (mut socket, _) = connect_async(game_socket_url(&base_url, &room_id, &human).await)
         .await
         .unwrap();
-    let assigned = read_ws_type(&mut socket, "roleAssigned").await;
+    let assigned = read_ws_type(&mut socket, "session_started").await;
     let ui_available_actions = assigned["available_actions"].as_array().unwrap();
     assert_eq!(ui_available_actions.len(), 1);
     assert_eq!(ui_available_actions[0]["finish"], true);
@@ -4285,15 +4197,15 @@ async fn agent_runtime_observes_messages_with_speaker_and_modality() {
     let (mut socket, _) = connect_async(game_socket_url(&base_url, &room_id, &human).await)
         .await
         .unwrap();
-    let _ = read_ws_type(&mut socket, "roleAssigned").await;
+    let _ = read_ws_type(&mut socket, "session_started").await;
     let _ = wait_for_export_event(router.clone(), "agent_started").await;
 
     send_ws_json(
         &mut socket,
-        json!({"type": "sendChatMessage", "text": "typed hello"}),
+        json!({"type": "message", "text": "typed hello"}),
     )
     .await;
-    let _ = read_ws_type(&mut socket, "conversationMessageAdded").await;
+    let _ = read_ws_type(&mut socket, "message").await;
     let (status, _) = json_request(
         router,
         http::Method::POST,
@@ -4312,7 +4224,7 @@ async fn agent_runtime_observes_messages_with_speaker_and_modality() {
 
     for _ in 0..20 {
         let captured = observations.lock().unwrap().clone();
-        if captured.contains(&"message:A:Typed:typed hello".to_string()) {
+        if captured.contains(&"message:A:typed hello".to_string()) {
             server.abort();
             return;
         }
@@ -4342,15 +4254,15 @@ async fn agent_runtime_observes_actions_with_resulting_observation() {
     let (mut socket, _) = connect_async(game_socket_url(&base_url, &room_id, &human).await)
         .await
         .unwrap();
-    let _ = read_ws_type(&mut socket, "roleAssigned").await;
+    let _ = read_ws_type(&mut socket, "session_started").await;
     let _ = wait_for_export_event(router.clone(), "agent_started").await;
 
     send_ws_json(
         &mut socket,
-        json!({"type": "submitAction", "action": {"finish": false}}),
+        json!({"type": "action", "action": {"finish": false}}),
     )
     .await;
-    let _ = read_ws_type(&mut socket, "stateChanged").await;
+    let _ = read_ws_type(&mut socket, "transition").await;
 
     for _ in 0..20 {
         let captured = observations.lock().unwrap().clone();
@@ -4397,14 +4309,15 @@ async fn agent_runtime_persists_messages_and_validated_actions() {
     let (mut socket, _) = connect_async(game_socket_url(&base_url, &room_id, &human).await)
         .await
         .unwrap();
-    let _ = read_ws_type(&mut socket, "roleAssigned").await;
+    let _ = read_ws_type(&mut socket, "session_started").await;
     let first_update = read_next_ws_value(&mut socket).await;
-    assert_eq!(first_update["type"], "stateChanged");
-    let message = read_ws_type(&mut socket, "conversationMessageAdded").await;
-    assert_eq!(message["conversation_message"]["origin"], "agent");
-    assert_eq!(message["conversation_message"]["text"], "agent says hello");
+    assert_eq!(first_update["type"], "transition");
+    let message = read_ws_type(&mut socket, "message").await;
+    assert_eq!(message["message"]["sender"], "B");
+    assert_eq!(message["message"]["input"], "text");
+    assert_eq!(message["message"]["text"], "agent says hello");
     let completed = read_ws_type(&mut socket, "completed").await;
-    assert_eq!(completed["summary"]["done"], true);
+    assert_eq!(completed["completion"]["done"], true);
 
     let export = wait_for_export_event(router, "session_completed").await;
     let events = export["session_events"].as_array().unwrap();
@@ -4441,14 +4354,14 @@ async fn agent_runtime_observes_accepted_action_before_next_decision() {
     let (mut socket, _) = connect_async(game_socket_url(&base_url, &room_id, &human).await)
         .await
         .unwrap();
-    let _ = read_ws_type(&mut socket, "roleAssigned").await;
+    let _ = read_ws_type(&mut socket, "session_started").await;
 
     for _ in 0..20 {
         let snapshot = log.lock().unwrap().clone();
-        if snapshot.iter().any(|entry| entry == "maybe_act:2") {
+        if snapshot.iter().any(|entry| entry == "respond:2") {
             assert_eq!(
                 snapshot,
-                vec!["maybe_act:1", "observe_action:B", "maybe_act:2"]
+                vec!["respond:1", "observe_transition:B", "respond:2"]
             );
             server.abort();
             return;
@@ -4499,7 +4412,7 @@ async fn agent_runtime_stops_invalid_agents_cleanly() {
     let (mut socket, _) = connect_async(game_socket_url(&base_url, &room_id, &human).await)
         .await
         .unwrap();
-    let _ = read_ws_type(&mut socket, "roleAssigned").await;
+    let _ = read_ws_type(&mut socket, "session_started").await;
 
     let export = wait_for_export_event(router, "agent_error").await;
     let events = export["session_events"].as_array().unwrap();
@@ -4518,50 +4431,8 @@ async fn agent_runtime_stops_invalid_agents_cleanly() {
             && event["payload"]["last_error"]
                 .as_str()
                 .unwrap()
-                .contains("invalid tiny action")
+                .contains("invalid_tiny_action")
     }));
-    server.abort();
-}
-
-#[tokio::test]
-async fn agent_runtime_rejects_empty_responses() {
-    let empty_response = Some(AgentResponse {
-        message: None,
-        action: None,
-    });
-    let factory = Arc::new(ScriptedAgentFactory::new(vec![vec![
-        empty_response.clone(),
-        empty_response,
-    ]]));
-    let router = build_router(
-        TinyAdapter,
-        human_vs_agent_config(),
-        ServeOptions {
-            agent_factory: Some(factory),
-            ..ServeOptions::default()
-        },
-    )
-    .await
-    .unwrap();
-    let (human, room_id) = create_human_vs_agent_room(router.clone(), "Human").await;
-    let (base_url, server) = spawn_test_server(router.clone()).await;
-    let (mut socket, _) = connect_async(game_socket_url(&base_url, &room_id, &human).await)
-        .await
-        .unwrap();
-    let _ = read_ws_type(&mut socket, "roleAssigned").await;
-
-    let export = wait_for_export_event(router, "agent_error").await;
-    assert!(export["session_events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|event| {
-            event["event_type"] == "agent_error"
-                && event["payload"]["last_error"]
-                    .as_str()
-                    .unwrap()
-                    .contains("empty response")
-        }));
     server.abort();
 }
 
@@ -4595,7 +4466,7 @@ async fn agent_tts_records_diagnostics_for_agent_messages() {
     let (mut socket, _) = connect_async(game_socket_url(&base_url, &room_id, &human).await)
         .await
         .unwrap();
-    let _ = read_ws_type(&mut socket, "roleAssigned").await;
+    let _ = read_ws_type(&mut socket, "session_started").await;
 
     let export = wait_for_tts_diagnostic(router, "tts_message_completed").await;
     let diagnostics = export["session_events"]
@@ -4641,8 +4512,14 @@ async fn agent_tts_continues_after_provider_failure() {
     let (mut socket, _) = connect_async(game_socket_url(&base_url, &room_id, &human).await)
         .await
         .unwrap();
-    let _ = read_ws_type(&mut socket, "roleAssigned").await;
+    let _ = read_ws_type(&mut socket, "session_started").await;
 
+    let _ = wait_for_tts_diagnostic(router.clone(), "tts_message_failed").await;
+    send_ws_json(
+        &mut socket,
+        json!({"type": "message", "text": "please try again"}),
+    )
+    .await;
     let export = wait_for_tts_diagnostic(router, "tts_message_completed").await;
     let diagnostics = export["session_events"]
         .as_array()
@@ -4678,4 +4555,112 @@ fn persisted_configuration_redacts_provider_credentials() {
     assert!(!serialized.contains("nested-auth-sentinel"));
     assert!(!serialized.contains("nested-client-sentinel"));
     assert!(!serialized.contains("nested-key-sentinel"));
+}
+
+#[derive(Clone)]
+struct LifecycleOrderGame {
+    events: Arc<Mutex<Vec<&'static str>>>,
+}
+
+struct LifecycleOrderAgent;
+
+#[async_trait]
+impl Agent<LifecycleOrderGame> for LifecycleOrderAgent {
+    /// Declines to act; this agent exists only to verify initialization order.
+    async fn respond(
+        &mut self,
+        _available_actions: Option<Vec<TinyAction>>,
+    ) -> Result<Option<AgentResponse<TinyAction>>> {
+        Ok(None)
+    }
+}
+
+struct LifecycleOrderFactory {
+    events: Arc<Mutex<Vec<&'static str>>>,
+}
+
+#[async_trait]
+impl AgentFactory<LifecycleOrderGame> for LifecycleOrderFactory {
+    /// Describes the lifecycle-order test factory.
+    fn definition(&self) -> AgentDefinition {
+        test_agent_definition()
+    }
+
+    /// Records that agent construction completed before returning the instance.
+    async fn create(
+        &self,
+        _context: AgentContext,
+    ) -> Result<Box<dyn Agent<LifecycleOrderGame> + Send>> {
+        self.events.lock().unwrap().push("agent_created");
+        Ok(Box::new(LifecycleOrderAgent))
+    }
+}
+
+impl Game for LifecycleOrderGame {
+    type Config = Value;
+    type State = TinyState;
+    type Action = TinyAction;
+    type Observation = TinyObservation;
+    type Completion = TinySummary;
+
+    /// Records initial-state construction after the agent factory has completed.
+    fn initial_state(&self, _config: &Self::Config, _seed: u64) -> Result<Self::State> {
+        self.events.lock().unwrap().push("initial_state");
+        Ok(TinyState { done: false })
+    }
+
+    /// Applies the tiny test transition.
+    fn apply_action(
+        &self,
+        state: &Self::State,
+        action: &Self::Action,
+        actor: PlayerRole,
+    ) -> std::result::Result<Self::State, ActionRejection> {
+        TinyAdapter.apply_action(state, action, actor)
+    }
+
+    /// Projects the tiny role-specific observation.
+    fn observation(&self, state: &Self::State, role: PlayerRole) -> Self::Observation {
+        TinyAdapter.observation(state, role)
+    }
+
+    /// Returns no terminal result for the lifecycle-order setup path.
+    fn completion(&self, state: &Self::State) -> Option<Self::Completion> {
+        TinyAdapter.completion(state)
+    }
+}
+
+#[tokio::test]
+async fn agent_construction_precedes_initial_state_construction() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let router = build_router(
+        LifecycleOrderGame {
+            events: events.clone(),
+        },
+        human_vs_agent_config(),
+        ServeOptions {
+            agent_factory: Some(Arc::new(LifecycleOrderFactory {
+                events: events.clone(),
+            })),
+            ..ServeOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    let human = create_direct_participant(router.clone(), "Human").await;
+    consent_participant(router.clone(), &human).await;
+
+    let (status, _) = json_request(
+        router,
+        http::Method::POST,
+        "/api/rooms",
+        json!({"participant_session_id": human}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        &["agent_created", "initial_state"]
+    );
 }

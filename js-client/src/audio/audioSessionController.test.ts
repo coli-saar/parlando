@@ -107,19 +107,18 @@ class FakeSink implements LocalAudioSink {
 function context(): AudioSessionContext {
   return {
     roomId: "room",
-    participantSessionId: "participant",
     role: "A",
     selectedAudioInputId: "default",
     selectedAudioInputLabel: "Default microphone",
     getAudioSession: vi.fn(async () => ({
       enabled: true,
-      websocket_url: "ws://example.test/ws/audio/room",
+      websocketUrl: "ws://example.test/ws/audio/room",
       token: "token",
-      protocol_version: 1,
-      sample_rate_hz: 24_000,
+      protocolVersion: 1,
+      sampleRateHz: 24_000,
       channels: 1,
-      frame_duration_ms: 20,
-      jitter_buffer_ms: 100
+      frameDurationMs: 20,
+      jitterBufferMs: 100
     })),
     logVoice: vi.fn(),
     onVoiceStatus: vi.fn()

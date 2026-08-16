@@ -210,18 +210,9 @@ pub struct SpaceObservation {
     pub log: Vec<String>,
 }
 
-/// Human-readable game event emitted for one recipient after an action.
+/// Shared game-specific result persisted and sent when the beacon launches.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct SpaceEvent {
-    #[serde(rename = "type")]
-    pub event_type: String,
-    pub actor: Option<String>,
-    pub text: String,
-}
-
-/// Completion summary persisted and sent when the beacon launches.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct SpaceSummary {
+pub struct SpaceCompletion {
     #[serde(rename = "beaconLaunched")]
     pub beacon_launched: bool,
     pub systems: Systems,
@@ -767,10 +758,10 @@ fn player_state_mut<'a>(state: &'a mut SpaceGameState, player: &str) -> &'a mut 
 
 #[cfg(test)]
 mod tests {
-    use parlando_server::{GameAdapter, PlayerRole};
+    use parlando_server::{Game, PlayerRole};
     use serde_json::json;
 
-    use crate::game::adapter::SpaceGameAdapter;
+    use crate::game::adapter::SpaceGame;
 
     use super::*;
 
@@ -882,10 +873,10 @@ mod tests {
 
     #[test]
     fn observation_filters_other_player_knowledge() {
-        let adapter = SpaceGameAdapter::new();
+        let adapter = SpaceGame::new();
         let state = initial_state();
-        let observation_a = adapter.observe_state(&state, PlayerRole::A);
-        let observation_b = adapter.observe_state(&state, PlayerRole::B);
+        let observation_a = adapter.observation(&state, PlayerRole::A);
+        let observation_b = adapter.observation(&state, PlayerRole::B);
         assert_eq!(observation_a.private_knowledge, state.knowledge.a);
         assert!(observation_a.knowledge.b.is_empty());
         assert_eq!(observation_b.private_knowledge, state.knowledge.b);
@@ -894,7 +885,7 @@ mod tests {
 
     #[test]
     fn adapter_exposes_typed_available_actions_with_client_json_shape() {
-        let adapter = SpaceGameAdapter::new();
+        let adapter = SpaceGame::new();
         let mut state = initial_state();
         state.players.a.position = Position { x: 1, y: 1 };
         let actions = adapter.available_actions(&state, PlayerRole::A).unwrap();
@@ -923,45 +914,6 @@ mod tests {
     }
 
     #[test]
-    fn adapter_events_include_action_and_recipient_knowledge_delta() {
-        let adapter = SpaceGameAdapter::new();
-        let before = initial_state();
-        let after = apply_action(
-            &before,
-            &SpaceAction::ChargeBattery {
-                player: "A".to_string(),
-            },
-        )
-        .unwrap();
-
-        let events_a = adapter.events_for_action(
-            &before,
-            &after,
-            &SpaceAction::ChargeBattery {
-                player: "A".to_string(),
-            },
-            PlayerRole::A,
-        );
-        let events_b = adapter.events_for_action(
-            &before,
-            &after,
-            &SpaceAction::ChargeBattery {
-                player: "A".to_string(),
-            },
-            PlayerRole::B,
-        );
-
-        assert!(events_a
-            .iter()
-            .any(|event| event.event_type == "action" && event.text.starts_with("You ")));
-        assert!(events_b
-            .iter()
-            .any(|event| event.event_type == "action" && event.text.starts_with("Player A ")));
-        assert!(events_a.iter().any(|event| event.event_type == "knowledge"));
-        assert!(!events_b.iter().any(|event| event.event_type == "knowledge"));
-    }
-
-    #[test]
     fn early_array_relay_reveals_python_compatible_diagnostics() {
         let state = apply(vec![SpaceAction::SetRelay {
             player: "B".to_string(),
@@ -979,13 +931,14 @@ mod tests {
     }
 
     #[test]
-    fn completion_summary_serializes_with_client_shape() {
-        let adapter = SpaceGameAdapter::new();
-        let state = initial_state();
-        let summary = adapter.completion_summary(&state);
-        let value = serde_json::to_value(summary).unwrap();
+    fn completion_serializes_with_client_shape() {
+        let adapter = SpaceGame::new();
+        let mut state = initial_state();
+        state.beacon_launched = true;
+        let completion = adapter.completion(&state).unwrap();
+        let value = serde_json::to_value(completion).unwrap();
 
-        assert_eq!(value["beaconLaunched"], false);
+        assert_eq!(value["beaconLaunched"], true);
         assert_eq!(value["systems"]["readyToLaunch"], false);
         assert!(value.get("beacon_launched").is_none());
     }

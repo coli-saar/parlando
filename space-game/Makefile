@@ -15,7 +15,7 @@ SERVER_BIN ?= $(LOCAL_BIN)/parlando-space-game
 CLIENT_PACKAGE ?= @coli-saar/parlando-client
 LOCAL_CLIENT_PACKAGE := $(JS_CLIENT_DIR)
 
-.PHONY: all install-local install-server prepare-client-local check-server check-client-package install-client-deps build-client build run run-solo-voice clean-client clean
+.PHONY: all install-local install-server prepare-client-local check-server check-client-package install-client-deps build-client build run clean-client clean
 
 # Default workflow: build the Space Game browser client and verify the server binary.
 all: build
@@ -61,11 +61,6 @@ build: install-local build-client check-server
 run: build
 	mkdir -p "$(SPACE_GAME_DIR)/.local"
 	"$(SERVER_BIN)" --host "$(HOST)" --port "$(PORT)" --database-url "$(DATABASE_URL)" --client-dist "$(CLIENT_DIR)/dist"
-
-# Seed and run the deterministic solo-voice development experiment.
-run-solo-voice: build
-	mkdir -p "$(SPACE_GAME_DIR)/.local"
-	"$(SERVER_BIN)" --host "$(HOST)" --port "$(PORT)" --database-url "$(DATABASE_URL)" --client-dist "$(CLIENT_DIR)/dist" --config "$(SPACE_GAME_DIR)/config/experiment.local-back-and-forth-voice.yaml"
 
 # Remove generated browser-client dependencies and build output.
 clean-client:

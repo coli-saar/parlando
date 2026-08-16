@@ -7,23 +7,19 @@ import {
   normalizePresence,
   participantMicrophoneLabel,
   platformLabel,
-  resolveStartupTitle,
   selectableAudioInputs,
   sendActionIfGameActive,
-  sendChatMessageIfGameActive,
+  sendMessageIfGameActive,
   voiceStatusUpdate
 } from "./startup";
-import type { PublicConfigResponse } from "./protocol";
+import type { ExperimentInfo } from "./protocol";
 import { experimentAllowsIntake, requiredConsentsAccepted, transcriptionProgressForStatus } from "./helpers";
 
-function publicConfig(overrides: Partial<PublicConfigResponse> = {}): PublicConfigResponse {
+function publicConfig(overrides: Partial<ExperimentInfo> = {}): ExperimentInfo {
   return {
-    study_name: "Startup Test",
-    experiment_status: "active",
+    status: "active",
     consents: [],
     voice: { enabled: false },
-    transcription: { enabled: false, provider: "speechmatics" },
-    agents: { mode: "human_vs_human", human_vs_agent: false },
     ...overrides
   };
 }
@@ -36,11 +32,6 @@ function audioInput(deviceId: string, label: string): MediaDeviceInfo {
 describe("Parlando startup helpers", () => {
   it("uses the reviewed one-second transport heartbeat", () => {
     expect(CLIENT_HEARTBEAT_INTERVAL_MS).toBe(1_000);
-  });
-
-  it("resolves startup titles from public study config", () => {
-    expect(resolveStartupTitle(publicConfig({ study_name: "Configured Study" }))).toBe("Configured Study");
-    expect(resolveStartupTitle(null)).toBe("Parlando Experiment");
   });
 
   it("combines the platform name with an optional institution", () => {
@@ -93,19 +84,19 @@ describe("Parlando startup helpers", () => {
     expect(participantMicrophoneLabel("Built-in Microphone")).toBe("Built-in Microphone");
   });
 
-  it("normalizes human-human and human-agent presence snapshots", () => {
+  it("normalizes two-player presence snapshots", () => {
     const presence = normalizePresence({
-      A: { participantSessionId: "human-a", connected: true, audioReady: true },
-      B: { participantSessionId: "agent-b", connected: true, audioReady: true }
+      A: { connected: true, audioReady: true },
+      B: { connected: true, audioReady: true }
     });
 
-    expect(presence.A).toEqual({ participantSessionId: "human-a", connected: true, audioReady: true });
-    expect(presence.B).toEqual({ participantSessionId: "agent-b", connected: true, audioReady: true });
+    expect(presence.A).toEqual({ connected: true, audioReady: true });
+    expect(presence.B).toEqual({ connected: true, audioReady: true });
   });
 
   it("keeps missing seats visible as waiting-room gaps", () => {
     const presence = normalizePresence({
-      A: { participantSessionId: "human-a", connected: true }
+      A: { connected: true }
     });
 
     expect(presence.A?.connected).toBe(true);
@@ -130,7 +121,7 @@ describe("Parlando startup helpers", () => {
     });
   });
 
-  it("stores completion summaries from completed server messages", () => {
+  it("stores game-specific completion payloads from completed server messages", () => {
     const patch = completedSessionPatch({
       outcome: "success",
       dyadScore: 12,
@@ -139,7 +130,7 @@ describe("Parlando startup helpers", () => {
 
     expect(patch).toEqual({
       completed: true,
-      completionSummary: {
+      completion: {
         outcome: "success",
         dyadScore: 12,
         playerScores: { A: 7, B: 5 }
@@ -157,17 +148,17 @@ describe("Parlando startup helpers", () => {
     const socket = {} as WebSocket;
     const apiClient = {
       sendAction: vi.fn(),
-      sendChatMessage: vi.fn()
+      sendMessage: vi.fn()
     };
 
     sendActionIfGameActive(apiClient, { socket, completed: true }, { type: "finish" });
-    sendChatMessageIfGameActive(apiClient, { socket, completed: true }, "late hello");
+    sendMessageIfGameActive(apiClient, { socket, completed: true }, "late hello");
     expect(apiClient.sendAction).not.toHaveBeenCalled();
-    expect(apiClient.sendChatMessage).not.toHaveBeenCalled();
+    expect(apiClient.sendMessage).not.toHaveBeenCalled();
 
     sendActionIfGameActive(apiClient, { socket, completed: false }, { type: "finish" });
-    sendChatMessageIfGameActive(apiClient, { socket, completed: false }, "hello");
+    sendMessageIfGameActive(apiClient, { socket, completed: false }, "hello");
     expect(apiClient.sendAction).toHaveBeenCalledWith(socket, { type: "finish" });
-    expect(apiClient.sendChatMessage).toHaveBeenCalledWith(socket, "hello");
+    expect(apiClient.sendMessage).toHaveBeenCalledWith(socket, "hello");
   });
 });

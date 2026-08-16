@@ -11,6 +11,8 @@ records the experiment revision and game version that produced it.
 
 Choose a path according to the task you need to perform.
 
+The [Design Principles](design-principles.md) are authoritative for public boundaries and terminology. Existing 0.2 games should follow [Migrating to the Clean API](migrating-to-clean-api.md).
+
 ## Create a dialogue game
 
 1. Use [Building a Game](building-games.md) to design the participant experience,
@@ -32,8 +34,8 @@ shape from a game description.
    game process, choose its port and database, establish the first administrator,
    and deploy it with Docker or Render.
 2. Open `/admin/experiments` to create, clone, edit, activate, and monitor
-   experiments. Normal configuration is database-backed; YAML is only a migration
-   input for older installations.
+   experiments. Normal configuration is database-backed; an older YAML file is
+   only a reference while its values are transferred through the dashboard.
 3. Use [Data and Monitoring](data-and-monitoring.md) to interpret lifecycle state,
    configuration revisions, session provenance, exports, and participant-data
    deletion.

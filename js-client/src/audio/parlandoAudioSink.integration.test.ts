@@ -89,19 +89,18 @@ function input() {
 function context(overrides: Record<string, unknown> = {}) {
   const value: AudioSessionContext = {
     roomId: "room",
-    participantSessionId: "participant",
     role: "A",
     selectedAudioInputId: "mic",
     selectedAudioInputLabel: "Mic",
     getAudioSession: vi.fn(async () => ({
       enabled: true,
-      websocket_url: "/ws/audio/room",
+      websocketUrl: "/ws/audio/room",
       token: "secret ticket",
-      protocol_version: 1,
-      sample_rate_hz: 24_000,
+      protocolVersion: 1,
+      sampleRateHz: 24_000,
       channels: 1,
-      frame_duration_ms: 20,
-      jitter_buffer_ms: 100,
+      frameDurationMs: 20,
+      jitterBufferMs: 100,
       ...overrides
     })),
     logVoice: vi.fn(),
@@ -131,7 +130,7 @@ describe("ParlandoAudioSink integration", () => {
     const session = context({ enabled: false });
     await sink.connect(input().value, session);
     expect(FakeAudioContext.instances).toHaveLength(0);
-    expect(session.onVoiceStatus).toHaveBeenCalledWith({ connecting: false, message: "Voice is disabled for this study" });
+    expect(session.onVoiceStatus).toHaveBeenCalledWith({ connecting: false, message: "Voice is disabled for this experiment" });
   });
 
   it("connects the graph, sends capture frames, and accepts status and PCM messages", async () => {

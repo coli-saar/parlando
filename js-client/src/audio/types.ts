@@ -1,4 +1,4 @@
-import type { AudioSessionPlan } from "../protocol";
+import type { AudioSessionPlan, PlayerRole } from "../protocol";
 
 export interface VoiceStatus {
   connected: boolean;
@@ -33,8 +33,7 @@ export interface MicrophoneInput {
 
 export interface AudioSessionContext {
   roomId: string;
-  participantSessionId: string;
-  role: string;
+  role: PlayerRole;
   selectedAudioInputId: string;
   selectedAudioInputLabel: string | null;
   getAudioSession(): Promise<AudioSessionPlan>;

@@ -57,10 +57,10 @@ recruitment reopens. Deactivation closes new participant and room creation while
 allowing sessions already in progress to finish.
 
 Each experiment also has explicit room-lifecycle bounds. Waiting rooms expire
-after `study.waiting_room_timeout_seconds`; disconnected rooms after
-`study.reconnect_grace_seconds`; active but idle sessions after
-`study.session_idle_timeout_seconds`; and every unfinished session after
-`study.session_max_lifetime_seconds`. Expiration closes live transports and stores
+after `session.waiting_room_timeout_seconds`; disconnected rooms after
+`session.reconnect_grace_seconds`; active but idle sessions after
+`session.session_idle_timeout_seconds`; and every unfinished session after
+`session.session_max_lifetime_seconds`. Expiration closes live transports and stores
 a `session_expired` event with a stable reason.
 
 The bundled client sends an in-memory game heartbeat once per second. The server
@@ -82,7 +82,7 @@ Only settings needed before the dashboard opens belong to process bootstrap:
 | --- | --- | --- |
 | `--host` | Listener interface | Command line |
 | `--port` or `PORT` | Listener port | Command line locally; platform environment when required |
-| `--database-url` or `PARLANDO_DATABASE_URL` | SQLite catalogue and study data | Command line or server environment |
+| `--database-url` or `PARLANDO_DATABASE_URL` | SQLite experiment catalogue and session data | Command line or server environment |
 | `--client-dist` or `PARLANDO_CLIENT_DIST` | Compiled browser client | Command line or server environment |
 | `SPEECHMATICS_API_KEY` | Hosted transcription credential | Secret server environment |
 | `ELEVENLABS_API_KEY` | Text-to-speech credential | Secret server environment |
@@ -101,12 +101,12 @@ Use `/admin/experiments` for normal configuration. The dashboard separates:
 
 - **game settings**, currently the institution shared by all experiments;
 - **catalogue metadata**, including pinning and obsolete status; and
-- **experiment configuration**, including study, consent, agents, capacity,
+- **experiment configuration**, including session lifecycle, consent, agents, capacity,
   voice, transcription, TTS, conversation, and privacy settings.
 
 Capacity is admitted per research session rather than independently per endpoint.
 Configure active and waiting sessions, unattached participant credentials, and
-reserved transcription streams in the dashboard. Agent TTS is trusted study
+reserved transcription streams in the dashboard. Agent TTS is trusted experiment
 behavior and has no application quota. File-backed SQLite pauses only new
 sessions at the dashboard-configured disk reserve (256 MiB by default); already
 admitted sessions may continue.
@@ -121,20 +121,13 @@ created. A version-mismatched experiment remains available for inspection and
 export, but it cannot be edited or activated. Clone it to obtain a new inactive
 experiment for the currently compiled version.
 
-YAML is not the normal source of truth. For a one-time migration from an older
-installation, pass an existing file with `--config`:
-
-```sh
-cargo run --manifest-path space-game/server/Cargo.toml -- \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --client-dist space-game/client/dist \
-  --config space-game/config/experiment.render.example.yaml
-```
-
-The resulting database configuration should thereafter be edited in the
-dashboard. Provider credentials are taken from process secrets, removed before
-configuration persistence, and redacted again during export.
+YAML is not a process bootstrap API. Migrate an older configuration by creating
+or cloning an inactive experiment in the dashboard and transferring its values,
+using the `study` to `session` transformation in
+[`migrating-to-clean-api.md`](migrating-to-clean-api.md). Do not add a `--config`
+argument to a game binary. Provider credentials come from process secrets or the
+authenticated game-settings surface and are redacted from configuration and
+exports.
 
 ## Establish administrator access
 
@@ -206,7 +199,7 @@ game and audio tickets.
 
 The Render blueprint checks `/health`, which acquires a SQLite write transaction
 and performs a read before reporting success. A live-process response therefore
-does not hide a missing, locked, or read-only study database.
+does not hide a missing, locked, or read-only experiment database.
 
 Parlando emits HSTS on every application response. Browsers honor it only when
 the response arrives over HTTPS, so local HTTP development is unaffected while a

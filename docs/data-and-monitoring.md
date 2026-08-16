@@ -112,7 +112,7 @@ Other durable records can include:
 - participant creation and role assignment;
 - consent declarations and participant-information evidence;
 - accepted and rejected actions;
-- accepted transitions, with their action, generated events, and resulting state stored once;
+- accepted transitions, with their action, role-neutral metadata, and resulting state stored once;
 - typed and final spoken conversation messages, each stored once with modality metadata;
 - agent startup, proposals, messages, and errors; and
 - TTS and voice diagnostics.
@@ -123,10 +123,11 @@ bounded error description, and—when an action body existed—its byte count an
 SHA-256 fingerprint. Repeated equivalent violations are coalesced into bounded
 per-minute aggregates so rejection monitoring cannot itself fill the database.
 
-Completion summaries are game-specific. Define them to contain the terminal
-outcome, score or condition labels, and any final task state required by the
-analysis. Do not rely on reconstructing an essential outcome solely from browser
-presentation.
+Completion values are game-specific. Define the shared participant-visible value
+to contain terminal outcomes, scores or condition labels, and any final task state
+required by the analysis that is safe for both roles. Keep role-private terminal
+facts in the final observation. Do not rely on reconstructing an essential outcome
+solely from browser presentation.
 
 ### Research identifiers
 

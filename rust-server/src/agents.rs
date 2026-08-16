@@ -2,220 +2,157 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::game::{GameAdapter, PlayerRole};
+use crate::game::{AgentDefinition, Game, PlayerRole};
 
-/// Durable identity metadata used when an agent participant is inserted.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct AgentParticipantIdentity {
-    /// Identity provider stored in the durable participants table.
-    pub identity_provider: String,
-    /// Stable external id stored in the durable participants table.
-    pub external_id: Option<String>,
-    /// Non-secret metadata stored with the durable participant row.
-    #[serde(default)]
-    pub metadata: Value,
+/// Stable semantic identity recorded for participants created by an agent factory.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentIdentity {
+    /// Human-readable implementation or model name.
+    pub name: String,
+    /// Stable implementation, model, or prompt version when one is available.
+    pub version: Option<String>,
 }
 
-impl Default for AgentParticipantIdentity {
-    /// Creates the default identity used by local in-process agents.
-    fn default() -> Self {
-        Self {
-            identity_provider: "agent".to_string(),
-            external_id: None,
-            metadata: Value::Null,
-        }
-    }
+/// Information supplied when a factory creates one session-local agent.
+///
+/// Construction happens before the runtime creates the game state and delivers
+/// the initial observation through [`Agent::start`]. `settings` contains only
+/// values owned by the selected agent factory.
+#[derive(Clone, Debug)]
+pub struct AgentContext {
+    /// The player role controlled by this agent.
+    pub role: PlayerRole,
+    /// Recorded deterministic seed selected for this agent instance.
+    pub seed: u64,
+    /// Agent-specific settings entered through the dashboard.
+    pub settings: Value,
 }
 
-impl AgentParticipantIdentity {
-    /// Returns the configured agent type when the factory supplied one.
-    pub fn agent_type(&self) -> Option<&str> {
-        self.metadata
-            .get("agent_type")
-            .or_else(|| self.metadata.get("agent_name"))
-            .and_then(Value::as_str)
-    }
-
-    /// Returns the configured agent version when the factory supplied one.
-    pub fn agent_version(&self) -> Option<&str> {
-        self.metadata.get("agent_version").and_then(Value::as_str)
-    }
-}
-
-/// Context passed to an agent factory when a new agent participant is created.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct AgentInitContext {
-    /// Session-local player role the agent controls, such as `A` or `B`.
-    pub role: String,
-    /// Optional deterministic seed supplied by the experiment config.
-    pub seed: Option<u64>,
-    /// Agent-specific configuration supplied by the game crate.
-    #[serde(default)]
-    pub config: Value,
-}
-
-/// Participant utterance modality observed by an agent.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentUtteranceKind {
-    /// Text typed by a participant.
-    Typed,
-    /// Speech transcript emitted by the voice pipeline.
-    Spoken,
-    /// Message emitted by an agent participant.
-    Agent,
-}
-
-/// Response returned by an agent decision method.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct AgentResponse<Action> {
-    /// Optional participant-facing message to add to the conversation.
-    pub message: Option<String>,
-    /// Optional game action to submit through the normal validation path.
-    pub action: Option<Action>,
+/// One non-empty output produced by an agent decision.
+///
+/// Messages are communication between the two players and do not change game
+/// state. Actions pass through the same game-rule validation as human actions.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AgentResponse<Action> {
+    /// Proposes one game action without sending a player message.
+    Action(Action),
+    /// Sends one player message without proposing a game action.
+    Message(String),
+    /// Proposes an action and sends a message after that action is accepted.
+    ActionAndMessage { action: Action, message: String },
 }
 
 impl<Action> AgentResponse<Action> {
-    /// Returns whether this response contains no message and no action.
-    pub fn is_empty(&self) -> bool {
-        self.message.is_none() && self.action.is_none()
+    /// Creates an action-only response.
+    pub fn action(action: Action) -> Self {
+        Self::Action(action)
+    }
+
+    /// Creates a message-only response.
+    pub fn message(message: impl Into<String>) -> Self {
+        Self::Message(message.into())
+    }
+
+    /// Creates a response whose message is sent only after its action is accepted.
+    pub fn action_and_message(action: Action, message: impl Into<String>) -> Self {
+        Self::ActionAndMessage {
+            action,
+            message: message.into(),
+        }
+    }
+
+    /// Separates the response into the runtime's ordered action and message operations.
+    pub(crate) fn into_parts(self) -> (Option<Action>, Option<String>) {
+        match self {
+            Self::Action(action) => (Some(action), None),
+            Self::Message(message) => (None, Some(message)),
+            Self::ActionAndMessage { action, message } => (Some(action), Some(message)),
+        }
     }
 }
 
-/// A per-room mutable game agent instance.
+/// Mutable agent instance controlling one player role in one game session.
 #[async_trait]
-pub trait GameAgent<A: GameAdapter>: Send {
-    /// Observes the current role-specific state snapshot.
-    async fn observe_state(&mut self, _current_observation: A::Observation) -> Result<()> {
+pub trait Agent<G: Game>: Send {
+    /// Starts play by delivering the first complete observation for this role.
+    ///
+    /// The runtime calls this only after the factory has finished constructing
+    /// the agent, so implementations may load models or establish remote resources
+    /// before they receive game information.
+    async fn start(&mut self, _initial_observation: G::Observation) -> Result<()> {
         Ok(())
     }
 
-    /// Observes an accepted game action and the role-specific state snapshot after it.
-    async fn observe_action(
+    /// Observes one accepted action and the complete resulting information for this role.
+    async fn observe_transition(
         &mut self,
         _actor: PlayerRole,
-        _action: A::Action,
-        _resulting_observation: A::Observation,
+        _action: G::Action,
+        _observation: G::Observation,
     ) -> Result<()> {
         Ok(())
     }
 
-    /// Observes a conversation utterance from a known player role.
-    async fn observe_message(
-        &mut self,
-        _speaker: PlayerRole,
-        _kind: AgentUtteranceKind,
-        _text: String,
-    ) -> Result<()> {
+    /// Observes one message sent by the other player.
+    async fn observe_message(&mut self, _sender: PlayerRole, _text: String) -> Result<()> {
         Ok(())
     }
 
-    /// Optionally chooses the agent's next action and/or message.
+    /// Optionally produces one non-empty action, message, or combined response.
     ///
-    /// The `available_actions` value is the same optional affordance sent to the
-    /// human UI for this role. `None` means the game does not provide this
-    /// affordance; `Some(vec![])` means it does and the player currently has no
-    /// listed actions. Any returned action is still validated by the server
-    /// before it can affect game state.
-    async fn maybe_act(
+    /// `available_actions` is an optional affordance rather than an authorization
+    /// guarantee. Every returned action is checked by the game before it changes
+    /// state. `None` means that the agent chooses not to respond now.
+    async fn respond(
         &mut self,
-        available_actions: Option<Vec<A::Action>>,
-    ) -> Result<Option<AgentResponse<A::Action>>>;
+        available_actions: Option<Vec<G::Action>>,
+    ) -> Result<Option<AgentResponse<G::Action>>>;
 
-    /// Chooses a required non-empty agent response.
-    async fn act(
-        &mut self,
-        available_actions: Option<Vec<A::Action>>,
-    ) -> Result<AgentResponse<A::Action>> {
-        let response = self
-            .maybe_act(available_actions)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("agent did not return a required response"))?;
-        if response.is_empty() {
-            anyhow::bail!("agent returned an empty response");
-        }
-        Ok(response)
-    }
-
-    /// Releases remote or per-session resources when the room agent stops.
+    /// Releases remote or per-session resources before the runtime drops the agent.
     async fn shutdown(&mut self) -> Result<()> {
         Ok(())
     }
 }
 
-/// Creates fresh game agent instances for individual agent participants.
-pub trait AgentFactory<A: GameAdapter>: Send + Sync + 'static {
-    /// Instantiates one mutable agent for a room participant.
-    fn create(&self, context: AgentInitContext) -> Result<Box<dyn GameAgent<A> + Send>>;
+/// Registers one compiled agent implementation and creates its session instances.
+#[async_trait]
+pub trait AgentFactory<G: Game>: Send + Sync + 'static {
+    /// Returns the stable dashboard definition for this factory.
+    fn definition(&self) -> AgentDefinition;
 
-    /// Returns durable participant identity metadata for agents created by this factory.
-    fn participant_identity(&self) -> AgentParticipantIdentity {
-        AgentParticipantIdentity::default()
+    /// Instantiates one mutable agent before game-state delivery begins.
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<G> + Send>>;
+
+    /// Returns the semantic identity stored for participants created by this factory.
+    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+        let definition = self.definition();
+        Ok(AgentIdentity {
+            name: definition.name,
+            version: None,
+        })
     }
 }
 
-/// Shared trait-object handle used by the reusable server.
-pub type SharedAgentFactory<A> = Arc<dyn AgentFactory<A>>;
+/// Internal shared ownership used by experiment runtimes.
+pub(crate) type SharedAgentFactory<G> = Arc<dyn AgentFactory<G>>;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use serde_json::json;
+    use super::AgentResponse;
 
-    /// Verifies response emptiness distinguishes absent values from present empty values.
+    /// Confirms every response variant represents at least one runtime operation.
     #[test]
-    fn agent_response_emptiness_uses_option_presence() {
-        assert!(AgentResponse::<Value> {
-            message: None,
-            action: None,
-        }
-        .is_empty());
-        assert!(!AgentResponse::<Value> {
-            message: Some(String::new()),
-            action: None,
-        }
-        .is_empty());
-        assert!(!AgentResponse {
-            message: None,
-            action: Some(Value::Null),
-        }
-        .is_empty());
-    }
-
-    /// Confirms durable identity helpers prefer explicit type and version metadata.
-    #[test]
-    fn agent_identity_helpers_follow_metadata_fallbacks() {
-        let default = AgentParticipantIdentity::default();
-        assert_eq!(default.identity_provider, "agent");
-        assert_eq!(default.agent_type(), None);
-        assert_eq!(default.agent_version(), None);
-
-        let identity = AgentParticipantIdentity {
-            identity_provider: "remote_grpc".into(),
-            external_id: Some("external".into()),
-            metadata: json!({"agent_name":"fallback", "agent_type":"typed", "agent_version":"v2"}),
-        };
-        assert_eq!(identity.agent_type(), Some("typed"));
-        assert_eq!(identity.agent_version(), Some("v2"));
-    }
-
-    /// Keeps every utterance kind's serialized wire name stable.
-    #[test]
-    fn utterance_kinds_use_snake_case_wire_values() {
+    fn response_variants_have_no_empty_state() {
+        assert_eq!(AgentResponse::action(3).into_parts(), (Some(3), None));
         assert_eq!(
-            serde_json::to_value(AgentUtteranceKind::Typed).unwrap(),
-            "typed"
+            AgentResponse::<u8>::message("hello").into_parts(),
+            (None, Some("hello".to_string()))
         );
         assert_eq!(
-            serde_json::to_value(AgentUtteranceKind::Spoken).unwrap(),
-            "spoken"
-        );
-        assert_eq!(
-            serde_json::to_value(AgentUtteranceKind::Agent).unwrap(),
-            "agent"
+            AgentResponse::action_and_message(4, "moving").into_parts(),
+            (Some(4), Some("moving".to_string()))
         );
     }
 }

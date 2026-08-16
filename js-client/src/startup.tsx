@@ -9,97 +9,88 @@ import {
   type VoicePreflight,
   type VoiceStatus
 } from "./audio/types.js";
-import { experimentAllowsIntake, requiredConsentsAccepted, type PresenceState } from "./helpers.js";
-import { MicLevelMeter, TranscriptionProgress } from "./voiceComponents.js";
+import { experimentAllowsIntake, requiredConsentsAccepted } from "./helpers.js";
+import { MicrophoneLevelMeter, TranscriptionProgress } from "./voiceComponents.js";
 import {
-  ExperimentApiClient,
-  type ConversationMessage,
-  type PublicConfigResponse,
-  type RoomResponse,
+  ParticipantClient,
+  type ExperimentInfo,
+  type JoinedRoom,
+  type PlayerMessage,
+  type PlayerRole,
+  type Presence,
+  playerMessage,
   type ServerMessage
 } from "./protocol.js";
 
-export interface ActiveParlandoSession<
-  TState,
-  TObservation,
-  TAction,
-  TEvent,
-  TSummary = Record<string, unknown>
-> {
+export interface GameSession<TObservation, TAction, TCompletion = Record<string, unknown>> {
   roomId: string;
-  participantSessionId: string;
-  role: string;
-  state: TState | null;
-  observation: TObservation | null;
-  availableActions: TAction[];
-  events: TEvent[];
-  conversation: ConversationMessage[];
-  presence: PresenceState;
+  role: PlayerRole;
+  observation: TObservation;
+  availableActions: TAction[] | null;
+  conversation: PlayerMessage[];
+  presence: Presence;
   voiceStatus: VoiceStatus;
   voicePreflight: VoicePreflight;
-  publicConfig: PublicConfigResponse;
+  voiceEnabled: boolean;
   connected: boolean;
   completed: boolean;
-  completionSummary: TSummary | null;
+  completion: TCompletion | null;
   sendAction(action: TAction): void;
-  sendChatMessage(text: string): void;
+  sendMessage(text: string): void;
   setMicrophoneMuted(muted: boolean): Promise<void>;
   leave(): void;
 }
 
-export interface ParlandoStartupGateProps<
-  TState,
-  TObservation,
-  TAction,
-  TEvent,
-  TSummary = Record<string, unknown>
-> {
-  renderGame(session: ActiveParlandoSession<TState, TObservation, TAction, TEvent, TSummary>): ReactNode;
-  apiClient?: ExperimentApiClient;
-  createAudioController?: () => AudioSessionController;
+export interface ParticipantAppProps<TObservation, TAction, TCompletion = Record<string, unknown>> {
+  renderGame(session: GameSession<TObservation, TAction, TCompletion>): ReactNode;
+  baseUrl?: string;
 }
 
-interface RoomSession<TState, TObservation, TAction, TEvent, TSummary = Record<string, unknown>> {
+interface ParticipantAppRuntimeProps<TObservation, TAction, TCompletion = Record<string, unknown>> {
+  renderGame(session: GameSession<TObservation, TAction, TCompletion>): ReactNode;
+  apiClient: ParticipantClient;
+  createAudioController: () => AudioSessionController;
+}
+
+interface RoomSession<TObservation, TAction, TCompletion = Record<string, unknown>> {
   roomId: string;
-  participantSessionId: string;
-  role: string;
-  state: TState | null;
+  role: PlayerRole;
   observation: TObservation | null;
-  availableActions: TAction[];
-  events: TEvent[];
+  availableActions: TAction[] | null;
   socket: WebSocket;
   connected: boolean;
   active: boolean;
   completed: boolean;
-  completionSummary: TSummary | null;
-  presence: PresenceState;
-  conversation: ConversationMessage[];
+  completion: TCompletion | null;
+  presence: Presence;
+  conversation: PlayerMessage[];
 }
 
+/** @internal Minimal channel state used by source-level tests. */
 export interface GameInputSession {
   socket: WebSocket;
   completed: boolean;
 }
 
-/** Game-channel transport heartbeat cadence; heartbeats are never research activity. */
+/** @internal Game-channel heartbeat cadence; heartbeats are never research activity. */
 export const CLIENT_HEARTBEAT_INTERVAL_MS = 1_000;
 
-/** Returns the state update applied when the server announces game completion. */
-export function completedSessionPatch<TSummary>(summary: TSummary | undefined): {
+/** @internal Returns the state update applied when the server announces game completion. */
+export function completedSessionPatch<TCompletion>(completion: TCompletion | undefined): {
   completed: true;
-  completionSummary: TSummary | null;
+  completion: TCompletion | null;
 } {
-  return { completed: true, completionSummary: summary ?? null };
+  return { completed: true, completion: completion ?? null };
 }
 
-/** Returns whether participant game-channel messages should still be sent. */
+/** @internal Returns whether participant game-channel messages should still be sent. */
 export function canSendGameMessage(session: { completed: boolean } | null): boolean {
   return Boolean(session && !session.completed);
 }
 
-/** Sends an action only while the reusable session is still accepting game input. */
+/** @internal Sends an action only while the reusable session is still accepting game input. */
 export function sendActionIfGameActive<TAction>(
-  apiClient: Pick<ExperimentApiClient, "sendAction">,
+  apiClient: Pick<ParticipantClient, "sendAction">,
   session: GameInputSession | null,
   action: TAction
 ): void {
@@ -107,57 +98,75 @@ export function sendActionIfGameActive<TAction>(
   apiClient.sendAction(session.socket, action);
 }
 
-/** Sends a chat message only while the reusable session is still accepting game input. */
-export function sendChatMessageIfGameActive(
-  apiClient: Pick<ExperimentApiClient, "sendChatMessage">,
+/** @internal Sends a chat message only while the reusable session is still accepting game input. */
+export function sendMessageIfGameActive(
+  apiClient: Pick<ParticipantClient, "sendMessage">,
   session: GameInputSession | null,
   text: string
 ): void {
   if (!session || session.completed) return;
-  apiClient.sendChatMessage(session.socket, text);
+  apiClient.sendMessage(session.socket, text);
 }
 
-export function ParlandoStartupGate<
-  TState,
-  TObservation = TState,
+/** Runs the standard participant lifecycle before rendering one game session. */
+export function ParticipantApp<
+  TObservation,
   TAction = unknown,
-  TEvent = unknown,
-  TSummary = Record<string, unknown>
->({
-  renderGame,
-  apiClient: providedApiClient,
-  createAudioController = createDefaultAudioController
-}: ParlandoStartupGateProps<TState, TObservation, TAction, TEvent, TSummary>) {
-  const apiClient = useMemo(() => providedApiClient ?? new ExperimentApiClient(), [providedApiClient]);
+  TCompletion = Record<string, unknown>
+>({ renderGame, baseUrl }: ParticipantAppProps<TObservation, TAction, TCompletion>) {
+  const apiClient = useMemo(() => new ParticipantClient({ baseUrl }), [baseUrl]);
+  return (
+    <ParticipantAppRuntime
+      apiClient={apiClient}
+      createAudioController={createDefaultAudioController}
+      renderGame={renderGame}
+    />
+  );
+}
+
+/** @internal Injects deterministic runtime dependencies for source-level tests only. */
+export function ParticipantAppTestHarness<
+  TObservation,
+  TAction = unknown,
+  TCompletion = Record<string, unknown>
+>(props: ParticipantAppRuntimeProps<TObservation, TAction, TCompletion>) {
+  return <ParticipantAppRuntime {...props} />;
+}
+
+/** Owns the participant lifecycle using selected transport dependencies. */
+function ParticipantAppRuntime<
+  TObservation,
+  TAction = unknown,
+  TCompletion = Record<string, unknown>
+>({ renderGame, apiClient, createAudioController }: ParticipantAppRuntimeProps<TObservation, TAction, TCompletion>) {
   const audioControllerRef = useRef<AudioSessionController | null>(null);
   if (!audioControllerRef.current) audioControllerRef.current = createAudioController();
   const audioController = audioControllerRef.current;
 
-  const [publicConfig, setPublicConfig] = useState<PublicConfigResponse | null>(null);
+  const [publicConfig, setPublicConfig] = useState<ExperimentInfo | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
   const [consentDecisions, setConsentDecisions] = useState<Record<string, boolean>>({});
-  const [session, setSession] = useState<RoomSession<TState, TObservation, TAction, TEvent, TSummary> | null>(null);
+  const [session, setSession] = useState<RoomSession<TObservation, TAction, TCompletion> | null>(null);
   const [error, setError] = useState("");
   const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
   const [selectedAudioInputId, setSelectedAudioInputId] = useState("");
-  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>(initialVoiceStatus);
+  const [status, setVoiceStatus] = useState<VoiceStatus>(initialVoiceStatus);
   const [voicePreflight, setVoicePreflight] = useState<VoicePreflight>(initialVoicePreflight);
   const [voiceReconnectGeneration, setVoiceReconnectGeneration] = useState(0);
   const [entering, setEntering] = useState(false);
-  const sessionRef = useRef<RoomSession<TState, TObservation, TAction, TEvent, TSummary> | null>(null);
-  const connectRoomRef = useRef<(room: RoomResponse<TState, TObservation, TAction, TEvent>) => Promise<void>>(async () => {});
-  const scheduleGameReconnectRef = useRef<(room: RoomResponse<TState, TObservation, TAction, TEvent>) => void>(() => {});
+  const sessionRef = useRef<RoomSession<TObservation, TAction, TCompletion> | null>(null);
+  const connectRoomRef = useRef<(room: JoinedRoom<TObservation, TAction>) => Promise<void>>(async () => {});
+  const scheduleGameReconnectRef = useRef<(room: JoinedRoom<TObservation, TAction>) => void>(() => {});
   const reconnectEnabledRef = useRef(false);
   const reconnectStartedAtRef = useRef(0);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
   const voicePreparationGenerationRef = useRef(0);
   const consentReady = requiredConsentsAccepted(publicConfig, consentDecisions);
-  const voiceEnabled = isVoiceEnabled(publicConfig);
+  const enabled = isVoiceEnabled(publicConfig);
   const canEnter = Boolean(
-    !entering && experimentAllowsIntake(publicConfig?.experiment_status) && consentReady && (!voiceEnabled || voicePreflight.ready)
+    !entering && experimentAllowsIntake(publicConfig?.status) && consentReady && (!enabled || voicePreflight.ready)
   );
-  const startupTitle = resolveStartupTitle(publicConfig);
 
   const refreshAudioInputs = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) return [];
@@ -187,7 +196,7 @@ export function ParlandoStartupGate<
   }, [apiClient, endCurrentSession]);
 
   const scheduleGameReconnect = useCallback(
-    (room: RoomResponse<TState, TObservation, TAction, TEvent>) => {
+    (room: JoinedRoom<TObservation, TAction>) => {
       const current = sessionRef.current;
       if (!reconnectEnabledRef.current || !current || current.completed || reconnectTimerRef.current !== null) return;
       if (reconnectStartedAtRef.current === 0) reconnectStartedAtRef.current = Date.now();
@@ -211,27 +220,24 @@ export function ParlandoStartupGate<
   scheduleGameReconnectRef.current = scheduleGameReconnect;
 
   const connectRoom = useCallback(
-    async (room: RoomResponse<TState, TObservation, TAction, TEvent>) => {
-      const gameSession = await apiClient.getGameSession(room.room_id);
+    async (room: JoinedRoom<TObservation, TAction>) => {
+      const gameSession = await apiClient.getGameSession(room.roomId);
       const socket = new WebSocket(apiClient.socketUrl(gameSession));
       setSession((current) => {
-        const next = current?.roomId === room.room_id
+        const next = current?.roomId === room.roomId
           ? { ...current, socket, connected: false }
           : {
-            roomId: room.room_id,
-            participantSessionId: room.participant_session_id,
+            roomId: room.roomId,
             role: room.role,
-            state: room.state ?? null,
-            observation: room.observation ?? null,
-            availableActions: room.available_actions ?? [],
-            events: room.events ?? [],
+            observation: room.observation,
+            availableActions: room.availableActions,
             socket,
             connected: false,
             active: false,
             completed: false,
-            completionSummary: null,
-            presence: normalizePresence(room.presence),
-            conversation: room.conversation ?? []
+            completion: null,
+            presence: room.presence,
+            conversation: []
             };
         sessionRef.current = next;
         return next;
@@ -251,28 +257,25 @@ export function ParlandoStartupGate<
       });
       socket.addEventListener("message", (event) => {
         if (sessionRef.current?.socket !== socket) return;
-        let message: ServerMessage<TState, TObservation, TAction, TEvent, TSummary>;
+        let message: ServerMessage<TObservation, TAction, TCompletion>;
         try {
           if (typeof event.data !== "string") throw new Error("non-text message");
-          message = JSON.parse(event.data) as ServerMessage<TState, TObservation, TAction, TEvent, TSummary>;
+          message = JSON.parse(event.data) as ServerMessage<TObservation, TAction, TCompletion>;
+          if (message.protocol_version !== 1) throw new Error("unsupported protocol version");
         } catch {
           setError("The server sent an invalid game message.");
           socket.close(1002, "Invalid server message");
           return;
         }
-        if (message.type === "roleAssigned") {
+        if (message.type === "session_started") {
           setSession((current) =>
             current?.socket === socket
               ? {
                   ...current,
                   roomId: message.room_id,
-                  participantSessionId: message.participant_session_id,
                   role: message.role,
-                  state: message.state ?? null,
-                  observation: message.observation ?? null,
-                  availableActions: message.available_actions ?? [],
-                  events: message.events ?? [],
-                  conversation: message.conversation ?? current.conversation,
+                  observation: message.observation,
+                  availableActions: message.available_actions,
                   connected: true,
                   active: true
                 }
@@ -280,43 +283,44 @@ export function ParlandoStartupGate<
           );
           return;
         }
-        if (message.type === "stateChanged") {
+        if (message.type === "transition") {
           setSession((current) =>
             current?.socket === socket
               ? {
                   ...current,
-                  state: message.state ?? null,
-                  observation: message.observation ?? current.observation,
-                  availableActions: message.available_actions ?? [],
-                  events: [...(message.events ?? []), ...current.events].slice(0, 20),
-                  conversation: message.conversation ?? current.conversation
+                  observation: message.observation,
+                  availableActions: message.available_actions
                 }
               : current
           );
           return;
         }
-        if (message.type === "presenceChanged") {
+        if (message.type === "presence") {
           setSession((current) =>
             current?.socket === socket ? { ...current, presence: normalizePresence(message.presence) } : current
           );
           return;
         }
-        if (message.type === "voiceStatusChanged") {
+        if (message.type === "voice_status") {
           audioController.updateVoiceStatus(voiceStatusUpdate(message.voice));
           return;
         }
-        if (message.type === "conversationMessageAdded") {
+        if (message.type === "message") {
           setSession((current) =>
             current?.socket === socket
-              ? { ...current, conversation: appendConversation(current.conversation, message.conversation_message) }
+              ? { ...current, conversation: appendConversation(current.conversation, playerMessage(message.message)) }
               : current
           );
           return;
         }
         if (message.type === "completed") {
           setSession((current) =>
-            current?.socket === socket ? { ...current, ...completedSessionPatch(message.summary) } : current
+            current?.socket === socket ? { ...current, ...completedSessionPatch(message.completion) } : current
           );
+          return;
+        }
+        if (message.type === "action_rejected") {
+          setError(`Action rejected: ${message.code}`);
           return;
         }
         if (message.type === "abandoned") {
@@ -324,11 +328,11 @@ export function ParlandoStartupGate<
           void audioController.disconnect(true);
           socket.close();
           setSession(null);
-          setError(message.message ?? "This session ended because a participant left.");
+          setError(errorText(message.code));
           return;
         }
         if (message.type === "error") {
-          setError(message.message ?? "Server rejected the last request.");
+          setError(errorText(message.code));
         }
       });
       socket.addEventListener("close", () => {
@@ -351,9 +355,9 @@ export function ParlandoStartupGate<
     if (!requiredConsentsAccepted(publicConfig, consentDecisions)) {
       throw new Error("Please accept all required consents before entering the waiting room.");
     }
-    await apiClient.createParticipant();
+    await apiClient.register();
     if (publicConfig.consents.length > 0) {
-      await apiClient.submitConsent(consentDecisions);
+      await apiClient.acceptConsents(consentDecisions);
     }
   }, [apiClient, consentDecisions, publicConfig]);
 
@@ -364,7 +368,7 @@ export function ParlandoStartupGate<
       setError("");
       await ensureParticipant();
       reconnectEnabledRef.current = true;
-      await connectRoom(await apiClient.createRoom<TState, TObservation, TAction, TEvent>());
+      await connectRoom(await apiClient.join<TObservation, TAction>());
     } catch (caught) {
       reconnectEnabledRef.current = false;
       setError(errorMessage(caught, "Could not create the waiting room."));
@@ -374,7 +378,7 @@ export function ParlandoStartupGate<
   }, [apiClient, connectRoom, ensureParticipant, entering]);
 
   const prepareVoice = useCallback(async (deviceId = ""): Promise<boolean> => {
-    if (!voiceEnabled) return false;
+    if (!enabled) return false;
     const generation = ++voicePreparationGenerationRef.current;
     try {
       setError("");
@@ -393,7 +397,7 @@ export function ParlandoStartupGate<
       }
       return false;
     }
-  }, [audioController, audioInputs, refreshAudioInputs, voiceEnabled]);
+  }, [audioController, audioInputs, refreshAudioInputs, enabled]);
 
   /** Builds the current room-bound context shared by voice connection and mute operations. */
   const currentAudioContext = useCallback((): AudioSessionContext | null => {
@@ -404,7 +408,6 @@ export function ParlandoStartupGate<
     };
     return {
       roomId: session.roomId,
-      participantSessionId: session.participantSessionId,
       role: session.role,
       selectedAudioInputId,
       selectedAudioInputLabel: selectedAudioInput?.label || null,
@@ -437,7 +440,7 @@ export function ParlandoStartupGate<
   useEffect(() => {
     let cancelled = false;
     apiClient
-      .getPublicConfig()
+      .getExperiment()
       .then((config) => {
         if (!cancelled) setPublicConfig(config);
       })
@@ -454,15 +457,15 @@ export function ParlandoStartupGate<
 
   // Rechecks closed intake so a waiting visitor can proceed after an administrator opens it.
   useEffect(() => {
-    if (!publicConfig || experimentAllowsIntake(publicConfig.experiment_status) || session) return;
+    if (!publicConfig || experimentAllowsIntake(publicConfig.status) || session) return;
     const timer = window.setInterval(() => {
       void apiClient
-        .getPublicConfig()
+        .getExperiment()
         .then(setPublicConfig)
         .catch((caught) => setError(errorMessage(caught, "Could not refresh experiment status.")));
     }, 5_000);
     return () => window.clearInterval(timer);
-  }, [apiClient, publicConfig?.experiment_status, session]);
+  }, [apiClient, publicConfig?.status, session]);
 
   useEffect(() => {
     void refreshAudioInputs();
@@ -478,8 +481,8 @@ export function ParlandoStartupGate<
   }), [audioController]);
 
   useEffect(() => {
-    if (voiceStatus.connected) setVoiceReconnectGeneration(0);
-  }, [voiceStatus.connected]);
+    if (status.connected) setVoiceReconnectGeneration(0);
+  }, [status.connected]);
 
   useEffect(() => {
     sessionRef.current = session;
@@ -511,21 +514,20 @@ export function ParlandoStartupGate<
   }, [endCurrentSession]);
 
   useEffect(() => {
-    if (!session?.connected || !voiceEnabled || !voicePreflight.ready || voiceStatus.connected || voiceStatus.connecting) return;
+    if (!session?.connected || !enabled || !voicePreflight.ready || status.connected || status.connecting) return;
     const delays = [1_000, 2_000, 5_000, 10_000];
     const timer = window.setTimeout(
       () => void connectVoice(),
       delays[Math.min(voiceReconnectGeneration, delays.length - 1)]
     );
     return () => window.clearTimeout(timer);
-  }, [connectVoice, session?.connected, voiceEnabled, voicePreflight.ready, voiceStatus.connected, voiceStatus.connecting, voiceReconnectGeneration]);
+  }, [connectVoice, session?.connected, enabled, voicePreflight.ready, status.connected, status.connecting, voiceReconnectGeneration]);
 
   if (configLoading || !publicConfig) {
     return (
       <StartupShell
-        title={startupTitle}
         institution={publicConfig?.institution}
-        heading="Loading study"
+        heading="Loading experiment"
         body="Connecting to the experiment server."
         error={error}
       />
@@ -533,24 +535,21 @@ export function ParlandoStartupGate<
   }
 
   if (session?.active) {
-    const activeSession: ActiveParlandoSession<TState, TObservation, TAction, TEvent, TSummary> = {
+    const activeSession: GameSession<TObservation, TAction, TCompletion> = {
       roomId: session.roomId,
-      participantSessionId: session.participantSessionId,
       role: session.role,
-      state: session.state,
-      observation: session.observation,
+      observation: session.observation as TObservation,
       availableActions: session.availableActions,
-      events: session.events,
       conversation: session.conversation,
       presence: session.presence,
-      voiceStatus,
+      voiceStatus: status,
       voicePreflight,
-      publicConfig,
+      voiceEnabled: enabled,
       connected: session.connected,
       completed: session.completed,
-      completionSummary: session.completionSummary,
+      completion: session.completion,
       sendAction: (action) => sendActionIfGameActive(apiClient, session, action),
-      sendChatMessage: (text) => sendChatMessageIfGameActive(apiClient, session, text),
+      sendMessage: (text) => sendMessageIfGameActive(apiClient, session, text),
       setMicrophoneMuted,
       leave
     };
@@ -560,23 +559,22 @@ export function ParlandoStartupGate<
   if (session) {
     return (
       <StartupShell
-        title={startupTitle}
         institution={publicConfig.institution}
-        heading="Starting game"
+        heading="Starting session"
         body="The game starts when all required participants and services are ready."
         error={error}
       >
         <ReadinessBoard
-          gameConnected={session.connected}
-          voiceEnabled={voiceEnabled}
+          connected={session.connected}
+          enabled={enabled}
           presence={session.presence}
-          voiceStatus={voiceStatus}
+          status={status}
         />
-        {voiceEnabled && <TranscriptionProgress gameConnected={session.connected} voiceStatus={voiceStatus} />}
+        {enabled && <TranscriptionProgress connected={session.connected} status={status} />}
         <div className="voice-preflight">
           <div>
             <strong>Voice chat</strong>
-            <span>{voiceEnabled ? voiceStatus.message : "Voice is disabled for this study"}</span>
+            <span>{enabled ? status.message : "Voice is disabled for this experiment"}</span>
           </div>
         </div>
         <div className="lobby-actions">
@@ -586,10 +584,9 @@ export function ParlandoStartupGate<
     );
   }
 
-  if (!experimentAllowsIntake(publicConfig.experiment_status)) {
+  if (!experimentAllowsIntake(publicConfig.status)) {
     return (
       <StartupShell
-        title={startupTitle}
         institution={publicConfig.institution}
         heading="Experiment not accepting participants"
         body="The experiment is not accepting new participants. Please return after the experimenter opens intake."
@@ -600,17 +597,17 @@ export function ParlandoStartupGate<
 
   return (
     <StartupShell
-      title={startupTitle}
       institution={publicConfig.institution}
+      heading="Join experiment"
       error={error}
     >
       {publicConfig.consents.length > 0 && (
         <div className="consent-list">
-          {publicConfig.participant_information_url && (
+          {publicConfig.participantInformationUrl && (
             <p className="participant-information">
-              <a href={publicConfig.participant_information_url} rel="noreferrer" target="_blank">
+              <a href={publicConfig.participantInformationUrl} rel="noreferrer" target="_blank">
                 Participant information
-                {publicConfig.participant_information_version && ` (${publicConfig.participant_information_version})`}
+                {publicConfig.participantInformationVersion && ` (${publicConfig.participantInformationVersion})`}
               </a>
             </p>
           )}
@@ -632,7 +629,7 @@ export function ParlandoStartupGate<
           ))}
         </div>
       )}
-      {voiceEnabled && (
+      {enabled && (
         <div className="voice-preflight">
           <div>
             <strong>Voice chat</strong>
@@ -640,7 +637,7 @@ export function ParlandoStartupGate<
           </div>
           <VoicePreparationControls
             audioInputs={audioInputs}
-            voiceEnabled={voiceEnabled}
+            enabled={enabled}
             onPrepareVoice={prepareVoice}
             onSelectedAudioInputChange={setSelectedAudioInputId}
             selectedAudioInputId={selectedAudioInputId}
@@ -662,26 +659,23 @@ function StartupShell({
   children,
   error,
   heading,
-  institution,
-  title
+  institution
 }: {
   body?: string;
   children?: ReactNode;
   error: string;
   heading?: string;
   institution?: string | null;
-  title: string;
 }) {
   return (
     <section className="lobby-panel">
       <div className="lobby-heading">
         <p className="platform-label">{platformLabel(institution)}</p>
-        <h1>{title}</h1>
+        {heading && <h1>{heading}</h1>}
       </div>
-      {(heading || body) && (
+      {body && (
         <div className="lobby-copy">
-          {heading && <h2>{heading}</h2>}
-          {body && <p>{body}</p>}
+          <p>{body}</p>
         </div>
       )}
       {children}
@@ -691,15 +685,15 @@ function StartupShell({
 }
 
 function ReadinessBoard({
-  gameConnected,
-  voiceEnabled,
+  connected,
+  enabled,
   presence,
-  voiceStatus
+  status
 }: {
-  gameConnected: boolean;
-  voiceEnabled: boolean;
-  presence: PresenceState;
-  voiceStatus: VoiceStatus;
+  connected: boolean;
+  enabled: boolean;
+  presence: Presence;
+  status: VoiceStatus;
 }) {
   const aConnected = Boolean(presence.A?.connected);
   const bConnected = Boolean(presence.B?.connected);
@@ -710,19 +704,20 @@ function ReadinessBoard({
         <span>{aConnected ? "Connected" : "Waiting"}</span>
       </div>
       <div className={bConnected ? "seat-ready" : ""}>
-        <strong>Player B / Agent</strong>
+        <strong>Player B</strong>
         <span>{bConnected ? "Connected" : "Waiting"}</span>
       </div>
-      {voiceEnabled && (
-        <div className={voiceStatus.transcriptionReady ? "seat-ready" : ""}>
+      {enabled && (
+        <div className={status.transcriptionReady ? "seat-ready" : ""}>
           <strong>Transcription Service</strong>
-          <span>{voiceStatus.transcriptionReady ? "Ready" : gameConnected ? voiceStatus.transcriptionMessage : "Not started"}</span>
+          <span>{status.transcriptionReady ? "Ready" : connected ? status.transcriptionMessage : "Not started"}</span>
         </div>
       )}
     </div>
   );
 }
 
+/** @internal Creates the browser audio controller used by ParticipantApp. */
 export function createDefaultAudioController(): AudioSessionController {
   return new AudioSessionController({
     microphone: new MicrophoneSource(),
@@ -730,7 +725,7 @@ export function createDefaultAudioController(): AudioSessionController {
   });
 }
 
-/**
+/** @internal
  * Renders the participant's microphone-preparation controls.
  *
  * The first action prepares the browser default. Once permission reveals named devices, the active
@@ -738,14 +733,14 @@ export function createDefaultAudioController(): AudioSessionController {
  */
 export function VoicePreparationControls({
   audioInputs,
-  voiceEnabled,
+  enabled,
   onPrepareVoice,
   onSelectedAudioInputChange,
   selectedAudioInputId,
   voicePreflight = initialVoicePreflight
 }: {
   audioInputs: MediaDeviceInfo[];
-  voiceEnabled: boolean;
+  enabled: boolean;
   onPrepareVoice: (deviceId?: string) => boolean | void | Promise<boolean | void>;
   onSelectedAudioInputChange: (value: string) => void;
   selectedAudioInputId: string;
@@ -775,9 +770,9 @@ export function VoicePreparationControls({
           ))}
         </select>
       )}
-      {voicePreflight.micProbeActive && <MicLevelMeter active={voicePreflight.micProbeActive} label="Level" level={voicePreflight.micLevel} />}
+      {voicePreflight.micProbeActive && <MicrophoneLevelMeter active={voicePreflight.micProbeActive} label="Level" level={voicePreflight.micLevel} />}
       {!voicePreflight.ready && !voicePreflight.preparing && (
-        <button disabled={!voiceEnabled} onClick={() => void onPrepareVoice("")} type="button">
+        <button disabled={!enabled} onClick={() => void onPrepareVoice("")} type="button">
           Prepare voice
         </button>
       )}
@@ -785,49 +780,45 @@ export function VoicePreparationControls({
   );
 }
 
-export function isVoiceEnabled(config: PublicConfigResponse | null): boolean {
+/** @internal Reports whether the standard application should prepare voice. */
+export function isVoiceEnabled(config: ExperimentInfo | null): boolean {
   return Boolean(config?.voice?.enabled);
 }
 
-/** Returns concrete microphone inputs, excluding the browser's synthetic default-device alias. */
+/** @internal Returns concrete microphone inputs, excluding the synthetic default-device alias. */
 export function selectableAudioInputs(audioInputs: MediaDeviceInfo[]): MediaDeviceInfo[] {
   return audioInputs.filter((device) => device.deviceId !== "default");
 }
 
-/** Removes browser-added USB vendor/product identifiers from a participant-facing microphone name. */
+/** @internal Removes browser-added USB identifiers from a microphone name. */
 export function participantMicrophoneLabel(label: string): string {
   return label.replace(/\s*[([][0-9a-f]{4}:[0-9a-f]{4}[)\]]\s*$/i, "").trim() || "Microphone";
 }
 
-/** Formats the stable platform label with an optional operating institution. */
+/** @internal Formats the stable platform label with an optional operating institution. */
 export function platformLabel(institution?: string | null): string {
   const name = institution?.trim();
   return name ? `Parlando · ${name}` : "Parlando";
 }
 
-/** Resolves the participant-facing game title from the server's public study configuration. */
-export function resolveStartupTitle(config: Pick<PublicConfigResponse, "study_name"> | null): string {
-  return config?.study_name ?? "Parlando Experiment";
-}
-
-export function normalizePresence(presence: Record<string, unknown> | undefined): PresenceState {
+/** @internal Normalizes wire presence into the public two-role shape. */
+export function normalizePresence(presence: Record<string, unknown> | undefined): Presence {
   return {
     A: normalizeSeat(presence?.A),
     B: normalizeSeat(presence?.B)
   };
 }
 
-function normalizeSeat(value: unknown): PresenceState["A"] {
+function normalizeSeat(value: unknown): Presence["A"] {
   if (!value || typeof value !== "object") return undefined;
   const record = value as Record<string, unknown>;
   return {
-    participantSessionId:
-      typeof record.participantSessionId === "string" ? record.participantSessionId : undefined,
     connected: Boolean(record.connected),
     audioReady: typeof record.audioReady === "boolean" ? record.audioReady : undefined
   };
 }
 
+/** @internal Normalizes a wire voice-status update. */
 export function voiceStatusUpdate(voice: { audioReady?: boolean; transcriptionReady?: boolean; transcriptionStatus?: string } | undefined): Partial<VoiceStatus> {
   const update: Partial<VoiceStatus> = {};
   if (voice?.transcriptionStatus) update.transcriptionMessage = voice.transcriptionStatus;
@@ -835,9 +826,26 @@ export function voiceStatusUpdate(voice: { audioReady?: boolean; transcriptionRe
   return update;
 }
 
-function appendConversation(current: ConversationMessage[], message: ConversationMessage): ConversationMessage[] {
+function appendConversation(current: PlayerMessage[], message: PlayerMessage): PlayerMessage[] {
   if (current.some((candidate) => candidate.id === message.id)) return current;
   return [...current, message].slice(-50);
+}
+
+/** Maps stable protocol error codes onto the standard participant application's copy. */
+function errorText(code: string): string {
+  const messages: Record<string, string> = {
+    action_too_large: "The action was too large.",
+    internal_error: "The server could not complete the request.",
+    invalid_action: "The action was not valid.",
+    invalid_message: "The server could not read the game message.",
+    message_rate_limited: "Please wait a moment before sending another message.",
+    message_rejected: "The message could not be sent.",
+    message_too_large: "The message was too long.",
+    participant_left: "This session ended because a player left.",
+    readiness_failed: "The session could not be started.",
+    session_end_failed: "The session could not be ended cleanly.",
+  };
+  return messages[code] ?? "The server rejected the last request.";
 }
 
 // Closes the game WebSocket so the server records the same participant_disconnected event as the Leave action.

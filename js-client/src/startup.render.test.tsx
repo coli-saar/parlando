@@ -4,8 +4,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialVoicePreflight, initialVoiceStatus, type AudioSessionSnapshot } from "./audio/types";
-import type { PublicConfigResponse, RoomResponse } from "./protocol";
-import { ParlandoStartupGate, type ActiveParlandoSession } from "./startup";
+import type { ExperimentInfo, JoinedRoom } from "./protocol";
+import { ParticipantAppTestHarness, type GameSession } from "./startup";
 
 class FakeWebSocket extends EventTarget {
   static CONNECTING = 0;
@@ -67,10 +67,9 @@ class FakeAudioController {
 }
 
 /** Creates a public config suitable for rendered startup tests. */
-function config(overrides: Partial<PublicConfigResponse> = {}): PublicConfigResponse {
+function config(overrides: Partial<ExperimentInfo> = {}): ExperimentInfo {
   return {
-    study_name: "Rendered Study",
-    experiment_status: "active",
+    status: "active",
     consents: [],
     voice: { enabled: false },
     ...overrides
@@ -78,23 +77,23 @@ function config(overrides: Partial<PublicConfigResponse> = {}): PublicConfigResp
 }
 
 /** Creates an API double while retaining Vitest call-order metadata. */
-function api(publicConfig: PublicConfigResponse = config()) {
-  const room: RoomResponse<{ turn: number }, { view: string }, { type: string }, { type: string }> = {
-    room_id: "ROOM1",
-    participant_session_id: "participant-1",
+function api(publicConfig: ExperimentInfo = config()) {
+  const room: JoinedRoom<{ view: string }, { type: string }> = {
+    roomId: "ROOM1",
     role: "A",
-    state: { turn: 0 },
-    observation: { view: "initial" }
+    observation: { view: "initial" },
+    availableActions: null,
+    presence: { A: { connected: false } }
   };
   return {
-    getPublicConfig: vi.fn(async () => publicConfig),
-    createParticipant: vi.fn(async () => ({ participant_session_id: "participant-1", participant_credential: "credential", participant_id: "research", source: "direct" as const })),
-    submitConsent: vi.fn(async () => undefined),
-    createRoom: vi.fn(async () => room),
-    getGameSession: vi.fn(async () => ({ websocket_url: "/ws/game/ROOM1", token: "ticket" })),
+    getExperiment: vi.fn(async () => publicConfig),
+    register: vi.fn(async () => undefined),
+    acceptConsents: vi.fn(async () => undefined),
+    join: vi.fn(async () => room),
+    getGameSession: vi.fn(async () => ({ websocketUrl: "/ws/game/ROOM1", token: "ticket" })),
     socketUrl: vi.fn(() => "ws://study.test/ws/game/ROOM1?token=ticket"),
     sendAction: vi.fn(),
-    sendChatMessage: vi.fn(),
+    message: vi.fn(),
     leaveSession: vi.fn(),
     postVoiceDiagnostic: vi.fn(),
     getAudioSession: vi.fn()
@@ -102,13 +101,13 @@ function api(publicConfig: PublicConfigResponse = config()) {
 }
 
 /** Renders a compact active-session projection for transport assertions. */
-function game(session: ActiveParlandoSession<{ turn: number }, { view: string }, { type: string }, { type: string }>) {
+function game(session: GameSession<{ view: string }, { type: string }, { type: string }>) {
   return (
     <div>
       <span>active:{session.connected ? "connected" : "disconnected"}</span>
       <span>observation:{session.observation?.view}</span>
       <span>completed:{String(session.completed)}</span>
-      {session.completionSummary && <span>summary</span>}
+      {session.completion && <span>completion</span>}
       <button onClick={() => session.sendAction({ type: "move" })}>Move</button>
     </div>
   );
@@ -130,22 +129,22 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("ParlandoStartupGate rendered state machine", () => {
+describe("ParticipantApp rendered state machine", () => {
   it("shows loading and then a closed-intake explanation", async () => {
-    const client = api(config({ experiment_status: "inactive" }));
-    render(<ParlandoStartupGate apiClient={client as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
-    expect(screen.getByRole("heading", { name: "Loading study" })).toBeInTheDocument();
+    const client = api(config({ status: "inactive" }));
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
+    expect(screen.getByRole("heading", { name: "Loading experiment" })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Experiment not accepting participants" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Enter waiting room" })).not.toBeInTheDocument();
   });
 
   it("gates required consent and performs create-consent-room in order once", async () => {
     const client = api(config({
-      participant_information_url: "https://example.test/info",
-      participant_information_version: "v2",
+      participantInformationUrl: "https://example.test/info",
+      participantInformationVersion: "v2",
       consents: [{ id: "study", title: "Study consent", body: "I agree", required: true }]
     }));
-    render(<ParlandoStartupGate apiClient={client as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
     const enter = await screen.findByRole("button", { name: "Enter waiting room" });
     expect(enter).toBeDisabled();
     fireEvent.click(screen.getByRole("checkbox", { name: /Study consent/ }));
@@ -154,33 +153,34 @@ describe("ParlandoStartupGate rendered state machine", () => {
     fireEvent.click(enter);
 
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
-    expect(client.createParticipant).toHaveBeenCalledOnce();
-    expect(client.submitConsent).toHaveBeenCalledWith({ study: true });
-    expect(client.createRoom).toHaveBeenCalledOnce();
-    expect(client.createParticipant.mock.invocationCallOrder[0]).toBeLessThan(client.submitConsent.mock.invocationCallOrder[0]);
-    expect(client.submitConsent.mock.invocationCallOrder[0]).toBeLessThan(client.createRoom.mock.invocationCallOrder[0]);
+    expect(client.register).toHaveBeenCalledOnce();
+    expect(client.acceptConsents).toHaveBeenCalledWith({ study: true });
+    expect(client.join).toHaveBeenCalledOnce();
+    expect(client.register.mock.invocationCallOrder[0]).toBeLessThan(client.acceptConsents.mock.invocationCallOrder[0]);
+    expect(client.acceptConsents.mock.invocationCallOrder[0]).toBeLessThan(client.join.mock.invocationCallOrder[0]);
   });
 
   it("activates on role assignment, applies completion, and blocks late actions", async () => {
     const client = api();
-    render(<ParlandoStartupGate apiClient={client as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     const socket = FakeWebSocket.instances[0];
     act(() => socket.open());
     expect(socket.sent).toContain(JSON.stringify({ type: "ready" }));
     act(() => socket.message({
-      type: "roleAssigned",
+      protocol_version: 1,
+      type: "session_started",
       room_id: "ROOM1",
-      participant_session_id: "participant-1",
       role: "A",
-      observation: { view: "assigned" }
+      observation: { view: "assigned" },
+      available_actions: null
     }));
     expect(screen.getByText("active:connected")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Move" }));
     expect(client.sendAction).toHaveBeenCalledOnce();
 
-    act(() => socket.message({ type: "completed", room_id: "ROOM1", summary: { outcome: "win" } }));
+    act(() => socket.message({ protocol_version: 1, type: "completed", room_id: "ROOM1", completion: { outcome: "win" } }));
     expect(screen.getByText("completed:true")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Move" }));
     expect(client.sendAction).toHaveBeenCalledOnce();
@@ -188,7 +188,7 @@ describe("ParlandoStartupGate rendered state machine", () => {
 
   it("closes malformed server messages with a protocol error", async () => {
     const client = api();
-    render(<ParlandoStartupGate apiClient={client as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     const socket = FakeWebSocket.instances[0];
@@ -201,7 +201,7 @@ describe("ParlandoStartupGate rendered state machine", () => {
   it("ignores callbacks from a socket replaced during reconnect", async () => {
     vi.useFakeTimers();
     const client = api();
-    render(<ParlandoStartupGate apiClient={client as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
     await act(async () => {
       await vi.runAllTicks();
     });
@@ -219,15 +219,16 @@ describe("ParlandoStartupGate rendered state machine", () => {
     const currentSocket = FakeWebSocket.instances[1];
     act(() => currentSocket.open());
     act(() => currentSocket.message({
-      type: "roleAssigned",
+      protocol_version: 1,
+      type: "session_started",
       room_id: "ROOM1",
-      participant_session_id: "participant-1",
       role: "A",
-      observation: { view: "current" }
+      observation: { view: "current" },
+      available_actions: null
     }));
 
     act(() => oldSocket.dispatchEvent(new Event("error")));
-    act(() => oldSocket.message({ type: "error", message: "stale error" }));
+    act(() => oldSocket.message({ protocol_version: 1, type: "error", room_id: "ROOM1", code: "stale_error", fatal: false }));
     expect(screen.queryByText(/stale error|Retrying/)).not.toBeInTheDocument();
     expect(screen.getByText("observation:current")).toBeInTheDocument();
   });

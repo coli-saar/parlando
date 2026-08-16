@@ -19,7 +19,7 @@ collection, privacy controls, monitoring, and export.
 - Two-player browser sessions with server-assigned roles, waiting rooms,
   readiness, and reconnection.
 - A typed connection between the browser game and its Rust game mechanics,
-  including actions, player-specific observations, events, and completion data.
+  including actions, player-specific observations, and game-specific completion data.
 - Human–human and human–agent conditions that use the same game rules and data
   model.
 - Typed chat and optional live voice, server-side Speechmatics transcription,
@@ -96,40 +96,40 @@ flowchart LR
 
     client -->|"participant actions"| runtime
     runtime -->|"proposed actions"| rules
-    rules -->|"observations and events"| runtime
+    rules -->|"observations and completion"| runtime
     runtime -->|"live updates"| client
     research <--> runtime
 ```
 
 ### Design the participant experience
 
-The browser game is a first-class part of the study, not a fixed Parlando screen.
-You decide what the world looks like, what each role can see, how participants
+The participant application is a first-class part of the experiment, not a fixed Parlando screen.
+You decide what the world looks like and how each role's observation is presented, how participants
 act, and how progress and completion are presented. A client might render a
 spatial environment, a card table, a document, a dialogue interface, or a custom
 interactive visualization. It can use ordinary web technologies and any
 game-specific assets or interaction design the study needs.
 
 The reusable `@coli-saar/parlando-client` package handles the connection to
-Parlando. Its React components can provide the standard setup sequence—study
+Parlando. Its React components can provide the standard setup sequence—participant
 information, consent, microphone preparation, matchmaking, and readiness—before
-handing control to your game UI. The client then receives player-specific game
-updates and sends typed actions. For lower-level control, a client can use the
+handing control to your game UI. The client then receives player-specific observations
+after accepted transitions and sends typed actions. For lower-level control, a client can use the
 [documented HTTP and WebSocket protocol](docs/client-protocol.md) directly.
 
 ### Implement the mechanics
 
 The Rust side defines the task semantics that all participants and agents share.
-Its `GameAdapter` specifies:
+Its `Game` implementation specifies:
 
 - the complete game state;
 - the actions that participants and agents may propose;
 - the observation visible to each role;
 - validation and state transitions;
-- events shown to participants or stored for analysis; and
-- the condition under which a session ends, together with its completion summary.
+- optional role-neutral metadata stored for analysis; and
+- the structured completion produced when a session ends.
 
-This division does not constrain what the browser game can be. It gives the study
+This division does not constrain what the browser game can be. It gives the experiment
 one consistent implementation of the rules and lets the game send a different
 observation to each role when the task contains private information.
 
@@ -141,7 +141,7 @@ task description. The Space Game implementation in `space-game/server` and
 ### Configure the experiments
 
 Once the game server is running, create experiments in `/admin/experiments`. An
-experiment selects the study title, consent text, participant mode, agent, voice,
+experiment selects participant information and consent text, participant mode, agent, voice,
 transcription, speech synthesis, and data-storage settings. Configuration is
 stored in SQLite, and each save creates a numbered revision.
 

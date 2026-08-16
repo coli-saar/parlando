@@ -14,7 +14,7 @@ Each human browser opens one authenticated bidirectional WebSocket:
 Browser A microphone ─┬─> Parlando room relay ─> Browser B playback
                       └─> TranscriptionProvider ─> conversation and agents
 
-AgentResponse.message ─> TTS provider ─> Parlando room relay ─> browser playback
+agent::Response::Message ─> TTS provider ─> Parlando room relay ─> browser playback
 ```
 
 Partner relay, transcription, and agent playback are independent consumers. A slow or failed transcription provider does not block partner audio. Synthesized agent audio enters the outbound room relay directly and is not transcribed again.
@@ -75,7 +75,7 @@ The server creates one `TranscriptionProvider` session per human microphone stre
 - `FinalUtterance` with text, timing, and stable result ids;
 - `Failed`.
 
-Only final utterances are durable. Parlando deduplicates provider results, persists a transcript event, adds a `voice_transcript` conversation message, broadcasts it on the game WebSocket, and calls `GameAgent::observe_message` with spoken modality. Speechmatics is the current hosted implementation and is contacted only by the server. Its API key is never returned to a browser. A future local recognizer can implement the same provider trait without changing browser or agent code.
+Only final utterances are durable. Parlando deduplicates provider results, persists a transcript event, adds a `voice_transcript` conversation message, broadcasts it on the game WebSocket, and calls `agent::Agent::observe_message` with spoken modality. Speechmatics is the current hosted implementation and is contacted only by the server. Its API key is never returned to a browser. A future local recognizer can implement the same provider trait without changing browser or agent code.
 
 The version 1 relay does not persist raw audio. When Speechmatics is configured,
 it receives the live microphone stream for recognition. A study that requires
@@ -85,7 +85,7 @@ a local implementation.
 
 ## TTS Boundary
 
-Agents speak by returning `AgentResponse.message`. Parlando persists that text first, asks the configured streaming TTS provider for 24 kHz mono PCM, and publishes the resulting frames through the room relay. Game adapters and browser clients must not call a TTS service or publish audio directly.
+Agents speak by returning `agent::Response::Message`. Parlando persists that text first, asks the configured streaming TTS provider for 24 kHz mono PCM, and publishes the resulting frames through the room relay. Game implementations and browser clients must not call a TTS service or publish audio directly.
 
 ## Deployment And Scaling
 

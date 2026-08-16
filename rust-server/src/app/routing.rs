@@ -8,7 +8,7 @@ type ServeOptionsFactory<A> =
 
 /// Installation-owned resources shared by every experiment runtime.
 #[derive(Clone)]
-struct RuntimeShared<A: GameAdapter> {
+struct RuntimeShared<A: Game> {
     store: SharedExperimentStore,
     admin_auth: Arc<AdminAuthenticator>,
     game_settings: Arc<RwLock<StoredGameSettings>>,
@@ -18,10 +18,10 @@ struct RuntimeShared<A: GameAdapter> {
 }
 
 /// One compiled game's installation-level dispatcher and lazily built experiment routers.
-struct GameHost<A: GameAdapter + Clone> {
-    adapter: A,
+struct GameHost<A: Game> {
+    adapter: Arc<A>,
     bootstrap: ExperimentConfig,
-    descriptor: GameDescriptor,
+    descriptor: GameMetadata,
     store: SharedExperimentStore,
     admin_auth: Arc<AdminAuthenticator>,
     game_settings: Arc<RwLock<StoredGameSettings>>,
@@ -35,7 +35,7 @@ struct GameHost<A: GameAdapter + Clone> {
 }
 
 /// Checks installation storage without constructing an additional experiment runtime.
-async fn game_health<A: GameAdapter + Clone>(State(host): State<Arc<GameHost<A>>>) -> Response {
+async fn game_health<A: Game>(State(host): State<Arc<GameHost<A>>>) -> Response {
     let Ok(_slot) = host.health_slots.try_acquire() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -66,7 +66,7 @@ async fn game_root() -> Redirect {
     Redirect::temporary("/admin/experiments")
 }
 
-impl<A: GameAdapter + Clone> GameHost<A>
+impl<A: Game> GameHost<A>
 where
     A::State: Serialize,
 {
@@ -96,11 +96,9 @@ where
             &self.bootstrap_secrets,
             &game_secrets,
         );
-        self.adapter
-            .validate_config(&config.game)
-            .with_context(|| {
-                format!("experiment {experiment_id:?} has invalid game configuration")
-            })?;
+        parse_game_config(self.adapter.as_ref(), &config.game).with_context(|| {
+            format!("experiment {experiment_id:?} has invalid game configuration")
+        })?;
         let mut options = (self.options_factory)(&config)?;
         options.game_descriptor = Some(self.descriptor.clone());
         let router = build_router_with_resources(
@@ -145,7 +143,7 @@ fn apply_bootstrap_settings(
 }
 
 /// Proxies a participant request to the isolated runtime selected by its path.
-async fn dispatch_experiment_request<A: GameAdapter + Clone>(
+async fn dispatch_experiment_request<A: Game>(
     State(host): State<Arc<GameHost<A>>>,
     Path((experiment_id, path)): Path<(String, String)>,
     request: Request,
@@ -157,7 +155,7 @@ where
 }
 
 /// Proxies an experiment-root request to the selected participant client.
-async fn dispatch_experiment_root<A: GameAdapter + Clone>(
+async fn dispatch_experiment_root<A: Game>(
     State(_host): State<Arc<GameHost<A>>>,
     Path(experiment_id): Path<String>,
     _request: Request,
@@ -169,7 +167,7 @@ where
 }
 
 /// Serves the participant client at the canonical trailing-slash experiment URL.
-async fn dispatch_experiment_index<A: GameAdapter + Clone>(
+async fn dispatch_experiment_index<A: Game>(
     State(host): State<Arc<GameHost<A>>>,
     Path(experiment_id): Path<String>,
     request: Request,
@@ -181,7 +179,7 @@ where
 }
 
 /// Proxies an experiment-scoped administrator request to runtime or shared storage.
-async fn dispatch_admin_runtime_request<A: GameAdapter + Clone>(
+async fn dispatch_admin_runtime_request<A: Game>(
     State(host): State<Arc<GameHost<A>>>,
     Path((experiment_id, path)): Path<(String, String)>,
     request: Request,
@@ -209,7 +207,7 @@ where
 }
 
 /// Proxies configuration reads and invalidates an inactive runtime after a successful save.
-async fn dispatch_experiment_config_request<A: GameAdapter + Clone>(
+async fn dispatch_experiment_config_request<A: Game>(
     State(host): State<Arc<GameHost<A>>>,
     Path(experiment_id): Path<String>,
     request: Request,
@@ -228,7 +226,7 @@ where
 }
 
 /// Proxies game-server-wide administration through the primary runtime's shared auth surface.
-async fn dispatch_primary_request<A: GameAdapter + Clone>(
+async fn dispatch_primary_request<A: Game>(
     State(host): State<Arc<GameHost<A>>>,
     Path(path): Path<String>,
     request: Request,
@@ -241,7 +239,7 @@ where
 }
 
 /// Proxies a fixed administrator root path through the primary experiment router.
-async fn dispatch_primary_root<A: GameAdapter + Clone>(
+async fn dispatch_primary_root<A: Game>(
     State(host): State<Arc<GameHost<A>>>,
     request: Request,
 ) -> Response
@@ -253,7 +251,7 @@ where
 }
 
 /// Rewrites one outer path and invokes a fully layered child Axum router.
-async fn dispatch_to_experiment<A: GameAdapter + Clone>(
+async fn dispatch_to_experiment<A: Game>(
     host: &Arc<GameHost<A>>,
     experiment_id: &str,
     path: &str,
@@ -266,7 +264,7 @@ where
 }
 
 /// Rewrites one outer path and optionally attaches a storage experiment scope.
-async fn dispatch_to_experiment_scoped<A: GameAdapter + Clone>(
+async fn dispatch_to_experiment_scoped<A: Game>(
     host: &Arc<GameHost<A>>,
     experiment_id: &str,
     path: &str,
@@ -333,17 +331,17 @@ where
 pub async fn build_game_router<A, F>(
     adapter: A,
     bootstrap: ExperimentConfig,
-    descriptor: GameDescriptor,
+    descriptor: GameMetadata,
     options_factory: F,
 ) -> Result<Router>
 where
-    A: GameAdapter + Clone,
+    A: Game,
     A::State: Serialize,
     F: Fn(&ExperimentConfig) -> Result<ServeOptions<A>> + Send + Sync + 'static,
 {
     bootstrap.validate()?;
     validate_game_config_contains_no_secrets(&bootstrap.game)?;
-    adapter.validate_config(&bootstrap.game)?;
+    parse_game_config(&adapter, &bootstrap.game)?;
     descriptor.validate()?;
     let store = experiment_store_from_url(&bootstrap.database.url).await?;
     let admin_auth = Arc::new(AdminAuthenticator::load(store.clone()).await?);
@@ -385,7 +383,7 @@ where
         );
     }
     let host = Arc::new(GameHost {
-        adapter,
+        adapter: Arc::new(adapter),
         bootstrap,
         descriptor,
         store,
@@ -443,12 +441,12 @@ where
 pub async fn serve_game<A, F>(
     adapter: A,
     bootstrap: ExperimentConfig,
-    descriptor: GameDescriptor,
+    descriptor: GameMetadata,
     bind_addr: SocketAddr,
     options_factory: F,
 ) -> Result<()>
 where
-    A: GameAdapter + Clone,
+    A: Game,
     A::State: Serialize,
     F: Fn(&ExperimentConfig) -> Result<ServeOptions<A>> + Send + Sync + 'static,
 {
@@ -462,37 +460,9 @@ where
     Ok(())
 }
 
-/// Builds and runs a Parlando HTTP/WebSocket server on the provided socket address.
-pub async fn serve<A: GameAdapter>(
-    adapter: A,
-    config: ExperimentConfig,
-    bind_addr: SocketAddr,
-    options: ServeOptions<A>,
-) -> Result<()> {
-    if !bind_addr.ip().is_loopback() && !config.server.public_base_url.starts_with("https://") {
-        return Err(anyhow!("public binding requires an https public_base_url"));
-    }
-    if !bind_addr.ip().is_loopback()
-        && config
-            .server
-            .allowed_origins
-            .iter()
-            .any(|origin| !origin.starts_with("https://"))
-    {
-        return Err(anyhow!("public binding allows only https browser origins"));
-    }
-    let router = build_router(adapter, config, options).await?;
-    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
-    axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await?;
-    Ok(())
-}
-
 /// Builds an Axum router for tests or for embedding in a custom server runner.
-pub async fn build_router<A: GameAdapter>(
+#[cfg(any(test, feature = "internal-tools"))]
+pub async fn build_router<A: Game>(
     adapter: A,
     config: ExperimentConfig,
     options: ServeOptions<A>,
@@ -500,12 +470,12 @@ pub async fn build_router<A: GameAdapter>(
 where
     A::State: Serialize,
 {
-    build_router_with_resources(adapter, config, options, None).await
+    build_router_with_resources(Arc::new(adapter), config, options, None).await
 }
 
 /// Builds one experiment router with optional installation-owned storage and authentication.
-async fn build_router_with_resources<A: GameAdapter>(
-    adapter: A,
+async fn build_router_with_resources<A: Game>(
+    adapter: Arc<A>,
     mut config: ExperimentConfig,
     options: ServeOptions<A>,
     shared: Option<RuntimeShared<A>>,
@@ -515,14 +485,14 @@ where
 {
     config.validate()?;
     validate_game_config_contains_no_secrets(&config.game)?;
-    adapter.validate_config(&config.game)?;
+    let game_config = parse_game_config(adapter.as_ref(), &config.game)?;
     let clean_admin_sessions = shared.is_none();
     let game_descriptor = options
         .game_descriptor
         .clone()
-        .unwrap_or_else(|| GameDescriptor {
+        .unwrap_or_else(|| GameMetadata {
             id: "embedded-game".to_string(),
-            display_name: config.study.name.clone(),
+            name: "Embedded game".to_string(),
             version: semver::Version::parse(env!("CARGO_PKG_VERSION"))
                 .expect("parlando-server package version is semantic"),
             build_manifest: options.game_version_manifest.clone().unwrap_or(Value::Null),
@@ -623,6 +593,7 @@ where
     let state = Arc::new(AppState {
         adapter,
         config,
+        game_config,
         experiment_id,
         game_descriptor,
         game_settings,
@@ -635,7 +606,9 @@ where
         store,
         room_buses: RwLock::new(HashMap::new()),
         agent_factory: options.agent_factory,
+        agent_definitions: options.agent_definitions,
         started_agents: RwLock::new(HashSet::new()),
+        pending_agents: Mutex::new(HashMap::new()),
         agent_inboxes: RwLock::new(HashMap::new()),
         tts_provider,
         tts_provider_is_override,

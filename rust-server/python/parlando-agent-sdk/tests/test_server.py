@@ -39,7 +39,7 @@ class FakeActionField:
         self.value = value
 
 
-class FakeAgentResponseMessage:
+class FakeResponseMessage:
     """Imitates the generated response fields touched by conversion code."""
 
     def __init__(self) -> None:
@@ -51,12 +51,11 @@ class FakeAgentResponseMessage:
 class FakePb2:
     """Minimal generated protobuf module contract used by service tests."""
 
-    UTTERANCE_KIND_SPOKEN = 2
-    UTTERANCE_KIND_AGENT = 3
-    AgentResponse = FakeAgentResponseMessage
+    Response = FakeResponseMessage
+    AgentResponse = FakeResponseMessage
     CreateAgentResponse = FakeMessage
     ObserveResponse = FakeMessage
-    MaybeActResponse = FakeMessage
+    RespondResponse = FakeMessage
     ShutdownResponse = FakeMessage
 
 
@@ -82,26 +81,26 @@ class FakeContext:
         raise AbortedRpc(detail)
 
 
-class RecordingAgent(server.GameAgent):
-    """Captures observations and close calls for service delegation tests."""
+class RecordingAgent(server.Agent):
+    """Captures observations and shutdown calls for service delegation tests."""
 
     def __init__(self) -> None:
         """Creates empty observation storage."""
         self.states: list[dict[str, object]] = []
-        self.messages: list[tuple[str, str, str]] = []
-        self.closed = 0
+        self.messages: list[tuple[str, str]] = []
+        self.shutdowns = 0
 
-    async def observe_state(self, current_observation: dict[str, object]) -> None:
+    async def start(self, observation: dict[str, object]) -> None:
         """Records a state observation."""
-        self.states.append(current_observation)
+        self.states.append(observation)
 
-    async def observe_message(self, speaker: str, kind: str, text: str) -> None:
+    async def observe_message(self, sender: server.PlayerRole, text: str) -> None:
         """Records a converted utterance."""
-        self.messages.append((speaker, kind, text))
+        self.messages.append((sender, text))
 
-    async def close(self) -> None:
+    async def shutdown(self) -> None:
         """Counts idempotent service shutdown ownership."""
-        self.closed += 1
+        self.shutdowns += 1
 
 
 class ConversionTests(unittest.TestCase):
@@ -110,14 +109,14 @@ class ConversionTests(unittest.TestCase):
     def test_agent_response_constructors_and_frozen_state(self) -> None:
         """All convenience constructors preserve content and instances are immutable."""
         action = {"move": {"x": 1}}
-        self.assertEqual(server.AgentResponse.action(action).action, action)
-        self.assertEqual(server.AgentResponse.say("hello").message, "hello")
+        self.assertEqual(server.Response.action(action), server.Response(_action=action))
+        self.assertEqual(server.Response.message("hello"), server.Response(_message="hello"))
         self.assertEqual(
-            server.AgentResponse.action_with_message(action, "hello"),
-            server.AgentResponse(action=action, message="hello"),
+            server.Response.action_with_message(action, "hello"),
+            server.Response(_action=action, _message="hello"),
         )
         with self.assertRaises(dataclasses.FrozenInstanceError):
-            server.AgentResponse.say("hello").message = "changed"  # type: ignore[misc]
+            server.Response.message("hello")._message = "changed"  # type: ignore[misc]
 
     def test_struct_round_trip_preserves_nested_json_values(self) -> None:
         """Struct conversion preserves nested null, Boolean, Unicode, list, and float values."""
@@ -146,19 +145,13 @@ class ConversionTests(unittest.TestCase):
 
     def test_response_conversion_rejects_empty_and_maps_both_fields(self) -> None:
         """Empty decisions fail while a combined response populates both protobuf fields."""
-        with self.assertRaisesRegex(ValueError, "message or action"):
-            server._response_to_proto(FakePb2, server.AgentResponse())
+        with self.assertRaisesRegex(ValueError, "action or message"):
+            server.Response()
         converted = server._response_to_proto(
-            FakePb2, server.AgentResponse.action_with_message({"type": "go"}, "moving")
+            FakePb2, server.Response.action_with_message({"type": "go"}, "moving")
         )
         self.assertEqual(converted.message, "moving")
         self.assertEqual(server._struct_to_dict(converted.action.value), {"type": "go"})
-
-    def test_utterance_kind_maps_known_and_unknown_values(self) -> None:
-        """Known spoken/agent enum values map exactly and future values fail safely to typed."""
-        self.assertEqual(server._utterance_kind(FakePb2, 2), "spoken")
-        self.assertEqual(server._utterance_kind(FakePb2, 3), "agent")
-        self.assertEqual(server._utterance_kind(FakePb2, 999), "typed")
 
 
 class ServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -172,12 +165,11 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     def create_request(self) -> SimpleNamespace:
         """Builds a complete CreateAgent request with an absent optional seed."""
         return SimpleNamespace(
-            protocol_version=1,
+            protocol_version="parlando-agent-v3",
             agent_name="test-agent",
             agent_version="1.0.0",
             role="B",
             seed=0,
-            HasField=lambda name: False,
             config=server._dict_to_struct({"difficulty": 2}),
         )
 
@@ -193,7 +185,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         """Reservations count factories still awaiting completion at the exact limit."""
         gate = asyncio.Event()
 
-        async def factory(_context: dict[str, object]) -> RecordingAgent:
+        async def factory(_context: server.Context) -> RecordingAgent:
             """Waits until both RPC attempts have reached the capacity boundary."""
             await gate.wait()
             return RecordingAgent()
@@ -212,7 +204,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         """A failed factory leaves no ghost agent and permits a later successful retry."""
         calls = 0
 
-        async def factory(_context: dict[str, object]) -> RecordingAgent:
+        async def factory(_context: server.Context) -> RecordingAgent:
             """Fails once before returning a usable agent."""
             nonlocal calls
             calls += 1
@@ -231,16 +223,16 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         agent = RecordingAgent()
         service = self.service(lambda _: agent)
         created = await service.CreateAgent(self.create_request(), FakeContext())
-        await service.ObserveState(
+        await service.Start(
             SimpleNamespace(
                 agent_id=created.agent_id,
-                current_observation=server._dict_to_struct({"turn": 3}),
+                observation=server._dict_to_struct({"turn": 3}),
             ),
             FakeContext(),
         )
         await service.ObserveMessage(
             SimpleNamespace(
-                agent_id=created.agent_id, speaker="A", kind=2, text="hello"
+                agent_id=created.agent_id, sender="A", text="hello"
             ),
             FakeContext(),
         )
@@ -248,16 +240,32 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         await service.Shutdown(request, FakeContext())
         await service.Shutdown(request, FakeContext())
         self.assertEqual(agent.states, [{"turn": 3}])
-        self.assertEqual(agent.messages, [("A", "spoken", "hello")])
-        self.assertEqual(agent.closed, 1)
+        self.assertEqual(agent.messages, [("A", "hello")])
+        self.assertEqual(agent.shutdowns, 1)
+
+    async def test_factory_receives_only_agent_owned_context(self) -> None:
+        """Initialization excludes room, participant, transport, and presentation details."""
+        contexts: list[server.Context] = []
+
+        def factory(context: server.Context) -> RecordingAgent:
+            """Records the immutable initialization context."""
+            contexts.append(context)
+            return RecordingAgent()
+
+        service = self.service(factory)
+        await service.CreateAgent(self.create_request(), FakeContext())
+        self.assertEqual(
+            contexts,
+            [server.Context(role="B", seed=0, settings={"difficulty": 2.0})],
+        )
 
     async def test_unknown_agent_ids_abort(self) -> None:
         """Observation RPCs reject unknown capability identifiers."""
         service = self.service(lambda _: RecordingAgent())
         with self.assertRaises(AbortedRpc):
-            await service.ObserveState(
+            await service.Start(
                 SimpleNamespace(
-                    agent_id="missing", current_observation=Struct()
+                    agent_id="missing", observation=Struct()
                 ),
                 FakeContext(),
             )
@@ -268,8 +276,8 @@ class ProtocolDriftTests(unittest.TestCase):
 
     def test_bundled_proto_matches_rust_server(self) -> None:
         """The package copy changes only alongside the authoritative server proto."""
-        sdk_proto = PACKAGE_SRC / "parlando_agent_sdk/protos/parlando_agent_v1.proto"
-        rust_proto = Path(__file__).resolve().parents[3] / "proto/parlando_agent_v1.proto"
+        sdk_proto = PACKAGE_SRC / "parlando_agent_sdk/protos/parlando_agent_v3.proto"
+        rust_proto = Path(__file__).resolve().parents[3] / "proto/parlando_agent_v3.proto"
         self.assertEqual(sdk_proto.read_bytes(), rust_proto.read_bytes())
 
 

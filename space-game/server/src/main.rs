@@ -1,20 +1,14 @@
-use std::{
-    net::{IpAddr, SocketAddr},
-    path::PathBuf,
-};
+use std::net::{IpAddr, SocketAddr};
 
 use anyhow::Result;
 use clap::Parser;
-use parlando_server::{serve_game, ExperimentConfig, GameDescriptor, ServeOptions};
-use parlando_space_game::{agents::factory_from_config, SpaceGameAdapter};
+use parlando_server::{agent::grpc::Factory as RemoteGrpcAgentFactory, GameMetadata, Server};
+use parlando_space_game::{BackAndForthAgentFactory, SpaceGame};
 use serde_json::{json, Value};
 
 #[derive(Debug, Parser)]
 #[command(name = "parlando-space-game")]
 struct Cli {
-    /// Optional legacy YAML used only to seed or migrate an installation.
-    #[arg(long, short)]
-    config: Option<PathBuf>,
     #[arg(long, default_value = "127.0.0.1")]
     host: IpAddr,
     /// Explicit listener port; hosting platforms may provide the `PORT` environment variable.
@@ -39,49 +33,20 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let cli = Cli::parse();
-    let mut config = if let Some(path) = cli.config.as_ref() {
-        ExperimentConfig::from_yaml(path)?
-    } else {
-        default_bootstrap_config(&cli)
-    };
-    config.database.url = cli.database_url;
-    config.server.client_dist_path = Some(cli.client_dist);
-    config.server.public_base_url = format!("http://127.0.0.1:{}", cli.port);
-    let adapter = SpaceGameAdapter::new();
     let build_manifest = space_game_version_manifest();
-    let descriptor = GameDescriptor {
+    let descriptor = GameMetadata {
         id: "space-game".to_string(),
-        display_name: "Space Game".to_string(),
+        name: "Space Game".to_string(),
         version: semver::Version::parse(env!("CARGO_PKG_VERSION"))?,
         build_manifest: build_manifest.clone(),
     };
-    serve_game(
-        adapter,
-        config,
-        descriptor,
-        SocketAddr::new(cli.host, cli.port),
-        move |experiment_config| {
-            Ok(ServeOptions {
-                agent_factory: factory_from_config(experiment_config)?,
-                game_version_manifest: Some(build_manifest.clone()),
-                ..ServeOptions::default()
-            })
-        },
-    )
-    .await
-}
-
-/// Builds the secret-aware migration seed used when no experiment YAML is supplied.
-fn default_bootstrap_config(cli: &Cli) -> ExperimentConfig {
-    let mut config = ExperimentConfig::default();
-    config.experiment.id = Some("default".to_string());
-    config.study.name = "Space Game".to_string();
-    config.database.url = cli.database_url.clone();
-    config.server.public_base_url = format!("http://127.0.0.1:{}", cli.port);
-    config.server.client_dist_path = Some(cli.client_dist.clone());
-    config.speechmatics.api_key = std::env::var("SPEECHMATICS_API_KEY").unwrap_or_default();
-    config.tts.api_key = std::env::var("ELEVENLABS_API_KEY").unwrap_or_default();
-    config
+    Server::new(SpaceGame::new(), descriptor)?
+        .database_url(cli.database_url)
+        .participant_app(cli.client_dist)
+        .agent(BackAndForthAgentFactory)?
+        .agent(RemoteGrpcAgentFactory::new())?
+        .serve(SocketAddr::new(cli.host, cli.port))
+        .await
 }
 
 fn space_game_version_manifest() -> Value {

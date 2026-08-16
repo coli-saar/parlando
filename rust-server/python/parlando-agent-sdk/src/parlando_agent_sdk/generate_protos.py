@@ -15,7 +15,7 @@ def main() -> int:
     generated_dir.mkdir(exist_ok=True)
     init_file = generated_dir / "__init__.py"
     init_file.touch()
-    proto_file = proto_dir / "parlando_agent_v1.proto"
+    proto_file = proto_dir / "parlando_agent_v3.proto"
     return protoc.main(
         [
             "grpc_tools.protoc",

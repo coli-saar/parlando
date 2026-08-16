@@ -22,7 +22,7 @@ export class ParlandoAudioSink implements LocalAudioSink {
   async connect(input: MicrophoneInput, context: AudioSessionContext): Promise<void> {
     await this.disconnect();
     const plan = await context.getAudioSession();
-    if (!plan.enabled || !plan.websocket_url || !plan.token) { context.onVoiceStatus({ connecting: false, message: "Voice is disabled for this study" }); return; }
+    if (!plan.enabled || !plan.websocketUrl || !plan.token) { context.onVoiceStatus({ connecting: false, message: "Voice is disabled for this experiment" }); return; }
     try {
       const audio = new AudioContext();
       this.audioContext = audio;
@@ -36,13 +36,13 @@ export class ParlandoAudioSink implements LocalAudioSink {
       this.source = audio.createMediaStreamSource(this.stream);
       this.capture = new AudioWorkletNode(audio, "parlando-capture", { numberOfOutputs: 0 });
       this.playback = new AudioWorkletNode(audio, "parlando-playback", { numberOfInputs: 0, outputChannelCount: [1] });
-      this.playback.port.postMessage({ jitterSamples: Math.round(plan.sample_rate_hz * plan.jitter_buffer_ms / 1000) });
+      this.playback.port.postMessage({ jitterSamples: Math.round(plan.sampleRateHz * plan.jitterBufferMs / 1000) });
       this.playback.port.onmessage = (event: MessageEvent<{ type?: string; count?: number; bufferedSamples?: number }>) => {
         if (event.data.type === "playbackUnderrun") context.logVoice("audio_playback_underrun", { count: event.data.count, buffered_samples: event.data.bufferedSamples });
       };
       this.source.connect(this.capture);
       this.playback.connect(audio.destination);
-      const url = new URL(plan.websocket_url, window.location.origin);
+      const url = new URL(plan.websocketUrl, window.location.origin);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       url.searchParams.set("token", plan.token);
       const socket = new WebSocket(url);
@@ -50,7 +50,7 @@ export class ParlandoAudioSink implements LocalAudioSink {
       this.socket = socket;
       this.startedAt = performance.now();
       await waitForSocketOpen(socket);
-      context.logVoice("parlando_audio_connected", { protocol_version: plan.protocol_version });
+      context.logVoice("parlando_audio_connected", { protocol_version: plan.protocolVersion });
       context.onVoiceStatus({
         connected: true,
         connecting: false,

@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import hmac
 import importlib
+import inspect
 import os
 import sys
 import uuid
-from dataclasses import FrozenInstanceError
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional
 
 import grpc
 from google.protobuf import json_format
@@ -23,9 +24,9 @@ def _generated_modules() -> tuple[Any, Any]:
         generated_dir = Path(__file__).resolve().parent / "generated"
         if str(generated_dir) not in sys.path:
             sys.path.insert(0, str(generated_dir))
-        pb2 = importlib.import_module("parlando_agent_sdk.generated.parlando_agent_v1_pb2")
+        pb2 = importlib.import_module("parlando_agent_sdk.generated.parlando_agent_v3_pb2")
         pb2_grpc = importlib.import_module(
-            "parlando_agent_sdk.generated.parlando_agent_v1_pb2_grpc"
+            "parlando_agent_sdk.generated.parlando_agent_v3_pb2_grpc"
         )
         return pb2, pb2_grpc
     except ModuleNotFoundError as exc:
@@ -35,90 +36,82 @@ def _generated_modules() -> tuple[Any, Any]:
         ) from exc
 
 
-class AgentResponse:
+PlayerRole = Literal["A", "B"]
+
+
+@dataclass(frozen=True)
+class Context:
+    """Session-local information supplied before an agent receives game data."""
+
+    role: PlayerRole
+    seed: int
+    settings: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class Response:
     """Non-empty response returned by a Python agent decision call."""
 
-    def __init__(
-        self,
-        action: Optional[dict[str, Any]] = None,
-        message: Optional[str] = None,
-    ) -> None:
-        """Creates an immutable response value without colliding with named constructors."""
-        object.__setattr__(self, "action", action)
-        object.__setattr__(self, "message", message)
+    _action: Optional[dict[str, Any]] = None
+    _message: Optional[str] = None
 
-    def __setattr__(self, name: str, value: object) -> None:
-        """Rejects mutation after construction like a frozen dataclass."""
-        raise FrozenInstanceError(f"cannot assign to field {name!r}")
-
-    def __eq__(self, other: object) -> bool:
-        """Compares response payloads structurally for application and test code."""
-        return (
-            isinstance(other, AgentResponse)
-            and self.action == other.action
-            and self.message == other.message
-        )
-
-    def __repr__(self) -> str:
-        """Returns a diagnostic representation without hiding either optional field."""
-        return f"AgentResponse(action={self.action!r}, message={self.message!r})"
+    def __post_init__(self) -> None:
+        """Rejects the empty value because declining to respond is represented by None."""
+        if self._action is None and self._message is None:
+            raise ValueError("Response must include an action or message")
 
     @staticmethod
-    def action(action: dict[str, Any]) -> "AgentResponse":
+    def action(action: dict[str, Any]) -> "Response":
         """Creates an action-only agent response."""
-        return AgentResponse(action=action)
+        return Response(_action=action)
 
     @staticmethod
-    def say(message: str) -> "AgentResponse":
+    def message(message: str) -> "Response":
         """Creates a message-only agent response."""
-        return AgentResponse(message=message)
+        return Response(_message=message)
 
     @staticmethod
-    def action_with_message(action: dict[str, Any], message: str) -> "AgentResponse":
+    def action_with_message(action: dict[str, Any], message: str) -> "Response":
         """Creates a combined action and message agent response."""
-        return AgentResponse(action=action, message=message)
+        return Response(_action=action, _message=message)
 
 
-class GameAgent:
+class Agent:
     """Base class for Python remote agents."""
 
-    async def observe_state(self, current_observation: dict[str, Any]) -> None:
-        """Observes the current role-specific state snapshot."""
+    async def start(self, observation: dict[str, Any]) -> None:
+        """Receives the first role-specific observation after initialization."""
         return None
 
-    async def observe_action(
+    async def observe_transition(
         self,
-        actor: str,
+        actor: PlayerRole,
         action: dict[str, Any],
-        resulting_observation: dict[str, Any],
+        observation: dict[str, Any],
     ) -> None:
-        """Observes an accepted action and the resulting role-specific state."""
+        """Observes an accepted action and the resulting role-specific observation."""
         return None
 
-    async def observe_message(self, speaker: str, kind: str, text: str) -> None:
-        """Observes a conversation utterance from a known player role."""
+    async def observe_message(self, sender: PlayerRole, text: str) -> None:
+        """Observes a player-to-player message from a known role."""
         return None
 
-    async def maybe_act(
+    async def respond(
         self, available_actions: Optional[list[dict[str, Any]]]
-    ) -> Optional[AgentResponse]:
+    ) -> Optional[Response]:
         """Optionally chooses a message and/or action after prior observations."""
         return None
 
-    async def act(self, available_actions: Optional[list[dict[str, Any]]]) -> AgentResponse:
-        """Chooses a required non-empty response."""
-        raise NotImplementedError
-
-    async def close(self) -> None:
+    async def shutdown(self) -> None:
         """Releases any per-agent resources before shutdown."""
         return None
 
 
-AgentFactory = Callable[[dict[str, Any]], GameAgent | Awaitable[GameAgent]]
+AgentFactory = Callable[[Context], Agent | Awaitable[Agent]]
 
 
 class _AgentService:
-    """Generated gRPC servicer implementation backed by Python GameAgent instances."""
+    """Generated gRPC servicer implementation backed by Python Agent instances."""
 
     def __init__(
         self, factory: AgentFactory, auth_token: str | None = None, max_agents: int = 128
@@ -127,7 +120,7 @@ class _AgentService:
         self._factory = factory
         self._auth_token = auth_token
         self._max_agents = max_agents
-        self._agents: dict[str, GameAgent] = {}
+        self._agents: dict[str, Agent] = {}
         self._creating_agents = 0
         self._agent_lock = asyncio.Lock()
         self._pb2, _pb2_grpc = _generated_modules()
@@ -144,24 +137,28 @@ class _AgentService:
     async def CreateAgent(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote CreateAgent request from the Rust server."""
         await self._authenticate(context)
+        if request.protocol_version != "parlando-agent-v3":
+            await context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION,
+                "unsupported protocol version",
+            )
+        if request.role not in {"A", "B"}:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "unknown player role")
         async with self._agent_lock:
             if len(self._agents) + self._creating_agents >= self._max_agents:
                 await context.abort(
                     grpc.StatusCode.RESOURCE_EXHAUSTED, "agent capacity reached"
                 )
             self._creating_agents += 1
-        init_context = {
-            "protocol_version": request.protocol_version,
-            "agent_name": request.agent_name,
-            "agent_version": request.agent_version,
-            "role": request.role,
-            "seed": request.seed if request.HasField("seed") else None,
-            "config": _struct_to_dict(request.config),
-        }
+        init_context = Context(
+            role=request.role,
+            seed=request.seed,
+            settings=_struct_to_dict(request.config),
+        )
         try:
             maybe_agent = self._factory(init_context)
             agent = (
-                await maybe_agent if asyncio.iscoroutine(maybe_agent) else maybe_agent
+                await maybe_agent if inspect.isawaitable(maybe_agent) else maybe_agent
             )
             agent_id = str(uuid.uuid4())
             async with self._agent_lock:
@@ -171,25 +168,25 @@ class _AgentService:
                 self._creating_agents -= 1
         return self._pb2.CreateAgentResponse(agent_id=agent_id)
 
-    async def ObserveState(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
-        """Handles a remote ObserveState request from the Rust server."""
+    async def Start(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
+        """Handles a remote Start request from the Rust server."""
         await self._authenticate(context)
         agent = self._agents.get(request.agent_id)
         if agent is None:
             await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
-        await agent.observe_state(_struct_to_dict(request.current_observation))
+        await agent.start(_struct_to_dict(request.observation))
         return self._pb2.ObserveResponse()
 
-    async def ObserveAction(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
-        """Handles a remote ObserveAction request from the Rust server."""
+    async def ObserveTransition(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
+        """Handles a remote ObserveTransition request from the Rust server."""
         await self._authenticate(context)
         agent = self._agents.get(request.agent_id)
         if agent is None:
             await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
-        await agent.observe_action(
+        await agent.observe_transition(
             request.actor,
             _struct_to_dict(request.action),
-            _struct_to_dict(request.resulting_observation),
+            _struct_to_dict(request.observation),
         )
         return self._pb2.ObserveResponse()
 
@@ -200,30 +197,20 @@ class _AgentService:
         if agent is None:
             await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
         await agent.observe_message(
-            request.speaker,
-            _utterance_kind(self._pb2, request.kind),
-            request.text,
+            request.sender, request.text
         )
         return self._pb2.ObserveResponse()
 
-    async def MaybeAct(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
-        """Handles a remote MaybeAct request from the Rust server."""
+    async def Respond(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
+        """Handles a remote Respond request from the Rust server."""
         await self._authenticate(context)
         agent = self._agents.get(request.agent_id)
         if agent is None:
             await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
-        result = await agent.maybe_act(_available_actions(request))
+        result = await agent.respond(_available_actions(request))
         if result is None:
-            return self._pb2.MaybeActResponse()
-        return self._pb2.MaybeActResponse(response=_response_to_proto(self._pb2, result))
-
-    async def Act(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
-        """Handles a remote Act request from the Rust server."""
-        await self._authenticate(context)
-        agent = self._agents.get(request.agent_id)
-        if agent is None:
-            await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
-        return _response_to_proto(self._pb2, await agent.act(_available_actions(request)))
+            return self._pb2.RespondResponse()
+        return self._pb2.RespondResponse(response=_response_to_proto(self._pb2, result))
 
     async def Shutdown(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote Shutdown request from the Rust server."""
@@ -231,12 +218,12 @@ class _AgentService:
         async with self._agent_lock:
             agent = self._agents.pop(request.agent_id, None)
         if agent is not None:
-            await agent.close()
+            await agent.shutdown()
         return self._pb2.ShutdownResponse()
 
 
-async def serve_agent_async(
-    factory: type[GameAgent] | AgentFactory,
+async def _serve_async(
+    factory: type[Agent] | AgentFactory,
     host: str = "127.0.0.1",
     port: int = 50051,
     certificate_chain: bytes | None = None,
@@ -252,8 +239,8 @@ async def serve_agent_async(
         raise ValueError("port must be between 0 and 65535")
     pb2, pb2_grpc = _generated_modules()
 
-    def normalized_factory(context: dict[str, Any]) -> GameAgent | Awaitable[GameAgent]:
-        """Creates a GameAgent from either a class or a callable factory."""
+    def normalized_factory(context: Context) -> Agent | Awaitable[Agent]:
+        """Creates an Agent from either a zero-argument class or a context-aware factory."""
         if isinstance(factory, type):
             return factory()
         return factory(context)
@@ -288,8 +275,8 @@ async def serve_agent_async(
     await server.wait_for_termination()
 
 
-def serve_agent(
-    factory: type[GameAgent] | AgentFactory,
+def serve(
+    factory: type[Agent] | AgentFactory,
     host: str = "127.0.0.1",
     port: int = 50051,
     certificate_chain: bytes | None = None,
@@ -300,7 +287,7 @@ def serve_agent(
 ) -> None:
     """Runs a Python Parlando agent server with the selected TLS or loopback policy."""
     asyncio.run(
-        serve_agent_async(
+        _serve_async(
             factory,
             host=host,
             port=port,
@@ -332,22 +319,11 @@ def _available_actions(request: Any) -> Optional[list[dict[str, Any]]]:
     return [_struct_to_dict(action) for action in request.available_actions]
 
 
-def _utterance_kind(pb2: Any, value: int) -> str:
-    """Converts a protobuf utterance kind into the Python string API."""
-    if value == pb2.UTTERANCE_KIND_SPOKEN:
-        return "spoken"
-    if value == pb2.UTTERANCE_KIND_AGENT:
-        return "agent"
-    return "typed"
-
-
-def _response_to_proto(pb2: Any, response: AgentResponse) -> Any:
-    """Converts an AgentResponse into the generated protobuf response type."""
-    if response.message is None and response.action is None:
-        raise ValueError("AgentResponse must include a message or action")
+def _response_to_proto(pb2: Any, response: Response) -> Any:
+    """Converts a Response into the generated protobuf response type."""
     converted = pb2.AgentResponse()
-    if response.message is not None:
-        converted.message = response.message
-    if response.action is not None:
-        converted.action.CopyFrom(_dict_to_struct(response.action))
+    if response._message is not None:
+        converted.message = response._message
+    if response._action is not None:
+        converted.action.CopyFrom(_dict_to_struct(response._action))
     return converted

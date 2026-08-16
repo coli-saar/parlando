@@ -9,25 +9,24 @@ use async_trait::async_trait;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use parlando_server::{
-    agents::{AgentFactory, AgentInitContext, AgentResponse, GameAgent},
-    build_router,
-    config::{
-        AgentsConfig, AgentsMode, ConsentItemConfig, DatabaseConfig, DirectConfig,
-        ExperimentConfig, ExperimentIdentityConfig, HumanVsAgentConfig, SpeechmaticsConfig,
-        TranscriptionConfig, VoiceConfig,
+    agent::grpc::Factory as RemoteGrpcAgentFactory,
+    agent::{
+        Agent, Context as AgentContext, Definition as AgentDefinition, Factory as AgentFactory,
+        Response as AgentResponse,
     },
-    game::{GameAdapter, PlayerRole},
-    remote_agent::{
-        pb::{
+    test_support::{
+        build_router,
+        remote_agent_pb::{
             agent_service_server::{AgentService, AgentServiceServer},
             AgentResponse as PbAgentResponse, CreateAgentRequest, CreateAgentResponse,
-            DecisionRequest, MaybeActResponse, ObserveActionRequest, ObserveMessageRequest,
-            ObserveResponse, ObserveStateRequest, ShutdownRequest, ShutdownResponse,
+            ObserveMessageRequest, ObserveResponse, ObserveTransitionRequest, RespondRequest,
+            RespondResponse, ShutdownRequest, ShutdownResponse, StartRequest,
         },
-        RemoteGrpcAgentConfig, RemoteGrpcAgentFactory,
+        AgentsConfig, AgentsMode, AudioChunk, ConsentItemConfig, DatabaseConfig, DirectConfig,
+        ExperimentConfig, ExperimentIdentityConfig, HumanVsAgentConfig, ServeOptions,
+        SpeechmaticsConfig, StreamingTtsProvider, TranscriptionConfig, VoiceConfig,
     },
-    tts::{AudioChunk, StreamingTtsProvider},
-    ServeOptions,
+    ActionRejection, Game, PlayerRole,
 };
 use prost_types::{value::Kind, Struct, Value as ProstValue};
 use serde::{Deserialize, Serialize};
@@ -61,12 +60,6 @@ struct DummyObservation {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct DummyEvent {
-    kind: String,
-    actions: usize,
-}
-
-#[derive(Clone, Debug, Serialize)]
 struct DummySummary {
     done: bool,
     actions: usize,
@@ -75,33 +68,29 @@ struct DummySummary {
 #[derive(Clone)]
 struct DummyAdapter;
 
-impl GameAdapter for DummyAdapter {
+impl Game for DummyAdapter {
+    type Config = Value;
     type State = DummyState;
     type Action = DummyAction;
     type Observation = DummyObservation;
-    type Event = DummyEvent;
-    type Summary = DummySummary;
+    type Completion = DummySummary;
 
-    fn initial_state(&self) -> Self::State {
-        DummyState {
+    fn initial_state(&self, _config: &Self::Config, _seed: u64) -> Result<Self::State> {
+        Ok(DummyState {
             actions: 0,
             done: false,
-        }
+        })
     }
 
-    fn validate_action(
+    fn apply_action(
         &self,
         state: &Self::State,
-        _action: &Self::Action,
-        _player: PlayerRole,
-    ) -> Result<()> {
+        action: &Self::Action,
+        _actor: PlayerRole,
+    ) -> std::result::Result<Self::State, ActionRejection> {
         if state.done {
-            bail!("game already complete");
+            return Err(ActionRejection::new("game_complete"));
         }
-        Ok(())
-    }
-
-    fn apply_action(&self, state: &Self::State, action: &Self::Action) -> Result<Self::State> {
         let DummyAction::Mark { finish } = action;
         Ok(DummyState {
             actions: state.actions + 1,
@@ -109,7 +98,7 @@ impl GameAdapter for DummyAdapter {
         })
     }
 
-    fn observe_state(&self, state: &Self::State, player: PlayerRole) -> Self::Observation {
+    fn observation(&self, state: &Self::State, player: PlayerRole) -> Self::Observation {
         DummyObservation {
             role: player.as_str().to_string(),
             actions: state.actions,
@@ -128,28 +117,11 @@ impl GameAdapter for DummyAdapter {
         ])
     }
 
-    fn events_for_action(
-        &self,
-        _before: &Self::State,
-        after: &Self::State,
-        _action: &Self::Action,
-        _player: PlayerRole,
-    ) -> Vec<Self::Event> {
-        vec![DummyEvent {
-            kind: "marked".to_string(),
-            actions: after.actions,
-        }]
-    }
-
-    fn is_complete(&self, state: &Self::State) -> bool {
-        state.done
-    }
-
-    fn completion_summary(&self, state: &Self::State) -> Self::Summary {
-        DummySummary {
+    fn completion(&self, state: &Self::State) -> Option<Self::Completion> {
+        state.done.then(|| DummySummary {
             done: state.done,
             actions: state.actions,
-        }
+        })
     }
 }
 
@@ -158,13 +130,13 @@ struct ScriptedAgent {
 }
 
 #[async_trait]
-impl GameAgent<DummyAdapter> for ScriptedAgent {
-    async fn observe_state(&mut self, observation: DummyObservation) -> Result<()> {
+impl Agent<DummyAdapter> for ScriptedAgent {
+    async fn start(&mut self, observation: DummyObservation) -> Result<()> {
         assert_eq!(observation.role, "B");
         Ok(())
     }
 
-    async fn maybe_act(
+    async fn respond(
         &mut self,
         available_actions: Option<Vec<DummyAction>>,
     ) -> Result<Option<AgentResponse<DummyAction>>> {
@@ -191,9 +163,19 @@ impl ScriptedAgentFactory {
     }
 }
 
+#[async_trait]
 impl AgentFactory<DummyAdapter> for ScriptedAgentFactory {
-    fn create(&self, context: AgentInitContext) -> Result<Box<dyn GameAgent<DummyAdapter> + Send>> {
-        assert_eq!(context.role, "B");
+    fn definition(&self) -> AgentDefinition {
+        AgentDefinition {
+            id: "test.scripted".to_string(),
+            name: "Scripted test agent".to_string(),
+            description: "Used by the integration test.".to_string(),
+            config_fields: Vec::new(),
+        }
+    }
+
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<DummyAdapter> + Send>> {
+        assert_eq!(context.role, PlayerRole::B);
         let script = self.scripts.lock().unwrap().pop_front().unwrap_or_default();
         Ok(Box::new(ScriptedAgent {
             script: script.into(),
@@ -209,28 +191,19 @@ struct RecordingTts {
 impl StreamingTtsProvider for RecordingTts {
     async fn synthesize(&self, text: &str, _message_id: &str) -> Result<Vec<AudioChunk>> {
         self.messages.lock().unwrap().push(text.to_string());
-        Ok(vec![
-            AudioChunk {
-                data: vec![1, 2, 3, 4],
-                sample_rate: 16000,
-                channels: 1,
-                final_chunk: false,
-            },
-            AudioChunk {
-                data: vec![],
-                sample_rate: 16000,
-                channels: 1,
-                final_chunk: true,
-            },
-        ])
+        Ok(vec![AudioChunk {
+            data: vec![1, 2, 3, 4],
+            sample_rate: 16000,
+            channels: 1,
+        }])
     }
 }
 
 #[derive(Default)]
 struct MockRemoteAgentState {
     create_requests: Mutex<Vec<CreateAgentRequest>>,
-    observe_state_requests: Mutex<Vec<ObserveStateRequest>>,
-    maybe_act_requests: Mutex<Vec<DecisionRequest>>,
+    start_requests: Mutex<Vec<StartRequest>>,
+    respond_requests: Mutex<Vec<RespondRequest>>,
 }
 
 #[derive(Clone)]
@@ -254,21 +227,21 @@ impl AgentService for MockRemoteAgentService {
         }))
     }
 
-    async fn observe_state(
+    async fn start(
         &self,
-        request: TonicRequest<ObserveStateRequest>,
+        request: TonicRequest<StartRequest>,
     ) -> std::result::Result<TonicResponse<ObserveResponse>, Status> {
         self.state
-            .observe_state_requests
+            .start_requests
             .lock()
             .unwrap()
             .push(request.into_inner());
         Ok(TonicResponse::new(ObserveResponse {}))
     }
 
-    async fn observe_action(
+    async fn observe_transition(
         &self,
-        _request: TonicRequest<ObserveActionRequest>,
+        _request: TonicRequest<ObserveTransitionRequest>,
     ) -> std::result::Result<TonicResponse<ObserveResponse>, Status> {
         Ok(TonicResponse::new(ObserveResponse {}))
     }
@@ -280,30 +253,20 @@ impl AgentService for MockRemoteAgentService {
         Ok(TonicResponse::new(ObserveResponse {}))
     }
 
-    async fn maybe_act(
+    async fn respond(
         &self,
-        request: TonicRequest<DecisionRequest>,
-    ) -> std::result::Result<TonicResponse<MaybeActResponse>, Status> {
+        request: TonicRequest<RespondRequest>,
+    ) -> std::result::Result<TonicResponse<RespondResponse>, Status> {
         let decision_count = {
-            let mut requests = self.state.maybe_act_requests.lock().unwrap();
+            let mut requests = self.state.respond_requests.lock().unwrap();
             requests.push(request.into_inner());
             requests.len()
         };
-        Ok(TonicResponse::new(MaybeActResponse {
+        Ok(TonicResponse::new(RespondResponse {
             response: Some(PbAgentResponse {
                 message: (decision_count == 1).then(|| "hello from remote grpc".to_string()),
                 action: Some(dummy_action_struct(decision_count > 1)),
             }),
-        }))
-    }
-
-    async fn act(
-        &self,
-        _request: TonicRequest<DecisionRequest>,
-    ) -> std::result::Result<TonicResponse<PbAgentResponse>, Status> {
-        Ok(TonicResponse::new(PbAgentResponse {
-            message: Some("hello from remote grpc".to_string()),
-            action: Some(dummy_action_struct(true)),
         }))
     }
 
@@ -478,9 +441,9 @@ async fn create_participant(
         .json::<Value>()
         .await?;
     Ok(TestParticipant {
-        id: response["participant_session_id"]
+        id: response["participant_id"]
             .as_str()
-            .ok_or_else(|| anyhow!("missing participant_session_id"))?
+            .ok_or_else(|| anyhow!("missing participant_id"))?
             .to_string(),
         credential: response["participant_credential"]
             .as_str()
@@ -737,8 +700,8 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
 
     let mut socket_a = ws_connect(&client, &server, &room_id, &a).await?;
     let mut socket_b = ws_connect(&client, &server, &room_id, &b).await?;
-    let assigned_a = read_ws_type(&mut socket_a, "roleAssigned").await?;
-    let assigned_b = read_ws_type(&mut socket_b, "roleAssigned").await?;
+    let assigned_a = read_ws_type(&mut socket_a, "session_started").await?;
+    let assigned_b = read_ws_type(&mut socket_b, "session_started").await?;
     assert_eq!(assigned_a["role"], "A");
     assert_eq!(assigned_b["role"], "B");
     assert_eq!(assigned_a["available_actions"].as_array().unwrap().len(), 2);
@@ -747,22 +710,22 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
 
     send_ws(
         &mut socket_a,
-        json!({"type": "sendChatMessage", "text": "browser chat"}),
+        json!({"type": "message", "text": "browser chat"}),
     )
     .await?;
-    let chat = read_ws_type(&mut socket_b, "conversationMessageAdded").await?;
-    assert_eq!(chat["conversation_message"]["origin"], "typed");
-    assert_eq!(chat["conversation_message"]["text"], "browser chat");
+    let chat = read_ws_type(&mut socket_b, "message").await?;
+    assert_eq!(chat["message"]["input"], "text");
+    assert_eq!(chat["message"]["text"], "browser chat");
 
     send_ws(
         &mut socket_a,
-        json!({"type": "submitAction", "action": {"type": "mark", "finish": true}}),
+        json!({"type": "action", "action": {"type": "mark", "finish": true}}),
     )
     .await?;
     let completed_a = read_ws_type(&mut socket_a, "completed").await?;
     let completed_b = read_ws_type(&mut socket_b, "completed").await?;
-    assert_eq!(completed_a["summary"]["done"], true);
-    assert_eq!(completed_b["summary"]["done"], true);
+    assert_eq!(completed_a["completion"]["done"], true);
+    assert_eq!(completed_b["completion"]["done"], true);
 
     let mut export = Value::Null;
     for _ in 0..20 {
@@ -799,14 +762,11 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
         messages: Mutex::new(vec![]),
     });
     let factory = Arc::new(ScriptedAgentFactory::new(vec![
-        Some(AgentResponse {
-            message: Some("agent says hello".to_string()),
-            action: Some(DummyAction::Mark { finish: false }),
-        }),
-        Some(AgentResponse {
-            message: None,
-            action: Some(DummyAction::Mark { finish: true }),
-        }),
+        Some(AgentResponse::action_and_message(
+            DummyAction::Mark { finish: false },
+            "agent says hello",
+        )),
+        Some(AgentResponse::action(DummyAction::Mark { finish: true })),
     ]));
     let server = spawn_server(
         config(AgentsMode::HumanVsAgent),
@@ -826,13 +786,15 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
     let room_id = room["room_id"].as_str().unwrap();
 
     let mut socket = ws_connect(&client, &server, room_id, &human).await?;
-    let assigned = read_ws_type(&mut socket, "roleAssigned").await?;
+    let assigned = read_ws_type(&mut socket, "session_started").await?;
     assert_eq!(assigned["role"], "A");
-    let message = read_ws_type(&mut socket, "conversationMessageAdded").await?;
-    assert_eq!(message["conversation_message"]["origin"], "agent");
-    assert_eq!(message["conversation_message"]["text"], "agent says hello");
+    let message = read_ws_type(&mut socket, "message").await?;
+    assert_eq!(message["message"]["sender"], "B");
+    assert_eq!(message["message"]["input"], "text");
+    assert_eq!(message["message"]["text"], "agent says hello");
+    send_ws(&mut socket, json!({"type": "message", "text": "continue"})).await?;
     let completed = read_ws_type(&mut socket, "completed").await?;
-    assert_eq!(completed["summary"]["done"], true);
+    assert_eq!(completed["completion"]["done"], true);
 
     for _ in 0..20 {
         if tts
@@ -865,12 +827,21 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
 async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_persistence(
 ) -> Result<()> {
     let remote = spawn_mock_remote_agent().await?;
-    let mut remote_config = RemoteGrpcAgentConfig::new(&remote.endpoint, "mock-python-agent");
-    remote_config.agent_version = Some("test-1".to_string());
-    remote_config.request_timeout = Duration::from_secs(2);
-    let factory = Arc::new(RemoteGrpcAgentFactory::<DummyAdapter>::new(remote_config));
+    let factory = Arc::new(RemoteGrpcAgentFactory::<DummyAdapter>::new());
+    let mut experiment_config = config(AgentsMode::HumanVsAgent);
+    experiment_config
+        .agents
+        .human_vs_agent
+        .as_mut()
+        .unwrap()
+        .config = json!({
+        "endpoint": remote.endpoint,
+        "agent_name": "mock-python-agent",
+        "agent_version": "test-1",
+        "protocol_version": "parlando-agent-v3"
+    });
     let server = spawn_server(
-        config(AgentsMode::HumanVsAgent),
+        experiment_config,
         ServeOptions {
             agent_factory: Some(factory),
             ..ServeOptions::default()
@@ -885,30 +856,29 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
     let room_id = room["room_id"].as_str().unwrap();
 
     let mut socket = ws_connect(&client, &server, room_id, &human).await?;
-    let assigned = read_ws_type(&mut socket, "roleAssigned").await?;
+    let assigned = read_ws_type(&mut socket, "session_started").await?;
     assert_eq!(assigned["role"], "A");
-    let message = read_ws_type(&mut socket, "conversationMessageAdded").await?;
-    assert_eq!(message["conversation_message"]["origin"], "agent");
-    assert_eq!(
-        message["conversation_message"]["text"],
-        "hello from remote grpc"
-    );
+    let message = read_ws_type(&mut socket, "message").await?;
+    assert_eq!(message["message"]["sender"], "B");
+    assert_eq!(message["message"]["input"], "text");
+    assert_eq!(message["message"]["text"], "hello from remote grpc");
+    send_ws(&mut socket, json!({"type": "message", "text": "continue"})).await?;
     let completed = read_ws_type(&mut socket, "completed").await?;
-    assert_eq!(completed["summary"]["done"], true);
+    assert_eq!(completed["completion"]["done"], true);
 
     let create_requests = remote.state.create_requests.lock().unwrap().clone();
     assert_eq!(create_requests.len(), 1);
-    assert_eq!(create_requests[0].protocol_version, "parlando-agent-v2");
+    assert_eq!(create_requests[0].protocol_version, "parlando-agent-v3");
     assert_eq!(create_requests[0].agent_name, "mock-python-agent");
     assert_eq!(create_requests[0].agent_version, "test-1");
     assert_eq!(create_requests[0].role, "B");
 
-    let observe_state_requests = remote.state.observe_state_requests.lock().unwrap().clone();
-    assert_eq!(observe_state_requests.len(), 1);
-    assert_eq!(observe_state_requests[0].agent_id, "remote-agent-1");
+    let start_requests = remote.state.start_requests.lock().unwrap().clone();
+    assert_eq!(start_requests.len(), 1);
+    assert_eq!(start_requests[0].agent_id, "remote-agent-1");
     assert_eq!(
-        observe_state_requests[0]
-            .current_observation
+        start_requests[0]
+            .observation
             .as_ref()
             .unwrap()
             .fields
@@ -916,11 +886,11 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
             .and_then(|value| value.kind.as_ref()),
         Some(&Kind::StringValue("B".to_string()))
     );
-    let maybe_act_requests = remote.state.maybe_act_requests.lock().unwrap().clone();
-    assert_eq!(maybe_act_requests.len(), 2);
-    assert_eq!(maybe_act_requests[0].agent_id, "remote-agent-1");
-    assert!(maybe_act_requests[0].available_actions_provided);
-    assert_eq!(maybe_act_requests[0].available_actions.len(), 2);
+    let respond_requests = remote.state.respond_requests.lock().unwrap().clone();
+    assert_eq!(respond_requests.len(), 2);
+    assert_eq!(respond_requests[0].agent_id, "remote-agent-1");
+    assert!(respond_requests[0].available_actions_provided);
+    assert_eq!(respond_requests[0].available_actions.len(), 2);
 
     let export = admin_export(&client, &server.base_url, &admin_cookie).await?;
     let events = export["session_events"].as_array().unwrap();
@@ -930,16 +900,16 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
         .iter()
         .find(|participant| participant["participant_kind"] == "agent")
         .expect("remote agent participant is exported");
-    assert_eq!(remote_participant["identity_provider"], "remote_grpc");
+    assert_eq!(remote_participant["identity_provider"], "agent");
     assert_eq!(
         remote_participant["external_id"],
         "mock-python-agent@test-1"
     );
+    assert_eq!(remote_participant["metadata"]["factory"], "remote_grpc");
     assert_eq!(
-        remote_participant["metadata"]["protocol_version"],
-        "parlando-agent-v2"
+        remote_participant["metadata"]["agent_name"],
+        "mock-python-agent"
     );
-    assert_eq!(remote_participant["metadata"]["agent_type"], "remote_grpc");
     assert_eq!(remote_participant["metadata"]["agent_version"], "test-1");
     assert!(events.iter().any(|event| {
         event["event_type"] == "conversation_message" && event["payload"]["origin"] == "agent"

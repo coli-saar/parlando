@@ -31,8 +31,8 @@ flowchart LR
 
 ## Game, experiment, and session
 
-A **game** is the compiled implementation. Its `GameDescriptor` supplies a stable
-id, participant-facing name, exact semantic version, and build manifest. The
+A **game** is the compiled implementation. Its `GameMetadata` supplies a stable
+id, administrator-facing name, exact semantic version, and build manifest. The
 descriptor belongs to the process and appears prominently in its administrator
 dashboard.
 
@@ -64,13 +64,13 @@ compiled game process
     └── sessions created under revision 1
 ```
 
-The experiment runtimes share durable installation resources, but not live study
+The experiment runtimes share durable installation resources, but not live experiment
 state. A participant credential, room, agent, or ticket from one experiment does
 not select or authorize another experiment.
 
 The SQLite database is part of this game-scoped installation boundary. Give each
 game binary its own database because Parlando has no cross-game registry that can
-partition one database by `GameDescriptor.id`.
+partition one database by `GameMetadata.id`.
 
 ## Component responsibilities
 
@@ -81,17 +81,17 @@ and turns participant interaction into typed actions. It can also derive display
 state and provide immediate ergonomic feedback; the Rust game crate performs the
 final validation shared by browsers and agents.
 
-The game crate defines the study semantics:
+The game crate defines the game semantics:
 
 - state and action types shared by humans and agents;
 - role-specific observations and private-information boundaries;
 - action validation and state transitions;
 - available-action hints, when useful;
-- game-specific events and completion summaries; and
+- role-neutral transition metadata and a shared structured completion; and
 - factories for game-specific agents.
 
 The reusable Parlando runtime supplies mechanisms that should behave consistently
-across studies:
+across experiments:
 
 - experiment catalogue, immutable configuration revisions, and lifecycle;
 - participant creation, consent evidence, matchmaking, roles, readiness, and
@@ -117,7 +117,7 @@ These values are not experiment fields and are not stored in experiment revision
 **Game settings** currently contain the institution shared by the process. They
 have their own optimistic-concurrency revision.
 
-**Experiment configuration** contains study name, consent, matchmaking, agent,
+**Experiment configuration** contains participant information and consent, matchmaking, agent,
 voice, transcription, TTS, conversation, and privacy settings. Each successful
 save creates a new immutable revision. The dashboard provides structured
 controls, and Rust deserialization and semantic validation provide a final
@@ -129,7 +129,7 @@ dashboard nor written to experiment configuration or exports.
 ## Version boundary
 
 An experiment can activate only when its stored game version exactly matches the
-compiled `GameDescriptor.version`. Parlando does not maintain a compatibility
+compiled `GameMetadata.version`. Parlando does not maintain a compatibility
 matrix between versions.
 
 To run an earlier configuration with new game code, clone the old experiment. The
@@ -167,10 +167,11 @@ A normal human–human session proceeds as follows:
    experiment-scoped game WebSocket returned by the server.
 5. Once the required participants and audio setup are ready, the server sends
    role-specific observations.
-6. Each submitted action is authenticated, deserialized, validated by the game
-   adapter, applied, and persisted before targeted updates are broadcast.
-7. When `is_complete` becomes true, the server records and broadcasts the
-   game-specific completion summary.
+6. Each submitted action is authenticated, deserialized, validated by `Game`,
+   applied, and persisted before targeted role-specific observations are broadcast.
+   The submitted action itself is not echoed to participant clients.
+7. When `Game::completion` returns a value, the server records it and broadcasts
+   it as the shared game-specific termination payload.
 
 Human–agent sessions use the same action and persistence path. The server creates
 the agent participant and the game-specific factory supplies its policy.
@@ -196,8 +197,8 @@ an emergency session-termination mechanism.
 ## Worked implementation
 
 - `space-game/server/src/game/state_engine.rs`: state, actions, observations,
-  events, and completion.
-- `space-game/server/src/game/adapter.rs`: `GameAdapter` implementation.
+  transition metadata, and completion.
+- `space-game/server/src/game/adapter.rs`: `Game` implementation.
 - `space-game/server/src/agents.rs`: in-process and remote-agent factories.
 - `space-game/server/src/main.rs`: descriptor and process bootstrap.
 - `space-game/client`: participant UI using `@coli-saar/parlando-client`.

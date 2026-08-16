@@ -10,11 +10,8 @@ use crate::{audio::AudioFrame, config::SpeechmaticsConfig};
 /// Context that identifies one authenticated speaker transcription stream.
 #[derive(Clone, Debug)]
 pub struct TranscriptionSessionContext {
-    /// Room that owns the audio stream.
-    pub room_id: String,
-    /// Participant session that owns the microphone.
-    pub participant_session_id: String,
     /// Authoritative player role for transcript attribution.
+    #[allow(dead_code)]
     pub role: String,
     /// BCP-47-like configured language identifier.
     pub language: String,
@@ -49,8 +46,6 @@ pub struct FinalTranscriptUtterance {
 pub enum TranscriptionEvent {
     /// Provider accepted configuration and is ready for audio.
     Ready,
-    /// Replaceable partial hypothesis intended only for status/UI.
-    Partial(String),
     /// Durable utterance safe to persist and send to agents.
     FinalUtterance(FinalTranscriptUtterance),
     /// Provider session failed; partner audio can continue independently.
@@ -195,11 +190,7 @@ impl TranscriptionProvider for SpeechmaticsTranscriptionProvider {
                         if !message.is_text() { continue; }
                         let Ok(payload) = serde_json::from_str::<Value>(message.to_text().unwrap_or("")) else { continue; };
                         match payload["message"].as_str() {
-                            Some("AddPartialTranscript") => {
-                                if let Some(text) = payload["metadata"]["transcript"].as_str().filter(|text| !text.is_empty()) {
-                                    let _ = events.send(TranscriptionEvent::Partial(text.to_string())).await;
-                                }
-                            }
+                            Some("AddPartialTranscript") => {}
                             Some("AddTranscript") => {
                                 let metadata = &payload["metadata"];
                                 if let Some(text) = metadata["transcript"].as_str().filter(|text| !text.trim().is_empty()) {

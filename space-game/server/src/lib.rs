@@ -1,4 +1,5 @@
-pub mod agents;
-pub mod game;
+mod agents;
+mod game;
 
-pub use game::adapter::SpaceGameAdapter;
+pub use agents::BackAndForthAgentFactory;
+pub use game::adapter::SpaceGame;

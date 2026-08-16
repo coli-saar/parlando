@@ -5,9 +5,12 @@ remote-agent gRPC interface. The policy receives the same role-specific
 observations and available actions as other agent implementations, while the SDK
 handles request dispatch and response conversion.
 
-Agent authors implement async observation callbacks such as `observe_state`,
-`observe_action`, and `observe_message`, then respond from
-`maybe_act(available_actions)`.
+Agent authors implement async observation callbacks such as `start`,
+`observe_transition`, and `observe_message`, then respond from
+`respond(available_actions)`. A factory may receive a small immutable `Context`
+containing the player's role, deterministic seed, and agent-specific settings.
+It receives no room identity, transport details, frontend data, or initial game
+observation.
 
 Before running the SDK from a checkout, generate the Python protobuf modules:
 
@@ -18,15 +21,20 @@ python -m parlando_agent_sdk.generate_protos
 Minimal agent:
 
 ```python
-from parlando_agent_sdk import AgentResponse, GameAgent, serve_agent
+from parlando_agent_sdk import Agent, Context, Response, serve
 
-class FirstActionAgent(GameAgent):
-    async def maybe_act(self, available_actions):
+class FirstActionAgent(Agent):
+    async def respond(self, available_actions):
         if available_actions:
-            return AgentResponse.action(available_actions[0])
+            return Response.action(available_actions[0])
         return None
 
-serve_agent(FirstActionAgent, host="127.0.0.1", port=50051)
+def create_agent(context: Context) -> Agent:
+    # Expensive model loading may happen here. The initial observation is sent
+    # only after this function returns.
+    return FirstActionAgent()
+
+serve(create_agent, host="127.0.0.1", port=50051)
 ```
 
 See [Agents](../../../docs/agents.md) for experiment configuration, deployment,

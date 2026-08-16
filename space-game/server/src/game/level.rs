@@ -39,48 +39,6 @@ pub fn is_walkable(position: Position) -> bool {
     room_at_position(position).is_some()
 }
 
-pub fn room_name(room: &str) -> &'static str {
-    match room {
-        "power" => "Power Bay",
-        "junction" => "Junction",
-        "oxygen" => "Oxygen Nook",
-        "diagnostics" => "Diagnostics",
-        "charger" => "Battery Charger",
-        "valve" => "Valve Room",
-        "signal" => "Signal Array",
-        "airlock" => "Airlock",
-        _ => "Junction",
-    }
-}
-
-pub fn room_exits(room: &str) -> &'static [&'static str] {
-    match room {
-        "power" => &["junction", "charger"],
-        "junction" => &["power", "oxygen", "diagnostics", "airlock"],
-        "oxygen" => &["junction", "valve"],
-        "valve" => &["oxygen", "charger", "signal"],
-        "charger" => &["power", "valve", "signal"],
-        "signal" => &["valve", "charger", "airlock"],
-        "airlock" => &["junction", "signal"],
-        "diagnostics" => &["junction"],
-        _ => &[],
-    }
-}
-
-pub fn room_center(room: &str) -> Position {
-    match room {
-        "power" => Position { x: 2, y: 2 },
-        "junction" => Position { x: 6, y: 2 },
-        "oxygen" => Position { x: 10, y: 2 },
-        "diagnostics" => Position { x: 2, y: 6 },
-        "charger" => Position { x: 6, y: 6 },
-        "valve" => Position { x: 10, y: 6 },
-        "signal" => Position { x: 10, y: 8 },
-        "airlock" => Position { x: 6, y: 8 },
-        _ => Position { x: 6, y: 2 },
-    }
-}
-
 pub fn door_kind_for_step(source: Position, target: Position) -> Option<&'static str> {
     for (a, b, kind) in [
         (Position { x: 4, y: 2 }, Position { x: 5, y: 2 }, "open"),

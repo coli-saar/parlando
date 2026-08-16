@@ -10,14 +10,18 @@ use crate::{
     identity::new_id,
     readable_id::{dialogue_id, participant_id as readable_participant_id},
 };
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{bail, Result};
+#[cfg(any(test, feature = "internal-tools"))]
+use anyhow::{ensure, Context};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+#[cfg(any(test, feature = "internal-tools"))]
+use sqlx::Connection;
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
-    Connection, SqlitePool,
+    SqlitePool,
 };
 
 /// Returns the current UTC timestamp in ISO-8601/RFC3339 form.
@@ -127,7 +131,6 @@ pub struct StoredExperimentSummary {
     pub experiment_id: String,
     /// Exact semantic version required for activation.
     pub game_version: String,
-    pub study_name: Option<String>,
     pub created_at: String,
     pub status: String,
     pub server_version: Option<String>,
@@ -1301,6 +1304,7 @@ impl SqliteExperimentStore {
 }
 
 /// Row counts used to verify a complete game-catalogue merge.
+#[cfg(any(test, feature = "internal-tools"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct CatalogueRowCounts {
     /// Experiment catalogue rows.
@@ -1319,6 +1323,7 @@ pub struct CatalogueRowCounts {
     pub session_events: i64,
 }
 
+#[cfg(any(test, feature = "internal-tools"))]
 impl CatalogueRowCounts {
     /// Adds corresponding table counts for post-merge verification.
     fn checked_add(self, other: Self) -> Result<Self> {
@@ -1356,6 +1361,7 @@ impl CatalogueRowCounts {
 }
 
 /// Verification report for a dry-run or applied SQLite catalogue merge.
+#[cfg(any(test, feature = "internal-tools"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct CatalogueMergeReport {
     /// Target rows before importing the source catalogue.
@@ -1376,6 +1382,7 @@ pub struct CatalogueMergeReport {
 /// collisions and remaps source participant primary keys in one transaction.
 /// Callers should pass a consistent backup as `source_database_url` when the
 /// historical source file itself must remain untouched.
+#[cfg(any(test, feature = "internal-tools"))]
 pub async fn merge_sqlite_catalogues(
     target_database_url: &str,
     source_database_url: &str,
@@ -1492,6 +1499,7 @@ pub async fn merge_sqlite_catalogues(
 }
 
 /// Counts every experiment-scoped table in one attached SQLite schema.
+#[cfg(any(test, feature = "internal-tools"))]
 async fn catalogue_counts(
     connection: &mut sqlx::SqliteConnection,
     schema: &str,
@@ -1524,6 +1532,7 @@ async fn catalogue_counts(
 }
 
 /// Rejects stable identifiers that would make an import ambiguous or lossy.
+#[cfg(any(test, feature = "internal-tools"))]
 async fn reject_catalogue_collisions(
     connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
 ) -> Result<()> {
@@ -2083,15 +2092,6 @@ impl ExperimentStore for SqliteExperimentStore {
             Ok(StoredExperimentSummary {
                 experiment_id: row.0,
                 game_version: row.1,
-                study_name: serde_json::from_str::<Value>(&row.3)
-                    .ok()
-                    .and_then(|config| {
-                        config
-                            .get("study")
-                            .and_then(|study| study.get("name"))
-                            .and_then(Value::as_str)
-                            .map(str::to_string)
-                    }),
                 created_at: row.2,
                 server_version: row.4,
                 version_manifest: row
@@ -3115,7 +3115,6 @@ pub struct ParticipantSession {
     /// Immutable data-use purpose selected when participant intake opened.
     pub purpose: String,
     pub status: String,
-    pub study_id: Option<String>,
     pub consent_decisions: HashMap<String, bool>,
     pub created_at: String,
     pub updated_at: String,
@@ -3148,10 +3147,11 @@ pub struct GameRoom<S> {
     pub mode: String,
     /// Immutable data-use purpose shared by every participant in this room.
     pub purpose: String,
+    /// Recorded seed used to initialize this session's deterministic game state.
+    pub seed: u64,
     pub state: S,
     /// Runtime lifecycle status: `waiting`, `running`, `completed`, or `abandoned`.
     pub status: String,
-    pub study_id: Option<String>,
     pub participants: HashMap<String, RoomParticipant>,
     pub created_at: String,
     pub updated_at: String,
@@ -3187,7 +3187,7 @@ impl<S> Default for MemoryState<S> {
     }
 }
 
-impl<S: Clone + Serialize> MemoryState<S> {
+impl<S> MemoryState<S> {
     /// Creates and stores an active participant session after durable identity creation.
     pub fn create_participant(
         &mut self,
@@ -3195,7 +3195,6 @@ impl<S: Clone + Serialize> MemoryState<S> {
         research_id: String,
         source: String,
         purpose: String,
-        study_id: Option<String>,
     ) -> ParticipantSession {
         let now = now_iso();
         let participant = ParticipantSession {
@@ -3205,7 +3204,6 @@ impl<S: Clone + Serialize> MemoryState<S> {
             source,
             purpose,
             status: "created".to_string(),
-            study_id,
             consent_decisions: HashMap::new(),
             created_at: now.clone(),
             updated_at: now,

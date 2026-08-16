@@ -1149,12 +1149,11 @@
     ];
 
     const PARLANDO_CONFIG_SECTIONS = [
-      { title: 'Study', description: 'Participant-facing identity and session lifecycle limits.', fields: [
-        { path: 'study.name', label: 'Study name', help: 'Shown to participants; the administrator catalogue uses the experiment id.' },
-        { path: 'study.waiting_room_timeout_seconds', label: 'Waiting-room timeout (seconds)', help: 'Time before an unmatched room expires.', type: 'number', min: 1 },
-        { path: 'study.reconnect_grace_seconds', label: 'Reconnect grace (seconds)', help: 'Time a disconnected participant may return.', type: 'number', min: 0 },
-        { path: 'study.session_idle_timeout_seconds', label: 'Session idle timeout (seconds)', help: 'Time without meaningful activity before expiry.', type: 'number', min: 1 },
-        { path: 'study.session_max_lifetime_seconds', label: 'Maximum session lifetime (seconds)', help: 'Absolute lifetime, including waiting.', type: 'number', min: 1 }
+      { title: 'Session lifecycle', description: 'Timeouts applied uniformly to every session in this experiment.', fields: [
+        { path: 'session.waiting_room_timeout_seconds', label: 'Waiting-room timeout (seconds)', help: 'Time before an unmatched session expires.', type: 'number', min: 1 },
+        { path: 'session.reconnect_grace_seconds', label: 'Reconnect grace (seconds)', help: 'Time a disconnected player may return.', type: 'number', min: 0 },
+        { path: 'session.session_idle_timeout_seconds', label: 'Idle timeout (seconds)', help: 'Time without meaningful activity before an active session expires.', type: 'number', min: 1 },
+        { path: 'session.session_max_lifetime_seconds', label: 'Maximum lifetime (seconds)', help: 'Absolute session lifetime, including waiting.', type: 'number', min: 1 }
       ]},
       { title: 'Participant access and consent', description: 'Controls direct participant entry and the exact information presented before play.', fields: [
         { path: 'direct.enabled', label: 'Enable direct participant access', help: 'Allow participants to enter this experiment from its public participant page.', type: 'boolean' },

@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { type ConversationMessage, type VoicePreflight, type VoiceStatus } from "@coli-saar/parlando-client";
+import { type PlayerMessage, type VoicePreflight, type VoiceStatus } from "@coli-saar/parlando-client";
 import {
-  MicLevelMeter,
-  ParlandoStartupGate,
+  MicrophoneLevelMeter,
+  ParticipantApp,
   MicrophoneMuteButton,
-  participantMicrophoneLabel,
-  type ActiveParlandoSession
+  type GameSession
 } from "@coli-saar/parlando-client/react";
 import {
   cells,
@@ -17,14 +16,9 @@ import {
   roomById,
   roomRegions
 } from "./game/level";
-import {
-  availableActions,
-  deriveSystems,
-  describeAction,
-  initialState
-} from "./game/stateEngine";
+import { availableActions, deriveSystems, describeAction } from "./game/stateEngine";
 import type { DeviceDefinition, Direction, GameAction, PlayerId, Position, StationState } from "./game/types";
-import type { ObservationEvent, StationObservation } from "./game/types";
+import type { StationObservation } from "./game/types";
 const movementKeys: Record<string, Direction> = {
   arrowup: "up",
   arrowdown: "down",
@@ -32,12 +26,17 @@ const movementKeys: Record<string, Direction> = {
   arrowright: "right"
 };
 
-type SpaceGameSession = ActiveParlandoSession<StationState, StationObservation, GameAction, ObservationEvent>;
+/** Removes browser-added USB identifiers from the displayed microphone name. */
+function participantMicrophoneLabel(label: string): string {
+  return label.replace(/\s*[([][0-9a-f]{4}:[0-9a-f]{4}[)\]]\s*$/i, "").trim() || "Microphone";
+}
+
+type SpaceGameSession = GameSession<StationObservation, GameAction>;
 
 export function App() {
   return (
     <main className="app-shell">
-      <ParlandoStartupGate<StationState, StationObservation, GameAction, ObservationEvent>
+      <ParticipantApp<StationObservation, GameAction>
         renderGame={(session) => <ActiveSpaceGame session={session} />}
       />
     </main>
@@ -47,13 +46,12 @@ export function App() {
 function ActiveSpaceGame({ session }: { session: SpaceGameSession }) {
   const [preview, setPreview] = useState<ActionPreview | null>(null);
   const [chatDraft, setChatDraft] = useState("");
-  const state = session?.observation ?? session?.state ?? initialState;
+  const state = session.observation;
   const systems = useMemo(() => deriveSystems(state), [state]);
   const serverAvailableActions = session?.availableActions ?? [];
-  const eventLog = session?.events ?? [];
   const assignedRole = session?.role === "A" || session?.role === "B" ? session.role : null;
-  const audioStudy = Boolean(session.publicConfig.voice?.enabled);
-  const voiceStatus = session.voiceStatus;
+  const voiceEnabled = session.voiceEnabled;
+  const status = session.voiceStatus;
   const voicePreflight = session.voicePreflight;
   const onlineReady = true;
   const dispatch = useCallback(
@@ -66,7 +64,7 @@ function ActiveSpaceGame({ session }: { session: SpaceGameSession }) {
   const submitChat = useCallback(() => {
     const text = chatDraft.trim();
     if (!text || !session) return;
-    session.sendChatMessage(text);
+    session.sendMessage(text);
     setChatDraft("");
   }, [chatDraft, session]);
 
@@ -84,7 +82,7 @@ function ActiveSpaceGame({ session }: { session: SpaceGameSession }) {
       }
 
       if (key === "enter" && assignedRole) {
-        const firstAction = session.availableActions[0] ?? availableActions(state, assignedRole)[0];
+        const firstAction = session.availableActions?.[0] ?? availableActions(state, assignedRole)[0];
         if (firstAction) {
           event.preventDefault();
           dispatch(firstAction);
@@ -134,16 +132,16 @@ function ActiveSpaceGame({ session }: { session: SpaceGameSession }) {
         )}
         <section className="playfield-zone" aria-label="Top-down station playfield">
           <StationPlayfield preview={preview} state={state} systems={systems} />
-          <SharedConsole preview={preview} state={state} systems={systems} eventLog={eventLog} />
+          <SharedConsole preview={preview} state={state} systems={systems} />
           <CommunicationPanel
             chatDraft={chatDraft}
             conversation={session.conversation}
-            voiceEnabled={audioStudy}
+            enabled={voiceEnabled}
             onChatDraftChange={setChatDraft}
             onSubmitChat={submitChat}
-            onMicrophoneMutedChange={(muted) => void session.setMicrophoneMuted(muted).catch(() => undefined)}
+            onMutedChange={(muted) => void session.setMicrophoneMuted(muted).catch(() => undefined)}
             voicePreflight={voicePreflight}
-            voiceStatus={voiceStatus}
+            status={status}
           />
         </section>
         {assignedRole === "B" && (
@@ -241,53 +239,6 @@ function PlayerPanel({
       </section>
     </aside>
   );
-}
-
-interface OnlineSession {
-  participantSessionId: string;
-  roomId: string;
-  role: PlayerId | "spectator";
-  state: StationState | null;
-  observation: StationObservation;
-  availableActions: GameAction[];
-  eventLog: ObservationEvent[];
-  socket: WebSocket;
-  connected: boolean;
-  completed: boolean;
-  presence: PresenceState;
-  conversation: ConversationMessage[];
-}
-
-interface PresenceState {
-  A?: { participantSessionId?: string; connected?: boolean };
-  B?: { participantSessionId?: string; connected?: boolean };
-}
-
-function normalizePresence(presence: Record<string, unknown> | undefined): PresenceState {
-  return {
-    A: normalizeSeat(presence?.A),
-    B: normalizeSeat(presence?.B)
-  };
-}
-
-function normalizeSeat(value: unknown): PresenceState["A"] {
-  if (!value || typeof value !== "object") return undefined;
-  const record = value as Record<string, unknown>;
-  return {
-    participantSessionId:
-      typeof record.participantSessionId === "string" ? record.participantSessionId : undefined,
-    connected: Boolean(record.connected)
-  };
-}
-
-function appendConversation(current: ConversationMessage[], message: ConversationMessage): ConversationMessage[] {
-  if (current.some((candidate) => candidate.id === message.id)) return current;
-  return [...current, message].slice(-50);
-}
-
-function selectedAudioInputLabel(audioInputs: MediaDeviceInfo[], selectedAudioInputId: string): string {
-  if (!selectedAudioInputId) return "Default microphone";
-  return audioInputs.find((device) => device.deviceId === selectedAudioInputId)?.label || "Selected microphone";
 }
 
 function StationPlayfield({
@@ -411,19 +362,17 @@ function DeviceSprite({
 }
 
 function SharedConsole({
-  eventLog,
   preview,
   state,
   systems
 }: {
-  eventLog: ObservationEvent[];
   preview: ActionPreview | null;
   state: StationState;
   systems: ReturnType<typeof deriveSystems>;
 }) {
   const recentEvents =
-    eventLog.length > 0
-      ? eventLog.map((event) => event.text ?? event.type)
+    state.log.length > 0
+      ? state.log
       : ["Emergency lamps are on. The beacon checklist is dark: power, oxygen, access, signal."];
   return (
     <section className="console-grid simplified-console">
@@ -451,24 +400,24 @@ function SharedConsole({
 export function CommunicationPanel({
   chatDraft,
   conversation,
-  voiceEnabled,
+  enabled,
   onChatDraftChange,
   onSubmitChat,
-  onMicrophoneMutedChange,
+  onMutedChange,
   voicePreflight,
-  voiceStatus
+  status
 }: {
   chatDraft: string;
-  conversation: ConversationMessage[];
-  voiceEnabled: boolean;
+  conversation: PlayerMessage[];
+  enabled: boolean;
   onChatDraftChange: (value: string) => void;
   onSubmitChat: () => void;
-  onMicrophoneMutedChange: (muted: boolean) => void;
+  onMutedChange: (muted: boolean) => void;
   voicePreflight: VoicePreflight;
-  voiceStatus: VoiceStatus;
+  status: VoiceStatus;
 }) {
-  const textMessages = conversation.filter((message) => message.origin !== "voice_transcript").slice(-6);
-  if (!voiceEnabled) {
+  const textMessages = conversation.filter((message) => message.input === "text").slice(-6);
+  if (!enabled) {
     return (
       <section className="communication-panel" aria-label="Text chat">
         <div className="communication-header">
@@ -482,8 +431,8 @@ export function CommunicationPanel({
             <li className="conversation-empty">No chat yet.</li>
           ) : (
             textMessages.map((message) => (
-              <li className={`conversation-message origin-${message.origin}`} key={message.id}>
-                <span>{message.sender_role ?? labelForOrigin(message.origin)}</span>
+              <li className={`conversation-message input-${message.input}`} key={message.id}>
+                <span>Player {message.sender}</span>
                 <p>{message.text}</p>
               </li>
             ))
@@ -510,13 +459,13 @@ export function CommunicationPanel({
     );
   }
 
-  const microphoneMuted = voiceStatus.connected && !voiceStatus.microphoneEnabled;
-  const microphoneLive = voiceStatus.connected && voiceStatus.microphoneEnabled;
+  const microphoneMuted = status.connected && !status.microphoneEnabled;
+  const microphoneLive = status.connected && status.microphoneEnabled;
   const microphoneStateLabel = microphoneMuted
     ? "Muted"
     : microphoneLive
       ? "Live"
-      : voiceStatus.connecting
+      : status.connecting
         ? "Connecting"
         : "Offline";
   return (
@@ -526,9 +475,9 @@ export function CommunicationPanel({
           <p className="eyebrow">Microphone</p>
         </div>
         <MicrophoneMuteButton
-          voiceEnabled={voiceEnabled}
-          onMicrophoneMutedChange={onMicrophoneMutedChange}
-          voiceStatus={voiceStatus}
+          enabled={enabled}
+          onMutedChange={onMutedChange}
+          status={status}
         />
       </div>
       <div className="voice-feedback" aria-label="Voice diagnostics">
@@ -539,7 +488,7 @@ export function CommunicationPanel({
               {microphoneStateLabel}
             </span>
           </div>
-          <MicLevelMeter
+          <MicrophoneLevelMeter
             active={voicePreflight.micProbeActive}
             label="Level"
             level={voicePreflight.micLevel}
@@ -554,16 +503,9 @@ export function CommunicationPanel({
           </div>
         </div>
       </div>
-      {voiceStatus.error && <p className="voice-error" role="alert">{voiceStatus.error}</p>}
+      {status.error && <p className="voice-error" role="alert">{status.error}</p>}
     </section>
   );
-}
-
-function labelForOrigin(origin: ConversationMessage["origin"]): string {
-  if (origin === "voice_transcript") return "Voice";
-  if (origin === "agent") return "Agent";
-  if (origin === "system") return "System";
-  return "Text";
 }
 
 function SystemPill({ label, online }: { label: string; online: boolean }) {

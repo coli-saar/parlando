@@ -2,13 +2,9 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
-use parlando_server::{
-    audio::{AudioFrame, AUDIO_FRAME_BYTES},
-    config::SpeechmaticsConfig,
-    transcription::{
-        SpeechmaticsTranscriptionProvider, TranscriptionEvent, TranscriptionInput,
-        TranscriptionProvider, TranscriptionSessionContext,
-    },
+use parlando_server::test_support::{
+    AudioFrame, SpeechmaticsConfig, SpeechmaticsTranscriptionProvider, TranscriptionEvent,
+    TranscriptionInput, TranscriptionProvider, TranscriptionSessionContext, AUDIO_FRAME_BYTES,
 };
 use serde_json::{json, Value};
 use tokio::{net::TcpListener, sync::oneshot, time::Duration};
@@ -133,8 +129,6 @@ async fn speechmatics_adapter_obeys_streaming_protocol_without_external_service(
     })?;
     let mut session = provider
         .start_session(TranscriptionSessionContext {
-            room_id: "room-contract".to_string(),
-            participant_session_id: "speaker-contract".to_string(),
             role: "A".to_string(),
             language: "en-US".to_string(),
             model: "enhanced".to_string(),
@@ -154,10 +148,6 @@ async fn speechmatics_adapter_obeys_streaming_protocol_without_external_service(
             pcm: pcm.clone(),
         }))
         .await?;
-    assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(2), session.events.recv()).await?,
-        Some(TranscriptionEvent::Partial(text)) if text == "hello"
-    ));
     let final_utterance = tokio::time::timeout(Duration::from_secs(2), session.events.recv())
         .await?
         .unwrap();

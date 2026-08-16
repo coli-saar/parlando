@@ -436,7 +436,9 @@ Tradeoffs: The common path has one fewer control and respects the browser/system
 
 Follow-up risks: Verify the post-permission device list and stream replacement in current Chrome, Firefox, and Safari. If browsers expose duplicate concrete entries, selection may need stable deduplication using both labels and group identifiers.
 
-## 2026-08-14: Startup content is limited to current platform tasks
+## 2026-08-14: Startup content is limited to current platform tasks (superseded)
+
+This decision's `study_name` title handling was superseded on 2026-08-16 by deleting participant titles and using functional lifecycle headings. Its restriction of startup content remains useful historical context.
 
 Context: The shared startup gate accepted arbitrary eyebrow, setup-copy, waiting-copy, and game-hint labels. This allowed game clients to place in-game controls, stale instructions, and vague category labels on a platform screen whose immediate jobs are consent, browser preparation, and room entry. The public study configuration already supplies the authoritative game title.
 
@@ -446,7 +448,9 @@ Tradeoffs: Game clients can no longer add arbitrary marketing text or premature 
 
 Follow-up risks: If a future study needs essential pre-room instructions unrelated to consent or browser readiness, add a structured, purpose-specific platform field instead of restoring an unrestricted copy slot.
 
-## 2026-08-14: Platform identity and consent derive from authoritative configuration
+## 2026-08-14: Platform identity and consent derive from authoritative configuration (partly superseded)
+
+The 2026-08-16 public-API decision supersedes the `study.name` title behavior below. Institution and consent behavior remain current.
 
 Context: The simplified startup title needs to distinguish the Parlando platform, the operating university, and the game without repeating them in one large heading. Consent configuration also had two independent switches: `direct.require_consent` and `direct.consents`, which could disagree about whether declarations were displayed or enforced.
 
@@ -540,7 +544,9 @@ Tradeoffs: Stable identifier collisions abort a merge instead of guessing which 
 
 Follow-up risks: Future import tooling must retain the same preflight collision checks and atomic verification. Configuration migrations may later make selected historical experiments runnable again, but storage access must not become dependent on that migration.
 
-## 2026-08-15: The administrator dashboard mirrors game, experiment, and session ownership
+## 2026-08-15: The administrator dashboard mirrors game, experiment, and session ownership (partly superseded)
+
+The 2026-08-16 public-API decision supersedes the participant-facing `study.name` references below. The ownership hierarchy and dashboard layout remain current.
 
 Context: The dashboard accumulated experiment selection, per-experiment load telemetry, shared game settings, privacy status, and session inspection in one undifferentiated workspace. This obscured which data belonged to the compiled game process, one experiment, or one session, and encouraged labels that were richer than the server's actual lifecycle model.
 
@@ -669,3 +675,29 @@ Follow-up risks: Manually test a long mute and muting mid-utterance with each co
 Implementation detail: The repository test workflow builds the JavaScript package and then runs an otherwise ignored Rust cross-language contract. A line-delimited Node driver instantiates the production `ParlandoAudioSink` with only Web Audio replaced by deterministic boundary doubles, connects through a real WebSocket to the production Rust router, and lets the Rust test command capture, mute, unmute, and playback checks without timing sleeps. The test proves that muted capture reaches neither the partner socket nor the provider-neutral transcription input while partner playback remains active.
 
 Visual refinement: The compact game microphone widget shows the microphone state directly after the device name and repeats it in a small pill at the end of the level row, using green `Live` or red `Muted` rather than transcription readiness, which the startup gate already establishes before entering the game. The level track consumes the remaining row width up to the pill. The level remains animated while muted but uses a faint translucent grayscale treatment so participants can distinguish local input detection from audio transmission. A smaller mute button and subtle header divider keep the `Microphone` heading visually connected to the compact controls.
+
+## 2026-08-16: Public authoring API follows domain boundaries
+
+Context: The initial public Rust and JavaScript APIs exposed runtime composition, complete experiment configuration, provider implementations, storage records, protocol DTOs, duplicate game operations, authoritative state, and generic events. Names such as `GameAdapter`, `GameAgent`, and `ParlandoStartupGate` described implementation position rather than author tasks. The ecosystem is still small enough for one breaking cleanup, but existing games require an explicit migration.
+
+Decision: Make the supported Rust root `Game`, `GameMetadata`, `PlayerRole`, `ActionRejection`, `Server`, and the optional `agent` namespace. Model exactly two roles, independent of whether a human or agent controls them. Combine validation and transition in `Game::apply_action`, combine terminal detection and result in `completion`, and send only role-specific `Observation` to players. Remove generic game events; retain optional role-neutral `transition_metadata` because dashboard inspection and durable analysis logs are legitimate game extensions. Keep experiment configuration, participant information and consent, session limits, pairing, provider configuration, routers, storage, and protocol DTOs internal. Delete the configured participant title instead of moving it into another page configuration: shared lifecycle screens use functional headings, while each game frontend owns game-specific presentation. Register compiled agent factories on `Server` and let their definitions contribute narrow dashboard metadata.
+
+Use actions as the only player operation that changes game state. Treat messages as communication only between the two players; an agent may react by later proposing an action, but message delivery itself never invokes game mechanics. Replace optional response fields with a non-empty action/message enum. Construct an agent asynchronously from role, seed, and agent-owned settings before creating the initial game state, then deliver the first role-safe observation through `Agent::start`. Use `observe_transition` and `observe_message` for later input.
+
+Make the participant protocol versioned and frontend-neutral, with observation, transition, message, presence, completion, and narrow voice capability messages but no authoritative state or generic events. Offer `@coli-saar/parlando-client` and its `ParticipantApp` React layer as optional conveniences, not server dependencies. Use Game, Experiment, and Session consistently; Parlando does not model the broader research Study entity. Publish an explicit no-alias migration guide and an authoritative design-principles document.
+
+Participant transition messages carry the actor and the recipient's new observation but do not echo the submitted action. Rust and remote agents still receive accepted actions through `observe_transition`. The shared `Game::Completion` remains the game-specific termination payload sent to both roles and persisted for dashboards and exports; it can carry win/loss, winner, scores, or any other public result without a universal Parlando schema. Role-private terminal facts belong in the final observation. The game WebSocket accepts one clean client protocol—`ready`, `action`, `message`, `heartbeat`, and `leave`—and the obsolete WebSocket consent operation is deleted.
+
+Apply the same public-surface discipline to the example game crate. Export only `SpaceGame` and its registered `BackAndForthAgentFactory` from the crate root; keep mechanics modules internal, delete the unused presentation-shaped `SpaceEvent`, and call the terminal domain type `SpaceCompletion` rather than `SpaceSummary`.
+
+Record the participant wire design separately in `notes/message-protocol.md`. The public `docs/client-protocol.md` remains the operational reference, while the note captures why the variants exist, their delivery scopes and ordering, and the information that must not cross the frontend boundary. A final reviewer-oriented revision of all user-facing API documentation remains part of the API-cleanup handoff.
+
+Tradeoffs: Existing games, agents, custom clients, stored configuration imports, and tests must migrate in one step. A narrow API removes convenient access to internal provider and router seams, so a future external integration may require a new focused extension. `transition_metadata` permits useful domain analysis while deliberately excluding presentation-specific events. Parlando's integration fixtures remain available behind an unsupported `internal-tools` feature, but `test_support` is absent from default builds. TypeScript declaration stripping and the package export map keep internal protocol, audio, and test symbols outside the supported type surface, although compiled dependency files necessarily remain inside the package. The supported `ParticipantClient` owns the HTTP lifecycle and `ParticipantApp` owns the complete React transport lifecycle. Its experiment, room, and transport-plan results use JavaScript-style field names. The two transport-plan methods remain public for custom non-React applications, so their `GameSessionPlan` and `AudioSessionPlan` result types are explicitly exported rather than leaking unnamed wire DTOs.
+
+Follow-up risks: The runtime currently equates completion of `Factory::create(...).await` or remote `CreateAgent` with construction readiness. A synchronous model load inside an async implementation can occupy a runtime worker, and initialization timeout, cancellation, retry, and failure presentation are not yet an explicit lifecycle contract. Address this first in the next API change: define readiness, give initialization its own policy rather than reusing a turn timeout, and specify how blocking initialization is isolated. Preserve the chosen ordering—construct agent first, then deliver initial observation—and do not encode readiness as a game message or frontend-specific event.
+
+The participant protocol itself permits a non-React or separately hosted frontend, but the current `Server` builder intentionally stops at same-origin assets or a shared reverse-proxy origin. A browser frontend on a distinct origin still needs a focused public origin-allowlist method. Add that method as future server work without exposing the internal `ServerConfig` or weakening origin checks.
+
+Smaller deferred refinements are deliberately not part of this cleanup: make agent cleanup and first-decision ordering unconditional when readiness is redesigned; replace raw agent settings and browser-shaped string field kinds with typed semantic configuration if real consumers require it; move `internal-tools` behind a physically private crate if the feature boundary becomes burdensome; and introduce status or error codes only when localization or another frontend requires them. English participant status text is acceptable for now.
+
+The server no longer accepts a bootstrap experiment YAML file. The dashboard's revisioned database configuration is the only active experiment source of truth, so the unused include/environment-expansion loader, Space Game YAML examples, and broken `--config` development target were removed. An older YAML file is migration reference material: transfer its values through the dashboard and apply the documented `study` to `session` transformation.

@@ -1,19 +1,16 @@
-use std::{
-    collections::{HashMap, HashSet},
-    env, fs,
-    path::{Path, PathBuf},
-};
+use std::collections::{HashMap, HashSet};
 
-use anyhow::{anyhow, bail, Context, Result};
-use regex::Regex;
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Runtime-owned lifecycle limits for one game session.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct StudyConfig {
-    pub name: String,
+pub struct SessionConfig {
+    /// Maximum time a one-player room may wait for its second role.
     pub waiting_room_timeout_seconds: i64,
+    /// Maximum time a disconnected player may reclaim an active role.
     pub reconnect_grace_seconds: i64,
     /// Maximum inactivity allowed after a room starts before it is expired.
     pub session_idle_timeout_seconds: i64,
@@ -21,10 +18,10 @@ pub struct StudyConfig {
     pub session_max_lifetime_seconds: i64,
 }
 
-impl Default for StudyConfig {
+impl Default for SessionConfig {
+    /// Uses conservative lifecycle limits for a modest research deployment.
     fn default() -> Self {
         Self {
-            name: "experiment".to_string(),
             waiting_room_timeout_seconds: 10 * 60,
             reconnect_grace_seconds: 5 * 60,
             session_idle_timeout_seconds: 30 * 60,
@@ -288,7 +285,7 @@ pub struct AgentsConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct ExperimentConfig {
     pub experiment: ExperimentIdentityConfig,
-    pub study: StudyConfig,
+    pub session: SessionConfig,
     pub direct: DirectConfig,
     pub server: ServerConfig,
     pub database: DatabaseConfig,
@@ -311,7 +308,7 @@ impl Default for ExperimentConfig {
     fn default() -> Self {
         Self {
             experiment: ExperimentIdentityConfig::default(),
-            study: StudyConfig::default(),
+            session: SessionConfig::default(),
             direct: DirectConfig::default(),
             server: ServerConfig::default(),
             database: DatabaseConfig::default(),
@@ -329,23 +326,8 @@ impl Default for ExperimentConfig {
 }
 
 impl ExperimentConfig {
-    /// Loads an experiment configuration from YAML using the Python-compatible include semantics.
-    pub fn from_yaml(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref().canonicalize().with_context(|| {
-            format!("failed to resolve config path {}", path.as_ref().display())
-        })?;
-        let mut data = load_yaml_with_includes(&path, &mut vec![])?;
-        resolve_relative_paths(&mut data, &config_base_path(&path));
-        let config: Self = serde_json::from_value(data)?;
-        config.validate()?;
-        Ok(config)
-    }
-
     /// Validates cross-field requirements that cannot be expressed by serde defaults alone.
     pub fn validate(&self) -> Result<()> {
-        if self.study.name.trim().is_empty() {
-            bail!("study.name must not be empty");
-        }
         if self.experiment.id.as_ref().is_some_and(|id| {
             id.is_empty()
                 || id.chars().count() > 128
@@ -357,18 +339,18 @@ impl ExperimentConfig {
                 "experiment.id must contain 1 to 128 letters, digits, dots, dashes, or underscores"
             );
         }
-        if self.study.waiting_room_timeout_seconds <= 0 {
-            bail!("study.waiting_room_timeout_seconds must be positive");
+        if self.session.waiting_room_timeout_seconds <= 0 {
+            bail!("session.waiting_room_timeout_seconds must be positive");
         }
-        if self.study.reconnect_grace_seconds < 0 {
-            bail!("study.reconnect_grace_seconds must not be negative");
+        if self.session.reconnect_grace_seconds < 0 {
+            bail!("session.reconnect_grace_seconds must not be negative");
         }
-        if self.study.session_idle_timeout_seconds <= 0 {
-            bail!("study.session_idle_timeout_seconds must be positive");
+        if self.session.session_idle_timeout_seconds <= 0 {
+            bail!("session.session_idle_timeout_seconds must be positive");
         }
-        if self.study.session_max_lifetime_seconds < self.study.session_idle_timeout_seconds {
+        if self.session.session_max_lifetime_seconds < self.session.session_idle_timeout_seconds {
             bail!(
-                "study.session_max_lifetime_seconds must be at least study.session_idle_timeout_seconds"
+                "session.session_max_lifetime_seconds must be at least session.session_idle_timeout_seconds"
             );
         }
         if self.capacity.max_active_sessions == 0
@@ -506,15 +488,6 @@ impl ExperimentConfig {
         }
         issues
     }
-
-    /// Rejects activation when enabled hosted services cannot be constructed safely.
-    pub fn validate_activation_readiness(&self) -> Result<()> {
-        let issues = self.activation_issues();
-        if !issues.is_empty() {
-            bail!(issues.join(" "));
-        }
-        Ok(())
-    }
 }
 
 /// Rejects malformed hosted-service WebSocket URLs.
@@ -545,322 +518,15 @@ fn validate_http_url(field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn load_yaml_with_includes(path: &Path, seen: &mut Vec<PathBuf>) -> Result<Value> {
-    if seen.iter().any(|candidate| candidate == path) {
-        bail!("config include cycle detected at {}", path.display());
-    }
-    seen.push(path.to_path_buf());
-    let text = expand_env(&fs::read_to_string(path)?)?;
-    let yaml: serde_yaml::Value = serde_yaml::from_str(&text)?;
-    let mut data = serde_json::to_value(yaml)?;
-    let parent = take_field(&mut data, "extends");
-    let includes = take_field(&mut data, "includes").or_else(|| take_field(&mut data, "include"));
-
-    if let Some(parent) = parent {
-        let parent_path = resolve_include_path(path, value_to_path(&parent)?)?;
-        let parent_data = load_yaml_with_includes(&parent_path, seen)?;
-        data = deep_merge(parent_data, data);
-    }
-
-    for include in normalize_includes(includes)? {
-        let include_path = resolve_include_path(path, include.path)?;
-        if !include_path.exists() {
-            if include.optional {
-                continue;
-            }
-            return Err(anyhow!(
-                "config include not found: {}",
-                include_path.display()
-            ));
-        }
-        let include_data = load_yaml_with_includes(&include_path, seen)?;
-        data = deep_merge(data, include_data);
-    }
-
-    seen.pop();
-    Ok(data)
-}
-
-#[derive(Debug)]
-struct IncludeEntry {
-    path: PathBuf,
-    optional: bool,
-}
-
-fn normalize_includes(value: Option<Value>) -> Result<Vec<IncludeEntry>> {
-    let Some(value) = value else {
-        return Ok(vec![]);
-    };
-    let values = match value {
-        Value::Array(values) => values,
-        other => vec![other],
-    };
-    values
-        .into_iter()
-        .map(|value| match value {
-            Value::String(path) => Ok(IncludeEntry {
-                path: PathBuf::from(path),
-                optional: false,
-            }),
-            Value::Object(map) => {
-                let path = map
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .context("include entries need path")?;
-                let optional = map
-                    .get("optional")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                Ok(IncludeEntry {
-                    path: PathBuf::from(path),
-                    optional,
-                })
-            }
-            _ => bail!("includes must be strings or objects with path/optional"),
-        })
-        .collect()
-}
-
-fn take_field(value: &mut Value, field: &str) -> Option<Value> {
-    value.as_object_mut()?.remove(field)
-}
-
-fn value_to_path(value: &Value) -> Result<PathBuf> {
-    value
-        .as_str()
-        .map(PathBuf::from)
-        .context("include path must be a string")
-}
-
-fn resolve_include_path(config_path: &Path, include: PathBuf) -> Result<PathBuf> {
-    let resolved = if include.is_absolute() {
-        include
-    } else {
-        config_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(include)
-    };
-    Ok(resolved.canonicalize().unwrap_or(resolved))
-}
-
-fn deep_merge(base: Value, override_value: Value) -> Value {
-    match (base, override_value) {
-        (Value::Object(mut base), Value::Object(override_map)) => {
-            for (key, value) in override_map {
-                let merged = match base.remove(&key) {
-                    Some(base_value) => deep_merge(base_value, value),
-                    None => value,
-                };
-                base.insert(key, merged);
-            }
-            Value::Object(base)
-        }
-        (_, override_value) => override_value,
-    }
-}
-
-fn config_base_path(path: &Path) -> PathBuf {
-    if path
-        .parent()
-        .and_then(Path::file_name)
-        .and_then(|s| s.to_str())
-        == Some("config")
-    {
-        path.parent()
-            .and_then(Path::parent)
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf()
-    } else {
-        path.parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf()
-    }
-}
-
-fn resolve_relative_paths(data: &mut Value, base: &Path) {
-    if let Some(server) = data.get_mut("server").and_then(Value::as_object_mut) {
-        if let Some(path) = server.get("client_dist_path").and_then(Value::as_str) {
-            let path = PathBuf::from(path);
-            if !path.is_absolute() {
-                server.insert(
-                    "client_dist_path".to_string(),
-                    Value::String(base.join(path).display().to_string()),
-                );
-            }
-        }
-    }
-    if let Some(database) = data.get_mut("database").and_then(Value::as_object_mut) {
-        if let Some(url) = database.get("url").and_then(Value::as_str) {
-            if url.starts_with("sqlite:///")
-                && !url.starts_with("sqlite:////")
-                && url != "sqlite:///:memory:"
-            {
-                let raw = url.trim_start_matches("sqlite:///");
-                database.insert(
-                    "url".to_string(),
-                    Value::String(format!("sqlite:///{}", base.join(raw).display())),
-                );
-            }
-        }
-    }
-}
-
-/// Expands required environment placeholders and reports missing variables.
-fn expand_env(text: &str) -> Result<String> {
-    let pattern = Regex::new(r"\$\{([A-Z0-9_]+)\}").expect("valid env regex");
-    let missing = pattern
-        .captures_iter(text)
-        .map(|captures| captures[1].to_string())
-        .filter(|name| env::var(name).is_err())
-        .collect::<HashSet<_>>();
-    if !missing.is_empty() {
-        bail!(
-            "missing environment variables referenced by configuration: {}",
-            missing.into_iter().collect::<Vec<_>>().join(", ")
-        );
-    }
-    Ok(pattern
-        .replace_all(text, |captures: &regex::Captures| {
-            env::var(&captures[1]).expect("environment variable was checked above")
-        })
-        .to_string())
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{fs, sync::Mutex};
-
-    use tempfile::tempdir;
-
     use super::*;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Returns a minimal valid configuration for one-field boundary mutations.
     fn valid_config() -> ExperimentConfig {
         let mut config = ExperimentConfig::default();
         config.database.url = "sqlite:///:memory:".to_string();
         config
-    }
-
-    #[test]
-    fn yaml_extends_includes_env_and_relative_paths_match_expected_behavior() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        env::set_var("PARLANDO_TEST_STUDY", "Env Study");
-
-        let temp = tempdir().expect("tempdir");
-        let project = temp.path();
-        let config_dir = project.join("config");
-        fs::create_dir_all(&config_dir).expect("config dir");
-        fs::write(
-            config_dir.join("base.yaml"),
-            r#"
-study:
-  name: base
-direct:
-  participant_information_version: test-v1
-  participant_information_url: https://example.test/privacy
-  consents:
-    - id: study
-      title: Study
-      body: Agree?
-      required: true
-database:
-  url: sqlite:///data/parlando.sqlite
-server:
-  client_dist_path: dist
-"#,
-        )
-        .expect("base config");
-        fs::write(
-            config_dir.join("experiment.yaml"),
-            r#"
-extends: base.yaml
-includes:
-  - path: missing-private.yaml
-    optional: true
-study:
-  name: ${PARLANDO_TEST_STUDY}
-agents:
-  mode: human_vs_agent
-  human_vs_agent:
-    factory: space_game.back_and_forth
-"#,
-        )
-        .expect("experiment config");
-
-        let config =
-            ExperimentConfig::from_yaml(config_dir.join("experiment.yaml")).expect("config loads");
-
-        assert_eq!(config.study.name, "Env Study");
-        assert_eq!(config.direct.consents.len(), 1);
-        assert_eq!(config.agents.mode, AgentsMode::HumanVsAgent);
-        let canonical_project = config_dir
-            .canonicalize()
-            .expect("canonical config dir")
-            .parent()
-            .expect("project dir")
-            .to_path_buf();
-        assert_eq!(
-            config.server.client_dist_path.as_deref(),
-            Some(canonical_project.join("dist").to_str().unwrap())
-        );
-        assert_eq!(
-            config.database.url,
-            format!(
-                "sqlite:///{}",
-                canonical_project.join("data/parlando.sqlite").display()
-            )
-        );
-
-        env::remove_var("PARLANDO_TEST_STUDY");
-    }
-
-    #[test]
-    fn yaml_required_include_must_exist() {
-        let temp = tempdir().expect("tempdir");
-        let path = temp.path().join("experiment.yaml");
-        fs::write(&path, "includes: missing.yaml\n").expect("config");
-
-        let error = ExperimentConfig::from_yaml(path).expect_err("missing required include fails");
-
-        assert!(
-            error.to_string().contains("Config include not found")
-                || error.to_string().contains("config include not found")
-        );
-    }
-
-    /// Confirms misspelled or removed configuration fields fail closed.
-    #[test]
-    fn yaml_rejects_unknown_fields() {
-        let temp = tempdir().expect("tempdir");
-        let path = temp.path().join("experiment.yaml");
-        fs::write(
-            &path,
-            "database:\n  url: sqlite:///:memory:\ndirect:\n  allow_room_codes: true\n",
-        )
-        .expect("config");
-
-        ExperimentConfig::from_yaml(path).expect_err("unknown field fails");
-    }
-
-    /// Confirms unresolved credential placeholders cannot silently become empty strings.
-    #[test]
-    fn yaml_rejects_missing_environment_placeholders() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        env::remove_var("PARLANDO_TEST_MISSING_SECRET");
-        let temp = tempdir().expect("tempdir");
-        let path = temp.path().join("experiment.yaml");
-        fs::write(
-            &path,
-            "database:\n  url: sqlite:///:memory:\nspeechmatics:\n  api_key: ${PARLANDO_TEST_MISSING_SECRET}\n",
-        )
-        .expect("config");
-
-        let error = ExperimentConfig::from_yaml(path).expect_err("missing environment fails");
-
-        assert!(error.to_string().contains("PARLANDO_TEST_MISSING_SECRET"));
     }
 
     /// Confirms invalid floating-point agent timeouts are rejected before Duration conversion.
@@ -889,11 +555,10 @@ agents:
         config
             .validate()
             .expect("incomplete draft remains editable");
-        let error = config
-            .validate_activation_readiness()
-            .expect_err("missing api key prevents activation");
-
-        assert!(error.to_string().contains("ElevenLabs API key"));
+        assert!(config
+            .activation_issues()
+            .iter()
+            .any(|issue| issue.contains("ElevenLabs API key")));
     }
 
     /// Confirms that consent items require no separate enablement or metadata fields.
@@ -939,18 +604,18 @@ agents:
     #[test]
     fn validation_checks_timeout_boundaries() {
         let mut exact = valid_config();
-        exact.study.session_idle_timeout_seconds = 30;
-        exact.study.session_max_lifetime_seconds = 30;
-        exact.study.reconnect_grace_seconds = 0;
+        exact.session.session_idle_timeout_seconds = 30;
+        exact.session.session_max_lifetime_seconds = 30;
+        exact.session.reconnect_grace_seconds = 0;
         exact.validate().unwrap();
 
         for mutate in [
-            |config: &mut ExperimentConfig| config.study.waiting_room_timeout_seconds = 0,
-            |config: &mut ExperimentConfig| config.study.reconnect_grace_seconds = -1,
-            |config: &mut ExperimentConfig| config.study.session_idle_timeout_seconds = 0,
+            |config: &mut ExperimentConfig| config.session.waiting_room_timeout_seconds = 0,
+            |config: &mut ExperimentConfig| config.session.reconnect_grace_seconds = -1,
+            |config: &mut ExperimentConfig| config.session.session_idle_timeout_seconds = 0,
             |config: &mut ExperimentConfig| {
-                config.study.session_max_lifetime_seconds =
-                    config.study.session_idle_timeout_seconds - 1
+                config.session.session_max_lifetime_seconds =
+                    config.session.session_idle_timeout_seconds - 1
             },
         ] {
             let mut config = valid_config();

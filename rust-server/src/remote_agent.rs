@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, env, fmt, marker::PhantomData, time::Duration};
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use prost_types::{value::Kind, ListValue, NullValue, Struct, Value as ProstValue};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{Number, Value};
 use tonic::{
     metadata::{Ascii, MetadataValue},
@@ -13,37 +13,38 @@ use tonic::{
 };
 
 use crate::{
-    agents::{
-        AgentFactory, AgentInitContext, AgentParticipantIdentity, AgentResponse,
-        AgentUtteranceKind, GameAgent,
-    },
-    game::{GameAdapter, PlayerRole},
+    agents::{Agent, AgentContext, AgentFactory, AgentIdentity, AgentResponse},
+    game::{AgentConfigField, AgentDefinition, Game, PlayerRole},
 };
 
 /// Generated protobuf types and gRPC service clients for remote agents.
 pub mod pb {
-    tonic::include_proto!("parlando.agent.v2");
+    tonic::include_proto!("parlando.agent.v3");
 }
 
 use pb::{
-    agent_service_client::AgentServiceClient, CreateAgentRequest, DecisionRequest,
-    ObserveActionRequest, ObserveMessageRequest, ObserveStateRequest, ShutdownRequest,
-    UtteranceKind,
+    agent_service_client::AgentServiceClient, CreateAgentRequest, ObserveMessageRequest,
+    ObserveTransitionRequest, RespondRequest, ShutdownRequest, StartRequest,
 };
 
 /// Configuration for a remote gRPC agent backend.
-#[derive(Clone)]
-pub struct RemoteGrpcAgentConfig {
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoteGrpcAgentConfig {
     /// HTTP/2 endpoint for the remote agent service, such as `http://127.0.0.1:50051`.
     pub endpoint: String,
     /// Stable human-readable agent name stored in initialization requests.
+    #[serde(default = "default_agent_name")]
     pub agent_name: String,
     /// Stable agent version or fingerprint stored in initialization requests.
     pub agent_version: Option<String>,
     /// Remote-agent protocol version expected by this server.
+    #[serde(default = "default_protocol_version")]
     pub protocol_version: String,
     /// Per-request timeout for create and act calls.
+    #[serde(skip, default = "default_request_timeout")]
     pub request_timeout: Duration,
+    #[serde(skip)]
     auth_token: Option<String>,
 }
 
@@ -65,24 +66,19 @@ impl fmt::Debug for RemoteGrpcAgentConfig {
     }
 }
 
-impl RemoteGrpcAgentConfig {
-    /// Creates a remote-agent configuration with conservative default metadata.
-    pub fn new(endpoint: impl Into<String>, agent_name: impl Into<String>) -> Self {
-        Self {
-            endpoint: endpoint.into(),
-            agent_name: agent_name.into(),
-            agent_version: None,
-            protocol_version: "parlando-agent-v2".to_string(),
-            request_timeout: Duration::from_secs(5),
-            auth_token: env::var("PARLANDO_REMOTE_AGENT_TOKEN").ok(),
-        }
-    }
+/// Returns the default timeout used for individual remote-agent requests.
+fn default_request_timeout() -> Duration {
+    Duration::from_secs(5)
+}
 
-    /// Sets a runtime-only bearer token without exposing it through `Debug` or serialization.
-    pub fn with_auth_token(mut self, token: impl Into<String>) -> Self {
-        self.auth_token = Some(token.into());
-        self
-    }
+/// Returns the default semantic name for a dashboard-configured remote agent.
+fn default_agent_name() -> String {
+    "remote-agent".to_string()
+}
+
+/// Returns the current remote-agent protocol identifier.
+fn default_protocol_version() -> String {
+    "parlando-agent-v3".to_string()
 }
 
 #[derive(Clone)]
@@ -106,61 +102,87 @@ type AuthenticatedAgentClient =
     AgentServiceClient<InterceptedService<Channel, RemoteAuthInterceptor>>;
 
 /// Agent factory that adapts a gRPC service to Parlando's normal in-process trait.
-pub struct RemoteGrpcAgentFactory<A: GameAdapter> {
-    config: RemoteGrpcAgentConfig,
-    _adapter: PhantomData<A>,
-}
+pub struct RemoteGrpcAgentFactory<A: Game>(PhantomData<A>);
 
-impl<A: GameAdapter> RemoteGrpcAgentFactory<A> {
+impl<A: Game> RemoteGrpcAgentFactory<A> {
     /// Creates a factory that will instantiate one remote agent per room participant.
-    pub fn new(config: RemoteGrpcAgentConfig) -> Self {
-        Self {
-            config,
-            _adapter: PhantomData,
-        }
+    pub fn new() -> Self {
+        Self(PhantomData)
     }
 }
 
-impl<A: GameAdapter> AgentFactory<A> for RemoteGrpcAgentFactory<A> {
+impl<A: Game> Default for RemoteGrpcAgentFactory<A> {
+    /// Creates the dashboard-configured remote gRPC factory.
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl<A: Game> AgentFactory<A> for RemoteGrpcAgentFactory<A> {
+    /// Describes the standard remote gRPC agent choice for the dashboard.
+    fn definition(&self) -> AgentDefinition {
+        AgentDefinition {
+            id: "remote_grpc".to_string(),
+            name: "Remote gRPC agent".to_string(),
+            description: "Connects to an external agent process using the Parlando agent protocol."
+                .to_string(),
+            config_fields: vec![
+                AgentConfigField {
+                    key: "endpoint".to_string(),
+                    label: "Agent endpoint".to_string(),
+                    help: "HTTP/2 endpoint of the external agent process.".to_string(),
+                    kind: "url".to_string(),
+                    required: true,
+                    default_value: Value::String("http://127.0.0.1:50051".to_string()),
+                },
+                AgentConfigField {
+                    key: "agent_name".to_string(),
+                    label: "Agent name".to_string(),
+                    help: "Name recorded for the remote agent implementation.".to_string(),
+                    kind: "text".to_string(),
+                    required: true,
+                    default_value: Value::String("remote-agent".to_string()),
+                },
+            ],
+        }
+    }
+
     /// Creates one lazy remote-agent handle for a room participant.
-    fn create(&self, context: AgentInitContext) -> Result<Box<dyn GameAgent<A> + Send>> {
-        Ok(Box::new(RemoteGrpcAgent::<A> {
-            config: self.config.clone(),
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<A> + Send>> {
+        let config = remote_config_from_settings(&context.settings)?;
+        let mut agent = RemoteGrpcAgent::<A> {
+            config,
             init_context: context,
             client: None,
             agent_id: None,
             _adapter: PhantomData,
-        }))
+        };
+        agent.ensure_created().await?;
+        Ok(Box::new(agent))
     }
 
     /// Returns durable identity metadata for remote gRPC agents.
-    fn participant_identity(&self) -> AgentParticipantIdentity {
-        let mut metadata = serde_json::json!({
-            "agent_type": "remote_grpc",
-            "protocol_version": self.config.protocol_version,
-            "agent_name": self.config.agent_name,
-        });
-        if let Some(agent_version) = self.config.agent_version.as_deref() {
-            metadata["agent_version"] = serde_json::json!(agent_version);
-        }
-        AgentParticipantIdentity {
-            identity_provider: "remote_grpc".to_string(),
-            external_id: Some(
-                self.config
-                    .agent_version
-                    .as_ref()
-                    .map(|version| format!("{}@{}", self.config.agent_name, version))
-                    .unwrap_or_else(|| self.config.agent_name.clone()),
-            ),
-            metadata,
-        }
+    fn identity(&self, settings: &Value) -> Result<AgentIdentity> {
+        let config = remote_config_from_settings(settings)?;
+        Ok(AgentIdentity {
+            name: config.agent_name,
+            version: config.agent_version,
+        })
     }
 }
 
+/// Parses dashboard-owned settings and injects the process-local credential.
+fn remote_config_from_settings(settings: &Value) -> Result<RemoteGrpcAgentConfig> {
+    let mut config: RemoteGrpcAgentConfig = serde_json::from_value(settings.clone())?;
+    config.auth_token = env::var("PARLANDO_REMOTE_AGENT_TOKEN").ok();
+    Ok(config)
+}
+
 /// Per-room remote gRPC agent instance.
-pub struct RemoteGrpcAgent<A: GameAdapter> {
+pub struct RemoteGrpcAgent<A: Game> {
     config: RemoteGrpcAgentConfig,
-    init_context: AgentInitContext,
+    init_context: AgentContext,
     client: Option<AuthenticatedAgentClient>,
     agent_id: Option<String>,
     _adapter: PhantomData<A>,
@@ -168,7 +190,7 @@ pub struct RemoteGrpcAgent<A: GameAdapter> {
 
 impl<A> RemoteGrpcAgent<A>
 where
-    A: GameAdapter,
+    A: Game,
 {
     /// Connects to the remote service and sends the create-agent request once.
     async fn ensure_created(&mut self) -> Result<()> {
@@ -194,9 +216,9 @@ where
             protocol_version: self.config.protocol_version.clone(),
             agent_name: self.config.agent_name.clone(),
             agent_version: self.config.agent_version.clone().unwrap_or_default(),
-            role: self.init_context.role.clone(),
+            role: self.init_context.role.as_str().to_string(),
             seed: self.init_context.seed,
-            config: Some(json_to_struct(self.init_context.config.clone())?),
+            config: Some(json_to_struct(self.init_context.settings.clone())?),
         };
         let response =
             tokio::time::timeout(self.config.request_timeout, client.create_agent(request))
@@ -252,69 +274,58 @@ fn validate_remote_endpoint(endpoint: &str, has_auth_token: bool) -> Result<()> 
 }
 
 #[async_trait]
-impl<A> GameAgent<A> for RemoteGrpcAgent<A>
+impl<A> Agent<A> for RemoteGrpcAgent<A>
 where
-    A: GameAdapter,
+    A: Game,
     A::Action: DeserializeOwned + Serialize,
 {
-    /// Sends the current state snapshot to the remote agent.
-    async fn observe_state(&mut self, current_observation: A::Observation) -> Result<()> {
+    /// Delivers the first observation after the remote process has created the agent.
+    async fn start(&mut self, initial_observation: A::Observation) -> Result<()> {
         self.ensure_created().await?;
-        let agent_id = self.agent_id()?;
-        let request_timeout = self.config.request_timeout;
-        let client = self.client()?;
-        let request = ObserveStateRequest {
-            agent_id,
-            current_observation: Some(json_to_struct(serde_json::to_value(current_observation)?)?),
+        let request = StartRequest {
+            agent_id: self.agent_id()?,
+            observation: Some(json_to_struct(serde_json::to_value(initial_observation)?)?),
         };
-        tokio::time::timeout(request_timeout, client.observe_state(request))
+        tokio::time::timeout(self.config.request_timeout, self.client()?.start(request))
             .await
-            .context("remote agent observe_state timed out")?
-            .context("remote agent observe_state failed")?;
+            .context("remote agent start timed out")?
+            .context("remote agent start failed")?;
         Ok(())
     }
 
-    /// Sends an accepted action and resulting state snapshot to the remote agent.
-    async fn observe_action(
+    /// Sends an accepted action and resulting observation to the remote agent.
+    async fn observe_transition(
         &mut self,
         actor: PlayerRole,
         action: A::Action,
-        resulting_observation: A::Observation,
+        observation: A::Observation,
     ) -> Result<()> {
         self.ensure_created().await?;
         let agent_id = self.agent_id()?;
         let request_timeout = self.config.request_timeout;
         let client = self.client()?;
-        let request = ObserveActionRequest {
+        let request = ObserveTransitionRequest {
             agent_id,
             actor: actor.as_str().to_string(),
             action: Some(action_to_struct(action)?),
-            resulting_observation: Some(json_to_struct(serde_json::to_value(
-                resulting_observation,
-            )?)?),
+            observation: Some(json_to_struct(serde_json::to_value(observation)?)?),
         };
-        tokio::time::timeout(request_timeout, client.observe_action(request))
+        tokio::time::timeout(request_timeout, client.observe_transition(request))
             .await
-            .context("remote agent observe_action timed out")?
-            .context("remote agent observe_action failed")?;
+            .context("remote agent observe_transition timed out")?
+            .context("remote agent observe_transition failed")?;
         Ok(())
     }
 
     /// Sends a conversation utterance to the remote agent.
-    async fn observe_message(
-        &mut self,
-        speaker: PlayerRole,
-        kind: AgentUtteranceKind,
-        text: String,
-    ) -> Result<()> {
+    async fn observe_message(&mut self, sender: PlayerRole, text: String) -> Result<()> {
         self.ensure_created().await?;
         let agent_id = self.agent_id()?;
         let request_timeout = self.config.request_timeout;
         let client = self.client()?;
         let request = ObserveMessageRequest {
             agent_id,
-            speaker: speaker.as_str().to_string(),
-            kind: utterance_kind_to_proto(kind) as i32,
+            sender: sender.as_str().to_string(),
             text,
         };
         tokio::time::timeout(request_timeout, client.observe_message(request))
@@ -325,35 +336,19 @@ where
     }
 
     /// Optionally asks the remote agent for a response.
-    async fn maybe_act(
+    async fn respond(
         &mut self,
         available_actions: Option<Vec<A::Action>>,
     ) -> Result<Option<AgentResponse<A::Action>>> {
         self.ensure_created().await?;
         let request = self.decision_request(available_actions)?;
         let request_timeout = self.config.request_timeout;
-        let response = tokio::time::timeout(request_timeout, self.client()?.maybe_act(request))
+        let response = tokio::time::timeout(request_timeout, self.client()?.respond(request))
             .await
-            .context("remote agent maybe_act timed out")?
-            .context("remote agent maybe_act failed")?
+            .context("remote agent respond timed out")?
+            .context("remote agent respond failed")?
             .into_inner();
         response.response.map(proto_to_agent_response).transpose()
-    }
-
-    /// Requires the remote agent to return a response.
-    async fn act(
-        &mut self,
-        available_actions: Option<Vec<A::Action>>,
-    ) -> Result<AgentResponse<A::Action>> {
-        self.ensure_created().await?;
-        let request = self.decision_request(available_actions)?;
-        let request_timeout = self.config.request_timeout;
-        let response = tokio::time::timeout(request_timeout, self.client()?.act(request))
-            .await
-            .context("remote agent act timed out")?
-            .context("remote agent act failed")?
-            .into_inner();
-        proto_to_agent_response(response)
     }
 
     /// Releases the corresponding remote server instance on normal completion or cancellation.
@@ -376,7 +371,7 @@ where
 
 impl<A> RemoteGrpcAgent<A>
 where
-    A: GameAdapter,
+    A: Game,
     A::Action: Serialize,
 {
     /// Returns the remote agent id after creation.
@@ -397,14 +392,14 @@ where
     fn decision_request(
         &self,
         available_actions: Option<Vec<A::Action>>,
-    ) -> Result<DecisionRequest> {
+    ) -> Result<RespondRequest> {
         let available_actions_provided = available_actions.is_some();
         let available_actions = available_actions
             .unwrap_or_default()
             .into_iter()
             .map(action_to_struct::<A::Action>)
             .collect::<Result<Vec<_>>>()?;
-        Ok(DecisionRequest {
+        Ok(RespondRequest {
             agent_id: self.agent_id()?,
             available_actions_provided,
             available_actions,
@@ -412,27 +407,17 @@ where
     }
 }
 
-/// Converts an utterance kind to its protobuf representation.
-fn utterance_kind_to_proto(kind: AgentUtteranceKind) -> UtteranceKind {
-    match kind {
-        AgentUtteranceKind::Typed => UtteranceKind::Typed,
-        AgentUtteranceKind::Spoken => UtteranceKind::Spoken,
-        AgentUtteranceKind::Agent => UtteranceKind::Agent,
-    }
-}
-
 /// Converts a protobuf agent response into a typed Rust response.
 fn proto_to_agent_response<Action: DeserializeOwned>(
     response: pb::AgentResponse,
 ) -> Result<AgentResponse<Action>> {
-    let response = AgentResponse {
-        message: response.message,
-        action: response.action.map(struct_to_action).transpose()?,
-    };
-    if response.is_empty() {
-        bail!("remote agent returned an empty response");
+    let action = response.action.map(struct_to_action).transpose()?;
+    match (action, response.message) {
+        (Some(action), Some(message)) => Ok(AgentResponse::action_and_message(action, message)),
+        (Some(action), None) => Ok(AgentResponse::action(action)),
+        (None, Some(message)) => Ok(AgentResponse::message(message)),
+        (None, None) => bail!("remote agent returned an empty response"),
     }
-    Ok(response)
 }
 
 /// Serializes a typed action into a protobuf struct for the remote boundary.
@@ -519,54 +504,36 @@ fn prost_to_json(value: ProstValue) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::{GameAdapter, PlayerRole};
+    use crate::game::{Game, PlayerRole};
 
     struct TestAdapter;
 
-    impl GameAdapter for TestAdapter {
+    impl Game for TestAdapter {
+        type Config = Value;
         type State = Value;
         type Action = Value;
         type Observation = Value;
-        type Event = Value;
-        type Summary = Value;
+        type Completion = Value;
 
-        fn initial_state(&self) -> Self::State {
-            Value::Null
+        fn initial_state(&self, _config: &Self::Config, _seed: u64) -> Result<Self::State> {
+            Ok(Value::Null)
         }
 
-        fn validate_action(
+        fn apply_action(
             &self,
-            _state: &Self::State,
+            state: &Self::State,
             _action: &Self::Action,
-            _player: PlayerRole,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn apply_action(&self, state: &Self::State, _action: &Self::Action) -> Result<Self::State> {
+            _actor: PlayerRole,
+        ) -> std::result::Result<Self::State, crate::ActionRejection> {
             Ok(state.clone())
         }
 
-        fn observe_state(&self, state: &Self::State, _player: PlayerRole) -> Self::Observation {
+        fn observation(&self, state: &Self::State, _player: PlayerRole) -> Self::Observation {
             state.clone()
         }
 
-        fn events_for_action(
-            &self,
-            _before: &Self::State,
-            _after: &Self::State,
-            _action: &Self::Action,
-            _player: PlayerRole,
-        ) -> Vec<Self::Event> {
-            vec![]
-        }
-
-        fn is_complete(&self, _state: &Self::State) -> bool {
-            false
-        }
-
-        fn completion_summary(&self, state: &Self::State) -> Self::Summary {
-            state.clone()
+        fn completion(&self, _state: &Self::State) -> Option<Self::Completion> {
+            None
         }
     }
 
@@ -584,15 +551,15 @@ mod tests {
 
     #[test]
     fn remote_identity_does_not_invent_missing_agent_version() {
-        let factory = RemoteGrpcAgentFactory::<TestAdapter>::new(RemoteGrpcAgentConfig::new(
-            "http://127.0.0.1:50051",
-            "python-agent",
-        ));
-        let identity = factory.participant_identity();
+        let factory = RemoteGrpcAgentFactory::<TestAdapter>::new();
+        let identity = factory
+            .identity(&serde_json::json!({
+                "endpoint": "http://127.0.0.1:50051",
+                "agent_name": "python-agent"
+            }))
+            .unwrap();
 
-        assert_eq!(identity.metadata["agent_type"], "remote_grpc");
-        assert_eq!(identity.metadata["agent_name"], "python-agent");
-        assert!(identity.metadata.get("agent_version").is_none());
-        assert_eq!(identity.external_id.as_deref(), Some("python-agent"));
+        assert_eq!(identity.name, "python-agent");
+        assert_eq!(identity.version, None);
     }
 }

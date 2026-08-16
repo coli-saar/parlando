@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiBase, checkedJson, ExperimentApiClient, socketUrl } from "./protocol";
+import { apiBase, checkedJson, ParticipantClient, socketUrl } from "./protocol";
 
 /** Creates an externally resolvable response promise for request-order races. */
 function deferredResponse(): { promise: Promise<Response>; resolve: (response: Response) => void } {
@@ -13,14 +13,12 @@ function deferredResponse(): { promise: Promise<Response>; resolve: (response: R
 /** Creates one valid direct participant response. */
 function participantResponse(id: string, credential: string): Response {
   return new Response(JSON.stringify({
-    participant_session_id: id,
     participant_credential: credential,
-    participant_id: `research-${id}`,
-    source: "direct"
+    participant_id: `research-${id}`
   }), { status: 200 });
 }
 
-describe("ExperimentApiClient room helpers", () => {
+describe("ParticipantClient room helpers", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -57,25 +55,25 @@ describe("ExperimentApiClient room helpers", () => {
   it("creates a direct room for a participant", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({
-        participant_session_id: "participant-1",
         participant_credential: "credential-1",
-        source: "direct"
+        participant_id: "research-1"
       }), { status: 200, headers: { "Content-Type": "application/json" } }))
       .mockResolvedValueOnce(new Response(
         JSON.stringify({
           room_id: "ROOM1",
-          participant_session_id: "participant-1",
-          role: "A"
+          role: "A",
+          available_actions: null
         }),
         { status: 200, headers: { "Content-Type": "application/json" } }
       )
     );
-    const client = new ExperimentApiClient("http://server.test");
+    const client = new ParticipantClient({ baseUrl: "http://server.test" });
 
-    const participant = await client.createParticipant();
-    const room = await client.createRoom();
+    await client.register();
+    const room = await client.join();
 
-    expect(room.room_id).toBe("ROOM1");
+    expect(room.roomId).toBe("ROOM1");
+    expect(room.availableActions).toBeNull();
     expect(fetchMock).toHaveBeenLastCalledWith("http://server.test/api/rooms", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer credential-1" },
@@ -83,9 +81,59 @@ describe("ExperimentApiClient room helpers", () => {
     });
   });
 
+  it("runs the supported experiment, consent, audio, and game-plan lifecycle", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        experiment_status: "active",
+        consents: [],
+        voice: { enabled: true }
+      }), { status: 200 }))
+      .mockResolvedValueOnce(participantResponse("one", "credential-1"))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        enabled: true,
+        websocket_url: "/ws/audio/ROOM1",
+        token: "audio-ticket",
+        protocol_version: 1,
+        sample_rate_hz: 24_000,
+        channels: 1,
+        frame_duration_ms: 20,
+        jitter_buffer_ms: 100
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        websocket_url: "/ws/game/ROOM1",
+        token: "ticket"
+      }), { status: 200 }));
+    const client = new ParticipantClient({ baseUrl: "http://server.test" });
+
+    await expect(client.getExperiment()).resolves.toMatchObject({ status: "active" });
+    await client.register();
+    await client.acceptConsents({ research: true });
+    await expect(client.getAudioSession("ROOM1")).resolves.toEqual({
+      enabled: true,
+      websocketUrl: "/ws/audio/ROOM1",
+      token: "audio-ticket",
+      protocolVersion: 1,
+      sampleRateHz: 24_000,
+      channels: 1,
+      frameDurationMs: 20,
+      jitterBufferMs: 100
+    });
+    await expect(client.getGameSession("ROOM1")).resolves.toEqual({
+      websocketUrl: "/ws/game/ROOM1",
+      token: "ticket"
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "http://server.test/api/consent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer credential-1" },
+      body: JSON.stringify({ decisions: { research: true } })
+    });
+  });
+
   it("sends an explicit leave message only on an open game channel", () => {
     vi.stubGlobal("WebSocket", { OPEN: 1 });
-    const client = new ExperimentApiClient("http://server.test");
+    const client = new ParticipantClient({ baseUrl: "http://server.test" });
     const send = vi.fn();
 
     client.leaveSession({ readyState: 1, send } as unknown as WebSocket);
@@ -97,12 +145,12 @@ describe("ExperimentApiClient room helpers", () => {
 
   it("drops actions and chat on non-open or concurrently closing sockets", () => {
     vi.stubGlobal("WebSocket", { OPEN: 1 });
-    const client = new ExperimentApiClient("http://server.test");
+    const client = new ParticipantClient({ baseUrl: "http://server.test" });
     const closedSend = vi.fn();
     const throwingSend = vi.fn(() => { throw new Error("closed concurrently"); });
 
     expect(() => client.sendAction({ readyState: 3, send: closedSend } as unknown as WebSocket, {})).not.toThrow();
-    expect(() => client.sendChatMessage({ readyState: 1, send: throwingSend } as unknown as WebSocket, "hi")).not.toThrow();
+    expect(() => client.sendMessage({ readyState: 1, send: throwingSend } as unknown as WebSocket, "hi")).not.toThrow();
     expect(closedSend).not.toHaveBeenCalled();
     expect(throwingSend).toHaveBeenCalledOnce();
   });
@@ -113,25 +161,25 @@ describe("ExperimentApiClient room helpers", () => {
     vi.spyOn(globalThis, "fetch")
       .mockImplementationOnce(() => old.promise)
       .mockImplementationOnce(() => current.promise)
-      .mockResolvedValueOnce(new Response(JSON.stringify({ room_id: "room", participant_session_id: "new", role: "A" }), { status: 200 }));
-    const client = new ExperimentApiClient("http://server.test");
+      .mockResolvedValueOnce(new Response(JSON.stringify({ room_id: "room", role: "A", available_actions: null }), { status: 200 }));
+    const client = new ParticipantClient({ baseUrl: "http://server.test" });
 
-    const oldRequest = client.createParticipant();
-    const currentRequest = client.createParticipant();
+    const oldRequest = client.register();
+    const currentRequest = client.register();
     current.resolve(participantResponse("new", "new-credential"));
     await currentRequest;
     old.resolve(participantResponse("old", "old-credential"));
     await oldRequest;
-    await client.createRoom();
+    await client.join();
 
     expect(fetch).toHaveBeenLastCalledWith("http://server.test/api/rooms", expect.objectContaining({
       headers: expect.objectContaining({ Authorization: "Bearer new-credential" })
     }));
   });
 
-  it("rejects authenticated calls before participant creation", () => {
-    const client = new ExperimentApiClient("http://server.test");
-    expect(() => client.createRoom()).toThrow("No participant credential");
+  it("rejects authenticated calls before participant creation", async () => {
+    const client = new ParticipantClient({ baseUrl: "http://server.test" });
+    await expect(client.join()).rejects.toThrow("No participant credential");
   });
 });
 

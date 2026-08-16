@@ -1,5 +1,5 @@
 """Public Python API for implementing Parlando remote agents."""
 
-from .server import AgentResponse, GameAgent, serve_agent
+from .server import Agent, Context, PlayerRole, Response, serve
 
-__all__ = ["AgentResponse", "GameAgent", "serve_agent"]
+__all__ = ["Agent", "Context", "PlayerRole", "Response", "serve"]

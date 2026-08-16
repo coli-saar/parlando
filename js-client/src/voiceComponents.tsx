@@ -4,7 +4,7 @@ import { initialVoiceStatus } from "./audio/types.js";
 import { transcriptionProgressForStatus } from "./helpers.js";
 
 /** Renders a normalized local microphone level, with a colorless fill while transport-muted. */
-export function MicLevelMeter({
+export function MicrophoneLevelMeter({
   active,
   label,
   level,
@@ -28,29 +28,29 @@ export function MicLevelMeter({
 
 /** Renders the shared hosted-transcription readiness progression. */
 export function TranscriptionProgress({
-  gameConnected = true,
-  voiceStatus = initialVoiceStatus
+  connected = true,
+  status = initialVoiceStatus
 }: {
-  gameConnected?: boolean;
-  voiceStatus?: VoiceStatus;
+  connected?: boolean;
+  status?: VoiceStatus;
 }) {
   const progress = useMemo(
-    () => transcriptionProgressForStatus(voiceStatus.transcriptionMessage, voiceStatus.transcriptionReady),
-    [voiceStatus.transcriptionMessage, voiceStatus.transcriptionReady]
+    () => transcriptionProgressForStatus(status.transcriptionMessage, status.transcriptionReady),
+    [status.transcriptionMessage, status.transcriptionReady]
   );
-  const transportStarted = gameConnected && (voiceStatus.connecting || voiceStatus.connected);
-  const heading = !gameConnected
+  const transportStarted = connected && (status.connecting || status.connected);
+  const heading = !connected
     ? "Waiting for game connection"
     : !transportStarted
       ? "Preparing voice connection"
-      : voiceStatus.transcriptionReady
+      : status.transcriptionReady
         ? "Transcription ready"
         : "Waiting for transcription service";
-  const detail = !gameConnected
+  const detail = !connected
     ? "Transcription has not started."
     : !transportStarted
       ? "Transcription starts after the voice transport connects."
-      : voiceStatus.transcriptionMessage;
+      : status.transcriptionMessage;
   return (
     <div className="transcription-progress" aria-label="Transcription service progress">
       <div>
