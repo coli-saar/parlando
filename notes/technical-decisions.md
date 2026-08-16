@@ -743,3 +743,13 @@ Migration documentation: Use `docs/migrating-0.2-to-0.3.md` as the task-oriented
 Generator correction: Version discovery treats `parlando` and `@coli-saar/parlando-client` as a coordinated pair. During staggered publication of a future release, generated code may use the repository's aligned manifest versions only for explicit release preparation and must report that external registry builds remain blocked. It must not combine different Parlando minor versions or substitute the obsolete `parlando-server` package. Agent guidance also names the actual Rust and Python shutdown hooks and their different combined-response constructors.
 
 Publication status: Both `parlando` and `@coli-saar/parlando-client` 0.3.0 are published. Normal generated games now resolve the coordinated release directly from crates.io and npm; the unpublished-version fallback remains only for explicit future release-preparation work.
+
+## 2026-08-16: Expensive integration tests remain local feature-gated targets
+
+Context: The `mock_client_smoke` and `speechmatics_contract` integration tests exercise expensive internal test infrastructure and should remain runnable by maintainers without being included in the crates.io source package. Explicit `[[test]]` targets in `Cargo.toml` pointed at files excluded by `tests/**`, causing Cargo to warn during packaging.
+
+Decision: Place both integration tests in the repository-only `rust-server-tests` crate, which has `publish = false` and depends on the main crate with `internal-tools` enabled. Keep `tests/**` excluded from the published package and retain the `internal-tools` feature because the tests consume the crate's opt-in `test_support` API. Run the local test crate from the top-level Rust test target.
+
+Tradeoffs: The local tests have their own small manifest and lockfile, so their direct test dependencies must be maintained explicitly. In return, local test execution remains available, the expensive targets are clearly separated from the reusable crate, and the published manifest has no targets referring to omitted files.
+
+Follow-up risks: Add future expensive integration tests to the repository-only crate and keep its dependency versions aligned with the main crate where protocol compatibility matters. If internal test support grows independently from stress tooling, consider splitting the feature into narrower `test-support` and tool-specific features.

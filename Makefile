@@ -3,6 +3,7 @@ SHELL := /bin/bash
 PARLANDO_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
 RUST_SERVER_DIR := $(PARLANDO_DIR)/rust-server
+RUST_SERVER_TESTS_DIR := $(PARLANDO_DIR)/rust-server-tests
 JS_CLIENT_DIR := $(PARLANDO_DIR)/js-client
 NPM_CACHE ?= $(PARLANDO_DIR)/.local/npm-cache
 
@@ -17,6 +18,7 @@ test: test-rust test-client-server test-python
 # Runs the Rust unit, integration, protocol, and documentation tests.
 test-rust:
 	cd "$(RUST_SERVER_DIR)" && cargo test --all-features
+	cd "$(RUST_SERVER_TESTS_DIR)" && cargo test
 
 # Runs browser-client tests, type compilation, and the coverage regression gate.
 test-js-client:
