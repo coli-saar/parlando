@@ -758,7 +758,7 @@ fn player_state_mut<'a>(state: &'a mut SpaceGameState, player: &str) -> &'a mut 
 
 #[cfg(test)]
 mod tests {
-    use parlando_server::{Game, PlayerRole};
+    use parlando::{Game, PlayerRole};
     use serde_json::json;
 
     use crate::game::adapter::SpaceGame;

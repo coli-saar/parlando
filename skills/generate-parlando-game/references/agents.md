@@ -4,7 +4,7 @@ Agents control A or B with the same observations, actions, and rules as humans. 
 
 ## Rust
 
-Implement `parlando_server::agent::Agent<G>` and `Factory<G>`. `Factory::definition` supplies dashboard metadata. `create(Context { role, seed, settings })` is async and constructs one session-local agent before game delivery. `identity(settings)` supplies semantic name/version.
+Implement `parlando::agent::Agent<G>` and `Factory<G>`. `Factory::definition` supplies dashboard metadata. `create(Context { role, seed, settings })` is async and constructs one session-local agent before game delivery. `identity(settings)` supplies semantic name/version.
 
 Implement callbacks as needed:
 

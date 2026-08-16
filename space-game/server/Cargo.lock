@@ -1318,8 +1318,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "parlando-server"
-version = "0.2.0"
+name = "parlando"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1361,7 +1361,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
- "parlando-server",
+ "parlando",
  "rand",
  "semver",
  "serde",

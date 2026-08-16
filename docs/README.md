@@ -11,7 +11,7 @@ records the experiment revision and game version that produced it.
 
 Choose a path according to the task you need to perform.
 
-The [Design Principles](design-principles.md) are authoritative for public boundaries and terminology. Existing 0.2 games should follow [Migrating to the Clean API](migrating-to-clean-api.md).
+The [Design Principles](design-principles.md) are authoritative for public boundaries and terminology. Existing 0.2 games should start with [Migrate a Parlando Game from 0.2 to 0.3](migrating-0.2-to-0.3.md); its steps link to [Migrating Games to the Clean Parlando API](migrating-to-clean-api.md) for the complete symbol and behavior mapping.
 
 ## Create a dialogue game
 
@@ -75,4 +75,4 @@ controller, legal basis, retention, provider agreements, and release approval.
 ## Maintainer reference
 
 [Publishing Packages](publishing-packages.md) covers local package smoke tests and
-publishing for `parlando-server` and `@coli-saar/parlando-client`.
+publishing for `parlando` and `@coli-saar/parlando-client`.

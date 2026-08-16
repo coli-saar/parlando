@@ -9,7 +9,7 @@ Implement `agent::Agent<G>` and create session-local instances with `agent::Fact
 ```rust
 use anyhow::Result;
 use async_trait::async_trait;
-use parlando_server::{
+use parlando::{
     agent::{Agent, Context, Definition, Factory, Identity, Response},
     PlayerRole,
 };
@@ -93,7 +93,7 @@ class FirstActionAgent(Agent):
 serve(FirstActionAgent, host="127.0.0.1", port=50051)
 ```
 
-Register `parlando_server::agent::grpc::Factory::<MyGame>::new()` on the Rust server and configure its endpoint and identity through the dashboard.
+Register `parlando::agent::grpc::Factory::<MyGame>::new()` on the Rust server and configure its endpoint and identity through the dashboard.
 
 ## Readiness follow-up
 

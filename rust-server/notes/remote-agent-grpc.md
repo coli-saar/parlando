@@ -55,7 +55,7 @@ WebSocket remains a possible future lightweight transport, but it should not be 
 
 ## Current Implementation
 
-- `parlando-server` exposes `agent::grpc::Factory<A>`; its transport settings remain private.
+- `parlando` exposes `agent::grpc::Factory<A>`; its transport settings remain private.
 - The factory implements the same `agent::Factory<A>` trait as in-process Rust agents.
 - `RemoteGrpcAgent` lazily connects to the configured gRPC endpoint, sends one `CreateAgent` request, forwards observations through `Start`, `ObserveTransition`, and `ObserveMessage`, delivers the shared terminal result through `Finish`, and asks for responses through `Respond`.
 - Returned actions are deserialized into the game-specific Rust action type and still pass through normal server validation before changing game state.

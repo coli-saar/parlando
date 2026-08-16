@@ -4,7 +4,7 @@ This page is for maintainers publishing Parlando packages and for game authors d
 
 Parlando has two reusable packages:
 
-- `parlando-server`: Rust library crate under `rust-server`, published to crates.io.
+- `parlando`: Rust library crate under `rust-server`, published to crates.io.
 - `@coli-saar/parlando-client`: browser SDK under `js-client`, published to npm.
 
 The intended dependency model is deliberately simple:
@@ -17,10 +17,10 @@ The intended dependency model is deliberately simple:
 
 ### Rust: crates.io
 
-Rust libraries are distributed as crates. `parlando-server` is published to crates.io, the default Cargo registry. A game normally writes:
+Rust libraries are distributed as crates. `parlando` is published to crates.io, the default Cargo registry. A game normally writes:
 
 ```toml
-parlando-server = "0.2.0"
+parlando = "0.3.0"
 ```
 
 Cargo resolves that version from crates.io and records the exact selected version in `Cargo.lock`. `cargo publish --dry-run` checks the crate contents, builds the packaged crate, and verifies what would be uploaded. `cargo publish` uploads the crate. crates.io versions are immutable, so a version cannot be overwritten after publishing.
@@ -30,7 +30,7 @@ Cargo resolves that version from crates.io and records the exact selected versio
 Browser SDK packages are distributed through npm. `@coli-saar/parlando-client` is published to the public npm registry under the `coli-saar` scope. A game normally writes:
 
 ```json
-"@coli-saar/parlando-client": "^0.2.0"
+"@coli-saar/parlando-client": "^0.3.0"
 ```
 
 npm resolves that dependency from the configured npm registry, normally `https://registry.npmjs.org/`, and records the exact package tarball and integrity in `package-lock.json`. `npm publish --dry-run` runs the package `prepack` script, builds the SDK, creates the tarball, and reports what would be uploaded. `npm publish` uploads the package. Published npm versions are effectively immutable for normal release workflow, so bump the package version before each release.
@@ -50,17 +50,17 @@ That makes the scoped npm package public when it is published.
 Use released registry packages in normal game repositories:
 
 ```toml
-parlando-server = "0.2.0"
+parlando = "0.3.0"
 ```
 
 ```json
-"@coli-saar/parlando-client": "^0.2.0"
+"@coli-saar/parlando-client": "^0.3.0"
 ```
 
 This is the only dependency style that should be committed for a game release or deployment. It gives clean provenance through the package manifests and lockfiles:
 
 ```bash
-cargo tree -i parlando-server
+cargo tree -i parlando
 npm ls @coli-saar/parlando-client
 ```
 
@@ -74,7 +74,7 @@ Rust game server:
 
 ```toml
 # Temporary local debug dependency. Do not commit to release branches.
-parlando-server = { path = "/absolute/path/to/parlando/rust-server" }
+parlando = { path = "/absolute/path/to/parlando/rust-server" }
 ```
 
 JavaScript game client:
@@ -175,19 +175,19 @@ npm config set registry https://registry.npmjs.org/
 Before committing a game release, remove temporary local dependencies:
 
 ```toml
-parlando-server = "0.2.0"
+parlando = "0.3.0"
 ```
 
 ```json
-"@coli-saar/parlando-client": "^0.2.0"
+"@coli-saar/parlando-client": "^0.3.0"
 ```
 
 Then refresh and verify:
 
 ```bash
-cargo update -p parlando-server
+cargo update -p parlando
 npm install
-cargo tree -i parlando-server
+cargo tree -i parlando
 npm ls @coli-saar/parlando-client
 ```
 

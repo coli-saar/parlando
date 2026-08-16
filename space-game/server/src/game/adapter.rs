@@ -1,5 +1,5 @@
 use anyhow::Result;
-use parlando_server::{ActionRejection, Game, PlayerRole};
+use parlando::{ActionRejection, Game, PlayerRole};
 use serde::{Deserialize, Serialize};
 
 use super::state_engine::{

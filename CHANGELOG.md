@@ -2,7 +2,7 @@
 
 All notable changes to Parlando releases are tracked in this file.
 
-The format is based on Keep a Changelog, and this project uses semantic versioning for the published Rust server crate and JavaScript client package.
+The format is based on Keep a Changelog, and this project uses semantic versioning for the published Rust crate and JavaScript client package.
 
 ## Unreleased
 
@@ -17,6 +17,7 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ### Changed
 
+- Renamed the published Rust package from `parlando-server` to `parlando` and bumped both `parlando` and `@coli-saar/parlando-client` to 0.3.0. Game crates now import the Rust API through `parlando::...`.
 - Replaced the ambiguous client `toggleVoice` operation with explicit reconnect-safe microphone muting. Muting now gates PCM and the cloned transport track while retaining playback and a live, colorless local level meter with an explicit participant-facing state label.
 - Made each server process own one compiled game implementation and any number of experiments for that exact game version. Startup resets every experiment to `inactive`; the authenticated dashboard explicitly activates or deactivates each intake, and deactivation leaves existing sessions connected.
 - Moved experiment configuration into database-backed dashboard editing. Listener port, database location, client bundle, and provider credentials remain process bootstrap settings rather than experiment revisions.

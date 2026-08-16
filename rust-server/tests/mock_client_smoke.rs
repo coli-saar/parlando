@@ -8,7 +8,7 @@ use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
-use parlando_server::{
+use parlando::{
     agent::grpc::Factory as RemoteGrpcAgentFactory,
     agent::{
         Agent, Context as AgentContext, Definition as AgentDefinition, Factory as AgentFactory,

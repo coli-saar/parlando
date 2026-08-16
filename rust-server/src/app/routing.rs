@@ -501,7 +501,7 @@ where
             id: "embedded-game".to_string(),
             name: "Embedded game".to_string(),
             version: semver::Version::parse(env!("CARGO_PKG_VERSION"))
-                .expect("parlando-server package version is semantic"),
+                .expect("parlando package version is semantic"),
             build_manifest: options.game_version_manifest.clone().unwrap_or(Value::Null),
         });
     game_descriptor.validate()?;

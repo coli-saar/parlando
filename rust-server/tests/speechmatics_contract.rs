@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
-use parlando_server::test_support::{
+use parlando::test_support::{
     AudioFrame, SpeechmaticsConfig, SpeechmaticsTranscriptionProvider, TranscriptionEvent,
     TranscriptionInput, TranscriptionProvider, TranscriptionSessionContext, AUDIO_FRAME_BYTES,
 };

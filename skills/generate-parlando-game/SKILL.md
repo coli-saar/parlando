@@ -1,6 +1,6 @@
 ---
 name: generate-parlando-game
-description: Generate Parlando dialogue games using the published parlando-server runtime and @coli-saar/parlando-client React participant application. Use when creating, porting, or iterating on a Parlando game.
+description: Generate Parlando dialogue games using the published parlando runtime and @coli-saar/parlando-client React participant application. Use when creating, porting, or iterating on a Parlando game.
 ---
 
 # Generate Parlando Game
@@ -9,7 +9,7 @@ Generate a complete two-player game using published registry packages. Read `ref
 
 ## Discover versions
 
-Query crates.io for `parlando-server` and npm for `@coli-saar/parlando-client`. If unavailable, use the repository's current package versions and disclose that fallback.
+Query crates.io for `parlando` and npm for `@coli-saar/parlando-client`. If unavailable, use the repository's current package versions and disclose that fallback.
 
 ## Clarify only domain choices
 

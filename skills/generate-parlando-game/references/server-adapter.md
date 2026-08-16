@@ -1,6 +1,6 @@
 # Parlando Rust game reference
 
-Consume the published `parlando-server` crate. The supported author API is `Game`, `GameMetadata`, `PlayerRole`, `ActionRejection`, `Server`, and the optional `agent` namespace.
+Consume the published `parlando` crate. The supported author API is `Game`, `GameMetadata`, `PlayerRole`, `ActionRejection`, `Server`, and the optional `agent` namespace.
 
 ## Contract
 

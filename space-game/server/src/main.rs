@@ -2,7 +2,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use anyhow::Result;
 use clap::Parser;
-use parlando_server::{agent::grpc::Factory as RemoteGrpcAgentFactory, GameMetadata, Server};
+use parlando::{agent::grpc::Factory as RemoteGrpcAgentFactory, GameMetadata, Server};
 use parlando_space_game::{BackAndForthAgentFactory, SpaceGame};
 use serde_json::{json, Value};
 

@@ -135,8 +135,10 @@ observation to each role when the task contains private information.
 
 Start with [Building a Game](docs/building-games.md), or use the included
 `generate-parlando-game` skill to generate a game crate and React client from a
-task description. The Space Game implementation in `space-game/server` and
-`space-game/client` is a complete reference.
+task description. To upgrade an existing 0.2 game, follow [Migrate a Parlando
+Game from 0.2 to 0.3](docs/migrating-0.2-to-0.3.md). The Space Game
+implementation in `space-game/server` and `space-game/client` is a complete
+reference.
 
 ### Configure the experiments
 

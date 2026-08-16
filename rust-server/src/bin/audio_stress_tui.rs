@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
-use parlando_server::test_support::{
+use parlando::test_support::{
     AudioFrame, AudioOutbound, AudioRoomRegistry, AUDIO_FRAME_BYTES, AUDIO_OUTBOUND_QUEUE_CAPACITY,
 };
 use ratatui::{

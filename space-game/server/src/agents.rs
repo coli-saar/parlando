@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use parlando_server::{
+use parlando::{
     agent::{
         Agent, Context as AgentContext, Definition as AgentDefinition, Factory as AgentFactory,
         Identity as AgentIdentity, Response,
@@ -339,7 +339,7 @@ impl BackAndForthAgent {
 
 #[cfg(test)]
 mod tests {
-    use parlando_server::{agent::Context as AgentContext, Game, PlayerRole};
+    use parlando::{agent::Context as AgentContext, Game, PlayerRole};
 
     use crate::game::state_engine::initial_state;
 

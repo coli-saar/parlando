@@ -4,11 +4,11 @@ A Parlando game has three independent parts: typed Rust mechanics, a participant
 
 ## Implement `Game`
 
-Define serializable `Config`, `State`, `Action`, `Observation`, and `Completion` types, then implement `parlando_server::Game`. `Action` and `Completion` must also implement `Clone` because the runtime delivers each accepted action and terminal result to both controllers.
+Define serializable `Config`, `State`, `Action`, `Observation`, and `Completion` types, then implement `parlando::Game`. `Action` and `Completion` must also implement `Clone` because the runtime delivers each accepted action and terminal result to both controllers.
 
 ```rust
 use anyhow::Result;
-use parlando_server::{ActionRejection, Game, PlayerRole};
+use parlando::{ActionRejection, Game, PlayerRole};
 
 #[derive(Clone)]
 pub struct MyGame;
@@ -68,7 +68,7 @@ When the dashboard or exported log needs game-specific analysis fields, implemen
 ## Run the server
 
 ```rust
-use parlando_server::{GameMetadata, Server};
+use parlando::{GameMetadata, Server};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

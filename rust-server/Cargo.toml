@@ -1,9 +1,9 @@
 [package]
-name = "parlando-server"
+name = "parlando"
 edition = "2021"
 license = "MIT"
-version = "0.2.0"
-description = "Reusable Rust server runtime for Parlando dialogue-game experiments."
+version = "0.3.0"
+description = "Reusable Rust runtime for Parlando dialogue-game experiments."
 repository = "https://github.com/coli-saar/parlando"
 readme = "../README.md"
 keywords = ["dialogue", "experiments", "games"]
