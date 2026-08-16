@@ -13,6 +13,7 @@ async fn start(&mut self, initial_observation: Observation) -> Result<()>;
 async fn observe_transition(&mut self, actor: PlayerRole, action: Action,
                             observation: Observation) -> Result<()>;
 async fn observe_message(&mut self, sender: PlayerRole, text: String) -> Result<()>;
+async fn finish(&mut self, completion: Completion) -> Result<()>;
 async fn respond(&mut self, available_actions: Option<Vec<Action>>)
     -> Result<Option<Response<Action>>>;
 ```
@@ -35,6 +36,9 @@ class MyAgent(Agent):
 
     async def observe_message(self, sender, text):
         self.last_message = (sender, text)
+
+    async def finish(self, completion):
+        self.completion = completion
 
     async def respond(self, available_actions):
         if available_actions:

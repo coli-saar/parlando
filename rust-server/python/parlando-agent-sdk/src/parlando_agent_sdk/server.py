@@ -96,6 +96,10 @@ class Agent:
         """Observes a player-to-player message from a known role."""
         return None
 
+    async def finish(self, completion: dict[str, Any]) -> None:
+        """Receives the shared game-specific terminal result before shutdown."""
+        return None
+
     async def respond(
         self, available_actions: Optional[list[dict[str, Any]]]
     ) -> Optional[Response]:
@@ -199,6 +203,15 @@ class _AgentService:
         await agent.observe_message(
             request.sender, request.text
         )
+        return self._pb2.ObserveResponse()
+
+    async def Finish(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
+        """Handles a remote Finish request from the Rust server."""
+        await self._authenticate(context)
+        agent = self._agents.get(request.agent_id)
+        if agent is None:
+            await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
+        await agent.finish(_struct_to_dict(request.completion))
         return self._pb2.ObserveResponse()
 
     async def Respond(self, request: Any, context: grpc.aio.ServicerContext) -> Any:

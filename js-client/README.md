@@ -34,7 +34,7 @@ import {
 
 `ParticipantApp` handles registration, consent, matchmaking, readiness, connection, and optional audio before handing a `GameSession` to the game renderer. The game owns its domain types, visual design, controls, language, assets, and completion presentation.
 
-`GameSession` exposes role-specific `observation`, optional `availableActions`, conversation, presence, completion, voice capability, and high-level operations. It does not expose authoritative state, generic events, provider credentials, or dashboard configuration.
+`GameSession` exposes role-specific `observation`, the nullable most recent `transition`, optional `availableActions`, conversation, presence, completion, voice capability, and high-level operations. A transition contains the accepted actor and action; presentation code may ignore it and render only the observation. The session does not expose authoritative state, generic events, provider credentials, or dashboard configuration.
 
 Use `new ParticipantClient({ baseUrl })` for the HTTP lifecycle of a custom non-React participant application. It retains the participant credential and returns presentation-neutral experiment, room, and authenticated one-use `GameSessionPlan` or `AudioSessionPlan` values with JavaScript-style field names. Implement the documented WebSocket protocol from that plan when the complete `ParticipantApp` lifecycle is unsuitable; raw server-message DTOs and socket helpers are intentionally not package exports.
 

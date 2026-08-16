@@ -1388,6 +1388,7 @@ enum AgentObservation<A: Game> {
         actor: PlayerRole,
         action: A::Action,
         resulting_observation: A::Observation,
+        completion: Option<A::Completion>,
     },
     /// Conversation message with its sender role.
     Message { speaker: PlayerRole, text: String },
@@ -6825,9 +6826,7 @@ where
         .privacy
         .store_full_game_state
         .then(|| after_json.clone());
-    let completion_json = completion
-        .map(|completion| protocol_json(&completion))
-        .transpose()?;
+    let completion_json = completion.as_ref().map(protocol_json).transpose()?;
     let accepted_payload = json!({
         "action": protocol_json(&action)?,
         "metadata": transition_metadata,
@@ -6880,7 +6879,7 @@ where
             room.status = "completed".to_string();
         }
     }
-    notify_agents_of_action(&state, room_id, player, action.clone()).await;
+    notify_agents_of_action(&state, room_id, player, action.clone(), completion).await;
     Ok((completed, completion_json))
 }
 
@@ -6889,8 +6888,7 @@ async fn broadcast_player_views<A: Game>(
     room_id: &str,
     actor: PlayerRole,
     action: Value,
-)
-where
+) where
     A::State: Serialize,
 {
     let participants = {
@@ -6998,6 +6996,7 @@ async fn notify_agents_of_action<A: Game>(
     room_id: &str,
     actor: PlayerRole,
     action: A::Action,
+    completion: Option<A::Completion>,
 ) where
     A::State: Serialize,
 {
@@ -7018,6 +7017,7 @@ async fn notify_agents_of_action<A: Game>(
                         resulting_observation: state
                             .adapter
                             .observation(&room.state, participant.role.player_role()),
+                        completion: completion.clone(),
                     },
                 )
             })
@@ -7101,13 +7101,7 @@ where
         .await;
         outcome =
             submit_action(state.clone(), room_id, participant_session_id, role, action).await?;
-        broadcast_player_views(
-            state.clone(),
-            room_id,
-            role.player_role(),
-            observed_action,
-        )
-        .await;
+        broadcast_player_views(state.clone(), room_id, role.player_role(), observed_action).await;
     }
     if let Some(text) = message {
         if let Ok(Json(message)) = add_conversation(
@@ -7425,6 +7419,7 @@ async fn maybe_start_agent<A: Game>(
             .await;
             return;
         }
+        let mut awaiting_completion = false;
         'agent_loop: loop {
             let limit = state
                 .config
@@ -7433,89 +7428,113 @@ async fn maybe_start_agent<A: Game>(
                 .as_ref()
                 .map(|c| c.invalid_action_limit)
                 .unwrap_or(3);
-            match request_agent_decision(
-                state.clone(),
-                &mut agent,
-                &room_id,
-                &participant_session_id,
-                role,
-                timeout,
-            )
-            .await
-            {
-                Ok(Some((completed, completion))) => {
-                    if completed {
-                        let _ = state
-                            .room_bus(&room_id)
-                            .await
-                            .send(ServerMessage::broadcast(ServerPayload::Completed {
-                                room_id: room_id.clone(),
-                                completion: completion.unwrap_or(Value::Null),
-                            }));
-                        break;
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    last_error = Some(error.to_string());
-                    if error.downcast_ref::<ActionRejection>().is_some() {
-                        invalid_actions += 1;
-                        if invalid_actions < limit {
-                            continue;
-                        }
-                    } else {
-                        persist_session_event(
-                            &state,
-                            &room_id,
-                            Some(&participant_session_id),
-                            "agent_error",
-                            json!({"last_error": last_error, "phase": "runtime"}),
-                            None,
-                        )
-                        .await;
-                        break;
-                    }
-                }
-            }
-            if invalid_actions >= limit {
-                persist_session_event(
-                    &state,
+            if !awaiting_completion {
+                match request_agent_decision(
+                    state.clone(),
+                    &mut agent,
                     &room_id,
-                    Some(&participant_session_id),
-                    "agent_error",
-                    json!({"last_error": last_error}),
-                    None,
+                    &participant_session_id,
+                    role,
+                    timeout,
                 )
-                .await;
-                break;
+                .await
+                {
+                    Ok(Some((completed, completion))) => {
+                        if completed {
+                            awaiting_completion = true;
+                            let _ = state
+                                .room_bus(&room_id)
+                                .await
+                                .send(ServerMessage::broadcast(ServerPayload::Completed {
+                                    room_id: room_id.clone(),
+                                    completion: completion.unwrap_or(Value::Null),
+                                }));
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        last_error = Some(error.to_string());
+                        if error.downcast_ref::<ActionRejection>().is_some() {
+                            invalid_actions += 1;
+                            if invalid_actions < limit {
+                                continue;
+                            }
+                        } else {
+                            persist_session_event(
+                                &state,
+                                &room_id,
+                                Some(&participant_session_id),
+                                "agent_error",
+                                json!({"last_error": last_error, "phase": "runtime"}),
+                                None,
+                            )
+                            .await;
+                            break;
+                        }
+                    }
+                }
+                if invalid_actions >= limit {
+                    persist_session_event(
+                        &state,
+                        &room_id,
+                        Some(&participant_session_id),
+                        "agent_error",
+                        json!({"last_error": last_error}),
+                        None,
+                    )
+                    .await;
+                    break;
+                }
             }
 
             let Some(observation) = receiver.recv().await else {
                 break;
             };
-            let observed = match observation {
+            let (observed, completion) = match observation {
                 AgentObservation::Action {
                     actor,
                     action,
                     resulting_observation,
-                } => {
+                    completion,
+                } => (
                     tokio::time::timeout(
                         Duration::from_secs_f64(timeout),
                         agent.observe_transition(actor, action, resulting_observation),
                     )
-                    .await
-                }
-                AgentObservation::Message { speaker, text } => {
+                    .await,
+                    completion,
+                ),
+                AgentObservation::Message { speaker, text } => (
                     tokio::time::timeout(
                         Duration::from_secs_f64(timeout),
                         agent.observe_message(speaker, text),
                     )
-                    .await
-                }
+                    .await,
+                    None,
+                ),
             };
             if let Err(error) = flatten_agent_timeout(observed, "agent observe timeout") {
                 last_error = Some(error.to_string());
                 invalid_actions += 1;
+            }
+            if let Some(completion) = completion {
+                let finished = tokio::time::timeout(
+                    Duration::from_secs_f64(timeout),
+                    agent.finish(completion),
+                )
+                .await;
+                if let Err(error) = flatten_agent_timeout(finished, "agent finish timeout") {
+                    persist_session_event(
+                        &state,
+                        &room_id,
+                        Some(&participant_session_id),
+                        "agent_error",
+                        json!({"last_error": error.to_string(), "phase": "finish"}),
+                        None,
+                    )
+                    .await;
+                }
+                break;
             }
             if invalid_actions >= limit {
                 persist_session_event(
@@ -7527,16 +7546,6 @@ async fn maybe_start_agent<A: Game>(
                     None,
                 )
                 .await;
-                break;
-            }
-            let completed = {
-                let memory = state.memory.read().await;
-                memory
-                    .rooms
-                    .get(&room_id)
-                    .is_none_or(|room| state.adapter.completion(&room.state).is_some())
-            };
-            if completed {
                 break;
             }
             continue 'agent_loop;

@@ -1,6 +1,6 @@
 # Agents
 
-An agent controls `PlayerRole::A` or `PlayerRole::B` under exactly the same game rules and information boundary as a human. It receives role-specific observations, accepted transitions, and messages from the other player. It never receives authoritative state or frontend events.
+An agent controls `PlayerRole::A` or `PlayerRole::B` under exactly the same game rules and information boundary as a human. It receives role-specific observations, accepted actions, messages from the other player, and the same shared completion delivered to human players. It never receives authoritative state or frontend events.
 
 ## Rust agents
 
@@ -16,6 +16,7 @@ use parlando_server::{
 
 struct MyAgent {
     observation: Option<MyObservation>,
+    completion: Option<MyCompletion>,
 }
 
 #[async_trait]
@@ -40,6 +41,11 @@ impl Agent<MyGame> for MyAgent {
         Ok(())
     }
 
+    async fn finish(&mut self, completion: MyCompletion) -> Result<()> {
+        self.completion = Some(completion);
+        Ok(())
+    }
+
     async fn respond(
         &mut self,
         available_actions: Option<Vec<MyAction>>,
@@ -52,6 +58,8 @@ impl Agent<MyGame> for MyAgent {
 ```
 
 A `Response` is always non-empty: action, message, or action and message. `None` means the agent declines to respond now. Messages communicate with the other player and do not change state. Every action is validated by the game.
+
+Once completion is known, the runtime requests no further responses. It delivers already-queued observations in order through the terminal `observe_transition`, then calls `finish` with the shared completion and finally calls `shutdown` for resource cleanup.
 
 `Factory::create(Context { role, seed, settings }).await` constructs the agent before game state is delivered. After construction returns, the runtime creates the initial game state and calls `start(initial_observation)`. This ordering allows model or remote-resource initialization before the agent sees the game.
 
@@ -73,6 +81,9 @@ class FirstActionAgent(Agent):
 
     async def observe_message(self, sender, text):
         self.last_message = (sender, text)
+
+    async def finish(self, completion):
+        self.completion = completion
 
     async def respond(self, available_actions):
         if available_actions:

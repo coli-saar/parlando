@@ -25,7 +25,7 @@ pub trait Game: Send + Sync + 'static {
 }
 ```
 
-Associated types must satisfy the serialization and clone bounds in the actual trait. `State` is authoritative and runtime-private. `Observation` is complete for one role. `Action` is deserialized automatically and is not echoed to participant clients. `apply_action` combines authorization, validation, and transition and performs no I/O. `available_actions` is optional guidance. `transition_metadata` is structured, role-neutral analysis data. `completion` atomically expresses terminal detection and a shared result safe for both roles.
+Associated types must satisfy the serialization and clone bounds in the actual trait. `State` is authoritative and runtime-private. `Observation` is complete for one role. `Action` is deserialized automatically and, once accepted, delivered to both player roles alongside their role-specific observations. `apply_action` combines authorization, validation, and transition and performs no I/O. `available_actions` is optional guidance. `transition_metadata` is structured, role-neutral analysis data. `completion` atomically expresses terminal detection and a shared result safe for both roles.
 
 Do not define `Event`, expose state, split validation from application, or render human prose in mechanics.
 

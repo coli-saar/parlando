@@ -19,8 +19,8 @@ use parlando_server::{
         remote_agent_pb::{
             agent_service_server::{AgentService, AgentServiceServer},
             AgentResponse as PbAgentResponse, CreateAgentRequest, CreateAgentResponse,
-            ObserveMessageRequest, ObserveResponse, ObserveTransitionRequest, RespondRequest,
-            RespondResponse, ShutdownRequest, ShutdownResponse, StartRequest,
+            FinishRequest, ObserveMessageRequest, ObserveResponse, ObserveTransitionRequest,
+            RespondRequest, RespondResponse, ShutdownRequest, ShutdownResponse, StartRequest,
         },
         AgentsConfig, AgentsMode, AudioChunk, ConsentItemConfig, DatabaseConfig, DirectConfig,
         ExperimentConfig, ExperimentIdentityConfig, HumanVsAgentConfig, ServeOptions,
@@ -204,6 +204,7 @@ struct MockRemoteAgentState {
     create_requests: Mutex<Vec<CreateAgentRequest>>,
     start_requests: Mutex<Vec<StartRequest>>,
     respond_requests: Mutex<Vec<RespondRequest>>,
+    finish_requests: Mutex<Vec<FinishRequest>>,
 }
 
 #[derive(Clone)]
@@ -250,6 +251,18 @@ impl AgentService for MockRemoteAgentService {
         &self,
         _request: TonicRequest<ObserveMessageRequest>,
     ) -> std::result::Result<TonicResponse<ObserveResponse>, Status> {
+        Ok(TonicResponse::new(ObserveResponse {}))
+    }
+
+    async fn finish(
+        &self,
+        request: TonicRequest<FinishRequest>,
+    ) -> std::result::Result<TonicResponse<ObserveResponse>, Status> {
+        self.state
+            .finish_requests
+            .lock()
+            .unwrap()
+            .push(request.into_inner());
         Ok(TonicResponse::new(ObserveResponse {}))
     }
 
@@ -866,6 +879,13 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
     let completed = read_ws_type(&mut socket, "completed").await?;
     assert_eq!(completed["completion"]["done"], true);
 
+    for _ in 0..20 {
+        if !remote.state.finish_requests.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
     let create_requests = remote.state.create_requests.lock().unwrap().clone();
     assert_eq!(create_requests.len(), 1);
     assert_eq!(create_requests[0].protocol_version, "parlando-agent-v3");
@@ -891,6 +911,19 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
     assert_eq!(respond_requests[0].agent_id, "remote-agent-1");
     assert!(respond_requests[0].available_actions_provided);
     assert_eq!(respond_requests[0].available_actions.len(), 2);
+    let finish_requests = remote.state.finish_requests.lock().unwrap().clone();
+    assert_eq!(finish_requests.len(), 1);
+    assert_eq!(finish_requests[0].agent_id, "remote-agent-1");
+    assert_eq!(
+        finish_requests[0]
+            .completion
+            .as_ref()
+            .unwrap()
+            .fields
+            .get("done")
+            .and_then(|value| value.kind.as_ref()),
+        Some(&Kind::BoolValue(true))
+    );
 
     let export = admin_export(&client, &server.base_url, &admin_cookie).await?;
     let events = export["session_events"].as_array().unwrap();

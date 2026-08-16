@@ -106,6 +106,9 @@ function game(session: GameSession<{ view: string }, { type: string }, { type: s
     <div>
       <span>active:{session.connected ? "connected" : "disconnected"}</span>
       <span>observation:{session.observation?.view}</span>
+      {session.transition && (
+        <span>transition:{session.transition.actor}:{session.transition.action.type}</span>
+      )}
       <span>completed:{String(session.completed)}</span>
       {session.completion && <span>completion</span>}
       <button onClick={() => session.sendAction({ type: "move" })}>Move</button>
@@ -177,6 +180,17 @@ describe("ParticipantApp rendered state machine", () => {
       available_actions: null
     }));
     expect(screen.getByText("active:connected")).toBeInTheDocument();
+    act(() => socket.message({
+      protocol_version: 1,
+      type: "transition",
+      room_id: "ROOM1",
+      actor: "B",
+      action: { type: "move" },
+      observation: { view: "moved" },
+      available_actions: []
+    }));
+    expect(screen.getByText("observation:moved")).toBeInTheDocument();
+    expect(screen.getByText("transition:B:move")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Move" }));
     expect(client.sendAction).toHaveBeenCalledOnce();
 

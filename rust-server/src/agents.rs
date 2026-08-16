@@ -100,6 +100,11 @@ pub trait Agent<G: Game>: Send {
         Ok(())
     }
 
+    /// Receives the same shared terminal result delivered to both human players.
+    async fn finish(&mut self, _completion: G::Completion) -> Result<()> {
+        Ok(())
+    }
+
     /// Optionally produces one non-empty action, message, or combined response.
     ///
     /// `available_actions` is an optional affordance rather than an authorization

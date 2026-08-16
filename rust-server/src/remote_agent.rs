@@ -23,8 +23,8 @@ pub mod pb {
 }
 
 use pb::{
-    agent_service_client::AgentServiceClient, CreateAgentRequest, ObserveMessageRequest,
-    ObserveTransitionRequest, RespondRequest, ShutdownRequest, StartRequest,
+    agent_service_client::AgentServiceClient, CreateAgentRequest, FinishRequest,
+    ObserveMessageRequest, ObserveTransitionRequest, RespondRequest, ShutdownRequest, StartRequest,
 };
 
 /// Configuration for a remote gRPC agent backend.
@@ -332,6 +332,20 @@ where
             .await
             .context("remote agent observe_message timed out")?
             .context("remote agent observe_message failed")?;
+        Ok(())
+    }
+
+    /// Sends the shared terminal result to the remote agent before shutdown.
+    async fn finish(&mut self, completion: A::Completion) -> Result<()> {
+        self.ensure_created().await?;
+        let request = FinishRequest {
+            agent_id: self.agent_id()?,
+            completion: Some(json_to_struct(serde_json::to_value(completion)?)?),
+        };
+        tokio::time::timeout(self.config.request_timeout, self.client()?.finish(request))
+            .await
+            .context("remote agent finish timed out")?
+            .context("remote agent finish failed")?;
         Ok(())
     }
 

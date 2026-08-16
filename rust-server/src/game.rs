@@ -167,7 +167,7 @@ pub trait Game: Send + Sync + 'static {
     ///
     /// This shared value may contain public facts such as the winner and scores.
     /// Put role-private terminal facts only in that role's final [`Game::Observation`].
-    type Completion: Serialize + Send + Sync + 'static;
+    type Completion: Serialize + Clone + Send + Sync + 'static;
 
     /// Validates semantic constraints on already-deserialized game configuration.
     fn validate_config(&self, _config: &Self::Config) -> Result<()> {

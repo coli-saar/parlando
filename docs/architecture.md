@@ -169,7 +169,7 @@ A normal human–human session proceeds as follows:
    role-specific observations.
 6. Each submitted action is authenticated, deserialized, validated by `Game`,
    applied, and persisted before targeted role-specific observations are broadcast.
-   The submitted action itself is not echoed to participant clients.
+   Both player roles receive the accepted action and their own resulting observation.
 7. When `Game::completion` returns a value, the server records it and broadcasts
    it as the shared game-specific termination payload.
 

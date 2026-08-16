@@ -4,7 +4,7 @@ A Parlando game has three independent parts: typed Rust mechanics, a participant
 
 ## Implement `Game`
 
-Define serializable `Config`, `State`, `Action`, `Observation`, and `Completion` types, then implement `parlando_server::Game`:
+Define serializable `Config`, `State`, `Action`, `Observation`, and `Completion` types, then implement `parlando_server::Game`. `Action` and `Completion` must also implement `Clone` because the runtime delivers each accepted action and terminal result to both controllers.
 
 ```rust
 use anyhow::Result;
@@ -55,7 +55,7 @@ impl Game for MyGame {
 }
 ```
 
-`State` is authoritative and private to the runtime. `Observation` is the complete ongoing domain information visible to one role and is the only transition data sent to a participant client. Agents additionally receive accepted actions through `observe_transition`. Test both observation projections for private-information leaks.
+`State` is authoritative and private to the runtime. `Observation` is the complete ongoing domain information visible to one role. After an accepted action, human players and agents both receive the actor, the shared typed action, and their own resulting observation. Test both observation projections for private-information leaks. If the cause of a transition must remain hidden, use a non-revealing action value such as a `SecretAction` variant and put only permitted consequences in each observation.
 
 `Completion` is the shared structured terminal payload sent to both roles and stored for dashboards and exports. It may contain public facts such as winner and scores. Put role-private terminal facts in the final role-specific observation instead.
 
@@ -110,7 +110,7 @@ export default function App() {
 }
 ```
 
-The game screen uses `observation`, `availableActions`, `conversation`, `presence`, the shared `completion`, and narrow voice properties. It sends typed actions with `sendAction` and player communication with `sendMessage`. Accepted transitions do not echo the submitted action. The screen never receives authoritative state or generic presentation events.
+The game screen uses `observation`, optional `transition`, `availableActions`, `conversation`, `presence`, the shared `completion`, and narrow voice properties. It sends typed actions with `sendAction` and player communication with `sendMessage`. `transition` identifies the most recent accepted actor and action; a frontend that only needs the resulting state can ignore it. The screen never receives authoritative state or generic presentation events.
 
 A non-React application can use `ParticipantClient` from the package root or implement the documented [client protocol](client-protocol.md).
 

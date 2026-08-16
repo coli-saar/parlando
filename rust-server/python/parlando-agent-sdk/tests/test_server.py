@@ -88,6 +88,7 @@ class RecordingAgent(server.Agent):
         """Creates empty observation storage."""
         self.states: list[dict[str, object]] = []
         self.messages: list[tuple[str, str]] = []
+        self.completions: list[dict[str, object]] = []
         self.shutdowns = 0
 
     async def start(self, observation: dict[str, object]) -> None:
@@ -97,6 +98,10 @@ class RecordingAgent(server.Agent):
     async def observe_message(self, sender: server.PlayerRole, text: str) -> None:
         """Records a converted utterance."""
         self.messages.append((sender, text))
+
+    async def finish(self, completion: dict[str, object]) -> None:
+        """Records the shared terminal result."""
+        self.completions.append(completion)
 
     async def shutdown(self) -> None:
         """Counts idempotent service shutdown ownership."""
@@ -236,11 +241,19 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             ),
             FakeContext(),
         )
+        await service.Finish(
+            SimpleNamespace(
+                agent_id=created.agent_id,
+                completion=server._dict_to_struct({"winner": "A", "score": 7}),
+            ),
+            FakeContext(),
+        )
         request = SimpleNamespace(agent_id=created.agent_id)
         await service.Shutdown(request, FakeContext())
         await service.Shutdown(request, FakeContext())
         self.assertEqual(agent.states, [{"turn": 3}])
         self.assertEqual(agent.messages, [("A", "hello")])
+        self.assertEqual(agent.completions, [{"winner": "A", "score": 7.0}])
         self.assertEqual(agent.shutdowns, 1)
 
     async def test_factory_receives_only_agent_owned_context(self) -> None:

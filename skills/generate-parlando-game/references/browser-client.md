@@ -12,7 +12,7 @@ export function App() {
 }
 ```
 
-Mirror Serde JSON in TypeScript. Define action, observation, and completion types; do not define authoritative client state or a generic event type. Accepted transitions replace the observation but do not echo the submitted action.
+Mirror Serde JSON in TypeScript. Define action, observation, and completion types; do not define authoritative client state or a generic event type. Accepted transitions replace the observation and expose the accepted actor and action through nullable `session.transition`; ignore it when the presentation needs only the new observation.
 
 Use `session.role`, `observation`, `availableActions`, `conversation`, `presence`, `completed`, `completion`, `voiceEnabled`, `voiceStatus`, `voicePreflight`, `sendAction`, `sendMessage`, `setMicrophoneMuted`, and `leave` as needed. Never branch on whether the peer is human or an agent.
 

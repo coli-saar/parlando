@@ -19,7 +19,7 @@ Ask only when missing information changes mechanics: game goal and terminal outc
 
 - Exactly two roles exist: `PlayerRole::A` and `PlayerRole::B`. Either can be human or an agent.
 - The Rust runtime alone owns authoritative `State`.
-- Human and automated players receive only role-specific `Observation`.
+- Human and automated players receive the same accepted actions and shared `Completion`, together with role-specific `Observation`.
 - Actions alone change state; messages only communicate between players.
 - Games and agents use structured domain data and make no human-presentation assumptions.
 - The Rust server is frontend-neutral. The JS client and React `ParticipantApp` are optional conveniences.
@@ -40,7 +40,7 @@ Start with `Server::new(game, metadata)`, set database and optional participant 
 
 ## Agents
 
-Implement `agent::Agent<G>` and `agent::Factory<G>`. Factory creation receives role, seed, and agent-owned settings before game delivery. Store the first observation in `start`; observe later accepted actions in `observe_transition`; observe other-player text in `observe_message`; decide in `respond`.
+Implement `agent::Agent<G>` and `agent::Factory<G>`. Factory creation receives role, seed, and agent-owned settings before game delivery. Store the first observation in `start`; observe later accepted actions in `observe_transition`; observe other-player text in `observe_message`; receive the shared terminal result in `finish`; and decide in `respond`.
 
 Return a non-empty `Response::action`, `Response::message`, or `Response::action_and_message`. A message does not change game state. For remote agents, register `agent::grpc::Factory::<G>::new()` and use the Python `Agent`, `Response`, and `serve` API.
 
@@ -48,7 +48,7 @@ Do not solve model readiness with game messages. The current construction-ready 
 
 ## Participant application
 
-Use `ParticipantApp` and `GameSession<Observation, Action, Completion>` from `@coli-saar/parlando-client/react`. Render transitions from `session.observation`; the participant protocol does not echo submitted actions. Send actions with `sendAction` and player messages with `sendMessage`. Use the shared `completion`, `voiceEnabled`, `voiceStatus`, and the exported microphone/transcription widgets as needed.
+Use `ParticipantApp` and `GameSession<Observation, Action, Completion>` from `@coli-saar/parlando-client/react`. Render current state from `session.observation`; use the nullable `session.transition` only when the presentation needs the most recent accepted actor and action. Send actions with `sendAction` and player messages with `sendMessage`. Use the shared `completion`, `voiceEnabled`, `voiceStatus`, and the exported microphone/transcription widgets as needed.
 
 Do not read authoritative state, generic events, complete experiment configuration, provider credentials, or peer controller type. Do not build custom audio transport, transcription, TTS, startup lifecycle, or WebSocket message handling when the SDK supplies it.
 

@@ -1718,6 +1718,14 @@ impl Agent<TinyAdapter> for RecordingObservationsAgent {
         Ok(())
     }
 
+    async fn finish(&mut self, completion: TinySummary) -> Result<()> {
+        self.observations.lock().unwrap().push(format!(
+            "finish:{}:{}",
+            completion.outcome, completion.dyad_score
+        ));
+        Ok(())
+    }
+
     async fn respond(
         &mut self,
         _available_actions: Option<Vec<TinyAction>>,
@@ -3708,8 +3716,8 @@ async fn websocket_accepts_actions_chat_completion_and_persists_state_changes() 
     let state_b = read_ws_type(&mut socket_b, "transition").await;
     assert_eq!(state_a["actor"], "A");
     assert_eq!(state_b["actor"], "A");
-    assert!(state_a.get("action").is_none());
-    assert!(state_b.get("action").is_none());
+    assert_eq!(state_a["action"]["finish"], false);
+    assert_eq!(state_b["action"], state_a["action"]);
     assert_eq!(state_a["observation"]["done"], false);
 
     send_ws_json(
@@ -4267,13 +4275,32 @@ async fn agent_runtime_observes_actions_with_resulting_observation() {
     for _ in 0..20 {
         let captured = observations.lock().unwrap().clone();
         if captured.contains(&"action:A:false:false".to_string()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(observations
+        .lock()
+        .unwrap()
+        .contains(&"action:A:false:false".to_string()));
+
+    send_ws_json(
+        &mut socket,
+        json!({"type": "action", "action": {"finish": true}}),
+    )
+    .await;
+    let _ = read_ws_type(&mut socket, "completed").await;
+    for _ in 0..20 {
+        let captured = observations.lock().unwrap().clone();
+        if captured.contains(&"finish:success:10".to_string()) {
+            assert!(captured.contains(&"action:A:true:true".to_string()));
             server.abort();
             return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     server.abort();
-    panic!("expected agent to observe accepted action");
+    panic!("expected agent to observe the terminal action and completion");
 }
 
 #[tokio::test]

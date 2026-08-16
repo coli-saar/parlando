@@ -2,7 +2,7 @@
 
 Parlando's Rust server is frontend-neutral. React, another browser framework, a native application, or an agent-operated client may implement this HTTP/JSON/WebSocket protocol. `@coli-saar/parlando-client` and its `ParticipantApp` React component are conveniences, not server dependencies.
 
-The protocol accepts player actions and carries role-specific observations, player messages, narrow readiness state, and completion. An accepted action is recorded by the runtime but is not echoed to participant clients. The protocol never carries authoritative game state, generic presentation events, peer controller type, provider credentials, storage records, or dashboard configuration.
+The protocol accepts player actions and carries accepted actions, role-specific resulting observations, player messages, narrow readiness state, and completion. Human players and agents receive the same accepted-transition information. A frontend may ignore the action when it wants to present only the resulting observation. The protocol never carries authoritative game state, generic presentation events, peer controller type, provider credentials, storage records, or dashboard configuration.
 
 ## Domain values
 
@@ -83,12 +83,13 @@ The following variants are exhaustive for protocol version 1. Fields shown as `n
   "type": "transition",
   "room_id": "room-123",
   "actor": "B",
+  "action": { "type": "choose", "value": 3 },
   "observation": { "turn": 2 },
   "available_actions": null
 }
 ```
 
-Replace the current observation and action affordance with these values. `actor` identifies who caused the transition. The submitted action is retained in runtime logs and deliberately omitted from participant delivery; any fact visible to this role must appear in its new observation.
+Replace the current observation and action affordance with these values. `actor` identifies who caused the transition, while `action` is the accepted game-specific action delivered to both roles. The `observation` remains role-specific and authoritative for what this recipient may know about state. Delivery of an action does not require the frontend to display it.
 
 ### Player message
 
@@ -228,13 +229,13 @@ These five variants are the complete client protocol. Consent is submitted throu
 
 `ParticipantApp` supplies a `GameSession<Observation, Action, Completion>` containing:
 
-- `roomId`, `role`, `observation`, and nullable `availableActions`;
+- `roomId`, `role`, `observation`, nullable `transition`, and nullable `availableActions`;
 - `conversation` as `PlayerMessage[]` and role-keyed `presence`;
 - narrow voice status and capability values;
 - `connected`, `completed`, and nullable `completion`; and
 - `sendAction`, `sendMessage`, `setMicrophoneMuted`, and `leave`.
 
-It contains neither authoritative state nor generic game events. Render human labels, instructions, accessibility text, and animation in the participant application from structured domain values.
+`transition` contains the most recent accepted `actor` and `action`; it is `null` for an initial or resynchronized observation. The session contains neither authoritative state nor generic game events. Render human labels, instructions, accessibility text, and animation in the participant application from structured domain values.
 
 ## Compatibility map from the old API
 
