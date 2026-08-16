@@ -216,10 +216,11 @@ pub enum ServerPayload {
         observation: Value,
         available_actions: Option<Vec<Value>>,
     },
-    /// Reports the receiving role's observation after one accepted action.
+    /// Reports one accepted action and the receiving role's resulting observation.
     Transition {
         room_id: String,
         actor: String,
+        action: Value,
         observation: Value,
         available_actions: Option<Vec<Value>>,
     },

@@ -26,6 +26,8 @@ export interface GameSession<TObservation, TAction, TCompletion = Record<string,
   roomId: string;
   role: PlayerRole;
   observation: TObservation;
+  /** Most recent accepted action, or null for an initial or resynchronized observation. */
+  transition: GameTransition<TAction> | null;
   availableActions: TAction[] | null;
   conversation: PlayerMessage[];
   presence: Presence;
@@ -39,6 +41,12 @@ export interface GameSession<TObservation, TAction, TCompletion = Record<string,
   sendMessage(text: string): void;
   setMicrophoneMuted(muted: boolean): Promise<void>;
   leave(): void;
+}
+
+/** One accepted action made observable to both player roles. */
+export interface GameTransition<TAction> {
+  actor: PlayerRole;
+  action: TAction;
 }
 
 export interface ParticipantAppProps<TObservation, TAction, TCompletion = Record<string, unknown>> {
@@ -56,6 +64,7 @@ interface RoomSession<TObservation, TAction, TCompletion = Record<string, unknow
   roomId: string;
   role: PlayerRole;
   observation: TObservation | null;
+  transition: GameTransition<TAction> | null;
   availableActions: TAction[] | null;
   socket: WebSocket;
   connected: boolean;
@@ -230,6 +239,7 @@ function ParticipantAppRuntime<
             roomId: room.roomId,
             role: room.role,
             observation: room.observation,
+            transition: null,
             availableActions: room.availableActions,
             socket,
             connected: false,
@@ -275,6 +285,7 @@ function ParticipantAppRuntime<
                   roomId: message.room_id,
                   role: message.role,
                   observation: message.observation,
+                  transition: null,
                   availableActions: message.available_actions,
                   connected: true,
                   active: true
@@ -288,6 +299,7 @@ function ParticipantAppRuntime<
             current?.socket === socket
               ? {
                   ...current,
+                  transition: { actor: message.actor, action: message.action },
                   observation: message.observation,
                   availableActions: message.available_actions
                 }
@@ -539,6 +551,7 @@ function ParticipantAppRuntime<
       roomId: session.roomId,
       role: session.role,
       observation: session.observation as TObservation,
+      transition: session.transition,
       availableActions: session.availableActions,
       conversation: session.conversation,
       presence: session.presence,

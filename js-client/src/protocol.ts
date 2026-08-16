@@ -130,6 +130,7 @@ export type ServerMessage<
       type: "transition";
       room_id: string;
       actor: PlayerRole;
+      action: TAction;
       observation: TObservation;
       available_actions: TAction[] | null;
     }

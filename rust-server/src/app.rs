@@ -6581,10 +6581,24 @@ async fn handle_client_message<A: Game>(
                     return;
                 }
             };
+            let observed_action = match protocol_json(&action) {
+                Ok(action) => action,
+                Err(error) => {
+                    tracing::error!(%error, room_id, "could not serialize accepted action");
+                    let _ = bus.send(internal_error_message(participant_session_id, room_id));
+                    return;
+                }
+            };
             match submit_action(state.clone(), room_id, participant_session_id, role, action).await
             {
                 Ok((completed, completion)) => {
-                    broadcast_player_views(state.clone(), room_id, role.player_role()).await;
+                    broadcast_player_views(
+                        state.clone(),
+                        room_id,
+                        role.player_role(),
+                        observed_action,
+                    )
+                    .await;
                     if completed {
                         let _ = bus.send(ServerMessage::broadcast(ServerPayload::Completed {
                             room_id: room_id.to_string(),
@@ -6870,7 +6884,12 @@ where
     Ok((completed, completion_json))
 }
 
-async fn broadcast_player_views<A: Game>(state: Arc<AppState<A>>, room_id: &str, actor: PlayerRole)
+async fn broadcast_player_views<A: Game>(
+    state: Arc<AppState<A>>,
+    room_id: &str,
+    actor: PlayerRole,
+    action: Value,
+)
 where
     A::State: Serialize,
 {
@@ -6896,6 +6915,7 @@ where
                     ServerPayload::Transition {
                         room_id: room_id.to_string(),
                         actor: actor.as_str().to_string(),
+                        action: action.clone(),
                         observation,
                         available_actions: response.available_actions,
                     },
@@ -7069,6 +7089,7 @@ where
     let (action, message) = response.into_parts();
     let mut outcome = (false, None);
     if let Some(action) = action {
+        let observed_action = protocol_json(&action)?;
         persist_session_event(
             &state,
             room_id,
@@ -7080,7 +7101,13 @@ where
         .await;
         outcome =
             submit_action(state.clone(), room_id, participant_session_id, role, action).await?;
-        broadcast_player_views(state.clone(), room_id, role.player_role()).await;
+        broadcast_player_views(
+            state.clone(),
+            room_id,
+            role.player_role(),
+            observed_action,
+        )
+        .await;
     }
     if let Some(text) = message {
         if let Ok(Json(message)) = add_conversation(

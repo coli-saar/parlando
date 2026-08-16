@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package parlando.agent.v3;
+
+import "google/protobuf/struct.proto";
+
+service AgentService {
+  rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse);
+  rpc Start(StartRequest) returns (ObserveResponse);
+  rpc ObserveTransition(ObserveTransitionRequest) returns (ObserveResponse);
+  rpc ObserveMessage(ObserveMessageRequest) returns (ObserveResponse);
+  rpc Respond(RespondRequest) returns (RespondResponse);
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+}
+
+message CreateAgentRequest {
+  string protocol_version = 1;
+  string agent_name = 2;
+  string agent_version = 3;
+  string role = 4;
+  uint64 seed = 5;
+  google.protobuf.Struct config = 6;
+}
+
+message CreateAgentResponse {
+  string agent_id = 1;
+}
+
+message StartRequest {
+  string agent_id = 1;
+  google.protobuf.Struct observation = 2;
+}
+
+message ObserveTransitionRequest {
+  string agent_id = 1;
+  string actor = 2;
+  google.protobuf.Struct action = 3;
+  google.protobuf.Struct observation = 4;
+}
+
+message ObserveMessageRequest {
+  string agent_id = 1;
+  string sender = 2;
+  string text = 3;
+}
+
+message ObserveResponse {}
+
+message RespondRequest {
+  string agent_id = 1;
+  bool available_actions_provided = 2;
+  repeated google.protobuf.Struct available_actions = 3;
+}
+
+message AgentResponse {
+  optional string message = 1;
+  optional google.protobuf.Struct action = 2;
+}
+
+message RespondResponse {
+  optional AgentResponse response = 1;
+}
+
+message ShutdownRequest {
+  string agent_id = 1;
+}
+
+message ShutdownResponse {}

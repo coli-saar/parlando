@@ -31,5 +31,6 @@ export function MicrophoneMuteButton({
 export {
   ParticipantApp,
   type GameSession,
+  type GameTransition,
   type ParticipantAppProps
 } from "./startup.js";
