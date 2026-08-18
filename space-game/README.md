@@ -110,3 +110,14 @@ Game-specific UI should stay here. For example, the station map, inventory/actio
 ## Runtime expectation
 
 The client expects a Parlando-compatible server that exposes experiment-scoped `/e/{experiment_id}/api/*` and WebSocket routes. In local runs, the Makefile passes this app's built `client/dist` directory to the Rust process.
+
+## Deploy on Render
+
+The Space Game includes a production [`Dockerfile`](Dockerfile) and a complete
+[`render.yaml`](render.yaml) Blueprint. Together they build the Rust server and
+browser client, attach persistent storage for SQLite, and configure Render's
+database-aware health check.
+
+Follow [Deploy a Parlando Game on
+Render](../docs/deploying-on-render.md#deploy-the-space-game-blueprint) to deploy
+this example or adapt the same two files to another game.

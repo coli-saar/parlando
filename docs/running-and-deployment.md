@@ -166,6 +166,11 @@ WebSocket URLs from a configured public hostname.
 
 ## Deploy with Docker and Render
 
+For a complete first deployment, including a field-by-field Blueprint
+explanation and failure diagnosis, follow [Deploy a Parlando Game on
+Render](deploying-on-render.md). This section records the shorter operational
+contract.
+
 The example production image in `space-game/Dockerfile` builds the Rust binary and
 browser client, runs as uid 10001, and reads these defaults:
 

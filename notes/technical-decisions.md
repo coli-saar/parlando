@@ -1,5 +1,31 @@
 # Technical Decisions
 
+## 2026-08-17: Render deployment is documented through one runnable example
+
+Context: The general deployment reference described Render in a short operational
+section, and Space Game already contained a Dockerfile and minimal Blueprint.
+However, a new game author still had to infer the repository-root Docker context,
+the relationship between the persistent-disk mount and SQLite URL, and the
+first-deploy workflow.
+
+Decision: Add a task-oriented Render tutorial that starts with the complete Space
+Game example and then explains how to adapt it. Keep the Dockerfile and Blueprint
+as the executable source of truth. Make the Blueprint explicit about its
+repository-root build context and non-secret Parlando environment variables, and
+link the tutorial from the Space Game README, documentation index, and general
+deployment reference.
+
+Tradeoffs: The focused tutorial repeats a small part of the broader deployment
+reference, but it gives readers one linear path they can execute without mixing
+platform setup with all operational topics. Provider keys remain absent from the
+example because typed deployments do not need them and committed placeholders
+can encourage unsafe secret handling.
+
+Follow-up risks: Render can revise its Blueprint schema, plans, and persistent
+disk behavior. Revalidate `space-game/render.yaml` against Render's schema when
+those platform contracts change, and keep the tutorial synchronized whenever the
+Space Game Dockerfile, binary name, or bootstrap environment changes.
+
 ## 2026-08-15: Reliability tests are invariant-driven and deterministic
 
 Context: The Rust server already has broad happy-path integration coverage, while the JavaScript client primarily tests pure helpers. The remaining reliability risk is concentrated in durable-write failures, asynchronous replacement and cleanup races, provider backpressure, browser lifecycle interleavings, and cross-language protocol drift. A line-coverage target alone would not prove these behaviors and timing-based sleeps would make the most important tests flaky.

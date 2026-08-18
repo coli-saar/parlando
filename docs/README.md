@@ -33,6 +33,8 @@ shape from a game description.
 1. Use [Running and Deployment](running-and-deployment.md) to start the compiled
    game process, choose its port and database, establish the first administrator,
    and deploy it with Docker or Render.
+   For a complete worked Render deployment, follow [Deploy a Parlando Game on
+   Render](deploying-on-render.md).
 2. Open `/admin/experiments` to create, clone, edit, activate, and monitor
    experiments. Normal configuration is database-backed; an older YAML file is
    only a reference while its values are transferred through the dashboard.

@@ -1,0 +1,422 @@
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  background: #14110f;
+  color: #f4efe6;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)), #262019;
+  border: 1px solid #4a4038;
+  border-radius: 7px;
+  color: #f4efe6;
+  cursor: pointer;
+  padding: 8px 14px;
+}
+
+button:hover,
+button:focus-visible {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.03)), #332a1f;
+  border-color: #d9a45e;
+  outline: none;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+input,
+select {
+  font: inherit;
+  background: #191512;
+  border: 1px solid #4a4038;
+  border-radius: 7px;
+  color: #f4efe6;
+  color-scheme: dark;
+  padding: 8px 10px;
+}
+
+.app-shell {
+  display: flex;
+  justify-content: center;
+  padding: 24px;
+}
+
+/* ==================== The game panel ==================== */
+
+svg[role="img"] {
+  width: 100%;
+  max-width: 920px;
+  height: auto;
+  border-radius: 14px;
+  display: block;
+}
+
+.game-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  max-width: 920px;
+}
+
+/* Channel flow and rising water: paths are authored in the direction of travel; a falling
+   stroke-dashoffset moves the dashes forward along that path. */
+@keyframes flowfwd {
+  to {
+    stroke-dashoffset: -96;
+  }
+}
+
+.flow {
+  animation: flowfwd 2.9s linear infinite;
+}
+
+.flow-b {
+  animation-duration: 3.9s;
+}
+
+@keyframes rise {
+  to {
+    stroke-dashoffset: -96;
+  }
+}
+
+.rising-water {
+  animation: rise 2.9s linear infinite;
+}
+
+/* Pollen drifting up through the crown. */
+@keyframes drift {
+  0% {
+    transform: translate(0, 0);
+    opacity: 0;
+  }
+  14% {
+    opacity: 0.8;
+  }
+  86% {
+    opacity: 0.5;
+  }
+  100% {
+    transform: translate(22px, -42px);
+    opacity: 0;
+  }
+}
+
+.mote {
+  animation: drift 9s ease-in-out infinite;
+}
+
+/* A very slow sway on the whole tree, so it never reads as a static illustration. */
+@keyframes sway {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(1.2deg);
+  }
+}
+
+.sways {
+  animation: sway 8s ease-in-out infinite;
+  transform-origin: 60px 300px;
+}
+
+/* A held-open gate's centre dot breathes gently. */
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.breathes {
+  animation: pulse 3.4s ease-in-out infinite;
+}
+
+/* Ice-crystal shimmer, staggered per shard. */
+@keyframes glint {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.glints {
+  animation: glint 3.6s ease-in-out infinite;
+}
+
+.terminal-screen {
+  text-align: center;
+  padding: 48px 24px;
+}
+
+.leave-button {
+  margin-left: auto;
+}
+
+.terminal-screen .leave-button {
+  margin: 16px auto 0;
+}
+
+/* ==================== Voice widget (below the game) ====================
+   Structurally the same widget as space-game's CommunicationPanel: a header row (label + mute
+   button) above a meter row. Reuses those class names so the look stays consistent with the
+   rest of the Parlando ecosystem, retextured in this game's own bark/gold palette. */
+
+.communication-panel {
+  background: rgba(29, 25, 22, 0.92);
+  border: 1px solid #4a4038;
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.communication-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.eyebrow {
+  color: #a9a094;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.microphone-mute-button.muted {
+  background: linear-gradient(180deg, #e2c98f, #b58f4f);
+  border-color: #f2c14e;
+  color: #201708;
+}
+
+.microphone-mute-button.muted:hover,
+.microphone-mute-button.muted:focus-visible {
+  background: linear-gradient(180deg, #f2dcab, #c9a15c);
+}
+
+.voice-feedback {
+  min-width: 0;
+}
+
+.meter-stack {
+  display: grid;
+  gap: 6px;
+}
+
+.mic-meter {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 3.5rem minmax(80px, 1fr);
+  width: 100%;
+}
+
+.mic-meter > span {
+  color: #a9a094;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.mic-meter-track {
+  background: rgba(8, 6, 4, 0.5);
+  border: 1px solid #4a4038;
+  border-radius: 999px;
+  height: 9px;
+  overflow: hidden;
+}
+
+.mic-meter-track span {
+  background: linear-gradient(90deg, #d9a45e, #f2c14e);
+  display: block;
+  height: 100%;
+  transform-origin: left center;
+  transition: transform 90ms linear;
+  width: 100%;
+}
+
+.mic-meter.muted .mic-meter-track {
+  background: rgba(169, 160, 148, 0.06);
+  border-color: rgba(169, 160, 148, 0.3);
+}
+
+.mic-meter.muted .mic-meter-track span {
+  background: rgba(169, 160, 148, 0.35);
+}
+
+.voice-error {
+  color: #ff9d8a;
+  font-size: 13px;
+}
+
+/* ==================== Lobby / join / prepare-voice screen ====================
+   Themes ParticipantApp's built-in lifecycle markup (before renderGame is called), using the
+   same class names space-game themes, per "generated CSS must style both ParticipantApp
+   lifecycle markup and the active game." */
+
+.lobby-panel {
+  background: rgba(29, 25, 22, 0.92);
+  border: 1px solid #4a4038;
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.3);
+  display: grid;
+  gap: 18px;
+  padding: 28px;
+  max-width: 480px;
+}
+
+.lobby-heading {
+  border-bottom: 1px solid #332c26;
+  display: grid;
+  gap: 6px;
+  padding-bottom: 14px;
+}
+
+.platform-label {
+  color: #a9a094;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.game-name {
+  color: #f2c14e;
+  font-size: clamp(1.6rem, 3vw, 2.4rem);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.lobby-copy {
+  display: grid;
+  gap: 10px;
+}
+
+.lobby-copy h2 {
+  font-size: 1.3rem;
+}
+
+.lobby-panel p {
+  color: #d9cbb8;
+  line-height: 1.5;
+}
+
+.lobby-actions {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.lobby-actions button:only-child {
+  justify-self: start;
+}
+
+.consent-list {
+  display: grid;
+  gap: 10px;
+}
+
+.consent-row {
+  align-items: flex-start;
+  background: #191512;
+  border: 1px solid #332c26;
+  border-radius: 8px;
+  color: #d9cbb8;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: auto 1fr;
+  padding: 10px 12px;
+}
+
+.consent-row a {
+  color: #9ff0ff;
+}
+
+.seat-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.seat-grid div {
+  background: #191512;
+  border: 1px solid #4a4038;
+  border-radius: 8px;
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+}
+
+.seat-grid .seat-ready {
+  border-color: #7fd08a;
+  box-shadow: 0 0 16px rgba(127, 208, 138, 0.16);
+}
+
+.seat-grid span {
+  color: #d9cbb8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.voice-preflight {
+  align-items: center;
+  background: #191512;
+  border: 1px solid #4a4038;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.voice-preflight div {
+  display: grid;
+  gap: 4px;
+}
+
+.voice-preflight span {
+  color: #d9cbb8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.voice-preflight select:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.mic-device-label {
+  color: #a9a094;
+}
+
+.transcription-progress {
+  color: #d9cbb8;
+  font-size: 13px;
+}
+
+.online-error {
+  color: #ff9d8a;
+}

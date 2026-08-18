@@ -1,0 +1,739 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Great Tree — visual mockup</title>
+<style>
+  :root {
+    --ink: #f4efe6;
+    --ink-dim: #a9a094;
+    --page: #14110f;
+    --panel: #1d1916;
+    --line: #332c26;
+    --crown-accent: #f2c14e;
+    --root-accent: #d69a5c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink);
+    font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 32px 24px 64px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 6px; font-weight: 620; letter-spacing: -0.01em; }
+  .sub { color: var(--ink-dim); margin: 0 0 22px; max-width: 82ch; }
+  .sub b { color: var(--ink); }
+
+  .rules {
+    background: #191512; border: 1px solid var(--line); border-left: 3px solid var(--crown-accent);
+    border-radius: 10px; padding: 14px 18px; margin: 0 0 26px; max-width: 82ch;
+  }
+  .rules h2, .chat h2, .vocab h2, .notes h2 {
+    font-size: 12.5px; margin: 0 0 10px; color: var(--ink-dim);
+    font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+  }
+  .rules ol { margin: 0; padding-left: 20px; }
+  .rules li { margin-bottom: 3px; font-size: 14.5px; }
+  .rules .tail { margin: 10px 0 0; font-size: 13.5px; color: var(--ink-dim); }
+
+  .views { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 980px) { .views { grid-template-columns: 1fr; } }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; }
+  .panel-head { display: flex; align-items: baseline; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .role { font-weight: 640; letter-spacing: 0.02em; }
+  .role.crown { color: var(--crown-accent); }
+  .role.root  { color: var(--root-accent); }
+  .role-note { color: var(--ink-dim); font-size: 13px; }
+
+  .stage { display: block; width: 100%; height: auto; }
+
+  .chat { margin-top: 22px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; }
+  .line { display: flex; gap: 10px; padding: 3px 0; }
+  .who { flex: 0 0 62px; font-size: 12.5px; font-weight: 640; text-align: right; letter-spacing: 0.02em; }
+  .who.crown { color: var(--crown-accent); }
+  .who.root { color: var(--root-accent); }
+  .said { font-size: 14.5px; }
+  .beat { color: var(--ink-dim); font-style: italic; }
+
+  .vocab { margin-top: 22px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px 20px; }
+  .vocab-lead { margin: 0 0 10px; font-size: 14.5px; color: var(--ink-dim); }
+  .vocab-lead.second { margin-top: 24px; }
+  .crown-t { color: var(--crown-accent); }
+  .root-t  { color: var(--root-accent); }
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .cards.three { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 820px) { .cards, .cards.three { grid-template-columns: 1fr 1fr; } }
+  .card { margin: 0; }
+  .card svg { display: block; width: 100%; height: auto; border-radius: 9px; border: 1px solid var(--line); }
+  .card figcaption { margin-top: 7px; font-size: 12.8px; color: var(--ink-dim); line-height: 1.45; }
+  .card figcaption b { color: var(--ink); font-weight: 620; }
+
+  .notes { margin-top: 22px; color: var(--ink-dim); font-size: 14px; }
+  .notes li { margin-bottom: 6px; }
+  .notes b { color: var(--ink); font-weight: 600; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; color: #d9cbb8; }
+
+  /* channels: paths authored in the direction of travel; a falling offset moves the dashes forward along that path */
+  @keyframes flowfwd { to { stroke-dashoffset: -96; } }
+  .flow  { animation: flowfwd 2.9s linear infinite; }
+  .flow.b { animation-duration: 3.9s; }
+
+  @keyframes sapOut { to { stroke-dashoffset: -104; } }
+  .sap { animation: sapOut 3.1s linear infinite; }
+
+  @keyframes drift {
+    0%   { transform: translate(0,0); opacity: 0; }
+    14%  { opacity: 0.8; }
+    86%  { opacity: 0.5; }
+    100% { transform: translate(22px,-42px); opacity: 0; }
+  }
+  .mote { animation: drift 9s ease-in-out infinite; }
+
+  @keyframes sway { 0%,100% { transform: rotate(0deg); } 50% { transform: rotate(1.2deg); } }
+  .sways { animation: sway 8s ease-in-out infinite; transform-origin: 60px 300px; }
+
+  @keyframes pulse { 0%,100% { opacity: 0.45; } 50% { opacity: 1; } }
+  .breathes { animation: pulse 3.4s ease-in-out infinite; }
+
+  @keyframes glint { 0%,100% { opacity: 0.55; } 50% { opacity: 0.95; } }
+  .glints { animation: glint 6s ease-in-out infinite; }
+
+  @keyframes burst { 0%,100% { opacity: 0.6; transform: scale(0.95); } 50% { opacity: 1; transform: scale(1.05); } }
+  .bursts { animation: burst 2.4s ease-in-out infinite; }
+
+  @keyframes hoverRing { 0%,100% { opacity: 0.08; } 50% { opacity: 0.24; } }
+  .hoverring { animation: hoverRing 1.9s ease-in-out infinite; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>The Great Tree — visual mockup</h1>
+  <p class="sub">
+    Both halves side by side for comparison; <b>in play each participant sees one panel, all of it.</b>
+    Five fixed channels run through the trunk in each panel, always visible as faint grooves — clicking never
+    creates a channel, it only starts or stops something flowing through one that was already there.
+    <b>Sun always flows down; water always flows up.</b> A small ring at each limb and root — a gate — is where you click.
+  </p>
+
+  <div class="rules">
+    <h2>The complete rulebook</h2>
+    <ol>
+      <li>Five limbs, five roots. Crown can hold sun on at most <b>three</b> limbs; Root can run water in at most <b>three</b> roots.</li>
+      <li>Choosing a fourth automatically releases whichever gate you opened <b>longest ago</b> — nothing to click to let go.</li>
+      <li>A root is <b>frozen</b> until sun currently falls on the limb it warms. Move the sun away and it re-freezes at once, and any water running in it stops.</li>
+      <li>Water rising in a root surfaces at the limb it <b>feeds</b> — a different limb from the one that thaws it.</li>
+      <li>A limb flowers when it has sun and water at once, and <b>stays flowered</b> from then on, freeing both slots. Play starts with <b>one</b> limb already in flower. <b>Four of the five flowering wins.</b></li>
+    </ol>
+    <p class="tail">Neither mapping is ever shown. Flowering is not an action — it happens when the conditions coincide.</p>
+  </div>
+
+  <div class="views">
+
+    <!-- ==================== CROWN ==================== -->
+    <section class="panel">
+      <div class="panel-head">
+        <span class="role crown">CROWN</span>
+        <span class="role-note">click a gate to move the sun onto that limb</span>
+      </div>
+
+      <svg class="stage" viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg" role="img"
+           aria-label="The crown of a great tree at sunrise. Five limbs of distinct shape, each with a small gate ring where its channel meets the trunk. Five faint channels always run down through the trunk; two currently glow and flow, one gold with sunlight heading down, one blue with water arriving from below.">
+        <defs>
+          <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%"   stop-color="#5fa8cc"/>
+            <stop offset="34%"  stop-color="#9fcdd8"/>
+            <stop offset="64%"  stop-color="#f4cf96"/>
+            <stop offset="100%" stop-color="#f0a866"/>
+          </linearGradient>
+          <radialGradient id="sunGlow" cx="0.5" cy="0.5" r="0.5">
+            <stop offset="0%"   stop-color="#fffdf2" stop-opacity="1"/>
+            <stop offset="26%"  stop-color="#ffeeb6" stop-opacity="0.7"/>
+            <stop offset="62%"  stop-color="#ffd98a" stop-opacity="0.24"/>
+            <stop offset="100%" stop-color="#ffc46a" stop-opacity="0"/>
+          </radialGradient>
+          <linearGradient id="trunkBark" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%"   stop-color="#2c1d0d"/>
+            <stop offset="45%"  stop-color="#5e3f24"/>
+            <stop offset="75%"  stop-color="#7c5732"/>
+            <stop offset="100%" stop-color="#331f0e"/>
+          </linearGradient>
+          <linearGradient id="dryBark" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%"   stop-color="#e4d9c3"/>
+            <stop offset="55%"  stop-color="#c2b192"/>
+            <stop offset="100%" stop-color="#9c8b70"/>
+          </linearGradient>
+          <linearGradient id="wetBark" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%"   stop-color="#4a2c12"/>
+            <stop offset="52%"  stop-color="#2a1707"/>
+            <stop offset="100%" stop-color="#100801"/>
+          </linearGradient>
+          <radialGradient id="flowerGlow" cx="0.5" cy="0.5" r="0.5">
+            <stop offset="0%"   stop-color="#fff6f8" stop-opacity="0.95"/>
+            <stop offset="100%" stop-color="#ffd0dd" stop-opacity="0"/>
+          </radialGradient>
+          <filter id="soft"><feGaussianBlur stdDeviation="3"/></filter>
+          <filter id="mid" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="5"/></filter>
+          <filter id="far" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="9"/></filter>
+        </defs>
+
+        <rect width="400" height="300" fill="url(#sky)"/>
+        <circle cx="336" cy="76" r="112" fill="url(#sunGlow)"/>
+        <circle cx="336" cy="76" r="22" fill="#fffcee"/>
+
+        <g opacity="0.2" fill="#6f9b86" filter="url(#far)">
+          <ellipse cx="90"  cy="292" rx="100" ry="20"/>
+          <ellipse cx="270" cy="298" rx="118" ry="18"/>
+        </g>
+        <g opacity="0.26" filter="url(#mid)">
+          <ellipse cx="120" cy="24" rx="66" ry="22" fill="#2a5540"/>
+          <ellipse cx="330" cy="252" rx="56" ry="22" fill="#2c5a42"/>
+        </g>
+
+        <g class="sways">
+          <!-- trunk -->
+          <path d="M10 300 C 18 232 22 176 32 118 C 38 80 44 40 48 -6 L118 -6 C 114 44 108 84 102 124 C 94 182 90 240 94 300 Z" fill="url(#trunkBark)"/>
+          <g stroke="#1f1206" stroke-width="1.6" fill="none" opacity="0.5">
+            <path d="M36 300 C 42 236 48 178 58 108 C 62 74 66 40 68 -4"/>
+            <path d="M62 300 C 66 240 70 184 78 120 C 82 86 86 46 88 -4"/>
+          </g>
+
+          <!-- five channels, always visible, dim by default; two are currently active -->
+          <!-- Nub channel: idle (bloomed, resources released) -->
+          <path d="M100 100 C 80 160 50 230 32 300" stroke="#241708" stroke-width="6" fill="none" stroke-linecap="round" opacity="0.55"/>
+          <!-- Spire channel: ACTIVE, sun flowing down -->
+          <path d="M96 132 C 80 190 60 250 50 300" stroke="#241708" stroke-width="7" fill="none" stroke-linecap="round" opacity="0.55"/>
+          <path d="M96 132 C 80 190 60 250 50 300" stroke="#ffdf8a" stroke-width="4.5" fill="none" stroke-linecap="round" stroke-dasharray="14 30" class="flow"/>
+          <path d="M96 132 C 80 190 60 250 50 300" stroke="#fffbe6" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-dasharray="6 38" class="flow b" opacity="0.85"/>
+          <!-- Hook channel: ACTIVE, water flowing up -->
+          <path d="M96 176 C 84 220 72 260 68 300" stroke="#0e2836" stroke-width="7" fill="none" stroke-linecap="round" opacity="0.55"/>
+          <path d="M68 300 C 72 260 84 220 96 176" stroke="#7fe0ff" stroke-width="4.5" fill="none" stroke-linecap="round" stroke-dasharray="14 30" class="flow"/>
+          <path d="M68 300 C 72 260 84 220 96 176" stroke="#ffffff" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-dasharray="6 38" class="flow b" opacity="0.85"/>
+          <!-- Fork channel: idle -->
+          <path d="M94 220 C 88 245 84 270 84 300" stroke="#241708" stroke-width="6" fill="none" stroke-linecap="round" opacity="0.55"/>
+          <!-- Cradle channel: ACTIVE, sun still resting there since it bloomed -->
+          <path d="M90 264 C 92 278 96 290 100 300" stroke="#241708" stroke-width="7" fill="none" stroke-linecap="round" opacity="0.55"/>
+          <path d="M90 264 C 92 278 96 290 100 300" stroke="#ffdf8a" stroke-width="4" fill="none" stroke-linecap="round" stroke-dasharray="12 26" class="flow" opacity="0.85"/>
+
+          <!-- ========== LIMB 1 · rises straight, short and plain · untouched (dry, dark) ========== -->
+          <g>
+            <g class="hoverring" stroke="#ffffff" stroke-width="20" fill="none" stroke-linecap="round">
+              <path d="M96 132 C 118 106 132 74 138 40"/>
+            </g>
+            <path d="M96 132 C 118 106 132 74 138 40" stroke="url(#dryBark)" stroke-width="11" fill="none" stroke-linecap="round"/>
+            <g transform="translate(120,80) rotate(-26)"><ellipse cx="0" cy="0" rx="13" ry="7.5" fill="#7f9070" opacity="0.85"/></g>
+            <g transform="translate(138,32) rotate(4)">
+              <path d="M-5 7 C -9 3 -10 -3 -8 -7 C -5 -3 -4 2 -5 7 Z" fill="#54523b"/>
+              <path d="M5 7 C 9 3 10 -3 8 -7 C 5 -3 4 2 5 7 Z" fill="#54523b"/>
+              <path d="M0 -14 C 5 -9 7 -1 4 6 C 2 10 -2 10 -4 6 C -7 -1 -5 -9 0 -14 Z" fill="#7c8a6e"/>
+            </g>
+            <!-- gate: closed, dim -->
+            <g transform="translate(96,132) rotate(-50)">
+              <ellipse rx="13" ry="7" fill="none" stroke="#5a4a34" stroke-width="2.6"/>
+              <circle r="2.4" fill="#3a3024"/>
+            </g>
+          </g>
+
+          <!-- ========== LIMB 2 · curls into a hook · WATERED, no sun ========== -->
+          <g>
+            <g class="hoverring" stroke="#ffffff" stroke-width="22" fill="none" stroke-linecap="round">
+              <path d="M96 176 C 148 170 200 158 238 136 C 264 120 290 126 290 148 C 290 166 272 174 262 162"/>
+            </g>
+            <path d="M96 176 C 148 170 200 158 238 136 C 264 120 290 126 290 148 C 290 166 272 174 262 162"
+                  stroke="url(#wetBark)" stroke-width="13" fill="none" stroke-linecap="round"/>
+            <path d="M96 171 C 148 165 200 153 237 131 C 262 116 285 121 286 142"
+                  stroke="#a9702f" stroke-width="2.6" fill="none" stroke-linecap="round" opacity="0.6"/>
+            <path d="M96 176 C 148 170 200 158 238 136 C 264 120 290 126 290 148 C 290 166 272 174 262 162"
+                  stroke="#ffcf6e" stroke-width="5" fill="none" stroke-linecap="round"
+                  stroke-dasharray="14 90" class="sap" opacity="0.9"/>
+            <g transform="translate(176,162) rotate(-12)"><ellipse cx="0" cy="0" rx="15" ry="8.5" fill="#7f9070" opacity="0.85"/></g>
+            <g transform="translate(275,143) rotate(-8) scale(1.35)">
+              <path d="M-5 7 C -9 3 -10 -3 -8 -7 C -5 -3 -4 2 -5 7 Z" fill="#54523b"/>
+              <path d="M5 7 C 9 3 10 -3 8 -7 C 5 -3 4 2 5 7 Z" fill="#54523b"/>
+              <path d="M0 -14 C 5 -9 7 -1 4 6 C 2 10 -2 10 -4 6 C -7 -1 -5 -9 0 -14 Z" fill="#7c8a6e"/>
+            </g>
+            <!-- gate: closed, dim (no sun currently, even though watered) -->
+            <g transform="translate(96,176) rotate(-7)">
+              <ellipse rx="13" ry="7" fill="none" stroke="#5a4a34" stroke-width="2.6"/>
+              <circle r="2.4" fill="#3a3024"/>
+            </g>
+          </g>
+
+          <!-- ========== LIMB 3 · forks in two · SUNLIT, dry ========== -->
+          <g>
+            <g class="hoverring" stroke="#ffffff" stroke-width="20" fill="none" stroke-linecap="round">
+              <path d="M94 220 C 146 224 196 222 234 212"/>
+              <path d="M234 212 C 266 198 298 188 334 188"/>
+              <path d="M234 212 C 264 224 296 234 330 234"/>
+            </g>
+            <path d="M94 220 C 146 224 196 222 234 212" stroke="url(#dryBark)" stroke-width="11" fill="none" stroke-linecap="round"/>
+            <path d="M234 212 C 266 198 298 188 334 188" stroke="url(#dryBark)" stroke-width="9" fill="none" stroke-linecap="round"/>
+            <path d="M234 212 C 264 224 296 234 330 234" stroke="url(#dryBark)" stroke-width="9" fill="none" stroke-linecap="round"/>
+            <g transform="translate(300,196) rotate(10)"><ellipse cx="0" cy="0" rx="12" ry="7" fill="#7f9070" opacity="0.85"/></g>
+            <g transform="translate(296,228) rotate(-8)"><ellipse cx="0" cy="0" rx="11" ry="6" fill="#7f9070" opacity="0.85"/></g>
+            <g transform="translate(338,186) rotate(18)">
+              <path d="M-5 7 C -9 3 -10 -3 -8 -7 C -5 -3 -4 2 -5 7 Z" fill="#5d6b52"/>
+              <path d="M5 7 C 9 3 10 -3 8 -7 C 5 -3 4 2 5 7 Z" fill="#5d6b52"/>
+              <path d="M0 -14 C 5 -9 7 -1 4 6 C 2 10 -2 10 -4 6 C -7 -1 -5 -9 0 -14 Z" fill="#83907a"/>
+            </g>
+            <g transform="translate(334,236) rotate(-14)">
+              <path d="M-4 6 C -7 2 -8 -3 -6 -6 C -4 -2 -3 2 -4 6 Z" fill="#5d6b52"/>
+              <path d="M4 6 C 7 2 8 -3 6 -6 C 4 -2 3 2 4 6 Z" fill="#5d6b52"/>
+              <path d="M0 -11 C 4 -7 5 -1 3 5 C 1 8 -1 8 -3 5 C -5 -1 -4 -7 0 -11 Z" fill="#83907a"/>
+            </g>
+            <!-- gate: closed, dim (this limb is fully untouched) -->
+            <g transform="translate(94,220) rotate(4)">
+              <ellipse rx="13" ry="7" fill="none" stroke="#5a4a34" stroke-width="2.6"/>
+              <circle r="2.4" fill="#3a3024"/>
+            </g>
+          </g>
+
+          <!-- ========== LIMB 4 · wide shallow cradle · FLOWERED, sun still resting here ========== -->
+          <g>
+            <g class="hoverring" stroke="#ffffff" stroke-width="20" fill="none" stroke-linecap="round">
+              <path d="M90 264 C 140 282 198 286 246 272 C 286 260 316 256 344 266"/>
+            </g>
+            <path d="M90 264 C 140 282 198 286 246 272 C 286 260 316 256 344 266"
+                  stroke="url(#wetBark)" stroke-width="12" fill="none" stroke-linecap="round"/>
+            <path d="M90 259 C 140 277 198 281 246 267 C 284 255 314 251 342 261"
+                  stroke="#a9702f" stroke-width="2.4" fill="none" stroke-linecap="round" opacity="0.5"/>
+            <g transform="translate(196,280)">
+              <ellipse cx="-46" cy="-4" rx="15" ry="8" fill="#7f9070" opacity="0.8"/>
+              <ellipse cx="50" cy="-8" rx="14" ry="7.5" fill="#7f9070" opacity="0.8"/>
+              <circle cx="0" cy="-14" r="38" fill="url(#flowerGlow)"/>
+              <g transform="translate(0,-14)"><g class="bursts">
+                <g fill="#fff5f8" stroke="#f2b3c9" stroke-width="1">
+                  <ellipse cx="0"    cy="-12"  rx="6.5" ry="12"/>
+                  <ellipse cx="11.4" cy="-3.7" rx="6.5" ry="12" transform="rotate(72 11.4 -3.7)"/>
+                  <ellipse cx="7"    cy="9.7"  rx="6.5" ry="12" transform="rotate(144 7 9.7)"/>
+                  <ellipse cx="-7"   cy="9.7"  rx="6.5" ry="12" transform="rotate(216 -7 9.7)"/>
+                  <ellipse cx="-11.4"cy="-3.7" rx="6.5" ry="12" transform="rotate(288 -11.4 -3.7)"/>
+                </g>
+                <circle r="5" fill="#ffd76a"/>
+              </g></g>
+            </g>
+            <!-- gate: still open/gold — Crown hasn't moved on yet -->
+            <g transform="translate(90,264) rotate(20)">
+              <circle r="15" fill="#fff2c0" opacity="0.3" filter="url(#soft)"/>
+              <ellipse rx="13" ry="7" fill="none" stroke="#ffdf8a" stroke-width="2.8"/>
+              <circle r="2.6" fill="#fff6d6" class="breathes"/>
+            </g>
+          </g>
+
+          <!-- ========== LIMB 5 · the nub: short, simple, near the trunk top · FLOWERED, resources released ========== -->
+          <g>
+            <g class="hoverring" stroke="#ffffff" stroke-width="18" fill="none" stroke-linecap="round">
+              <path d="M100 100 C 124 92 144 90 160 92"/>
+            </g>
+            <path d="M100 100 C 124 92 144 90 160 92" stroke="url(#wetBark)" stroke-width="9" fill="none" stroke-linecap="round"/>
+            <g transform="translate(160,92)"><g class="bursts">
+              <circle r="26" fill="url(#flowerGlow)"/>
+              <g fill="#fff5f8" stroke="#f2b3c9" stroke-width="0.9">
+                <ellipse cx="0"   cy="-8.5" rx="4.6" ry="8.5"/>
+                <ellipse cx="8"   cy="-2.6" rx="4.6" ry="8.5" transform="rotate(72 8 -2.6)"/>
+                <ellipse cx="4.9" cy="6.9"  rx="4.6" ry="8.5" transform="rotate(144 4.9 6.9)"/>
+                <ellipse cx="-4.9"cy="6.9"  rx="4.6" ry="8.5" transform="rotate(216 -4.9 6.9)"/>
+                <ellipse cx="-8"  cy="-2.6" rx="4.6" ry="8.5" transform="rotate(288 -8 -2.6)"/>
+              </g>
+              <circle r="3.5" fill="#ffd76a"/>
+            </g></g>
+            <!-- gate: closed, dim — the starting bloom, no longer holding anything -->
+            <g transform="translate(100,100) rotate(-18)">
+              <ellipse rx="11" ry="6" fill="none" stroke="#5a4a34" stroke-width="2.4"/>
+              <circle r="2" fill="#3a3024"/>
+            </g>
+          </g>
+        </g>
+
+        <g fill="#fff3cd">
+          <circle class="mote" cx="152" cy="212" r="1.8" style="animation-delay:0s"/>
+          <circle class="mote" cx="252" cy="184" r="1.5" style="animation-delay:2.4s"/>
+          <circle class="mote" cx="320" cy="142" r="1.9" style="animation-delay:4.8s"/>
+        </g>
+      </svg>
+    </section>
+
+    <!-- ==================== ROOT ==================== -->
+    <section class="panel">
+      <div class="panel-head">
+        <span class="role root">ROOT</span>
+        <span class="role-note">click a gate to open or close that root</span>
+      </div>
+
+      <svg class="stage" viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg" role="img"
+           aria-label="Roots spreading down through dark earth, each with a small gate ring at its collar. Five faint channels always run down through the flared trunk base; two currently glow gold with sunlight arriving from above, and one of those also carries a blue pulse of water heading back up.">
+        <defs>
+          <radialGradient id="earth" cx="0.46" cy="0.06" r="1.05">
+            <stop offset="0%"   stop-color="#4e3521"/>
+            <stop offset="40%"  stop-color="#2b1c11"/>
+            <stop offset="100%" stop-color="#0d0805"/>
+          </radialGradient>
+          <linearGradient id="rootSkin" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%"   stop-color="#a3743f"/>
+            <stop offset="52%"  stop-color="#704926"/>
+            <stop offset="100%" stop-color="#3c2513"/>
+          </linearGradient>
+          <linearGradient id="rootCold" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%"   stop-color="#9fb2c2"/>
+            <stop offset="55%"  stop-color="#6d7b8c"/>
+            <stop offset="100%" stop-color="#3d4552"/>
+          </linearGradient>
+          <radialGradient id="baseGlow" cx="0.5" cy="0.5" r="0.5">
+            <stop offset="0%"   stop-color="#ffdba0" stop-opacity="0.5"/>
+            <stop offset="100%" stop-color="#ffb877" stop-opacity="0"/>
+          </radialGradient>
+          <filter id="softb"><feGaussianBlur stdDeviation="4"/></filter>
+          <filter id="icy" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="6"/></filter>
+        </defs>
+
+        <rect width="400" height="300" fill="url(#earth)"/>
+
+        <g opacity="0.4">
+          <path d="M0 104 C 90 92 200 114 400 96 L400 130 C 210 146 90 124 0 138 Z" fill="#3a2716"/>
+          <path d="M0 200 C 120 188 260 210 400 192 L400 228 C 250 246 120 224 0 238 Z" fill="#31200e"/>
+        </g>
+        <g fill="#4c3d2c" opacity="0.6">
+          <ellipse cx="40"  cy="152" rx="17" ry="9"  transform="rotate(-18 40 152)"/>
+          <ellipse cx="372" cy="130" rx="13" ry="8"  transform="rotate(24 372 130)"/>
+          <ellipse cx="126" cy="272" rx="19" ry="10" transform="rotate(9 126 272)"/>
+          <ellipse cx="336" cy="292" rx="15" ry="8"  transform="rotate(-14 336 292)"/>
+          <ellipse cx="20"  cy="248" rx="14" ry="8"  transform="rotate(30 20 248)"/>
+        </g>
+
+        <!-- flared trunk base -->
+        <path d="M100 -8 L312 -8 C 310 18 304 36 292 46 C 264 64 226 68 200 68 C 170 68 136 62 116 46 C 104 36 100 16 100 -8 Z" fill="#5a3d1e"/>
+        <path d="M116 -8 L296 -8 C 294 14 288 30 278 38 C 252 52 224 56 200 56 C 174 56 146 52 128 38 C 118 30 116 12 116 -8 Z" fill="#6d4a26" opacity="0.75"/>
+        <ellipse cx="200" cy="34" rx="76" ry="20" fill="url(#baseGlow)"/>
+
+        <!-- five channels, always visible, dim by default -->
+        <!-- Hand channel: ACTIVE, sun down, idle (not running) -->
+        <path d="M130 -8 C 130 18 130 40 130 58" stroke="#4a3814" stroke-width="7" fill="none" stroke-linecap="round" opacity="0.5"/>
+        <path d="M130 -8 C 130 18 130 40 130 58" stroke="#ffe28f" stroke-width="4.2" fill="none" stroke-linecap="round" stroke-dasharray="14 30" class="flow"/>
+        <path d="M130 -8 C 130 18 130 40 130 58" stroke="#fffbe6" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-dasharray="6 38" class="flow b" opacity="0.85"/>
+        <!-- Knot channel: ACTIVE, sun down AND water up (running) -->
+        <path d="M193 -8 C 193 18 193 40 193 60" stroke="#4a3814" stroke-width="7" fill="none" stroke-linecap="round" opacity="0.5"/>
+        <path d="M193 -8 C 193 18 193 40 193 60" stroke="#ffe28f" stroke-width="4.2" fill="none" stroke-linecap="round" stroke-dasharray="14 30" class="flow" style="animation-delay:-1s"/>
+        <path d="M193 -8 C 193 18 193 40 193 60" stroke="#fffbe6" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-dasharray="6 38" class="flow b" opacity="0.85" style="animation-delay:-1s"/>
+        <path d="M193 60 C 193 40 193 18 193 -8" stroke="#3fa8cc" stroke-width="9" fill="none" stroke-linecap="round" opacity="0.55"/>
+        <path d="M193 60 C 193 40 193 18 193 -8" stroke="#c4f3ff" stroke-width="4.4" fill="none" stroke-linecap="round" stroke-dasharray="14 30" class="flow"/>
+        <path d="M193 60 C 193 40 193 18 193 -8" stroke="#ffffff" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-dasharray="6 38" class="flow b" opacity="0.85"/>
+        <!-- Tip / Swollen / Deep channels: idle, frozen -->
+        <path d="M232 -8 C 232 16 232 36 232 58" stroke="#4a3814" stroke-width="6" fill="none" stroke-linecap="round" opacity="0.4"/>
+        <path d="M271 -8 C 270 18 270 40 271 60" stroke="#4a3814" stroke-width="6" fill="none" stroke-linecap="round" opacity="0.4"/>
+        <path d="M312 -8 C 311 16 311 34 312 54" stroke="#4a3814" stroke-width="6" fill="none" stroke-linecap="round" opacity="0.4"/>
+
+        <!-- ========== ROOT 1 · three fingers · THAWED, idle (closed) ========== -->
+        <g>
+          <g class="hoverring" stroke="#ffffff" stroke-width="34" fill="none" stroke-linecap="round">
+            <path d="M124 56 C 108 90 94 118 82 146 C 74 168 68 186 64 202"/>
+            <path d="M64 202 C 50 224 38 244 28 266"/>
+            <path d="M64 202 C 62 228 60 252 58 278"/>
+            <path d="M64 202 C 80 224 94 242 106 260"/>
+          </g>
+          <path d="M124 56 C 108 90 94 118 82 146" stroke="url(#rootSkin)" stroke-width="31" fill="none" stroke-linecap="round"/>
+          <path d="M82 146 C 74 168 68 186 64 202"  stroke="url(#rootSkin)" stroke-width="23" fill="none" stroke-linecap="round"/>
+          <path d="M64 202 C 50 224 38 244 28 266"  stroke="url(#rootSkin)" stroke-width="14" fill="none" stroke-linecap="round"/>
+          <path d="M64 202 C 62 228 60 252 58 278"  stroke="url(#rootSkin)" stroke-width="14" fill="none" stroke-linecap="round"/>
+          <path d="M64 202 C 80 224 94 242 106 260" stroke="url(#rootSkin)" stroke-width="12" fill="none" stroke-linecap="round"/>
+          <path d="M28 266 C 22 274 18 280 14 288"  stroke="url(#rootSkin)" stroke-width="7" fill="none" stroke-linecap="round"/>
+          <path d="M58 278 C 58 286 58 292 58 298"  stroke="url(#rootSkin)" stroke-width="7" fill="none" stroke-linecap="round"/>
+          <path d="M106 260 C 114 268 120 274 126 282" stroke="url(#rootSkin)" stroke-width="6" fill="none" stroke-linecap="round"/>
+          <g stroke="#805634" stroke-width="2.6" fill="none" stroke-linecap="round" opacity="0.8">
+            <path d="M100 118 C 86 112 74 110 60 112"/>
+            <path d="M74 174 C 60 176 50 182 40 192"/>
+          </g>
+          <!-- gate: thawed, shut, openable -->
+          <g transform="translate(130,60) rotate(-30)">
+            <ellipse rx="15" ry="8" fill="none" stroke="#d9a45e" stroke-width="3.2"/>
+            <ellipse rx="9" ry="4" fill="#33200f"/>
+          </g>
+        </g>
+
+        <!-- ========== ROOT 2 · knots through itself · THAWED, RUNNING (feeds Limb 2, the hook) ========== -->
+        <g>
+          <g class="hoverring" stroke="#ffffff" stroke-width="30" fill="none" stroke-linecap="round">
+            <path d="M193 60 C 189 88 183 106 173 120 C 155 144 165 176 193 172 C 215 169 219 146 201 138 C 205 130 209 96 213 62"/>
+            <path d="M187 180 C 191 210 197 238 201 264 C 203 280 205 290 207 298"/>
+          </g>
+          <path d="M193 60 C 189 88 183 106 173 120 C 155 144 165 176 193 172 C 215 169 219 146 201 138 C 205 130 209 96 213 62"
+                fill="none" stroke="url(#rootSkin)" stroke-width="25" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M187 180 C 191 210 197 238 201 264 C 203 280 205 290 207 298"
+                fill="none" stroke="url(#rootSkin)" stroke-width="17" stroke-linecap="round"/>
+          <path d="M193 60 C 189 88 183 106 173 120 C 155 144 165 176 193 172 C 215 169 219 146 201 138 C 205 130 209 96 213 62"
+                fill="none" stroke="#b5854d" stroke-width="3" stroke-linecap="round" opacity="0.35"/>
+          <path d="M193 60 C 189 88 183 106 173 120 C 155 144 165 176 193 172 C 215 169 219 146 201 138 C 205 130 209 96 213 62"
+                fill="none" stroke="#3fa8cc" stroke-width="12" stroke-linecap="round" opacity="0.6"/>
+          <path d="M187 180 C 191 210 197 238 201 264 C 203 280 205 290 207 298"
+                fill="none" stroke="#3fa8cc" stroke-width="9" stroke-linecap="round" opacity="0.6"/>
+          <path d="M207 298 C 205 290 203 280 201 264 C 197 238 191 210 187 180 C 205 176 215 169 213 62"
+                fill="none" stroke="#c4f3ff" stroke-width="7" stroke-linecap="round"
+                stroke-dasharray="16 32" class="flow"/>
+          <path d="M207 298 C 205 290 203 280 201 264 C 197 238 191 210 187 180 C 205 176 215 169 213 62"
+                fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round"
+                stroke-dasharray="7 41" class="flow b" opacity="0.8"/>
+          <g stroke="#805634" stroke-width="2.6" fill="none" stroke-linecap="round" opacity="0.8">
+            <path d="M193 236 C 207 240 217 248 223 258"/>
+          </g>
+          <!-- gate: open -->
+          <g transform="translate(193,60) rotate(-6)">
+            <ellipse rx="14" ry="8" fill="none" stroke="#9ff0ff" stroke-width="3.2"/>
+            <ellipse rx="8" ry="4" fill="#0d2b36"/>
+            <circle r="2.8" fill="#dcfaff" class="breathes"/>
+          </g>
+        </g>
+
+        <!-- ========== ROOT 3 · the tip: short and simple · FROZEN ========== -->
+        <g>
+          <g class="hoverring" stroke="#ffffff" stroke-width="22" fill="none" stroke-linecap="round">
+            <path d="M232 58 C 230 78 229 96 227 112"/>
+          </g>
+          <path d="M232 58 C 230 78 229 96 227 112" stroke="url(#rootCold)" stroke-width="15" fill="none" stroke-linecap="round"/>
+          <g fill="#dff2fb" opacity="0.9">
+            <g transform="translate(232,74) rotate(50)"><path d="M0 -8 L5 0 L0 8 L-5 0 Z"/></g>
+            <g transform="translate(229,96) rotate(60)"><path d="M0 -7 L5 0 L0 7 L-5 0 Z"/></g>
+          </g>
+          <ellipse cx="230" cy="86" rx="18" ry="30" fill="#a8dcf2" opacity="0.14" filter="url(#icy)"/>
+          <g transform="translate(232,58) rotate(-10)">
+            <ellipse rx="12" ry="7" fill="none" stroke="#a6cfe0" stroke-width="3"/>
+            <path d="M-6 -5 L6 5 M6 -5 L-6 5" stroke="#e8f8ff" stroke-width="2" stroke-linecap="round"/>
+          </g>
+        </g>
+
+        <!-- ========== ROOT 4 · a swelling in the middle · FROZEN ========== -->
+        <g>
+          <g class="hoverring" stroke="#ffffff" stroke-width="34" fill="none" stroke-linecap="round">
+            <path d="M267 58 C 281 82 291 100 299 118"/>
+            <path d="M311 180 C 317 208 321 234 323 262 C 325 278 325 290 325 300"/>
+          </g>
+          <g>
+            <path d="M267 58 C 281 82 291 100 299 118" stroke="url(#rootCold)" stroke-width="27" fill="none" stroke-linecap="round"/>
+            <ellipse cx="315" cy="154" rx="28" ry="24" fill="url(#rootCold)"/>
+            <path d="M311 180 C 317 208 321 234 323 262" stroke="url(#rootCold)" stroke-width="17" fill="none" stroke-linecap="round"/>
+            <path d="M323 262 C 325 278 325 290 325 300" stroke="url(#rootCold)" stroke-width="9" fill="none" stroke-linecap="round"/>
+          </g>
+          <g fill="#dff2fb" opacity="0.9">
+            <g transform="translate(273,72) rotate(58)"><path d="M0 -13 L8 0 L0 13 L-8 0 Z"/></g>
+            <g transform="translate(286,98) rotate(64)"><path d="M0 -12 L7 0 L0 12 L-7 0 Z"/></g>
+            <g transform="translate(297,120) rotate(70)"><path d="M0 -12 L7 0 L0 12 L-7 0 Z"/></g>
+            <g transform="translate(297,138) rotate(30)"><path d="M0 -13 L8 0 L0 13 L-8 0 Z"/></g>
+            <g transform="translate(317,131) rotate(-8)"><path d="M0 -13 L7 0 L0 13 L-7 0 Z"/></g>
+            <g transform="translate(330,152) rotate(24)"><path d="M0 -12 L7 0 L0 12 L-7 0 Z"/></g>
+            <g transform="translate(313,176) rotate(72)"><path d="M0 -12 L7 0 L0 12 L-7 0 Z"/></g>
+            <g transform="translate(317,204) rotate(82)"><path d="M0 -10 L6 0 L0 10 L-6 0 Z"/></g>
+            <g transform="translate(321,234) rotate(86)"><path d="M0 -9 L6 0 L0 9 L-6 0 Z"/></g>
+            <g transform="translate(324,262) rotate(88)"><path d="M0 -8 L5 0 L0 8 L-5 0 Z"/></g>
+          </g>
+          <ellipse cx="309" cy="146" rx="14" ry="9" transform="rotate(-22 309 146)" fill="#f4fdff" opacity="0.55"/>
+          <ellipse cx="315" cy="154" rx="40" ry="36" fill="#a8dcf2" opacity="0.2" filter="url(#icy)"/>
+          <g stroke="#f4fdff" stroke-width="1.5" stroke-linecap="round" class="glints">
+            <g transform="translate(283,110)"><path d="M0 -7 L0 7 M-6 -3.5 L6 3.5 M-6 3.5 L6 -3.5"/></g>
+            <g transform="translate(335,196)"><path d="M0 -6 L0 6 M-5 -3 L5 3 M-5 3 L5 -3"/></g>
+          </g>
+          <g transform="translate(271,62) rotate(26)">
+            <ellipse rx="15" ry="8" fill="none" stroke="#a6cfe0" stroke-width="3.2"/>
+            <path d="M-8 -5 L8 5 M8 -5 L-8 5" stroke="#e8f8ff" stroke-width="2.2" stroke-linecap="round"/>
+          </g>
+        </g>
+
+        <!-- ========== ROOT 5 · plunges away out of frame · FROZEN ========== -->
+        <g>
+          <g class="hoverring" stroke="#ffffff" stroke-width="30" fill="none" stroke-linecap="round">
+            <path d="M308 54 C 342 84 370 126 386 174 C 396 208 400 246 398 300"/>
+          </g>
+          <g>
+            <path d="M308 54 C 342 84 370 126 386 174" stroke="url(#rootCold)" stroke-width="24" fill="none" stroke-linecap="round"/>
+            <path d="M386 174 C 396 208 400 246 398 300" stroke="url(#rootCold)" stroke-width="16" fill="none" stroke-linecap="round"/>
+          </g>
+          <g fill="#dff2fb" opacity="0.9">
+            <g transform="translate(322,68) rotate(40)"><path d="M0 -12 L7 0 L0 12 L-7 0 Z"/></g>
+            <g transform="translate(342,96) rotate(50)"><path d="M0 -12 L7 0 L0 12 L-7 0 Z"/></g>
+            <g transform="translate(362,128) rotate(60)"><path d="M0 -11 L7 0 L0 11 L-7 0 Z"/></g>
+            <g transform="translate(378,160) rotate(70)"><path d="M0 -11 L6 0 L0 11 L-6 0 Z"/></g>
+            <g transform="translate(389,198) rotate(82)"><path d="M0 -9 L6 0 L0 9 L-6 0 Z"/></g>
+            <g transform="translate(395,238) rotate(86)"><path d="M0 -9 L5 0 L0 9 L-5 0 Z"/></g>
+          </g>
+          <ellipse cx="372" cy="176" rx="34" ry="60" transform="rotate(-16 372 176)" fill="#a8dcf2" opacity="0.16" filter="url(#icy)"/>
+          <g stroke="#f4fdff" stroke-width="1.5" stroke-linecap="round" class="glints" style="animation-delay:2.4s">
+            <g transform="translate(356,126)"><path d="M0 -6 L0 6 M-5 -3 L5 3 M-5 3 L5 -3"/></g>
+          </g>
+          <g transform="translate(312,58) rotate(44)">
+            <ellipse rx="15" ry="8" fill="none" stroke="#a6cfe0" stroke-width="3.2"/>
+            <path d="M-8 -5 L8 5 M8 -5 L-8 5" stroke="#e8f8ff" stroke-width="2.2" stroke-linecap="round"/>
+          </g>
+        </g>
+      </svg>
+    </section>
+  </div>
+
+  <!-- ==================== THE VISUAL GRAMMAR ==================== -->
+  <div class="vocab">
+    <h2>The visual grammar</h2>
+    <p class="vocab-lead">
+      Two independent channels on every limb, always both showing at once. <b class="crown-t">Sun sets the bud's colour</b> —
+      dull olive when dark, gold when lit. <b class="root-t">Water sets the bark and the bud's size</b> — bone-pale
+      and small when dry, near-black and glossy with amber sap when watered, and the bud visibly swells.
+      Leaves carry no information; they stay one quiet, muted colour throughout.
+    </p>
+    <div class="cards">
+      <figure class="card">
+        <svg viewBox="0 0 200 120" xmlns="http://www.w3.org/2000/svg" aria-label="A dry limb in shade: chalky pale bark, a small dull closed bud, one muted leaf.">
+          <rect width="200" height="120" fill="#efc99a"/>
+          <path d="M4 104 C 56 98 106 80 146 50" stroke="url(#dryBark)" stroke-width="13" fill="none" stroke-linecap="round"/>
+          <g transform="translate(100,76) rotate(-16)"><ellipse cx="0" cy="0" rx="15" ry="8.5" fill="#7f9070" opacity="0.85"/></g>
+          <g transform="translate(150,46) rotate(10)">
+            <path d="M-5 7 C -9 3 -10 -3 -8 -7 C -5 -3 -4 2 -5 7 Z" fill="#54523b"/>
+            <path d="M5 7 C 9 3 10 -3 8 -7 C 5 -3 4 2 5 7 Z" fill="#54523b"/>
+            <path d="M0 -14 C 5 -9 7 -1 4 6 C 2 10 -2 10 -4 6 C -7 -1 -5 -9 0 -14 Z" fill="#7c8a6e"/>
+          </g>
+        </svg>
+        <figcaption><b>Dry, dark.</b> The resting state. Small dull bud.</figcaption>
+      </figure>
+      <figure class="card">
+        <svg viewBox="0 0 200 120" xmlns="http://www.w3.org/2000/svg" aria-label="A sunlit but dry limb: bark still chalky pale, bud still small but glowing gold.">
+          <rect width="200" height="120" fill="#efc99a"/>
+          <path d="M4 104 C 56 98 106 80 146 50" stroke="url(#dryBark)" stroke-width="13" fill="none" stroke-linecap="round"/>
+          <g transform="translate(100,76) rotate(-16)"><ellipse cx="0" cy="0" rx="15" ry="8.5" fill="#7f9070" opacity="0.85"/></g>
+          <circle cx="150" cy="46" r="34" fill="#fff2c0" opacity="0.42"/>
+          <g transform="translate(150,46) rotate(10)">
+            <path d="M-5 7 C -9 3 -10 -3 -8 -7 C -5 -3 -4 2 -5 7 Z" fill="#8a7b3e"/>
+            <path d="M5 7 C 9 3 10 -3 8 -7 C 5 -3 4 2 5 7 Z" fill="#8a7b3e"/>
+            <path d="M0 -14 C 5 -9 7 -1 4 6 C 2 10 -2 10 -4 6 C -7 -1 -5 -9 0 -14 Z" fill="#e9d979"/>
+          </g>
+        </svg>
+        <figcaption><b>Sunlit, dry.</b> Colour changed, size didn't. Below, a root just lost its ice.</figcaption>
+      </figure>
+      <figure class="card">
+        <svg viewBox="0 0 200 120" xmlns="http://www.w3.org/2000/svg" aria-label="A watered but shaded limb: near-black glossy bark with amber sap running outward, a large swollen dull bud.">
+          <rect width="200" height="120" fill="#efc99a"/>
+          <path d="M4 104 C 56 98 106 80 146 50" stroke="url(#wetBark)" stroke-width="13" fill="none" stroke-linecap="round"/>
+          <path d="M4 99 C 56 93 106 75 145 46" stroke="#a9702f" stroke-width="2.6" fill="none" stroke-linecap="round" opacity="0.6"/>
+          <path d="M4 104 C 56 98 106 80 146 50" stroke="#ffcf6e" stroke-width="5" fill="none"
+                stroke-linecap="round" stroke-dasharray="14 90" class="sap"/>
+          <g transform="translate(100,76) rotate(-16)"><ellipse cx="0" cy="0" rx="15" ry="8.5" fill="#7f9070" opacity="0.85"/></g>
+          <g transform="translate(150,44) rotate(10) scale(1.4)">
+            <path d="M-5 7 C -9 3 -10 -3 -8 -7 C -5 -3 -4 2 -5 7 Z" fill="#54523b"/>
+            <path d="M5 7 C 9 3 10 -3 8 -7 C 5 -3 4 2 5 7 Z" fill="#54523b"/>
+            <path d="M0 -14 C 5 -9 7 -1 4 6 C 2 10 -2 10 -4 6 C -7 -1 -5 -9 0 -14 Z" fill="#7c8a6e"/>
+          </g>
+        </svg>
+        <figcaption><b>Watered, dark.</b> Size changed, colour didn't. Root did this and cannot see it.</figcaption>
+      </figure>
+      <figure class="card">
+        <svg viewBox="0 0 200 120" xmlns="http://www.w3.org/2000/svg" aria-label="A limb in flower: dark wet bark with sap, and an open blossom where the bud was.">
+          <rect width="200" height="120" fill="#efc99a"/>
+          <path d="M4 104 C 56 98 106 80 146 50" stroke="url(#wetBark)" stroke-width="13" fill="none" stroke-linecap="round"/>
+          <path d="M4 99 C 56 93 106 75 145 46" stroke="#a9702f" stroke-width="2.6" fill="none" stroke-linecap="round" opacity="0.6"/>
+          <path d="M4 104 C 56 98 106 80 146 50" stroke="#ffcf6e" stroke-width="5" fill="none"
+                stroke-linecap="round" stroke-dasharray="14 90" class="sap"/>
+          <g transform="translate(100,76) rotate(-16)"><ellipse cx="0" cy="0" rx="15" ry="8.5" fill="#7f9070" opacity="0.85"/></g>
+          <g transform="translate(150,44)"><g class="bursts">
+            <circle r="34" fill="#fff3f6" opacity="0.55"/>
+            <g fill="#fff8fa" stroke="#f4bcd0" stroke-width="1">
+              <ellipse cx="0" cy="-11" rx="6" ry="11"/>
+              <ellipse cx="10.5" cy="-3.4" rx="6" ry="11" transform="rotate(72 10.5 -3.4)"/>
+              <ellipse cx="6.5" cy="8.9" rx="6" ry="11" transform="rotate(144 6.5 8.9)"/>
+              <ellipse cx="-6.5" cy="8.9" rx="6" ry="11" transform="rotate(216 -6.5 8.9)"/>
+              <ellipse cx="-10.5" cy="-3.4" rx="6" ry="11" transform="rotate(288 -10.5 -3.4)"/>
+            </g>
+            <circle r="4.6" fill="#ffd76a"/>
+          </g></g>
+        </svg>
+        <figcaption><b>In flower.</b> Both at once. Latches — stays flowered even if sun or water later moves on.</figcaption>
+      </figure>
+    </div>
+
+    <p class="vocab-lead second"><b class="root-t">Root</b> — three states. Crown sees none of this.</p>
+    <div class="cards three">
+      <figure class="card">
+        <svg viewBox="0 0 200 120" xmlns="http://www.w3.org/2000/svg" aria-label="An iced root: cold grey wood sheathed in angular pale shards, its collar crossed shut.">
+          <rect width="200" height="120" fill="#241708"/>
+          <path d="M182 6 C 150 34 118 58 96 88" stroke="url(#rootCold)" stroke-width="24" fill="none" stroke-linecap="round"/>
+          <path d="M96 88 C 74 104 48 112 18 114" stroke="url(#rootCold)" stroke-width="15" fill="none" stroke-linecap="round"/>
+          <g fill="#dff2fb" opacity="0.9">
+            <g transform="translate(166,22) rotate(46)"><path d="M0 -11 L6.5 0 L0 11 L-6.5 0 Z"/></g>
+            <g transform="translate(142,44) rotate(56)"><path d="M0 -10 L6 0 L0 10 L-6 0 Z"/></g>
+            <g transform="translate(116,68) rotate(64)"><path d="M0 -10 L6 0 L0 10 L-6 0 Z"/></g>
+            <g transform="translate(84,94) rotate(50)"><path d="M0 -9 L5.5 0 L0 9 L-5.5 0 Z"/></g>
+            <g transform="translate(50,106) rotate(88)"><path d="M0 -8 L5 0 L0 8 L-5 0 Z"/></g>
+          </g>
+          <ellipse cx="110" cy="66" rx="66" ry="34" transform="rotate(-32 110 66)" fill="#a8dcf2" opacity="0.15" filter="url(#icy)"/>
+          <g stroke="#f4fdff" stroke-width="1.5" stroke-linecap="round" class="glints">
+            <g transform="translate(130,52)"><path d="M0 -6 L0 6 M-5 -3 L5 3 M-5 3 L5 -3"/></g>
+          </g>
+          <g transform="translate(178,14) rotate(-40)">
+            <ellipse rx="14" ry="8" fill="none" stroke="#a6cfe0" stroke-width="3.4"/>
+            <path d="M-8 -5 L8 5 M8 -5 L-8 5" stroke="#e8f8ff" stroke-width="2.2" stroke-linecap="round"/>
+          </g>
+        </svg>
+        <figcaption><b>Iced.</b> No sun on the limb it warms. Clicking does nothing.</figcaption>
+      </figure>
+      <figure class="card">
+        <svg viewBox="0 0 200 120" xmlns="http://www.w3.org/2000/svg" aria-label="A thawed root: living brown wood with rootlets, collar open but dark and dry.">
+          <rect width="200" height="120" fill="#241708"/>
+          <path d="M182 6 C 150 34 118 58 96 88" stroke="url(#rootSkin)" stroke-width="26" fill="none" stroke-linecap="round"/>
+          <path d="M96 88 C 74 104 48 112 18 114" stroke="url(#rootSkin)" stroke-width="16" fill="none" stroke-linecap="round"/>
+          <g stroke="#805634" stroke-width="2.6" fill="none" stroke-linecap="round" opacity="0.8">
+            <path d="M126 58 C 118 70 114 82 114 94"/>
+            <path d="M62 104 C 56 114 54 122 54 130"/>
+          </g>
+          <g transform="translate(178,14) rotate(-40)">
+            <ellipse rx="15" ry="8" fill="none" stroke="#d9a45e" stroke-width="3.4"/>
+            <ellipse rx="9" ry="4" fill="#33200f"/>
+          </g>
+        </svg>
+        <figcaption><b>Thawed.</b> Crown put sun somewhere. It can be opened now.</figcaption>
+      </figure>
+      <figure class="card">
+        <svg viewBox="0 0 200 120" xmlns="http://www.w3.org/2000/svg" aria-label="A running root: full of water, with bright pulses travelling up towards the trunk.">
+          <rect width="200" height="120" fill="#241708"/>
+          <path d="M182 6 C 150 34 118 58 96 88" stroke="url(#rootSkin)" stroke-width="26" fill="none" stroke-linecap="round"/>
+          <path d="M96 88 C 74 104 48 112 18 114" stroke="url(#rootSkin)" stroke-width="16" fill="none" stroke-linecap="round"/>
+          <path d="M18 114 C 48 112 74 104 96 88 C 118 58 150 34 182 6"
+                stroke="#3fa8cc" stroke-width="11" fill="none" stroke-linecap="round" opacity="0.65"/>
+          <path d="M18 114 C 48 112 74 104 96 88 C 118 58 150 34 182 6"
+                stroke="#c4f3ff" stroke-width="6.5" fill="none" stroke-linecap="round"
+                stroke-dasharray="16 32" class="flow"/>
+          <path d="M18 114 C 48 112 74 104 96 88 C 118 58 150 34 182 6"
+                stroke="#ffffff" stroke-width="2.4" fill="none" stroke-linecap="round"
+                stroke-dasharray="7 41" class="flow b" opacity="0.8"/>
+          <g transform="translate(178,14) rotate(-40)">
+            <ellipse rx="15" ry="8" fill="none" stroke="#9ff0ff" stroke-width="3.4"/>
+            <ellipse rx="9" ry="4" fill="#0d2b36"/>
+            <circle r="3" fill="#dcfaff" class="breathes"/>
+          </g>
+        </svg>
+        <figcaption><b>Running.</b> Water rises towards the trunk. Above, a limb just went black and glossy.</figcaption>
+      </figure>
+    </div>
+  </div>
+
+  <!-- ==================== DIALOGUE ==================== -->
+  <div class="chat">
+    <h2>What the conversation sounds like</h2>
+    <div class="line"><span class="who crown">CROWN</span><span class="said">ok, we start with the little nub by the trunk already open. that's our one free flower</span></div>
+    <div class="line"><span class="who root">ROOT</span><span class="said">yeah I see it down here too — a tiny frozen stub, not doing anything now though</span></div>
+    <div class="line"><span class="who crown">CROWN</span><span class="said">I've put sun on the straight-up one and left it on the wide bowl-shaped one too. anything?</span></div>
+    <div class="line"><span class="who root">ROOT</span><span class="said">two things thawed. one's the three-finger hand, one's the loop that folds through itself</span></div>
+    <div class="line"><span class="who crown">CROWN</span><span class="said">open the loop, see what happens</span></div>
+    <div class="line"><span class="who root">ROOT</span><span class="said">water's climbing… </span></div>
+    <div class="line"><span class="who crown">CROWN</span><span class="said">it surfaced at the hook, not the straight one. they're offset, like before</span></div>
+    <div class="line beat"><span class="who">&nbsp;</span><span class="said">— sun always heads down, water always heads up. which channel does which is the whole game.</span></div>
+  </div>
+
+  <!-- ==================== NOTES ==================== -->
+  <div class="notes">
+    <h2>Why this is cheap in React</h2>
+    <ul>
+      <li><b>Five fixed channels per panel, always rendered.</b> A channel is a static path; whether it glows and animates is purely a function of current state. Nothing is created or destroyed when a player acts.</li>
+      <li><b>One consistent gate widget.</b> A small ring at the trunk-limb or trunk-root junction, three visual states (closed/dim, thawed/openable, open/glowing) driven by the same component on both sides — Crown's sun-gates and Root's water-gates are the same shape with different palettes.</li>
+      <li><b>No labels, no buttons, no release action.</b> Clicking a gate is the only input. A fourth choice auto-drops the oldest of the current three — one rule, no extra control.</li>
+      <li><b>Two action types.</b> <code>SetSun {limb, lit}</code> and <code>SetFlow {root, open}</code>. Rejections: <code>SunExhausted</code>, <code>WaterExhausted</code>, <code>RootFrozen</code>.</li>
+      <li><b>Direction is authored, not computed.</b> Every flowing path is drawn in the direction it should appear to travel; a single falling <code>stroke-dashoffset</code> animation makes it move that way. Downward paths get the gold sun treatment, upward paths the blue water treatment — same technique, opposite authoring direction.</li>
+    </ul>
+  </div>
+
+</div>
+</body>
+</html>
