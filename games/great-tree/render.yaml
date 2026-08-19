@@ -2,7 +2,7 @@ services:
   - type: web
     name: parlando-great-tree
     runtime: docker
-    plan: starter
+    plan: free
     dockerfilePath: ./games/great-tree/Dockerfile
     # The image copies shared packages from the repository as well as this game.
     dockerContext: .
