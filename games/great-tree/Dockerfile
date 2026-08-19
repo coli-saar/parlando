@@ -31,7 +31,7 @@ COPY --from=builder /app/games/great-tree/server/target/release/parlando-great-t
 COPY --from=client-builder /app/games/great-tree/client/dist /app/client-dist
 ENV RUST_LOG=info
 ENV PORT=8000
-ENV PARLANDO_DATABASE_URL=sqlite:////data/parlando.sqlite
+ENV PARLANDO_DATABASE_URL=sqlite:////home/parlando/parlando.sqlite
 ENV PARLANDO_CLIENT_DIST=/app/client-dist
 EXPOSE 8000
 USER 10001:10001

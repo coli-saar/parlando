@@ -11,10 +11,6 @@ services:
       - key: RUST_LOG
         value: info
       - key: PARLANDO_DATABASE_URL
-        value: sqlite:////data/parlando.sqlite
+        value: sqlite:////home/parlando/parlando.sqlite
       - key: PARLANDO_CLIENT_DIST
         value: /app/client-dist
-    disk:
-      name: parlando-data
-      mountPath: /data
-      sizeGB: 10
