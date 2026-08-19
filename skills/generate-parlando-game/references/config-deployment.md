@@ -42,6 +42,14 @@ Build the participant application, build/install the Rust binary, copy the front
 
 For Render or another platform, mount persistent storage for SQLite and keep provider keys in platform secrets. Use one Parlando process unless sticky routing and process-local live-session ownership have been designed explicitly; audio rooms and one-use credentials are process-local today.
 
+### Render specifically
+
+Follow [`docs/deploying-on-render.md`](../../../docs/deploying-on-render.md); it walks through a full Blueprint deploy end to end. The short version:
+
+- Copy `space-game/Dockerfile` and `space-game/render.yaml` into the generated game's directory and rewrite only the game-specific paths (source dirs, manifest path, binary name, `dockerfilePath`). Keep `dockerContext: .` so the image can still reach the shared `rust-server` and `js-client` packages.
+- The client build stage runs `npm ci`, which requires a committed `package-lock.json`. This repo's root `.gitignore` blanket-ignores `**/package-lock.json` and only un-ignores it per game (see the `!space-game/client/package-lock.json` line). A new game's client needs its own `!<game>/client/package-lock.json` exception added, and the lockfile itself committed — otherwise the Render build fails on `npm ci` with an unhelpful usage dump instead of a missing-lockfile error.
+- Render's free plan does not support attached disks at all (the Blueprint validator rejects a `disk:` block outright). If persistence is optional (a demo/testing deploy), drop the `disk:` block, switch `plan: free`, and point `PARLANDO_DATABASE_URL` at a writable path baked into the image, e.g. the container user's home directory (`sqlite:////home/parlando/parlando.sqlite`) — but say explicitly that the database resets on every restart and inactivity spin-down. If persistence matters, keep `plan: starter` with the `/data` disk as in the Space Game example, and say so is the ~$9.50/mo cost this adds.
+
 ## Handoff
 
 Tell the user the exact run command, dashboard URL, database path, participant asset path, required secret variables, and any remote-agent process command. Tell researchers to create and configure experiments in the dashboard instead of editing generated game code.
