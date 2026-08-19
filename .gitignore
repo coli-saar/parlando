@@ -4,6 +4,7 @@
 **/package-lock.json
 !js-client/package-lock.json
 !space-game/client/package-lock.json
+!games/great-tree/client/package-lock.json
 **/.DS_Store
 rust-server/target/
 rust-server/config/*.private.yaml
