@@ -1,5 +1,19 @@
 # Technical Decisions
 
+## 2026-08-20: Immutable experiment identity is not repeated in Configuration
+
+Context: the Configuration panel displayed an experiment's immutable identifier in a disabled
+text input even though the same identifier is already the selected experiment's panel title.
+Although technically non-editable, the input styling implied that the value belonged to the
+editable configuration form.
+
+Decision: omit the experiment ID from Configuration and use the selected experiment title as its
+single display location. Retain the editable ID input in the creation dialog, where the researcher
+must choose the identifier before it becomes immutable.
+
+Tradeoffs: the identifier is not repeated beside the configuration values, reducing redundancy at
+the cost of requiring users to refer to the persistent panel title when confirming the experiment.
+
 ## 2026-08-20: Desktop dashboard regions own scrolling below fixed navigation
 
 Context: allowing the embedded dashboard document to grow made the product header and selected
@@ -9,7 +23,10 @@ tab panels made Configuration and Privacy content unreachable.
 Decision: bound the desktop document to the viewport and keep overflow inside the experiment and
 session catalogues, event log, experiment tab panel, and game-level page panel. The product header,
 selected experiment header, and experiment tabs remain outside those scroll containers. At the
-narrow-screen breakpoint, restore document scrolling for the stacked mobile layout.
+narrow-screen breakpoint, restore document scrolling for the stacked mobile layout. Experiment
+tab scroll containers span the full workspace so their scrollbar stays at the right edge. Their
+content uses fluid viewport-relative gutters instead of a fixed maximum width, allowing wide
+configuration controls to use the available workspace while retaining padding at every width.
 
 Tradeoffs: nested scroll regions require explicit `min-height: 0` throughout the flex/grid chain
 and careful mobile overrides. They preserve stable navigation and independent long lists on desktop

@@ -139,7 +139,8 @@
     .event.action { border-left-color: var(--active); }
     .event.transcript { border-left-color: var(--draft); }
     .event.problem { background: #fff7f6; border-left-color: var(--danger); }
-    .simple-panel { flex: 1; max-width: 1000px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 22px 10px 40px 0; width: 100%; }
+    .simple-panel { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 22px clamp(18px, 3vw, 48px) 40px; width: 100%; }
+    .simple-panel > * { width: 100%; }
     .section-intro { align-content: start; display: grid; gap: 5px; }
     .section-intro h2 { margin: 0; }
     .export-controls { align-items: end; display: grid; gap: 16px; grid-template-columns: repeat(3, minmax(0, 1fr)); padding-top: 24px; }
@@ -1519,13 +1520,12 @@
     function renderConfigurationForm(config, gameYaml = '{}\n') {
       state.configValue = structuredClone(config);
       const activationWarning = `<div id="activationWarning" class="activation-warning" role="alert" ${state.activationIssues.length ? '' : 'hidden'}><strong>This experiment cannot be started yet.</strong><span id="activationWarningItems">${state.activationIssues.map(issue => escapeHtml(issue)).join(' ')}</span></div>`;
-      const identity = `<section class="config-group"><header class="config-group-copy"><h3>Experiment</h3><p class="muted small">The unique researcher-facing identifier chosen when the experiment was created.</p></header><div class="config-fields"><label class="config-field"><span>Experiment ID</span><input value="${escapeHtml(state.experiment?.experiment_id || '')}" disabled><span class="config-help">Experiment IDs are immutable after creation.</span></label></div></section>`;
       const sections = PARLANDO_CONFIG_SECTIONS.map(section => `
         <section class="config-group">
           <header class="config-group-copy"><h3>${escapeHtml(section.title)}</h3><p class="muted small">${escapeHtml(section.description)}</p></header>
           <div class="config-fields">${section.fields.map(field => renderConfigField(field, config)).join('')}</div>
         </section>`).join('');
-      configForm.innerHTML = `${activationWarning}${identity}${sections}
+      configForm.innerHTML = `${activationWarning}${sections}
         <section class="config-group">
           <header class="config-group-copy"><h3>Game configuration</h3><p class="muted small">Game-owned options. YAML is parsed and validated by the compiled game before it can be saved.</p></header>
           <div class="config-fields">

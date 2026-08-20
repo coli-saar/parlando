@@ -192,8 +192,9 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(ADMIN_EXPERIMENT_HTML.contains("gameVersion"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("gameGit"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("gameBuild"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Experiment IDs are immutable after creation."));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Experiment ID (unique and immutable after creation)"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("class=\"immutable-value\""));
+    assert!(ADMIN_EXPERIMENT_HTML.contains(".simple-panel > * { width: 100%; }"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("Experiment name"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("escapeHtml(factory.name)"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("escapeHtml(factory.display_name)"));
