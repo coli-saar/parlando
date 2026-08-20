@@ -28,17 +28,20 @@ export function ActiveGreatTree({ session }: { session: Session }) {
   const observation = session.observation;
   return (
     <div className="game-shell">
-      {observation.role === "crown" ? (
-        <CrownView
-          limbs={observation.limbs}
-          onSetSun={(limb, lit) => session.sendAction({ type: "setSun", limb, lit })}
-        />
-      ) : (
-        <RootView
-          roots={observation.roots}
-          onSetFlow={(root, open) => session.sendAction({ type: "setFlow", root, open })}
-        />
-      )}
+      <div className="game-panel">
+        <p className="hint">Make three flowers bloom.</p>
+        {observation.role === "crown" ? (
+          <CrownView
+            limbs={observation.limbs}
+            onSetSun={(limb, lit) => session.sendAction({ type: "setSun", limb, lit })}
+          />
+        ) : (
+          <RootView
+            roots={observation.roots}
+            onSetFlow={(root, open) => session.sendAction({ type: "setFlow", root, open })}
+          />
+        )}
+      </div>
       <SessionBar session={session} />
     </div>
   );

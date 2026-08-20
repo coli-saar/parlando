@@ -1,5 +1,78 @@
 # Technical Decisions
 
+## 2026-08-20: Desktop dashboard regions own scrolling below fixed navigation
+
+Context: allowing the embedded dashboard document to grow made the product header and selected
+experiment controls scroll away, while constraining the workspace without assigning overflow to
+tab panels made Configuration and Privacy content unreachable.
+
+Decision: bound the desktop document to the viewport and keep overflow inside the experiment and
+session catalogues, event log, experiment tab panel, and game-level page panel. The product header,
+selected experiment header, and experiment tabs remain outside those scroll containers. At the
+narrow-screen breakpoint, restore document scrolling for the stacked mobile layout.
+
+Tradeoffs: nested scroll regions require explicit `min-height: 0` throughout the flex/grid chain
+and careful mobile overrides. They preserve stable navigation and independent long lists on desktop
+without imposing desktop overflow behavior on small screens.
+
+## 2026-08-20: Dashboard polling never reconstructs an active source editor
+
+Context: the experiment catalogue refreshes periodically. Re-rendering the Notes editor during
+that refresh replaced its textarea node, which blurred the field and interrupted typing even
+though neither the selection nor the note had changed.
+
+Decision: keep the source editor DOM stable for the lifetime of an experiment selection. Polling
+may refresh non-dirty source in place but never replaces the textarea, resets its selection, or
+changes focus. Only an explicit experiment selection constructs a different editor. Markdown
+highlighting is rendered in a passive layer behind the textarea, and Write/Preview use the same
+underline-tab visual language as the dashboard workspace.
+
+Tradeoffs: the editor owns a small amount of synchronized DOM state for highlighting, line
+numbers, and scrolling. This avoids a larger client framework dependency while keeping polling
+independent of keyboard interaction.
+
+## 2026-08-20: Catalogue badges separate configuration validity from runtime readiness
+
+Context: a stored experiment can be structurally valid yet unable to start because a required
+provider credential or other activation prerequisite is missing. Treating both cases as a generic
+configuration error hid that distinction and made archived-but-valid experiments appear broken.
+
+Decision: assess every catalogue entry against the compiled game schema and expose separate
+validity and runnable facts with hover diagnostics. The dashboard shows compact badges for both,
+uses the exact `GameMetadata.name`, and offers Unarchive only when the valid runtime route can be
+constructed. Structurally invalid archived entries retain only their storage-only archive state.
+
+Tradeoffs: loading the catalogue performs bounded validation work for each experiment. This keeps
+readiness truthful without constructing or caching experiment routers, at the cost of additional
+configuration and credential reads during administrator catalogue refreshes.
+
+## 2026-08-20: Space Game names the local Parlando development run explicitly
+
+Context: Space Game already uses sibling `rust-server` and `js-client` path dependencies, but
+its development command was named only `run`, making the local dependency contract easy to miss.
+
+Decision: add `make run-local` as the explicit target that prepares both sibling artifacts and
+starts the game. Keep `make run` on the published manifest dependencies; `run-local` uses a
+Cargo command-line patch plus a no-save npm install instead of changing either manifest.
+
+Tradeoffs: local preparation takes an additional override step, but the explicit name makes
+testing an unpublished Parlando checkout discoverable without changing published-release tests.
+
+## 2026-08-20: Invalid experiment configurations have a one-way catalogue archive path
+
+Context: normal experiment-scoped administration constructs and validates the stored runtime
+configuration. That prevented an administrator from archiving an old configuration after a game
+schema change, even though archival changes only durable catalogue lifecycle state.
+
+Decision: add a dedicated installation-routed archive endpoint that atomically permits only
+`inactive | completed → archived`, then evicts any cached router. It never invokes experiment
+runtime construction. All other operations, including restore, remain runtime-scoped and keep
+their configuration validation requirement.
+
+Tradeoffs: an invalid archived experiment cannot be restored through the dashboard. This is a
+deliberate one-way safety boundary that avoids turning legacy archival support into a general
+configuration-validation bypass.
+
 ## 2026-08-17: Render deployment is documented through one runnable example
 
 Context: The general deployment reference described Render in a short operational
@@ -779,3 +852,23 @@ Decision: Place both integration tests in the repository-only `rust-server-tests
 Tradeoffs: The local tests have their own small manifest and lockfile, so their direct test dependencies must be maintained explicitly. In return, local test execution remains available, the expensive targets are clearly separated from the reusable crate, and the published manifest has no targets referring to omitted files.
 
 Follow-up risks: Add future expensive integration tests to the repository-only crate and keep its dependency versions aligned with the main crate where protocol compatibility matters. If internal test support grows independently from stress tooling, consider splitting the feature into narrower `test-support` and tool-specific features.
+
+## 2026-08-20: Dashboard catalogue refinements share one storage/runtime boundary
+
+Context: Open issues #8, #10, #11, and #12 concern the experimenter dashboard. Notes already exist in experiment storage and API request types, while archival currently traverses experiment runtime construction and therefore fails for structurally outdated stored configurations. The page-title and layout issues are confined to the same embedded dashboard document.
+
+Decision: Plan these issues as one dashboard and experiment-management change. Derive the browser title from compiled game metadata, give catalogue and session-detail columns independent viewport-bounded scrolling, and define the existing `notes` field as raw Markdown without changing its database or API name. Use a locally bundled source editor for Markdown and YAML, with sanitized Markdown preview and server-authoritative YAML validation. Creation may set initial Markdown; cloning never copies notes and always starts the clone with none. Add a one-way, storage-only archive route that never constructs the target experiment runtime. An outdated or structurally invalid experiment exposes only its identity, diagnostic, and Archive action; every other operation, including restoration, requires a valid runtime. The detailed implementation sequence and verification contract live in `notes/dashboard-experiment-management-plan.md`.
+
+Tradeoffs: The bundle spans presentation, editor assets, and routing rather than being a CSS-only patch. In return, it fixes the shared conceptual boundary once: an invalid catalogue entry remains archivable without becoming otherwise operable. Reusing `notes TEXT` avoids an unnecessary database migration; the Markdown contract is enforced by the editor and safe preview behavior. A dedicated one-way archival route adds one narrow internal endpoint but avoids weakening the validation required by every other path.
+
+Follow-up risks: Viewport ownership and source editors must be checked on narrow screens and with keyboard navigation. Markdown preview must remain sanitized, editor dependencies must be local rather than CDN-loaded, and the storage-only route must remain limited to archival while rejecting active, testing, and already archived experiments.
+
+## 2026-08-20: Agent secrets and fingerprints derive from one semantic configuration contract
+
+Context: Open issues #18, #25, and #16 expose three consequences of the same missing abstraction. Agent definitions describe browser widgets rather than value semantics, experiment secrets are loaded but unavailable through public game and agent contexts, and agent identity records do not distinguish different settings for one name/version pair.
+
+Decision: Plan one breaking configuration-contract migration. Replace browser-shaped field kinds with a recursively typed semantic schema and server-side validation. Store secret reference names and their factory-versus-agent-instance delivery purpose in configuration while resolving values into non-serializable, redacting runtime contexts. Give trusted compiled game code all game-owned experiment secrets and give each agent only its explicitly referenced subset. Send only agent-instance secrets in a separate authenticated remote create field; factory/transport credentials remain in the Rust adapter. Compute a versioned SHA-256 fingerprint from canonical factory ID and normalized non-secret settings, including reference names but excluding values, and expose a narrow fingerprint in durable agent identity, administration, and research exports. The detailed migration and security test plan live in `notes/agent-configuration-secrets-fingerprints-plan.md`.
+
+Tradeoffs: This choice requires coordinated Rust API, dashboard, gRPC, Python SDK, game, generator, and documentation changes. It avoids parallel legacy paths and prevents secret values from becoming ordinary JSON settings. Changing a value behind an unchanged reference deliberately leaves the fingerprint unchanged, so the fingerprint identifies configuration rather than deployed model contents or credential versions.
+
+Follow-up risks: Remote secret delivery expands the trusted endpoint boundary and must remain protected by transport and authentication checks. Existing stored settings need an explicit migration or a clear clone-required error. Agent readiness, rejected-action callbacks, arbitrary logging, and RL execution remain separate lifecycle work.

@@ -8,13 +8,13 @@ experiment infrastructure.
 
 ## Project role
 
-The local Parlando checkout has three parts:
+The Parlando checkout has three parts:
 
 - `rust-server` provides the reusable Rust server crate.
 - `js-client` builds the reusable SDK package `@coli-saar/parlando-client`.
 - `space-game` owns the demo game's Rust server crate, browser UI, assets, state interpretation, controls, configs, and tests.
 
-The browser dependency direction is one-way: this app consumes the sibling SDK through its local `file:` dependency. The Rust game server is source-local in `server/` and depends on the sibling `rust-server` crate through a Cargo path dependency.
+The browser dependency direction is one-way. Published builds consume the released SDK and Rust crate; `make run-local` temporarily overrides both with the sibling checkout without changing either manifest.
 
 The station interface is intentionally game-specific. It illustrates how a
 project can use Parlando's startup, connection, chat, and voice facilities while
@@ -29,10 +29,10 @@ Run the compiled Space Game host from this directory:
 
 ```bash
 cd /Users/koller/Documents/workspace/parlando/space-game
-make run
+make run-local
 ```
 
-The command installs or refreshes shared local artifacts before starting the server. It can take a while after source changes because it may run `cargo install`, build `@coli-saar/parlando-client`, reinstall client dependencies, and rebuild the browser app.
+The command installs or refreshes the sibling Rust and JavaScript Parlando artifacts before starting the server. It can take a while after source changes because it may run `cargo install`, build `@coli-saar/parlando-client`, reinstall client dependencies, and rebuild the browser app. Use `make run` to instead test released dependencies.
 
 Open `http://127.0.0.1:8000/admin`, configure the inactive starter experiment or create another one, and activate it. Participant pages live at `http://127.0.0.1:8000/e/{experiment_id}/`. Stop the process with `Ctrl-C` in the terminal running `make`.
 
@@ -49,18 +49,18 @@ cd /Users/koller/Documents/workspace/parlando/space-game
 make install-local
 ```
 
-That command installs the Rust server binary into `.local/bin` and builds the local `@coli-saar/parlando-client` checkout.
+That command is no longer necessary: `make run-local` prepares the local overrides itself.
 
 Then build or run the demo:
 
 ```bash
 make build
-make run
+make run-local
 ```
 
 ## Game-local Makefile
 
-This directory has the Space Game Makefile. It can prepare its own local dependencies, and it also accepts externally prepared artifacts:
+This directory has the Space Game Makefile. `make run` uses the published dependencies declared in its manifests. `make run-local` applies ephemeral local overrides for development:
 
 - the default `.local/bin/parlando-space-game`, or `SERVER_BIN=/path/to/parlando-space-game`.
 - the local `js-client` checkout already built with `npm run build`.
@@ -68,11 +68,11 @@ This directory has the Space Game Makefile. It can prepare its own local depende
 Run from this directory:
 
 ```bash
-make build
 make run
+make run-local
 ```
 
-The Rust and browser manifests point directly at the sibling `rust-server` and `js-client` directories. This makes `make run` a development workflow: it always compiles the current Parlando checkout rather than the last packages published to crates.io or npm.
+`make run-local` patches Cargo's `parlando` crate to the sibling `rust-server` directory and temporarily installs the sibling `js-client` package into `client/node_modules`. The manifests retain their published versions, so `make run` continues to test the crates.io and npm releases.
 
 ## Solo voice test
 

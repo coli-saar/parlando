@@ -10,7 +10,7 @@ use crate::{
     identity::new_id,
     readable_id::{dialogue_id, participant_id as readable_participant_id},
 };
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -464,6 +464,12 @@ pub trait ExperimentStore: Send + Sync {
     ) -> Result<Option<StoredExperimentSummary>>;
     /// Updates the lifecycle status for one experiment row.
     async fn update_experiment_status(&self, experiment_id: &str, status: &str) -> Result<()>;
+    /// Archives an inactive or completed experiment without loading its runtime configuration.
+    ///
+    /// This one-way catalogue operation deliberately cannot restore an experiment and rejects
+    /// open intake or an already archived row. It is intended for legacy configurations that
+    /// the current game binary can no longer parse.
+    async fn archive_experiment(&self, experiment_id: &str) -> Result<()>;
     /// Closes all intake that was open before the current game-process startup.
     async fn deactivate_open_experiments(&self) -> Result<u64>;
     /// Creates or reuses a durable participant identity and returns `participant_id`.
@@ -1836,6 +1842,31 @@ impl ExperimentStore for SqliteExperimentStore {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    async fn archive_experiment(&self, experiment_id: &str) -> Result<()> {
+        let result = sqlx::query(
+            "update experiments set status = 'archived' where experiment_id = ? and status in ('inactive', 'completed')",
+        )
+        .bind(experiment_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(());
+        }
+        let status = sqlx::query_scalar::<_, String>(
+            "select status from experiments where experiment_id = ?",
+        )
+        .bind(experiment_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        match status.as_deref() {
+            None => Err(anyhow!("Experiment not found.")),
+            Some("archived") => Err(anyhow!("Experiment is already archived.")),
+            Some(status) => Err(anyhow!(
+                "Experiment in {status} status must stop intake before archival."
+            )),
+        }
     }
 
     async fn deactivate_open_experiments(&self) -> Result<u64> {

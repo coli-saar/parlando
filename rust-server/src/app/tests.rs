@@ -248,6 +248,22 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(!ADMIN_EXPERIMENT_HTML.contains("runtimeApi('load')"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("runningExperimentId"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("New experiment"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("createExperimentDialog"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("newExperimentNotes"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("data-tab=\"notes\""));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("experimentNotesSource"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("safeMarkdown"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("source-editor-lines"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("document.title"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("state.game?.name"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("experimentCapabilityBadges"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("align-content: start"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("html { height: 100%; overflow: hidden; }"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains(".simple-panel { flex: 1;"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("overflow-y: auto; overscroll-behavior: contain"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("'Unarchive'"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("/archive"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Experiment unavailable"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("new-experiment"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("experimentStatusFilter"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-status-filter"));
@@ -1028,11 +1044,45 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         router.clone(),
         http::Method::POST,
         "/api/admin/experiments",
-        json!({"experiment_id": "primary"}),
+        json!({"experiment_id": "primary", "notes": "# Primary\n\nPrivate catalogue note"}),
     )
     .await;
     assert_eq!(create_status, StatusCode::OK);
     assert_eq!(created["experiment_id"], "primary");
+
+    let (catalogue_status, catalogue) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(catalogue_status, StatusCode::OK);
+    assert_eq!(
+        catalogue["experiments"][0]["notes"],
+        "# Primary\n\nPrivate catalogue note"
+    );
+    assert_eq!(catalogue["game"]["name"], "Tiny Game");
+    assert_eq!(catalogue["experiments"][0]["configuration_valid"], true);
+    assert_eq!(catalogue["experiments"][0]["runnable"], true);
+
+    let (clone_status, _) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiments/primary/clone",
+        json!({"experiment_id": "primary-clone"}),
+    )
+    .await;
+    assert_eq!(clone_status, StatusCode::OK);
+    let (clone_definition_status, clone_definition) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments/primary-clone/config",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(clone_definition_status, StatusCode::OK);
+    assert!(clone_definition["experiment"]["notes"].is_null());
 
     let (settings_status, _) = json_request(
         router.clone(),
@@ -1188,7 +1238,7 @@ async fn compiled_game_router_hosts_multiple_experiments() {
     )
     .await;
     assert_eq!(catalogue["game"]["name"], "Tiny Game");
-    assert_eq!(catalogue["experiments"].as_array().unwrap().len(), 2);
+    assert_eq!(catalogue["experiments"].as_array().unwrap().len(), 3);
     let (_, privacy) = json_request(
         router.clone(),
         http::Method::GET,
@@ -1196,7 +1246,7 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         Value::Null,
     )
     .await;
-    assert_eq!(privacy["experiment_count"], 2);
+    assert_eq!(privacy["experiment_count"], 3);
 
     let restarted = build_game_router(TinyAdapter, config, descriptor, |_config| {
         Ok(ServeOptions::default())

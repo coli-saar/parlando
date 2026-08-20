@@ -7,8 +7,9 @@
   <style>
     /* Dashboard information architecture: game navigation, experiment catalogue, and session workspace. */
     :root { --line: #d9dee3; --strong-line: #c6ccd2; --surface: #f4f5f6; --selected: #e5f2fb; --accent: #1687c9; --text: #20262c; --subtle: #68737d; --draft: #e9972d; --testing: #7b61c9; --active: #35b76f; --completed: #3998e8; --archived: #a9afb5; --danger: #cf4c48; --catalogue-width: 290px; --session-width: 300px; background: #fff; color: var(--text); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; line-height: 1.35; }
+    html { height: 100%; overflow: hidden; }
     * { box-sizing: border-box; }
-    body { background: #fff; color: var(--text); display: flex; flex-direction: column; margin: 0; min-height: 100vh; }
+    body { background: #fff; color: var(--text); display: flex; flex-direction: column; height: 100%; margin: 0; overflow: hidden; }
     .icon-sprite { height: 0; overflow: hidden; position: absolute; width: 0; }
     .icon { display: inline-block; fill: none; flex: 0 0 auto; height: 16px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; vertical-align: -3px; width: 16px; }
     .count-icon { height: 14px; width: 14px; }
@@ -39,10 +40,10 @@
     .scope-navigation { border-top: 1px solid var(--line); display: flex; gap: 4px; padding: 0 24px; }
     .scope-link, .tab { align-items: center; background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--subtle); cursor: pointer; display: inline-flex; font-weight: 600; gap: 7px; padding: 10px 11px; }
     .scope-link.active, .tab.active { border-bottom-color: var(--accent); color: var(--text); }
-    .dashboard-main { display: flex; flex: 1; min-height: 0; }
-    .scope-screen { min-height: calc(100vh - 113px); width: 100%; }
+    .dashboard-main { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+    .scope-screen { height: 100%; min-height: 0; width: 100%; }
     .scope-screen[hidden], .tab-panel[hidden] { display: none; }
-    .experiment-scope { display: grid; grid-template-columns: var(--catalogue-width) 7px minmax(0, 1fr); }
+    .experiment-scope { display: grid; grid-template-columns: var(--catalogue-width) 7px minmax(0, 1fr); height: 100%; min-height: 0; overflow: hidden; }
     .experiment-catalogue { display: flex; flex-direction: column; min-width: 0; padding: 26px 20px; }
     .catalogue-header, .session-toolbar { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
     .catalogue-header { margin-bottom: 14px; }
@@ -57,6 +58,7 @@
     .status-filter-option { background: transparent; border: 0; border-radius: 4px; color: var(--text); cursor: pointer; font: inherit; padding: 7px 8px; text-align: left; width: 100%; }
     .status-filter-option:hover, .status-filter-option[aria-selected="true"] { background: var(--selected); }
     .experiment-list, .session-list, .revision-list { display: grid; gap: 0; }
+    .experiment-list { align-content: start; flex: 1; min-height: 0; overflow-y: auto; }
     .experiment { align-items: center; background: transparent; border: 0; border-radius: 0; border-top: 1px solid var(--line); color: var(--text); cursor: pointer; display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) auto; padding: 13px 8px; text-align: left; width: 100%; }
     .experiment:last-child { border-bottom: 1px solid var(--line); }
     .experiment.active { background: var(--selected); }
@@ -68,6 +70,11 @@
     .status-label { align-items: center; display: flex; gap: 7px; min-width: 0; }
     .experiment-meta { align-items: center; display: flex; flex-wrap: wrap; gap: 5px 10px; padding-left: 14px; }
     .experiment-count, .session-count { align-items: center; color: var(--subtle); display: inline-flex; font-variant-numeric: tabular-nums; gap: 5px; justify-content: flex-end; min-width: 2ch; text-align: right; white-space: nowrap; }
+    .experiment-badges { align-items: center; display: inline-flex; flex: 0 0 auto; gap: 4px; margin-left: 2px; }
+    .capability-badge { align-items: center; border: 1px solid currentColor; border-radius: 999px; display: inline-flex; height: 20px; justify-content: center; width: 20px; }
+    .capability-badge .icon { height: 12px; width: 12px; }
+    .capability-badge.valid, .capability-badge.ready { background: #e8f7ee; color: #247849; }
+    .capability-badge.invalid, .capability-badge.blocked { background: #fff1ef; color: #ac3832; }
     .new-experiment { margin-top: auto; width: 100%; }
     .status-dot { background: var(--archived); border-radius: 50%; display: inline-block; flex: 0 0 auto; height: 7px; width: 7px; }
     .status-dot.inactive, .status-dot.waiting, .status-dot.delayed { background: var(--draft); }
@@ -81,7 +88,7 @@
     .column-resizer span { background: var(--strong-line); height: 100%; width: 1px; }
     .column-resizer:hover, .column-resizer:focus-visible, .column-resizer.dragging { background: var(--selected); }
     .column-resizer:hover span, .column-resizer:focus-visible span, .column-resizer.dragging span { background: var(--accent); }
-    .experiment-workspace { display: flex; flex-direction: column; min-width: 0; padding: 28px 24px; }
+    .experiment-workspace { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; padding: 28px 24px; }
     .workspace-header { align-items: start; display: flex; gap: 24px; justify-content: space-between; margin: 0; }
     .workspace-title { display: grid; gap: 5px; min-width: 0; }
     .workspace-title h1 { align-items: center; display: flex; gap: 8px; margin: 0; overflow-wrap: anywhere; }
@@ -93,17 +100,17 @@
     .empty-experiment-workspace[hidden], .workspace-header[hidden], .workspace-navigation[hidden] { display: none; }
     .empty-experiment-workspace .large-icon { color: var(--accent); height: 32px; width: 32px; }
     .empty-experiment-workspace h1, .empty-experiment-workspace p { margin: 0; }
-    .session-workspace { display: grid; flex: 1; grid-template-columns: var(--session-width) 7px minmax(0, 1fr); min-height: 500px; padding-top: 20px; }
-    .session-picker { background: transparent; border: 0; box-shadow: none; margin: 0; min-width: 0; padding-right: 24px; position: static; }
+    .session-workspace { display: grid; flex: 1; grid-template-columns: var(--session-width) 7px minmax(0, 1fr); min-height: 0; padding-top: 20px; }
+    .session-picker { background: transparent; border: 0; box-shadow: none; display: flex; flex-direction: column; margin: 0; min-height: 0; min-width: 0; padding-right: 24px; position: static; }
     .session-toolbar { margin-bottom: 12px; }
-    .session-list { max-height: none; overflow: visible; padding: 0; }
+    .session-list { flex: 1; max-height: none; min-height: 0; overflow-y: auto; padding: 0; }
     .session-list > .empty { padding: 24px 8px; text-align: left; }
     .session { align-items: center; background: transparent; border: 0; border-radius: 0; border-top: 1px solid var(--line); color: var(--text); cursor: pointer; display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) auto; padding: 13px 9px; text-align: left; width: 100%; }
     .session:last-child { border-bottom: 1px solid var(--line); }
     .session:hover, .session.active { background: var(--selected); border-color: var(--line); }
     .session-main { display: grid; gap: 4px; min-width: 0; }
     .session strong { display: inline; margin: 0; overflow-wrap: anywhere; }
-    .session-detail { min-width: 0; padding-left: 24px; }
+    .session-detail { display: flex; flex-direction: column; min-height: 0; min-width: 0; padding-left: 24px; }
     .session-summary { background: #fff; border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 18px; padding: 18px; }
     .session-summary h2 { margin: 0; }
     .session-facts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; }
@@ -122,7 +129,7 @@
     .role-b { background: #faebd6; color: #76501b; }
     .participant-copy { display: grid; gap: 2px; min-width: 0; }
     .participant-copy strong { overflow-wrap: anywhere; }
-    .session-log { margin-top: 24px; }
+    .session-log { flex: 1; margin-top: 24px; min-height: 0; overflow-y: auto; }
     .events-header { align-items: center; border-bottom: 1px solid var(--strong-line); display: flex; gap: 14px; justify-content: flex-end; padding-bottom: 12px; }
     .events-header h2 { margin: 0 auto 0 0; }
     .toggle-row { align-items: center; display: inline-flex; gap: 7px; white-space: nowrap; }
@@ -132,7 +139,7 @@
     .event.action { border-left-color: var(--active); }
     .event.transcript { border-left-color: var(--draft); }
     .event.problem { background: #fff7f6; border-left-color: var(--danger); }
-    .simple-panel { max-width: 1000px; padding-top: 22px; }
+    .simple-panel { flex: 1; max-width: 1000px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 22px 10px 40px 0; width: 100%; }
     .section-intro { align-content: start; display: grid; gap: 5px; }
     .section-intro h2 { margin: 0; }
     .export-controls { align-items: end; display: grid; gap: 16px; grid-template-columns: repeat(3, minmax(0, 1fr)); padding-top: 24px; }
@@ -181,6 +188,31 @@
     .secret-missing input { border-color: #d7a34b; }
     .secret-configured .secret-state { color: #257748; font-weight: 600; }
     .game-yaml { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-height: 260px !important; tab-size: 2; }
+    .source-editor { background: #fff; border: 1px solid #cbd2d8; border-radius: 6px; display: grid; grid-template-columns: auto minmax(0, 1fr); min-height: 180px; overflow: hidden; }
+    .source-editor-lines { background: #f5f7f9; color: var(--subtle); font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin: 0; padding: 9px 8px; text-align: right; user-select: none; }
+    .source-editor textarea { border: 0; border-radius: 0; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-height: 180px; resize: vertical; tab-size: 2; }
+    .source-editor-stage { min-height: 180px; position: relative; }
+    .source-editor-highlight { color: var(--text); font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; inset: 0; margin: 0; overflow: hidden; padding: 9px 10px; pointer-events: none; position: absolute; tab-size: 2; white-space: pre-wrap; word-break: break-word; }
+    .markdown-source-editor textarea { background: transparent; caret-color: var(--text); color: transparent; inset: 0; overflow: auto; position: absolute; resize: none; -webkit-text-fill-color: transparent; }
+    .markdown-source-editor textarea::selection { background: rgba(22, 135, 201, .22); }
+    .markdown-token-marker { color: #7b61c9; font-weight: 700; }
+    .markdown-token-heading { color: #185f8f; font-weight: 700; }
+    .markdown-token-code { color: #9b5c12; }
+    .markdown-token-link { color: #1674a8; text-decoration: underline; }
+    .markdown-token-emphasis { color: #754b8d; }
+    .markdown-preview { border: 1px solid var(--line); border-radius: 6px; min-height: 180px; padding: 12px; }
+    .markdown-preview :first-child { margin-top: 0; }
+    .markdown-preview :last-child { margin-bottom: 0; }
+    .notes-actions { align-items: center; display: flex; gap: 10px; margin-top: 12px; }
+    .notes-mode-tabs { border-bottom: 1px solid var(--strong-line); display: flex; gap: 3px; margin-top: 14px; }
+    .notes-mode { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--subtle); cursor: pointer; font: inherit; font-weight: 600; margin-bottom: -1px; padding: 9px 11px; }
+    .notes-mode[aria-pressed="true"] { border-bottom-color: var(--accent); color: var(--text); }
+    .notes-mode:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .notes-mode-tabs #notesSaveState { align-self: center; margin-left: auto; padding-right: 4px; }
+    dialog { border: 0; border-radius: 8px; box-shadow: 0 18px 60px rgba(20,34,45,.32); max-width: 620px; padding: 0; width: calc(100% - 32px); }
+    dialog::backdrop { background: rgba(20,34,45,.35); }
+    .dialog-form { display: grid; gap: 16px; padding: 24px; }
+    .dialog-actions { display: flex; gap: 10px; justify-content: flex-end; }
     .validation-row { align-items: center; display: flex; gap: 10px; }
     .validation-result.valid { color: #23824d; }
     .validation-result.invalid { color: var(--danger); }
@@ -197,7 +229,7 @@
     .revision-section h2 { margin: 0 0 12px; }
     .revision-row { border-top: 1px solid var(--line); display: grid; gap: 4px; padding: 12px 0; }
     .revision-row:last-child { border-bottom: 1px solid var(--line); }
-    .page-scope { padding: 30px 34px 40px; }
+    .page-scope { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 30px 34px 40px; }
     .page-header { align-items: start; border-bottom: 1px solid var(--strong-line); display: flex; gap: 20px; justify-content: space-between; padding-bottom: 20px; }
     .page-header > span:first-child { display: grid; gap: 5px; }
     .page-header h1 { margin: 0; }
@@ -282,11 +314,14 @@
     .event-json[hidden] { display: none; }
     .empty { color: var(--subtle); padding: 28px; text-align: center; }
     @media (max-width: 900px) {
+      html, body { height: auto; min-height: 100%; overflow: auto; }
+      .dashboard-main { overflow: visible; }
+      .scope-screen { height: auto; min-height: calc(100vh - 113px); }
       .menu-button { display: inline-flex; }
       .product-row { grid-template-columns: auto minmax(0, 1fr); }
       .product-identity { display: none; }
       .game-identity { border-left: 0; padding-left: 0; }
-      .experiment-scope { grid-template-columns: 1fr; }
+      .experiment-scope { grid-template-columns: 1fr; height: auto; overflow: visible; }
       .experiment-catalogue { background: #fff; bottom: 0; box-shadow: 0 16px 50px rgba(20,34,45,.22); left: 0; max-width: 88vw; position: fixed; top: 111px; transform: translateX(-102%); transition: transform 160ms ease; width: 340px; z-index: 10; }
       body.sidebar-open .experiment-catalogue { transform: translateX(0); }
       .column-resizer { display: none; }
@@ -294,7 +329,9 @@
       .session-picker { border-bottom: 1px solid var(--line); padding: 0 0 20px; }
       .session-list { display: flex; overflow-x: auto; }
       .session { flex: 0 0 200px; }
+      .experiment-workspace { min-height: calc(100vh - 113px); overflow: visible; }
       .session-detail { padding: 20px 0 0; }
+      .session-log { overflow: visible; }
       .load-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .load-layout { grid-template-columns: 1fr; }
       .plain-section:nth-child(2) { border-left: 0; border-top: 1px solid var(--line); padding-left: 0; }
@@ -339,6 +376,8 @@
     <symbol id="icon-restore" viewBox="0 0 24 24"><path d="M4 7h16v13H4zM3 4h18v3H3zM8 13a4 4 0 1 0 1.2-2.8L7 12"/><path d="M7 9v3h3"/></symbol>
     <symbol id="icon-power" viewBox="0 0 24 24"><path d="M12 2v10M6.3 5.8a9 9 0 1 0 11.4 0"/></symbol>
     <symbol id="icon-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="icon-alert" viewBox="0 0 24 24"><path d="M12 3 22 21H2L12 3Z"/><path d="M12 9v5M12 18h.01"/></symbol>
+    <symbol id="icon-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7V5Z"/></symbol>
     <symbol id="icon-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 20h16"/></symbol>
     <symbol id="icon-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 21c.8-4.6 3.3-7 7.5-7s6.7 2.4 7.5 7"/></symbol>
     <symbol id="icon-bot" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 7V4M9 4h6M9 16h6"/><circle cx="9" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1" fill="currentColor" stroke="none"/></symbol>
@@ -399,6 +438,7 @@
         </section>
         <nav id="experimentWorkspaceTabs" class="tabs workspace-navigation" aria-label="Experiment workspace">
           <button class="tab active" type="button" data-tab="sessions">Sessions</button>
+          <button class="tab" type="button" data-tab="notes">Notes</button>
           <button class="tab" type="button" data-tab="export">Export</button>
           <button class="tab" type="button" data-tab="details">Configuration</button>
           <button class="tab" type="button" data-tab="privacy"><svg class="icon" aria-hidden="true"><use href="#icon-shield"></use></svg>Privacy</button>
@@ -437,6 +477,14 @@
               <div id="timeline" class="timeline"></div>
             </section>
           </div>
+        </section>
+
+        <section id="notesPanel" class="tab-panel simple-panel" hidden>
+          <header class="section-intro"><h2>Notes</h2><p class="muted">Private Markdown catalogue metadata for this experiment. It is not included in participant pages or exports.</p></header>
+          <div class="notes-mode-tabs" role="group" aria-label="Notes editor mode"><button id="notesWriteMode" class="notes-mode" type="button" aria-pressed="true">Write</button><button id="notesPreviewMode" class="notes-mode" type="button" aria-pressed="false">Preview</button><span id="notesSaveState" class="muted small" role="status">Saved</span></div>
+          <div id="notesEditor"></div>
+          <div id="notesPreview" class="markdown-preview" hidden aria-live="polite"></div>
+          <div class="notes-actions"><button id="saveNotes" class="primary" type="button">Save notes</button></div>
         </section>
 
         <section id="exportPanel" class="tab-panel simple-panel" hidden>
@@ -486,8 +534,16 @@
     </section>
 
   </main>
+  <dialog id="createExperimentDialog" aria-labelledby="createExperimentTitle">
+    <form id="createExperimentForm" class="dialog-form" method="dialog">
+      <header><h2 id="createExperimentTitle">New experiment</h2><p class="muted">Choose its immutable identifier and optional private Markdown notes.</p></header>
+      <label>Experiment ID (unique and immutable after creation)<input id="newExperimentId" name="experiment_id" required pattern="[A-Za-z0-9._-]{1,128}" autocomplete="off" aria-describedby="newExperimentIdHelp"><span id="newExperimentIdHelp" class="config-help">1–128 letters, digits, dots, dashes, or underscores. This cannot be changed later.</span></label>
+      <label>Markdown description (optional)<textarea id="newExperimentNotes" name="notes" rows="7" spellcheck="true"></textarea></label>
+      <div class="dialog-actions"><button id="cancelCreateExperiment" class="secondary" type="button">Cancel</button><button class="primary" type="submit">Create experiment</button></div>
+    </form>
+  </dialog>
   <script>
-    const state = { experiment: null, experiments: [], game: null, gameSettings: null, load: null, privacy: null, activationIssues: [], sessions: [], selected: null, selectedSession: null, selectedParticipants: [], events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, csrfToken: null, activeScope: 'experiments', activeTab: 'sessions', loadedConfigKey: null, configLoadFailed: false, configValue: null, configuredSecrets: [], gameSecretKeys: [], secretDeletions: new Set(), agentFactories: [], gameProviderSecrets: [], gameProviderSecretDeletions: new Set(), gameProviderSecretUpdates: new Map(), gameSettingsConfirmationTimer: null };
+    const state = { experiment: null, experiments: [], game: null, gameSettings: null, load: null, privacy: null, activationIssues: [], sessions: [], selected: null, selectedSession: null, selectedParticipants: [], events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, csrfToken: null, activeScope: 'experiments', activeTab: 'sessions', loadedConfigKey: null, configLoadFailed: false, configValue: null, configuredSecrets: [], gameSecretKeys: [], secretDeletions: new Set(), agentFactories: [], gameProviderSecrets: [], gameProviderSecretDeletions: new Set(), gameProviderSecretUpdates: new Map(), gameSettingsConfirmationTimer: null, notesMode: 'write', notesSource: '', notesDirty: false };
     const experimentList = document.getElementById('experimentList');
     const menuButton = document.getElementById('menuButton');
     const experimentHeader = document.getElementById('experimentHeader');
@@ -522,11 +578,16 @@
     const loadChart = document.getElementById('loadChart');
     const livenessTable = document.getElementById('livenessTable');
     const privacyContent = document.getElementById('privacyContent');
+    const notesEditor = document.getElementById('notesEditor');
+    const notesPreview = document.getElementById('notesPreview');
+    const notesSaveState = document.getElementById('notesSaveState');
+    const createExperimentDialog = document.getElementById('createExperimentDialog');
     const scopeButtons = Array.from(document.querySelectorAll('[data-scope]'));
     const scopePanels = Array.from(document.querySelectorAll('[data-scope-panel]'));
     const tabButtons = Array.from(document.querySelectorAll('.tab'));
     const tabPanels = {
       sessions: document.getElementById('sessionsPanel'),
+      notes: document.getElementById('notesPanel'),
       export: document.getElementById('exportPanel'),
       details: document.getElementById('detailsPanel'),
       privacy: document.getElementById('privacyPanel')
@@ -549,6 +610,153 @@
     // Escapes arbitrary server data before inserting it into HTML templates.
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+
+    // Highlights common GitHub-flavored Markdown source tokens without interpreting raw HTML.
+    function highlightMarkdownSource(source) {
+      const inline = value => {
+        const pattern = /(`[^`\n]*`|\[[^\]\n]+\]\([^)\n]+\)|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|[*_][^*_\n]+[*_])/g;
+        let result = '';
+        let offset = 0;
+        for (const match of value.matchAll(pattern)) {
+          result += escapeHtml(value.slice(offset, match.index));
+          const token = match[0];
+          const kind = token.startsWith('`') ? 'code' : token.startsWith('[') ? 'link' : 'emphasis';
+          result += `<span class="markdown-token-${kind}">${escapeHtml(token)}</span>`;
+          offset = match.index + token.length;
+        }
+        return result + escapeHtml(value.slice(offset));
+      };
+      let fenced = false;
+      return source.split('\n').map(line => {
+        if (/^\s*```/.test(line)) {
+          fenced = !fenced;
+          return `<span class="markdown-token-marker">${escapeHtml(line)}</span>`;
+        }
+        if (fenced) return `<span class="markdown-token-code">${escapeHtml(line)}</span>`;
+        const prefix = line.match(/^(\s{0,3}(?:#{1,6}\s+|>\s+|[-+*]\s+(?:\[[ xX]\]\s+)?|\d+\.\s+))/);
+        if (!prefix) return inline(line);
+        const heading = prefix[0].includes('#');
+        return `<span class="markdown-token-marker">${escapeHtml(prefix[0])}</span><span class="${heading ? 'markdown-token-heading' : ''}">${inline(line.slice(prefix[0].length))}</span>`;
+      }).join('\n');
+    }
+
+    // Builds a local source editor with line numbers, Markdown highlighting, and indentation.
+    function renderSourceEditor(container, id, value, label, onChange) {
+      container.innerHTML = `<div class="source-editor markdown-source-editor"><pre class="source-editor-lines" aria-hidden="true">1</pre><div class="source-editor-stage"><pre class="source-editor-highlight" aria-hidden="true"></pre><textarea id="${id}" aria-label="${escapeHtml(label)}" spellcheck="true"></textarea></div></div>`;
+      const input = container.querySelector('textarea');
+      const lines = container.querySelector('.source-editor-lines');
+      const highlight = container.querySelector('.source-editor-highlight');
+      input.value = value;
+      const synchronize = () => {
+        lines.textContent = Array.from({ length: input.value.split('\n').length }, (_, index) => index + 1).join('\n');
+        highlight.innerHTML = highlightMarkdownSource(input.value) || ' ';
+        highlight.scrollTop = input.scrollTop;
+        highlight.scrollLeft = input.scrollLeft;
+        lines.scrollTop = input.scrollTop;
+      };
+      input.addEventListener('input', () => { synchronize(); onChange(input.value); });
+      input.addEventListener('scroll', synchronize);
+      input.addEventListener('keydown', event => {
+        if (event.key !== 'Tab') return;
+        event.preventDefault();
+        const start = input.selectionStart;
+        const end = input.selectionEnd;
+        input.setRangeText('  ', start, end, 'end');
+        input.dispatchEvent(new Event('input'));
+      });
+      input.synchronizeSourceEditor = synchronize;
+      synchronize();
+    }
+
+    // Upgrades a YAML textarea in place while preserving its stable form identifier and fallback.
+    function upgradeYamlEditor() {
+      const textarea = document.getElementById('gameYaml');
+      if (!textarea) return;
+      const holder = document.createElement('div');
+      holder.className = 'source-editor';
+      holder.innerHTML = `<pre class="source-editor-lines" aria-hidden="true">1</pre>`;
+      const lines = holder.firstElementChild;
+      textarea.parentNode.insertBefore(holder, textarea);
+      holder.appendChild(textarea);
+      const updateLines = () => { lines.textContent = Array.from({ length: textarea.value.split('\n').length }, (_, index) => index + 1).join('\n'); };
+      textarea.addEventListener('input', updateLines);
+      textarea.addEventListener('keydown', event => {
+        if (event.key !== 'Tab') return;
+        event.preventDefault();
+        textarea.setRangeText('  ', textarea.selectionStart, textarea.selectionEnd, 'end');
+        textarea.dispatchEvent(new Event('input'));
+      });
+      updateLines();
+    }
+
+    // Renders conservative Markdown from escaped source without allowing active HTML or URLs.
+    function safeMarkdown(source) {
+      const safeLink = (_match, label, url) => {
+        try {
+          const parsed = new URL(url, window.location.origin);
+          if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) return escapeHtml(label);
+          return `<a href="${escapeHtml(parsed.href)}" rel="noopener noreferrer" target="_blank">${escapeHtml(label)}</a>`;
+        } catch (_) { return escapeHtml(label); }
+      };
+      const inline = value => value
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+        .replace(/~~([^~]+)~~/g, '<del>$1</del>')
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, safeLink);
+      return escapeHtml(source).split(/\n{2,}/).map(block => {
+        if (/^```/.test(block) && /```$/.test(block)) return `<pre><code>${block.replace(/^```[^\n]*\n?/, '').replace(/\n?```$/, '')}</code></pre>`;
+        const lines = block.split('\n');
+        if (lines.every(line => /^[-+*]\s+/.test(line))) return `<ul>${lines.map(line => {
+          const item = line.replace(/^[-+*]\s+/, '');
+          const task = item.match(/^\[([ xX])\]\s+(.*)$/);
+          return task ? `<li><input type="checkbox" disabled ${task[1].toLowerCase() === 'x' ? 'checked' : ''}> ${inline(task[2])}</li>` : `<li>${inline(item)}</li>`;
+        }).join('')}</ul>`;
+        if (lines.every(line => /^\d+\.\s+/.test(line))) return `<ol>${lines.map(line => `<li>${inline(line.replace(/^\d+\.\s+/, ''))}</li>`).join('')}</ol>`;
+        if (lines.every(line => /^&gt;\s?/.test(line))) return `<blockquote>${lines.map(line => inline(line.replace(/^&gt;\s?/, ''))).join('<br>')}</blockquote>`;
+        const linked = inline(block);
+        if (linked.startsWith('### ')) return `<h3>${linked.slice(4)}</h3>`;
+        if (linked.startsWith('## ')) return `<h2>${linked.slice(3)}</h2>`;
+        if (linked.startsWith('# ')) return `<h1>${linked.slice(2)}</h1>`;
+        return `<p>${linked.replace(/\n/g, '<br>')}</p>`;
+      }).join('') || '<p class="muted">No notes yet.</p>';
+    }
+
+    // Applies the selected Notes mode without rebuilding the editor or disturbing focus.
+    function setNotesMode(mode) {
+      state.notesMode = mode;
+      notesPreview.hidden = mode !== 'preview';
+      notesEditor.hidden = mode !== 'write';
+      document.getElementById('notesWriteMode').setAttribute('aria-pressed', String(mode === 'write'));
+      document.getElementById('notesPreviewMode').setAttribute('aria-pressed', String(mode === 'preview'));
+      if (mode === 'preview') notesPreview.innerHTML = safeMarkdown(state.notesSource);
+    }
+
+    // Synchronizes Notes with selection changes while preserving the active editor across polling.
+    function renderNotes() {
+      const selectionChanged = state.notesExperimentId !== state.experiment?.experiment_id;
+      if (selectionChanged) {
+        state.notesExperimentId = state.experiment?.experiment_id || null;
+        state.notesSource = state.experiment?.notes || '';
+        state.notesDirty = false;
+      }
+      let input = document.getElementById('experimentNotesSource');
+      if (selectionChanged || !input) {
+        renderSourceEditor(notesEditor, 'experimentNotesSource', state.notesSource, 'Experiment notes in Markdown', value => {
+          state.notesSource = value;
+          state.notesDirty = value !== (state.experiment?.notes || '');
+          notesSaveState.textContent = state.notesDirty ? 'Unsaved changes' : 'Saved';
+          if (state.notesMode === 'preview') notesPreview.innerHTML = safeMarkdown(value);
+        });
+      } else if (!state.notesDirty && document.activeElement !== input && input.value !== (state.experiment?.notes || '')) {
+        state.notesSource = state.experiment?.notes || '';
+        input.value = state.notesSource;
+        input.synchronizeSourceEditor();
+      }
+      notesPreview.innerHTML = safeMarkdown(state.notesSource);
+      setNotesMode(state.notesMode);
+      notesSaveState.textContent = state.notesDirty ? 'Unsaved changes' : 'Saved';
     }
 
     // Renders one symbol from the dashboard's bundled SVG icon sprite.
@@ -844,6 +1052,18 @@
       if (state.selectedSession) renderSummary(state.selectedSession, state.selectedParticipants);
     }
 
+    // Renders compact structural-validity and runtime-readiness indicators with diagnostics.
+    function experimentCapabilityBadges(experiment) {
+      const valid = experiment.configuration_valid === true;
+      const runnable = experiment.runnable === true;
+      const validityTitle = valid ? 'Valid experiment configuration' : `Invalid experiment configuration: ${experiment.configuration_error || 'unknown error'}`;
+      const readinessTitle = runnable ? 'Runnable experiment' : `Not runnable: ${(experiment.runnable_issues || []).join(' ') || (valid ? 'runtime requirements are not met' : 'configuration is invalid')}`;
+      return `<span class="experiment-badges">
+        <span class="capability-badge ${valid ? 'valid' : 'invalid'}" title="${escapeHtml(validityTitle)}" aria-label="${escapeHtml(validityTitle)}">${icon(valid ? 'check' : 'alert')}</span>
+        ${valid ? `<span class="capability-badge ${runnable ? 'ready' : 'blocked'}" title="${escapeHtml(readinessTitle)}" aria-label="${escapeHtml(readinessTitle)}">${icon(runnable ? 'play' : 'alert')}</span>` : ''}
+      </span>`;
+    }
+
     // Renders the filtered experiment catalogue using only durable server metadata.
     function renderExperiment() {
       const experiment = state.experiment;
@@ -884,28 +1104,31 @@
         return;
       }
       const status = experimentDisplayStatus(experiment);
+      if (state.configLoadFailed) {
+        experimentHeader.innerHTML = `<h1>${escapeHtml(experiment.experiment_id)}${experimentCapabilityBadges(experiment)}</h1><span class="workspace-facts small">${statusLabel(status)}<span>Configuration revision ${escapeHtml(experiment.config_revision)}</span><span>Created ${escapeHtml(fmtDate(experiment.created_at))}</span></span>`;
+        experimentStats.innerHTML = experiment.status === 'archived' ? '' : `<button class="secondary" id="archiveButton" type="button" ${['active', 'testing'].includes(experiment.status) ? 'disabled title="Stop intake before archiving this experiment"' : ''}>${icon('archive')}Archive</button>`;
+        document.getElementById('archiveButton')?.addEventListener('click', archiveSelectedExperiment);
+        return;
+      }
       experimentHeader.innerHTML = `
-        <h1>${escapeHtml(experiment.experiment_id)}</h1>
+        <h1>${escapeHtml(experiment.experiment_id)}${experimentCapabilityBadges(experiment)}</h1>
         <span class="workspace-facts small">
           ${statusLabel(status)}
           <span>Configuration revision ${escapeHtml(experiment.config_revision)}</span>
           <span>Created ${escapeHtml(fmtDate(experiment.created_at))}</span>
-          ${state.activationIssues.length ? `<span class="activation-blocker">Cannot start · ${escapeHtml(state.activationIssues.join(' '))}</span>` : ''}
         </span>
       `;
       experimentStats.innerHTML = `
         <a class="secondary" href="/e/${encodeURIComponent(experiment.experiment_id)}/" target="_blank" rel="noopener">${icon('external')}Participant page</a>
         <button class="secondary" id="cloneButton" type="button">${icon('copy')}Clone</button>
-        <button class="secondary" id="archiveButton" type="button" ${['active', 'testing'].includes(experiment.status) ? 'disabled title="Stop intake before archiving this experiment"' : ''}>${icon(experiment.status === 'archived' ? 'restore' : 'archive')}${experiment.status === 'archived' ? 'Restore' : 'Archive'}</button>
+        <button class="secondary" id="archiveButton" type="button" ${['active', 'testing'].includes(experiment.status) ? 'disabled title="Stop intake before archiving this experiment"' : ''}>${icon(experiment.status === 'archived' ? 'restore' : 'archive')}${experiment.status === 'archived' ? 'Unarchive' : 'Archive'}</button>
         ${lifecycleActions(experiment)}
       `;
       experimentStats.querySelectorAll('[data-lifecycle]').forEach(button => {
         button.addEventListener('click', () => updateExperimentStatus(button.dataset.lifecycle));
       });
       document.getElementById('cloneButton').addEventListener('click', cloneSelectedExperiment);
-      document.getElementById('archiveButton').addEventListener('click', () => {
-        updateExperimentStatus(experiment.status === 'archived' ? 'inactive' : 'archived');
-      });
+      document.getElementById('archiveButton').addEventListener('click', experiment.status === 'archived' ? () => updateExperimentStatus('inactive') : archiveSelectedExperiment);
     }
 
     // Shows a dedicated creation prompt instead of experiment controls when the catalogue is empty.
@@ -913,12 +1136,16 @@
       const hasExperiment = Boolean(state.experiment);
       experimentWorkspaceHeader.hidden = !hasExperiment;
       emptyExperimentWorkspace.hidden = hasExperiment;
-      experimentWorkspaceTabs.hidden = !hasExperiment;
-      if (hasExperiment) {
+      experimentWorkspaceTabs.hidden = !hasExperiment || state.configLoadFailed;
+      if (hasExperiment && !state.configLoadFailed) {
         renderTabs();
         return;
       }
       Object.values(tabPanels).forEach(panel => { panel.hidden = true; });
+      if (hasExperiment && state.configLoadFailed) {
+        emptyExperimentWorkspace.hidden = false;
+        emptyExperimentWorkspace.innerHTML = `<svg class="icon large-icon" aria-hidden="true"><use href="#icon-archive"></use></svg><h1>Experiment unavailable</h1><p class="muted">This experiment cannot be opened by the current game. Hover its validity badge for the diagnostic.</p>`;
+      }
     }
 
     // Returns state-appropriate intake and completion controls for one experiment.
@@ -948,7 +1175,8 @@
       const manifest = state.versionManifest || {};
       const warnings = manifest.warnings || [];
       const gameManifest = state.game?.build_manifest || manifest.game || {};
-      gameName.textContent = state.game?.display_name || displayGameName(gameManifest);
+      gameName.textContent = state.game?.name || displayGameName(gameManifest);
+      document.title = state.game ? `${gameName.textContent} · Parlando` : 'Parlando Experimenter Dashboard';
       gameVersion.textContent = `Version ${state.game?.version || gameManifest.version || '—'}`;
       gameGit.textContent = `Git ${shortSha(gameManifest.git_sha)}`;
       gameBuild.textContent = `Built ${fmtTime(gameManifest.build_time)}`;
@@ -1032,6 +1260,8 @@
       state.gameSettings = data.game_settings || null;
       state.gameProviderSecrets = data.game_provider_secrets || [];
       state.csrfToken = data.csrf_token || null;
+      state.configLoadFailed = false;
+      state.configLoadError = null;
       const selectedId = state.experiment?.experiment_id || state.experiments.find(item => ['active', 'testing'].includes(item.status))?.experiment_id;
       state.experiment = state.experiments.find(item => item.experiment_id === selectedId) || state.experiments[0] || null;
       if (!state.experiment) {
@@ -1053,6 +1283,7 @@
       renderExperimentHeader();
       renderExperimentWorkspaceState();
       renderExperimentDetails();
+      renderNotes();
       institutionInput.value = state.gameSettings?.institution || '';
       adminAllowedIpRangesInput.value = (state.gameSettings?.admin_allowed_ip_ranges || []).join('\n');
       speechmaticsRealtimeUrlInput.value = state.gameSettings?.speechmatics_realtime_url || 'wss://eu.rt.speechmatics.com/v2';
@@ -1079,6 +1310,17 @@
       await loadExperiment();
     }
 
+    // Uses the installation-level one-way archival route without constructing a runtime.
+    async function archiveSelectedExperiment() {
+      const experiment = state.experiment;
+      if (!experiment || !window.confirm(`Archive ${experiment.experiment_id}?`)) return;
+      const response = await fetch(`/api/admin/experiments/${encodeURIComponent(experiment.experiment_id)}/archive`, {
+        method: 'POST', headers: { 'X-CSRF-Token': state.csrfToken || '' }
+      });
+      if (!response.ok) { window.alert(await response.text()); return; }
+      await loadExperiment();
+    }
+
     // Selects one experiment and scopes session, export, and configuration requests to it.
     async function selectExperiment(experimentId) {
       state.experiment = state.experiments.find(item => item.experiment_id === experimentId) || null;
@@ -1088,11 +1330,14 @@
       state.load = null;
       state.privacy = null;
       state.activationIssues = [];
+      state.configLoadFailed = false;
+      state.configLoadError = null;
       sessionDetail.hidden = true;
       closeExperimentMenu();
       renderExperiment();
       renderExperimentHeader();
       renderExperimentDetails();
+      renderNotes();
       await Promise.all([loadConfigurationSafely(), loadSessions(), loadLoad()]);
       if (state.activeTab === 'privacy') await loadPrivacy();
     }
@@ -1127,6 +1372,7 @@
         renderExperimentDetails();
       }
       renderConfigurationForm(data.experiment.config, data.game_yaml || '{}\n');
+      upgradeYamlEditor();
       configRevision.textContent = `Revision ${data.experiment.config_revision}`;
       state.loadedConfigKey = `${data.experiment.experiment_id}:${data.experiment.config_revision}`;
       await loadRevisionHistory();
@@ -1139,12 +1385,15 @@
         await loadConfiguration();
       } catch (error) {
         state.configLoadFailed = true;
+        state.configLoadError = error.message;
         state.loadedConfigKey = null;
         state.configValue = null;
         configRevision.textContent = 'Unavailable';
         configForm.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
         revisionHistory.innerHTML = '';
         saveConfiguration.disabled = true;
+        renderExperimentHeader();
+        renderExperimentWorkspaceState();
       }
     }
 
@@ -1665,13 +1914,11 @@
     }
 
     // Creates an inactive experiment from the compiled game's current defaults.
-    async function createExperiment() {
-      const experimentId = window.prompt('Experiment ID (unique and immutable after creation)');
-      if (!experimentId) return;
+    async function createExperiment(experimentId, notes) {
       const response = await fetch('/api/admin/experiments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
-        body: JSON.stringify({ experiment_id: experimentId })
+        body: JSON.stringify({ experiment_id: experimentId, notes: notes.trim() || null })
       });
       if (!response.ok) throw new Error(await response.text());
       state.experiment = { experiment_id: experimentId };
@@ -1710,6 +1957,27 @@
       });
       if (!response.ok) throw new Error(await response.text());
       await loadExperiment();
+    }
+
+    // Saves Markdown notes as catalogue metadata without creating a configuration revision.
+    async function saveNotes() {
+      const selectedId = state.experiment?.experiment_id;
+      if (!selectedId) return;
+      const value = state.notesSource.trim() || null;
+      const response = await fetch(`/api/admin/experiments/${encodeURIComponent(selectedId)}/catalogue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
+        body: JSON.stringify({ pinned: state.experiment.pinned, notes: value })
+      });
+      if (!response.ok) throw new Error(await response.text());
+      if (state.experiment?.experiment_id !== selectedId) return;
+      state.experiment.notes = value;
+      const catalogue = state.experiments.find(item => item.experiment_id === selectedId);
+      if (catalogue) catalogue.notes = value;
+      state.notesSource = value || '';
+      state.notesDirty = false;
+      notesSaveState.textContent = 'Saved';
+      renderExperiment();
     }
 
     // Validates and stores the editor contents as a new immutable revision.
@@ -2155,8 +2423,20 @@
 
     showHousekeeping.addEventListener('change', renderEventBundles);
     document.getElementById('createExperimentButton').addEventListener('click', () => {
-      createExperiment().catch(error => window.alert(error.message));
+      document.getElementById('createExperimentForm').reset();
+      createExperimentDialog.showModal();
+      document.getElementById('newExperimentId').focus();
     });
+    document.getElementById('cancelCreateExperiment').addEventListener('click', () => createExperimentDialog.close());
+    document.getElementById('createExperimentForm').addEventListener('submit', event => {
+      event.preventDefault();
+      const experimentId = document.getElementById('newExperimentId').value.trim();
+      const notes = document.getElementById('newExperimentNotes').value;
+      createExperiment(experimentId, notes).then(() => createExperimentDialog.close()).catch(error => window.alert(error.message));
+    });
+    document.getElementById('notesWriteMode').addEventListener('click', () => setNotesMode('write'));
+    document.getElementById('notesPreviewMode').addEventListener('click', () => setNotesMode('preview'));
+    document.getElementById('saveNotes').addEventListener('click', () => saveNotes().catch(error => window.alert(error.message)));
     saveConfiguration.addEventListener('click', saveConfigRevision);
     document.getElementById('saveGameSettings').addEventListener('click', saveSharedGameSettings);
     menuButton.addEventListener('click', toggleExperimentMenu);

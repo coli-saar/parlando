@@ -224,6 +224,23 @@ where
     response
 }
 
+/// Proxies storage-only archival and evicts a stale cached runtime after success.
+async fn dispatch_experiment_archive_request<A: Game>(
+    State(host): State<Arc<GameHost<A>>>,
+    Path(experiment_id): Path<String>,
+    request: Request,
+) -> Response
+where
+    A::State: Serialize,
+{
+    let child_path = format!("api/admin/experiments/{experiment_id}/archive");
+    let response = dispatch_to_router(host.admin_router.clone(), &child_path, request, None).await;
+    if response.status().is_success() {
+        host.routers.write().await.remove(&experiment_id);
+    }
+    response
+}
+
 /// Proxies game-server-wide administration through the primary runtime's shared auth surface.
 async fn dispatch_primary_request<A: Game>(
     State(host): State<Arc<GameHost<A>>>,
@@ -427,6 +444,10 @@ where
         .route(
             "/api/admin/experiments/:experiment_id/config",
             any(dispatch_experiment_config_request::<A>),
+        )
+        .route(
+            "/api/admin/experiments/:experiment_id/archive",
+            any(dispatch_experiment_archive_request::<A>),
         )
         .route("/admin", any(dispatch_primary_root::<A>))
         .route("/admin/", any(dispatch_primary_root::<A>))
@@ -733,6 +754,10 @@ where
         .route(
             "/api/admin/experiments/:experiment_id/catalogue",
             post(admin_update_experiment_catalogue::<A>),
+        )
+        .route(
+            "/api/admin/experiments/:experiment_id/archive",
+            post(admin_archive_experiment::<A>),
         )
         .route(
             "/api/admin/game/settings",

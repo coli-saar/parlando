@@ -9,7 +9,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@coli-saar/parlando-client": "file:../../js-client",
+    "@coli-saar/parlando-client": "^0.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

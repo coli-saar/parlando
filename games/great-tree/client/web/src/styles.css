@@ -69,6 +69,31 @@ svg[role="img"] {
   max-width: 920px;
 }
 
+.game-panel {
+  position: relative;
+}
+
+.hint {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 6px 16px;
+  background: rgba(20, 17, 15, 0.55);
+  border: 1px solid rgba(244, 239, 230, 0.2);
+  border-radius: 999px;
+  backdrop-filter: blur(2px);
+  color: #f4efe6;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  z-index: 1;
+}
+
 /* Channel flow and rising water: paths are authored in the direction of travel; a falling
    stroke-dashoffset moves the dashes forward along that path. */
 @keyframes flowfwd {

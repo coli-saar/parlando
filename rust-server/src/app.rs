@@ -3224,7 +3224,6 @@ struct AdminCreateExperimentRequest {
 #[serde(deny_unknown_fields)]
 struct AdminCloneExperimentRequest {
     experiment_id: String,
-    notes: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -3921,6 +3920,32 @@ async fn admin_experiments<A: Game>(
     Extension(admin_session): Extension<AdminSession>,
 ) -> Result<Json<Value>, AppError> {
     let experiments = state.store.list_experiments(1_000).await?;
+    let mut catalogue = Vec::with_capacity(experiments.len());
+    for experiment in experiments {
+        let (configuration_valid, configuration_error, runnable, runnable_issues) =
+            experiment_catalogue_readiness(
+                &state,
+                &experiment.experiment_id,
+                &experiment.game_version,
+            )
+            .await;
+        let mut value = serde_json::to_value(experiment)
+            .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        let object = value
+            .as_object_mut()
+            .expect("serialized experiment summaries are JSON objects");
+        object.insert(
+            "configuration_valid".to_string(),
+            json!(configuration_valid),
+        );
+        object.insert(
+            "configuration_error".to_string(),
+            json!(configuration_error),
+        );
+        object.insert("runnable".to_string(), json!(runnable));
+        object.insert("runnable_issues".to_string(), json!(runnable_issues));
+        catalogue.push(value);
+    }
     let game_settings = state.game_settings.read().await.clone();
     let game_secrets = state.store.game_secrets().await?;
     Ok(Json(json!({
@@ -3928,9 +3953,43 @@ async fn admin_experiments<A: Game>(
         "version_manifest": state.version_manifest,
         "game_settings": game_settings,
         "game_provider_secrets": configured_provider_secret_statuses(&state.bootstrap_secrets, &game_secrets),
-        "experiments": experiments,
+        "experiments": catalogue,
         "csrf_token": admin_session.csrf_token,
     })))
+}
+
+/// Assesses structural validity and intake readiness without constructing a runtime router.
+async fn experiment_catalogue_readiness<A: Game>(
+    state: &Arc<AppState<A>>,
+    experiment_id: &str,
+    game_version: &str,
+) -> (bool, Option<String>, bool, Vec<String>) {
+    let mut config = match hydrated_experiment_config(state, experiment_id).await {
+        Ok(config) => config,
+        Err(error) => return (false, Some(error.message), false, Vec::new()),
+    };
+    if let Err(error) = config.validate() {
+        return (false, Some(error.to_string()), false, Vec::new());
+    }
+    if let Err(error) = parse_game_config(state.adapter.as_ref(), &config.game) {
+        return (false, Some(error.to_string()), false, Vec::new());
+    }
+    let mut issues = Vec::new();
+    if game_version != state.game_descriptor.version.to_string() {
+        issues.push(
+            "This experiment belongs to another game version; clone it before activation."
+                .to_string(),
+        );
+    }
+    if state.transcription_provider_is_override {
+        config.speechmatics.api_key = "provided-by-runtime".to_string();
+    }
+    if state.tts_provider_is_override {
+        config.tts.api_key = "provided-by-runtime".to_string();
+        config.tts.voice_id = "provided-by-runtime".to_string();
+    }
+    issues.extend(config.activation_issues());
+    (true, None, issues.is_empty(), issues)
 }
 
 /// Creates one inactive experiment for the exact game version compiled into this process.
@@ -4003,7 +4062,7 @@ async fn admin_clone_experiment<A: Game>(
             server_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             version_manifest: Some(state.version_manifest.clone()),
             status: "inactive".to_string(),
-            notes: request.notes,
+            notes: None,
         })
         .await
         .map_err(|error| AppError::bad_request(error.to_string()))?;
@@ -4261,6 +4320,28 @@ async fn admin_update_experiment_catalogue<A: Game>(
         .await
         .map_err(|error| AppError::bad_request(error.to_string()))?;
     Ok(Json(json!({ "experiment_id": experiment_id, "ok": true })))
+}
+
+/// Archives catalogue state without constructing the selected experiment's runtime.
+async fn admin_archive_experiment<A: Game>(
+    State(state): State<Arc<AppState<A>>>,
+    Path(experiment_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    state
+        .store
+        .archive_experiment(&experiment_id)
+        .await
+        .map_err(|error| {
+            let message = error.to_string();
+            if message == "Experiment not found." {
+                AppError::not_found(message)
+            } else {
+                AppError::new(StatusCode::CONFLICT, message)
+            }
+        })?;
+    Ok(Json(
+        json!({ "experiment_id": experiment_id, "status": "archived" }),
+    ))
 }
 
 /// Returns settings shared by every experiment of the compiled game.

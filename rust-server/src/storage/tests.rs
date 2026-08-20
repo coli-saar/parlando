@@ -416,6 +416,12 @@ async fn sqlite_deactivates_every_open_experiment_without_changing_terminal_stat
             .update_experiment_status(experiment_id, status)
             .await
             .unwrap();
+        if status != "inactive" {
+            store
+                .update_experiment_status(experiment_id, status)
+                .await
+                .unwrap();
+        }
     }
 
     assert_eq!(store.deactivate_open_experiments().await.unwrap(), 2);
@@ -428,6 +434,66 @@ async fn sqlite_deactivates_every_open_experiment_without_changing_terminal_stat
     assert_eq!(statuses["testing-one"], "inactive");
     assert_eq!(statuses["completed-one"], "completed");
     assert_eq!(statuses["archived-one"], "archived");
+}
+
+/// Confirms storage-only archival permits only closed catalogue lifecycle states.
+#[tokio::test]
+async fn sqlite_archives_only_inactive_or_completed_experiments() {
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+    for (experiment_id, status) in [
+        ("inactive", "inactive"),
+        ("completed", "completed"),
+        ("active", "active"),
+        ("testing", "testing"),
+        ("archived", "archived"),
+    ] {
+        store
+            .create_experiment(ExperimentRecord {
+                experiment_id: experiment_id.to_string(),
+                game_version: "0.4.0".to_string(),
+                config: json!({}),
+                server_version: None,
+                version_manifest: None,
+                status: status.to_string(),
+                notes: None,
+            })
+            .await
+            .unwrap();
+        if status != "inactive" {
+            store
+                .update_experiment_status(experiment_id, status)
+                .await
+                .unwrap();
+        }
+    }
+    store.archive_experiment("inactive").await.unwrap();
+    store.archive_experiment("completed").await.unwrap();
+    assert!(store
+        .archive_experiment("active")
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("active"));
+    assert!(store
+        .archive_experiment("testing")
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("testing"));
+    assert!(store
+        .archive_experiment("archived")
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("already archived"));
+    assert!(store
+        .archive_experiment("missing")
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("not found"));
 }
 
 /// Confirms the former obsolescence flag migrates into the unified archived lifecycle.
