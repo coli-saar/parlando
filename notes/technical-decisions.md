@@ -989,6 +989,40 @@ Tradeoffs: The dashboard no longer acts as a dense implementation diagnostics vi
 
 Follow-up risks: The generated record captures the effective experiment configuration at generation time, so experimenters must generate and retain it at the relevant archival point. Future export-schema changes must update the shared status model, Markdown renderer, dashboard preview, and their agreement tests together.
 
+## 2026-08-20: Session events and speech share one authoritative game clock
+
+Context: Session events were stored as RFC3339 wall-clock timestamps and converted to
+`time_from_session_start_ms` only during corpus export. Speechmatics utterance boundaries were
+stored separately as offsets from each transcription stream. Similar-looking numbers therefore had
+different origins, could not be compared after an audio reconnect, and made the dashboard display
+long locale-formatted dates for a within-game timeline.
+
+Decision: Use `sessions.started_at` as the authoritative origin for each game instance and store
+every session event as signed integer `game_time_ms`. The running transition sets that wall-clock
+anchor and atomically rebases lifecycle events recorded while the room was waiting, yielding
+negative pre-game coordinates and non-negative in-game coordinates. New transcription sessions
+capture the server timestamp of their first accepted PCM frame; provider-relative utterance
+boundaries are translated through that stream origin into `start_game_time_ms` and
+`end_game_time_ms` before persistence. Persisted conversation payloads omit their live-protocol
+wall-clock field. Corpus events expose `game_time_ms`, utterance timing declares `game_clock` as its
+origin, and the dashboard renders compact `m:ss.mmm` coordinates in a fixed column on the left.
+
+Tradeoffs: `started_at` remains one absolute anchor per session so relative values can be audited and
+new audio-stream origins can be mapped. Operational timestamps outside the session event stream—such
+as administrator sessions, consent declarations, catalogue creation, and liveness state—remain wall
+clock values because they have operational or evidentiary meaning outside a running game. Waiting-room
+events briefly contain Unix milliseconds until the atomic start transition rebases them; they are not
+eligible for corpus export while the session is waiting. Server receipt of the first accepted audio
+frame is the shared-clock bridge, so network capture latency is included consistently and browser
+clocks never become authoritative.
+
+Follow-up risks: Dropped PCM before provider ingestion can compress a provider's media timeline;
+backpressure handling should eventually insert equivalent silence or carry a discontinuity mapping.
+Historical databases did not retain transcription-stream origins, so destructive conversion can
+rebase event timestamps exactly but can only reinterpret legacy utterance offsets under their old
+near-session-start assumption. Backups must be retained for any study needing to revisit that
+limitation.
+
 ## 2026-08-20: Runtime stress uses real transports and temporary file-backed SQLite
 
 Context: Parlando's existing stress dashboard exercises the process-local audio relay, while live-server integration tests cover only a small number of human-human, human-agent, and remote-agent sessions. Neither layer sustains concurrent participant admission, HTTP and game-WebSocket traffic, SQLite persistence, connection churn, and live-agent cleanup. The planned headless agent-agent runner deliberately bypasses those live-runtime boundaries and therefore cannot supply this coverage.

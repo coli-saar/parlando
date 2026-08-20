@@ -14,7 +14,7 @@ One row per configured or generated experiment run.
 
 ```sql
 experiment_id text primary key
-created_at text not null
+game_time_ms integer not null
 config_json text not null
 server_version text
 version_manifest_json text
@@ -144,11 +144,15 @@ create index idx_session_events_session
 create index idx_session_events_session_type
     on session_events(experiment_id, session_id, event_type);
 
-create index idx_session_events_actor_created
-    on session_events(actor_participant_id, created_at);
+create index idx_session_events_actor_game_time
+    on session_events(actor_participant_id, game_time_ms);
 ```
 
-The event stream is not duplicated into category tables. It is the ordered reconstruction surface for evaluation.
+`sessions.started_at` is the authoritative game-clock origin. `game_time_ms = 0` is the
+instant the room enters `running`; negative values describe waiting-room lifecycle events and
+non-negative values describe the running game. Events accepted before start temporarily use Unix
+milliseconds and are atomically rebased in the transaction that sets `started_at`. The event stream
+is not duplicated into category tables. It is the ordered reconstruction surface for evaluation.
 
 ## Current Event Types
 
@@ -174,13 +178,14 @@ The intended event vocabulary includes:
 - `session_expired`
 
 Each accepted game action stores the actor, typed action payload, generated game
-events, optional full resulting game state, and timestamp exactly once. Live
+events, optional full resulting game state, and game-clock coordinate exactly once. Live
 `transition` WebSocket messages are presentation protocol and do not create a
 second durable state-snapshot event. Repeated equivalent rejections are stored as
 bounded aggregates with stable reasons and occurrence counts.
 
 Typed and spoken utterances each use one `conversation_message` row. Spoken rows
-use origin `voice_transcript` and carry segment timing/provider metadata; Parlando
+use origin `voice_transcript` and carry `start_game_time_ms` and `end_game_time_ms` values
+on the same clock as the enclosing event, plus provider metadata; Parlando
 does not write a duplicate transcript event.
 
 The `voice_diagnostic` payload may include browser `audio_playback_underrun` events with cumulative underrun and buffered-sample measurements. Raw PCM is not stored in the event stream.

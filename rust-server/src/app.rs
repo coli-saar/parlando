@@ -3,7 +3,7 @@ use std::{
     future::Future,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
-    sync::{Arc, Weak},
+    sync::{Arc, OnceLock, Weak},
     time::{Duration, Instant},
 };
 
@@ -3115,10 +3115,40 @@ async fn commit_final_transcript<A: Game>(
     state: &Arc<AppState<A>>,
     room_id: &str,
     participant_session_id: &str,
+    stream_started_at: &str,
     utterance: FinalTranscriptUtterance,
 ) -> Result<Option<TranscriptSegment>, AppError> {
     let role = participant_role(state, room_id, participant_session_id).await?;
     ensure_room_accepts_game_input(state, room_id).await?;
+    let (experiment_id, session_id) = {
+        let memory = state.memory.read().await;
+        let room = memory
+            .rooms
+            .get(room_id)
+            .ok_or_else(|| AppError::not_found("Room not found."))?;
+        (room.experiment_id.clone(), room.session_id)
+    };
+    let stream_start_game_time_ms = state
+        .store
+        .session_game_time_ms(&experiment_id, session_id, stream_started_at)
+        .await
+        .map_err(AppError::from)?;
+    let start_game_time_ms = stream_start_game_time_ms
+        .checked_add(utterance.start_time_ms)
+        .ok_or_else(|| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Transcript start time overflowed",
+            )
+        })?;
+    let end_game_time_ms = stream_start_game_time_ms
+        .checked_add(utterance.end_time_ms)
+        .ok_or_else(|| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Transcript end time overflowed",
+            )
+        })?;
     let provider_identity = if utterance.result_ids.is_empty() {
         format!(
             "{}:{}:{}",
@@ -3141,11 +3171,10 @@ async fn commit_final_transcript<A: Game>(
         room_id: room_id.to_string(),
         participant_session_id: participant_session_id.to_string(),
         player: role.as_str().to_string(),
-        start_time_ms: utterance.start_time_ms,
-        end_time_ms: utterance.end_time_ms,
+        start_game_time_ms,
+        end_game_time_ms,
         text: utterance.text,
         metadata: json!({"provider":state.config.transcription.provider,"result_ids":utterance.result_ids}),
-        created_at: now_iso(),
     };
     let message = ConversationMessageResponse {
         id: new_id("msg"),
@@ -3156,9 +3185,8 @@ async fn commit_final_transcript<A: Game>(
         origin: "voice_transcript".to_string(),
         source_message_id: Some(stored.id.clone()),
         metadata: json!({
-            "start_time_ms": stored.start_time_ms,
-            "end_time_ms": stored.end_time_ms,
-            "transcript_created_at": stored.created_at,
+            "start_game_time_ms": stored.start_game_time_ms,
+            "end_game_time_ms": stored.end_game_time_ms,
             "client_metadata": stored.metadata,
         }),
         created_at: now_iso(),
@@ -3169,7 +3197,7 @@ async fn commit_final_transcript<A: Game>(
             room_id,
             message.sender_participant_session_id.as_deref(),
             "conversation_message",
-            serde_json::to_value(&message).unwrap(),
+            conversation_message_event_payload(&message),
             None,
         )
         .await?;
@@ -3199,6 +3227,15 @@ async fn commit_final_transcript<A: Game>(
         notify_agents_of_message(state, room_id, speaker, stored.text.clone()).await;
     }
     Ok(Some(stored))
+}
+
+/// Removes live-protocol wall time before a conversation message enters research storage.
+fn conversation_message_event_payload(message: &ConversationMessageResponse) -> Value {
+    let mut payload = serde_json::to_value(message).expect("conversation messages serialize");
+    if let Some(object) = payload.as_object_mut() {
+        object.remove("created_at");
+    }
+    payload
 }
 
 /// Accepts a bounded operational voice metric without retaining it in research storage.
@@ -3300,7 +3337,7 @@ async fn add_conversation<A: Game>(
         &room_id,
         message.sender_participant_session_id.as_deref(),
         "conversation_message",
-        serde_json::to_value(&message).unwrap(),
+        conversation_message_event_payload(&message),
         None,
     )
     .await?;
@@ -3786,11 +3823,11 @@ async fn privacy_status<A: Game>(
             .to_string()
     } else if total == 1 {
         format!(
-            "Speech transcription through {provider_description} is enabled. Parlando stores event order and wall-clock time, speaking participant and role, final transcript text, and utterance timing returned by the service. It does not store interim recognition hypotheses."
+            "Speech transcription through {provider_description} is enabled. Parlando stores event order, milliseconds from game start, speaking participant and role, final transcript text, and speech start and end positions on the same game clock. It does not store interim recognition hypotheses."
         )
     } else {
         format!(
-            "Speech transcription is enabled in {transcription} of {total} covered experiments. Those experiments retain event order and wall-clock time, speaking participant and role, final transcript text, and returned utterance timing; interim recognition hypotheses are not stored."
+            "Speech transcription is enabled in {transcription} of {total} covered experiments. Those experiments retain event order, milliseconds from game start, speaking participant and role, final transcript text, and speech start and end positions on the same game clock; interim recognition hypotheses are not stored."
         )
     };
     let (audio_behavior, audio_boundary, interim_behavior, interim_boundary) = if total > 1 {
@@ -3860,7 +3897,7 @@ async fn privacy_status<A: Game>(
         operational_sources.push("enabled external speech-service status");
     }
     let operational_event_detail = format!(
-        "Events for {} are retained with event order and wall-clock time. For rejected action input, Parlando stores a reason, byte count, and cryptographic fingerprint rather than the rejected content. Operational events have no output field in the corpus unless the event is an accepted action or participant message.",
+        "Events for {} are retained with event order and game_time_ms, a signed millisecond coordinate whose zero is game start. For rejected action input, Parlando stores a reason, byte count, and cryptographic fingerprint rather than the rejected content. Operational events have no output field in the corpus unless the event is an accepted action or participant message.",
         operational_sources.join(", ")
     );
     let has_external_services = !external_services.is_empty();
@@ -4050,7 +4087,7 @@ async fn privacy_status<A: Game>(
                 persisted_when_produced: true,
                 purpose: "Reconstruct the experimental interaction and analyze game behavior and outcomes."
                     .to_string(),
-                detail: "Event order and wall-clock time; acting participant and role; accepted action; game-supplied information about how the action changed the game; and the complete game state after the action."
+                detail: "Event order and game_time_ms, measured in milliseconds from game start; acting participant and role; accepted action; game-supplied information about how the action changed the game; and the complete game state after the action."
                     .to_string(),
             },
             PrivacyStorageStatus {
@@ -4058,7 +4095,7 @@ async fn privacy_status<A: Game>(
                 persisted_when_produced: true,
                 purpose: "Preserve the dialogue as experimental data."
                     .to_string(),
-                detail: "Event order and wall-clock time, sending participant and role, message text, an indication that it was typed, and message metadata."
+                detail: "Event order and game_time_ms, measured in milliseconds from game start; sending participant and role; message text; an indication that it was typed; and message metadata."
                     .to_string(),
             },
             PrivacyStorageStatus {
@@ -4130,7 +4167,7 @@ async fn privacy_status<A: Game>(
             formats: vec!["JSON".to_string(), "YAML".to_string(), "CSV".to_string()],
             identifiers: "Human participants are represented by Parlando's randomly generated three-word pseudonyms, and sessions by separate randomly generated three-word pseudonyms. These identifiers are not derived from names, contact details, IP addresses, or external participant identifiers. Software agents use an identifier derived from their agent implementation rather than a human identity. Internal numeric keys, room identifiers, and temporary connection identifiers are not written to the corpus. The corpus is pseudonymized, not anonymous: participant-authored text can still contain identifying information and must be reviewed before sharing.".to_string(),
             structure: "The corpus contains one experiment record with game information and configuration, a list of participants, and a list of sessions. Each session contains its own context, both participant-role assignments, the game-supplied completion record, and ordered accepted-action and participant-message events.".to_string(),
-            timing: "Parlando replaces its stored wall-clock event and session times with milliseconds relative to session start, waiting duration, and session duration. An invalid or missing start time blocks export instead of producing a misleading value. Game-defined configuration, actions, transition information, state, and completion are included unchanged.".to_string(),
+            timing: "Session events are stored and exported as game_time_ms, measured in milliseconds from game start. Transcribed speech start and end positions use the same game clock. The corpus derives only waiting time and session duration from lifecycle timestamps; an invalid or missing start time blocks export instead of producing a misleading value. Game-defined configuration, actions, transition information, state, and completion are included unchanged.".to_string(),
             selection_rule: "Parlando builds a new corpus document and writes only the categories listed below. It does not copy a database-shaped document and then remove columns. A database field that has no listed destination is never written to the corpus.".to_string(),
             included_fields: vec![
                 PrivacyExportFieldStatus {
@@ -4190,11 +4227,11 @@ async fn privacy_status<A: Game>(
                 },
                 PrivacyExportFieldStatus {
                     section: "Action event".to_string(),
-                    description: "Order and time relative to session start, participant and role, complete accepted action, game-supplied transition information, and complete resulting game state."
+                    description: "Order and game_time_ms in milliseconds from game start, participant and role, complete accepted action, game-supplied transition information, and complete resulting game state."
                         .to_string(),
                     fields: privacy_field_names(&[
                         "index",
-                        "time_from_session_start_ms",
+                        "game_time_ms",
                         "kind=action",
                         "participant_id",
                         "role",
@@ -4206,20 +4243,20 @@ async fn privacy_status<A: Game>(
                 PrivacyExportFieldStatus {
                     section: "Message event".to_string(),
                     description: if transcription > 0 {
-                        "Order and time relative to session start, participant and role, whether the message was typed or transcribed from speech, message text, and optional utterance timing."
+                        "Order and game_time_ms in milliseconds from game start, participant and role, whether the message was typed or transcribed from speech, message text, and optional speech start and end positions on the same game clock."
                     } else {
-                        "Order and time relative to session start, participant and role, typed message text, and its typed origin."
+                        "Order and game_time_ms in milliseconds from game start, participant and role, typed message text, and its typed origin."
                     }
                     .to_string(),
                     fields: privacy_field_names(&[
                         "index",
-                        "time_from_session_start_ms",
+                        "game_time_ms",
                         "kind=message",
                         "participant_id",
                         "role",
                         "origin",
                         "text",
-                        "utterance_timing?.{origin,start_ms,end_ms}",
+                        "utterance_timing?.{origin=game_clock,start_ms,end_ms}",
                     ]),
                 },
             ],
@@ -4231,7 +4268,7 @@ async fn privacy_status<A: Game>(
                 "Database-only participant creation metadata.".to_string(),
                 "Internal numeric participant and session keys, room identifiers, temporary participant-session identifiers, connection status, and join or leave times."
                     .to_string(),
-                "Parlando wall-clock timestamps; only the documented relative durations and event offsets are written."
+                "Parlando wall-clock timestamps. The corpus writes stored game-clock event and utterance coordinates plus derived waiting and session durations."
                     .to_string(),
                 if selected.is_some_and(|fact| fact.human_vs_agent) || has_external_services {
                     "Operational lifecycle, connection, rejected-input, and any enabled software-agent or speech-service status events."
@@ -5479,7 +5516,7 @@ fn admin_bundle_json(bundle: AdminEventBundle) -> Value {
         "role": bundle.role,
         "first_index": admin_event_index(&first),
         "last_index": admin_event_index(&last),
-        "created_at": last.get("created_at").cloned().unwrap_or(Value::Null),
+        "game_time_ms": last.get("game_time_ms").cloned().unwrap_or(Value::Null),
         "title": admin_bundle_title(&bundle),
         "problem": problem,
         "problem_reason": problem_reason,
@@ -5768,7 +5805,7 @@ fn admin_event_summary(event: crate::storage::StoredSessionEvent) -> Value {
         "actor_role": event.actor_role,
         "payload": payload,
         "game_state": event.game_state,
-        "created_at": event.created_at,
+        "game_time_ms": event.game_time_ms,
     });
     json!({
         "event_id": raw["event_id"],
@@ -5776,7 +5813,7 @@ fn admin_event_summary(event: crate::storage::StoredSessionEvent) -> Value {
         "event_type": raw["event_type"],
         "actor_participant_id": raw["actor_participant_id"],
         "actor_role": raw["actor_role"],
-        "created_at": raw["created_at"],
+        "game_time_ms": raw["game_time_ms"],
         "title": title,
         "text": text,
         "detail": detail,
@@ -5843,8 +5880,8 @@ fn admin_event_detail(event_type: &str, payload: &Value) -> Value {
         }),
         "transcript_segment" => json!({
             "player": payload.get("player"),
-            "start_time_ms": payload.get("start_time_ms"),
-            "end_time_ms": payload.get("end_time_ms"),
+            "start_game_time_ms": payload.get("start_game_time_ms"),
+            "end_game_time_ms": payload.get("end_game_time_ms"),
             "metadata": payload.get("metadata"),
         }),
         "game_action_accepted" => json!({
@@ -6296,18 +6333,13 @@ fn corpus_experiment_export(
                     )
                 })
                 .map(|row| {
-                    let start = started_at.ok_or_else(|| {
-                        export_integrity_error(format!(
-                            "session {session_id} has semantic events but no valid start time"
-                        ))
-                    })?;
-                    let event_time = required_timestamp_ms(row.get("created_at"), "event")?;
-                    let relative = event_time
-                        .checked_sub(start)
+                    let game_time_ms = row
+                        .get("game_time_ms")
+                        .and_then(Value::as_i64)
                         .filter(|value| *value >= 0)
                         .ok_or_else(|| {
                             export_integrity_error(format!(
-                                "session {session_id} contains an event before its start"
+                                "session {session_id} contains a semantic event without valid game time"
                             ))
                         })?;
                     let index = row.get("event_index").cloned().unwrap_or(Value::Null);
@@ -6325,7 +6357,7 @@ fn corpus_experiment_export(
                             action_count += 1;
                             Ok(json!({
                                 "index": index,
-                                "time_from_session_start_ms": relative,
+                                "game_time_ms": game_time_ms,
                                 "kind": "action",
                                 "participant_id": participant,
                                 "role": row.get("actor_role"),
@@ -6338,7 +6370,7 @@ fn corpus_experiment_export(
                             message_count += 1;
                             let mut event = json!({
                                 "index": index,
-                                "time_from_session_start_ms": relative,
+                                "game_time_ms": game_time_ms,
                                 "kind": "message",
                                 "participant_id": participant,
                                 "role": row.get("actor_role"),
@@ -6347,13 +6379,13 @@ fn corpus_experiment_export(
                             });
                             let start_time = payload
                                 .get("metadata")
-                                .and_then(|value| value.get("start_time_ms"));
+                                .and_then(|value| value.get("start_game_time_ms"));
                             let end_time = payload
                                 .get("metadata")
-                                .and_then(|value| value.get("end_time_ms"));
+                                .and_then(|value| value.get("end_game_time_ms"));
                             if start_time.is_some() || end_time.is_some() {
                                 event["utterance_timing"] = json!({
-                                    "origin": "speaker_audio_stream",
+                                    "origin": "game_clock",
                                     "start_ms": start_time,
                                     "end_ms": end_time,
                                 });
@@ -6696,11 +6728,13 @@ async fn audio_websocket_loop<A: Game>(
         None
     };
     let transcription_input = transcription.as_ref().map(|session| session.input.clone());
+    let transcription_stream_started_at = Arc::new(OnceLock::<String>::new());
     let event_task = transcription.map(|mut session| {
         let state = state.clone();
         let room_id = room_id.clone();
         let role = role.clone();
         let participant_session_id = participant_session_id.clone();
+        let transcription_stream_started_at = transcription_stream_started_at.clone();
         tokio::spawn(async move {
             while let Some(event) = session.events.recv().await {
                 match event {
@@ -6711,7 +6745,11 @@ async fn audio_websocket_loop<A: Game>(
                         maybe_start_game(state.clone(), &room_id).await;
                     }
                     TranscriptionEvent::FinalUtterance(utterance) => {
-                        if let Err(error) = commit_final_transcript(&state, &room_id, &participant_session_id, utterance).await {
+                        let Some(stream_started_at) = transcription_stream_started_at.get() else {
+                            tracing::warn!(%room_id, "transcription result arrived without an audio-stream clock origin");
+                            continue;
+                        };
+                        if let Err(error) = commit_final_transcript(&state, &room_id, &participant_session_id, stream_started_at, utterance).await {
                             tracing::warn!(error = %error.message, %room_id, "failed to commit final transcript");
                         }
                     }
@@ -6790,10 +6828,17 @@ async fn audio_websocket_loop<A: Game>(
                         .relay_partner(&room_id, &role, bytes)
                         .await;
                     state.telemetry.record_audio_frame();
-                    if let Some(input) = &transcription_input {
-                        if input.try_send(TranscriptionInput::Audio(frame)).is_err() {
-                            state.telemetry.record_asr_backpressure();
-                            state.audio_rooms.send_control(&room_id, &role, json!({"type":"transcriptionStatus","ready":false,"message":"ASR is falling behind"}).to_string()).await;
+                    if transcription_input.is_some() && room_is_running(&state, &room_id).await {
+                        if let Some(input) = &transcription_input {
+                            let received_at = now_iso();
+                            let _ = transcription_stream_started_at.set(received_at);
+                            match input.try_send(TranscriptionInput::Audio(frame)) {
+                                Ok(()) => {}
+                                Err(_) => {
+                                    state.telemetry.record_asr_backpressure();
+                                    state.audio_rooms.send_control(&room_id, &role, json!({"type":"transcriptionStatus","ready":false,"message":"ASR is falling behind"}).to_string()).await;
+                                }
+                            }
                         }
                     }
                 }
@@ -8453,6 +8498,15 @@ async fn room_has_started<A: Game>(state: &Arc<AppState<A>>, room_id: &str) -> b
         .rooms
         .get(room_id)
         .is_some_and(|room| room.status != "waiting")
+}
+
+/// Returns whether game-clock time is active and participant audio may be transcribed.
+async fn room_is_running<A: Game>(state: &Arc<AppState<A>>, room_id: &str) -> bool {
+    let memory = state.memory.read().await;
+    memory
+        .rooms
+        .get(room_id)
+        .is_some_and(|room| room.status == "running")
 }
 
 /// Sends the targeted game-start payload for one participant.

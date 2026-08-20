@@ -12,7 +12,7 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{
@@ -23,6 +23,18 @@ use sqlx::{
 /// Returns the current UTC timestamp in ISO-8601/RFC3339 form.
 pub fn now_iso() -> String {
     Utc::now().to_rfc3339()
+}
+
+/// Converts one RFC3339 wall-clock timestamp to Unix milliseconds.
+fn timestamp_millis(timestamp: &str) -> Result<i64> {
+    Ok(DateTime::parse_from_rfc3339(timestamp)?.timestamp_millis())
+}
+
+/// Computes a timestamp's position on a session's authoritative game clock.
+fn relative_game_time_ms(game_started_at: &str, timestamp: &str) -> Result<i64> {
+    timestamp_millis(timestamp)?
+        .checked_sub(timestamp_millis(game_started_at)?)
+        .ok_or_else(|| anyhow!("game-clock subtraction overflowed"))
 }
 
 /// Generates a startup experiment id when neither CLI nor YAML provided one.
@@ -275,7 +287,8 @@ pub struct StoredSessionEvent {
     pub actor_role: Option<String>,
     pub payload: Value,
     pub game_state: Option<Value>,
-    pub created_at: String,
+    /// Milliseconds relative to the instant at which this game entered `running`.
+    pub game_time_ms: i64,
 }
 
 /// Durable session summary returned by recent-game database queries.
@@ -300,7 +313,8 @@ pub struct StoredSessionSummary {
     pub completion: Option<Value>,
     pub participant_count: i64,
     pub event_count: i64,
-    pub last_event_at: Option<String>,
+    /// Latest event position on the authoritative game clock.
+    pub last_event_game_time_ms: Option<i64>,
 }
 
 /// Durable participant metadata for one session-local game appearance.
@@ -486,6 +500,13 @@ pub trait ExperimentStore: Send + Sync {
     async fn create_session(&self, session: SessionRecord) -> Result<i64>;
     /// Atomically moves one waiting session to running and records its first start time.
     async fn start_session(&self, experiment_id: &str, session_id: i64) -> Result<bool>;
+    /// Maps an RFC3339 timestamp onto one running session's authoritative game clock.
+    async fn session_game_time_ms(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+        timestamp: &str,
+    ) -> Result<i64>;
     /// Adds a participant to a session with a session-local role.
     async fn add_session_participant(&self, participant: SessionParticipantRecord) -> Result<()>;
     /// Updates connection status for a participant's session appearance.
@@ -567,6 +588,30 @@ fn sqlite_unique_constraint_for(error: &sqlx::Error, column: &str) -> bool {
     error.as_database_error().is_some_and(|database_error| {
         database_error.is_unique_violation() && database_error.message().contains(column)
     })
+}
+
+/// Returns game-relative milliseconds, or temporary Unix milliseconds before game start.
+///
+/// The lookup runs inside the event's write transaction so it cannot race the transaction that
+/// establishes the game-start timestamp and rebases waiting-room events.
+async fn stored_game_time_ms(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    experiment_id: &str,
+    session_id: i64,
+    timestamp: &str,
+) -> Result<i64> {
+    let started_at = sqlx::query_scalar::<_, Option<String>>(
+        "select started_at from sessions where experiment_id = ? and session_id = ?",
+    )
+    .bind(experiment_id)
+    .bind(session_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| anyhow!("session not found"))?;
+    match started_at {
+        Some(started_at) => relative_game_time_ms(&started_at, timestamp),
+        None => timestamp_millis(timestamp),
+    }
 }
 
 /// SQLite implementation of the evaluation-oriented experiment store.
@@ -766,7 +811,7 @@ impl SqliteExperimentStore {
                 actor_role text,
                 payload_json text not null,
                 game_state_json text,
-                created_at text not null,
+                game_time_ms integer not null,
                 unique (experiment_id, session_id, event_index),
                 foreign key (experiment_id, session_id) references sessions(experiment_id, session_id),
                 foreign key (actor_participant_id) references participants(participant_id)
@@ -774,7 +819,7 @@ impl SqliteExperimentStore {
             "#,
             "create index if not exists idx_session_events_session on session_events(experiment_id, session_id)",
             "create index if not exists idx_session_events_session_type on session_events(experiment_id, session_id, event_type)",
-            "create index if not exists idx_session_events_actor_created on session_events(actor_participant_id, created_at)",
+            "create index if not exists idx_session_events_actor_game_time on session_events(actor_participant_id, game_time_ms)",
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
         }
@@ -1962,12 +2007,14 @@ impl ExperimentStore for SqliteExperimentStore {
                 break candidate;
             }
         };
+        let created_at = now_iso();
+        let started_at = (session.status == "running").then(|| created_at.clone());
         sqlx::query(
             r#"
             insert into sessions
             (experiment_id, session_id, room_id, dialogue_id, mode, status, purpose, created_at,
-             config_revision, game_version)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             started_at, config_revision, game_version)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(session.experiment_id)
@@ -1977,7 +2024,8 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(session.mode)
         .bind(session.status)
         .bind(session.purpose)
-        .bind(now_iso())
+        .bind(created_at)
+        .bind(started_at)
         .bind(session.config_revision)
         .bind(session.game_version)
         .execute(&mut *tx)
@@ -1987,15 +2035,49 @@ impl ExperimentStore for SqliteExperimentStore {
     }
 
     async fn start_session(&self, experiment_id: &str, session_id: i64) -> Result<bool> {
+        let started_at = now_iso();
+        let started_at_ms = timestamp_millis(&started_at)?;
+        let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
-            "update sessions set status = 'running', started_at = coalesce(started_at, ?) where experiment_id = ? and session_id = ? and status = 'waiting'",
+            "update sessions set status = 'running', started_at = ? where experiment_id = ? and session_id = ? and status = 'waiting'",
         )
-        .bind(now_iso())
+        .bind(&started_at)
         .bind(experiment_id)
         .bind(session_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        if result.rows_affected() == 1 {
+            // Events written while the room was waiting temporarily contain Unix milliseconds;
+            // rebasing them in this transaction gives every durable event the same game clock.
+            sqlx::query(
+                "update session_events set game_time_ms = game_time_ms - ? where experiment_id = ? and session_id = ?",
+            )
+            .bind(started_at_ms)
+            .bind(experiment_id)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
         Ok(result.rows_affected() == 1)
+    }
+
+    async fn session_game_time_ms(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+        timestamp: &str,
+    ) -> Result<i64> {
+        let started_at = sqlx::query_scalar::<_, Option<String>>(
+            "select started_at from sessions where experiment_id = ? and session_id = ?",
+        )
+        .bind(experiment_id)
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten()
+        .ok_or_else(|| anyhow!("session does not have a game-start time"))?;
+        relative_game_time_ms(&started_at, timestamp)
     }
 
     async fn add_session_participant(&self, participant: SessionParticipantRecord) -> Result<()> {
@@ -2065,7 +2147,15 @@ impl ExperimentStore for SqliteExperimentStore {
     }
 
     async fn append_session_event(&self, event: SessionEventRecord) -> Result<i64> {
+        let occurred_at = now_iso();
         let mut tx = self.pool.begin().await?;
+        let game_time_ms = stored_game_time_ms(
+            &mut tx,
+            &event.experiment_id,
+            event.session_id,
+            &occurred_at,
+        )
+        .await?;
         let event_index = sqlx::query_scalar::<_, i64>(
             "select coalesce(max(event_index), 0) + 1 from session_events where experiment_id = ? and session_id = ?",
         )
@@ -2076,7 +2166,7 @@ impl ExperimentStore for SqliteExperimentStore {
         sqlx::query(
             r#"
             insert into session_events
-            (experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, created_at)
+            (experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, game_time_ms)
             values (?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
@@ -2088,7 +2178,7 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(event.actor_role)
         .bind(serde_json::to_string(&event.payload)?)
         .bind(event.game_state.map(|state| serde_json::to_string(&state)).transpose()?)
-        .bind(now_iso())
+        .bind(game_time_ms)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -2111,7 +2201,10 @@ impl ExperimentStore for SqliteExperimentStore {
         {
             bail!("transition events must belong to one session");
         }
+        let occurred_at = now_iso();
         let mut tx = self.pool.begin().await?;
+        let game_time_ms =
+            stored_game_time_ms(&mut tx, &experiment_id, session_id, &occurred_at).await?;
         let mut event_index = sqlx::query_scalar::<_, i64>(
             "select coalesce(max(event_index), 0) from session_events where experiment_id = ? and session_id = ?",
         )
@@ -2124,7 +2217,7 @@ impl ExperimentStore for SqliteExperimentStore {
             sqlx::query(
                 r#"
                 insert into session_events
-                (experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, created_at)
+                (experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, game_time_ms)
                 values (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 "#,
             )
@@ -2136,7 +2229,7 @@ impl ExperimentStore for SqliteExperimentStore {
             .bind(event.actor_role)
             .bind(serde_json::to_string(&event.payload)?)
             .bind(event.game_state.map(|state| serde_json::to_string(&state)).transpose()?)
-            .bind(now_iso())
+            .bind(game_time_ms)
             .execute(&mut *tx)
             .await?;
         }
@@ -2161,7 +2254,10 @@ impl ExperimentStore for SqliteExperimentStore {
         session_id: i64,
         reason: &str,
     ) -> Result<()> {
+        let occurred_at = now_iso();
         let mut tx = self.pool.begin().await?;
+        let game_time_ms =
+            stored_game_time_ms(&mut tx, experiment_id, session_id, &occurred_at).await?;
         let status = sqlx::query_scalar::<_, String>(
             "select status from sessions where experiment_id = ? and session_id = ?",
         )
@@ -2187,7 +2283,7 @@ impl ExperimentStore for SqliteExperimentStore {
             r#"
             insert into session_events
             (experiment_id, session_id, event_index, event_type, actor_participant_id,
-             actor_role, payload_json, game_state_json, created_at)
+             actor_role, payload_json, game_state_json, game_time_ms)
             values (?, ?, ?, 'session_expired', null, null, ?, null, ?)
             "#,
         )
@@ -2195,7 +2291,7 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(session_id)
         .bind(event_index)
         .bind(serde_json::to_string(&json!({"reason": reason}))?)
-        .bind(now_iso())
+        .bind(game_time_ms)
         .execute(&mut *tx)
         .await?;
         sqlx::query(
@@ -2211,7 +2307,15 @@ impl ExperimentStore for SqliteExperimentStore {
     }
 
     async fn abandon_session(&self, event: SessionEventRecord) -> Result<()> {
+        let occurred_at = now_iso();
         let mut tx = self.pool.begin().await?;
+        let game_time_ms = stored_game_time_ms(
+            &mut tx,
+            &event.experiment_id,
+            event.session_id,
+            &occurred_at,
+        )
+        .await?;
         let status = sqlx::query_scalar::<_, String>(
             "select status from sessions where experiment_id = ? and session_id = ?",
         )
@@ -2237,7 +2341,7 @@ impl ExperimentStore for SqliteExperimentStore {
             r#"
             insert into session_events
             (experiment_id, session_id, event_index, event_type, actor_participant_id,
-             actor_role, payload_json, game_state_json, created_at)
+             actor_role, payload_json, game_state_json, game_time_ms)
             values (?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
@@ -2254,7 +2358,7 @@ impl ExperimentStore for SqliteExperimentStore {
                 .map(|state| serde_json::to_string(&state))
                 .transpose()?,
         )
-        .bind(now_iso())
+        .bind(game_time_ms)
         .execute(&mut *tx)
         .await?;
         sqlx::query(
@@ -2276,9 +2380,9 @@ impl ExperimentStore for SqliteExperimentStore {
         event_type: Option<&str>,
     ) -> Result<Vec<StoredSessionEvent>> {
         let sql = if event_type.is_some() {
-            "select event_id, experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, created_at from session_events where experiment_id = ? and session_id = ? and event_type = ? order by event_index"
+            "select event_id, experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, game_time_ms from session_events where experiment_id = ? and session_id = ? and event_type = ? order by event_index"
         } else {
-            "select event_id, experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, created_at from session_events where experiment_id = ? and session_id = ? order by event_index"
+            "select event_id, experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, game_time_ms from session_events where experiment_id = ? and session_id = ? order by event_index"
         };
         let mut query = sqlx::query_as::<
             _,
@@ -2292,7 +2396,7 @@ impl ExperimentStore for SqliteExperimentStore {
                 Option<String>,
                 String,
                 Option<String>,
-                String,
+                i64,
             ),
         >(sql)
         .bind(experiment_id)
@@ -2332,7 +2436,7 @@ impl ExperimentStore for SqliteExperimentStore {
                 Option<String>,
                 i64,
                 i64,
-                Option<String>,
+                Option<i64>,
             ),
         >(
             r#"
@@ -2341,7 +2445,7 @@ impl ExperimentStore for SqliteExperimentStore {
                    s.completed_at, s.completion_json,
                    count(distinct sp.participant_id) as participant_count,
                    count(distinct se.event_id) as event_count,
-                   max(se.created_at) as last_event_at
+                   max(se.game_time_ms) as last_event_game_time_ms
             from sessions s
             left join session_participants sp
                 on sp.experiment_id = s.experiment_id and sp.session_id = s.session_id
@@ -2378,7 +2482,7 @@ impl ExperimentStore for SqliteExperimentStore {
                     .transpose()?,
                 participant_count: row.13,
                 event_count: row.14,
-                last_event_at: row.15,
+                last_event_game_time_ms: row.15,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -2668,7 +2772,7 @@ type SessionEventSqlRow = (
     Option<String>,
     String,
     Option<String>,
-    String,
+    i64,
 );
 
 fn stored_event_from_sql_row(row: SessionEventSqlRow) -> Result<StoredSessionEvent> {
@@ -2685,7 +2789,7 @@ fn stored_event_from_sql_row(row: SessionEventSqlRow) -> Result<StoredSessionEve
             .8
             .map(|raw| serde_json::from_str::<Value>(&raw))
             .transpose()?,
-        created_at: row.9,
+        game_time_ms: row.9,
     })
 }
 
@@ -2780,9 +2884,9 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
         })
         .collect::<Vec<_>>();
     let event_sql = if session_id.is_some() {
-        "select event_id, experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, created_at from session_events where experiment_id = ? and session_id = ? order by session_id, event_index"
+        "select event_id, experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, game_time_ms from session_events where experiment_id = ? and session_id = ? order by session_id, event_index"
     } else {
-        "select event_id, experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, created_at from session_events where experiment_id = ? order by session_id, event_index"
+        "select event_id, experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, game_time_ms from session_events where experiment_id = ? order by session_id, event_index"
     };
     let mut event_query = sqlx::query_as::<_, SessionEventSqlRow>(event_sql).bind(experiment_id);
     if let Some(session_id) = scope.and_then(|(_, id)| id) {
@@ -2996,11 +3100,12 @@ pub struct TranscriptSegment {
     pub room_id: String,
     pub participant_session_id: String,
     pub player: String,
-    pub start_time_ms: i64,
-    pub end_time_ms: i64,
+    /// Speech onset on the session's authoritative game clock.
+    pub start_game_time_ms: i64,
+    /// Speech endpoint on the session's authoritative game clock.
+    pub end_game_time_ms: i64,
     pub text: String,
     pub metadata: Value,
-    pub created_at: String,
 }
 
 /// In-memory active-session cache used for live WebSocket and game execution state.

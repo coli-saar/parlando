@@ -150,8 +150,9 @@ the corpus as a new document from a fixed output-field list; new database fields
 do not enter it automatically.
 
 The corpus retains the experiment-specific participant and dialogue labels so
-repeated exports can be joined. Parlando wall-clock timestamps are converted to
-relative event times and durations. Consent declarations, internal database keys,
+repeated exports can be joined. Events and transcript boundaries use the stored
+game clock, in milliseconds from game start; waiting time and session duration
+are derived from lifecycle timestamps. Consent declarations, internal database keys,
 room and connection identifiers, operational events, administrator data, and
 credentials have no corpus output field.
 

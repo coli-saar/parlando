@@ -114,22 +114,26 @@
     .session-summary { background: #fff; border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 18px; padding: 18px; }
     .session-summary h2 { margin: 0; }
     .session-facts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; }
-    .session-facts > div { border-left: 1px solid var(--line); display: grid; gap: 5px; padding: 0 18px; }
+    .session-facts > div { border-left: 1px solid var(--strong-line); display: grid; gap: 5px; padding: 0 18px; }
     .session-facts > div:first-child { border-left: 0; padding-left: 0; }
     .session-facts dt { color: var(--subtle); font-size: 12px; }
     .session-facts dd { margin: 0; }
     .status-chip { align-items: center; background: #f2f4f6; border-radius: 999px; display: inline-flex; gap: 6px; padding: 4px 9px; white-space: nowrap; }
     .purpose-marker { align-items: center; color: #654caf; display: inline-flex; gap: 5px; font-weight: 600; }
-    .participant-assignments { border-top: 1px solid var(--line); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding-top: 14px; }
-    .participant-assignment { align-items: center; display: grid; gap: 10px; grid-template-columns: auto auto minmax(0, 1fr) auto; min-width: 0; }
-    .participant-assignment + .participant-assignment { border-left: 1px solid var(--line); padding-left: 18px; }
-    .participant-icon { color: #56616a; height: 18px; width: 18px; }
+    .participant-assignments { border-top: 1px solid var(--line); column-gap: 37px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding-top: 14px; position: relative; }
+    .participant-assignments::after { background: var(--strong-line); bottom: 0; content: ""; left: 50%; position: absolute; top: 14px; width: 1px; }
+    .participant-assignment { align-items: center; border: 1px solid transparent; border-radius: 7px; display: grid; gap: 10px; grid-template-columns: auto auto minmax(0, 1fr); min-height: 54px; min-width: 0; padding: 11px 13px; }
+    .participant-role-a { background: #e1f0f9; border-color: #b8d8e9; color: #165f85; }
+    .participant-role-b { background: #faebd6; border-color: #e5cba6; color: #76501b; }
+    .participant-icon { color: currentColor; height: 20px; width: 20px; }
     .role-badge { align-items: center; background: var(--selected); border-radius: 4px; color: #195b80; display: inline-flex; font-weight: 800; height: 26px; justify-content: center; min-width: 26px; padding: 0 6px; }
     .role-a { background: #e1f0f9; color: #165f85; }
     .role-b { background: #faebd6; color: #76501b; }
     .participant-copy { display: grid; gap: 2px; min-width: 0; }
-    .participant-copy strong { overflow-wrap: anywhere; }
+    .participant-copy strong { color: var(--text); font-size: 15px; overflow-wrap: anywhere; }
     .participant-name-line { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; min-width: 0; }
+    .delete-participant { height: 26px; justify-content: center; padding: 0; width: 26px; }
+    .delete-participant .icon { height: 14px; width: 14px; }
     .configuration-identity { justify-self: start; position: relative; }
     .configuration-identity summary { align-items: center; background: #eef4f8; border: 1px solid #c9dce8; border-radius: 999px; color: #245f7d; cursor: pointer; display: inline-flex; font-size: 11px; font-weight: 700; gap: 5px; list-style: none; padding: 3px 8px; white-space: nowrap; }
     .configuration-identity summary::-webkit-details-marker { display: none; }
@@ -306,10 +310,10 @@
     .privacy-table { border-collapse: collapse; font-size: 13px; margin: 10px 0 18px; width: 100%; }
     .privacy-table th, .privacy-table td { border-bottom: 1px solid var(--line); padding: 9px 7px; text-align: left; vertical-align: top; }
     .privacy-table th { color: var(--subtle); font-size: 12px; }
-    .event-line { align-items: center; display: grid; gap: 10px; grid-template-columns: auto minmax(140px, 1fr) minmax(0, 2fr) auto; }
+    .event-line { align-items: center; display: grid; gap: 10px; grid-template-columns: 74px auto minmax(140px, 1fr) minmax(0, 2fr); }
     .role-system { background: #e8edf2; color: #4c5964; font-size: 11px; letter-spacing: .02em; }
     .event-main { min-width: 0; }
-    .event-meta { align-items: center; display: flex; gap: 10px; justify-content: flex-end; min-width: 210px; }
+    .game-time { color: #4e5b66; font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align: right; }
     .event-title { font-weight: 700; }
     .event-text { color: #252f38; overflow: hidden; overflow-wrap: anywhere; text-overflow: ellipsis; }
     .event-text:empty { display: none; }
@@ -321,12 +325,6 @@
     .action-row { display: grid; gap: 8px; grid-template-columns: minmax(76px, auto) minmax(0, 1fr); }
     .action-key, .action-value { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
     .action-key { color: #185f8f; font-weight: 800; }
-    .event-json-block { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; }
-    .event-json-title { color: #4e5b66; font-size: 12px; font-weight: 800; margin-bottom: 6px; }
-    .expand { background: #fff; border: 1px solid #c9d2da; border-radius: 6px; cursor: pointer; font-size: 12px; padding: 4px 8px; }
-    .event-json { background: #f5f7f9; border-radius: 6px; font-size: 12px; margin: 10px 0 0; overflow-wrap: anywhere; padding: 10px; white-space: pre-wrap; }
-    .event-json pre { margin: 0; white-space: pre-wrap; }
-    .event-json[hidden] { display: none; }
     .empty { color: var(--subtle); padding: 28px; text-align: center; }
     @media (max-width: 900px) {
       html, body { height: auto; min-height: 100%; overflow: auto; }
@@ -361,17 +359,18 @@
       .workspace-actions { justify-content: flex-start; }
       .session-facts, .participant-assignments, .load-overview, .settings-section, .export-controls { grid-template-columns: 1fr; }
       .session-facts > div { border-left: 0; border-top: 1px solid var(--line); padding: 10px 0 0; }
-      .participant-assignment + .participant-assignment { border-left: 0; border-top: 1px solid var(--line); margin-top: 12px; padding: 12px 0 0; }
+      .participant-assignments { gap: 12px; }
+      .participant-assignments::after { display: none; }
       .settings-section { gap: 16px; }
       .configuration-save, .config-group, .config-field-row, .consent-item-fields { grid-template-columns: 1fr; }
       .consent-actions { align-items: stretch; grid-template-columns: 1fr; }
       .consent-actions button { justify-self: start; }
       .game-secret-row { grid-template-columns: 1fr auto auto; }
       .game-secret-row .game-secret-key { grid-column: 1 / -1; }
-      .event-line { grid-template-columns: 34px minmax(0, 1fr); }
-      .role-badge { grid-column: 1; min-width: 28px; padding: 0; width: 28px; }
-      .event-main, .event-text, .event-meta { grid-column: 2; }
-      .event-meta { justify-content: space-between; min-width: 0; width: 100%; }
+      .event-line { grid-template-columns: 64px 34px minmax(0, 1fr); }
+      .game-time { grid-column: 1; }
+      .role-badge { grid-column: 2; min-width: 28px; padding: 0; width: 28px; }
+      .event-main, .event-text { grid-column: 3; }
     }
   </style>
 </head>
@@ -618,6 +617,18 @@
         minute: '2-digit',
         second: '2-digit'
       });
+    }
+
+    // Formats a game-clock coordinate as compact minutes, seconds, and milliseconds.
+    function fmtGameTime(value) {
+      if (!Number.isFinite(Number(value))) return '-';
+      const milliseconds = Math.round(Number(value));
+      const sign = milliseconds < 0 ? '−' : '';
+      const absolute = Math.abs(milliseconds);
+      const minutes = Math.floor(absolute / 60000);
+      const seconds = Math.floor((absolute % 60000) / 1000);
+      const remainder = absolute % 1000;
+      return `${sign}${minutes}:${String(seconds).padStart(2, '0')}.${String(remainder).padStart(3, '0')}`;
     }
 
     // Escapes arbitrary server data before inserting it into HTML templates.
@@ -2362,7 +2373,7 @@
       const metadata = row.metadata || {};
       const type = String(metadata.agent_name || metadata.agent_type || 'Agent').replace(/Agent$/, '');
       const version = metadata.agent_version;
-      return version ? `${type}, v ${version}` : type;
+      return version ? `${type} v ${version}` : type;
     }
 
     // Visualizes reproducible agent configuration identity separately from its display name.
@@ -2396,11 +2407,10 @@
     function participantAssignments(rows) {
       if (!rows.length) return '';
       return `<div class="participant-assignments" aria-label="Session participants">${rows.map(row => `
-        <div class="participant-assignment" title="${escapeHtml(row.connection_status || '')}">
+        <div class="participant-assignment participant-role-${row.role === 'B' ? 'b' : 'a'}" title="${escapeHtml(row.connection_status || '')}">
           ${roleBadge(row.role)}
           ${participantIcon(row.participant_kind)}
-          <span class="participant-copy"><span class="participant-name-line"><strong>${escapeHtml(participantDisplayName(row))}</strong>${configurationIdentityMarkup(row)}</span></span>
-          ${row.participant_kind !== 'agent' && row.research_id ? `<button class="danger delete-participant" data-research-id="${escapeHtml(row.research_id)}" type="button">${icon('trash')}Delete data</button>` : ''}
+          <span class="participant-copy"><span class="participant-name-line"><strong>${escapeHtml(participantDisplayName(row))}</strong>${row.participant_kind !== 'agent' && row.research_id ? `<button class="danger delete-participant" data-research-id="${escapeHtml(row.research_id)}" type="button" title="Delete participant data" aria-label="Delete participant data">${icon('trash')}</button>` : ''}${configurationIdentityMarkup(row)}</span></span>
         </div>`).join('')}</div>`;
     }
 
@@ -2431,11 +2441,6 @@
       return '';
     }
 
-    // Returns the event's participant role when the durable row exposes one.
-    function eventRole(event) {
-      return event.actor_role || event.detail?.player || event.detail?.sender_role || event.detail?.role || '';
-    }
-
     // Renders compact participant role markers for rows and event timeline entries.
     function roleBadge(role) {
       const normalized = role === 'A' || role === 'B' ? role : '';
@@ -2461,17 +2466,10 @@
       const bundles = (state.eventBundles || []).filter(bundle => showHousekeeping.checked || !bundle.housekeeping);
       timeline.innerHTML = '';
       for (const bundle of bundles) {
-        const jsonId = `event-bundle-${bundle.first_index}-${bundle.last_index}`;
-        const rawHtml = bundle.events.map(event => `
-          <div class="event-json-block">
-            <div class="event-json-title">#${event.event_index} ${escapeHtml(event.title || event.event_type)} · ${escapeHtml(fmtTime(event.created_at))}</div>
-            ${actionFromEvent(event) ? `<div class="structured-action">${prettyAction(actionFromEvent(event), eventRole(event))}</div>` : ''}
-            <pre>${escapeHtml(JSON.stringify(event.raw || event, null, 2))}</pre>
-          </div>
-        `).join('');
         timeline.insertAdjacentHTML('beforeend', `
           <article class="event ${eventClass(bundle)}">
             <div class="event-line">
+              <span class="game-time" title="Game time">${escapeHtml(fmtGameTime(bundle.game_time_ms))}</span>
               ${roleBadge(bundle.role)}
               <div class="event-main">
                 <span class="event-title">${escapeHtml(bundle.title)}${bundle.problem ? '<span class="problem-badge">Problem</span>' : ''}</span>
@@ -2480,21 +2478,11 @@
                 ${bundle.problem_reason ? `<div class="problem-reason">${escapeHtml(bundle.problem_reason)}</div>` : ''}
               </div>
               <div class="event-text">${bundle.action ? `<div class="structured-action">${prettyAction(bundle.action, bundle.role)}</div>` : escapeHtml(bundle.text || '')}</div>
-              <div class="event-meta">
-                <span class="muted small">${escapeHtml(fmtTime(bundle.created_at))}</span>
-                <button class="expand" type="button" aria-expanded="false" aria-controls="${jsonId}" data-target="${jsonId}">JSON</button>
-              </div>
             </div> 
-            <div class="event-json" id="${jsonId}" hidden>${rawHtml}</div>
           </article>
         `);
       }
       if (!timeline.children.length) timeline.innerHTML = '<div class="empty">No action or message events recorded yet.</div>';
-    }
-
-    // Extracts a structured game action from supported durable event shapes.
-    function actionFromEvent(event) {
-      return event.detail?.action || event.raw?.payload?.action || event.payload?.action || null;
     }
 
     // Formats a structured action without repeating its already-visible actor role.
@@ -2599,16 +2587,6 @@
         window.alert(error.message);
         button.disabled = false;
       });
-    });
-    timeline.addEventListener('click', event => {
-      const button = event.target.closest('.expand');
-      if (!button) return;
-      const panel = document.getElementById(button.dataset.target);
-      if (!panel) return;
-      const expanded = button.getAttribute('aria-expanded') === 'true';
-      button.setAttribute('aria-expanded', String(!expanded));
-      button.textContent = expanded ? 'JSON' : 'Hide';
-      panel.hidden = expanded;
     });
     makeResizable(document.getElementById('catalogueResizer'), '--catalogue-width', 230, 430);
     makeResizable(document.getElementById('sessionResizer'), '--session-width', 250, 480);

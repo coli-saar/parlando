@@ -861,6 +861,20 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
         .await
         .is_err());
     assert!(store.start_session("exp_eval", session_one).await.unwrap());
+    let rebased = store
+        .session_events("exp_eval", session_one, None)
+        .await
+        .unwrap();
+    assert!(rebased
+        .iter()
+        .all(|event| (-1_000..=0).contains(&event.game_time_ms)));
+    assert!(
+        store
+            .session_game_time_ms("exp_eval", session_one, &now_iso())
+            .await
+            .unwrap()
+            >= 0
+    );
     store
         .commit_session_transition(
             vec![SessionEventRecord {

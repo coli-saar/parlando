@@ -88,10 +88,10 @@
     },
     "eventBase": {
       "type": "object",
-      "required": ["index", "time_from_session_start_ms", "kind", "participant_id", "role"],
+      "required": ["index", "game_time_ms", "kind", "participant_id", "role"],
       "properties": {
         "index": {"type": "integer", "minimum": 1},
-        "time_from_session_start_ms": {"type": "integer", "minimum": 0},
+        "game_time_ms": {"type": "integer", "minimum": 0, "description": "Milliseconds since game start; zero is the session's game-start instant."},
         "kind": {"type": "string"},
         "participant_id": {"type": "string", "minLength": 1},
         "role": {"type": "string", "minLength": 1}
@@ -100,17 +100,17 @@
     "action": {
       "allOf": [
         {"$ref": "#/$defs/eventBase"},
-        {"type": "object", "additionalProperties": false, "required": ["index", "time_from_session_start_ms", "kind", "participant_id", "role", "action", "transition_metadata", "state"], "properties": {
-          "index": {}, "time_from_session_start_ms": {}, "kind": {"const": "action"}, "participant_id": {}, "role": {}, "action": {}, "transition_metadata": {}, "state": {}
+        {"type": "object", "additionalProperties": false, "required": ["index", "game_time_ms", "kind", "participant_id", "role", "action", "transition_metadata", "state"], "properties": {
+          "index": {}, "game_time_ms": {}, "kind": {"const": "action"}, "participant_id": {}, "role": {}, "action": {}, "transition_metadata": {}, "state": {}
         }}
       ]
     },
     "message": {
       "allOf": [
         {"$ref": "#/$defs/eventBase"},
-        {"type": "object", "additionalProperties": false, "required": ["index", "time_from_session_start_ms", "kind", "participant_id", "role", "origin", "text"], "properties": {
-          "index": {}, "time_from_session_start_ms": {}, "kind": {"const": "message"}, "participant_id": {}, "role": {}, "origin": {"type": "string"}, "text": {"type": "string"},
-          "utterance_timing": {"type": "object", "additionalProperties": false, "required": ["origin", "start_ms", "end_ms"], "properties": {"origin": {"const": "speaker_audio_stream"}, "start_ms": {"type": ["integer", "null"]}, "end_ms": {"type": ["integer", "null"]}}}
+        {"type": "object", "additionalProperties": false, "required": ["index", "game_time_ms", "kind", "participant_id", "role", "origin", "text"], "properties": {
+          "index": {}, "game_time_ms": {}, "kind": {"const": "message"}, "participant_id": {}, "role": {}, "origin": {"type": "string"}, "text": {"type": "string"},
+          "utterance_timing": {"type": "object", "description": "Speech boundaries on the same game clock as game_time_ms.", "additionalProperties": false, "required": ["origin", "start_ms", "end_ms"], "properties": {"origin": {"const": "game_clock"}, "start_ms": {"type": ["integer", "null"], "minimum": 0}, "end_ms": {"type": ["integer", "null"], "minimum": 0}}}
         }}
       ]
     }

@@ -176,7 +176,7 @@ fn admin_test_event(index: i64, event_type: &str, role: Option<&str>, payload: V
         actor_role: role.map(str::to_string),
         payload,
         game_state: None,
-        created_at: format!("2026-07-11T20:15:{index:02}.000000+00:00"),
+        game_time_ms: index * 1_000,
     };
     admin_event_summary(stored)
 }
@@ -297,6 +297,19 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(ADMIN_EXPERIMENT_HTML.contains("catalogueResizer"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("sessionResizer"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Object.assign(state.selectedSession, refreshed)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("function fmtGameTime(value)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("title=\"Game time\""));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("fmtTime(bundle.created_at)"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("class=\"expand\""));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("event-json"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("border-left: 1px solid var(--strong-line)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("title=\"Delete participant data\""));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("aria-label=\"Delete participant data\""));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains(">Delete data</button>"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("participant-role-a"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("participant-role-b"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("participant-assignments::after"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("`${type} v ${version}`"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("experimentForm"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"configForm\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("configurationFromForm"));
@@ -638,6 +651,14 @@ async fn admin_privacy_status_renders_and_downloads_current_facts() {
     assert_eq!(privacy["exports"]["available"], true);
     assert_eq!(privacy["exports"]["variant"], "corpus");
     assert_eq!(privacy["exports"]["schema_id"], "parlando.corpus.v1");
+    assert!(privacy["exports"]["timing"]
+        .as_str()
+        .unwrap()
+        .contains("game_time_ms, measured in milliseconds from game start"));
+    assert!(privacy["exports"]["timing"]
+        .as_str()
+        .unwrap()
+        .contains("speech start and end positions use the same game clock"));
     assert!(privacy["exports"]["selection_rule"]
         .as_str()
         .unwrap()
@@ -800,6 +821,15 @@ async fn experiment_privacy_reports_only_the_enabled_speech_path() {
         .unwrap()
         .iter()
         .any(|item| item["category"] == "Final voice transcripts"));
+    assert!(privacy["storage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["category"] == "Final voice transcripts")
+        .unwrap()["detail"]
+        .as_str()
+        .unwrap()
+        .contains("speech start and end positions on the same game clock"));
     assert!(privacy["not_retained"]
         .as_array()
         .unwrap()
@@ -826,15 +856,26 @@ fn corpus_export_is_nested_informative_and_structurally_minimized() {
             {"session_id": 3, "participant_id": 7, "participant_session_id": "ps_secret", "role": "A"},
             {"session_id": 3, "participant_id": 8, "participant_session_id": "ps_agent", "role": "B"}
         ],
-        "session_events": [{
-            "session_id": 3,
-            "event_index": 4,
-            "event_type": "conversation_message",
-            "actor_participant_id": 7,
-            "actor_role": "A",
-            "payload": {"text": "hello", "origin": "typed", "sender_participant_session_id": "ps_secret"},
-            "created_at": "2026-01-01T00:00:04Z"
-        }]
+        "session_events": [
+            {
+                "session_id": 3,
+                "event_index": 4,
+                "event_type": "conversation_message",
+                "actor_participant_id": 7,
+                "actor_role": "A",
+                "payload": {"text": "hello", "origin": "typed", "sender_participant_session_id": "ps_secret"},
+                "game_time_ms": 3000
+            },
+            {
+                "session_id": 3,
+                "event_index": 5,
+                "event_type": "conversation_message",
+                "actor_participant_id": 7,
+                "actor_role": "A",
+                "payload": {"text": "spoken hello", "origin": "voice_transcript", "metadata": {"start_game_time_ms": 3200, "end_game_time_ms": 3900}},
+                "game_time_ms": 4000
+            }
+        ]
     });
     let corpus = corpus_experiment_export(full.clone(), "2").unwrap();
     let encoded = serde_json::to_string(&corpus).unwrap();
@@ -855,8 +896,12 @@ fn corpus_export_is_nested_informative_and_structurally_minimized() {
         "hello"
     );
     assert_eq!(
-        corpus["experiment"]["sessions"][0]["events"][0]["time_from_session_start_ms"],
+        corpus["experiment"]["sessions"][0]["events"][0]["game_time_ms"],
         3_000
+    );
+    assert_eq!(
+        corpus["experiment"]["sessions"][0]["events"][1]["utterance_timing"],
+        json!({"origin": "game_clock", "start_ms": 3_200, "end_ms": 3_900})
     );
     assert_eq!(
         corpus["experiment"]["sessions"][0]["metadata"]["time_to_start_ms"],
@@ -888,11 +933,11 @@ fn corpus_export_is_nested_informative_and_structurally_minimized() {
     );
 
     let mut invalid = full;
-    invalid["sessions"][0]["started_at"] = json!("2026-01-01T00:00:05Z");
+    invalid["session_events"][0]["game_time_ms"] = json!(-1);
     assert!(corpus_experiment_export(invalid, "2")
         .unwrap_err()
         .message
-        .contains("before its start"));
+        .contains("without valid game time"));
 
     let schema: Value = serde_json::from_str(CORPUS_EXPORT_SCHEMA_V1).unwrap();
     assert_eq!(
@@ -1541,7 +1586,7 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         Value::Null,
     )
     .await;
-    assert_eq!(privacy["experiment_count"], 3);
+    assert!(privacy.get("experiment_count").is_none());
 
     let restarted = build_game_router(TinyAdapter, config, descriptor, |_config| {
         Ok(ServeOptions::default())
@@ -2877,6 +2922,7 @@ async fn create_human_vs_agent_room(router: Router, name: &str) -> (String, Stri
 
 // Polls the evaluation export until an event type appears or the test times out.
 async fn wait_for_export_event(router: Router, event_type: &str) -> Value {
+    let mut last_export = Value::Null;
     for _ in 0..20 {
         let (status, export) = json_request(
             router.clone(),
@@ -2894,9 +2940,10 @@ async fn wait_for_export_event(router: Router, event_type: &str) -> Value {
         {
             return export;
         }
+        last_export = export;
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("timed out waiting for event type {event_type}");
+    panic!("timed out waiting for event type {event_type}; last export: {last_export}");
 }
 
 // Polls the evaluation export until a TTS diagnostic event appears.
@@ -3412,9 +3459,43 @@ async fn audio_websocket_relays_pcm_and_commits_one_final_utterance() {
     ))
     .await
     .unwrap();
-    let frame = AudioFrame {
+    wait_for_audio_control(&mut socket_a).await;
+    wait_for_audio_control(&mut socket_b).await;
+    let waiting_frame = AudioFrame {
         sequence: 0,
         timestamp_ms: 0,
+        pcm: vec![0; crate::audio::AUDIO_FRAME_BYTES],
+    }
+    .encode();
+    socket_a
+        .send(TungsteniteMessage::Binary(waiting_frame.clone()))
+        .await
+        .unwrap();
+    assert_eq!(read_audio_binary(&mut socket_b).await, waiting_frame);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let (_, waiting_export) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/export?variant=full",
+        Value::Null,
+    )
+    .await;
+    assert!(!waiting_export["session_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event["event_type"] == "conversation_message"));
+    let (mut game_a, _) = connect_async(game_socket_url(&base_url, &room_id, &a).await)
+        .await
+        .unwrap();
+    let (mut game_b, _) = connect_async(game_socket_url(&base_url, &room_id, &b).await)
+        .await
+        .unwrap();
+    let _ = read_ws_type(&mut game_a, "session_started").await;
+    let _ = read_ws_type(&mut game_b, "session_started").await;
+    let frame = AudioFrame {
+        sequence: 1,
+        timestamp_ms: 20,
         pcm: vec![0; crate::audio::AUDIO_FRAME_BYTES],
     }
     .encode();

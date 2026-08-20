@@ -77,6 +77,12 @@ The server creates one `TranscriptionProvider` session per human microphone stre
 
 Only final utterances are durable. Parlando deduplicates provider results, persists a transcript event, adds a `voice_transcript` conversation message, broadcasts it on the game WebSocket, and calls `agent::Agent::observe_message` with spoken modality. Speechmatics is the current hosted implementation and is contacted only by the server. Its API key is never returned to a browser. A future local recognizer can implement the same provider trait without changing browser or agent code.
 
+The provider connection may become ready while participants are still waiting, because provider
+readiness is one of the conditions for starting a voice-enabled game. Parlando does not send PCM to
+that connection until the room enters `running`. Waiting-room speech is therefore neither
+transcribed nor persisted. The first accepted in-game PCM frame establishes the bridge from the
+provider's media timeline to the session's authoritative `game_time_ms` clock.
+
 The version 1 relay does not persist raw audio. When Speechmatics is configured,
 it receives the live microphone stream for recognition. A study that requires
 all audio processing to remain on institutional infrastructure cannot yet use the
