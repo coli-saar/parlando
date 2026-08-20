@@ -333,6 +333,12 @@ pub struct ParticipantDataPreview {
     pub content_event_count: i64,
     /// Number of other authored events whose actor reference will be anonymized.
     pub other_event_count: i64,
+    /// Dashboard session identifiers that will be deleted with the participant.
+    pub session_ids: Vec<String>,
+    /// Other dashboard participant identifiers whose shared sessions will also disappear.
+    pub other_participant_ids: Vec<String>,
+    /// Whether at least one affected session can still receive runtime writes.
+    pub has_non_terminal_session: bool,
 }
 
 /// Durable administrator credential material loaded by the authentication layer.
@@ -538,7 +544,7 @@ pub trait ExperimentStore: Send + Sync {
         experiment_id: &str,
         participant_id: i64,
     ) -> Result<ParticipantDataPreview>;
-    /// Removes participant-authored content and anonymizes remaining references.
+    /// Physically removes a participant and every session in which they appeared.
     async fn delete_participant_data(
         &self,
         experiment_id: &str,
@@ -2460,61 +2466,100 @@ impl ExperimentStore for SqliteExperimentStore {
     ) -> Result<ParticipantDataPreview> {
         let preview =
             sqlite_participant_data_preview(&self.pool, experiment_id, participant_id).await?;
+        if preview.has_non_terminal_session {
+            bail!("affected sessions are live or non-terminal");
+        }
         let mut tx = self.pool.begin().await?;
-        let participant_session_ids = sqlx::query_scalar::<_, String>(
-            "select participant_session_id from session_participants where experiment_id = ? and participant_id = ?",
+        let non_terminal = sqlx::query_scalar::<_, i64>(
+            r#"
+            select count(*) from sessions s
+            join session_participants sp
+              on sp.experiment_id = s.experiment_id and sp.session_id = s.session_id
+            where sp.experiment_id = ? and sp.participant_id = ?
+              and s.status not in ('completed', 'abandoned', 'expired')
+            "#,
         )
         .bind(experiment_id)
         .bind(participant_id)
-        .fetch_all(&mut *tx)
+        .fetch_one(&mut *tx)
         .await?;
+        if non_terminal > 0 {
+            bail!("affected sessions are live or non-terminal");
+        }
         sqlx::query(
-            "delete from consent_declarations where experiment_id = ? and participant_id = ?",
-        )
-        .bind(experiment_id)
-        .bind(participant_id)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "delete from session_events where experiment_id = ? and actor_participant_id = ? and event_type in ('conversation_message', 'transcript_segment')",
-        )
-        .bind(experiment_id)
-        .bind(participant_id)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "update session_events set actor_participant_id = null, actor_role = 'deleted_participant' where experiment_id = ? and actor_participant_id = ?",
-        )
-        .bind(experiment_id)
-        .bind(participant_id)
-        .execute(&mut *tx)
-        .await?;
-        for participant_session_id in &participant_session_ids {
-            sqlx::query(
-                "update session_events set payload_json = replace(payload_json, ?, 'deleted_participant'), game_state_json = replace(game_state_json, ?, 'deleted_participant') where experiment_id = ?",
+            r#"
+            delete from consent_declarations
+            where experiment_id = ? and (
+                participant_id = ? or session_id in (
+                    select session_id from session_participants
+                    where experiment_id = ? and participant_id = ?
+                )
             )
-            .bind(participant_session_id)
-            .bind(participant_session_id)
+            "#,
+        )
+        .bind(experiment_id)
+        .bind(participant_id)
+        .bind(experiment_id)
+        .bind(participant_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            delete from session_events
+            where experiment_id = ? and session_id in (
+                select session_id from session_participants
+                where experiment_id = ? and participant_id = ?
+            )
+            "#,
+        )
+        .bind(experiment_id)
+        .bind(experiment_id)
+        .bind(participant_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            delete from session_participants
+            where experiment_id = ? and session_id in (
+                select affected.session_id from (
+                    select session_id from session_participants
+                    where experiment_id = ? and participant_id = ?
+                ) affected
+            )
+            "#,
+        )
+        .bind(experiment_id)
+        .bind(experiment_id)
+        .bind(participant_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            delete from sessions
+            where experiment_id = ? and dialogue_id in (
+                select value from json_each(?)
+            )
+            "#,
+        )
+        .bind(experiment_id)
+        .bind(serde_json::to_string(&preview.session_ids)?)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("delete from participants where experiment_id = ? and participant_id = ?")
             .bind(experiment_id)
+            .bind(participant_id)
             .execute(&mut *tx)
             .await?;
-        }
-        for participant_session_id in participant_session_ids {
-            sqlx::query(
-                "update session_participants set participant_session_id = ?, connection_status = 'deleted', left_at = ? where participant_session_id = ?",
-            )
-            .bind(new_id("deleted"))
-            .bind(now_iso())
-            .bind(participant_session_id)
-            .execute(&mut *tx)
-            .await?;
-        }
-        sqlx::query(
-            "update participants set research_id = null, participant_kind = 'deleted', external_id = null, metadata_json = '{}' where participant_id = ?",
+        let remaining = sqlx::query_scalar::<_, i64>(
+            "select count(*) from participants where experiment_id = ? and participant_id = ?",
         )
+        .bind(experiment_id)
         .bind(participant_id)
-        .execute(&mut *tx)
+        .fetch_one(&mut *tx)
         .await?;
+        if remaining != 0 {
+            bail!("participant deletion verification failed");
+        }
         tx.commit().await?;
         Ok(preview)
     }
@@ -2554,12 +2599,49 @@ async fn sqlite_participant_data_preview(
     .bind(participant_id)
     .fetch_one(pool)
     .await?;
+    let sessions = sqlx::query_as::<_, (String, String)>(
+        r#"
+        select s.dialogue_id, s.status from sessions s
+        join session_participants sp
+          on sp.experiment_id = s.experiment_id and sp.session_id = s.session_id
+        where sp.experiment_id = ? and sp.participant_id = ?
+        order by s.dialogue_id
+        "#,
+    )
+    .bind(experiment_id)
+    .bind(participant_id)
+    .fetch_all(pool)
+    .await?;
+    let other_participant_ids = sqlx::query_scalar::<_, String>(
+        r#"
+        select distinct p.research_id from participants p
+        join session_participants other on other.participant_id = p.participant_id
+        where other.experiment_id = ? and other.participant_id != ?
+          and other.session_id in (
+              select session_id from session_participants
+              where experiment_id = ? and participant_id = ?
+          )
+          and p.research_id is not null
+        order by p.research_id
+        "#,
+    )
+    .bind(experiment_id)
+    .bind(participant_id)
+    .bind(experiment_id)
+    .bind(participant_id)
+    .fetch_all(pool)
+    .await?;
     Ok(ParticipantDataPreview {
         participant_id,
         session_count,
         consent_count,
         content_event_count,
         other_event_count,
+        session_ids: sessions.iter().map(|(id, _)| id.clone()).collect(),
+        other_participant_ids,
+        has_non_terminal_session: sessions
+            .iter()
+            .any(|(_, status)| !matches!(status.as_str(), "completed" | "abandoned" | "expired")),
     })
 }
 

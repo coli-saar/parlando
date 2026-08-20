@@ -92,20 +92,16 @@ completion events. Use an export when analysis depends on complete structured
 payloads or exact ordering; the dashboard is a summary, not an alternative data
 source.
 
-When `privacy.store_voice_diagnostics` is enabled, playback underruns appear as
-`voice_diagnostic` events. They contain an event name, cumulative connection-local
-count, and remaining buffered source samples. Parlando discards device ids, device
-labels, user agents, and arbitrary browser error messages. Sustained underruns may
-justify increasing `voice.jitter_buffer_ms`, but a larger buffer also delays
-playback startup.
+Playback underruns remain bounded operational telemetry and are not written to the
+research database. Parlando also discards device ids, device labels, user agents,
+and arbitrary browser error messages. Sustained underruns may justify increasing
+`voice.jitter_buffer_ms`, but a larger buffer also delays playback startup.
 
-## Choose what to retain
+## Understand what is retained
 
-Four experiment-level privacy switches let researchers collect the data their
-analysis requires without retaining every available stream. They independently
-control full game state, typed messages, final transcripts, and minimized voice
-diagnostics. The dashboard displays the effective choices, and disabled data
-types are not written to SQLite or included in later exports.
+Collection follows the enabled experiment modality. Accepted actions retain their
+resulting state; typed messages and final transcripts are retained when those
+modalities produce them. Raw audio and new voice diagnostics are not retained.
 
 Other durable records can include:
 
@@ -115,7 +111,7 @@ Other durable records can include:
 - accepted transitions, with their action, role-neutral metadata, and resulting state stored once;
 - typed and final spoken conversation messages, each stored once with modality metadata;
 - agent startup, proposals, messages, and errors; and
-- TTS and voice diagnostics.
+- bounded TTS operational events.
 
 Rejected actions use bounded analytical records rather than retaining arbitrary
 attacker-controlled payloads. Each record includes a stable `reason_code`, a
@@ -136,34 +132,28 @@ dialogues. Human identifiers end in an animal noun; dialogue identifiers end in 
 place or object noun. These identifiers remain stable across repeated exports of
 the same experiment.
 
-Human identifiers are experiment-scoped. The same recruited person receives an
-independent identifier in another experiment. Agent identifiers instead record
+Human identifiers are experiment-scoped; Parlando does not use them to identify a
+person across experiments. Agent identifiers instead record
 their type, implementation name, and version, for example
 `agent:space_game.back_and_forth:BackAndForthAgent@0.2.0`.
 
-These labels support pseudonymous analysis without carrying a name or recruitment
-identifier into normal exports. Data remain pseudonymous while an external
-recruitment mapping or identifying dialogue content can still link them to a
-person.
+These labels support pseudonymous analysis without asking a participant for a
+name. Before sharing a corpus, review participant-authored typed messages and,
+when the experiment used speech transcription, final voice transcripts; remove
+explicit identifying information from that participant-authored text.
 
 ## Choose an export
 
-The dashboard export action calls
-`/api/admin/runtime/{experiment_id}/export`. It reconstructs data from SQLite and
-supports JSON, YAML, and CSV encodings.
+The dashboard provides one data variant, **Corpus candidate**, in JSON, YAML, and
+CSV. It contains every non-testing session in the experiment. Parlando constructs
+the corpus as a new document from a fixed output-field list; new database fields
+do not enter it automatically.
 
-Use the variants as follows:
-
-| Variant | Intended use | Deliberate boundary |
-| --- | --- | --- |
-| `research` | Normal pseudonymous analysis | Omits recruitment identity, consent evidence, and internal runtime identifiers |
-| `corpus` | Preparation for a dialogue-data release | Removes additional internal identifiers and absolute timestamps, but remains a `corpus_candidate` requiring linkage removal and content review |
-| `full` | Restricted administration, audit, or recovery | Contains internal administrative records and should not be used as the ordinary analysis export |
-
-Both public-facing variants retain the experiment-specific participant and
-dialogue labels so repeated exports can be joined. They also retain session game
-version and configuration revision. New internal database fields do not
-automatically enter the fixed research and corpus projections.
+The corpus retains the experiment-specific participant and dialogue labels so
+repeated exports can be joined. Parlando wall-clock timestamps are converted to
+relative event times and durations. Consent declarations, internal database keys,
+room and connection identifiers, operational events, administrator data, and
+credentials have no corpus output field.
 
 Use export data for task success, action sequences, utterance counts, timing,
 agent comparisons, transcription diagnostics, and exclusion decisions.
@@ -171,19 +161,22 @@ agent comparisons, transcription diagnostics, and exclusion decisions.
 ## Delete participant data
 
 Human participant cards provide a preview and confirmed deletion action. Deletion
-removes consent evidence plus authored messages and transcripts, clears direct
-identity fields, and removes participant references where this can be done without
-destroying the shared fictitious game record. Shared actions needed to interpret
-the other participant's session remain with a deleted-participant marker.
+physically removes the participant and every session in which the participant
+appeared, including messages, transcripts, actions, game states, operational
+events, role assignments, and consent records. The other participant's
+contribution to each affected shared session is removed with the session. Live or
+unfinished sessions block deletion.
 
 Parlando performs no automatic retention deletion. The institution must define
 retention, backups, and treatment of data already exported or released.
 
 ## Review the installation privacy status
 
-`/admin/privacy` reports the effective Privacy Contract version, storage switches,
-external speech services, export capabilities, deletion support, and consent
-evidence settings. It can be downloaded as Markdown or JSON.
+The experiment Privacy tab generates a self-contained data-processing record. It
+documents SQLite storage and retention, each retained data category, verified
+non-retention guarantees, configured external speech services, corpus contents,
+deletion, and consent evidence. It can be downloaded as Markdown for retention
+with the experiment data or as JSON for tooling.
 
 This report makes the platform's technical behavior inspectable and downloadable.
 The institution adds the decisions that software cannot infer: controller,

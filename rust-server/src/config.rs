@@ -98,25 +98,13 @@ impl Default for DirectConfig {
 pub struct PrivacyConfig {
     /// Version of the stable privacy behavior implemented by this server release.
     pub contract_version: String,
-    /// Persists complete game-state snapshots alongside accepted transitions.
-    pub store_full_game_state: bool,
-    /// Persists participant messages whose existing origin is `typed`.
-    pub store_typed_messages: bool,
-    /// Persists final transcript and corresponding conversation-message events.
-    pub store_final_transcripts: bool,
-    /// Persists minimized voice diagnostic events.
-    pub store_voice_diagnostics: bool,
 }
 
 impl Default for PrivacyConfig {
-    /// Uses research-friendly content defaults while disabling optional diagnostics.
+    /// Selects the current fixed privacy contract.
     fn default() -> Self {
         Self {
-            contract_version: "1".to_string(),
-            store_full_game_state: true,
-            store_typed_messages: true,
-            store_final_transcripts: true,
-            store_voice_diagnostics: false,
+            contract_version: "2".to_string(),
         }
     }
 }

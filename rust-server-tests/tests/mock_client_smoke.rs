@@ -586,7 +586,7 @@ async fn admin_export(
     admin: &TestAdminSession,
 ) -> Result<Value> {
     Ok(client
-        .get(format!("{base_url}/api/admin/export?variant=full"))
+        .get(format!("{base_url}/api/admin/export"))
         .header(reqwest::header::COOKIE, &admin.cookie)
         .send()
         .await?
@@ -753,28 +753,27 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
     let mut export = Value::Null;
     for _ in 0..20 {
         export = admin_export(&client, &server.base_url, &admin_cookie).await?;
-        if export["session_events"].as_array().is_some_and(|events| {
-            [
-                "conversation_message",
-                "game_action_accepted",
-                "session_completed",
-            ]
-            .iter()
-            .all(|expected| events.iter().any(|event| event["event_type"] == *expected))
-        }) {
+        if export["experiment"]["sessions"][0]["events"]
+            .as_array()
+            .is_some_and(|events| {
+                ["message", "action"]
+                    .iter()
+                    .all(|expected| events.iter().any(|event| event["kind"] == *expected))
+            })
+            && export["experiment"]["sessions"][0]["completion"]["done"] == true
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    let event_types = export["session_events"]
+    let event_types = export["experiment"]["sessions"][0]["events"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|event| event["event_type"].as_str().unwrap())
+        .map(|event| event["kind"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert!(event_types.contains(&"conversation_message"));
-    assert!(event_types.contains(&"game_action_accepted"));
-    assert!(event_types.contains(&"session_completed"));
+    assert!(event_types.contains(&"message"));
+    assert!(event_types.contains(&"action"));
     Ok(())
 }
 
@@ -833,16 +832,14 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
     }
 
     let export = admin_export(&client, &server.base_url, &admin_cookie).await?;
-    let events = export["session_events"].as_array().unwrap();
-    assert!(events.iter().any(|event| {
-        event["event_type"] == "conversation_message" && event["payload"]["origin"] == "agent"
-    }));
+    let events = export["experiment"]["sessions"][0]["events"]
+        .as_array()
+        .unwrap();
     assert!(events
         .iter()
-        .any(|event| event["event_type"] == "agent_action"));
-    assert!(events
-        .iter()
-        .any(|event| event["event_type"] == "tts_diagnostic"));
+        .any(|event| { event["kind"] == "message" && event["origin"] == "agent" }));
+    assert!(events.iter().any(|event| event["kind"] == "action"));
+    assert!(!export.to_string().contains("tts_diagnostic"));
     Ok(())
 }
 
@@ -942,39 +939,40 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
     );
 
     let export = admin_export(&client, &server.base_url, &admin_cookie).await?;
-    let events = export["session_events"].as_array().unwrap();
-    let remote_participant = export["participants"]
+    let events = export["experiment"]["sessions"][0]["events"]
+        .as_array()
+        .unwrap();
+    let remote_participant = export["experiment"]["participants"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|participant| participant["participant_kind"] == "agent")
+        .find(|participant| participant["kind"] == "agent")
         .expect("remote agent participant is exported");
-    assert_eq!(remote_participant["identity_provider"], "agent");
-    assert!(remote_participant["external_id"]
+    assert!(remote_participant["participant_id"]
         .as_str()
         .unwrap()
-        .starts_with("mock-python-agent@test-1#sha256:"));
-    assert!(remote_participant["metadata"]["configuration_fingerprint"]
-        .as_str()
-        .unwrap()
-        .starts_with("sha256:"));
-    assert_eq!(remote_participant["metadata"]["factory"], "remote_grpc");
+        .contains("mock-python-agent"));
+    assert!(
+        remote_participant["agent_identity"]["configuration_fingerprint"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
     assert_eq!(
-        remote_participant["metadata"]["agent_name"],
+        remote_participant["agent_identity"]["agent_name"],
         "mock-python-agent"
     );
-    assert_eq!(remote_participant["metadata"]["agent_version"], "test-1");
-    assert!(events.iter().any(|event| {
-        event["event_type"] == "conversation_message" && event["payload"]["origin"] == "agent"
-    }));
+    assert_eq!(
+        remote_participant["agent_identity"]["agent_version"],
+        "test-1"
+    );
     assert!(events
         .iter()
-        .any(|event| event["event_type"] == "agent_action"));
-    assert!(events
-        .iter()
-        .any(|event| event["event_type"] == "game_action_accepted"));
-    assert!(events
-        .iter()
-        .any(|event| event["event_type"] == "session_completed"));
+        .any(|event| { event["kind"] == "message" && event["origin"] == "agent" }));
+    assert!(events.iter().any(|event| event["kind"] == "action"));
+    assert_eq!(
+        export["experiment"]["sessions"][0]["completion"]["done"],
+        true
+    );
     Ok(())
 }

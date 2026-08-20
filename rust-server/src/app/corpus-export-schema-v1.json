@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://parlando.dev/schemas/parlando.corpus.v1.json",
+  "title": "Parlando corpus candidate v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["export_schema_version", "export_variant", "release_status", "content_review_required", "privacy_contract_version", "data_inventory", "experiment"],
+  "properties": {
+    "export_schema_version": {"const": "parlando.corpus.v1"},
+    "export_variant": {"const": "corpus"},
+    "release_status": {"const": "corpus_candidate"},
+    "content_review_required": {"const": true},
+    "privacy_contract_version": {"type": "string"},
+    "data_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["participants", "sessions", "events", "actions", "messages"],
+      "properties": {
+        "participants": {"type": "integer", "minimum": 0},
+        "sessions": {"type": "integer", "minimum": 0},
+        "events": {"type": "integer", "minimum": 0},
+        "actions": {"type": "integer", "minimum": 0},
+        "messages": {"type": "integer", "minimum": 0}
+      }
+    },
+    "experiment": {"$ref": "#/$defs/experiment"}
+  },
+  "$defs": {
+    "experiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["experiment_id", "game", "configuration", "participants", "sessions"],
+      "properties": {
+        "experiment_id": {"type": "string", "minLength": 1},
+        "game": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version"],
+          "properties": {"version": {"type": "string", "minLength": 1}}
+        },
+        "configuration": {},
+        "participants": {"type": "array", "items": {"$ref": "#/$defs/participant"}},
+        "sessions": {"type": "array", "items": {"$ref": "#/$defs/session"}}
+      }
+    },
+    "participant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["participant_id", "kind", "agent_identity"],
+      "properties": {
+        "participant_id": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "agent_identity": {"type": ["object", "null"]}
+      }
+    },
+    "assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["participant_id", "role"],
+      "properties": {
+        "participant_id": {"type": "string", "minLength": 1},
+        "role": {"type": "string", "minLength": 1}
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_id", "metadata", "participants", "completion", "events"],
+      "properties": {
+        "session_id": {"type": "string", "minLength": 1},
+        "metadata": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["game_version", "config_revision", "mode", "status", "time_to_start_ms", "duration_ms"],
+          "properties": {
+            "game_version": {"type": "string"},
+            "config_revision": {"type": "integer"},
+            "mode": {"type": "string"},
+            "status": {"type": "string"},
+            "time_to_start_ms": {"type": ["integer", "null"], "minimum": 0},
+            "duration_ms": {"type": ["integer", "null"], "minimum": 0}
+          }
+        },
+        "participants": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/assignment"}},
+        "completion": {},
+        "events": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/action"}, {"$ref": "#/$defs/message"}]}}
+      }
+    },
+    "eventBase": {
+      "type": "object",
+      "required": ["index", "time_from_session_start_ms", "kind", "participant_id", "role"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 1},
+        "time_from_session_start_ms": {"type": "integer", "minimum": 0},
+        "kind": {"type": "string"},
+        "participant_id": {"type": "string", "minLength": 1},
+        "role": {"type": "string", "minLength": 1}
+      }
+    },
+    "action": {
+      "allOf": [
+        {"$ref": "#/$defs/eventBase"},
+        {"type": "object", "additionalProperties": false, "required": ["index", "time_from_session_start_ms", "kind", "participant_id", "role", "action", "transition_metadata", "state"], "properties": {
+          "index": {}, "time_from_session_start_ms": {}, "kind": {"const": "action"}, "participant_id": {}, "role": {}, "action": {}, "transition_metadata": {}, "state": {}
+        }}
+      ]
+    },
+    "message": {
+      "allOf": [
+        {"$ref": "#/$defs/eventBase"},
+        {"type": "object", "additionalProperties": false, "required": ["index", "time_from_session_start_ms", "kind", "participant_id", "role", "origin", "text"], "properties": {
+          "index": {}, "time_from_session_start_ms": {}, "kind": {"const": "message"}, "participant_id": {}, "role": {}, "origin": {"type": "string"}, "text": {"type": "string"},
+          "utterance_timing": {"type": "object", "additionalProperties": false, "required": ["origin", "start_ms", "end_ms"], "properties": {"origin": {"const": "speaker_audio_stream"}, "start_ms": {"type": ["integer", "null"]}, "end_ms": {"type": ["integer", "null"]}}}
+        }}
+      ]
+    }
+  }
+}

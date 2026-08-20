@@ -855,29 +855,35 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
     assert_eq!(preview.session_count, 1);
     assert_eq!(preview.consent_count, 1);
     assert_eq!(preview.other_event_count, 1);
+    assert!(preview.has_non_terminal_session);
+    assert!(store
+        .delete_participant_data("exp_eval", participant_id)
+        .await
+        .is_err());
+    assert!(store.start_session("exp_eval", session_one).await.unwrap());
+    store
+        .commit_session_transition(
+            vec![SessionEventRecord {
+                experiment_id: "exp_eval".to_string(),
+                session_id: session_one,
+                event_type: "session_completed".to_string(),
+                actor_participant_id: None,
+                actor_role: None,
+                payload: json!({"outcome": "test"}),
+                game_state: None,
+            }],
+            Some(json!({"outcome": "test"})),
+        )
+        .await
+        .unwrap();
     store
         .delete_participant_data("exp_eval", participant_id)
         .await
         .unwrap();
-    let redacted = store.export_session("exp_eval", session_one).await.unwrap();
-    assert!(redacted["consent_declarations"]
-        .as_array()
-        .unwrap()
-        .is_empty());
-    assert_eq!(redacted["participants"][0]["research_id"], Value::Null);
-    assert_eq!(redacted["participants"][0]["external_id"], Value::Null);
-    assert_eq!(
-        redacted["session_events"][0]["actor_participant_id"],
-        Value::Null
-    );
-    assert_eq!(
-        redacted["session_events"][0]["actor_role"],
-        "deleted_participant"
-    );
-    assert_ne!(
-        redacted["session_participants"][0]["participant_session_id"],
-        "ps_1"
-    );
+    let deleted = store.export_session("exp_eval", session_one).await.unwrap();
+    assert!(deleted["sessions"].as_array().unwrap().is_empty());
+    assert!(deleted["participants"].as_array().unwrap().is_empty());
+    assert!(deleted["session_events"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]

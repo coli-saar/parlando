@@ -234,7 +234,8 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(!ADMIN_EXPERIMENT_HTML.contains("path: 'voice.frame_duration_ms'"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("path: 'transcription.provider'"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("path: 'tts.output_format'"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Parlando never stores raw microphone audio"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Data retained in Parlando's SQLite database"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("privacy.exports?.selection_rule"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-consent-editor"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-consent-field=\"id\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-consent-field=\"title\""));
@@ -611,8 +612,8 @@ async fn admin_privacy_status_renders_and_downloads_current_facts() {
     assert_eq!(page.status(), StatusCode::OK);
     let page_html = to_bytes(page.into_body(), usize::MAX).await.unwrap();
     let page_html = String::from_utf8_lossy(&page_html);
-    assert!(page_html.contains("Installation-wide facts"));
-    assert!(page_html.contains("Not yet bound to a completed DPO platform assessment"));
+    assert!(page_html.contains("Installation-wide privacy behavior"));
+    assert!(!page_html.contains("DPO platform assessment"));
     assert!(page_html.contains("href=\"/admin/experiments\""));
 
     let (status, privacy) = json_request(
@@ -623,15 +624,57 @@ async fn admin_privacy_status_renders_and_downloads_current_facts() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(privacy["privacy_contract_version"], "1");
-    assert_eq!(privacy["experiment_count"], 1);
+    assert_eq!(privacy["privacy_contract_version"], "2");
+    assert!(privacy.get("experiment_count").is_none());
     assert_eq!(privacy["raw_audio_stored_by_parlando"], false);
-    assert_eq!(privacy["exports"]["full_internal_export"], true);
-    assert_eq!(privacy["exports"]["research_export"], true);
-    assert_eq!(privacy["exports"]["corpus_export"], true);
+    assert!(privacy["overview"]["primary_storage"]
+        .as_str()
+        .unwrap()
+        .contains("SQLite database file"));
+    assert_eq!(
+        privacy["not_retained"][0]["category"],
+        "Participant IP addresses"
+    );
+    assert_eq!(privacy["exports"]["available"], true);
+    assert_eq!(privacy["exports"]["variant"], "corpus");
+    assert_eq!(privacy["exports"]["schema_id"], "parlando.corpus.v1");
+    assert!(privacy["exports"]["selection_rule"]
+        .as_str()
+        .unwrap()
+        .contains("writes only the categories listed below"));
+    assert_eq!(
+        privacy["exports"]["included_fields"][0]["section"],
+        "Manifest"
+    );
+    assert_eq!(
+        privacy["exports"]["included_fields"][0]["fields"][0],
+        "export_schema_version"
+    );
+    assert!(privacy["exports"].get("excluded").is_none());
+    assert!(privacy["exports"]["not_written"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item.as_str().unwrap().contains("Consent declarations")));
     assert_eq!(privacy["participant_deletion"]["available"], true);
     assert_eq!(privacy["consent_evidence"]["available"], true);
     assert_eq!(privacy["external_services"], json!([]));
+    assert_eq!(privacy["not_retained"].as_array().unwrap().len(), 1);
+    assert!(privacy["configuration"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["setting"] == "Voice communication" && item["status"] == "Disabled"));
+    assert!(privacy["configuration"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["setting"] == "Speech transcription" && item["status"] == "Disabled"));
+    assert!(!privacy["storage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["category"] == "Final voice transcripts"));
 
     let (experiment_status, experiment_privacy) = json_request(
         router.clone(),
@@ -641,11 +684,16 @@ async fn admin_privacy_status_renders_and_downloads_current_facts() {
     )
     .await;
     assert_eq!(experiment_status, StatusCode::OK);
-    assert_eq!(experiment_privacy["experiment_count"], 1);
+    assert_eq!(experiment_privacy["experiment_id"], "step5");
+    assert!(experiment_privacy
+        .get("experiment_config_revision")
+        .is_none());
+    assert!(experiment_privacy.get("game_version").is_none());
+    assert!(experiment_privacy.get("software").is_none());
     assert!(experiment_privacy["consent_evidence"]["detail"]
         .as_str()
         .unwrap()
-        .contains("1 item(s)"));
+        .contains("cryptographic fingerprint"));
 
     let markdown = admin_raw_request(
         router,
@@ -663,22 +711,121 @@ async fn admin_privacy_status_renders_and_downloads_current_facts() {
     );
     assert!(markdown.headers().contains_key(CONTENT_DISPOSITION));
     let markdown_body = to_bytes(markdown.into_body(), usize::MAX).await.unwrap();
-    assert!(String::from_utf8_lossy(&markdown_body).contains("# Parlando privacy status"));
+    let markdown_body = String::from_utf8_lossy(&markdown_body);
+    assert!(markdown_body.contains("# Data processing record — experiment step5"));
+    assert!(markdown_body.contains("## Scope and responsibility"));
+    assert!(markdown_body.contains("## Privacy-relevant experiment settings"));
+    assert!(!markdown_body.contains("Experiment configuration revision"));
+    assert!(!markdown_body.contains("Game version"));
+    assert!(!markdown_body.contains("Technical provenance"));
+    assert!(markdown_body.contains("| Voice communication | Disabled |"));
+    assert!(markdown_body.contains("| Speech transcription | Disabled |"));
+    assert!(markdown_body.contains("## Data retained in Parlando's SQLite database"));
+    assert!(markdown_body.contains("| Information | Why it is processed |"));
+    assert!(markdown_body.contains("randomly generates a three-word pseudonym"));
+    assert!(markdown_body.contains("adverb-adjective-animal"));
+    assert!(markdown_body.contains("not derived from a name, contact detail, participant IP address, or other external identifier"));
+    assert!(markdown_body.contains("## Data not retained by Parlando"));
+    assert!(markdown_body.contains("Participant IP addresses"));
+    assert!(markdown_body.contains("Parlando does not write participant network addresses"));
+    assert!(markdown_body.contains("web server, hosting service, firewall"));
+    assert!(markdown_body.contains("## Corpus export"));
+    assert!(markdown_body.contains("The corpus is pseudonymized, not anonymous"));
+    assert!(markdown_body.contains("complete game-specific configuration"));
+    assert!(
+        !markdown_body[..markdown_body.find("## Corpus export").unwrap()]
+            .contains("complete game-specific configuration")
+    );
+    assert!(markdown_body.contains("| Part of the corpus | What it contains |"));
+    assert!(markdown_body.contains("Stored or used by Parlando but not written to the corpus"));
+    assert!(
+        markdown_body.contains("does not copy a database-shaped document and then remove columns")
+    );
+    assert!(!markdown_body.contains("The export excludes"));
+    assert!(markdown_body.contains("## Consent evidence and deletion"));
+    assert!(markdown_body.contains("## What the institution must add"));
+    assert!(!markdown_body.contains("identity source"));
+    assert!(!markdown_body.contains("external participant linkage"));
+    assert!(!markdown_body.contains("external recruitment"));
+    assert!(!markdown_body.to_lowercase().contains("speechmatics"));
+    assert!(!markdown_body.contains("streamed to the configured transcription provider"));
+    assert!(!markdown_body.contains("requires content review"));
+    assert!(!markdown_body.contains("inspect game configuration"));
+    assert!(!markdown_body.contains("rare behavior"));
+    assert!(markdown_body.contains(
+        "review participant-authored typed messages and remove explicit identifying information"
+    ));
+    assert!(!markdown_body.contains("Final voice transcripts"));
+    assert!(!markdown_body.contains("Raw microphone audio"));
+    assert!(!markdown_body.contains("Browser voice diagnostics"));
+    assert!(!markdown_body.contains("stored state snapshot(s)"));
+    assert!(!markdown_body.contains("stored typed message(s)"));
+    assert!(!markdown_body.contains("historical diagnostic event(s)"));
+    assert!(!markdown_body.contains("Recognition model"));
+    assert!(!markdown_body.contains("Synthesis model"));
 }
 
-/// Confirms fixed public exports exclude direct identity while retaining readable ids.
+/// Confirms an enabled voice/transcription path names its processor without product settings.
+#[tokio::test]
+async fn experiment_privacy_reports_only_the_enabled_speech_path() {
+    let (mut config, _tmp) = sqlite_config();
+    config.voice.enabled = true;
+    config.transcription.enabled = true;
+    config.speechmatics.api_key = "test-key".to_string();
+    let router = build_router(TinyAdapter, config, ServeOptions::default())
+        .await
+        .unwrap();
+    authenticate_test_admin(router.clone()).await.unwrap();
+
+    let (status, privacy) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/experiments/step5/privacy",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(privacy["configuration"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["setting"] == "Speech transcription"
+            && item["status"] == "Enabled"
+            && item["detail"].as_str().unwrap().contains("speechmatics")));
+    let configuration = privacy["configuration"].to_string();
+    assert!(!configuration.contains("enhanced"));
+    assert!(!configuration.contains("en-US"));
+    assert!(privacy["storage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["category"] == "Final voice transcripts"));
+    assert!(privacy["not_retained"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["category"] == "Raw microphone audio"));
+    assert_eq!(privacy["external_services"][0]["service"], "speechmatics");
+    assert!(privacy["exports"]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("final voice transcripts"));
+}
+
+/// Confirms the corpus is one experiment document with dashboard IDs and relative timing.
 #[test]
-fn research_and_corpus_exports_apply_fixed_identity_boundaries() {
+fn corpus_export_is_nested_informative_and_structurally_minimized() {
     let full = json!({
-        "participants": [{
-            "participant_id": 7,
-            "research_id": "calm-blue-otter",
-            "participant_kind": "human",
-            "external_id": "recruitment-id"
-        }],
-        "experiment": {"experiment_id": "study", "game_version": "0.4.0", "config_revision": 2},
-        "sessions": [{"session_id": 3, "dialogue_id": "softly-amber-harbor", "config_revision": 2, "game_version": "0.4.0", "mode": "direct", "status": "completed", "created_at": "2026-01-01T00:00:00Z"}],
-        "session_participants": [{"session_id": 3, "participant_id": 7, "participant_session_id": "ps_secret", "role": "A"}],
+        "participants": [
+            {"participant_id": 7, "research_id": "calm-blue-otter", "participant_kind": "human", "external_id": "recruitment-id"},
+            {"participant_id": 8, "research_id": "agent:tiny@1", "participant_kind": "agent", "metadata": {"agent_name": "tiny", "agent_version": "1"}}
+        ],
+        "experiment": {"experiment_id": "study", "game_version": "0.4.0", "config_revision": 2, "config": {"game": {"condition": "example"}, "direct": {"participant_information_url": "secret"}}},
+        "sessions": [{"session_id": 3, "dialogue_id": "softly-amber-harbor", "config_revision": 2, "game_version": "0.4.0", "mode": "direct", "status": "completed", "created_at": "2026-01-01T00:00:00Z", "started_at": "2026-01-01T00:00:01Z", "completed_at": "2026-01-01T00:00:05Z", "completion": {"outcome": "success"}}],
+        "session_participants": [
+            {"session_id": 3, "participant_id": 7, "participant_session_id": "ps_secret", "role": "A"},
+            {"session_id": 3, "participant_id": 8, "participant_session_id": "ps_agent", "role": "B"}
+        ],
         "session_events": [{
             "session_id": 3,
             "event_index": 4,
@@ -689,24 +836,69 @@ fn research_and_corpus_exports_apply_fixed_identity_boundaries() {
             "created_at": "2026-01-01T00:00:04Z"
         }]
     });
-    let research = research_export(full, "1");
-    let encoded = serde_json::to_string(&research).unwrap();
-    assert!(!encoded.contains("recruitment-id"));
-    assert!(!encoded.contains("ps_secret"));
-    assert!(encoded.contains("calm-blue-otter"));
-    assert!(encoded.contains("softly-amber-harbor"));
-    assert_eq!(research["sessions"][0]["config_revision"], 2);
-    assert_eq!(research["experiment"]["game_version"], "0.4.0");
-
-    let corpus = corpus_export(research);
+    let corpus = corpus_experiment_export(full.clone(), "2").unwrap();
     let encoded = serde_json::to_string(&corpus).unwrap();
     assert_eq!(corpus["release_status"], "corpus_candidate");
     assert!(encoded.contains("calm-blue-otter"));
     assert!(encoded.contains("softly-amber-harbor"));
     assert!(!encoded.contains("2026-01-01"));
-    assert_eq!(corpus["messages"][0]["text"], "hello");
-    assert_eq!(corpus["messages"][0]["time_from_session_start_ms"], 4_000);
-    assert_eq!(corpus["sessions"][0]["config_revision"], 2);
+    assert!(!encoded.contains("recruitment-id"));
+    assert!(!encoded.contains("ps_secret"));
+    assert!(!encoded.contains("2026-01-01"));
+    assert!(!encoded.contains("participant_information_url"));
+    assert_eq!(
+        corpus["experiment"]["configuration"]["condition"],
+        "example"
+    );
+    assert_eq!(
+        corpus["experiment"]["sessions"][0]["events"][0]["text"],
+        "hello"
+    );
+    assert_eq!(
+        corpus["experiment"]["sessions"][0]["events"][0]["time_from_session_start_ms"],
+        3_000
+    );
+    assert_eq!(
+        corpus["experiment"]["sessions"][0]["metadata"]["time_to_start_ms"],
+        1_000
+    );
+    assert_eq!(
+        corpus["experiment"]["sessions"][0]["metadata"]["duration_ms"],
+        4_000
+    );
+
+    let csv = export_csv(&corpus);
+    assert_eq!(
+        csv.lines()
+            .filter(|line| line.starts_with("manifest,"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        csv.lines()
+            .filter(|line| line.starts_with("experiment,"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        csv.lines()
+            .filter(|line| line.starts_with("session,"))
+            .count(),
+        1
+    );
+
+    let mut invalid = full;
+    invalid["sessions"][0]["started_at"] = json!("2026-01-01T00:00:05Z");
+    assert!(corpus_experiment_export(invalid, "2")
+        .unwrap_err()
+        .message
+        .contains("before its start"));
+
+    let schema: Value = serde_json::from_str(CORPUS_EXPORT_SCHEMA_V1).unwrap();
+    assert_eq!(
+        schema["$id"],
+        "https://parlando.dev/schemas/parlando.corpus.v1.json"
+    );
 }
 
 /// Confirms `/admin` reaches setup and the resulting login persists across router restarts.
@@ -2689,7 +2881,7 @@ async fn wait_for_export_event(router: Router, event_type: &str) -> Value {
         let (status, export) = json_request(
             router.clone(),
             http::Method::GET,
-            "/api/admin/export",
+            "/api/admin/export?variant=full",
             Value::Null,
         )
         .await;
@@ -2713,7 +2905,7 @@ async fn wait_for_tts_diagnostic(router: Router, diagnostic_event: &str) -> Valu
         let (status, export) = json_request(
             router.clone(),
             http::Method::GET,
-            "/api/admin/export",
+            "/api/admin/export?variant=full",
             Value::Null,
         )
         .await;
@@ -3766,7 +3958,7 @@ async fn explicit_leave_abandons_session_and_notifies_partner() {
     let (export_status, running_export) = json_request(
         router.clone(),
         http::Method::GET,
-        "/api/admin/export",
+        "/api/admin/export?variant=full",
         Value::Null,
     )
     .await;
@@ -3811,8 +4003,13 @@ async fn websocket_rejects_actions_until_both_players_are_connected() {
     let error = read_ws_type(&mut socket_a, "action_rejected").await;
     assert_eq!(error["code"], "players_not_ready");
 
-    let (export_status, export) =
-        json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
+    let (export_status, export) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/export?variant=full",
+        Value::Null,
+    )
+    .await;
     assert_eq!(export_status, StatusCode::OK);
     assert!(export["session_events"]
         .as_array()
@@ -3851,8 +4048,13 @@ async fn oversized_action_rejection_is_bounded_and_analyzable() {
     assert_eq!(error["code"], "action_too_large");
     assert_no_ws_type(&mut socket_b, "error").await;
 
-    let (export_status, export) =
-        json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
+    let (export_status, export) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/export?variant=full",
+        Value::Null,
+    )
+    .await;
     assert_eq!(export_status, StatusCode::OK);
     let rejected = export["session_events"]
         .as_array()
@@ -3870,12 +4072,10 @@ async fn oversized_action_rejection_is_bounded_and_analyzable() {
     server.abort();
 }
 
-/// Disabling full-state storage removes both the state column and embedded pre-state.
+/// Accepted actions always retain the authoritative resulting state.
 #[tokio::test]
-async fn privacy_switch_removes_all_full_game_state_copies() {
-    let mut config = step_five_config();
-    config.privacy.store_full_game_state = false;
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+async fn accepted_actions_always_store_resulting_game_state() {
+    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
         .await
         .unwrap();
     let (a, b, room_id) = create_joined_room(router.clone()).await;
@@ -3898,14 +4098,13 @@ async fn privacy_switch_removes_all_full_game_state_copies() {
     let (export_status, export) =
         json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
     assert_eq!(export_status, StatusCode::OK);
-    let accepted = export["session_events"]
+    let accepted = export["experiment"]["sessions"][0]["events"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|event| event["event_type"] == "game_action_accepted")
+        .find(|event| event["kind"] == "action")
         .unwrap();
-    assert!(accepted["game_state"].is_null());
-    assert!(accepted["payload"].get("before").is_none());
+    assert!(!accepted["state"].is_null());
     server.abort();
 }
 
@@ -3998,8 +4197,13 @@ async fn websocket_accepts_actions_chat_completion_and_persists_state_changes() 
     assert_eq!(completed_b["completion"]["done"], true);
     assert_eq!(completed_b["completion"], completed_a["completion"]);
 
-    let (export_status, export) =
-        json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
+    let (export_status, export) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/export?variant=full",
+        Value::Null,
+    )
+    .await;
     assert_eq!(export_status, StatusCode::OK);
     let event_types = export["session_events"]
         .as_array()
@@ -4046,8 +4250,13 @@ async fn loss_completion_is_broadcast_and_exported() {
     assert_eq!(completed["completion"]["player_scores"]["A"], 0);
     assert_eq!(completed["completion"]["player_scores"]["B"], 0);
 
-    let (export_status, export) =
-        json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
+    let (export_status, export) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/export?variant=full",
+        Value::Null,
+    )
+    .await;
     assert_eq!(export_status, StatusCode::OK);
     let completed_events = export["session_events"]
         .as_array()
@@ -4115,8 +4324,13 @@ async fn completed_rooms_reject_late_game_channel_input() {
     assert_eq!(transcript_status, StatusCode::NOT_FOUND);
     assert!(transcript_response["raw"].as_str().is_none());
 
-    let (export_status, export) =
-        json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
+    let (export_status, export) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/export?variant=full",
+        Value::Null,
+    )
+    .await;
     assert_eq!(export_status, StatusCode::OK);
     let events = export["session_events"].as_array().unwrap();
     assert_eq!(
@@ -4144,9 +4358,8 @@ async fn completed_rooms_reject_late_game_channel_input() {
 }
 
 #[tokio::test]
-async fn transcript_endpoints_are_private_and_diagnostics_persist() {
-    let (mut config, _temp) = sqlite_config();
-    config.privacy.store_voice_diagnostics = true;
+async fn transcript_endpoints_are_private_and_diagnostics_are_not_persisted() {
+    let (config, _temp) = sqlite_config();
     let router = build_router(TinyAdapter, config, ServeOptions::default())
         .await
         .unwrap();
@@ -4221,23 +4434,15 @@ async fn transcript_endpoints_are_private_and_diagnostics_persist() {
     )
     .await;
     assert_eq!(diagnostic_status, StatusCode::OK);
-    assert_eq!(diagnostic["event"], "mic_started");
+    assert_eq!(diagnostic["stored"], false);
 
-    let (export_status, export) = json_request(
-        router,
-        http::Method::GET,
-        "/api/admin/export?variant=full",
-        Value::Null,
-    )
-    .await;
+    let (export_status, export) =
+        json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
     assert_eq!(export_status, StatusCode::OK);
-    let events = export["session_events"].as_array().unwrap();
-    assert!(!events
-        .iter()
-        .any(|event| event["event_type"] == "transcript_segment"));
-    assert!(events
-        .iter()
-        .any(|event| event["event_type"] == "voice_diagnostic"));
+    let events = export["experiment"]["sessions"][0]["events"]
+        .as_array()
+        .unwrap();
+    assert!(events.is_empty());
 }
 
 #[tokio::test]
@@ -4350,8 +4555,13 @@ async fn human_vs_agent_direct_room_supplies_agent_role_b_immediately() {
     assert_eq!(created["presence"]["B"]["connected"], true);
     assert_eq!(created["presence"]["B"]["audioReady"], true);
 
-    let (export_status, export) =
-        json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
+    let (export_status, export) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/export?variant=full",
+        Value::Null,
+    )
+    .await;
     assert_eq!(export_status, StatusCode::OK);
     let roles = export["session_participants"]
         .as_array()

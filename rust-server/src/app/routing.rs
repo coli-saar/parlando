@@ -801,6 +801,7 @@ where
             get(admin_session_events::<A>),
         )
         .route("/api/admin/export", get(admin_export::<A>))
+        .route("/api/admin/export-schema", get(admin_corpus_export_schema))
         .route(
             "/api/admin/participants/:research_id/deletion",
             get(admin_participant_deletion_preview::<A>).post(admin_delete_participant_data::<A>),

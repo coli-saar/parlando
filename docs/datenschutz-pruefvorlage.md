@@ -171,7 +171,7 @@ Bei aktivierter Echtzeittranskription überträgt Parlando das Live-Mikrofonsign
 
 Die TTS-Schnittstelle übermittelt ausschließlich den vom Software-Agenten erzeugten Text und die technische Voice-/Modellkonfiguration. Mikrofon-Audio, Teilnehmernachrichten, Transkripte, Teilnehmer- oder Sitzungskennungen und Spielzustände sind nicht Bestandteil des TTS-Aufrufs. Der Standardbetrieb setzt außerdem voraus, dass der Agent keine realen Angaben einer Versuchsperson in seiner Ausgabe wiedergibt. Unter dieser technischen und experimentellen Grenze ist ElevenLabs kein Empfänger von Versuchspersonendaten.
 
-## 9. Datenarten, Erforderlichkeit und Speicherschalter
+## 9. Datenarten und Erforderlichkeit
 
 Der Standardbetrieb verwendet automatisch erzeugte, studienbezogene Teilnehmerkennungen. Rekrutierungskennungen sind nicht Bestandteil des normalen Forschungs- oder Korpusexports. Ein Eingabefeld und ein Datenbankfeld für Anzeigenamen bestehen nicht.
 
@@ -181,24 +181,14 @@ Der Standardbetrieb verwendet automatisch erzeugte, studienbezogene Teilnehmerke
 | Agentenzuordnung | beschreibende Kennung aus Agententyp, Implementierungsname, soweit vorhanden, und Version; bei fehlender Versionsangabe ausdrückliche Markierung `unversioned` | macht in Administration und Forschungsdaten unmittelbar erkennbar, welche kontrollierte Agentimplementierung gehandelt oder kommuniziert hat |
 | Sitzungsdaten | zufällig erzeugte, menschenlesbare Dialogkennung, Experiment, Raum, Rolle, Verbindungsstatus und Zeitpunkte | verbindet die zwei Rollen und ordnet Ereignisse in einem gemeinsamen Ablauf |
 | Spielhandlungen und Ergebnisse | Aktionen, Ereignisse und Abschlussdaten entsprechend dem Experimentcode | bildet den untersuchten Aufgabenverlauf und seinen Ausgang ab |
-| Vollständiger Spielzustand | nur wenn `store_full_game_state: true` | ermöglicht, falls für die Forschungsfrage erforderlich, die Rekonstruktion der Situation, in der eine Handlung oder Äußerung erfolgte |
-| Tastatur-Chat | bestehende `conversation_message`-Ereignisse mit Ursprung `typed`; dauerhafte Speicherung nur wenn `store_typed_messages: true` | ermöglicht die Analyse des Zusammenhangs zwischen sprachlicher Koordination und Spielverlauf |
-| Finale Sprachtranskripte | ein `conversation_message`-Ereignis mit Herkunft `voice_transcript` und Zeit-/Provider-Metadaten; Speicherung nur wenn `store_final_transcripts: true` | macht gesprochene Kommunikation für dieselben Dialoganalysen zugänglich, ohne Text doppelt oder Roh-Audio zu archivieren |
-| Sprachdiagnostik | minimierte Fehlercodes und technische Messwerte nur wenn `store_voice_diagnostics: true`; keine Mikrofon-Geräte-ID, Gerätebezeichnung oder freien Fehlertexte | erlaubt, technisch fehlerhafte Sprachsitzungen zu erkennen und wissenschaftlich begründete Ausschlüsse vorzunehmen |
+| Vollständiger Spielzustand | der resultierende Zustand wird mit jeder akzeptierten Handlung gespeichert | ermöglicht die Rekonstruktion der Situation, in der eine Handlung oder Äußerung erfolgte |
+| Tastatur-Chat | `conversation_message`-Ereignisse mit Ursprung `typed` werden gespeichert, wenn diese Kommunikationsform verwendet wird | ermöglicht die Analyse des Zusammenhangs zwischen sprachlicher Koordination und Spielverlauf |
+| Finale Sprachtranskripte | ein `conversation_message`-Ereignis mit Herkunft `voice_transcript` und relativen Äußerungszeiten wird gespeichert, wenn Transkription aktiviert ist | macht gesprochene Kommunikation für dieselben Dialoganalysen zugänglich, ohne Text doppelt oder Roh-Audio zu archivieren |
+| Sprachdiagnostik | neue Browser- und Transportdiagnosen werden nicht dauerhaft gespeichert | vermeidet operative Verknüpfungsdaten im Forschungsbestand |
 | Erklärungsnachweis | Entscheidungen, Zeitpunkt, Informationsversion und -URL sowie serverseitiger Hash aus dieser Referenz und der geordneten Consent-Darstellung | belegt, welche konfigurierte Information referenziert und welche Erklärung abgegeben wurde |
 | Softwareprovenienz | Parlando-, Spiel- und Agentenversion sowie Privacy-Contract-Version | ermöglicht Reproduzierbarkeit und die Zuordnung der Daten zum geprüften technischen Verhalten |
 
-Die vorgesehenen Schalter lauten:
-
-```yaml
-privacy:
-  store_full_game_state: true
-  store_typed_messages: true
-  store_final_transcripts: true
-  store_voice_diagnostics: false
-```
-
-Die Schalter ändern nicht die bestehende Darstellung von Nachrichten, Transkripten oder Ereignissen in der Datenbank. Sie bestimmen nur, ob die betreffende Datenart dauerhaft geschrieben wird.
+Die Speicherung folgt der aktivierten Experimentmodalität und besitzt keine separaten Speicherschalter. Dadurch hat jede neue Sitzung eine einheitliche wissenschaftliche Bedeutung.
 
 ## 10. Daten, die Parlando nicht dauerhaft speichert
 

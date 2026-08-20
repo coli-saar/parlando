@@ -3164,9 +3164,6 @@ async fn commit_final_transcript<A: Game>(
         created_at: now_iso(),
     };
     let persist_result = async {
-        if !state.config.privacy.store_final_transcripts {
-            return Result::<()>::Ok(());
-        }
         persist_session_event_required(
             state,
             room_id,
@@ -3204,7 +3201,7 @@ async fn commit_final_transcript<A: Game>(
     Ok(Some(stored))
 }
 
-/// Accepts a bounded operational voice metric and persists it only when enabled.
+/// Accepts a bounded operational voice metric without retaining it in research storage.
 async fn add_voice_diagnostic<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(room_id): Path<String>,
@@ -3213,9 +3210,6 @@ async fn add_voice_diagnostic<A: Game>(
 ) -> Result<Json<Value>, AppError> {
     let participant_session_id = authenticated_participant_id(principal)?;
     participant_role(&state, &room_id, &participant_session_id).await?;
-    if !state.config.privacy.store_voice_diagnostics {
-        return Ok(Json(json!({"stored": false})));
-    }
     if diagnostic.event.is_empty()
         || diagnostic.event.len() > 64
         || !diagnostic
@@ -3225,24 +3219,8 @@ async fn add_voice_diagnostic<A: Game>(
     {
         return Err(AppError::bad_request("Invalid voice diagnostic event name"));
     }
-    let stored = json!({
-        "id": new_id("vdiag"),
-        "room_id": room_id,
-        "participant_session_id": participant_session_id,
-        "event": diagnostic.event,
-        "metadata": minimized_voice_diagnostic_metadata(&diagnostic.metadata),
-        "created_at": now_iso(),
-    });
-    persist_session_event_required(
-        &state,
-        stored["room_id"].as_str().unwrap_or(""),
-        stored["participant_session_id"].as_str(),
-        "voice_diagnostic",
-        stored.clone(),
-        None,
-    )
-    .await?;
-    Ok(Json(stored))
+    let _ = minimized_voice_diagnostic_metadata(&diagnostic.metadata);
+    Ok(Json(json!({"stored": false})))
 }
 
 /// Keeps only non-identifying scalar metrics used to diagnose voice transport quality.
@@ -3317,17 +3295,15 @@ async fn add_conversation<A: Game>(
         metadata: input.metadata,
         created_at: now_iso(),
     };
-    if message.origin != "typed" || state.config.privacy.store_typed_messages {
-        persist_session_event_required(
-            &state,
-            &room_id,
-            message.sender_participant_session_id.as_deref(),
-            "conversation_message",
-            serde_json::to_value(&message).unwrap(),
-            None,
-        )
-        .await?;
-    }
+    persist_session_event_required(
+        &state,
+        &room_id,
+        message.sender_participant_session_id.as_deref(),
+        "conversation_message",
+        serde_json::to_value(&message).unwrap(),
+        None,
+    )
+    .await?;
     touch_room_activity(&state, &room_id).await;
     if let Some(player_message) = message.player_message() {
         let _ = state
@@ -3457,9 +3433,6 @@ struct AdminRevealGameSecretRequest {
 
 #[derive(Clone, Debug, Deserialize)]
 struct AdminExportQuery {
-    session_id: Option<i64>,
-    status: Option<String>,
-    event_type: Option<String>,
     format: Option<String>,
     variant: Option<String>,
 }
@@ -3467,11 +3440,12 @@ struct AdminExportQuery {
 #[derive(Clone, Debug, Serialize)]
 struct PrivacyStatus {
     generated_at: String,
-    experiment_count: usize,
+    experiment_id: Option<String>,
     privacy_contract_version: String,
-    review_state: String,
-    software: PrivacySoftwareStatus,
+    overview: PrivacyOverviewStatus,
+    configuration: Vec<PrivacyConfigurationStatus>,
     storage: Vec<PrivacyStorageStatus>,
+    not_retained: Vec<PrivacyNonRetentionStatus>,
     raw_audio_stored_by_parlando: bool,
     external_services: Vec<PrivacyServiceStatus>,
     exports: PrivacyExportStatus,
@@ -3479,36 +3453,69 @@ struct PrivacyStatus {
     consent_evidence: PrivacyFeatureStatus,
 }
 
+/// One effective experiment setting that determines the report's processing claims.
 #[derive(Clone, Debug, Serialize)]
-struct PrivacySoftwareStatus {
-    server_name: String,
-    server_version: String,
-    git_sha: Option<String>,
-    git_dirty: String,
+struct PrivacyConfigurationStatus {
+    setting: String,
+    status: String,
+    detail: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PrivacyOverviewStatus {
+    purpose: String,
+    primary_storage: String,
+    access: String,
+    retention: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct PrivacyStorageStatus {
     category: String,
     persisted_when_produced: bool,
-    configurable: bool,
+    purpose: String,
     detail: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PrivacyNonRetentionStatus {
+    category: String,
+    behavior: String,
+    boundary: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct PrivacyServiceStatus {
     service: String,
     enabled: bool,
+    purpose: String,
     data_sent: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct PrivacyExportStatus {
-    full_internal_export: bool,
-    research_export: bool,
-    corpus_export: bool,
+    available: bool,
+    variant: String,
+    schema_id: String,
+    schema_sha256: String,
+    scope: String,
+    release_status: String,
+    content_review_required: bool,
     formats: Vec<String>,
+    identifiers: String,
+    structure: String,
+    timing: String,
+    selection_rule: String,
+    included_fields: Vec<PrivacyExportFieldStatus>,
+    not_written: Vec<String>,
     detail: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PrivacyExportFieldStatus {
+    section: String,
+    description: String,
+    fields: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -3562,6 +3569,15 @@ async fn admin_privacy_markdown_download<A: Game>(
     ))
 }
 
+/// Downloads the exact JSON Schema enforced by the corpus export projector.
+async fn admin_corpus_export_schema() -> Response {
+    privacy_download_response(
+        CORPUS_EXPORT_SCHEMA_V1.to_string(),
+        "application/schema+json; charset=utf-8",
+        "parlando.corpus.v1.schema.json",
+    )
+}
+
 /// Returns the privacy status for one experiment selected in the dashboard workspace.
 async fn admin_experiment_privacy_json<A: Game>(
     State(state): State<Arc<AppState<A>>>,
@@ -3600,17 +3616,15 @@ async fn admin_experiment_privacy_markdown_download<A: Game>(
 /// Privacy-relevant projection which remains readable across configuration schema versions.
 struct PrivacyConfigFacts {
     contract_version: String,
-    store_full_game_state: bool,
-    store_typed_messages: bool,
-    store_final_transcripts: bool,
-    store_voice_diagnostics: bool,
     transcription_enabled: bool,
     transcription_provider: String,
     tts_enabled: bool,
     tts_provider: String,
     voice_enabled: bool,
+    human_vs_agent: bool,
     consent_items: usize,
-    participant_information_reference: bool,
+    participant_information_version: String,
+    participant_information_url: String,
 }
 
 /// Reads one boolean from a nested normalized experiment configuration.
@@ -3639,47 +3653,25 @@ fn privacy_config_facts(config: &Value) -> PrivacyConfigFacts {
     let information_url = privacy_config_string(config, "direct", "participant_information_url");
     PrivacyConfigFacts {
         contract_version: privacy_config_string(config, "privacy", "contract_version"),
-        store_full_game_state: privacy_config_bool(config, "privacy", "store_full_game_state"),
-        store_typed_messages: privacy_config_bool(config, "privacy", "store_typed_messages"),
-        store_final_transcripts: privacy_config_bool(config, "privacy", "store_final_transcripts"),
-        store_voice_diagnostics: privacy_config_bool(config, "privacy", "store_voice_diagnostics"),
         transcription_enabled: privacy_config_bool(config, "transcription", "enabled"),
         transcription_provider: privacy_config_string(config, "transcription", "provider"),
         tts_enabled: privacy_config_bool(config, "tts", "enabled"),
         tts_provider: privacy_config_string(config, "tts", "provider"),
         voice_enabled: privacy_config_bool(config, "voice", "enabled"),
+        human_vs_agent: privacy_config_string(config, "agents", "mode") == "human_vs_agent",
         consent_items: config
             .get("direct")
             .and_then(|value| value.get("consents"))
             .and_then(Value::as_array)
             .map_or(0, Vec::len),
-        participant_information_reference: !information_version.trim().is_empty()
-            && !information_url.trim().is_empty(),
+        participant_information_version: information_version,
+        participant_information_url: information_url,
     }
 }
 
-/// Formats how many experiment configurations enable one privacy-affecting feature.
-fn privacy_coverage(enabled: usize, total: usize, setting: &str) -> String {
-    if total == 1 {
-        format!(
-            "{} for this experiment; controlled by {setting}.",
-            if enabled == 1 { "Enabled" } else { "Disabled" }
-        )
-    } else {
-        format!("Enabled in {enabled} of {total} experiments; controlled by {setting}.")
-    }
-}
-
-/// Describes one related privacy feature for either a selected experiment or an aggregate report.
-fn privacy_feature_coverage(enabled: usize, total: usize, feature: &str) -> String {
-    if total == 1 {
-        format!(
-            "{feature} is {}.",
-            if enabled == 1 { "enabled" } else { "disabled" }
-        )
-    } else {
-        format!("{feature} is enabled in {enabled} of {total} experiments.")
-    }
+/// Converts a static corpus-schema field list into the serialized privacy descriptor.
+fn privacy_field_names(fields: &[&str]) -> Vec<String> {
+    fields.iter().map(|field| (*field).to_string()).collect()
 }
 
 /// Builds a privacy report for one experiment or, for tooling, the complete game process.
@@ -3687,7 +3679,6 @@ async fn privacy_status<A: Game>(
     state: &Arc<AppState<A>>,
     experiment_id: Option<&str>,
 ) -> Result<PrivacyStatus, AppError> {
-    let server_manifest = state.version_manifest.get("server");
     let mut facts = Vec::new();
     if let Some(experiment_id) = experiment_id {
         let definition = state
@@ -3734,9 +3725,11 @@ async fn privacy_status<A: Game>(
         {
             external_services.push(PrivacyServiceStatus {
                 service: fact.transcription_provider.clone(),
-            enabled: true,
-            data_sent: "Live microphone audio for real-time transcription; Parlando receives text and timing information.".to_string(),
-        });
+                enabled: true,
+                purpose: "Convert participant speech to text during the live session."
+                    .to_string(),
+                data_sent: "Live microphone audio. The provider returns transcript text and timing information to Parlando.".to_string(),
+            });
         }
         if fact.tts_enabled
             && !external_services.iter().any(|service| {
@@ -3748,27 +3741,13 @@ async fn privacy_status<A: Game>(
         {
             external_services.push(PrivacyServiceStatus {
                 service: fact.tts_provider.clone(),
-            enabled: true,
-            data_sent: "Software-agent-generated text and technical voice/model parameters; no participant audio, transcript, identifier, or game state.".to_string(),
-        });
+                enabled: true,
+                purpose: "Convert a software agent's message to speech for participants."
+                    .to_string(),
+                data_sent: "The software agent's message text. The request does not contain participant audio, participant identifiers, or game state as separate fields. Because agent-generated text can repeat information from the conversation, the message itself must still be treated as session content.".to_string(),
+            });
         }
     }
-    let full_game_state = facts
-        .iter()
-        .filter(|fact| fact.store_full_game_state)
-        .count();
-    let typed_messages = facts
-        .iter()
-        .filter(|fact| fact.store_typed_messages)
-        .count();
-    let final_transcripts = facts
-        .iter()
-        .filter(|fact| fact.store_final_transcripts)
-        .count();
-    let voice_diagnostics = facts
-        .iter()
-        .filter(|fact| fact.store_voice_diagnostics)
-        .count();
     let transcription = facts
         .iter()
         .filter(|fact| fact.transcription_enabled)
@@ -3777,11 +3756,241 @@ async fn privacy_status<A: Game>(
     let consent_items = facts.iter().map(|fact| fact.consent_items).sum::<usize>();
     let information_references = facts
         .iter()
-        .filter(|fact| fact.participant_information_reference)
+        .filter(|fact| {
+            !fact.participant_information_version.trim().is_empty()
+                && !fact.participant_information_url.trim().is_empty()
+        })
         .count();
+    let consent_storage_detail = if total == 1 && consent_items == 0 {
+        "No consent items are configured for this experiment, so Parlando does not create consent declaration records."
+            .to_string()
+    } else {
+        "For each declaration, Parlando stores the consent item, whether it was accepted, declaration time, research or testing purpose, a cryptographic fingerprint of the complete text shown to the participant, and consent metadata. A fingerprint can verify unchanged text but does not contain the text itself; the configured consent text is retained in the versioned experiment configuration described above."
+            .to_string()
+    };
+    let mut transcription_providers = facts
+        .iter()
+        .filter(|fact| fact.transcription_enabled)
+        .map(|fact| fact.transcription_provider.as_str())
+        .filter(|provider| !provider.is_empty())
+        .collect::<Vec<_>>();
+    transcription_providers.sort_unstable();
+    transcription_providers.dedup();
+    let provider_description = if transcription_providers.is_empty() {
+        "the configured transcription provider".to_string()
+    } else {
+        transcription_providers.join(", ")
+    };
+    let transcript_storage_detail = if total == 1 && transcription == 0 {
+        "Speech transcription is disabled. Parlando does not generate or store voice-transcript events for this experiment."
+            .to_string()
+    } else if total == 1 {
+        format!(
+            "Speech transcription through {provider_description} is enabled. Parlando stores event order and wall-clock time, speaking participant and role, final transcript text, and utterance timing returned by the service. It does not store interim recognition hypotheses."
+        )
+    } else {
+        format!(
+            "Speech transcription is enabled in {transcription} of {total} covered experiments. Those experiments retain event order and wall-clock time, speaking participant and role, final transcript text, and returned utterance timing; interim recognition hypotheses are not stored."
+        )
+    };
+    let (audio_behavior, audio_boundary, interim_behavior, interim_boundary) = if total > 1 {
+        (
+            format!(
+                "Across the {total} covered experiments, voice communication is enabled in {voice} and speech transcription is enabled in {transcription}. When voice is enabled, Parlando relays microphone audio live but does not store it."
+            ),
+            if transcription == 0 {
+                "None of the covered experiments sends microphone audio to a transcription provider."
+                    .to_string()
+            } else {
+                format!(
+                    "Experiments with transcription enabled stream audio to {provider_description}; provider processing is governed by the institution's provider agreement and retention settings."
+                )
+            },
+            if transcription == 0 {
+                "None of the covered experiments generates or receives speech-recognition text."
+                    .to_string()
+            } else {
+                "Experiments with transcription enabled store final transcript text but not changing interim recognition hypotheses."
+                    .to_string()
+            },
+            "Final transcript text and timing are retained only for experiments with transcription enabled."
+                .to_string(),
+        )
+    } else if voice == 0 {
+        (
+                "Voice communication is disabled. Parlando does not receive, relay, or store participant microphone audio for this experiment."
+                    .to_string(),
+                "No transcription provider receives microphone audio from Parlando."
+                    .to_string(),
+                "Speech transcription is disabled. Parlando does not generate or receive interim or final speech-recognition text for this experiment."
+                    .to_string(),
+                "Typed participant messages are unaffected and are stored as described above."
+                    .to_string(),
+            )
+    } else if transcription == 0 {
+        (
+                "Voice communication is enabled. Parlando relays microphone audio live to the other participant but does not store it."
+                    .to_string(),
+                "Speech transcription is disabled, so Parlando does not send microphone audio to a transcription provider."
+                    .to_string(),
+                "Speech transcription is disabled. Parlando does not generate or receive speech-recognition text."
+                    .to_string(),
+                "Spoken audio is relayed live but is not converted to stored text by Parlando."
+                    .to_string(),
+            )
+    } else {
+        (
+                format!(
+                    "Voice communication and speech transcription are enabled. Parlando relays microphone audio live to the other participant and streams it to {provider_description}; Parlando does not store the audio."
+                ),
+                format!(
+                    "{provider_description} processes the live stream under the institution's provider agreement and retention settings."
+                ),
+                "Parlando stores the final transcript returned for an utterance, not changing interim recognition hypotheses."
+                    .to_string(),
+                "Final transcript text and its timing are stored as described above."
+                    .to_string(),
+            )
+    };
+    let mut operational_sources = vec!["session lifecycle", "connection changes"];
+    if facts.iter().any(|fact| fact.human_vs_agent) {
+        operational_sources.push("software-agent status");
+    }
+    if !external_services.is_empty() {
+        operational_sources.push("enabled external speech-service status");
+    }
+    let operational_event_detail = format!(
+        "Events for {} are retained with event order and wall-clock time. For rejected action input, Parlando stores a reason, byte count, and cryptographic fingerprint rather than the rejected content. Operational events have no output field in the corpus unless the event is an accepted action or participant message.",
+        operational_sources.join(", ")
+    );
+    let has_external_services = !external_services.is_empty();
+    let (browser_diagnostic_behavior, browser_diagnostic_boundary) = if total == 1 && voice == 0 {
+        (
+            "Voice communication is disabled, so the browser does not start a Parlando voice session. Parlando does not store browser voice-diagnostic reports."
+                .to_string(),
+            "No browser voice-diagnostic records are expected for this experiment."
+                .to_string(),
+        )
+    } else if total == 1 {
+        (
+            "During an enabled voice session, the browser may report temporary audio problems to the diagnostics endpoint. The endpoint does not write those reports to SQLite."
+                .to_string(),
+            "This guarantee concerns browser diagnostic reports; status events produced by enabled server-side speech services are retained."
+                .to_string(),
+        )
+    } else {
+        (
+            format!(
+                "Voice communication is enabled in {voice} of {total} covered experiments. Parlando does not write browser voice-diagnostic reports to SQLite."
+            ),
+            "This guarantee concerns browser diagnostic reports; status events produced by enabled server-side speech services are retained."
+                .to_string(),
+            )
+    };
+    let selected = (total == 1).then(|| &facts[0]);
+    let configuration = if let Some(fact) = selected {
+        let participant_information = if fact.participant_information_url.is_empty()
+            && fact.participant_information_version.is_empty()
+        {
+            PrivacyConfigurationStatus {
+                setting: "Participant information".to_string(),
+                status: "Not configured".to_string(),
+                detail: "This experiment has no participant-information document URL or version in its Parlando configuration."
+                    .to_string(),
+            }
+        } else {
+            PrivacyConfigurationStatus {
+                setting: "Participant information".to_string(),
+                status: "Configured".to_string(),
+                detail: format!(
+                    "Version: {}; document: {}.",
+                    if fact.participant_information_version.is_empty() {
+                        "not specified"
+                    } else {
+                        &fact.participant_information_version
+                    },
+                    if fact.participant_information_url.is_empty() {
+                        "URL not specified"
+                    } else {
+                        &fact.participant_information_url
+                    }
+                ),
+            }
+        };
+        vec![
+            PrivacyConfigurationStatus {
+                setting: "Participant arrangement".to_string(),
+                status: if fact.human_vs_agent {
+                    "One human and one software agent"
+                } else {
+                    "Two human participants"
+                }
+                .to_string(),
+                detail: if fact.human_vs_agent {
+                    "Each session assigns one human participant and one configured software agent."
+                } else {
+                    "Each session assigns two human participants; this experiment does not create software-agent participant records."
+                }
+                .to_string(),
+            },
+            PrivacyConfigurationStatus {
+                setting: "Voice communication".to_string(),
+                status: if fact.voice_enabled { "Enabled" } else { "Disabled" }.to_string(),
+                detail: if fact.voice_enabled {
+                    "The browser sends microphone audio to Parlando for live voice communication."
+                } else {
+                    "The browser does not start Parlando voice capture; Parlando therefore does not receive, relay, or store participant microphone audio for this experiment."
+                }
+                .to_string(),
+            },
+            PrivacyConfigurationStatus {
+                setting: "Speech transcription".to_string(),
+                status: if fact.transcription_enabled { "Enabled" } else { "Disabled" }.to_string(),
+                detail: if fact.transcription_enabled {
+                    format!("Participant microphone audio is sent to {} for live speech-to-text processing.", fact.transcription_provider)
+                } else {
+                    "No participant audio is sent to a transcription provider and no speech transcripts are produced."
+                        .to_string()
+                },
+            },
+            PrivacyConfigurationStatus {
+                setting: "Agent speech synthesis".to_string(),
+                status: if fact.tts_enabled { "Enabled" } else { "Disabled" }.to_string(),
+                detail: if fact.tts_enabled {
+                    format!("Software-agent message text is sent to {} to generate speech.", fact.tts_provider)
+                } else {
+                    "No text is sent to a speech-synthesis provider."
+                        .to_string()
+                },
+            },
+            PrivacyConfigurationStatus {
+                setting: "Consent items".to_string(),
+                status: if fact.consent_items == 0 {
+                    "None configured".to_string()
+                } else {
+                    format!("{} configured", fact.consent_items)
+                },
+                detail: if fact.consent_items == 0 {
+                    "Parlando does not collect consent declarations for this experiment."
+                        .to_string()
+                } else {
+                    "The configured declarations are presented and recorded as described below."
+                        .to_string()
+                },
+            },
+            participant_information,
+        ]
+    } else {
+        vec![PrivacyConfigurationStatus {
+            setting: "Experiments covered".to_string(),
+            status: total.to_string(),
+            detail: "This installation-wide endpoint summarizes multiple experiment configurations; use an experiment Privacy tab for an experiment-specific record."
+                .to_string(),
+        }]
+    };
     Ok(PrivacyStatus {
         generated_at: now_iso(),
-        experiment_count: total,
+        experiment_id: experiment_id.map(str::to_string),
         privacy_contract_version: if contract_versions.len() == 1 {
             contract_versions[0].to_string()
         } else if contract_versions.is_empty() {
@@ -3789,85 +3998,279 @@ async fn privacy_status<A: Game>(
         } else {
             format!("Mixed ({})", contract_versions.join(", "))
         },
-        review_state: "Not yet bound to a completed DPO platform assessment.".to_string(),
-        software: PrivacySoftwareStatus {
-            server_name: server_manifest
-                .and_then(|value| value.get("name"))
-                .and_then(Value::as_str)
-                .unwrap_or(env!("CARGO_PKG_NAME"))
+        overview: PrivacyOverviewStatus {
+            purpose: if consent_items > 0 {
+                "Run the experiment, reconnect participants to their sessions, let authorized experimenters monitor and analyze sessions, preserve configured consent evidence, and prepare the documented corpus export."
+            } else {
+                "Run the experiment, reconnect participants to their sessions, let authorized experimenters monitor and analyze sessions, and prepare the documented corpus export."
+            }
+            .to_string(),
+            primary_storage: "The SQLite database file configured for this Parlando server. Parlando does not encrypt individual database fields itself; encryption of the disk and protection of database backups depend on the deployment."
                 .to_string(),
-            server_version: server_manifest
-                .and_then(|value| value.get("version"))
-                .and_then(Value::as_str)
-                .unwrap_or(env!("CARGO_PKG_VERSION"))
+            access: "Participants can use their own live session. Authenticated Parlando administrators can inspect experiment records, download the corpus, and delete participant data. A web server, hosting service, or other infrastructure in front of Parlando may have separate access and logging rules."
                 .to_string(),
-            git_sha: server_manifest
-                .and_then(|value| value.get("git_sha"))
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            git_dirty: server_manifest
-                .and_then(|value| value.get("git_dirty"))
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
+            retention: "Parlando does not automatically delete completed research sessions after a fixed time. Records remain in SQLite until an administrator deletes a participant and the participant's shared sessions, or the operator removes the database data. Copies in backups or external exports must be managed separately by the institution."
                 .to_string(),
         },
+        configuration,
         storage: vec![
             PrivacyStorageStatus {
-                category: "Full game state".to_string(),
-                persisted_when_produced: full_game_state > 0,
-                configurable: true,
-                detail: privacy_coverage(full_game_state, total, "privacy.store_full_game_state"),
+                category: "Participant records".to_string(),
+                persisted_when_produced: true,
+                purpose: if selected.is_some_and(|fact| fact.human_vs_agent) {
+                    "Distinguish the human participant and software agent and link both to their session."
+                } else {
+                    "Distinguish the two human participants and link them to their session."
+                }
+                .to_string(),
+                detail: if selected.is_some_and(|fact| fact.human_vs_agent) {
+                    "When the human participant record is created, Parlando randomly generates a three-word pseudonym in the form adverb-adjective-animal, retries if it collides with an existing pseudonym, and stores it with this experiment. The pseudonym is not derived from a name, contact detail, participant IP address, or other external identifier, and Parlando does not use it to match the person across experiments. Parlando also stores that this is a human record and its creation time; the session links it to the software-agent participant."
+                } else {
+                    "When each participant record is created, Parlando randomly generates a three-word pseudonym in the form adverb-adjective-animal, retries if it collides with an existing pseudonym, and stores it with this experiment. The pseudonym is not derived from a name, contact detail, participant IP address, or other external identifier, and Parlando does not use it to match the person across experiments. Parlando also stores that this is a human record and its creation time."
+                }
+                .to_string(),
+            },
+            PrivacyStorageStatus {
+                category: "Sessions and assignments".to_string(),
+                persisted_when_produced: true,
+                purpose: "Operate a two-participant session, support reconnection, and preserve its experimental context and outcome."
+                    .to_string(),
+                detail: "For each session, Parlando randomly generates a three-word pseudonym in the form adverb-adjective-place-or-object. It also stores internal session and room identifiers; temporary participant-session identifiers used for access and reconnection; research or testing purpose; participant roles; connection status; creation, start, completion, join, and leave times; final status; and the game-supplied completion record."
+                    .to_string(),
+            },
+            PrivacyStorageStatus {
+                category: "Consent evidence".to_string(),
+                persisted_when_produced: consent_items > 0,
+                purpose: "Show which version of the participant information and consent text was presented and accepted."
+                    .to_string(),
+                detail: consent_storage_detail,
+            },
+            PrivacyStorageStatus {
+                category: "Accepted actions and game state".to_string(),
+                persisted_when_produced: true,
+                purpose: "Reconstruct the experimental interaction and analyze game behavior and outcomes."
+                    .to_string(),
+                detail: "Event order and wall-clock time; acting participant and role; accepted action; game-supplied information about how the action changed the game; and the complete game state after the action."
+                    .to_string(),
             },
             PrivacyStorageStatus {
                 category: "Typed participant messages".to_string(),
-                persisted_when_produced: typed_messages > 0,
-                configurable: true,
-                detail: privacy_coverage(typed_messages, total, "privacy.store_typed_messages"),
+                persisted_when_produced: true,
+                purpose: "Preserve the dialogue as experimental data."
+                    .to_string(),
+                detail: "Event order and wall-clock time, sending participant and role, message text, an indication that it was typed, and message metadata."
+                    .to_string(),
             },
             PrivacyStorageStatus {
                 category: "Final voice transcripts".to_string(),
-                persisted_when_produced: final_transcripts > 0,
-                configurable: true,
-                detail: format!(
-                    "{} {}",
-                    privacy_coverage(final_transcripts, total, "privacy.store_final_transcripts"),
-                    privacy_feature_coverage(transcription, total, "Transcription")
-                ),
+                persisted_when_produced: transcription > 0,
+                purpose: if transcription == 0 {
+                    "Not applicable because speech transcription is disabled.".to_string()
+                } else {
+                    "Preserve spoken dialogue as text for experiments with speech transcription enabled."
+                        .to_string()
+                },
+                detail: transcript_storage_detail,
             },
             PrivacyStorageStatus {
-                category: "Voice diagnostics".to_string(),
-                persisted_when_produced: voice_diagnostics > 0,
-                configurable: true,
-                detail: format!(
-                    "{} Stored metadata is restricted to scalar transport metrics; {}",
-                    privacy_coverage(voice_diagnostics, total, "privacy.store_voice_diagnostics"),
-                    privacy_feature_coverage(voice, total, "voice")
-                ),
+                category: "Operational session events".to_string(),
+                persisted_when_produced: true,
+                purpose: "Diagnose session failures and establish what happened during collection."
+                    .to_string(),
+                detail: operational_event_detail,
             },
-        ],
+        ]
+        .into_iter()
+        .filter(|item| total > 1 || item.persisted_when_produced)
+        .collect(),
+        not_retained: vec![
+            PrivacyNonRetentionStatus {
+                category: "Participant IP addresses".to_string(),
+                behavior: "Parlando does not write participant network addresses to SQLite or the corpus export."
+                    .to_string(),
+                boundary: "A web server, hosting service, firewall, or other infrastructure outside Parlando may keep its own access logs; the institution must document and manage those separately."
+                    .to_string(),
+            },
+            PrivacyNonRetentionStatus {
+                category: "Raw microphone audio".to_string(),
+                behavior: audio_behavior,
+                boundary: audio_boundary,
+            },
+            PrivacyNonRetentionStatus {
+                category: "Interim speech-recognition text".to_string(),
+                behavior: interim_behavior,
+                boundary: interim_boundary,
+            },
+            PrivacyNonRetentionStatus {
+                category: "Browser voice diagnostics".to_string(),
+                behavior: browser_diagnostic_behavior,
+                boundary: browser_diagnostic_boundary,
+            },
+        ]
+        .into_iter()
+        .filter(|item| {
+            total > 1
+                || item.category == "Participant IP addresses"
+                || (voice > 0
+                    && (item.category == "Raw microphone audio"
+                        || item.category == "Browser voice diagnostics"))
+                || (transcription > 0 && item.category == "Interim speech-recognition text")
+        })
+        .collect(),
         raw_audio_stored_by_parlando: false,
         external_services,
         exports: PrivacyExportStatus {
-            full_internal_export: true,
-            research_export: true,
-            corpus_export: true,
+            available: true,
+            variant: "corpus".to_string(),
+            schema_id: "parlando.corpus.v1".to_string(),
+            schema_sha256: format!("{:x}", Sha256::digest(CORPUS_EXPORT_SCHEMA_V1.as_bytes())),
+            scope: "Every session in the selected experiment that is not marked as a testing session. Testing sessions are omitted before the corpus document is built.".to_string(),
+            release_status: "corpus_candidate".to_string(),
+            content_review_required: true,
             formats: vec!["JSON".to_string(), "YAML".to_string(), "CSV".to_string()],
-            detail: "Testing sessions and their linked events, memberships, consent declarations, and test-only participants are excluded from every export. Archived experiments must be restored before export. Completed experiments remain exportable. Research is the dashboard default. Research and corpus exports retain readable participant and dialogue identifiers across repeated exports of one experiment. Human participant identifiers are random and are not reused across experiments; agent identifiers expose agent type and version. Corpus candidates require content review before publication; full is restricted to internal administration.".to_string(),
+            identifiers: "Human participants are represented by Parlando's randomly generated three-word pseudonyms, and sessions by separate randomly generated three-word pseudonyms. These identifiers are not derived from names, contact details, IP addresses, or external participant identifiers. Software agents use an identifier derived from their agent implementation rather than a human identity. Internal numeric keys, room identifiers, and temporary connection identifiers are not written to the corpus. The corpus is pseudonymized, not anonymous: participant-authored text can still contain identifying information and must be reviewed before sharing.".to_string(),
+            structure: "The corpus contains one experiment record with game information and configuration, a list of participants, and a list of sessions. Each session contains its own context, both participant-role assignments, the game-supplied completion record, and ordered accepted-action and participant-message events.".to_string(),
+            timing: "Parlando replaces its stored wall-clock event and session times with milliseconds relative to session start, waiting duration, and session duration. An invalid or missing start time blocks export instead of producing a misleading value. Game-defined configuration, actions, transition information, state, and completion are included unchanged.".to_string(),
+            selection_rule: "Parlando builds a new corpus document and writes only the categories listed below. It does not copy a database-shaped document and then remove columns. A database field that has no listed destination is never written to the corpus.".to_string(),
+            included_fields: vec![
+                PrivacyExportFieldStatus {
+                    section: "Manifest".to_string(),
+                    description: "The export format and Privacy Contract versions, the reminder to review participant utterances for explicit identifying information, and summary totals for participants, sessions, and exported events."
+                        .to_string(),
+                    fields: privacy_field_names(&[
+                        "export_schema_version",
+                        "export_variant",
+                        "release_status",
+                        "content_review_required",
+                        "privacy_contract_version",
+                        "data_inventory.{participants,sessions,events,actions,messages}",
+                    ]),
+                },
+                PrivacyExportFieldStatus {
+                    section: "Experiment".to_string(),
+                    description: "The experiment label shown in the dashboard, game version, complete game-specific configuration, participant catalogue, and sessions."
+                        .to_string(),
+                    fields: privacy_field_names(&[
+                        "experiment_id",
+                        "game.version",
+                        "configuration (complete game-owned value)",
+                        "participants",
+                        "sessions",
+                    ]),
+                },
+                PrivacyExportFieldStatus {
+                    section: "Participant".to_string(),
+                    description: if selected.is_some_and(|fact| fact.human_vs_agent) {
+                        "The human's randomly generated three-word pseudonym and the software agent's implementation-derived identifier. The agent entry also identifies its implementation and configuration."
+                    } else {
+                        "The two humans' randomly generated three-word pseudonyms."
+                    }
+                    .to_string(),
+                    fields: if selected.is_some_and(|fact| fact.human_vs_agent) {
+                        privacy_field_names(&[
+                            "participant_id (dashboard ID)",
+                            "kind",
+                            "agent_identity.{factory_id,agent_name,agent_version,configuration_fingerprint}",
+                        ])
+                    } else {
+                        privacy_field_names(&["participant_id (dashboard ID)", "kind=human"])
+                    },
+                },
+                PrivacyExportFieldStatus {
+                    section: "Session".to_string(),
+                    description: "The randomly generated three-word session pseudonym, game and configuration versions, how the session was created, final status, relative waiting time and duration, both participant-role assignments, game-supplied completion record, and exported events."
+                        .to_string(),
+                    fields: privacy_field_names(&[
+                        "session_id (dashboard ID)",
+                        "metadata.{game_version,config_revision,mode,status,time_to_start_ms,duration_ms}",
+                        "participants[].{participant_id,role}",
+                        "completion (complete game-owned value)",
+                        "events",
+                    ]),
+                },
+                PrivacyExportFieldStatus {
+                    section: "Action event".to_string(),
+                    description: "Order and time relative to session start, participant and role, complete accepted action, game-supplied transition information, and complete resulting game state."
+                        .to_string(),
+                    fields: privacy_field_names(&[
+                        "index",
+                        "time_from_session_start_ms",
+                        "kind=action",
+                        "participant_id",
+                        "role",
+                        "action (complete game-owned value)",
+                        "transition_metadata (complete game-owned value)",
+                        "state (complete game-owned value)",
+                    ]),
+                },
+                PrivacyExportFieldStatus {
+                    section: "Message event".to_string(),
+                    description: if transcription > 0 {
+                        "Order and time relative to session start, participant and role, whether the message was typed or transcribed from speech, message text, and optional utterance timing."
+                    } else {
+                        "Order and time relative to session start, participant and role, typed message text, and its typed origin."
+                    }
+                    .to_string(),
+                    fields: privacy_field_names(&[
+                        "index",
+                        "time_from_session_start_ms",
+                        "kind=message",
+                        "participant_id",
+                        "role",
+                        "origin",
+                        "text",
+                        "utterance_timing?.{origin,start_ms,end_ms}",
+                    ]),
+                },
+            ],
+            not_written: vec![
+                "Testing sessions and participants that occur only in testing sessions."
+                    .to_string(),
+                "Consent declarations, participant-information references, and the configured consent text."
+                    .to_string(),
+                "Database-only participant creation metadata.".to_string(),
+                "Internal numeric participant and session keys, room identifiers, temporary participant-session identifiers, connection status, and join or leave times."
+                    .to_string(),
+                "Parlando wall-clock timestamps; only the documented relative durations and event offsets are written."
+                    .to_string(),
+                if selected.is_some_and(|fact| fact.human_vs_agent) || has_external_services {
+                    "Operational lifecycle, connection, rejected-input, and any enabled software-agent or speech-service status events."
+                } else {
+                    "Operational lifecycle, connection, and rejected-input events."
+                }
+                .to_string(),
+                "Administrator accounts and sessions, server access settings, provider credentials, and other administrator metadata."
+                    .to_string(),
+            ],
+            detail: if transcription > 0 {
+                "Before sharing the corpus, review participant-authored typed messages and final voice transcripts and remove explicit identifying information. Parlando does not perform this text review automatically."
+            } else {
+                "Before sharing the corpus, review participant-authored typed messages and remove explicit identifying information. Parlando does not perform this text review automatically."
+            }
+            .to_string(),
         },
         participant_deletion: PrivacyFeatureStatus {
             available: true,
-            detail: "Human participant cards provide a counted preview and irreversible manual deletion of that experiment's recruitment mapping, participant identifier, consent evidence, and authored communication; no automatic retention deletion is performed.".to_string(),
+            detail: "Deleting a human participant physically removes that participant and every session in which the participant appeared, including all messages, transcripts, actions, game states, operational events, role assignments, and consent records attached to those sessions. Because the complete shared session is removed, the other participant's contribution to that session is removed as well. Deletion is blocked while an affected session is still live or otherwise unfinished. Database backups and corpus files already copied elsewhere are not changed by this operation."
+                .to_string(),
         },
         consent_evidence: PrivacyFeatureStatus {
             available: consent_items > 0,
             detail: if total == 1 {
-                format!(
-                    "Consent is configured through {consent_items} item(s). Accepted declarations record a server-computed hash of the complete presentation. A participant-information reference is {}.",
-                    if information_references == 1 { "configured" } else { "not configured" }
-                )
+                if consent_items == 0 {
+                    format!(
+                        "No consent items are configured for this experiment. A link and version for the participant-information document are {}.",
+                        if information_references == 1 { "configured" } else { "not configured" }
+                    )
+                } else {
+                    format!(
+                        "For each configured consent item, Parlando records whether it was accepted, when it was declared, and a cryptographic fingerprint of the complete text shown. A link and version for the participant-information document are {}.",
+                        if information_references == 1 { "configured" } else { "not configured" }
+                    )
+                }
             } else {
                 format!(
-                    "Consent is configured through {consent_items} item(s) across {total} experiments. Accepted declarations record a server-computed hash of the complete presentation. A participant-information reference is configured in {information_references} experiments."
+                    "Across these {total} experiments, Parlando records whether each configured consent item was accepted, when it was declared, and a cryptographic fingerprint of the complete text shown. A link and version for the participant-information document are configured in {information_references} experiments."
                 )
             },
         },
@@ -3876,7 +4279,6 @@ async fn privacy_status<A: Game>(
 
 /// Renders the privacy status as a self-contained administrator page without client-side scripts.
 fn render_privacy_status_html(status: &PrivacyStatus) -> String {
-    let git_sha = status.software.git_sha.as_deref().unwrap_or("not embedded");
     let services = if status.external_services.is_empty() {
         "<tr><td colspan=\"3\" class=\"empty\">No external speech services are enabled.</td></tr>"
             .to_string()
@@ -3900,11 +4302,23 @@ fn render_privacy_status_html(status: &PrivacyStatus) -> String {
         .iter()
         .map(|item| {
             format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
                 escape_html_text(&item.category),
                 yes_no(item.persisted_when_produced),
-                yes_no(item.configurable),
                 escape_html_text(&item.detail)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let export_fields = status
+        .exports
+        .included_fields
+        .iter()
+        .map(|item| {
+            format!(
+                "<tr><td>{}</td><td>{}</td></tr>",
+                escape_html_text(&item.section),
+                escape_html_text(&item.fields.join(", "))
             )
         })
         .collect::<Vec<_>>()
@@ -3931,7 +4345,6 @@ fn render_privacy_status_html(status: &PrivacyStatus) -> String {
     h1 {{ font-size: 28px; margin: 0 0 8px; }}
     h2 {{ font-size: 18px; margin: 0 0 12px; }}
     .intro {{ color: #53616c; margin: 0 0 20px; }}
-    .warning {{ background: #fff8e8; border: 1px solid #f2c36b; border-radius: 8px; color: #694500; margin-bottom: 18px; padding: 12px 14px; }}
     .grid {{ display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }}
     .panel {{ background: #fff; border: 1px solid #dce2e8; border-radius: 8px; margin-bottom: 14px; padding: 16px; }}
     .facts {{ display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }}
@@ -3952,15 +4365,14 @@ fn render_privacy_status_html(status: &PrivacyStatus) -> String {
   </header>
   <main>
     <h1>Privacy status</h1>
-    <p class="intro">Installation-wide facts derived from the running Parlando version and effective configuration. This page does not infer controller identity, legal basis, self-hosting, retention decisions, or provider contracts.</p>
-    <div class="warning"><strong>Review state:</strong> {review_state} Privacy Contract: <strong>{contract_version}</strong>.</div>
+    <p class="intro">Installation-wide privacy behavior derived from the effective experiment configurations. This page does not infer controller identity, legal basis, retention decisions, hosting logs, or provider contracts.</p>
     <section class="panel">
-      <h2>Software</h2>
-      <div class="facts"><div class="fact"><span>Server</span><strong>{server_name} {server_version}</strong></div><div class="fact"><span>Experiments covered</span><strong>{experiment_count}</strong></div><div class="fact"><span>Generated</span><strong>{generated_at}</strong></div><div class="fact"><span>Git revision</span><strong>{git_sha}</strong></div><div class="fact"><span>Working tree at build</span><strong>{git_dirty}</strong></div></div>
+      <h2>Scope</h2>
+      <div class="facts"><div class="fact"><span>Generated</span><strong>{generated_at}</strong></div><div class="fact"><span>Privacy contract</span><strong>{contract_version}</strong></div></div>
     </section>
     <section class="panel">
       <h2>Storage behavior</h2>
-      <table><thead><tr><th>Category</th><th>Persisted when produced</th><th>Configurable</th><th>Detail</th></tr></thead><tbody>{storage}</tbody></table>
+      <table><thead><tr><th>Category</th><th>Stored by Parlando</th><th>Data retained</th></tr></thead><tbody>{storage}</tbody></table>
       <p class="state">Raw microphone audio stored by Parlando: {raw_audio}</p>
     </section>
     <section class="panel">
@@ -3968,26 +4380,27 @@ fn render_privacy_status_html(status: &PrivacyStatus) -> String {
       <table><thead><tr><th>Service</th><th>Enabled</th><th>Data sent</th></tr></thead><tbody>{services}</tbody></table>
     </section>
     <div class="grid">
-      <section class="panel"><h2>Exports</h2><p>Full internal export: <strong>{full_export}</strong><br>Research export: <strong>{research_export}</strong><br>Corpus export: <strong>{corpus_export}</strong></p><p class="empty">{export_detail}</p></section>
+      <section class="panel"><h2>Corpus export</h2><p>Available: <strong>{export_available}</strong><br>Variant: <strong>{export_variant}</strong><br>Schema: <strong>{export_schema}</strong><br>Release status: <strong>{release_status}</strong><br>Formats: <strong>{export_formats}</strong></p><p>{export_scope}</p><p>{export_structure}</p><p>{export_timing}</p><p><strong>Field-selection rule:</strong> {selection_rule}</p><table><thead><tr><th>Output section</th><th>Fields written</th></tr></thead><tbody>{export_fields}</tbody></table><p class="empty">{export_detail}</p></section>
       <section class="panel"><h2>Participant administration</h2><p>Manual deletion available: <strong>{deletion}</strong></p><p class="empty">{deletion_detail}</p><p>Versioned information evidence available: <strong>{consent}</strong></p><p class="empty">{consent_detail}</p></section>
     </div>
   </main>
 </body>
 </html>"##,
-        review_state = escape_html_text(&status.review_state),
         contract_version = escape_html_text(&status.privacy_contract_version),
-        server_name = escape_html_text(&status.software.server_name),
-        server_version = escape_html_text(&status.software.server_version),
-        experiment_count = status.experiment_count,
         generated_at = escape_html_text(&status.generated_at),
-        git_sha = escape_html_text(git_sha),
-        git_dirty = escape_html_text(&status.software.git_dirty),
         storage = storage,
         raw_audio = yes_no(status.raw_audio_stored_by_parlando),
         services = services,
-        full_export = yes_no(status.exports.full_internal_export),
-        research_export = yes_no(status.exports.research_export),
-        corpus_export = yes_no(status.exports.corpus_export),
+        export_available = yes_no(status.exports.available),
+        export_variant = escape_html_text(&status.exports.variant),
+        export_schema = escape_html_text(&status.exports.schema_id),
+        release_status = escape_html_text(&status.exports.release_status),
+        export_formats = escape_html_text(&status.exports.formats.join(", ")),
+        export_scope = escape_html_text(&status.exports.scope),
+        export_structure = escape_html_text(&status.exports.structure),
+        export_timing = escape_html_text(&status.exports.timing),
+        selection_rule = escape_html_text(&status.exports.selection_rule),
+        export_fields = export_fields,
         export_detail = escape_html_text(&status.exports.detail),
         deletion = yes_no(status.participant_deletion.available),
         deletion_detail = escape_html_text(&status.participant_deletion.detail),
@@ -3996,56 +4409,97 @@ fn render_privacy_status_html(status: &PrivacyStatus) -> String {
     )
 }
 
-/// Renders the privacy status as a portable Markdown record for DPO review material.
+/// Renders a portable experiment data-processing record for archival with collected data.
 fn render_privacy_status_markdown(status: &PrivacyStatus) -> String {
-    let mut output = format!(
-        "# Parlando privacy status\n\nGenerated: {}  \nExperiments covered: {}  \nPrivacy Contract: {}  \nReview state: {}\n\n## Software\n\n- Server: {} {}\n- Git revision: {}\n- Working tree at build: {}\n\n## Storage behavior\n\n| Category | Persisted when produced | Configurable | Detail |\n| --- | --- | --- | --- |\n",
-        markdown_cell(&status.generated_at),
-        status.experiment_count,
-        markdown_cell(&status.privacy_contract_version),
-        markdown_cell(&status.review_state),
-        markdown_cell(&status.software.server_name),
-        markdown_cell(&status.software.server_version),
-        markdown_cell(status.software.git_sha.as_deref().unwrap_or("not embedded")),
-        markdown_cell(&status.software.git_dirty),
+    let subject = status.experiment_id.as_deref().map_or_else(
+        || "all experiments".to_string(),
+        |id| format!("experiment {id}"),
     );
-    for item in &status.storage {
+    let mut output = format!(
+        "# Data processing record — {}\n\nThis record describes how Parlando stored, processed, exported, and deleted participant data for {}. It was generated for retention with the experiment data. The data-handling contract version identifies the Parlando storage, export, and deletion behavior documented here.\n\n| Record | Value |\n| --- | --- |\n| Generated | {} |\n| Parlando data-handling contract version | {} |\n\n## Scope and responsibility\n\n| Topic | Description |\n| --- | --- |\n| Purpose | {} |\n| Primary storage | {} |\n| Access through Parlando | {} |\n| Retention | {} |\n\n## Privacy-relevant experiment settings\n\n| Setting | Status | Effect on data processing |\n| --- | --- | --- |\n",
+        markdown_cell(&subject),
+        markdown_cell(&subject),
+        markdown_cell(&status.generated_at),
+        markdown_cell(&status.privacy_contract_version),
+        markdown_cell(&status.overview.purpose),
+        markdown_cell(&status.overview.primary_storage),
+        markdown_cell(&status.overview.access),
+        markdown_cell(&status.overview.retention),
+    );
+    for item in &status.configuration {
         output.push_str(&format!(
-            "| {} | {} | {} | {} |\n",
-            markdown_cell(&item.category),
-            yes_no(item.persisted_when_produced),
-            yes_no(item.configurable),
+            "| {} | {} | {} |\n",
+            markdown_cell(&item.setting),
+            markdown_cell(&item.status),
             markdown_cell(&item.detail)
         ));
     }
-    output.push_str(&format!(
-        "\nRaw microphone audio stored by Parlando: **{}**\n\n## External services\n\n",
-        yes_no(status.raw_audio_stored_by_parlando)
-    ));
+    output.push_str("\n## Data retained in Parlando's SQLite database\n\n| Information | Why it is processed | What is retained |\n| --- | --- | --- |\n");
+    for item in &status.storage {
+        output.push_str(&format!(
+            "| {} | {} | {} |\n",
+            markdown_cell(&item.category),
+            markdown_cell(&item.purpose),
+            markdown_cell(&item.detail)
+        ));
+    }
+    output.push_str("\n## Data not retained by Parlando\n\n| Information | Parlando guarantee | Boundary of the guarantee |\n| --- | --- | --- |\n");
+    for item in &status.not_retained {
+        output.push_str(&format!(
+            "| {} | {} | {} |\n",
+            markdown_cell(&item.category),
+            markdown_cell(&item.behavior),
+            markdown_cell(&item.boundary)
+        ));
+    }
+    output.push_str(
+        "\n## External speech services\n\n| Service | Purpose | Data sent |\n| --- | --- | --- |\n",
+    );
     if status.external_services.is_empty() {
-        output.push_str("No external speech services are enabled.\n");
+        output.push_str("| None | Not applicable | No external speech service is enabled for this experiment. |\n");
     } else {
-        output.push_str("| Service | Enabled | Data sent |\n| --- | --- | --- |\n");
         for service in &status.external_services {
             output.push_str(&format!(
                 "| {} | {} | {} |\n",
                 markdown_cell(&service.service),
-                yes_no(service.enabled),
+                markdown_cell(&service.purpose),
                 markdown_cell(&service.data_sent)
             ));
         }
     }
     output.push_str(&format!(
-        "\n## Exports and participant administration\n\n- Full internal export: **{}**\n- Research export: **{}**\n- Corpus export: **{}**\n- Export formats: {}\n- Export detail: {}\n- Manual participant deletion available: **{}**\n- Deletion detail: {}\n- Versioned participant-information evidence available: **{}**\n- Evidence detail: {}\n\nThis report describes technical facts only. It does not infer controller identity, legal basis, self-hosting, retention decisions, or provider contracts.\n",
-        yes_no(status.exports.full_internal_export),
-        yes_no(status.exports.research_export),
-        yes_no(status.exports.corpus_export),
-        status.exports.formats.iter().map(|value| markdown_cell(value)).collect::<Vec<_>>().join(", "),
+        "\n## Corpus export\n\n{} {}\n\n{} {}\n\n**How fields are selected:** {}\n\n| Part of the corpus | What it contains |\n| --- | --- |\n",
+        markdown_cell(&status.exports.structure),
+        markdown_cell(&status.exports.scope),
+        markdown_cell(&status.exports.identifiers),
+        markdown_cell(&status.exports.timing),
+        markdown_cell(&status.exports.selection_rule),
+    ));
+    for item in &status.exports.included_fields {
+        output.push_str(&format!(
+            "| {} | {} |\n",
+            markdown_cell(&item.section),
+            markdown_cell(&item.description)
+        ));
+    }
+    output.push_str("\n**Stored or used by Parlando but not written to the corpus:**\n\n");
+    for item in &status.exports.not_written {
+        output.push_str(&format!("- {}\n", markdown_cell(item)));
+    }
+    let institution_provider_addition = if status.external_services.is_empty() {
+        String::new()
+    } else {
+        ", and agreements and retention settings for the external speech services listed above"
+            .to_string()
+    };
+    output.push_str(&format!(
+        "\n**Before sharing:** {}\n\nThe export uses schema `{}` and is available as {}.\n\n## Consent evidence and deletion\n\n| Area | Behavior |\n| --- | --- |\n| Consent evidence | {} |\n| Participant deletion | {} |\n\n## What the institution must add\n\nThis record covers behavior enforced by Parlando. The institution must keep it together with its own record of the data controller, legal basis, retention schedule, server location, transport and disk encryption, backup policy, administrator access, and reverse-proxy or hosting logs{}.\n",
         markdown_cell(&status.exports.detail),
-        yes_no(status.participant_deletion.available),
-        markdown_cell(&status.participant_deletion.detail),
-        yes_no(status.consent_evidence.available),
+        markdown_cell(&status.exports.schema_id),
+        status.exports.formats.iter().map(|value| markdown_cell(value)).collect::<Vec<_>>().join(", "),
         markdown_cell(&status.consent_evidence.detail),
+        markdown_cell(&status.participant_deletion.detail),
+        institution_provider_addition,
     ));
     output
 }
@@ -5432,30 +5886,28 @@ where
     A::State: Serialize,
 {
     let experiment_id = admin_experiment_id(&state, scope.as_ref());
-    let mut value = filtered_export(&state, &experiment_id, &query).await?;
-    value = match query.variant.as_deref().unwrap_or("research") {
-        "full" => value,
-        "research" => research_export(value, &state.config.privacy.contract_version),
-        "corpus" => corpus_export(research_export(
-            value,
-            &state.config.privacy.contract_version,
-        )),
+    let raw = filtered_export(&state, &experiment_id).await?;
+    let mut value = match query.variant.as_deref().unwrap_or("corpus") {
+        "corpus" => corpus_experiment_export(raw.clone(), &state.config.privacy.contract_version)?,
+        #[cfg(test)]
+        "full" => raw,
         other => {
             return Err(AppError::bad_request(format!(
                 "Unsupported export variant {other:?}."
             )))
         }
     };
-    tracing::info!(experiment_id, session_id = ?query.session_id, "administrator requested export");
+    tracing::info!(experiment_id, "administrator requested corpus export");
     redact_secret_fields(&mut value);
     if value
-        .get("session_events")
-        .and_then(Value::as_array)
-        .is_some_and(|events| events.len() > 100_000)
+        .get("data_inventory")
+        .and_then(|inventory| inventory.get("events"))
+        .and_then(Value::as_u64)
+        .is_some_and(|events| events > 100_000)
     {
         return Err(AppError::new(
             StatusCode::PAYLOAD_TOO_LARGE,
-            "Export exceeds the 100,000 event limit; select one session",
+            "Export exceeds the 100,000 event limit.",
         ));
     }
     let (content_type, body) = match query.format.as_deref().unwrap_or("json") {
@@ -5481,10 +5933,30 @@ where
     if body.len() > 32 * 1024 * 1024 {
         return Err(AppError::new(
             StatusCode::PAYLOAD_TOO_LARGE,
-            "Export exceeds the 32 MiB response limit; narrow the scope",
+            "Export exceeds the 32 MiB response limit.",
         ));
     }
-    Ok(([("content-type", content_type)], body).into_response())
+    let extension = match query.format.as_deref().unwrap_or("json") {
+        "yaml" | "yml" => "yaml",
+        "csv" => "csv",
+        _ => "json",
+    };
+    Ok((
+        [
+            ("content-type", content_type),
+            ("cache-control", "no-store"),
+            ("x-content-type-options", "nosniff"),
+            (
+                "content-disposition",
+                &format!(
+                    "attachment; filename=\"{}-corpus-v1.{extension}\"",
+                    experiment_id
+                ),
+            ),
+        ],
+        body,
+    )
+        .into_response())
 }
 
 /// Resolves an experiment-specific participant identifier without exposing database ids.
@@ -5536,6 +6008,16 @@ async fn admin_delete_participant_data<A: Game>(
             "already_absent": true,
         })));
     };
+    let preview = state
+        .store
+        .participant_data_preview(&experiment_id, participant_id)
+        .await?;
+    if preview.has_non_terminal_session {
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            "Participant deletion is blocked while an affected session is live or non-terminal.",
+        ));
+    }
     let deleted = state
         .store
         .delete_participant_data(&experiment_id, participant_id)
@@ -5599,7 +6081,6 @@ fn local_dependency_warnings(manifest_dir: &str, cargo_toml: &str) -> Vec<Value>
 async fn filtered_export<A: Game>(
     state: &Arc<AppState<A>>,
     experiment_id: &str,
-    query: &AdminExportQuery,
 ) -> Result<Value, AppError>
 where
     A::State: Serialize,
@@ -5615,33 +6096,8 @@ where
             "Archived experiments must be restored before export",
         ));
     }
-    let mut exported = if let Some(session_id) = query.session_id {
-        state
-            .store
-            .export_session(experiment_id, session_id)
-            .await?
-    } else {
-        state.store.export_experiment(experiment_id).await?
-    };
+    let mut exported = state.store.export_experiment(experiment_id).await?;
     exclude_testing_sessions(&mut exported);
-    if query.session_id.is_some()
-        && exported
-            .get("sessions")
-            .and_then(Value::as_array)
-            .is_none_or(Vec::is_empty)
-    {
-        return Err(AppError::new(
-            StatusCode::CONFLICT,
-            "Testing sessions are not exportable",
-        ));
-    }
-    if let Some(status) = query.status.as_deref() {
-        filter_array_by_string(&mut exported, "sessions", "status", status);
-        filter_scoped_tables_to_sessions(&mut exported);
-    }
-    if let Some(event_type) = query.event_type.as_deref() {
-        filter_array_by_string(&mut exported, "session_events", "event_type", event_type);
-    }
     Ok(exported)
 }
 
@@ -5678,12 +6134,6 @@ fn filter_array_by_string_not_equal(
 ) {
     if let Some(rows) = exported.get_mut(table).and_then(Value::as_array_mut) {
         rows.retain(|row| row.get(field).and_then(Value::as_str) != Some(excluded));
-    }
-}
-
-fn filter_array_by_string(exported: &mut Value, table: &str, field: &str, expected: &str) {
-    if let Some(rows) = exported.get_mut(table).and_then(Value::as_array_mut) {
-        rows.retain(|row| row.get(field).and_then(Value::as_str) == Some(expected));
     }
 }
 
@@ -5730,319 +6180,272 @@ fn filter_scoped_tables_to_sessions(exported: &mut Value) {
     }
 }
 
-/// Converts the internal export into a fixed pseudonymous research allowlist.
-fn research_export(exported: Value, privacy_contract_version: &str) -> Value {
-    let participant_details = exported
+/// Derives a publication-oriented dialogue corpus with consistent readable identifiers.
+fn corpus_experiment_export(
+    exported: Value,
+    privacy_contract_version: &str,
+) -> Result<Value, AppError> {
+    let experiment = exported
+        .get("experiment")
+        .and_then(Value::as_object)
+        .ok_or_else(|| export_integrity_error("experiment metadata is missing"))?;
+    let participant_rows = exported
         .get("participants")
         .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|row| {
-            Some((
-                row.get("participant_id")?.as_i64()?,
-                (
-                    row.get("research_id")?.as_str()?.to_string(),
-                    row.get("participant_kind")?.as_str()?.to_string(),
-                    row.get("metadata").cloned().unwrap_or(Value::Null),
-                ),
-            ))
-        })
-        .collect::<HashMap<_, _>>();
+        .ok_or_else(|| export_integrity_error("participant catalogue is missing"))?;
     let mut participant_ids = HashMap::<i64, String>::new();
-    let mut session_participant_ids = HashMap::<String, String>::new();
-    let session_participants = exported
+    let participants = participant_rows
+        .iter()
+        .map(|row| {
+            let internal_id = row
+                .get("participant_id")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| export_integrity_error("a participant lacks its database key"))?;
+            let public_id = row
+                .get("research_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| export_integrity_error("a participant lacks its dashboard ID"))?
+                .to_string();
+            participant_ids.insert(internal_id, public_id.clone());
+            let kind = row.get("participant_kind").cloned().unwrap_or(Value::Null);
+            let agent_identity = (kind.as_str() == Some("agent")).then(|| {
+                let metadata = row.get("metadata").unwrap_or(&Value::Null);
+                json!({
+                    "factory_id": metadata.get("factory"),
+                    "agent_name": metadata.get("agent_name"),
+                    "agent_version": metadata.get("agent_version"),
+                    "configuration_fingerprint": metadata.get("configuration_fingerprint"),
+                })
+            });
+            Ok(json!({
+                "participant_id": public_id,
+                "kind": kind,
+                "agent_identity": agent_identity,
+            }))
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+
+    let membership_rows = exported
         .get("session_participants")
         .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|row| {
-            let participant_id = row.get("participant_id")?.as_i64()?;
-            let pseudonym = participant_details.get(&participant_id)?.0.clone();
-            participant_ids.insert(participant_id, pseudonym.clone());
-            if let Some(session_identity) = row
-                .get("participant_session_id")
-                .and_then(Value::as_str)
-            {
-                session_participant_ids.insert(session_identity.to_string(), pseudonym.clone());
-            }
-            Some(json!({
-                "dialogue_id": exported.get("sessions").and_then(Value::as_array).and_then(|sessions| sessions.iter().find(|session| session.get("session_id") == row.get("session_id"))).and_then(|session| session.get("dialogue_id")),
-                "participant_id": pseudonym,
-                "role": row.get("role"),
-                "participant_kind": participant_details.get(&participant_id).map(|details| &details.1),
-            }))
-        })
-        .collect::<Vec<_>>();
-    let participants = participant_ids
+        .ok_or_else(|| export_integrity_error("session assignments are missing"))?;
+    let event_rows = exported
+        .get("session_events")
+        .and_then(Value::as_array)
+        .ok_or_else(|| export_integrity_error("session events are missing"))?;
+    let session_rows = exported
+        .get("sessions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| export_integrity_error("sessions are missing"))?;
+    let mut semantic_event_count = 0_usize;
+    let mut message_count = 0_usize;
+    let mut action_count = 0_usize;
+    let sessions = session_rows
         .iter()
-        .map(|(participant_id, pseudonym)| {
-            json!({
-                "participant_id": pseudonym,
-                "participant_kind": participant_details.get(participant_id).map(|details| &details.1),
-                "agent_identity": participant_details.get(participant_id).and_then(|details| {
-                    (details.1 == "agent").then(|| json!({
-                        "factory_id": details.2.get("factory"),
-                        "agent_name": details.2.get("agent_name"),
-                        "agent_version": details.2.get("agent_version"),
-                        "configuration_fingerprint": details.2.get("configuration_fingerprint"),
+        .map(|session| {
+            let internal_session_id = session
+                .get("session_id")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| export_integrity_error("a session lacks its database key"))?;
+            let session_id = session
+                .get("dialogue_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| export_integrity_error("a session lacks its dashboard ID"))?;
+            let assignments = membership_rows
+                .iter()
+                .filter(|row| {
+                    row.get("session_id").and_then(Value::as_i64) == Some(internal_session_id)
+                })
+                .map(|row| {
+                    let participant = row
+                        .get("participant_id")
+                        .and_then(Value::as_i64)
+                        .and_then(|id| participant_ids.get(&id))
+                        .ok_or_else(|| {
+                            export_integrity_error(
+                                "a session assignment has no exported participant",
+                            )
+                        })?;
+                    Ok(json!({
+                        "participant_id": participant,
+                        "role": row.get("role"),
                     }))
-                }),
-            })
-        })
-        .collect::<Vec<_>>();
-    let sessions = exported
-        .get("sessions")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|row| {
-            json!({
-                "dialogue_id": row.get("dialogue_id"),
-                "config_revision": row.get("config_revision"),
-                "game_version": row.get("game_version"),
-                "mode": row.get("mode"),
-                "status": row.get("status"),
-                "created_at": row.get("created_at"),
-                "started_at": row.get("started_at"),
-                "completed_at": row.get("completed_at"),
-                "completion": row.get("completion"),
-            })
-        })
-        .collect::<Vec<_>>();
-    let session_events = exported
-        .get("session_events")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|row| {
-            let dialogue_id = exported
-                .get("sessions")
-                .and_then(Value::as_array)
-                .and_then(|sessions| sessions.iter().find(|session| session.get("session_id") == row.get("session_id")))
-                .and_then(|session| session.get("dialogue_id"));
-            let mut payload = row.get("payload").cloned().unwrap_or(Value::Null);
-            sanitize_research_value(&mut payload, &session_participant_ids);
-            let mut game_state = row.get("game_state").cloned().unwrap_or(Value::Null);
-            sanitize_research_value(&mut game_state, &session_participant_ids);
-            json!({
-                "dialogue_id": dialogue_id,
-                "event_index": row.get("event_index"),
-                "event_type": row.get("event_type"),
-                "actor_participant_id": row.get("actor_participant_id").and_then(Value::as_i64).and_then(|id| participant_ids.get(&id)),
-                "actor_role": row.get("actor_role"),
-                "payload": payload,
-                "game_state": game_state,
-                "created_at": row.get("created_at"),
-            })
-        })
-        .collect::<Vec<_>>();
-    json!({
-        "export_variant": "research",
-        "generated_at": now_iso(),
-        "privacy_contract_version": privacy_contract_version,
-        "experiment": {
-            "experiment_id": exported.get("experiment").and_then(|value| value.get("experiment_id")),
-            "game_version": exported.get("experiment").and_then(|value| value.get("game_version")),
-            "config_revision": exported.get("experiment").and_then(|value| value.get("config_revision")),
-            "server_version": exported.get("experiment").and_then(|value| value.get("server_version")),
-            "version_manifest": exported.get("experiment").and_then(|value| value.get("version_manifest")),
-        },
-        "participants": participants,
-        "sessions": sessions,
-        "session_participants": session_participants,
-        "session_events": session_events,
-    })
-}
-
-/// Removes direct-identity fields and replaces runtime handles with participant identifiers.
-fn sanitize_research_value(value: &mut Value, replacements: &HashMap<String, String>) {
-    match value {
-        Value::String(text) => {
-            if let Some(replacement) = replacements.get(text) {
-                *text = replacement.clone();
+                })
+                .collect::<Result<Vec<_>, AppError>>()?;
+            if assignments.len() != 2 {
+                return Err(export_integrity_error(format!(
+                    "session {session_id} has {} participant assignments; expected exactly two",
+                    assignments.len()
+                )));
             }
-        }
-        Value::Array(items) => items
-            .iter_mut()
-            .for_each(|item| sanitize_research_value(item, replacements)),
-        Value::Object(fields) => {
-            for key in [
-                "external_id",
-                "selected_audio_input_id",
-                "selected_audio_input_label",
-            ] {
-                fields.remove(key);
-            }
-            fields
-                .values_mut()
-                .for_each(|item| sanitize_research_value(item, replacements));
-        }
-        _ => {}
-    }
-}
-
-/// Derives a publication-oriented dialogue corpus with consistent readable identifiers.
-fn corpus_export(research: Value) -> Value {
-    let participant_labels = research
-        .get("participants")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|row| {
-            let participant_id = row.get("participant_id")?.as_str()?.to_string();
-            Some((participant_id.clone(), participant_id))
-        })
-        .collect::<HashMap<_, _>>();
-    let session_labels = research
-        .get("sessions")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|row| {
-            let dialogue_id = row.get("dialogue_id")?.as_str()?.to_string();
-            Some((dialogue_id.clone(), dialogue_id))
-        })
-        .collect::<HashMap<_, _>>();
-    let session_start_ms = research
-        .get("sessions")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|row| {
-            Some((
-                row.get("dialogue_id")?.as_str()?.to_string(),
-                rfc3339_millis(row.get("created_at")?.as_str()?)?,
-            ))
-        })
-        .collect::<HashMap<_, _>>();
-    let participants = research
-        .get("participants")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|row| {
-            let source = row.get("participant_id")?.as_str()?;
-            Some(json!({
-                "participant_id": participant_labels.get(source),
-                "participant_kind": row.get("participant_kind"),
-                "agent_identity": row.get("agent_identity"),
+            let started_at = optional_timestamp_ms(session.get("started_at"), "session start")?;
+            let created_at = required_timestamp_ms(session.get("created_at"), "session creation")?;
+            let completed_at =
+                optional_timestamp_ms(session.get("completed_at"), "session completion")?;
+            let session_events = event_rows
+                .iter()
+                .filter(|row| {
+                    row.get("session_id").and_then(Value::as_i64) == Some(internal_session_id)
+                })
+                .filter(|row| {
+                    matches!(
+                        row.get("event_type").and_then(Value::as_str),
+                        Some("game_action_accepted" | "conversation_message")
+                    )
+                })
+                .map(|row| {
+                    let start = started_at.ok_or_else(|| {
+                        export_integrity_error(format!(
+                            "session {session_id} has semantic events but no valid start time"
+                        ))
+                    })?;
+                    let event_time = required_timestamp_ms(row.get("created_at"), "event")?;
+                    let relative = event_time
+                        .checked_sub(start)
+                        .filter(|value| *value >= 0)
+                        .ok_or_else(|| {
+                            export_integrity_error(format!(
+                                "session {session_id} contains an event before its start"
+                            ))
+                        })?;
+                    let index = row.get("event_index").cloned().unwrap_or(Value::Null);
+                    let participant = row
+                        .get("actor_participant_id")
+                        .and_then(Value::as_i64)
+                        .and_then(|id| participant_ids.get(&id))
+                        .ok_or_else(|| {
+                            export_integrity_error("a semantic event lacks an exported actor")
+                        })?;
+                    let payload = row.get("payload").unwrap_or(&Value::Null);
+                    semantic_event_count += 1;
+                    match row.get("event_type").and_then(Value::as_str) {
+                        Some("game_action_accepted") => {
+                            action_count += 1;
+                            Ok(json!({
+                                "index": index,
+                                "time_from_session_start_ms": relative,
+                                "kind": "action",
+                                "participant_id": participant,
+                                "role": row.get("actor_role"),
+                                "action": payload.get("action"),
+                                "transition_metadata": payload.get("metadata"),
+                                "state": row.get("game_state"),
+                            }))
+                        }
+                        Some("conversation_message") => {
+                            message_count += 1;
+                            let mut event = json!({
+                                "index": index,
+                                "time_from_session_start_ms": relative,
+                                "kind": "message",
+                                "participant_id": participant,
+                                "role": row.get("actor_role"),
+                                "origin": payload.get("origin"),
+                                "text": payload.get("text"),
+                            });
+                            let start_time = payload
+                                .get("metadata")
+                                .and_then(|value| value.get("start_time_ms"));
+                            let end_time = payload
+                                .get("metadata")
+                                .and_then(|value| value.get("end_time_ms"));
+                            if start_time.is_some() || end_time.is_some() {
+                                event["utterance_timing"] = json!({
+                                    "origin": "speaker_audio_stream",
+                                    "start_ms": start_time,
+                                    "end_ms": end_time,
+                                });
+                            }
+                            Ok(event)
+                        }
+                        _ => unreachable!(),
+                    }
+                })
+                .collect::<Result<Vec<_>, AppError>>()?;
+            let time_to_start_ms = started_at
+                .map(|start| checked_interval(start, created_at, session_id, "time to start"))
+                .transpose()?;
+            let duration_ms = completed_at
+                .zip(started_at)
+                .map(|(completed, start)| {
+                    checked_interval(completed, start, session_id, "duration")
+                })
+                .transpose()?;
+            Ok(json!({
+                "session_id": session_id,
+                "metadata": {
+                    "game_version": session.get("game_version"),
+                    "config_revision": session.get("config_revision"),
+                    "mode": session.get("mode"),
+                    "status": session.get("status"),
+                    "time_to_start_ms": time_to_start_ms,
+                    "duration_ms": duration_ms,
+                },
+                "participants": assignments,
+                "completion": session.get("completion"),
+                "events": session_events,
             }))
         })
-        .collect::<Vec<_>>();
-    let events = research
-        .get("session_events")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|row| {
-            let dialogue_id = row.get("dialogue_id")?.as_str()?;
-            let mut payload = row.get("payload").cloned().unwrap_or(Value::Null);
-            sanitize_corpus_value(&mut payload, &participant_labels);
-            let mut game_state = row.get("game_state").cloned().unwrap_or(Value::Null);
-            sanitize_corpus_value(&mut game_state, &participant_labels);
-            let actor = row
-                .get("actor_participant_id")
-                .and_then(Value::as_str)
-                .and_then(|id| participant_labels.get(id));
-            let relative_time_ms = corpus_relative_time_ms(row, dialogue_id, &session_start_ms);
-            Some(json!({
-                "dialogue_id": session_labels.get(dialogue_id),
-                "turn": row.get("event_index"),
-                "event_type": row.get("event_type"),
-                "participant_id": actor,
-                "role": row.get("actor_role"),
-                "payload": payload,
-                "game_state": game_state,
-                "time_from_session_start_ms": relative_time_ms,
-            }))
-        })
-        .collect::<Vec<_>>();
-    let messages = research
-        .get("session_events")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|row| row.get("event_type").and_then(Value::as_str) == Some("conversation_message"))
-        .filter_map(|row| {
-            let dialogue_id = row.get("dialogue_id")?.as_str()?;
-            let payload = row.get("payload")?;
-            let actor = row
-                .get("actor_participant_id")
-                .and_then(Value::as_str)
-                .and_then(|id| participant_labels.get(id));
-            let relative_time_ms = corpus_relative_time_ms(row, dialogue_id, &session_start_ms);
-            Some(json!({
-                "dialogue_id": session_labels.get(dialogue_id),
-                "turn": row.get("event_index"),
-                "participant_id": actor,
-                "role": row.get("actor_role"),
-                "origin": payload.get("origin"),
-                "text": payload.get("text"),
-                "time_from_session_start_ms": relative_time_ms,
-                "start_time_ms": payload.get("metadata").and_then(|metadata| metadata.get("start_time_ms")),
-                "end_time_ms": payload.get("metadata").and_then(|metadata| metadata.get("end_time_ms")),
-            }))
-        })
-        .collect::<Vec<_>>();
-    json!({
+        .collect::<Result<Vec<_>, AppError>>()?;
+    let config = experiment.get("config").unwrap_or(&Value::Null);
+    Ok(json!({
+        "export_schema_version": "parlando.corpus.v1",
         "export_variant": "corpus",
         "release_status": "corpus_candidate",
         "content_review_required": true,
-        "experiment": research.get("experiment"),
-        "sessions": research.get("sessions").and_then(Value::as_array).into_iter().flatten().map(|row| json!({
-            "dialogue_id": row.get("dialogue_id"),
-            "config_revision": row.get("config_revision"),
-            "game_version": row.get("game_version"),
-        })).collect::<Vec<_>>(),
-        "participants": participants,
-        "events": events,
-        "messages": messages,
-    })
+        "privacy_contract_version": privacy_contract_version,
+        "data_inventory": {
+            "participants": participants.len(),
+            "sessions": sessions.len(),
+            "events": semantic_event_count,
+            "actions": action_count,
+            "messages": message_count,
+        },
+        "experiment": {
+            "experiment_id": experiment.get("experiment_id"),
+            "game": {
+                "version": experiment.get("game_version"),
+            },
+            "configuration": config.get("game").cloned().unwrap_or_else(|| json!({})),
+            "participants": participants,
+            "sessions": sessions,
+        },
+    }))
 }
 
-/// Computes one event's non-negative time offset from its session start.
-fn corpus_relative_time_ms(
-    event: &Value,
-    dialogue_id: &str,
-    session_start_ms: &HashMap<String, i64>,
-) -> Option<i64> {
-    event
-        .get("created_at")
+/// Creates a visible conflict for corrupt timing or identity data at the export boundary.
+fn export_integrity_error(message: impl Into<String>) -> AppError {
+    AppError::new(
+        StatusCode::CONFLICT,
+        format!("Corpus export integrity error: {}", message.into()),
+    )
+}
+
+/// Parses a required RFC3339 timestamp used only to derive a relative interval.
+fn required_timestamp_ms(value: Option<&Value>, label: &str) -> Result<i64, AppError> {
+    value
         .and_then(Value::as_str)
         .and_then(rfc3339_millis)
-        .zip(session_start_ms.get(dialogue_id).copied())
-        .map(|(event, start)| event.saturating_sub(start))
+        .ok_or_else(|| export_integrity_error(format!("{label} timestamp is missing or invalid")))
 }
 
-/// Removes live-system identifiers while retaining experiment-specific corpus labels.
-fn sanitize_corpus_value(value: &mut Value, replacements: &HashMap<String, String>) {
+/// Parses an optional RFC3339 timestamp while rejecting a present malformed value.
+fn optional_timestamp_ms(value: Option<&Value>, label: &str) -> Result<Option<i64>, AppError> {
     match value {
-        Value::String(text) => {
-            if let Some(replacement) = replacements.get(text) {
-                *text = replacement.clone();
-            }
-        }
-        Value::Array(items) => items
-            .iter_mut()
-            .for_each(|item| sanitize_corpus_value(item, replacements)),
-        Value::Object(fields) => {
-            for key in [
-                "id",
-                "room_id",
-                "source_message_id",
-                "participant_session_id",
-                "sender_participant_session_id",
-            ] {
-                fields.remove(key);
-            }
-            fields
-                .values_mut()
-                .for_each(|item| sanitize_corpus_value(item, replacements));
-        }
-        _ => {}
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => required_timestamp_ms(Some(value), label).map(Some),
     }
+}
+
+/// Computes a checked non-negative session interval.
+fn checked_interval(end: i64, start: i64, session_id: &str, label: &str) -> Result<i64, AppError> {
+    end.checked_sub(start)
+        .filter(|value| *value >= 0)
+        .ok_or_else(|| {
+            export_integrity_error(format!("session {session_id} has a negative {label}"))
+        })
 }
 
 /// Parses an RFC3339 timestamp into milliseconds for export-relative timing.
@@ -6055,6 +6458,34 @@ fn rfc3339_millis(value: &str) -> Option<i64> {
 /// Serializes all tables in an export variant into a two-column CSV stream.
 fn export_csv(exported: &Value) -> String {
     let mut output = String::from("table,row_json\n");
+    if exported.get("export_schema_version").is_some() {
+        push_csv_row(
+            &mut output,
+            "manifest",
+            &json!({
+                "export_schema_version": exported.get("export_schema_version"),
+                "export_variant": exported.get("export_variant"),
+                "release_status": exported.get("release_status"),
+                "content_review_required": exported.get("content_review_required"),
+                "privacy_contract_version": exported.get("privacy_contract_version"),
+                "data_inventory": exported.get("data_inventory"),
+            }),
+        );
+        if let Some(experiment) = exported.get("experiment") {
+            let mut metadata = experiment.clone();
+            let sessions = metadata
+                .as_object_mut()
+                .and_then(|object| object.remove("sessions"))
+                .unwrap_or_else(|| json!([]));
+            push_csv_row(&mut output, "experiment", &metadata);
+            if let Some(rows) = sessions.as_array() {
+                for row in rows {
+                    push_csv_row(&mut output, "session", row);
+                }
+            }
+        }
+        return output;
+    }
     for table in [
         "experiment",
         "participants",
@@ -6100,6 +6531,7 @@ fn csv_escape(value: &str) -> String {
 }
 
 const ADMIN_EXPERIMENT_HTML: &str = include_str!("app/admin_dashboard.html");
+const CORPUS_EXPORT_SCHEMA_V1: &str = include_str!("app/corpus-export-schema-v1.json");
 
 async fn game_socket<A: Game>(
     State(state): State<Arc<AppState<A>>>,
@@ -6382,16 +6814,8 @@ async fn audio_websocket_loop<A: Game>(
         )
         .await;
     }
-    if dropped_audio_frames > 0 && state.config.privacy.store_voice_diagnostics {
-        persist_session_event(
-            &state,
-            &room_id,
-            Some(&participant_session_id),
-            "voice_input_dropped",
-            json!({"frames": dropped_audio_frames, "reason": "invalid_or_ahead_of_realtime"}),
-            None,
-        )
-        .await;
+    if dropped_audio_frames > 0 {
+        tracing::debug!(dropped_audio_frames, %room_id, "browser audio frames were dropped");
     }
     state
         .audio_rooms
@@ -7085,11 +7509,7 @@ where
     };
     let completed = completion.is_some();
     let after_json = protocol_json(&after)?;
-    let stored_game_state = state
-        .config
-        .privacy
-        .store_full_game_state
-        .then(|| after_json.clone());
+    let stored_game_state = Some(after_json.clone());
     let completion_json = completion.as_ref().map(protocol_json).transpose()?;
     let accepted_payload = json!({
         "action": protocol_json(&action)?,
@@ -7959,16 +8379,8 @@ async fn mark_participant_audio_ready<A: Game>(
             })
             .unwrap_or(false)
     };
-    if changed && state.config.privacy.store_voice_diagnostics {
-        persist_session_event(
-            state,
-            room_id,
-            Some(participant_session_id),
-            "voice_diagnostic",
-            json!({"event": "stt_initialized"}),
-            None,
-        )
-        .await;
+    if changed {
+        tracing::debug!(%room_id, %participant_session_id, "participant transcription initialized");
     }
 }
 

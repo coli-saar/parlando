@@ -294,12 +294,16 @@
     .save-confirmation { color: #257748; font-size: 12px; font-weight: 700; opacity: 1; transition: opacity 180ms ease; }
     .save-confirmation[hidden] { display: none; }
     .save-confirmation.fading { opacity: 0; }
-    .build-facts, .privacy-facts { display: grid; gap: 0; margin: 0; }
-    .build-facts > div, .privacy-facts > div { align-items: center; border-top: 1px solid var(--line); display: flex; gap: 20px; justify-content: space-between; padding: 11px 0; }
-    .build-facts > div:last-child, .privacy-facts > div:last-child { border-bottom: 1px solid var(--line); }
-    .build-facts dt, .privacy-facts dt { color: var(--subtle); font-size: 12px; }
-    .build-facts dd, .privacy-facts dd { margin: 0; text-align: right; }
-    .privacy-table { border-collapse: collapse; width: 100%; }
+    .build-facts { display: grid; gap: 0; margin: 0; }
+    .build-facts > div { align-items: center; border-top: 1px solid var(--line); display: flex; gap: 20px; justify-content: space-between; padding: 11px 0; }
+    .build-facts > div:last-child { border-bottom: 1px solid var(--line); }
+    .build-facts dt { color: var(--subtle); font-size: 12px; }
+    .build-facts dd { margin: 0; text-align: right; }
+    .privacy-document { line-height: 1.55; margin: 0 auto; max-width: 920px; padding: 28px 0 48px; }
+    .privacy-document h3 { font-size: 16px; margin: 30px 0 8px; }
+    .privacy-document p, .privacy-document ul { margin: 8px 0; }
+    .privacy-document li + li { margin-top: 7px; }
+    .privacy-table { border-collapse: collapse; font-size: 13px; margin: 10px 0 18px; width: 100%; }
     .privacy-table th, .privacy-table td { border-bottom: 1px solid var(--line); padding: 9px 7px; text-align: left; vertical-align: top; }
     .privacy-table th { color: var(--subtle); font-size: 12px; }
     .event-line { align-items: center; display: grid; gap: 10px; grid-template-columns: auto minmax(140px, 1fr) minmax(0, 2fr) auto; }
@@ -499,12 +503,10 @@
         </section>
 
         <section id="exportPanel" class="tab-panel simple-panel" hidden>
-          <header class="section-intro"><h2>Export</h2><p class="muted">Create a research-ready export for this experiment or the selected session.</p><span id="experimentLabel" class="muted small">Configured experiment</span></header>
+          <header class="section-intro"><h2>Export</h2><p class="muted">Download every non-testing session as one experiment corpus. Review participant utterances and remove explicit identifying content before distribution.</p><span id="experimentLabel" class="muted small">Configured experiment</span></header>
           <div class="export-controls">
-            <label>Data variant<select id="exportVariant"><option value="research">Research (pseudonymized)</option><option value="corpus">Corpus candidate</option><option value="full">Full internal</option></select></label>
-            <label>Scope<select id="exportScope"><option value="experiment">Entire experiment</option><option value="session">Selected session</option></select></label>
+            <label>Data variant<select id="exportVariant"><option value="corpus">Corpus candidate</option></select></label>
             <label>Format<select id="exportFormat"><option value="json">JSON</option><option value="yaml">YAML</option><option value="csv">CSV</option></select></label>
-            <label>Event type<input id="eventTypeFilter" placeholder="Optional filter"></label>
             <button class="primary" id="downloadExport"><svg class="icon" aria-hidden="true"><use href="#icon-download"></use></svg>Download export</button>
           </div>
         </section>
@@ -517,7 +519,7 @@
         </section>
 
         <section id="privacyPanel" class="tab-panel simple-panel" hidden>
-          <header class="section-intro"><h2>Privacy</h2><p class="muted">Storage, external services, consent evidence, and administrative controls for this experiment.</p><span class="page-actions"><a id="privacyMarkdown" class="secondary" download>Markdown</a><a id="privacyJson" class="primary" download>JSON</a></span></header>
+          <header class="section-intro"><h2>Data documentation</h2><p class="muted">A generated record of how this experiment stores, processes, exports, and deletes participant data. Download it and retain it with the experiment data.</p><span class="page-actions"><a id="privacyMarkdown" class="primary" download>Download Markdown</a><a id="privacyJson" class="secondary" download>Download JSON</a></span></header>
           <div id="privacyContent"><div class="empty">Loading privacy status…</div></div>
         </section>
       </section>
@@ -1505,12 +1507,6 @@
         { path: 'capacity.max_unattached_participants', label: 'Maximum unattached participants', help: 'Maximum issued participant identities that have not yet joined a session.', type: 'number', min: 1 },
         { path: 'capacity.max_transcription_streams', label: 'Maximum recognition streams', help: 'Maximum simultaneous participant audio streams sent to speech recognition.', type: 'number', min: 1 },
         { path: 'capacity.storage_reserve_megabytes', label: 'Disk reserve (MB)', help: 'Pause new session admission when available disk space falls below this reserve.', type: 'number', min: 1 }
-      ]},
-      { title: 'Research data', description: 'Choose which optional content enters durable research storage.', fields: [
-        { path: 'privacy.store_full_game_state', label: 'Store full game-state snapshots', help: 'Persist the complete game state alongside accepted events for detailed reconstruction and analysis.', type: 'boolean' },
-        { path: 'privacy.store_typed_messages', label: 'Store typed participant messages', help: 'Persist text that participants type into the conversation interface.', type: 'boolean' },
-        { path: 'privacy.store_final_transcripts', label: 'Store final speech transcripts', help: 'Persist finalized recognized speech as text. Parlando never stores raw microphone audio.', type: 'boolean' },
-        { path: 'privacy.store_voice_diagnostics', label: 'Store voice diagnostics', help: 'Persist minimized scalar transport and recognition diagnostics for troubleshooting, without audio content.', type: 'boolean' }
       ]}
     ];
 
@@ -2249,17 +2245,29 @@
       if (scope === 'operations') loadLoad().catch(error => { loadUpdated.textContent = error.message; });
     }
 
-    // Renders the selected experiment's privacy contract returned by the server.
+    // Renders a concise archival data record for the selected experiment.
     function renderPrivacy() {
       const privacy = state.privacy;
       if (!privacy) return;
-      const storageRows = (privacy.storage || []).map(item => `<tr><td>${escapeHtml(item.category)}</td><td>${item.persisted_when_produced ? 'Yes' : 'No'}</td><td>${item.configurable ? 'Yes' : 'No'}</td><td>${escapeHtml(item.detail)}</td></tr>`).join('');
-      const serviceRows = (privacy.external_services || []).map(service => `<tr><td>${escapeHtml(service.service)}</td><td>${service.enabled ? 'Enabled' : 'Disabled'}</td><td>${escapeHtml(service.data_sent)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">No external speech services are enabled.</td></tr>';
+      const configurationRows = (privacy.configuration || []).map(item => `<tr><td>${escapeHtml(item.setting)}</td><td>${escapeHtml(item.status)}</td><td>${escapeHtml(item.detail)}</td></tr>`).join('');
+      const storageRows = (privacy.storage || []).map(item => `<tr><td>${escapeHtml(item.category)}</td><td>${escapeHtml(item.purpose)}</td><td>${escapeHtml(item.detail)}</td></tr>`).join('');
+      const nonRetainedRows = (privacy.not_retained || []).map(item => `<tr><td>${escapeHtml(item.category)}</td><td>${escapeHtml(item.behavior)}</td><td>${escapeHtml(item.boundary)}</td></tr>`).join('');
+      const serviceRows = (privacy.external_services || []).map(service => `<tr><td>${escapeHtml(service.service)}</td><td>${escapeHtml(service.purpose)}</td><td>${escapeHtml(service.data_sent)}</td></tr>`).join('') || '<tr><td>None</td><td>Not applicable</td><td>No external speech service is enabled for this experiment.</td></tr>';
+      const exportRows = (privacy.exports?.included_fields || []).map(item => `<tr><td>${escapeHtml(item.section)}</td><td>${escapeHtml(item.description)}</td></tr>`).join('');
+      const notWrittenItems = (privacy.exports?.not_written || []).map(item => `<li>${escapeHtml(item)}</li>`).join('');
+      const providerRecord = (privacy.external_services || []).length ? ', and the processor agreements and retention settings for the listed external speech services' : '';
       privacyContent.innerHTML = `
-        <section class="settings-section"><header class="section-intro"><h2>Assessment status</h2><p class="muted">Current review state for ${escapeHtml(state.experiment?.experiment_id || 'this experiment')}.</p></header><dl class="privacy-facts"><div><dt>REVIEW STATE</dt><dd>${escapeHtml(privacy.review_state)}</dd></div><div><dt>PRIVACY CONTRACT</dt><dd>${escapeHtml(privacy.privacy_contract_version)}</dd></div><div><dt>RAW AUDIO STORED</dt><dd>${privacy.raw_audio_stored_by_parlando ? 'Yes' : 'No'}</dd></div><div><dt>GENERATED</dt><dd>${escapeHtml(fmtTime(privacy.generated_at))}</dd></div></dl></section>
-        <section class="settings-section"><header class="section-intro"><h2>Storage behavior</h2><p class="muted">What Parlando persists when each category is produced.</p></header><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Category</th><th>Stored</th><th>Configurable</th><th>Detail</th></tr></thead><tbody>${storageRows}</tbody></table></div></section>
-        <section class="settings-section"><header class="section-intro"><h2>External services</h2><p class="muted">Configured providers and the data sent to them.</p></header><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Service</th><th>Status</th><th>Data sent</th></tr></thead><tbody>${serviceRows}</tbody></table></div></section>
-        <section class="settings-section"><header class="section-intro"><h2>Administration</h2><p class="muted">Export and participant-data controls exposed by this server.</p></header><dl class="privacy-facts"><div><dt>RESEARCH EXPORT</dt><dd>${privacy.exports?.research_export ? 'Available' : 'Unavailable'}</dd></div><div><dt>CORPUS EXPORT</dt><dd>${privacy.exports?.corpus_export ? 'Available' : 'Unavailable'}</dd></div><div><dt>FULL INTERNAL EXPORT</dt><dd>${privacy.exports?.full_internal_export ? 'Available' : 'Unavailable'}</dd></div><div><dt>PARTICIPANT DELETION</dt><dd>${privacy.participant_deletion?.available ? 'Available' : 'Unavailable'}</dd></div><div><dt>CONSENT EVIDENCE</dt><dd>${privacy.consent_evidence?.available ? 'Available' : 'Unavailable'}</dd></div></dl></section>`;
+        <article class="privacy-document">
+          <header class="section-intro"><h2>Data processing record: ${escapeHtml(privacy.experiment_id || state.experiment?.experiment_id || '')}</h2><p class="muted">Generated ${escapeHtml(fmtTime(privacy.generated_at))}; Parlando data-handling contract version ${escapeHtml(privacy.privacy_contract_version)}.</p></header>
+          <h3>Scope and responsibility</h3><div class="table-wrap"><table class="privacy-table"><tbody><tr><th>Purpose</th><td>${escapeHtml(privacy.overview?.purpose || '')}</td></tr><tr><th>Primary storage</th><td>${escapeHtml(privacy.overview?.primary_storage || '')}</td></tr><tr><th>Access through Parlando</th><td>${escapeHtml(privacy.overview?.access || '')}</td></tr><tr><th>Retention</th><td>${escapeHtml(privacy.overview?.retention || '')}</td></tr></tbody></table></div>
+          <h3>Privacy-relevant experiment settings</h3><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Setting</th><th>Status</th><th>Effect on data processing</th></tr></thead><tbody>${configurationRows}</tbody></table></div>
+          <h3>Data retained in Parlando's SQLite database</h3><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Information</th><th>Why it is processed</th><th>What is retained</th></tr></thead><tbody>${storageRows}</tbody></table></div>
+          <h3>Data not retained by Parlando</h3><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Information</th><th>Parlando guarantee</th><th>Boundary of the guarantee</th></tr></thead><tbody>${nonRetainedRows}</tbody></table></div>
+          <h3>External speech services</h3><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Service</th><th>Purpose</th><th>Data sent</th></tr></thead><tbody>${serviceRows}</tbody></table></div>
+          <h3>Corpus export</h3><p>${escapeHtml(privacy.exports?.structure || '')} ${escapeHtml(privacy.exports?.scope || '')}</p><p>${escapeHtml(privacy.exports?.identifiers || '')} ${escapeHtml(privacy.exports?.timing || '')}</p><p><strong>How fields are selected:</strong> ${escapeHtml(privacy.exports?.selection_rule || '')}</p><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Part of the corpus</th><th>What it contains</th></tr></thead><tbody>${exportRows}</tbody></table></div><p><strong>Stored or used by Parlando but not written to the corpus:</strong></p><ul>${notWrittenItems}</ul><p><strong>Before sharing:</strong> ${escapeHtml(privacy.exports?.detail || '')}</p><p class="muted">Schema ${escapeHtml(privacy.exports?.schema_id || '')}; available as ${escapeHtml((privacy.exports?.formats || []).join(', '))}. <a href="/api/admin/export-schema" download>Download the machine-readable schema</a>.</p>
+          <h3>Consent evidence and deletion</h3><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Area</th><th>Behavior</th></tr></thead><tbody><tr><td>Consent evidence</td><td>${escapeHtml(privacy.consent_evidence?.detail || '')}</td></tr><tr><td>Participant deletion</td><td>${escapeHtml(privacy.participant_deletion?.detail || '')}</td></tr></tbody></table></div>
+          <h3>Scope of this record</h3><p>This record documents behavior enforced by Parlando for this experiment. Store it with the exported data. Supplement it with the controller, legal basis, retention period, hosting arrangements${providerRecord} that apply at your institution.</p>
+        </article>`;
     }
 
     // Loads privacy status for the selected experiment and updates its report links.
@@ -2581,11 +2589,6 @@
         format: document.getElementById('exportFormat').value,
         variant: document.getElementById('exportVariant').value
       });
-      if (document.getElementById('exportScope').value === 'session' && state.selected) {
-        params.set('session_id', String(state.selected));
-      }
-      const eventType = document.getElementById('eventTypeFilter').value.trim();
-      if (eventType) params.set('event_type', eventType);
       window.location.href = `${runtimeApi('export')}?${params}`;
     });
     summary.addEventListener('click', event => {
