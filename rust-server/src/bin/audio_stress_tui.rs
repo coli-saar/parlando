@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -10,20 +10,14 @@ use std::{
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use parlando::test_support::{
-    AudioFrame, AudioOutbound, AudioRoomRegistry, AUDIO_FRAME_BYTES, AUDIO_OUTBOUND_QUEUE_CAPACITY,
+    run_dashboard as run_shared_dashboard, AudioFrame, AudioOutbound, AudioRoomRegistry,
+    DashboardHealth, DashboardMetric, DashboardPanel, DashboardSeries, DashboardSnapshot,
+    DashboardTile, AUDIO_FRAME_BYTES, AUDIO_OUTBOUND_QUEUE_CAPACITY,
 };
-use ratatui::{
-    crossterm::event::{self, Event, KeyCode, KeyEventKind},
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Paragraph, Sparkline, Wrap},
-    DefaultTerminal, Frame,
-};
+use ratatui::DefaultTerminal;
 use tokio::sync::{mpsc, watch};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(20);
-const UI_TICK: Duration = Duration::from_millis(100);
 const METRICS_TICK: Duration = Duration::from_millis(250);
 const ROOM_TIMEOUT: Duration = Duration::from_secs(2);
 const RATE_WINDOW_SECONDS: usize = 60;
@@ -367,7 +361,7 @@ async fn main() -> Result<()> {
     let cancelled = Arc::new(AtomicBool::new(false));
     let stress_task = tokio::spawn(run_stress(config, snapshot_tx, Arc::clone(&cancelled)));
     let mut terminal = ratatui::init();
-    let ui_result = run_dashboard(&mut terminal, snapshot_rx, Arc::clone(&cancelled));
+    let ui_result = run_audio_dashboard(&mut terminal, snapshot_rx, Arc::clone(&cancelled));
     ratatui::restore();
     cancelled.store(true, Ordering::Relaxed);
     let stress_result = stress_task.await.context("audio stress task panicked")?;
@@ -760,28 +754,183 @@ fn slow_consumer_paused(room_index: usize, round: u64) -> bool {
 }
 
 /// Drives terminal redraws and keyboard handling until completion or cancellation.
-fn run_dashboard(
+fn run_audio_dashboard(
     terminal: &mut DefaultTerminal,
     mut snapshots: watch::Receiver<StressSnapshot>,
     cancelled: Arc<AtomicBool>,
 ) -> Result<StressSnapshot> {
-    loop {
-        let snapshot = snapshots.borrow_and_update().clone();
-        terminal.draw(|frame| draw_dashboard(frame, &snapshot))?;
-        if snapshot.finished {
-            std::thread::sleep(Duration::from_millis(900));
-            return Ok(snapshot);
+    run_shared_dashboard(
+        terminal,
+        &mut snapshots,
+        cancelled,
+        Arc::new(AtomicUsize::new(0)),
+        audio_dashboard_snapshot,
+    )?;
+    Ok(snapshots.borrow().clone())
+}
+
+/// Converts audio-workload measurements into the common stress-dashboard model.
+fn audio_dashboard_snapshot(snapshot: &StressSnapshot) -> DashboardSnapshot {
+    let error = |count| {
+        if count == 0 {
+            DashboardHealth::Good
+        } else {
+            DashboardHealth::Error
         }
-        if event::poll(UI_TICK)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press
-                    && matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+    };
+    let warning = |count| {
+        if count == 0 {
+            DashboardHealth::Good
+        } else {
+            DashboardHealth::Warning
+        }
+    };
+    let metric = |label: &str, value: String, health| DashboardMetric {
+        label: label.to_string(),
+        value,
+        health,
+    };
+    DashboardSnapshot {
+        title: "Parlando audio stress".to_string(),
+        mode: snapshot.mode.label().to_string(),
+        phase: None,
+        elapsed: snapshot.elapsed,
+        duration: snapshot.duration,
+        finished: snapshot.finished,
+        cancelled: snapshot.cancelled,
+        failure: snapshot.failure.clone(),
+        panels: [
+            DashboardPanel {
+                title: " Workload ".to_string(),
+                metrics: vec![
+                    metric(
+                        "Rooms / streams",
+                        format!("{} / {}", snapshot.room_count, snapshot.room_count * 2),
+                        DashboardHealth::Neutral,
+                    ),
+                    metric(
+                        "Participant frames",
+                        format_count(snapshot.participant_frames),
+                        DashboardHealth::Good,
+                    ),
+                    metric(
+                        "Agent TTS frames",
+                        format_count(snapshot.tts_frames),
+                        DashboardHealth::Good,
+                    ),
+                    metric(
+                        "Verified frames/s",
+                        format_count(snapshot.current_rate),
+                        DashboardHealth::Neutral,
+                    ),
+                    metric(
+                        "Expected base/s",
+                        if snapshot.expected_rate == 0 {
+                            "unpaced".into()
+                        } else {
+                            format_count(snapshot.expected_rate)
+                        },
+                        DashboardHealth::Neutral,
+                    ),
+                ],
+            },
+            DashboardPanel {
+                title: " Cadence & in-memory latency ".to_string(),
+                metrics: vec![
+                    metric(
+                        "p50 queue latency",
+                        format_latency(snapshot.p50_us),
+                        DashboardHealth::Good,
+                    ),
+                    metric(
+                        "p95 queue latency",
+                        format_latency(snapshot.p95_us),
+                        DashboardHealth::Warning,
+                    ),
+                    metric(
+                        "p99 queue latency",
+                        format_latency(snapshot.p99_us),
+                        DashboardHealth::Warning,
+                    ),
+                    metric(
+                        "Maximum latency",
+                        format_latency(snapshot.max_us),
+                        DashboardHealth::Warning,
+                    ),
+                    metric(
+                        "Deadline misses",
+                        format_count(snapshot.deadline_misses),
+                        warning(snapshot.deadline_misses),
+                    ),
+                    metric(
+                        "Max schedule lag",
+                        format_latency(snapshot.max_schedule_lag_us),
+                        DashboardHealth::Warning,
+                    ),
+                ],
+            },
+            DashboardPanel {
+                title: " Verification ".to_string(),
+                metrics: vec![
+                    metric(
+                        "Wrong room/payload",
+                        format_count(snapshot.payload_errors),
+                        error(snapshot.payload_errors),
+                    ),
+                    metric(
+                        "Timeouts",
+                        format_count(snapshot.timeouts),
+                        error(snapshot.timeouts),
+                    ),
+                    metric(
+                        "Unexpected control",
+                        format_count(snapshot.unexpected_messages),
+                        error(snapshot.unexpected_messages),
+                    ),
+                    metric(
+                        "Queue drops",
+                        format_count(snapshot.dropped_frames),
+                        warning(snapshot.dropped_frames),
+                    ),
+                    metric(
+                        "Fatal failures",
+                        format_count(snapshot.fatal_error_count()),
+                        error(snapshot.fatal_error_count()),
+                    ),
+                ],
+            },
+        ],
+        series: vec![DashboardSeries {
+            title: format!(
+                " Verified frame throughput — last {}s ",
+                snapshot.rate_history.len()
+            ),
+            values: snapshot.rate_history.clone(),
+        }],
+        tiles: snapshot
+            .room_pressure
+            .iter()
+            .map(|value| DashboardTile {
+                health: if snapshot.mode == StressMode::Impaired
+                    && *value >= AUDIO_OUTBOUND_QUEUE_CAPACITY as u64
                 {
-                    cancelled.store(true, Ordering::Relaxed);
-                }
-            }
-        }
-        let _ = snapshots.has_changed();
+                    DashboardHealth::Warning
+                } else if *value > snapshot.p99_us {
+                    DashboardHealth::Error
+                } else if *value > snapshot.p50_us {
+                    DashboardHealth::Warning
+                } else {
+                    DashboardHealth::Good
+                },
+            })
+            .collect(),
+        tile_legend: if snapshot.mode == StressMode::Impaired {
+            "queue pressure: green low · yellow building · red full".to_string()
+        } else {
+            "latency: green ≤ p50 · yellow ≤ p95 · red > p99".to_string()
+        },
+        events: snapshot.milestones.clone(),
+        footer: "realistic = full duplex at 20 ms/frame".to_string(),
     }
 }
 
@@ -805,330 +954,12 @@ fn print_final_summary(snapshot: &StressSnapshot) {
     }
 }
 
-/// Renders the complete dashboard from the latest measured state.
-fn draw_dashboard(frame: &mut Frame, snapshot: &StressSnapshot) {
-    let outer = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(8),
-            Constraint::Length(5),
-            Constraint::Min(7),
-            Constraint::Length(5),
-            Constraint::Length(1),
-        ])
-        .split(frame.area());
-    draw_progress(frame, outer[0], snapshot);
-    draw_metrics(frame, outer[1], snapshot);
-    draw_throughput(frame, outer[2], snapshot);
-    draw_room_heatmap(frame, outer[3], snapshot);
-    draw_events(frame, outer[4], snapshot);
-    let footer = if snapshot.finished {
-        "Complete — terminal will close shortly"
-    } else {
-        "q / Esc: stop cleanly   •   realistic = full duplex at 20 ms/frame"
-    };
-    frame.render_widget(
-        Paragraph::new(footer).style(Style::default().fg(Color::DarkGray)),
-        outer[5],
-    );
-}
-
-/// Renders mode, elapsed time, and the primary progress gauge.
-fn draw_progress(frame: &mut Frame, area: Rect, snapshot: &StressSnapshot) {
-    let fraction = progress_fraction(snapshot);
-    let status = if snapshot.failure.is_some() {
-        "FAILED"
-    } else if snapshot.cancelled {
-        "STOPPED"
-    } else if snapshot.finished {
-        "COMPLETE"
-    } else {
-        "RUNNING"
-    };
-    let color = if snapshot.failure.is_some() {
-        Color::Red
-    } else if snapshot.finished {
-        Color::Green
-    } else {
-        Color::Cyan
-    };
-    frame.render_widget(
-        Gauge::default()
-            .block(Block::default().borders(Borders::ALL).title(format!(
-                " Parlando audio stress · {} ",
-                snapshot.mode.label()
-            )))
-            .gauge_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
-            .ratio(fraction)
-            .label(format!(
-                " {status}  {:5.1}%  {} / {} ",
-                fraction * 100.0,
-                format_clock(snapshot.elapsed),
-                format_clock(snapshot.duration)
-            )),
-        area,
-    );
-}
-
-/// Renders workload, latency/cadence, and verification counters.
-fn draw_metrics(frame: &mut Frame, area: Rect, snapshot: &StressSnapshot) {
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(33),
-            Constraint::Percentage(34),
-            Constraint::Percentage(33),
-        ])
-        .split(area);
-    let workload = vec![
-        metric_line("Mode", snapshot.mode.label().to_string(), Color::White),
-        metric_line(
-            "Rooms / streams",
-            format!("{} / {}", snapshot.room_count, snapshot.room_count * 2),
-            Color::White,
-        ),
-        metric_line(
-            "Participant frames",
-            format_count(snapshot.participant_frames),
-            Color::Green,
-        ),
-        metric_line(
-            "Agent TTS frames",
-            format_count(snapshot.tts_frames),
-            Color::Green,
-        ),
-        metric_line(
-            "Verified frames/s",
-            format_count(snapshot.current_rate),
-            Color::Cyan,
-        ),
-        metric_line(
-            "Expected base/s",
-            if snapshot.expected_rate == 0 {
-                "unpaced".into()
-            } else {
-                format_count(snapshot.expected_rate)
-            },
-            Color::Cyan,
-        ),
-    ];
-    let latency = vec![
-        metric_line(
-            "p50 queue latency",
-            format_latency(snapshot.p50_us),
-            Color::Green,
-        ),
-        metric_line(
-            "p95 queue latency",
-            format_latency(snapshot.p95_us),
-            Color::Yellow,
-        ),
-        metric_line(
-            "p99 queue latency",
-            format_latency(snapshot.p99_us),
-            Color::LightRed,
-        ),
-        metric_line(
-            "Maximum latency",
-            format_latency(snapshot.max_us),
-            Color::Red,
-        ),
-        metric_line(
-            "Deadline misses",
-            format_count(snapshot.deadline_misses),
-            warning_color(snapshot.deadline_misses),
-        ),
-        metric_line(
-            "Max schedule lag",
-            format_latency(snapshot.max_schedule_lag_us),
-            Color::Yellow,
-        ),
-    ];
-    let verification = vec![
-        metric_line(
-            "Wrong room/payload",
-            format_count(snapshot.payload_errors),
-            error_color(snapshot.payload_errors),
-        ),
-        metric_line(
-            "Timeouts",
-            format_count(snapshot.timeouts),
-            error_color(snapshot.timeouts),
-        ),
-        metric_line(
-            "Unexpected control",
-            format_count(snapshot.unexpected_messages),
-            error_color(snapshot.unexpected_messages),
-        ),
-        metric_line(
-            "Queue drops",
-            format_count(snapshot.dropped_frames),
-            warning_color(snapshot.dropped_frames),
-        ),
-        metric_line(
-            "Fatal failures",
-            format_count(snapshot.fatal_error_count()),
-            error_color(snapshot.fatal_error_count()),
-        ),
-        Line::from(Span::styled(
-            snapshot
-                .failure
-                .clone()
-                .unwrap_or_else(|| "Fatal invariants healthy".into()),
-            Style::default().fg(if snapshot.failure.is_some() {
-                Color::Red
-            } else {
-                Color::Green
-            }),
-        )),
-    ];
-    frame.render_widget(panel(" Workload ", workload), columns[0]);
-    frame.render_widget(panel(" Cadence & in-memory latency ", latency), columns[1]);
-    frame.render_widget(panel(" Verification ", verification), columns[2]);
-}
-
-/// Renders rolling verified-frame throughput.
-fn draw_throughput(frame: &mut Frame, area: Rect, snapshot: &StressSnapshot) {
-    let data = if snapshot.rate_history.is_empty() {
-        vec![0]
-    } else {
-        snapshot.rate_history.clone()
-    };
-    frame.render_widget(
-        Sparkline::default()
-            .block(Block::default().borders(Borders::ALL).title(format!(
-                " Verified frame throughput — last {}s · current {} frames/s · peak {} ",
-                data.len(),
-                format_count(snapshot.current_rate),
-                format_count(snapshot.peak_rate)
-            )))
-            .data(&data)
-            .style(Style::default().fg(Color::Cyan)),
-        area,
-    );
-}
-
-/// Renders one room tile colored by queue pressure in impaired mode or latency otherwise.
-fn draw_room_heatmap(frame: &mut Frame, area: Rect, snapshot: &StressSnapshot) {
-    let tiles_per_row = (area.width.saturating_sub(2).max(1) as usize / 2).max(1);
-    let mut lines = Vec::new();
-    for chunk in snapshot.room_pressure.chunks(tiles_per_row) {
-        lines.push(Line::from(
-            chunk
-                .iter()
-                .map(|value| Span::styled("██", Style::default().fg(room_color(*value, snapshot))))
-                .collect::<Vec<_>>(),
-        ));
-    }
-    let legend = if snapshot.mode == StressMode::Impaired {
-        "queue pressure: green low · yellow building · red full"
-    } else {
-        "latency: green ≤ p50 · yellow ≤ p95 · red > p99"
-    };
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title(format!(
-                " Room activity — {} rooms · {legend} ",
-                snapshot.room_count
-            )))
-            .wrap(Wrap { trim: false }),
-        area,
-    );
-}
-
-/// Renders recent measured milestones and impairment events.
-fn draw_events(frame: &mut Frame, area: Rect, snapshot: &StressSnapshot) {
-    let lines = snapshot
-        .milestones
-        .iter()
-        .take(area.height.saturating_sub(2) as usize)
-        .map(|entry| Line::from(format!("• {entry}")))
-        .collect::<Vec<_>>();
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Recent events "),
-        ),
-        area,
-    );
-}
-
-/// Builds one aligned label/value metric row.
-fn metric_line(label: &str, value: String, color: Color) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{label:<21}"), Style::default().fg(Color::Gray)),
-        Span::styled(
-            value,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ),
-    ])
-}
-
-/// Wraps metric rows in a bordered panel.
-fn panel(title: &str, lines: Vec<Line<'static>>) -> Paragraph<'static> {
-    Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(title.to_string()),
-    )
-}
-
-/// Colors fatal counters green at zero and red otherwise.
-fn error_color(count: u64) -> Color {
-    if count == 0 {
-        Color::Green
-    } else {
-        Color::Red
-    }
-}
-
-/// Colors nonfatal impairment counters green at zero and yellow otherwise.
-fn warning_color(count: u64) -> Color {
-    if count == 0 {
-        Color::Green
-    } else {
-        Color::Yellow
-    }
-}
-
-/// Maps room latency or impaired queue depth to a heatmap color.
-fn room_color(value: u64, snapshot: &StressSnapshot) -> Color {
-    if snapshot.mode == StressMode::Impaired {
-        match value {
-            0..=15 => Color::Green,
-            16..=47 => Color::Yellow,
-            _ => Color::Red,
-        }
-    } else if value == 0 {
-        Color::DarkGray
-    } else if value <= snapshot.p50_us.max(1) {
-        Color::Green
-    } else if value <= snapshot.p95_us.max(1) {
-        Color::LightGreen
-    } else if value <= snapshot.p99_us.max(1) {
-        Color::Yellow
-    } else {
-        Color::Red
-    }
-}
-
 /// Returns one nearest-rank percentile from sorted samples.
 fn percentile(sorted: &[u64], fraction: f64) -> u64 {
     if sorted.is_empty() {
         return 0;
     }
     sorted[((sorted.len() - 1) as f64 * fraction).round() as usize]
-}
-
-/// Returns the bounded duration progress ratio.
-fn progress_fraction(snapshot: &StressSnapshot) -> f64 {
-    if snapshot.duration.is_zero() {
-        1.0
-    } else {
-        (snapshot.elapsed.as_secs_f64() / snapshot.duration.as_secs_f64()).clamp(0.0, 1.0)
-    }
 }
 
 /// Formats seconds as hours, minutes, and seconds.

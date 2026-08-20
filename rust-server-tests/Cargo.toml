@@ -4,18 +4,29 @@ version = "0.0.0"
 edition = "2021"
 publish = false
 
+[features]
+stress-tui = ["parlando/stress-tui", "dep:clap", "dep:ratatui"]
+
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.7", features = ["ws", "macros"] }
 futures-util = "0.3"
 parlando = { path = "../rust-server", features = ["internal-tools"] }
+clap = { version = "4", features = ["derive"], optional = true }
 prost-types = "0.13"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net", "sync"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 tonic = { version = "0.13.1", features = ["transport", "tls-native-roots", "tls-ring"] }
+ratatui = { version = "0.30.2", optional = true }
+
+[[bin]]
+name = "runtime-stress"
+path = "src/bin/runtime_stress.rs"
+required-features = ["stress-tui"]

@@ -1,5 +1,97 @@
 # Technical Decisions
 
+## 2026-08-20: Runtime stress retains the ordinary agent deadline
+
+Context: an initial attempt to make a 100-room run pass raised the fixture's agent deadline from
+two to thirty seconds. That would make a green result less predictive: the test would no longer
+exercise the same deadline that a normal Parlando human-agent experiment receives.
+
+Decision: remove the fixture-specific agent timeout and retain `HumanVsAgentConfig`'s ordinary
+default of ten seconds. Treat startup failures as a workload observation, and distinguish a
+connection burst's admission rate from sustained concurrent-session capacity rather than hiding
+them by extending configuration limits.
+
+Tradeoffs: high-rate admission can fail even when an already-established workload would be
+healthy. Reports and dashboard design must expose that distinction instead of converting one
+measurement into the other.
+
+## 2026-08-20: Runtime stress publishes a monotonic harness revision
+
+Context: interactive stress investigations need to distinguish a currently running binary from
+an earlier build without inferring that fact from Cargo's short compilation summary or file
+timestamps.
+
+Decision: give the runtime-stress harness a manually incremented revision number and expose it
+in the terminal banner, final terminal summary, and serialized run configuration. Increment the
+number whenever the harness behavior changes.
+
+Tradeoffs: the revision is intentionally a small manual release marker rather than a general
+build provenance system. It makes local iteration unambiguous with no build-script or Git
+dependency.
+
+## 2026-08-20: Runtime stress renders its TUI outside Tokio's scheduler
+
+Context: the 100-session workload completed cleanly in headless mode but repeatedly stalled at
+59 started sessions when its Ratatui dashboard was visible. The previous implementation called
+the synchronous terminal event/render loop directly from the async `main` function, occupying a
+Tokio runtime worker during the most concurrent part of HTTP, WebSocket, SQLite, ASR, and agent
+startup.
+
+Decision: run the terminal dashboard on its own operating-system thread and await that thread
+through Tokio's blocking pool. The workload remains entirely on Tokio's scheduler; quitting the
+dashboard still sets the existing cancellation flag and produces a clean shutdown.
+
+Tradeoffs: the tool uses one additional thread only when the interactive dashboard is enabled.
+This isolates rendering from measured runtime behavior, which is more important than minimizing
+developer-tool thread count.
+
+## 2026-08-20: Live stress status reflects accumulated task failures
+
+Context: the runtime stress dashboard colored its `Failures` counter red during a failed
+startup burst but kept the adjacent `Status` value green as `healthy`. That status considered
+only the terminal error, which is populated after the workload joins all task handles, not a
+failure already observed while the test is running.
+
+Decision: make any nonzero task-failure count immediately render a red `degraded` status with
+the count. A terminal error still takes precedence and is shown verbatim.
+
+Tradeoffs: the dashboard cannot yet assign an individual failure reason to each room tile, but
+it no longer suggests that an actively degraded workload is healthy.
+
+## 2026-08-20: Runtime stress separates setup and live-audio deadlines
+
+Context: a 100-session loopback run reported `deadline has elapsed` while only part of the
+workload had started. The error originated in the harness's two-second WebSocket receive guard,
+which it used both for a session-start control message and for a live PCM frame. Session start
+can legitimately contend on SQLite, WebSocket upgrades, and agent/ASR admission under a ramp;
+two seconds measures the test harness's impatience rather than an audio or protocol failure.
+
+Decision: allow thirty seconds for game-control startup messages, while retaining the two-second
+deadline for verified live PCM relay frames. Startup latency remains recorded in the dashboard and
+JSON report, so a slow ramp stays observable without invalidating an otherwise healthy workload.
+
+Tradeoffs: a genuinely stalled session now takes longer to fail during setup. This is intentional:
+the run has a visible finite admission deadline while preserving a much stricter requirement for
+ongoing audio delivery.
+
+## 2026-08-20: Runtime stress fixture scales ASR admission with synthetic sessions
+
+Context: the runtime stress harness uses a local transcription provider so that each
+browser-like human exercises the real ASR admission and audio-ingestion paths. It raised
+the active-room, waiting-room, and unattached-participant limits but inadvertently retained
+the ordinary deployment default of 32 transcription streams. A 100-session human-agent run
+therefore stopped admitting rooms at 32 with an HTTP 503 before it could measure the requested
+workload.
+
+Decision: set the fixture's transcription-stream reservation to the same stress-only scale as
+the other synthetic capacity reservations (4,000). The production configuration defaults and
+their admission controls remain unchanged.
+
+Tradeoffs: this removes a useful deployment-limit test from the default workload command.
+Capacity-policy verification should instead run explicitly with configured production limits;
+the runtime stress tool's primary purpose is to measure protocol, SQLite, and provider-path
+behavior at the chosen scale.
+
 ## 2026-08-20: Immutable experiment identity is not repeated in Configuration
 
 Context: the Configuration panel displayed an experiment's immutable identifier in a disabled
@@ -1034,3 +1126,32 @@ Every embedded run uses a real temporary file-backed SQLite database through the
 Tradeoffs: A Rust loopback runner exercises production game and audio protocols, provider adapters, and persistence without the cost and nondeterminism of hundreds of browser processes or default paid-provider calls. Local peers reproduce protocol, queue, task, and pacing costs but not external quotas or regional latency. It does not reproduce proxy, TLS, browser scheduling, or wide-area-network behavior. A small fixture game isolates runtime overhead but may underrepresent a deployed game's computation and serialized state; configurable state padding and the opt-in deployment calibration cover those dimensions. Compressed lifecycle limits verify ordering and cleanup within ten minutes but do not replace exact timer-boundary tests or occasional longer soaks. Sharing the TUI requires a small presentation snapshot abstraction, but it gives both runners identical controls, status colors, terminal cleanup, and report-facing semantics. Runtime-specific panels remain data adapters rather than branches inside the workload engine.
 
 Follow-up risks: The generator can become the bottleneck at continuous 20 ms cadence and must report its own scheduler and resource pressure. Internal cleanup snapshots must remain count-only, exclude participant content and credentials, and stay behind an internal feature. Reference thresholds must record hardware, audio participation, provider tier, and workload parameters, and changes must not hide regressions by silently reducing offered load. Real-provider calibration must require explicit authorization and hard session, audio-minute, request, and cost bounds.
+
+## 2026-08-20: Runtime stress phases control workload behavior
+
+Context: A duration label alone would not reproduce the connection lifecycle pressure that the
+runtime test is intended to measure, especially in short developer runs. The same runner also needs
+credential-free audio processing while retaining the production runtime queues and attribution.
+
+Decision: Resolve every preset and explicit duration into four fixed 1:4:3:2 phases. Ramp paces
+public participant admission, steady sustains production-cadence traffic, churn replaces both real
+WebSockets for a deterministic quarter of sessions with fresh one-use tickets, and drain sends a
+terminal action before closing sockets. Scale the phase boundaries with the requested duration,
+with ten seconds as the minimum useful override. Enable transcription in both pairing modes through
+a deterministic asynchronous provider override. In human-agent mode, instantiate a real
+session-local agent and use a deterministic 24 kHz mono TTS provider so synthesized messages travel
+through the normal room audio publisher. Record resolved configuration, correctness counters,
+provider activity, database row counts, and physical SQLite/WAL/SHM sizes in JSON. Treat a healthy
+target as a workload-specific lower bound, not an inferred universal maximum.
+
+Tradeoffs: Fixed proportions make short runs comparable and keep the preferred multi-phase shape,
+but very short overrides compress realistic dwell time and are only smoke checks. Local providers
+exercise Parlando's concurrency and persistence paths without external cost, while omitting real
+provider quotas, network variance, and model compute. Reconnecting both transports together covers
+the common lifecycle but does not yet replace the dedicated race tests for every independent stale
+generation ordering.
+
+Follow-up risks: Deployment capacity still requires repeated acceptance runs on the intended host,
+representative game logic, explicit resource and latency thresholds, and an authorized external
+provider/proxy calibration. A future impaired profile can add independently churned transports and
+controlled provider failures without weakening the deterministic acceptance gate.

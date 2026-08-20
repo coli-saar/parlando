@@ -11,6 +11,8 @@ mod readable_id;
 mod remote_agent;
 mod server;
 mod storage;
+#[cfg(feature = "stress-tui")]
+mod stress_dashboard;
 mod transcription;
 mod tts;
 
@@ -47,6 +49,8 @@ pub mod test_support {
     pub use crate::audio::*;
     pub use crate::config::*;
     pub use crate::remote_agent::pb as remote_agent_pb;
+    #[cfg(feature = "stress-tui")]
+    pub use crate::stress_dashboard::*;
     pub use crate::transcription::*;
     pub use crate::tts::*;
 }
