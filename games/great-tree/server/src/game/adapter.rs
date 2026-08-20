@@ -1,5 +1,5 @@
 use anyhow::Result;
-use parlando::{ActionRejection, Game, PlayerRole};
+use parlando::{ActionRejection, Game, GameInitializationContext, PlayerRole};
 
 use super::bijection;
 use super::ids::{LimbId, RootId};
@@ -47,7 +47,12 @@ impl Game for GreatTree {
         Ok(())
     }
 
-    fn initial_state(&self, config: &Self::Config, seed: u64) -> Result<Self::State> {
+    fn initial_state(
+        &self,
+        context: GameInitializationContext<'_, Self::Config>,
+    ) -> Result<Self::State> {
+        let config = context.config;
+        let seed = context.seed;
         let (starting_limb, bijection) = bijection::generate(seed);
         let starting_root = bijection[starting_limb.index()];
         let mut limb_water = [false; 5];
@@ -82,7 +87,11 @@ impl Game for GreatTree {
 
     fn observation(&self, state: &Self::State, role: PlayerRole) -> Self::Observation {
         if role == state.crown_seat.role() {
-            let mut limbs = [LimbView { id: LimbId::Spire, sun: false, water: false }; 5];
+            let mut limbs = [LimbView {
+                id: LimbId::Spire,
+                sun: false,
+                water: false,
+            }; 5];
             for (i, &limb) in LimbId::ALL.iter().enumerate() {
                 limbs[i] = LimbView {
                     id: limb,
@@ -92,7 +101,11 @@ impl Game for GreatTree {
             }
             GreatTreeObservation::Crown { limbs }
         } else {
-            let mut roots = [RootView { id: RootId::Hand, thawed: false, running: false }; 5];
+            let mut roots = [RootView {
+                id: RootId::Hand,
+                thawed: false,
+                running: false,
+            }; 5];
             for (i, &root) in RootId::ALL.iter().enumerate() {
                 roots[i] = RootView {
                     id: root,
@@ -129,8 +142,11 @@ impl Game for GreatTree {
     }
 
     fn completion(&self, state: &Self::State) -> Option<Self::Completion> {
-        let flowered_limbs: Vec<LimbId> =
-            LimbId::ALL.iter().copied().filter(|&limb| flowered(state, limb)).collect();
+        let flowered_limbs: Vec<LimbId> = LimbId::ALL
+            .iter()
+            .copied()
+            .filter(|&limb| flowered(state, limb))
+            .collect();
         if flowered_limbs.len() >= 3 {
             Some(GreatTreeCompletion { flowered_limbs })
         } else {
@@ -141,18 +157,29 @@ impl Game for GreatTree {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::types::CrownSeat;
+    use super::*;
 
     fn config() -> GreatTreeConfig {
         GreatTreeConfig::default()
     }
 
+    /// Creates test state through the public secret-safe initialization contract.
+    fn init(game: &GreatTree, config: &GreatTreeConfig, seed: u64) -> GreatTreeState {
+        let secrets = parlando::SecretValues::default();
+        game.initial_state(GameInitializationContext {
+            config,
+            seed,
+            secrets: &secrets,
+        })
+        .unwrap()
+    }
+
     #[test]
     fn same_seed_produces_the_same_initial_state() {
         let game = GreatTree::new();
-        let a = game.initial_state(&config(), 7).unwrap();
-        let b = game.initial_state(&config(), 7).unwrap();
+        let a = init(&game, &config(), 7);
+        let b = init(&game, &config(), 7);
         assert_eq!(a.sun_holds, b.sun_holds);
         assert_eq!(a.water_holds, b.water_holds);
         assert_eq!(a.bijection, b.bijection);
@@ -161,18 +188,24 @@ mod tests {
     #[test]
     fn initial_state_has_exactly_one_flowered_limb() {
         let game = GreatTree::new();
-        let state = game.initial_state(&config(), 7).unwrap();
-        let flowered_count = LimbId::ALL.iter().filter(|&&limb| flowered(&state, limb)).count();
+        let state = init(&game, &config(), 7);
+        let flowered_count = LimbId::ALL
+            .iter()
+            .filter(|&&limb| flowered(&state, limb))
+            .count();
         assert_eq!(flowered_count, 1);
     }
 
     #[test]
     fn crown_cannot_send_set_flow() {
         let game = GreatTree::new();
-        let state = game.initial_state(&config(), 1).unwrap();
+        let state = init(&game, &config(), 1);
         let result = game.apply_action(
             &state,
-            &GreatTreeAction::SetFlow { root: RootId::Hand, open: true },
+            &GreatTreeAction::SetFlow {
+                root: RootId::Hand,
+                open: true,
+            },
             PlayerRole::A,
         );
         assert_eq!(result.unwrap_err().code, "wrong_role");
@@ -181,10 +214,13 @@ mod tests {
     #[test]
     fn root_cannot_send_set_sun() {
         let game = GreatTree::new();
-        let state = game.initial_state(&config(), 1).unwrap();
+        let state = init(&game, &config(), 1);
         let result = game.apply_action(
             &state,
-            &GreatTreeAction::SetSun { limb: LimbId::Spire, lit: true },
+            &GreatTreeAction::SetSun {
+                limb: LimbId::Spire,
+                lit: true,
+            },
             PlayerRole::B,
         );
         assert_eq!(result.unwrap_err().code, "wrong_role");
@@ -193,7 +229,7 @@ mod tests {
     #[test]
     fn crown_observation_never_contains_the_string_bijection() {
         let game = GreatTree::new();
-        let state = game.initial_state(&config(), 1).unwrap();
+        let state = init(&game, &config(), 1);
         let obs = game.observation(&state, PlayerRole::A);
         let json = serde_json::to_string(&obs).unwrap().to_lowercase();
         assert!(!json.contains("bijection"));
@@ -203,7 +239,7 @@ mod tests {
     #[test]
     fn root_observation_never_contains_limb_data() {
         let game = GreatTree::new();
-        let state = game.initial_state(&config(), 1).unwrap();
+        let state = init(&game, &config(), 1);
         let obs = game.observation(&state, PlayerRole::B);
         assert!(matches!(obs, GreatTreeObservation::Root { .. }));
     }
@@ -211,18 +247,25 @@ mod tests {
     #[test]
     fn completion_is_none_below_three_flowered_limbs() {
         let game = GreatTree::new();
-        let state = game.initial_state(&config(), 1).unwrap();
+        let state = init(&game, &config(), 1);
         assert_eq!(game.completion(&state), None);
     }
 
     #[test]
     fn completion_fires_the_instant_a_third_limb_flowers() {
         let game = GreatTree::new();
-        let mut state = game.initial_state(&config(), 1).unwrap();
+        let mut state = init(&game, &config(), 1);
         // Use the real seeded bijection so this test doesn't hardcode pairings.
-        let starting_limb = LimbId::ALL.iter().copied().find(|&l| flowered(&state, l)).unwrap();
-        let others: Vec<LimbId> =
-            LimbId::ALL.iter().copied().filter(|&l| l != starting_limb).collect();
+        let starting_limb = LimbId::ALL
+            .iter()
+            .copied()
+            .find(|&l| flowered(&state, l))
+            .unwrap();
+        let others: Vec<LimbId> = LimbId::ALL
+            .iter()
+            .copied()
+            .filter(|&l| l != starting_limb)
+            .collect();
 
         for &limb in &others[0..2] {
             state = apply_set_sun(&state, limb, true);
@@ -236,25 +279,42 @@ mod tests {
     #[test]
     fn default_config_makes_crown_player_a() {
         let game = GreatTree::new();
-        let state = game.initial_state(&config(), 1).unwrap();
-        assert!(matches!(game.observation(&state, PlayerRole::A), GreatTreeObservation::Crown { .. }));
-        assert!(matches!(game.observation(&state, PlayerRole::B), GreatTreeObservation::Root { .. }));
+        let state = init(&game, &config(), 1);
+        assert!(matches!(
+            game.observation(&state, PlayerRole::A),
+            GreatTreeObservation::Crown { .. }
+        ));
+        assert!(matches!(
+            game.observation(&state, PlayerRole::B),
+            GreatTreeObservation::Root { .. }
+        ));
     }
 
     #[test]
     fn crown_seat_b_swaps_which_player_is_crown() {
         let game = GreatTree::new();
-        let config = GreatTreeConfig { crown_seat: CrownSeat::B };
-        let state = game.initial_state(&config, 1).unwrap();
+        let config = GreatTreeConfig {
+            crown_seat: CrownSeat::B,
+        };
+        let state = init(&game, &config, 1);
 
-        assert!(matches!(game.observation(&state, PlayerRole::B), GreatTreeObservation::Crown { .. }));
-        assert!(matches!(game.observation(&state, PlayerRole::A), GreatTreeObservation::Root { .. }));
+        assert!(matches!(
+            game.observation(&state, PlayerRole::B),
+            GreatTreeObservation::Crown { .. }
+        ));
+        assert!(matches!(
+            game.observation(&state, PlayerRole::A),
+            GreatTreeObservation::Root { .. }
+        ));
 
         // SetSun now belongs to B, not A.
         assert_eq!(
             game.apply_action(
                 &state,
-                &GreatTreeAction::SetSun { limb: LimbId::Spire, lit: true },
+                &GreatTreeAction::SetSun {
+                    limb: LimbId::Spire,
+                    lit: true
+                },
                 PlayerRole::A,
             )
             .unwrap_err()
@@ -264,7 +324,10 @@ mod tests {
         assert!(game
             .apply_action(
                 &state,
-                &GreatTreeAction::SetSun { limb: LimbId::Spire, lit: true },
+                &GreatTreeAction::SetSun {
+                    limb: LimbId::Spire,
+                    lit: true
+                },
                 PlayerRole::B,
             )
             .is_ok());
@@ -273,7 +336,10 @@ mod tests {
         assert_eq!(
             game.apply_action(
                 &state,
-                &GreatTreeAction::SetFlow { root: RootId::Hand, open: true },
+                &GreatTreeAction::SetFlow {
+                    root: RootId::Hand,
+                    open: true
+                },
                 PlayerRole::B,
             )
             .unwrap_err()
@@ -291,6 +357,10 @@ mod tests {
         assert_eq!(config.crown_seat, CrownSeat::B);
 
         let empty: GreatTreeConfig = serde_yaml::from_str("{}\n").unwrap();
-        assert_eq!(empty.crown_seat, CrownSeat::A, "omitted field must default to Crown = A");
+        assert_eq!(
+            empty.crown_seat,
+            CrownSeat::A,
+            "omitted field must default to Crown = A"
+        );
     }
 }

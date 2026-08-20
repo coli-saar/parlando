@@ -12,7 +12,7 @@ use parlando::{
     agent::grpc::Factory as RemoteGrpcAgentFactory,
     agent::{
         Agent, Context as AgentContext, Definition as AgentDefinition, Factory as AgentFactory,
-        Response as AgentResponse,
+        Identity as AgentIdentity, Response as AgentResponse,
     },
     test_support::{
         build_router,
@@ -26,7 +26,7 @@ use parlando::{
         ExperimentConfig, ExperimentIdentityConfig, HumanVsAgentConfig, ServeOptions,
         SpeechmaticsConfig, StreamingTtsProvider, TranscriptionConfig, VoiceConfig,
     },
-    ActionRejection, Game, PlayerRole,
+    ActionRejection, Game, GameInitializationContext, PlayerRole,
 };
 use prost_types::{value::Kind, Struct, Value as ProstValue};
 use serde::{Deserialize, Serialize};
@@ -75,7 +75,10 @@ impl Game for DummyAdapter {
     type Observation = DummyObservation;
     type Completion = DummySummary;
 
-    fn initial_state(&self, _config: &Self::Config, _seed: u64) -> Result<Self::State> {
+    fn initial_state(
+        &self,
+        _context: GameInitializationContext<'_, Self::Config>,
+    ) -> Result<Self::State> {
         Ok(DummyState {
             actions: 0,
             done: false,
@@ -167,7 +170,7 @@ impl ScriptedAgentFactory {
 impl AgentFactory<DummyAdapter> for ScriptedAgentFactory {
     fn definition(&self) -> AgentDefinition {
         AgentDefinition {
-            id: "test.scripted".to_string(),
+            id: "mock".to_string(),
             name: "Scripted test agent".to_string(),
             description: "Used by the integration test.".to_string(),
             config_fields: Vec::new(),
@@ -180,6 +183,13 @@ impl AgentFactory<DummyAdapter> for ScriptedAgentFactory {
         Ok(Box::new(ScriptedAgent {
             script: script.into(),
         }))
+    }
+
+    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+        Ok(AgentIdentity {
+            name: "ScriptedAgent".to_string(),
+            version: "1".to_string(),
+        })
     }
 }
 
@@ -847,11 +857,17 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
         .human_vs_agent
         .as_mut()
         .unwrap()
+        .factory = Some("remote_grpc".to_string());
+    experiment_config
+        .agents
+        .human_vs_agent
+        .as_mut()
+        .unwrap()
         .config = json!({
         "endpoint": remote.endpoint,
         "agent_name": "mock-python-agent",
         "agent_version": "test-1",
-        "protocol_version": "parlando-agent-v3"
+        "protocol_version": "parlando-agent-v4"
     });
     let server = spawn_server(
         experiment_config,
@@ -888,7 +904,7 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
 
     let create_requests = remote.state.create_requests.lock().unwrap().clone();
     assert_eq!(create_requests.len(), 1);
-    assert_eq!(create_requests[0].protocol_version, "parlando-agent-v3");
+    assert_eq!(create_requests[0].protocol_version, "parlando-agent-v4");
     assert_eq!(create_requests[0].agent_name, "mock-python-agent");
     assert_eq!(create_requests[0].agent_version, "test-1");
     assert_eq!(create_requests[0].role, "B");
@@ -934,10 +950,14 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
         .find(|participant| participant["participant_kind"] == "agent")
         .expect("remote agent participant is exported");
     assert_eq!(remote_participant["identity_provider"], "agent");
-    assert_eq!(
-        remote_participant["external_id"],
-        "mock-python-agent@test-1"
-    );
+    assert!(remote_participant["external_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("mock-python-agent@test-1#sha256:"));
+    assert!(remote_participant["metadata"]["configuration_fingerprint"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
     assert_eq!(remote_participant["metadata"]["factory"], "remote_grpc");
     assert_eq!(
         remote_participant["metadata"]["agent_name"],

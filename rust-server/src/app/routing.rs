@@ -623,6 +623,25 @@ where
         .as_ref()
         .map(|shared| shared.runtime_registry.clone())
         .unwrap_or_else(|| Arc::new(RwLock::new(HashMap::new())));
+    let agent_definitions = if options.agent_definitions.is_empty() {
+        options
+            .agent_factory
+            .iter()
+            .map(|factory| factory.definition())
+            .collect()
+    } else {
+        options.agent_definitions
+    };
+    let mut definition_ids = HashSet::new();
+    for definition in &agent_definitions {
+        definition.validate()?;
+        if !definition_ids.insert(definition.id.clone()) {
+            anyhow::bail!(
+                "agent definition {:?} is registered more than once",
+                definition.id
+            );
+        }
+    }
     let state = Arc::new(AppState {
         adapter,
         config,
@@ -639,7 +658,7 @@ where
         store,
         room_buses: RwLock::new(HashMap::new()),
         agent_factory: options.agent_factory,
-        agent_definitions: options.agent_definitions,
+        agent_definitions,
         started_agents: RwLock::new(HashSet::new()),
         pending_agents: Mutex::new(HashMap::new()),
         agent_inboxes: RwLock::new(HashMap::new()),

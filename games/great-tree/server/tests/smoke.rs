@@ -16,7 +16,14 @@ fn set_flow_json(root: &str, open: bool) -> Value {
 fn a_full_play_through_reaches_completion() {
     let game = GreatTree::new();
     let config = serde_json::from_value(json!({})).unwrap();
-    let mut state = game.initial_state(&config, 123).unwrap();
+    let secrets = parlando::SecretValues::default();
+    let mut state = game
+        .initial_state(parlando::GameInitializationContext {
+            config: &config,
+            seed: 123,
+            secrets: &secrets,
+        })
+        .unwrap();
 
     let crown_view = serde_json::to_value(game.observation(&state, PlayerRole::A)).unwrap();
     let root_view = serde_json::to_value(game.observation(&state, PlayerRole::B)).unwrap();
@@ -25,7 +32,10 @@ fn a_full_play_through_reaches_completion() {
     assert!(crown_view.get("roots").is_none());
     assert!(root_view.get("limbs").is_none());
 
-    assert!(game.completion(&state).is_none(), "one starting bloom is not a win yet");
+    assert!(
+        game.completion(&state).is_none(),
+        "one starting bloom is not a win yet"
+    );
 
     let limb_ids = ["spire", "hook", "fork", "cradle", "nub"];
     let root_ids = ["hand", "knot", "tip", "swollen", "deep"];
@@ -42,8 +52,13 @@ fn a_full_play_through_reaches_completion() {
         for &root in &root_ids {
             let flow_action: parlando_great_tree::Action =
                 serde_json::from_value(set_flow_json(root, true)).unwrap();
-            if game.apply_action(&state, &flow_action, PlayerRole::B).is_ok() {
-                state = game.apply_action(&state, &flow_action, PlayerRole::B).unwrap();
+            if game
+                .apply_action(&state, &flow_action, PlayerRole::B)
+                .is_ok()
+            {
+                state = game
+                    .apply_action(&state, &flow_action, PlayerRole::B)
+                    .unwrap();
             }
             if let Some(completion) = game.completion(&state) {
                 assert!(completion.flowered_limbs.len() >= 3);
@@ -52,5 +67,8 @@ fn a_full_play_through_reaches_completion() {
         }
     }
 
-    assert!(game.completion(&state).is_some(), "brute-forcing every pair must eventually win");
+    assert!(
+        game.completion(&state).is_some(),
+        "brute-forcing every pair must eventually win"
+    );
 }

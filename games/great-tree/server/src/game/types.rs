@@ -118,7 +118,10 @@ mod tests {
 
     #[test]
     fn set_sun_action_serializes_with_a_type_tag() {
-        let action = GreatTreeAction::SetSun { limb: LimbId::Hook, lit: true };
+        let action = GreatTreeAction::SetSun {
+            limb: LimbId::Hook,
+            lit: true,
+        };
         let value = serde_json::to_value(&action).unwrap();
         assert_eq!(value["type"], "setSun");
         assert_eq!(value["limb"], "hook");
@@ -127,7 +130,10 @@ mod tests {
 
     #[test]
     fn set_flow_action_serializes_with_a_type_tag() {
-        let action = GreatTreeAction::SetFlow { root: RootId::Deep, open: false };
+        let action = GreatTreeAction::SetFlow {
+            root: RootId::Deep,
+            open: false,
+        };
         let value = serde_json::to_value(&action).unwrap();
         assert_eq!(value["type"], "setFlow");
         assert_eq!(value["root"], "deep");
@@ -138,38 +144,95 @@ mod tests {
     fn crown_observation_carries_only_limbs_no_root_or_bijection_keys() {
         let obs = GreatTreeObservation::Crown {
             limbs: [
-                LimbView { id: LimbId::Spire, sun: false, water: false },
-                LimbView { id: LimbId::Hook, sun: false, water: false },
-                LimbView { id: LimbId::Fork, sun: false, water: false },
-                LimbView { id: LimbId::Cradle, sun: false, water: false },
-                LimbView { id: LimbId::Nub, sun: true, water: true },
+                LimbView {
+                    id: LimbId::Spire,
+                    sun: false,
+                    water: false,
+                },
+                LimbView {
+                    id: LimbId::Hook,
+                    sun: false,
+                    water: false,
+                },
+                LimbView {
+                    id: LimbId::Fork,
+                    sun: false,
+                    water: false,
+                },
+                LimbView {
+                    id: LimbId::Cradle,
+                    sun: false,
+                    water: false,
+                },
+                LimbView {
+                    id: LimbId::Nub,
+                    sun: true,
+                    water: true,
+                },
             ],
         };
         let value = serde_json::to_value(&obs).unwrap();
-        let keys: Vec<&str> = value.as_object().unwrap().keys().map(String::as_str).collect();
+        let keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         assert_eq!(value["role"], "crown");
         assert!(keys.contains(&"limbs"));
-        assert!(!keys.contains(&"roots"), "Crown observation must never carry root data");
         assert!(
-            !serde_json::to_string(&value).unwrap().to_lowercase().contains("bijection")
+            !keys.contains(&"roots"),
+            "Crown observation must never carry root data"
         );
+        assert!(!serde_json::to_string(&value)
+            .unwrap()
+            .to_lowercase()
+            .contains("bijection"));
     }
 
     #[test]
     fn root_observation_carries_only_roots_no_limb_data() {
         let obs = GreatTreeObservation::Root {
             roots: [
-                RootView { id: RootId::Hand, thawed: false, running: false },
-                RootView { id: RootId::Knot, thawed: false, running: false },
-                RootView { id: RootId::Tip, thawed: false, running: false },
-                RootView { id: RootId::Swollen, thawed: false, running: false },
-                RootView { id: RootId::Deep, thawed: false, running: false },
+                RootView {
+                    id: RootId::Hand,
+                    thawed: false,
+                    running: false,
+                },
+                RootView {
+                    id: RootId::Knot,
+                    thawed: false,
+                    running: false,
+                },
+                RootView {
+                    id: RootId::Tip,
+                    thawed: false,
+                    running: false,
+                },
+                RootView {
+                    id: RootId::Swollen,
+                    thawed: false,
+                    running: false,
+                },
+                RootView {
+                    id: RootId::Deep,
+                    thawed: false,
+                    running: false,
+                },
             ],
         };
         let value = serde_json::to_value(&obs).unwrap();
-        let keys: Vec<&str> = value.as_object().unwrap().keys().map(String::as_str).collect();
+        let keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         assert_eq!(value["role"], "root");
         assert!(keys.contains(&"roots"));
-        assert!(!keys.contains(&"limbs"), "Root observation must never carry limb data");
+        assert!(
+            !keys.contains(&"limbs"),
+            "Root observation must never carry limb data"
+        );
     }
 }

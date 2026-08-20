@@ -1,4 +1,3 @@
-use std::env;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context as _, Result};
@@ -24,7 +23,10 @@ pub struct IdleAgent;
 
 #[async_trait]
 impl Agent<GreatTree> for IdleAgent {
-    async fn respond(&mut self, _available_actions: Option<Vec<Action>>) -> Result<Option<Response<Action>>> {
+    async fn respond(
+        &mut self,
+        _available_actions: Option<Vec<Action>>,
+    ) -> Result<Option<Response<Action>>> {
         Ok(None)
     }
 }
@@ -44,6 +46,13 @@ impl AgentFactory<GreatTree> for IdleAgentFactory {
 
     async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<GreatTree> + Send>> {
         Ok(Box::new(IdleAgent))
+    }
+
+    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+        Ok(AgentIdentity {
+            name: "IdleAgent".to_string(),
+            version: "1".to_string(),
+        })
     }
 }
 
@@ -68,7 +77,11 @@ pub struct RootBotAgent {
 
 impl RootBotAgent {
     fn new() -> Self {
-        Self { latest_roots: None, pending_action: None, pending_message: None }
+        Self {
+            latest_roots: None,
+            pending_action: None,
+            pending_message: None,
+        }
     }
 
     /// Opens the first thawed-but-not-running root found, queuing both the action and a status
@@ -77,7 +90,10 @@ impl RootBotAgent {
         self.latest_roots = Some(*roots);
         for view in roots {
             if view.thawed && !view.running {
-                self.pending_action = Some(Action::SetFlow { root: view.id, open: true });
+                self.pending_action = Some(Action::SetFlow {
+                    root: view.id,
+                    open: true,
+                });
                 self.pending_message = Some(format!("Opened {:?} — it's running now.", view.id));
                 return;
             }
@@ -97,9 +113,10 @@ impl RootBotAgent {
         for &root in RootId::ALL.iter() {
             let name = format!("{root:?}").to_lowercase();
             if words.iter().any(|w| *w == name) {
-                let reply = match self.latest_roots.and_then(|roots| {
-                    roots.iter().find(|view| view.id == root).copied()
-                }) {
+                let reply = match self
+                    .latest_roots
+                    .and_then(|roots| roots.iter().find(|view| view.id == root).copied())
+                {
                     Some(view) if view.running => {
                         format!("{root:?} is thawed and I've got it open.")
                     }
@@ -116,7 +133,10 @@ impl RootBotAgent {
             return;
         }
 
-        if words.iter().any(|w| w == "hi" || w == "hello" || w == "hey") {
+        if words
+            .iter()
+            .any(|w| w == "hi" || w == "hello" || w == "hey")
+        {
             self.pending_message = Some("Hey! Ready when you are.".to_string());
         }
     }
@@ -183,6 +203,13 @@ impl AgentFactory<GreatTree> for RootBotAgentFactory {
 
     async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<GreatTree> + Send>> {
         Ok(Box::new(RootBotAgent::new()))
+    }
+
+    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+        Ok(AgentIdentity {
+            name: "RootBotAgent".to_string(),
+            version: "1".to_string(),
+        })
     }
 }
 
@@ -410,10 +437,12 @@ and every chat message either of you has sent. Decide what to do next."
         }
 
         if let Some(action) = &action {
-            self.history.push(json!({"event": "you_attempted_action", "action": action}));
+            self.history
+                .push(json!({"event": "you_attempted_action", "action": action}));
         }
         if let Some(text) = &text {
-            self.history.push(json!({"event": "message", "from": "you", "text": text}));
+            self.history
+                .push(json!({"event": "message", "from": "you", "text": text}));
         }
 
         Ok(match (action, text) {
@@ -432,7 +461,8 @@ impl Agent<GreatTree> for LlmAgent {
             GreatTreeObservation::Crown { .. } => GameRole::Crown,
             GreatTreeObservation::Root { .. } => GameRole::Root,
         });
-        self.history.push(json!({"event": "start", "observation": initial_observation}));
+        self.history
+            .push(json!({"event": "start", "observation": initial_observation}));
         self.should_consider = true;
         Ok(())
     }
@@ -463,7 +493,8 @@ impl Agent<GreatTree> for LlmAgent {
         if is_own {
             return Ok(());
         }
-        self.history.push(json!({"event": "message", "from": "partner", "text": text}));
+        self.history
+            .push(json!({"event": "message", "from": "partner", "text": text}));
         self.should_consider = true;
         Ok(())
     }
@@ -508,25 +539,41 @@ impl AgentFactory<GreatTree> for LlmAgentFactory {
             name: "LLM (learns as it plays)".to_string(),
             description: "OpenAI-backed agent that is never told this game's rules; it plays \
                 either role by experimenting and talking with its partner, the same way a human \
-                would have to. Requires OPENAI_API_KEY in the server environment."
+                would have to. Requires a configured experiment secret reference."
                 .to_string(),
-            config_fields: vec![AgentConfigField {
-                key: "model".to_string(),
-                label: "OpenAI model".to_string(),
-                help: "Chat Completions model name used for this agent's decisions, e.g. \
+            config_fields: vec![
+                AgentConfigField {
+                    key: "model".to_string(),
+                    label: "OpenAI model".to_string(),
+                    help: "Chat Completions model name used for this agent's decisions, e.g. \
                     gpt-4o-mini."
-                    .to_string(),
-                kind: "text".to_string(),
-                required: false,
-                default_value: Value::String("gpt-4o-mini".to_string()),
-            }],
+                        .to_string(),
+                    value: parlando::agent::ConfigValue::String {
+                        format: parlando::agent::StringFormat::Plain,
+                    },
+                    required: false,
+                    default_value: Value::String("gpt-4o-mini".to_string()),
+                },
+                AgentConfigField {
+                    key: "openai_api_key".to_string(),
+                    label: "OpenAI API key".to_string(),
+                    help: "Experiment secret used by the local agent factory.".to_string(),
+                    value: parlando::agent::ConfigValue::SecretReference {
+                        purpose: parlando::agent::SecretPurpose::Factory,
+                    },
+                    required: true,
+                    default_value: Value::Null,
+                },
+            ],
         }
     }
 
     async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<GreatTree> + Send>> {
-        let api_key = env::var("OPENAI_API_KEY").context(
-            "OPENAI_API_KEY must be set in the server environment to use the great_tree.llm agent",
-        )?;
+        let api_key = context
+            .factory_secrets
+            .get("config.openai_api_key")
+            .context("the configured OpenAI secret reference is unavailable")?
+            .to_string();
         let model = context
             .settings
             .get("model")
@@ -537,16 +584,10 @@ impl AgentFactory<GreatTree> for LlmAgentFactory {
         Ok(Box::new(LlmAgent::new(context.role, api_key, model)))
     }
 
-    fn identity(&self, settings: &Value) -> Result<AgentIdentity> {
-        let model = settings
-            .get("model")
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("gpt-4o-mini")
-            .to_string();
+    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
         Ok(AgentIdentity {
             name: "LlmAgent".to_string(),
-            version: Some(model),
+            version: "1".to_string(),
         })
     }
 }
@@ -555,12 +596,34 @@ impl AgentFactory<GreatTree> for LlmAgentFactory {
 mod root_bot_tests {
     use super::*;
 
+    #[test]
+    fn every_great_tree_agent_uses_identity_version_one() {
+        for identity in [
+            IdleAgentFactory.identity(&json!({})).unwrap(),
+            RootBotAgentFactory.identity(&json!({})).unwrap(),
+            LlmAgentFactory
+                .identity(&json!({"model": "gpt-4o-mini"}))
+                .unwrap(),
+        ] {
+            assert_eq!(identity.version, "1");
+        }
+    }
+
     fn roots(thawed_running: [(bool, bool); 5]) -> [RootView; 5] {
-        let mut views = [RootView { id: RootId::Hand, thawed: false, running: false }; 5];
-        for (view, (id, (thawed, running))) in
-            views.iter_mut().zip(RootId::ALL.into_iter().zip(thawed_running))
+        let mut views = [RootView {
+            id: RootId::Hand,
+            thawed: false,
+            running: false,
+        }; 5];
+        for (view, (id, (thawed, running))) in views
+            .iter_mut()
+            .zip(RootId::ALL.into_iter().zip(thawed_running))
         {
-            *view = RootView { id, thawed, running };
+            *view = RootView {
+                id,
+                thawed,
+                running,
+            };
         }
         views
     }
@@ -583,7 +646,10 @@ mod root_bot_tests {
         assert_eq!(
             response,
             Response::action_and_message(
-                Action::SetFlow { root: RootId::Knot, open: true },
+                Action::SetFlow {
+                    root: RootId::Knot,
+                    open: true
+                },
                 "Opened Knot — it's running now.".to_string(),
             )
         );
@@ -631,7 +697,9 @@ mod root_bot_tests {
         ]));
         take_response(&mut agent).await; // drain the "Opened Tip" response first
         agent.handle_message("is tip running yet?");
-        let response = take_response(&mut agent).await.expect("should reply about Tip");
+        let response = take_response(&mut agent)
+            .await
+            .expect("should reply about Tip");
         assert_eq!(
             response,
             Response::message("Tip is thawed and I've got it open.".to_string())

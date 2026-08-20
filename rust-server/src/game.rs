@@ -1,4 +1,9 @@
-use anyhow::Result;
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt,
+};
+
+use anyhow::{bail, Context, Result};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
@@ -11,12 +16,113 @@ pub struct AgentConfigField {
     pub label: String,
     /// Brief explanation of the value's purpose.
     pub help: String,
-    /// Browser control kind, such as `text` or `url`.
-    pub kind: String,
+    /// Semantic value accepted by this field. User interfaces derive controls from it.
+    #[serde(flatten)]
+    pub value: AgentConfigValue,
     /// Whether an administrator must supply a non-empty value.
     pub required: bool,
     /// Default value inserted when this factory is selected.
     pub default_value: Value,
+}
+
+/// Semantic format of a string-valued agent setting.
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StringFormat {
+    /// An unconstrained string.
+    #[default]
+    Plain,
+    /// An absolute HTTP or HTTPS URI.
+    Uri,
+}
+
+/// One stable stored choice and its human-readable label.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct AgentConfigChoice {
+    /// Stable value persisted in experiment configuration.
+    pub value: String,
+    /// Label displayed to administrators.
+    pub label: String,
+}
+
+/// Determines which consumer may receive a referenced secret value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretPurpose {
+    /// The local factory or transport adapter may consume the value.
+    Factory,
+    /// The constructed agent instance may consume the value.
+    AgentInstance,
+}
+
+/// Semantic type of an agent configuration field.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentConfigValue {
+    /// A string, optionally carrying a URI semantic constraint.
+    String {
+        #[serde(default)]
+        format: StringFormat,
+    },
+    /// A Boolean value.
+    Boolean,
+    /// A signed integer with optional inclusive bounds.
+    Integer {
+        minimum: Option<i64>,
+        maximum: Option<i64>,
+    },
+    /// A finite number with optional inclusive bounds.
+    Number {
+        minimum: Option<f64>,
+        maximum: Option<f64>,
+    },
+    /// One value selected from a stable closed set.
+    Choice { choices: Vec<AgentConfigChoice> },
+    /// A recursively typed object.
+    Object { fields: Vec<AgentConfigField> },
+    /// The identifier of an experiment-owned game secret.
+    SecretReference { purpose: SecretPurpose },
+}
+
+/// Secret values exposed to one trusted runtime consumer.
+#[derive(Clone, Default)]
+pub struct SecretValues(BTreeMap<String, String>);
+
+impl SecretValues {
+    /// Creates an isolated secret set keyed by semantic configuration path.
+    pub(crate) fn new(values: BTreeMap<String, String>) -> Self {
+        Self(values)
+    }
+    /// Looks up one explicitly delivered secret without permitting serialization.
+    pub fn get(&self, path: &str) -> Option<&str> {
+        self.0.get(path).map(String::as_str)
+    }
+    /// Returns whether this isolated set contains no values.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&String, &String)> {
+        self.0.iter()
+    }
+}
+
+impl fmt::Debug for SecretValues {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SecretValues")
+            .field("values", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Trusted inputs used to construct a game's initial state.
+pub struct GameInitializationContext<'a, C> {
+    /// Validated typed game configuration.
+    pub config: &'a C,
+    /// Recorded deterministic session seed.
+    pub seed: u64,
+    /// All experiment-owned game secrets, keyed without the `game.` prefix.
+    pub secrets: &'a SecretValues,
 }
 
 /// Describes one agent implementation registered with a game server.
@@ -30,6 +136,256 @@ pub struct AgentDefinition {
     pub description: String,
     /// Factory-specific structured configuration inputs.
     pub config_fields: Vec<AgentConfigField>,
+}
+
+impl AgentDefinition {
+    /// Validates field keys, recursive definitions, defaults, and numeric constraints.
+    pub fn validate(&self) -> Result<()> {
+        if self.id.trim().is_empty() {
+            bail!("agent definition id must not be empty");
+        }
+        validate_fields(&self.config_fields, "config")
+    }
+
+    /// Validates and normalizes stored settings, inserting declared defaults.
+    pub fn normalize_settings(&self, settings: &Value) -> Result<Value> {
+        if settings.is_null() && self.config_fields.is_empty() {
+            return Ok(Value::Object(serde_json::Map::new()));
+        }
+        let object = settings
+            .as_object()
+            .context("agent settings must be an object")?;
+        normalize_object(&self.config_fields, object, "config")
+    }
+
+    /// Resolves declared references into purpose-isolated secret sets.
+    pub(crate) fn resolve_secrets(
+        &self,
+        settings: &Value,
+        secrets: &std::collections::HashMap<String, String>,
+    ) -> Result<(SecretValues, SecretValues)> {
+        let mut factory = BTreeMap::new();
+        let mut instance = BTreeMap::new();
+        resolve_field_secrets(
+            &self.config_fields,
+            settings
+                .as_object()
+                .context("agent settings must be an object")?,
+            "config",
+            secrets,
+            &mut factory,
+            &mut instance,
+        )?;
+        Ok((SecretValues::new(factory), SecretValues::new(instance)))
+    }
+}
+
+fn resolve_field_secrets(
+    fields: &[AgentConfigField],
+    values: &serde_json::Map<String, Value>,
+    path: &str,
+    secrets: &std::collections::HashMap<String, String>,
+    factory: &mut BTreeMap<String, String>,
+    instance: &mut BTreeMap<String, String>,
+) -> Result<()> {
+    for field in fields {
+        let Some(value) = values.get(&field.key) else {
+            continue;
+        };
+        let field_path = format!("{path}.{}", field.key);
+        match &field.value {
+            AgentConfigValue::SecretReference { purpose } => {
+                let reference = value
+                    .as_str()
+                    .context("validated secret reference was not a string")?;
+                let key = reference
+                    .strip_prefix("game.")
+                    .context("validated secret reference lost game prefix")?;
+                let secret = secrets
+                    .get(key)
+                    .with_context(|| format!("missing experiment secret reference {reference}"))?
+                    .clone();
+                match purpose {
+                    SecretPurpose::Factory => &mut *factory,
+                    SecretPurpose::AgentInstance => &mut *instance,
+                }
+                .insert(field_path, secret);
+            }
+            AgentConfigValue::Object { fields } => resolve_field_secrets(
+                fields,
+                value
+                    .as_object()
+                    .context("validated object was not an object")?,
+                &field_path,
+                secrets,
+                factory,
+                instance,
+            )?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn valid_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 128
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+}
+
+fn validate_fields(fields: &[AgentConfigField], path: &str) -> Result<()> {
+    let mut keys = HashSet::new();
+    for field in fields {
+        if !valid_key(&field.key) {
+            bail!("invalid agent configuration key {path}.{}", field.key);
+        }
+        if !keys.insert(&field.key) {
+            bail!("duplicate agent configuration key {path}.{}", field.key);
+        }
+        match &field.value {
+            AgentConfigValue::Integer {
+                minimum: Some(a),
+                maximum: Some(b),
+            } if a > b => bail!("impossible bounds for {path}.{}", field.key),
+            AgentConfigValue::Number { minimum, maximum } => {
+                if minimum.is_some_and(|v| !v.is_finite())
+                    || maximum.is_some_and(|v| !v.is_finite())
+                    || matches!((minimum, maximum), (Some(a), Some(b)) if a > b)
+                {
+                    bail!("invalid bounds for {path}.{}", field.key);
+                }
+            }
+            AgentConfigValue::Choice { choices } => {
+                let mut values = HashSet::new();
+                if choices.is_empty()
+                    || choices.iter().any(|c| {
+                        c.value.is_empty() || c.label.trim().is_empty() || !values.insert(&c.value)
+                    })
+                {
+                    bail!("invalid choices for {path}.{}", field.key);
+                }
+            }
+            AgentConfigValue::Object { fields } => {
+                validate_fields(fields, &format!("{path}.{}", field.key))?
+            }
+            _ => {}
+        }
+        if !field.default_value.is_null() {
+            normalize_value(
+                field,
+                &field.default_value,
+                &format!("{path}.{}", field.key),
+            )
+            .context("invalid agent configuration default")?;
+        }
+    }
+    Ok(())
+}
+
+fn normalize_object(
+    fields: &[AgentConfigField],
+    object: &serde_json::Map<String, Value>,
+    path: &str,
+) -> Result<Value> {
+    for key in object.keys() {
+        if !fields.iter().any(|f| &f.key == key) {
+            bail!("unknown agent setting {path}.{key}");
+        }
+    }
+    let mut normalized = serde_json::Map::new();
+    for field in fields {
+        let value = object
+            .get(&field.key)
+            .or_else(|| (!field.default_value.is_null()).then_some(&field.default_value));
+        match value {
+            Some(value) => {
+                normalized.insert(
+                    field.key.clone(),
+                    normalize_value(field, value, &format!("{path}.{}", field.key))?,
+                );
+            }
+            None if field.required => {
+                bail!("required agent setting {path}.{} is missing", field.key)
+            }
+            None => {}
+        }
+    }
+    Ok(Value::Object(normalized))
+}
+
+fn normalize_value(field: &AgentConfigField, value: &Value, path: &str) -> Result<Value> {
+    match &field.value {
+        AgentConfigValue::String { format } => {
+            let text = value
+                .as_str()
+                .with_context(|| format!("{path} must be a string"))?;
+            if field.required && text.trim().is_empty() {
+                bail!("{path} must not be empty");
+            }
+            if matches!(format, StringFormat::Uri) {
+                let uri = text
+                    .parse::<http::Uri>()
+                    .with_context(|| format!("{path} must be a URI"))?;
+                if !matches!(uri.scheme_str(), Some("http" | "https")) || uri.host().is_none() {
+                    bail!("{path} must be an absolute HTTP or HTTPS URI");
+                }
+            }
+            Ok(value.clone())
+        }
+        AgentConfigValue::Boolean => value
+            .as_bool()
+            .map(Value::Bool)
+            .with_context(|| format!("{path} must be a boolean")),
+        AgentConfigValue::Integer { minimum, maximum } => {
+            let number = value
+                .as_i64()
+                .with_context(|| format!("{path} must be an integer"))?;
+            if minimum.is_some_and(|v| number < v) || maximum.is_some_and(|v| number > v) {
+                bail!("{path} is outside its bounds");
+            }
+            Ok(Value::from(number))
+        }
+        AgentConfigValue::Number { minimum, maximum } => {
+            let number = value
+                .as_f64()
+                .filter(|v| v.is_finite())
+                .with_context(|| format!("{path} must be a finite number"))?;
+            if minimum.is_some_and(|v| number < v) || maximum.is_some_and(|v| number > v) {
+                bail!("{path} is outside its bounds");
+            }
+            serde_json::Number::from_f64(number)
+                .map(Value::Number)
+                .context("finite number could not be normalized")
+        }
+        AgentConfigValue::Choice { choices } => {
+            let selected = value
+                .as_str()
+                .with_context(|| format!("{path} must be a choice string"))?;
+            if !choices.iter().any(|c| c.value == selected) {
+                bail!("{path} is not a declared choice");
+            }
+            Ok(value.clone())
+        }
+        AgentConfigValue::Object { fields } => normalize_object(
+            fields,
+            value
+                .as_object()
+                .with_context(|| format!("{path} must be an object"))?,
+            path,
+        ),
+        AgentConfigValue::SecretReference { .. } => {
+            let reference = value
+                .as_str()
+                .with_context(|| format!("{path} must be a secret reference"))?;
+            if !reference.starts_with("game.") || !valid_key(reference.trim_start_matches("game."))
+            {
+                bail!("{path} must reference a game.<key> secret");
+            }
+            Ok(value.clone())
+        }
+    }
 }
 
 /// Immutable identity of the game implementation compiled into a server process.
@@ -175,7 +531,10 @@ pub trait Game: Send + Sync + 'static {
     }
 
     /// Creates a fresh authoritative state from game configuration and a recorded seed.
-    fn initial_state(&self, config: &Self::Config, seed: u64) -> Result<Self::State>;
+    fn initial_state(
+        &self,
+        context: GameInitializationContext<'_, Self::Config>,
+    ) -> Result<Self::State>;
 
     /// Applies one typed action or returns an expected machine-readable rule rejection.
     ///
@@ -233,4 +592,100 @@ pub(crate) fn parse_game_config<G: Game>(game: &G, value: &Value) -> Result<G::C
     let config = serde_json::from_value(value.clone())?;
     game.validate_config(&config)?;
     Ok(config)
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Exercises recursive typed normalization and strict unknown-field rejection.
+    #[test]
+    fn semantic_agent_settings_are_normalized_strictly() {
+        let definition = AgentDefinition {
+            id: "test".into(),
+            name: "Test".into(),
+            description: String::new(),
+            config_fields: vec![AgentConfigField {
+                key: "nested".into(),
+                label: "Nested".into(),
+                help: String::new(),
+                required: true,
+                default_value: Value::Null,
+                value: AgentConfigValue::Object {
+                    fields: vec![AgentConfigField {
+                        key: "count".into(),
+                        label: "Count".into(),
+                        help: String::new(),
+                        required: false,
+                        default_value: json!(3),
+                        value: AgentConfigValue::Integer {
+                            minimum: Some(1),
+                            maximum: Some(4),
+                        },
+                    }],
+                },
+            }],
+        };
+        definition.validate().unwrap();
+        assert_eq!(
+            definition
+                .normalize_settings(&json!({"nested": {}}))
+                .unwrap(),
+            json!({"nested": {"count": 3}})
+        );
+        assert!(definition
+            .normalize_settings(&json!({"nested": {"unknown": true}}))
+            .is_err());
+        assert!(definition
+            .normalize_settings(&json!({"nested": {"count": 5}}))
+            .is_err());
+    }
+
+    /// Debug formatting never exposes secret values.
+    #[test]
+    fn secret_values_debug_is_redacted() {
+        let values = SecretValues::new(BTreeMap::from([(
+            "config.token".into(),
+            "sentinel-secret".into(),
+        )]));
+        let debug = format!("{values:?}");
+        assert!(debug.contains("REDACTED"));
+        assert!(!debug.contains("sentinel-secret"));
+    }
+
+    /// Secret references resolve only into their declared delivery subsets.
+    #[test]
+    fn secret_references_resolve_by_purpose() {
+        let field = |key: &str, purpose| AgentConfigField {
+            key: key.into(),
+            label: key.into(),
+            help: String::new(),
+            required: true,
+            default_value: Value::Null,
+            value: AgentConfigValue::SecretReference { purpose },
+        };
+        let definition = AgentDefinition {
+            id: "secrets".into(),
+            name: "Secrets".into(),
+            description: String::new(),
+            config_fields: vec![
+                field("transport", SecretPurpose::Factory),
+                field("instance", SecretPurpose::AgentInstance),
+            ],
+        };
+        let settings = definition
+            .normalize_settings(&json!({"transport": "game.auth", "instance": "game.api"}))
+            .unwrap();
+        let values = std::collections::HashMap::from([
+            ("auth".into(), "transport-value".into()),
+            ("api".into(), "instance-value".into()),
+            ("unrelated".into(), "hidden".into()),
+        ]);
+        let (factory, instance) = definition.resolve_secrets(&settings, &values).unwrap();
+        assert_eq!(factory.get("config.transport"), Some("transport-value"));
+        assert_eq!(instance.get("config.instance"), Some("instance-value"));
+        assert_eq!(factory.get("config.instance"), None);
+        assert_eq!(instance.get("unrelated"), None);
+    }
 }

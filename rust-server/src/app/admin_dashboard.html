@@ -103,7 +103,7 @@
     .session-workspace { display: grid; flex: 1; grid-template-columns: var(--session-width) 7px minmax(0, 1fr); min-height: 0; padding-top: 20px; }
     .session-picker { background: transparent; border: 0; box-shadow: none; display: flex; flex-direction: column; margin: 0; min-height: 0; min-width: 0; padding-right: 24px; position: static; }
     .session-toolbar { margin-bottom: 12px; }
-    .session-list { flex: 1; max-height: none; min-height: 0; overflow-y: auto; padding: 0; }
+    .session-list { align-content: start; flex: 1; grid-auto-rows: max-content; max-height: none; min-height: 0; overflow-y: auto; padding: 0; }
     .session-list > .empty { padding: 24px 8px; text-align: left; }
     .session { align-items: center; background: transparent; border: 0; border-radius: 0; border-top: 1px solid var(--line); color: var(--text); cursor: pointer; display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) auto; padding: 13px 9px; text-align: left; width: 100%; }
     .session:last-child { border-bottom: 1px solid var(--line); }
@@ -129,6 +129,16 @@
     .role-b { background: #faebd6; color: #76501b; }
     .participant-copy { display: grid; gap: 2px; min-width: 0; }
     .participant-copy strong { overflow-wrap: anywhere; }
+    .participant-name-line { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; min-width: 0; }
+    .configuration-identity { justify-self: start; position: relative; }
+    .configuration-identity summary { align-items: center; background: #eef4f8; border: 1px solid #c9dce8; border-radius: 999px; color: #245f7d; cursor: pointer; display: inline-flex; font-size: 11px; font-weight: 700; gap: 5px; list-style: none; padding: 3px 8px; white-space: nowrap; }
+    .configuration-identity summary::-webkit-details-marker { display: none; }
+    .configuration-identity[open] summary { background: #dcecf5; }
+    .configuration-identity-card { background: #fff; border: 1px solid var(--strong-line); border-radius: 7px; box-shadow: 0 10px 28px rgba(32, 38, 44, .16); display: grid; gap: 10px; left: 0; min-width: 330px; padding: 13px; position: absolute; top: calc(100% + 6px); z-index: 10; }
+    .configuration-identity-card dl { display: grid; gap: 6px; grid-template-columns: auto minmax(0, 1fr); margin: 0; }
+    .configuration-identity-card dt { color: var(--subtle); }
+    .configuration-identity-card dd { margin: 0; overflow-wrap: anywhere; }
+    .configuration-fingerprint { background: var(--surface); border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; padding: 7px; user-select: all; }
     .session-log { flex: 1; margin-top: 24px; min-height: 0; overflow-y: auto; }
     .events-header { align-items: center; border-bottom: 1px solid var(--strong-line); display: flex; gap: 14px; justify-content: flex-end; padding-bottom: 12px; }
     .events-header h2 { margin: 0 auto 0 0; }
@@ -1152,11 +1162,12 @@
     // Returns state-appropriate intake and completion controls for one experiment.
     function lifecycleActions(experiment) {
       const incompatible = experiment.game_version !== state.game?.version;
-      const incomplete = state.activationIssues.length > 0;
+      const incomplete = experiment.runnable !== true;
+      const readinessIssues = experiment.runnable_issues || state.activationIssues;
       const disabled = incompatible
         ? 'disabled title="Clone this experiment to use the current game version"'
         : incomplete
-          ? `disabled title="${escapeHtml(state.activationIssues.join(' '))}"`
+          ? `disabled title="${escapeHtml(readinessIssues.join(' ') || 'This experiment is not runnable')}"`
           : '';
       if (experiment.status === 'inactive') return `
         <button class="secondary" data-lifecycle="testing" type="button" ${disabled}>${icon('flask')}Start testing</button>
@@ -1571,11 +1582,73 @@
     // Renders fields owned by one compiled agent factory without exposing raw JSON.
     function agentFactoryFieldsMarkup(descriptor, values = {}) {
       if (!descriptor) return '<p class="muted small">This game binary does not provide an agent.</p>';
-      const fields = (descriptor.config_fields || []).map(field => {
-        const value = values[field.key] ?? field.default_value ?? '';
-        return `<label class="config-field"><span>${escapeHtml(field.label)}</span><input data-agent-config-key="${escapeHtml(field.key)}" type="${field.kind === 'url' ? 'url' : 'text'}" value="${escapeHtml(value ?? '')}" ${field.required ? 'required' : ''}><span class="config-help">${escapeHtml(field.help || '')}</span></label>`;
+      return agentFieldsMarkup(descriptor.config_fields || [], values, '', descriptor.id);
+    }
+
+    // Reuses the game configuration editor's typed-control conventions recursively.
+    function agentFieldsMarkup(fields, values, parentPath, factoryId) {
+      return fields.map(field => {
+        const path = parentPath ? `${parentPath}.${field.key}` : field.key;
+        const value = values?.[field.key] ?? field.default_value ?? '';
+        if (field.type === 'object') {
+          return `<fieldset class="config-group"><legend>${escapeHtml(field.label)}</legend>${agentFieldsMarkup(field.fields || [], value || {}, path, factoryId)}</fieldset>`;
+        }
+        let control;
+        const attributes = `data-agent-config-path="${escapeHtml(path)}" data-agent-config-type="${escapeHtml(field.type)}" ${field.required ? 'required' : ''}`;
+        if (field.type === 'boolean') control = `<input ${attributes} type="checkbox" ${value ? 'checked' : ''}>`;
+        else if (field.type === 'integer' || field.type === 'number') control = `<input ${attributes} type="number" value="${escapeHtml(value)}" ${field.minimum != null ? `min="${field.minimum}"` : ''} ${field.maximum != null ? `max="${field.maximum}"` : ''} step="${field.type === 'integer' ? '1' : 'any'}">`;
+        else if (field.type === 'choice') control = `<select ${attributes}>${(field.choices || []).map(choice => `<option value="${escapeHtml(choice.value)}" ${choice.value === value ? 'selected' : ''}>${escapeHtml(choice.label)}</option>`).join('')}</select>`;
+        else if (field.type === 'secret_reference') return agentSecretFieldMarkup(field, path, factoryId, value);
+        else control = `<input ${attributes} type="${field.format === 'uri' ? 'url' : 'text'}" value="${escapeHtml(value ?? '')}">`;
+        return `<label class="config-field"><span>${escapeHtml(field.label)}</span>${control}<span class="config-help">${escapeHtml(field.help || '')}</span></label>`;
       }).join('');
-      return fields;
+    }
+
+    // Derives the hidden experiment-secret reference used by one agent credential field.
+    function agentSecretReference(factoryId, path, configuredReference) {
+      if (typeof configuredReference === 'string' && configuredReference.startsWith('game.')) return configuredReference;
+      const suffix = `agent_${factoryId}_${path}`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 128);
+      return `game.${suffix}`;
+    }
+
+    // Presents an agent secret as the same write-only control used by provider credentials.
+    function agentSecretFieldMarkup(field, path, factoryId, configuredReference) {
+      const reference = agentSecretReference(factoryId, path, configuredReference);
+      const configured = state.configuredSecrets.some(item => item.key === reference && item.configured) && !state.secretDeletions.has(reference);
+      return `<label class="config-field ${configured ? 'secret-configured' : 'secret-missing'}" data-agent-secret-field>
+        <span>${escapeHtml(field.label)}</span>
+        <input type="hidden" data-agent-config-path="${escapeHtml(path)}" data-agent-config-type="secret_reference" data-agent-secret-reference="${escapeHtml(reference)}" value="${escapeHtml(reference)}">
+        <span class="secret-control"><input type="password" autocomplete="new-password" data-secret-update="${escapeHtml(reference)}" value="${configured ? '••••••••••••' : ''}" ${configured ? 'data-secret-placeholder="true"' : ''} placeholder="${configured ? 'Enter a replacement key' : 'Paste API key'}"><button class="secondary" type="button" data-reveal-agent-secret="${escapeHtml(reference)}" ${configured ? '' : 'disabled'}>Reveal</button><button class="secondary" type="button" data-delete-agent-secret="${escapeHtml(reference)}" ${configured ? '' : 'disabled'}>Remove</button></span>
+        <span class="secret-state">${configured ? 'Configured, hidden' : 'Not configured'}</span>
+        <span class="config-help">${escapeHtml(field.help || '')}</span>
+      </label>`;
+    }
+
+    // Connects dynamically rendered agent secret controls to write-only secret operations.
+    function initializeAgentSecretControls(container) {
+      container.querySelectorAll('[data-secret-placeholder="true"]').forEach(installSecretReplacementInput);
+      container.querySelectorAll('[data-reveal-agent-secret]').forEach(button => button.addEventListener('click', () => revealSecret(button.dataset.revealAgentSecret, button)));
+      container.querySelectorAll('[data-delete-agent-secret]').forEach(button => button.addEventListener('click', () => removeAgentSecret(button.dataset.deleteAgentSecret, button)));
+      container.querySelectorAll('[data-secret-update]').forEach(input => {
+        input.addEventListener('input', refreshDraftActivationWarning);
+        input.addEventListener('change', refreshDraftActivationWarning);
+      });
+    }
+
+    // Marks one inline agent credential for deletion without exposing its reference selector.
+    function removeAgentSecret(key, button) {
+      const status = state.configuredSecrets.find(item => item.key === key);
+      if (status?.configured) state.secretDeletions.add(key);
+      const field = button.closest('[data-agent-secret-field]');
+      const input = field?.querySelector('[data-secret-update]');
+      if (input) { input.type = 'password'; input.value = ''; input.dataset.secretPlaceholder = 'false'; }
+      field?.classList.remove('secret-configured');
+      field?.classList.add('secret-missing');
+      const secretState = field?.querySelector('.secret-state');
+      if (secretState) secretState.textContent = status?.configured ? 'Will be removed on save' : 'Not configured';
+      field?.querySelector('[data-reveal-agent-secret]')?.setAttribute('disabled', '');
+      button.setAttribute('disabled', '');
+      refreshDraftActivationWarning();
     }
 
     // Renders pairing and runtime controls as one valid, atomic agent configuration.
@@ -1604,10 +1677,13 @@
         settings.hidden = mode.value !== 'human_vs_agent';
         refreshDraftActivationWarning();
       });
+      initializeAgentSecretControls(editor);
       editor.querySelector('[data-agent-factory]')?.addEventListener('change', event => {
         const descriptor = state.agentFactories.find(factory => factory.id === event.target.value);
         editor.querySelector('[data-agent-description]').textContent = descriptor?.description || '';
-        editor.querySelector('[data-agent-specific-fields]').innerHTML = agentFactoryFieldsMarkup(descriptor);
+        const fields = editor.querySelector('[data-agent-specific-fields]');
+        fields.innerHTML = agentFactoryFieldsMarkup(descriptor);
+        initializeAgentSecretControls(fields);
       });
     }
 
@@ -1796,8 +1872,13 @@
         }
         const factory = editor.querySelector('[data-agent-factory]').value;
         const agentConfig = {};
-        editor.querySelectorAll('[data-agent-config-key]').forEach(control => {
-          if (control.value !== '') agentConfig[control.dataset.agentConfigKey] = control.value;
+        editor.querySelectorAll('[data-agent-config-path]').forEach(control => {
+          let value;
+          if (control.dataset.agentConfigType === 'boolean') value = control.checked;
+          else if (control.dataset.agentConfigType === 'integer') value = Number.parseInt(control.value, 10);
+          else if (control.dataset.agentConfigType === 'number') value = Number(control.value);
+          else value = control.value;
+          if (control.value !== '' || control.dataset.agentConfigType === 'boolean') setConfigAt(agentConfig, control.dataset.agentConfigPath, value);
         });
         const timeout = Number(editor.querySelector('[data-agent-timeout]').value);
         const invalidLimit = Number(editor.querySelector('[data-agent-invalid-limit]').value);
@@ -1845,7 +1926,9 @@
     function renderGameSecrets() {
       const list = document.getElementById('gameSecretList');
       if (!list) return;
-      list.innerHTML = state.gameSecretKeys.length ? state.gameSecretKeys.map(key => {
+      const agentReferences = new Set(Array.from(configForm.querySelectorAll('[data-agent-secret-reference]')).map(input => input.dataset.agentSecretReference));
+      const visibleKeys = state.gameSecretKeys.filter(key => !agentReferences.has(key));
+      list.innerHTML = visibleKeys.length ? visibleKeys.map(key => {
         const configured = state.configuredSecrets.some(item => item.key === key) && !state.secretDeletions.has(key);
         return `<div class="game-secret-row"><span class="game-secret-key">${escapeHtml(key.slice(5))}</span><input type="password" autocomplete="new-password" data-secret-update="${escapeHtml(key)}" value="${configured ? '••••••••••••' : ''}" ${configured ? 'data-secret-placeholder="true"' : ''} placeholder="${configured ? 'Enter a replacement value' : 'Enter value'}"><button class="secondary" type="button" data-reveal-secret="${escapeHtml(key)}" ${configured ? '' : 'disabled'}>Reveal</button><button class="secondary" type="button" data-delete-secret="${escapeHtml(key)}">Remove</button></div>`;
       }).join('') : '<p class="muted small">No game-specific secrets configured.</p>';
@@ -2274,6 +2357,28 @@
       return version ? `${type}, v ${version}` : type;
     }
 
+    // Visualizes reproducible agent configuration identity separately from its display name.
+    function configurationIdentityMarkup(row) {
+      if (row.participant_kind !== 'agent') return '';
+      const metadata = row.metadata || {};
+      const fingerprint = metadata.configuration_fingerprint;
+      if (!fingerprint) return '<span class="muted small">Configuration identity unavailable</span>';
+      const digest = fingerprint.includes(':') ? fingerprint.split(':').pop() : fingerprint;
+      return `<details class="configuration-identity">
+        <summary title="View agent configuration identity">${icon('settings')}${escapeHtml(digest.slice(0, 8))}</summary>
+        <div class="configuration-identity-card">
+          <strong>Agent configuration identity</strong>
+          <dl>
+            <dt>Agent</dt><dd>${escapeHtml(metadata.agent_name || 'Agent')}</dd>
+            <dt>Version</dt><dd>${escapeHtml(metadata.agent_version || 'Unversioned')}</dd>
+            <dt>Factory</dt><dd>${escapeHtml(metadata.factory || 'Unavailable')}</dd>
+          </dl>
+          <div class="configuration-fingerprint" title="Select to copy">${escapeHtml(fingerprint)}</div>
+          <p class="muted small">Same badge means the same normalized settings and secret references. Secret values are never included.</p>
+        </div>
+      </details>`;
+    }
+
     // Renders a small human or software-agent symbol without an external icon dependency.
     function participantIcon(kind) {
       return icon(kind === 'agent' ? 'bot' : 'user', 'participant-icon');
@@ -2286,7 +2391,7 @@
         <div class="participant-assignment" title="${escapeHtml(row.connection_status || '')}">
           ${roleBadge(row.role)}
           ${participantIcon(row.participant_kind)}
-          <span class="participant-copy"><strong>${escapeHtml(participantDisplayName(row))}</strong></span>
+          <span class="participant-copy"><span class="participant-name-line"><strong>${escapeHtml(participantDisplayName(row))}</strong>${configurationIdentityMarkup(row)}</span></span>
           ${row.participant_kind !== 'agent' && row.research_id ? `<button class="danger delete-participant" data-research-id="${escapeHtml(row.research_id)}" type="button">${icon('trash')}Delete data</button>` : ''}
         </div>`).join('')}</div>`;
     }

@@ -58,7 +58,9 @@ impl<G: Game> Server<G> {
         F: AgentFactory<G>,
     {
         let factory: Arc<dyn AgentFactory<G>> = Arc::new(factory);
-        let id = factory.definition().id;
+        let definition = factory.definition();
+        definition.validate()?;
+        let id = definition.id;
         if self
             .agents
             .iter()

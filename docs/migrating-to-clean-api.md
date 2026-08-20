@@ -54,8 +54,8 @@ impl Game for MyGame {
         validate_config(config)
     }
 
-    fn initial_state(&self, config: &Self::Config, seed: u64) -> anyhow::Result<Self::State> {
-        create_initial_state(config, seed)
+    fn initial_state(&self, context: GameInitializationContext<'_, Self::Config>) -> anyhow::Result<Self::State> {
+        create_initial_state(context.config, context.seed)
     }
 
     fn apply_action(
@@ -125,6 +125,8 @@ Delete participant events. Derive presentation from observations or accepted tra
 | Optional response fields | Non-empty `Response` enum variants |
 
 `Factory::create(context).await` receives only `role`, `seed`, and agent-owned `settings`. It constructs and initializes the agent before a game state exists. After creation succeeds, the runtime creates the initial state and calls `Agent::start(initial_observation)`. Do not require an observation in the constructor.
+
+Every factory must implement `identity(settings)` and return an `agent::Identity` with non-empty `name` and `version` strings. The version identifies the implementation release. Keep model, prompt, endpoint, and other configuration choices in the normalized settings; Parlando incorporates those separately into the configuration fingerprint. Newly created automated participants cannot be unversioned, although historical stored rows without version metadata remain readable.
 
 Return `Response::action(action)`, `Response::message(text)`, or `Response::action_and_message(action, text)`. Return `Ok(None)` when declining to respond. A message goes only to the other player. In a combined response, the runtime accepts the action before sending the message.
 

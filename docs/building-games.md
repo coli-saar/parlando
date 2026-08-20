@@ -8,7 +8,7 @@ Define serializable `Config`, `State`, `Action`, `Observation`, and `Completion`
 
 ```rust
 use anyhow::Result;
-use parlando::{ActionRejection, Game, PlayerRole};
+use parlando::{ActionRejection, Game, GameInitializationContext, PlayerRole};
 
 #[derive(Clone)]
 pub struct MyGame;
@@ -24,8 +24,10 @@ impl Game for MyGame {
         validate_config(config)
     }
 
-    fn initial_state(&self, config: &Self::Config, seed: u64) -> Result<Self::State> {
-        initial_state(config, seed)
+    fn initial_state(&self, context: GameInitializationContext<'_, Self::Config>) -> Result<Self::State> {
+        // Trusted compiled game code can read only experiment-owned game secrets.
+        let optional_token = context.secrets.get("provider_token");
+        initial_state(context.config, context.seed)
     }
 
     fn apply_action(
@@ -54,6 +56,8 @@ impl Game for MyGame {
     }
 }
 ```
+
+`GameInitializationContext` keeps the typed configuration, seed, and secrets separate. Secret values have no serialization implementation and redact their debug output. The secret keys omit the stored `game.` prefix.
 
 `State` is authoritative and private to the runtime. `Observation` is the complete ongoing domain information visible to one role. After an accepted action, human players and agents both receive the actor, the shared typed action, and their own resulting observation. Test both observation projections for private-information leaks. If the cause of a transition must remain hidden, use a non-revealing action value such as a `SecretAction` variant and put only permitted consequences in each observation.
 

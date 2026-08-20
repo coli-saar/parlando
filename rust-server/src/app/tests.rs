@@ -19,11 +19,13 @@ use tokio::net::TcpListener;
 use tokio_tungstenite::{connect_async, tungstenite::Message as TungsteniteMessage};
 use tower::ServiceExt;
 
-use crate::agents::{Agent, AgentContext, AgentResponse};
+use crate::agents::{Agent, AgentContext, AgentIdentity, AgentResponse};
 use crate::config::{
     AgentsConfig, AgentsMode, DatabaseConfig, DirectConfig, ExperimentIdentityConfig,
 };
-use crate::game::{ActionRejection, AgentDefinition, PlayerRole};
+use crate::game::{
+    ActionRejection, AgentConfigField, AgentConfigValue, AgentDefinition, PlayerRole, SecretPurpose,
+};
 
 use super::*;
 
@@ -215,6 +217,13 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(ADMIN_EXPERIMENT_HTML.contains("Settings saved"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Configured ("));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-secret-placeholder"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("data-agent-secret-field"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("data-reveal-agent-secret"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("Select a game secret"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains(".session-list { align-content: start;"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("grid-auto-rows: max-content"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Agent configuration identity"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("${escapeHtml(digest.slice(0, 8))}</summary>"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("refreshDraftActivationWarning"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("End-of-utterance silence (seconds)"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("inputmode=\"decimal\""));
@@ -407,6 +416,43 @@ fn game_configuration_rejects_credential_shaped_fields() {
     .unwrap_err();
     assert!(error.to_string().contains("provider.access_token"));
     assert!(error.to_string().contains("Game secrets"));
+}
+
+/// Preserves semantic references while erasing actual values under credential-shaped keys.
+#[test]
+fn persisted_configuration_distinguishes_secret_references_from_values() {
+    let mut reference = json!({"api_key": "game.agent_secret"});
+    redact_secret_fields(&mut reference);
+    assert_eq!(reference["api_key"], "game.agent_secret");
+
+    let mut credential = json!({"api_key": "sentinel-secret-value"});
+    redact_secret_fields(&mut credential);
+    assert_eq!(credential["api_key"], "");
+}
+
+/// Repairs a historically blanked reference when its separately stored secret survives.
+#[test]
+fn hydrated_configuration_repairs_legacy_agent_secret_references() {
+    let mut config = ExperimentConfig::default();
+    config.agents = AgentsConfig {
+        mode: AgentsMode::HumanVsAgent,
+        human_vs_agent: Some(crate::config::HumanVsAgentConfig {
+            factory: Some("secret.agent".to_string()),
+            config: json!({"api_key": ""}),
+            ..Default::default()
+        }),
+    };
+    config.game_secrets.insert(
+        "agent_secret_agent_api_key".to_string(),
+        "sentinel-secret-value".to_string(),
+    );
+
+    repair_legacy_agent_secret_references(&[SecretAgentFactory.definition()], &mut config);
+
+    assert_eq!(
+        config.agents.human_vs_agent.unwrap().config["api_key"],
+        "game.agent_secret_agent_api_key"
+    );
 }
 
 /// Confirms game-wide provider and experiment game secrets require explicit reveal.
@@ -923,6 +969,62 @@ async fn hosted_voice_services_without_credentials_block_experiment_start() {
         .as_str()
         .unwrap()
         .contains("Speechmatics API key"));
+}
+
+/// Confirms catalogue badges and lifecycle controls receive identical agent readiness.
+#[tokio::test]
+async fn catalogue_readiness_includes_missing_agent_secret_references() {
+    let (mut config, _tmp) = sqlite_config();
+    config.agents = AgentsConfig {
+        mode: AgentsMode::HumanVsAgent,
+        human_vs_agent: Some(crate::config::HumanVsAgentConfig {
+            factory: Some("secret.agent".to_string()),
+            config: json!({"api_key": "game.agent_secret"}),
+            ..Default::default()
+        }),
+    };
+    let router = super::build_router(
+        TinyAdapter,
+        config,
+        ServeOptions {
+            agent_factory: Some(Arc::new(SecretAgentFactory)),
+            ..ServeOptions::default()
+        },
+    )
+    .await
+    .expect("a missing agent secret remains an editable inactive draft");
+    authenticate_test_admin(router.clone()).await.unwrap();
+
+    let (_, catalogue) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments",
+        Value::Null,
+    )
+    .await;
+    let experiment = &catalogue["experiments"][0];
+    assert_eq!(experiment["configuration_valid"], true);
+    assert_eq!(experiment["runnable"], false);
+    assert!(
+        experiment["runnable_issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue.as_str().unwrap().contains("game.agent_secret")),
+        "unexpected catalogue readiness: {experiment:#}"
+    );
+
+    let (_, dashboard_config) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/experiments/step5/config",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        experiment["runnable_issues"], dashboard_config["activation_issues"],
+        "catalogue badges and lifecycle controls must share readiness diagnostics"
+    );
 }
 
 /// Confirms test sessions and their dependent rows are absent from every export variant input.
@@ -1656,6 +1758,47 @@ impl Agent<TinyAdapter> for NoopAgent {
 
 struct NoopAgentFactory;
 
+struct SecretAgentFactory;
+
+/// Returns the stable identity shared by runtime-only test factories.
+fn test_agent_identity() -> Result<AgentIdentity> {
+    Ok(AgentIdentity {
+        name: "TestAgent".to_string(),
+        version: "1".to_string(),
+    })
+}
+
+#[async_trait]
+impl AgentFactory<TinyAdapter> for SecretAgentFactory {
+    /// Declares one required factory-purpose credential for readiness tests.
+    fn definition(&self) -> AgentDefinition {
+        AgentDefinition {
+            id: "secret.agent".to_string(),
+            name: "Secret agent".to_string(),
+            description: "Agent with a required credential.".to_string(),
+            config_fields: vec![AgentConfigField {
+                key: "api_key".to_string(),
+                label: "API key".to_string(),
+                help: "Required test credential.".to_string(),
+                value: AgentConfigValue::SecretReference {
+                    purpose: SecretPurpose::Factory,
+                },
+                required: true,
+                default_value: Value::Null,
+            }],
+        }
+    }
+
+    /// Creates the existing no-op agent; readiness is tested before construction.
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
+        Ok(Box::new(NoopAgent))
+    }
+
+    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+        test_agent_identity()
+    }
+}
+
 /// Returns minimal metadata for runtime-only test agents.
 fn test_agent_definition() -> AgentDefinition {
     AgentDefinition {
@@ -1674,6 +1817,10 @@ impl AgentFactory<TinyAdapter> for NoopAgentFactory {
 
     async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
         Ok(Box::new(NoopAgent))
+    }
+
+    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+        test_agent_identity()
     }
 }
 
@@ -1737,6 +1884,10 @@ impl AgentFactory<TinyAdapter> for ScriptedAgentFactory {
             script: script.into(),
         }))
     }
+
+    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+        test_agent_identity()
+    }
 }
 
 struct RecordingActionsAgent {
@@ -1768,6 +1919,10 @@ impl AgentFactory<TinyAdapter> for RecordingActionsAgentFactory {
         Ok(Box::new(RecordingActionsAgent {
             seen_actions: self.seen_actions.clone(),
         }))
+    }
+
+    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+        test_agent_identity()
     }
 }
 
@@ -1839,6 +1994,10 @@ impl AgentFactory<TinyAdapter> for RecordingObservationsAgentFactory {
             observations: self.observations.clone(),
         }))
     }
+
+    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+        test_agent_identity()
+    }
 }
 
 struct SequencedDecisionAgent {
@@ -1899,6 +2058,10 @@ impl AgentFactory<TinyAdapter> for SequencedDecisionAgentFactory {
             decisions: 0,
         }))
     }
+
+    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+        test_agent_identity()
+    }
 }
 
 struct MockTtsProvider {
@@ -1954,7 +2117,10 @@ impl Game for TinyAdapter {
     type Observation = TinyObservation;
     type Completion = TinySummary;
 
-    fn initial_state(&self, _config: &Self::Config, _seed: u64) -> Result<Self::State> {
+    fn initial_state(
+        &self,
+        _context: GameInitializationContext<'_, Self::Config>,
+    ) -> Result<Self::State> {
         Ok(TinyState { done: false })
     }
 
@@ -2007,8 +2173,11 @@ impl Game for NoAvailableActionsAdapter {
     type Observation = TinyObservation;
     type Completion = TinySummary;
 
-    fn initial_state(&self, config: &Self::Config, seed: u64) -> Result<Self::State> {
-        TinyAdapter.initial_state(config, seed)
+    fn initial_state(
+        &self,
+        context: GameInitializationContext<'_, Self::Config>,
+    ) -> Result<Self::State> {
+        TinyAdapter.initial_state(context)
     }
 
     fn apply_action(
@@ -2036,8 +2205,11 @@ impl Game for LossSummaryAdapter {
     type Observation = TinyObservation;
     type Completion = TinySummary;
 
-    fn initial_state(&self, config: &Self::Config, seed: u64) -> Result<Self::State> {
-        TinyAdapter.initial_state(config, seed)
+    fn initial_state(
+        &self,
+        context: GameInitializationContext<'_, Self::Config>,
+    ) -> Result<Self::State> {
+        TinyAdapter.initial_state(context)
     }
 
     fn apply_action(
@@ -4712,6 +4884,10 @@ impl AgentFactory<LifecycleOrderGame> for LifecycleOrderFactory {
         self.events.lock().unwrap().push("agent_created");
         Ok(Box::new(LifecycleOrderAgent))
     }
+
+    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+        test_agent_identity()
+    }
 }
 
 impl Game for LifecycleOrderGame {
@@ -4722,7 +4898,10 @@ impl Game for LifecycleOrderGame {
     type Completion = TinySummary;
 
     /// Records initial-state construction after the agent factory has completed.
-    fn initial_state(&self, _config: &Self::Config, _seed: u64) -> Result<Self::State> {
+    fn initial_state(
+        &self,
+        _context: GameInitializationContext<'_, Self::Config>,
+    ) -> Result<Self::State> {
         self.events.lock().unwrap().push("initial_state");
         Ok(TinyState { done: false })
     }

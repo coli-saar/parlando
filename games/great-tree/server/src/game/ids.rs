@@ -22,7 +22,10 @@ impl LimbId {
     ];
 
     pub fn index(self) -> usize {
-        Self::ALL.iter().position(|&id| id == self).expect("LimbId::ALL is exhaustive")
+        Self::ALL
+            .iter()
+            .position(|&id| id == self)
+            .expect("LimbId::ALL is exhaustive")
     }
 }
 
@@ -47,7 +50,10 @@ impl RootId {
     ];
 
     pub fn index(self) -> usize {
-        Self::ALL.iter().position(|&id| id == self).expect("RootId::ALL is exhaustive")
+        Self::ALL
+            .iter()
+            .position(|&id| id == self)
+            .expect("RootId::ALL is exhaustive")
     }
 }
 
@@ -72,11 +78,17 @@ mod tests {
     #[test]
     fn limb_id_serializes_as_lowercase_camel_case() {
         assert_eq!(serde_json::to_string(&LimbId::Spire).unwrap(), "\"spire\"");
-        assert_eq!(serde_json::to_string(&LimbId::Cradle).unwrap(), "\"cradle\"");
+        assert_eq!(
+            serde_json::to_string(&LimbId::Cradle).unwrap(),
+            "\"cradle\""
+        );
     }
 
     #[test]
     fn root_id_serializes_as_lowercase_camel_case() {
-        assert_eq!(serde_json::to_string(&RootId::Swollen).unwrap(), "\"swollen\"");
+        assert_eq!(
+            serde_json::to_string(&RootId::Swollen).unwrap(),
+            "\"swollen\""
+        );
     }
 }

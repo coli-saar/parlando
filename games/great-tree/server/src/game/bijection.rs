@@ -1,5 +1,5 @@
-use rand::seq::SliceRandom;
 use rand::rngs::StdRng;
+use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 
 use super::ids::{LimbId, RootId};

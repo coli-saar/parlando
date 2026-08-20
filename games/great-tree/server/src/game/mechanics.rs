@@ -139,7 +139,13 @@ mod tests {
             sun_holds: vec![],
             water_holds: vec![],
             limb_water: [false; 5],
-            bijection: [RootId::Hand, RootId::Knot, RootId::Tip, RootId::Swollen, RootId::Deep],
+            bijection: [
+                RootId::Hand,
+                RootId::Knot,
+                RootId::Tip,
+                RootId::Swollen,
+                RootId::Deep,
+            ],
         }
     }
 
@@ -197,9 +203,18 @@ mod tests {
 
         let next = apply_set_sun(&state, LimbId::Spire, false);
 
-        assert!(!next.water_holds.contains(&RootId::Hand), "root must re-freeze and close");
-        assert!(!water(&next, LimbId::Spire), "losing sun must dry the limb out completely");
-        assert!(!flowered(&next, LimbId::Spire), "sun&&water is false, so it must have shriveled");
+        assert!(
+            !next.water_holds.contains(&RootId::Hand),
+            "root must re-freeze and close"
+        );
+        assert!(
+            !water(&next, LimbId::Spire),
+            "losing sun must dry the limb out completely"
+        );
+        assert!(
+            !flowered(&next, LimbId::Spire),
+            "sun&&water is false, so it must have shriveled"
+        );
     }
 
     #[test]
@@ -215,7 +230,10 @@ mod tests {
 
         assert!(!next.sun_holds.contains(&LimbId::Spire));
         assert!(!next.water_holds.contains(&RootId::Hand));
-        assert!(!water(&next, LimbId::Spire), "eviction must dry the limb out, same as explicit false");
+        assert!(
+            !water(&next, LimbId::Spire),
+            "eviction must dry the limb out, same as explicit false"
+        );
     }
 
     #[test]
@@ -256,12 +274,16 @@ mod tests {
         state = apply_set_sun(&state, LimbId::Fork, true);
         state = apply_set_sun(&state, LimbId::Cradle, true);
         state = apply_set_sun(&state, LimbId::Spire, true); // now [Fork, Cradle, Spire] hold sun
-        state = apply_set_flow(&state, RootId::Tip, true).unwrap();   // fed by Fork
+        state = apply_set_flow(&state, RootId::Tip, true).unwrap(); // fed by Fork
         state = apply_set_flow(&state, RootId::Swollen, true).unwrap(); // fed by Cradle
-        state = apply_set_flow(&state, RootId::Hand, true).unwrap();  // fed by Spire
+        state = apply_set_flow(&state, RootId::Hand, true).unwrap(); // fed by Spire
 
         let next = apply_set_flow(&state, RootId::Knot, true); // Hook is not currently sunlit
-        assert_eq!(next, Err(FlowRejection::RootFrozen), "Knot's warming limb (Hook) has no sun");
+        assert_eq!(
+            next,
+            Err(FlowRejection::RootFrozen),
+            "Knot's warming limb (Hook) has no sun"
+        );
     }
 
     #[test]
@@ -270,7 +292,10 @@ mod tests {
         let state = apply_set_flow(&state, RootId::Hand, true).unwrap();
         let next = apply_set_flow(&state, RootId::Hand, false).unwrap();
         assert!(!running(&next, RootId::Hand));
-        assert!(!water(&next, LimbId::Spire), "explicit close must clear the limb water latch");
+        assert!(
+            !water(&next, LimbId::Spire),
+            "explicit close must clear the limb water latch"
+        );
     }
 
     #[test]

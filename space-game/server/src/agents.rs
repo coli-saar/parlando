@@ -43,7 +43,7 @@ impl AgentFactory<SpaceGame> for BackAndForthAgentFactory {
     fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
         Ok(AgentIdentity {
             name: "BackAndForthAgent".to_string(),
-            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            version: "1".to_string(),
         })
     }
 }
@@ -345,11 +345,19 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn space_game_agent_uses_identity_version_one() {
+        let identity = BackAndForthAgentFactory.identity(&Value::Null).unwrap();
+        assert_eq!(identity.version, "1");
+    }
+
     fn init_context(role: PlayerRole) -> AgentContext {
         AgentContext {
             role,
             seed: 1,
             settings: Value::Null,
+            factory_secrets: parlando::SecretValues::default(),
+            agent_instance_secrets: parlando::SecretValues::default(),
         }
     }
 

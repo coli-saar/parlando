@@ -9,7 +9,7 @@ import inspect
 import os
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Optional
 
@@ -39,6 +39,26 @@ def _generated_modules() -> tuple[Any, Any]:
 PlayerRole = Literal["A", "B"]
 
 
+class SecretValues:
+    """Non-serializable values explicitly authorized for this agent instance."""
+
+    def __init__(self, values: dict[str, str]) -> None:
+        """Stores one isolated path-to-value mapping."""
+        self._values = dict(values)
+
+    def get(self, path: str) -> str | None:
+        """Returns one referenced value by its semantic configuration path."""
+        return self._values.get(path)
+
+    def __repr__(self) -> str:
+        """Redacts all secret material from diagnostics."""
+        return "SecretValues([REDACTED])"
+
+    def __eq__(self, other: object) -> bool:
+        """Compares isolated values without exposing them in assertion output."""
+        return isinstance(other, SecretValues) and self._values == other._values
+
+
 @dataclass(frozen=True)
 class Context:
     """Session-local information supplied before an agent receives game data."""
@@ -46,6 +66,7 @@ class Context:
     role: PlayerRole
     seed: int
     settings: dict[str, Any]
+    secrets: SecretValues = field(default_factory=lambda: SecretValues({}))
 
 
 @dataclass(frozen=True)
@@ -141,7 +162,7 @@ class _AgentService:
     async def CreateAgent(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote CreateAgent request from the Rust server."""
         await self._authenticate(context)
-        if request.protocol_version != "parlando-agent-v3":
+        if request.protocol_version != "parlando-agent-v4":
             await context.abort(
                 grpc.StatusCode.FAILED_PRECONDITION,
                 "unsupported protocol version",
@@ -158,6 +179,7 @@ class _AgentService:
             role=request.role,
             seed=request.seed,
             settings=_struct_to_dict(request.config),
+            secrets=SecretValues(_struct_to_dict(request.agent_instance_secrets)),
         )
         try:
             maybe_agent = self._factory(init_context)

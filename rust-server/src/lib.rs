@@ -14,16 +14,22 @@ mod storage;
 mod transcription;
 mod tts;
 
-pub use game::{ActionRejection, Game, GameMetadata, PlayerRole};
+pub use game::{
+    ActionRejection, Game, GameInitializationContext, GameMetadata, PlayerRole, SecretValues,
+};
 pub use server::Server;
 
 /// APIs for implementing optional computer-controlled players.
 pub mod agent {
     pub use crate::agents::{
-        Agent, AgentContext as Context, AgentFactory as Factory, AgentIdentity as Identity,
-        AgentResponse as Response,
+        configuration_fingerprint, Agent, AgentContext as Context, AgentFactory as Factory,
+        AgentIdentity as Identity, AgentResponse as Response,
     };
-    pub use crate::game::{AgentConfigField as ConfigField, AgentDefinition as Definition};
+    pub use crate::game::{
+        AgentConfigChoice as Choice, AgentConfigField as ConfigField,
+        AgentConfigValue as ConfigValue, AgentDefinition as Definition, SecretPurpose,
+        StringFormat,
+    };
 
     /// Adapter for agents hosted behind Parlando's versioned gRPC protocol.
     pub mod grpc {

@@ -8,7 +8,9 @@ handles request dispatch and response conversion.
 Agent authors implement async observation callbacks such as `start`,
 `observe_transition`, `observe_message`, and `finish`, then respond from
 `respond(available_actions)`. A factory may receive a small immutable `Context`
-containing the player's role, deterministic seed, and agent-specific settings.
+containing the player's role, deterministic seed, normalized agent settings, and
+an isolated redacting `secrets` lookup for values explicitly authorized for the
+remote agent instance.
 It receives no room identity, transport details, frontend data, or initial game
 observation.
 

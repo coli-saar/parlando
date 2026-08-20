@@ -1321,8 +1321,6 @@ dependencies = [
 [[package]]
 name = "parlando"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "103ec94dd71d43f2bac804e23436b5857fd7e08dbc3f0fa1d10f6d7f177f05f0"
 dependencies = [
  "anyhow",
  "argon2",

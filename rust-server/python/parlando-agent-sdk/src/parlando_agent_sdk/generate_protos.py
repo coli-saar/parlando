@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import grpc_tools
 from grpc_tools import protoc
 
 
@@ -16,10 +17,12 @@ def main() -> int:
     init_file = generated_dir / "__init__.py"
     init_file.touch()
     proto_file = proto_dir / "parlando_agent_v3.proto"
+    bundled_proto_dir = Path(grpc_tools.__file__).resolve().parent / "_proto"
     return protoc.main(
         [
             "grpc_tools.protoc",
             f"--proto_path={proto_dir}",
+            f"--proto_path={bundled_proto_dir}",
             f"--python_out={generated_dir}",
             f"--grpc_python_out={generated_dir}",
             str(proto_file),

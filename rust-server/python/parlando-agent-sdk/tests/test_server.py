@@ -170,12 +170,13 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     def create_request(self) -> SimpleNamespace:
         """Builds a complete CreateAgent request with an absent optional seed."""
         return SimpleNamespace(
-            protocol_version="parlando-agent-v3",
+            protocol_version="parlando-agent-v4",
             agent_name="test-agent",
             agent_version="1.0.0",
             role="B",
             seed=0,
             config=server._dict_to_struct({"difficulty": 2}),
+            agent_instance_secrets=server._dict_to_struct({"config.token": "sentinel"}),
         )
 
     async def test_authentication_accepts_exact_bearer_and_rejects_others(self) -> None:
@@ -223,6 +224,19 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         created = await service.CreateAgent(self.create_request(), FakeContext())
         self.assertIn(created.agent_id, service._agents)
 
+    async def test_factory_receives_separate_redacting_secrets(self) -> None:
+        """Agent-instance values stay separate from ordinary settings and diagnostics."""
+        contexts: list[server.Context] = []
+
+        def factory(context: server.Context) -> RecordingAgent:
+            contexts.append(context)
+            return RecordingAgent()
+
+        await self.service(factory).CreateAgent(self.create_request(), FakeContext())
+        self.assertEqual(contexts[0].settings, {"difficulty": 2})
+        self.assertEqual(contexts[0].secrets.get("config.token"), "sentinel")
+        self.assertNotIn("sentinel", repr(contexts[0].secrets))
+
     async def test_observation_and_double_shutdown_delegate_safely(self) -> None:
         """RPC conversion reaches the agent and repeated shutdown closes it only once."""
         agent = RecordingAgent()
@@ -269,7 +283,14 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         await service.CreateAgent(self.create_request(), FakeContext())
         self.assertEqual(
             contexts,
-            [server.Context(role="B", seed=0, settings={"difficulty": 2.0})],
+            [
+                server.Context(
+                    role="B",
+                    seed=0,
+                    settings={"difficulty": 2.0},
+                    secrets=server.SecretValues({"config.token": "sentinel"}),
+                )
+            ],
         )
 
     async def test_unknown_agent_ids_abort(self) -> None:

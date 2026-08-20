@@ -15,7 +15,7 @@ pub trait Game: Send + Sync + 'static {
     type Completion;
 
     fn validate_config(&self, config: &Self::Config) -> anyhow::Result<()>;
-    fn initial_state(&self, config: &Self::Config, seed: u64) -> anyhow::Result<Self::State>;
+    fn initial_state(&self, context: GameInitializationContext<'_, Self::Config>) -> anyhow::Result<Self::State>;
     fn apply_action(&self, state: &Self::State, action: &Self::Action, actor: PlayerRole)
         -> Result<Self::State, ActionRejection>;
     fn observation(&self, state: &Self::State, role: PlayerRole) -> Self::Observation;
@@ -28,6 +28,8 @@ pub trait Game: Send + Sync + 'static {
 ```
 
 Associated types must satisfy the serialization and clone bounds in the actual trait. `State` is authoritative and runtime-private. `Observation` is complete for one role. `Action` is deserialized automatically and, once accepted, delivered to both player roles alongside their role-specific observations. `apply_action` combines authorization, validation, and transition and performs no I/O. `available_actions` is optional guidance. `transition_metadata` is structured, role-neutral analysis data. `completion` atomically expresses terminal detection and a shared result safe for both roles.
+
+Read configuration and seed from `GameInitializationContext`; game-owned experiment secrets are available through its redacting `secrets.get(key)` lookup. Never copy a value into state, logs, or serialized configuration.
 
 Do not define `Event`, expose state, split validation from application, or render human prose in mechanics.
 

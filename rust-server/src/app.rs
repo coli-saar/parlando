@@ -39,7 +39,10 @@ use tower_http::{
 };
 
 use crate::{
-    agents::{Agent, AgentContext, AgentFactory, AgentResponse, SharedAgentFactory},
+    agents::{
+        configuration_fingerprint, Agent, AgentContext, AgentFactory, AgentResponse,
+        SharedAgentFactory,
+    },
     audio::{
         AudioFrame, AudioOutbound, AudioRoomRegistry, SharedAudioRooms, AUDIO_CHANNELS,
         AUDIO_FRAME_DURATION_MS, AUDIO_PROTOCOL_VERSION, AUDIO_SAMPLE_RATE,
@@ -52,7 +55,8 @@ use crate::{
     },
     config::{AgentsMode, ConsentItemConfig, ExperimentConfig},
     game::{
-        parse_game_config, ActionRejection, AgentDefinition, Game, GameMetadata, PlayerRole, Seat,
+        parse_game_config, ActionRejection, AgentConfigField, AgentConfigValue, AgentDefinition,
+        Game, GameInitializationContext, GameMetadata, PlayerRole, Seat, SecretValues,
     },
     identity::{new_id, room_code},
     protocol::*,
@@ -256,6 +260,7 @@ async fn hydrated_experiment_config<A: Game>(
         .map_err(|error| AppError::bad_request(error.to_string()))?;
     let experiment_secrets = state.store.experiment_secrets(experiment_id).await?;
     apply_experiment_secrets(&mut config, &experiment_secrets);
+    repair_legacy_agent_secret_references(&state.agent_definitions, &mut config);
     let game_secrets = state.store.game_secrets().await?;
     let game_settings = state.game_settings.read().await.clone();
     apply_game_provider_settings(
@@ -267,12 +272,105 @@ async fn hydrated_experiment_config<A: Game>(
     Ok(config)
 }
 
+/// Repairs references erased by the former credential-shaped-field redactor.
+fn repair_legacy_agent_secret_references(
+    definitions: &[AgentDefinition],
+    config: &mut ExperimentConfig,
+) {
+    let Some(selected) = config.agents.human_vs_agent.as_mut() else {
+        return;
+    };
+    let Some(factory_id) = selected
+        .factory
+        .as_deref()
+        .or_else(|| definitions.first().map(|definition| definition.id.as_str()))
+    else {
+        return;
+    };
+    let Some(definition) = definitions
+        .iter()
+        .find(|definition| definition.id == factory_id)
+    else {
+        return;
+    };
+    let Some(settings) = selected.config.as_object_mut() else {
+        return;
+    };
+    repair_legacy_agent_secret_fields(
+        &definition.config_fields,
+        settings,
+        factory_id,
+        "",
+        &config.game_secrets,
+    );
+}
+
+/// Restores only empty references whose dashboard-derived secret actually exists.
+fn repair_legacy_agent_secret_fields(
+    fields: &[AgentConfigField],
+    settings: &mut serde_json::Map<String, Value>,
+    factory_id: &str,
+    parent_path: &str,
+    secrets: &HashMap<String, String>,
+) {
+    for field in fields {
+        let path = if parent_path.is_empty() {
+            field.key.clone()
+        } else {
+            format!("{parent_path}.{}", field.key)
+        };
+        match &field.value {
+            AgentConfigValue::Object { fields } => {
+                if let Some(object) = settings.get_mut(&field.key).and_then(Value::as_object_mut) {
+                    repair_legacy_agent_secret_fields(fields, object, factory_id, &path, secrets);
+                }
+            }
+            AgentConfigValue::SecretReference { .. } => {
+                let missing = settings
+                    .get(&field.key)
+                    .is_none_or(|value| value.as_str().is_none_or(str::is_empty));
+                if !missing {
+                    continue;
+                }
+                let key = derived_agent_secret_key(factory_id, &path);
+                if secrets.contains_key(&key) {
+                    settings.insert(field.key.clone(), Value::String(format!("game.{key}")));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Mirrors the dashboard's stable hidden key for an agent-owned credential.
+fn derived_agent_secret_key(factory_id: &str, path: &str) -> String {
+    format!("agent_{factory_id}_{path}")
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .take(128)
+        .collect()
+}
+
 /// Computes intake blockers while honoring providers injected by an embedding application.
 async fn experiment_activation_issues<A: Game>(
     state: &Arc<AppState<A>>,
     experiment_id: &str,
 ) -> Result<Vec<String>, AppError> {
     let mut config = hydrated_experiment_config(state, experiment_id).await?;
+    Ok(activation_issues_for_config(state, &mut config))
+}
+
+/// Computes every runtime-readiness blocker from one hydrated configuration.
+fn activation_issues_for_config<A: Game>(
+    state: &AppState<A>,
+    config: &mut ExperimentConfig,
+) -> Vec<String> {
     if state.transcription_provider_is_override {
         config.speechmatics.api_key = "provided-by-runtime".to_string();
     }
@@ -280,7 +378,41 @@ async fn experiment_activation_issues<A: Game>(
         config.tts.api_key = "provided-by-runtime".to_string();
         config.tts.voice_id = "provided-by-runtime".to_string();
     }
-    Ok(config.activation_issues())
+    let mut issues = config.activation_issues();
+    if let Err(error) = validate_agent_configuration(&state.agent_definitions, &config, true) {
+        issues.push(error.to_string());
+    }
+    issues
+}
+
+/// Validates the selected factory settings and, when requested, referenced secret availability.
+fn validate_agent_configuration(
+    definitions: &[AgentDefinition],
+    config: &ExperimentConfig,
+    require_secrets: bool,
+) -> Result<()> {
+    if config.agents.mode != AgentsMode::HumanVsAgent {
+        return Ok(());
+    }
+    let selected = config
+        .agents
+        .human_vs_agent
+        .as_ref()
+        .context("human-versus-agent configuration is missing")?;
+    let factory_id = selected
+        .factory
+        .as_deref()
+        .or_else(|| definitions.first().map(|definition| definition.id.as_str()))
+        .context("no agent factory is selected")?;
+    let definition = definitions
+        .iter()
+        .find(|definition| definition.id == factory_id)
+        .with_context(|| format!("unknown agent factory {factory_id:?}"))?;
+    let normalized = definition.normalize_settings(&selected.config)?;
+    if require_secrets {
+        definition.resolve_secrets(&normalized, &config.game_secrets)?;
+    }
+    Ok(())
 }
 
 /// Extracts non-empty process bootstrap credentials for experiment fallback and reveal.
@@ -314,7 +446,12 @@ fn redact_secret_fields(value: &mut Value) {
                         "api_key" | "apikey" | "password" | "password_hash" | "token" | "secret"
                     )
                 {
-                    *child = Value::String(String::new());
+                    if !child
+                        .as_str()
+                        .is_some_and(is_experiment_game_secret_reference)
+                    {
+                        *child = Value::String(String::new());
+                    }
                 } else {
                     redact_secret_fields(child);
                 }
@@ -323,6 +460,17 @@ fn redact_secret_fields(value: &mut Value) {
         Value::Array(items) => items.iter_mut().for_each(redact_secret_fields),
         _ => {}
     }
+}
+
+/// Recognizes the non-secret identifier stored by semantic secret-reference fields.
+fn is_experiment_game_secret_reference(value: &str) -> bool {
+    value.strip_prefix("game.").is_some_and(|key| {
+        !key.is_empty()
+            && key.len() <= 128
+            && key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    })
 }
 
 /// Encodes a SHA-256 digest as lowercase hexadecimal without adding another dependency.
@@ -2326,13 +2474,13 @@ where
             .as_ref()
             .and_then(|config| config.seed)
             .unwrap_or(room_seed);
-        let settings = state
+        let raw_settings = state
             .config
             .agents
             .human_vs_agent
             .as_ref()
             .map(|config| config.config.clone())
-            .unwrap_or(Value::Null);
+            .unwrap_or_else(|| json!({}));
         let factory = state.agent_factory.clone().ok_or_else(|| {
             AppError::new(StatusCode::SERVICE_UNAVAILABLE, "No agent is registered")
         })?;
@@ -2343,10 +2491,27 @@ where
             .as_ref()
             .map(|config| config.act_timeout_seconds)
             .unwrap_or(10.0);
+        let definition = factory.definition();
+        let settings = definition.normalize_settings(&raw_settings).map_err(|_| {
+            AppError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "The configured agent settings are invalid",
+            )
+        })?;
+        let (factory_secrets, agent_instance_secrets) = definition
+            .resolve_secrets(&settings, &state.config.game_secrets)
+            .map_err(|_| {
+                AppError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "The configured agent references an unavailable secret",
+                )
+            })?;
         let context = AgentContext {
             role: PlayerRole::B,
             seed: agent_seed,
             settings,
+            factory_secrets,
+            agent_instance_secrets,
         };
         let agent =
             match tokio::time::timeout(Duration::from_secs_f64(timeout), factory.create(context))
@@ -2597,9 +2762,19 @@ async fn add_agent_to_room<A: Game>(
         .map(|room| room.purpose.clone())
         .ok_or_else(|| AppError::not_found("Room not found."))?;
     let configured_agent = state.config.agents.human_vs_agent.as_ref();
-    let agent_settings = configured_agent
+    let raw_agent_settings = configured_agent
         .map(|config| config.config.clone())
-        .unwrap_or(Value::Null);
+        .unwrap_or_else(|| json!({}));
+    let factory_definition = state
+        .agent_factory
+        .as_ref()
+        .map(|factory| factory.definition())
+        .ok_or_else(|| AppError::new(StatusCode::SERVICE_UNAVAILABLE, "No agent is registered"))?;
+    let agent_settings = factory_definition
+        .normalize_settings(&raw_agent_settings)
+        .map_err(AppError::from)?;
+    let fingerprint = configuration_fingerprint(&factory_definition.id, &agent_settings)
+        .map_err(AppError::from)?;
     let factory_identity = state
         .agent_factory
         .as_ref()
@@ -2607,20 +2782,16 @@ async fn add_agent_to_room<A: Game>(
         .transpose()
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::new(StatusCode::SERVICE_UNAVAILABLE, "No agent is registered"))?;
-    let factory_definition = state
-        .agent_factory
-        .as_ref()
-        .map(|factory| factory.definition())
-        .ok_or_else(|| AppError::new(StatusCode::SERVICE_UNAVAILABLE, "No agent is registered"))?;
-    let external_id = Some(match factory_identity.version.as_deref() {
-        Some(version) => format!("{}@{}", factory_identity.name, version),
-        None => format!("{}@unversioned", factory_identity.name),
-    });
+    factory_identity.validate().map_err(AppError::from)?;
+    let external_id = Some(format!(
+        "{}@{}#{fingerprint}",
+        factory_identity.name, factory_identity.version
+    ));
     let metadata = json!({
         "agent_name": factory_identity.name,
         "agent_version": factory_identity.version,
         "factory": factory_definition.id,
-        "config": agent_settings,
+        "configuration_fingerprint": fingerprint,
     });
     let agent_metadata = metadata.clone();
     let agent_participant_db_id = state
@@ -2812,7 +2983,13 @@ fn create_room_locked<A: Game>(
             seed,
             state: state
                 .adapter
-                .initial_state(&state.game_config, seed)
+                .initial_state(GameInitializationContext {
+                    config: &state.game_config,
+                    seed,
+                    secrets: &SecretValues::new(
+                        state.config.game_secrets.clone().into_iter().collect(),
+                    ),
+                })
                 .map_err(|error| AppError::bad_request(error.to_string()))?,
             status: "waiting".to_string(),
             participants,
@@ -3981,14 +4158,7 @@ async fn experiment_catalogue_readiness<A: Game>(
                 .to_string(),
         );
     }
-    if state.transcription_provider_is_override {
-        config.speechmatics.api_key = "provided-by-runtime".to_string();
-    }
-    if state.tts_provider_is_override {
-        config.tts.api_key = "provided-by-runtime".to_string();
-        config.tts.voice_id = "provided-by-runtime".to_string();
-    }
-    issues.extend(config.activation_issues());
+    issues.extend(activation_issues_for_config(state, &mut config));
     (true, None, issues.is_empty(), issues)
 }
 
@@ -4007,6 +4177,8 @@ async fn admin_create_experiment<A: Game>(
     config.experiment.id = Some(request.experiment_id.clone());
     config
         .validate()
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    validate_agent_configuration(&state.agent_definitions, &config, false)
         .map_err(|error| AppError::bad_request(error.to_string()))?;
     let persisted = persistable_config_json(&config)?;
     state
@@ -5571,6 +5743,7 @@ fn research_export(exported: Value, privacy_contract_version: &str) -> Value {
                 (
                     row.get("research_id")?.as_str()?.to_string(),
                     row.get("participant_kind")?.as_str()?.to_string(),
+                    row.get("metadata").cloned().unwrap_or(Value::Null),
                 ),
             ))
         })
@@ -5606,6 +5779,14 @@ fn research_export(exported: Value, privacy_contract_version: &str) -> Value {
             json!({
                 "participant_id": pseudonym,
                 "participant_kind": participant_details.get(participant_id).map(|details| &details.1),
+                "agent_identity": participant_details.get(participant_id).and_then(|details| {
+                    (details.1 == "agent").then(|| json!({
+                        "factory_id": details.2.get("factory"),
+                        "agent_name": details.2.get("agent_name"),
+                        "agent_version": details.2.get("agent_version"),
+                        "configuration_fingerprint": details.2.get("configuration_fingerprint"),
+                    }))
+                }),
             })
         })
         .collect::<Vec<_>>();
@@ -5746,6 +5927,7 @@ fn corpus_export(research: Value) -> Value {
             Some(json!({
                 "participant_id": participant_labels.get(source),
                 "participant_kind": row.get("participant_kind"),
+                "agent_identity": row.get("agent_identity"),
             }))
         })
         .collect::<Vec<_>>();
@@ -7407,15 +7589,25 @@ async fn maybe_start_agent<A: Game>(
             .human_vs_agent
             .as_ref()
             .map(|config| config.config.clone())
-            .unwrap_or(Value::Null);
+            .unwrap_or_else(|| json!({}));
+        let definition = factory.definition();
+        let Ok(agent_settings) = definition.normalize_settings(&agent_settings) else {
+            return;
+        };
         let Ok(agent_identity) = factory.identity(&agent_settings) else {
             return;
         };
-        let definition = factory.definition();
+        if agent_identity.validate().is_err() {
+            return;
+        }
+        let Ok(fingerprint) = configuration_fingerprint(&definition.id, &agent_settings) else {
+            return;
+        };
         let agent_metadata = json!({
             "agent_name": agent_identity.name,
             "agent_version": agent_identity.version,
             "factory": definition.id,
+            "configuration_fingerprint": fingerprint,
         });
         {
             let mut memory = state.memory.write().await;

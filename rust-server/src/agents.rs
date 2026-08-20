@@ -3,16 +3,29 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
-use crate::game::{AgentDefinition, Game, PlayerRole};
+use crate::game::{AgentDefinition, Game, PlayerRole, SecretValues};
 
 /// Stable semantic identity recorded for participants created by an agent factory.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AgentIdentity {
     /// Human-readable implementation or model name.
     pub name: String,
-    /// Stable implementation, model, or prompt version when one is available.
-    pub version: Option<String>,
+    /// Required stable implementation release identifier.
+    pub version: String,
+}
+
+impl AgentIdentity {
+    /// Rejects identities that cannot provide stable participant provenance.
+    pub(crate) fn validate(&self) -> Result<()> {
+        anyhow::ensure!(!self.name.trim().is_empty(), "agent name must not be empty");
+        anyhow::ensure!(
+            !self.version.trim().is_empty(),
+            "agent version must not be empty"
+        );
+        Ok(())
+    }
 }
 
 /// Information supplied when a factory creates one session-local agent.
@@ -28,6 +41,35 @@ pub struct AgentContext {
     pub seed: u64,
     /// Agent-specific settings entered through the dashboard.
     pub settings: Value,
+    /// Secrets consumed only by the local factory or transport adapter.
+    pub factory_secrets: SecretValues,
+    /// Secrets explicitly authorized for delivery to the agent instance.
+    pub agent_instance_secrets: SecretValues,
+}
+
+/// Computes the versioned canonical fingerprint of validated non-secret settings.
+pub fn configuration_fingerprint(factory_id: &str, settings: &Value) -> Result<String> {
+    let document = serde_json::json!({"version": 1, "factory": factory_id, "settings": settings});
+    let bytes = serde_json::to_vec(&canonical_value(&document))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+}
+
+/// Recursively sorts object keys while preserving array order.
+fn canonical_value(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let mut entries = object.iter().collect::<Vec<_>>();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), canonical_value(value)))
+                    .collect(),
+            )
+        }
+        Value::Array(values) => Value::Array(values.iter().map(canonical_value).collect()),
+        _ => value.clone(),
+    }
 }
 
 /// One non-empty output produced by an agent decision.
@@ -130,14 +172,8 @@ pub trait AgentFactory<G: Game>: Send + Sync + 'static {
     /// Instantiates one mutable agent before game-state delivery begins.
     async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<G> + Send>>;
 
-    /// Returns the semantic identity stored for participants created by this factory.
-    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
-        let definition = self.definition();
-        Ok(AgentIdentity {
-            name: definition.name,
-            version: None,
-        })
-    }
+    /// Returns the required semantic identity stored for participants created by this factory.
+    fn identity(&self, settings: &Value) -> Result<AgentIdentity>;
 }
 
 /// Internal shared ownership used by experiment runtimes.
@@ -145,7 +181,8 @@ pub(crate) type SharedAgentFactory<G> = Arc<dyn AgentFactory<G>>;
 
 #[cfg(test)]
 mod tests {
-    use super::AgentResponse;
+    use super::{configuration_fingerprint, AgentIdentity, AgentResponse};
+    use serde_json::json;
 
     /// Confirms every response variant represents at least one runtime operation.
     #[test]
@@ -159,5 +196,37 @@ mod tests {
             AgentResponse::action_and_message(4, "moving").into_parts(),
             (Some(4), Some("moving".to_string()))
         );
+    }
+
+    /// Canonical object ordering is stable while semantic changes remain distinct.
+    #[test]
+    fn fingerprints_canonicalize_objects_and_include_factory() {
+        let first =
+            configuration_fingerprint("factory", &json!({"b": 2, "a": {"y": 1, "x": 0}})).unwrap();
+        let second =
+            configuration_fingerprint("factory", &json!({"a": {"x": 0, "y": 1}, "b": 2})).unwrap();
+        assert_eq!(first, second);
+        assert!(first.starts_with("sha256:"));
+        assert_ne!(
+            first,
+            configuration_fingerprint("other", &json!({"b": 2, "a": {"y": 1, "x": 0}})).unwrap()
+        );
+    }
+
+    /// New automated participants must always identify an implementation release.
+    #[test]
+    fn agent_identity_requires_name_and_version() {
+        assert!(AgentIdentity {
+            name: "Agent".to_string(),
+            version: String::new(),
+        }
+        .validate()
+        .is_err());
+        assert!(AgentIdentity {
+            name: String::new(),
+            version: "1".to_string(),
+        }
+        .validate()
+        .is_err());
     }
 }

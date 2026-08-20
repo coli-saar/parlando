@@ -14,12 +14,15 @@ use tonic::{
 
 use crate::{
     agents::{Agent, AgentContext, AgentFactory, AgentIdentity, AgentResponse},
-    game::{AgentConfigField, AgentDefinition, Game, PlayerRole},
+    game::{
+        AgentConfigField, AgentConfigValue, AgentDefinition, Game, PlayerRole, SecretPurpose,
+        StringFormat,
+    },
 };
 
 /// Generated protobuf types and gRPC service clients for remote agents.
 pub mod pb {
-    tonic::include_proto!("parlando.agent.v3");
+    tonic::include_proto!("parlando.agent.v4");
 }
 
 use pb::{
@@ -36,8 +39,8 @@ struct RemoteGrpcAgentConfig {
     /// Stable human-readable agent name stored in initialization requests.
     #[serde(default = "default_agent_name")]
     pub agent_name: String,
-    /// Stable agent version or fingerprint stored in initialization requests.
-    pub agent_version: Option<String>,
+    /// Required stable implementation release identifier stored in initialization requests.
+    pub agent_version: String,
     /// Remote-agent protocol version expected by this server.
     #[serde(default = "default_protocol_version")]
     pub protocol_version: String,
@@ -78,7 +81,7 @@ fn default_agent_name() -> String {
 
 /// Returns the current remote-agent protocol identifier.
 fn default_protocol_version() -> String {
-    "parlando-agent-v3".to_string()
+    "parlando-agent-v4".to_string()
 }
 
 #[derive(Clone)]
@@ -132,7 +135,9 @@ impl<A: Game> AgentFactory<A> for RemoteGrpcAgentFactory<A> {
                     key: "endpoint".to_string(),
                     label: "Agent endpoint".to_string(),
                     help: "HTTP/2 endpoint of the external agent process.".to_string(),
-                    kind: "url".to_string(),
+                    value: AgentConfigValue::String {
+                        format: StringFormat::Uri,
+                    },
                     required: true,
                     default_value: Value::String("http://127.0.0.1:50051".to_string()),
                 },
@@ -140,9 +145,49 @@ impl<A: Game> AgentFactory<A> for RemoteGrpcAgentFactory<A> {
                     key: "agent_name".to_string(),
                     label: "Agent name".to_string(),
                     help: "Name recorded for the remote agent implementation.".to_string(),
-                    kind: "text".to_string(),
+                    value: AgentConfigValue::String {
+                        format: StringFormat::Plain,
+                    },
                     required: true,
                     default_value: Value::String("remote-agent".to_string()),
+                },
+                AgentConfigField {
+                    key: "agent_version".to_string(),
+                    label: "Agent version".to_string(),
+                    help: "Required stable implementation release identifier.".to_string(),
+                    value: AgentConfigValue::String {
+                        format: StringFormat::Plain,
+                    },
+                    required: true,
+                    default_value: Value::Null,
+                },
+                AgentConfigField {
+                    key: "protocol_version".to_string(),
+                    label: "Protocol version".to_string(),
+                    help: "Remote protocol identifier; normally left at its default.".to_string(),
+                    value: AgentConfigValue::String {
+                        format: StringFormat::Plain,
+                    },
+                    required: true,
+                    default_value: Value::String(default_protocol_version()),
+                },
+                AgentConfigField {
+                    key: "bearer_token".to_string(),
+                    label: "Bearer credential".to_string(),
+                    help: "Experiment secret used only to authenticate the transport.".to_string(),
+                    value: AgentConfigValue::SecretReference {
+                        purpose: SecretPurpose::Factory,
+                    },
+                    required: false,
+                    default_value: Value::Null,
+                },
+                AgentConfigField {
+                    key: "agent_secret".to_string(),
+                    label: "Agent-instance secret".to_string(),
+                    help: "Optional experiment secret explicitly authorized for delivery to the remote agent.".to_string(),
+                    value: AgentConfigValue::SecretReference { purpose: SecretPurpose::AgentInstance },
+                    required: false,
+                    default_value: Value::Null,
                 },
             ],
         }
@@ -150,7 +195,11 @@ impl<A: Game> AgentFactory<A> for RemoteGrpcAgentFactory<A> {
 
     /// Creates one lazy remote-agent handle for a room participant.
     async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<A> + Send>> {
-        let config = remote_config_from_settings(&context.settings)?;
+        let mut config = remote_config_from_settings(&context.settings)?;
+        config.auth_token = context
+            .factory_secrets
+            .get("config.bearer_token")
+            .map(str::to_string);
         let mut agent = RemoteGrpcAgent::<A> {
             config,
             init_context: context,
@@ -172,11 +221,14 @@ impl<A: Game> AgentFactory<A> for RemoteGrpcAgentFactory<A> {
     }
 }
 
-/// Parses dashboard-owned settings and injects the process-local credential.
+/// Parses validated dashboard-owned non-secret settings.
 fn remote_config_from_settings(settings: &Value) -> Result<RemoteGrpcAgentConfig> {
-    let mut config: RemoteGrpcAgentConfig = serde_json::from_value(settings.clone())?;
-    config.auth_token = env::var("PARLANDO_REMOTE_AGENT_TOKEN").ok();
-    Ok(config)
+    let mut settings = settings.clone();
+    settings.as_object_mut().map(|object| {
+        object.remove("bearer_token");
+        object.remove("agent_secret");
+    });
+    serde_json::from_value(settings).map_err(Into::into)
 }
 
 /// Per-room remote gRPC agent instance.
@@ -215,10 +267,17 @@ where
         let request = CreateAgentRequest {
             protocol_version: self.config.protocol_version.clone(),
             agent_name: self.config.agent_name.clone(),
-            agent_version: self.config.agent_version.clone().unwrap_or_default(),
+            agent_version: self.config.agent_version.clone(),
             role: self.init_context.role.as_str().to_string(),
             seed: self.init_context.seed,
             config: Some(json_to_struct(self.init_context.settings.clone())?),
+            agent_instance_secrets: Some(json_to_struct(Value::Object(
+                self.init_context
+                    .agent_instance_secrets
+                    .iter()
+                    .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+                    .collect(),
+            ))?),
         };
         let response =
             tokio::time::timeout(self.config.request_timeout, client.create_agent(request))
@@ -243,7 +302,7 @@ fn validate_remote_endpoint(endpoint: &str, has_auth_token: bool) -> Result<()> 
     match uri.scheme_str() {
         Some("https") if has_auth_token => {}
         Some("https") => {
-            bail!("non-loopback remote-agent TLS requires PARLANDO_REMOTE_AGENT_TOKEN")
+            bail!("non-loopback remote-agent TLS requires a configured factory bearer credential")
         }
         Some("http") => {
             let host = uri
@@ -529,7 +588,10 @@ mod tests {
         type Observation = Value;
         type Completion = Value;
 
-        fn initial_state(&self, _config: &Self::Config, _seed: u64) -> Result<Self::State> {
+        fn initial_state(
+            &self,
+            _context: crate::GameInitializationContext<'_, Self::Config>,
+        ) -> Result<Self::State> {
             Ok(Value::Null)
         }
 
@@ -564,16 +626,15 @@ mod tests {
     }
 
     #[test]
-    fn remote_identity_does_not_invent_missing_agent_version() {
+    fn remote_identity_requires_agent_version() {
         let factory = RemoteGrpcAgentFactory::<TestAdapter>::new();
-        let identity = factory
+        let error = factory
             .identity(&serde_json::json!({
                 "endpoint": "http://127.0.0.1:50051",
                 "agent_name": "python-agent"
             }))
-            .unwrap();
+            .unwrap_err();
 
-        assert_eq!(identity.name, "python-agent");
-        assert_eq!(identity.version, None);
+        assert!(error.to_string().contains("agent_version"));
     }
 }

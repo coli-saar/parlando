@@ -1,5 +1,5 @@
 use anyhow::Result;
-use parlando::{ActionRejection, Game, PlayerRole};
+use parlando::{ActionRejection, Game, GameInitializationContext, PlayerRole};
 use serde::{Deserialize, Serialize};
 
 use super::state_engine::{
@@ -30,7 +30,10 @@ impl Game for SpaceGame {
     type Observation = SpaceObservation;
     type Completion = SpaceCompletion;
 
-    fn initial_state(&self, _config: &Self::Config, _seed: u64) -> Result<Self::State> {
+    fn initial_state(
+        &self,
+        _context: GameInitializationContext<'_, Self::Config>,
+    ) -> Result<Self::State> {
         Ok(initial_state())
     }
 

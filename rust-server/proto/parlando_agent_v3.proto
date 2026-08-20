@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package parlando.agent.v3;
+package parlando.agent.v4;
 
 import "google/protobuf/struct.proto";
 
@@ -21,6 +21,8 @@ message CreateAgentRequest {
   string role = 4;
   uint64 seed = 5;
   google.protobuf.Struct config = 6;
+  // Values explicitly referenced for delivery to the agent instance.
+  google.protobuf.Struct agent_instance_secrets = 7;
 }
 
 message CreateAgentResponse {
