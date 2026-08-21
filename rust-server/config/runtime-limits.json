@@ -1,0 +1,6 @@
+{
+  "participant_creation": {
+    "max_attempts": 300,
+    "window_seconds": 60
+  }
+}

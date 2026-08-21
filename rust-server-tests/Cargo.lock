@@ -1873,12 +1873,15 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum 0.7.9",
+ "base64",
  "clap",
  "futures-util",
+ "libc",
  "parlando",
  "prost-types",
  "ratatui",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "sqlx",
@@ -1887,6 +1890,7 @@ dependencies = [
  "tokio-stream",
  "tokio-tungstenite",
  "tonic",
+ "uuid",
 ]
 
 [[package]]

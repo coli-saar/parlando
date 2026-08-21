@@ -1405,17 +1405,33 @@ fn admin_experiment_id<A: Game>(
 }
 
 /// Sliding-window participant-creation counters bounded by cleanup on each request.
-#[derive(Default)]
 struct ParticipantCreationRate {
     /// Process-wide creation timestamps used as a final safety ceiling.
     global: Vec<i64>,
+    /// Maximum attempts retained inside the sliding window.
+    max_attempts: usize,
+    /// Width of the sliding window in seconds.
+    window_seconds: i64,
+}
+
+impl Default for ParticipantCreationRate {
+    /// Loads the same build-time limits exposed to operational preflight tools.
+    fn default() -> Self {
+        let limit = crate::bundled_runtime_limits().participant_creation.clone();
+        Self {
+            global: Vec::new(),
+            max_attempts: limit.max_attempts,
+            window_seconds: limit.window_seconds,
+        }
+    }
 }
 
 impl ParticipantCreationRate {
-    /// Records one allowed attempt after pruning the bounded sixty-second window.
+    /// Records one allowed attempt after pruning the configured sliding window.
     fn record(&mut self, now: i64) -> bool {
-        self.global.retain(|timestamp| *timestamp > now - 60);
-        if self.global.len() >= 300 {
+        self.global
+            .retain(|timestamp| *timestamp > now - self.window_seconds);
+        if self.global.len() >= self.max_attempts {
             return false;
         }
         self.global.push(now);
@@ -1722,7 +1738,11 @@ async fn build_load_sample<A: Game>(state: &Arc<AppState<A>>) -> LoadSample {
             .values()
             .filter(|room| room.status == "completed")
             .count();
-        let active = memory.rooms.len().saturating_sub(waiting);
+        let active = memory
+            .rooms
+            .values()
+            .filter(|room| room.status == "running")
+            .count();
         let attached = memory
             .rooms
             .values()
@@ -1737,6 +1757,7 @@ async fn build_load_sample<A: Game>(state: &Arc<AppState<A>>) -> LoadSample {
             memory
                 .rooms
                 .values()
+                .filter(|room| matches!(room.status.as_str(), "waiting" | "running"))
                 .flat_map(|room| room.participants.values())
                 .filter(|participant| participant.source != "agent")
                 .count()
@@ -2668,8 +2689,10 @@ fn ensure_session_capacity<S>(
         .fold((0_usize, 0_usize), |counts, room| {
             if room.status == "waiting" && room.participants.len() < 2 {
                 (counts.0 + 1, counts.1)
-            } else {
+            } else if room.status == "running" {
                 (counts.0, counts.1 + 1)
+            } else {
+                counts
             }
         });
     match admission {
@@ -2691,6 +2714,7 @@ fn ensure_session_capacity<S>(
         let reserved_streams = memory
             .rooms
             .values()
+            .filter(|room| matches!(room.status.as_str(), "waiting" | "running"))
             .flat_map(|room| room.participants.values())
             .filter(|participant| participant.source != "agent")
             .count();

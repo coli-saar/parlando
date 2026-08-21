@@ -265,7 +265,7 @@ fn draw_series(
             if series.values.is_empty() {
                 vec![0]
             } else {
-                series.values.clone()
+                visible_series(&series.values, area.width.saturating_sub(2) as usize)
             },
         ),
         None => ("No measured series".to_string(), vec![0]),
@@ -283,22 +283,36 @@ fn draw_series(
     );
 }
 
+/// Selects the newest samples that fit inside the sparkline's bordered viewport.
+fn visible_series(values: &[u64], width: usize) -> Vec<u64> {
+    let visible = width.max(1).min(values.len());
+    values[values.len().saturating_sub(visible)..].to_vec()
+}
+
 /// Renders the workload's current per-room health tiles.
 fn draw_tiles(frame: &mut Frame, area: Rect, snapshot: &DashboardSnapshot) {
-    let tiles_per_row = (area.width.saturating_sub(2).max(1) as usize / 2).max(1);
+    let tiles_per_row = area.width.saturating_sub(2).max(1) as usize;
+    let visible_rows = area.height.saturating_sub(2).max(1) as usize;
+    let visible_tiles = snapshot.tiles.len().min(tiles_per_row * visible_rows);
     let mut lines = Vec::new();
-    for chunk in snapshot.tiles.chunks(tiles_per_row) {
+    for chunk in snapshot.tiles[..visible_tiles].chunks(tiles_per_row) {
         lines.push(Line::from(
             chunk
                 .iter()
-                .map(|tile| Span::styled("██", Style::default().fg(health_color(tile.health))))
+                .map(|tile| Span::styled("█", Style::default().fg(health_color(tile.health))))
                 .collect::<Vec<_>>(),
         ));
     }
+    let hidden = snapshot.tiles.len().saturating_sub(visible_tiles);
+    let visibility = if hidden == 0 {
+        String::new()
+    } else {
+        format!(" · {hidden} off-screen")
+    };
     frame.render_widget(
         Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).title(format!(
-                " Room activity — {} rooms · {} ",
+                " Room activity — {} rooms{visibility} · {} ",
                 snapshot.tiles.len(),
                 snapshot.tile_legend
             )))
@@ -329,7 +343,7 @@ fn draw_events(frame: &mut Frame, area: Rect, snapshot: &DashboardSnapshot) {
 fn metric_line(metric: &DashboardMetric) -> Line<'static> {
     Line::from(vec![
         Span::styled(
-            format!("{:<21}", metric.label),
+            format!("{:<21}  ", metric.label),
             Style::default().fg(Color::Gray),
         ),
         Span::styled(
@@ -356,7 +370,7 @@ fn health_color(health: DashboardHealth) -> Color {
         DashboardHealth::Good => Color::Green,
         DashboardHealth::Warning => Color::Yellow,
         DashboardHealth::Error => Color::Red,
-        DashboardHealth::Neutral => Color::White,
+        DashboardHealth::Neutral => Color::Reset,
     }
 }
 
@@ -364,4 +378,30 @@ fn health_color(health: DashboardHealth) -> Color {
 fn format_clock(duration: Duration) -> String {
     let seconds = duration.as_secs();
     format!("{:02}:{:02}", seconds / 60, seconds % 60)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Confirms a full sparkline viewport follows the newest samples.
+    #[test]
+    fn visible_series_scrolls_at_the_right_edge() {
+        assert_eq!(visible_series(&[1, 2, 3, 4, 5], 3), vec![3, 4, 5]);
+        assert_eq!(visible_series(&[1, 2], 5), vec![1, 2]);
+        assert_eq!(visible_series(&[7], 0), vec![7]);
+    }
+
+    /// Keeps neutral metric values theme-aware and visibly separated from their labels.
+    #[test]
+    fn neutral_metric_line_uses_terminal_foreground_and_label_gap() {
+        let line = metric_line(&DashboardMetric {
+            label: "Messages/s / actions/s".to_string(),
+            value: "12 / 34".to_string(),
+            health: DashboardHealth::Neutral,
+        });
+
+        assert_eq!(line.spans[0].content, "Messages/s / actions/s  ");
+        assert_eq!(line.spans[1].style.fg, Some(Color::Reset));
+    }
 }

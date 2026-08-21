@@ -48,11 +48,12 @@ struct AdminTestSession {
 #[test]
 fn participant_creation_rate_uses_only_a_high_process_ceiling() {
     let mut rate = ParticipantCreationRate::default();
-    for _ in 0..300 {
+    let limit = crate::bundled_runtime_limits().participant_creation.clone();
+    for _ in 0..limit.max_attempts {
         assert!(rate.record(1_000));
     }
     assert!(!rate.record(1_000));
-    assert!(rate.record(1_061));
+    assert!(rate.record(1_001 + limit.window_seconds));
 }
 
 /// Confirms chat pacing permits realistic bursts and refills without limiting game actions.

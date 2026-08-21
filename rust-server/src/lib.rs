@@ -9,6 +9,7 @@ mod identity;
 mod protocol;
 mod readable_id;
 mod remote_agent;
+mod runtime_limits;
 mod server;
 mod storage;
 #[cfg(feature = "stress-tui")]
@@ -19,6 +20,7 @@ mod tts;
 pub use game::{
     ActionRejection, Game, GameInitializationContext, GameMetadata, PlayerRole, SecretValues,
 };
+pub use runtime_limits::{bundled_runtime_limits, ParticipantCreationLimit, RuntimeLimits};
 pub use server::Server;
 
 /// APIs for implementing optional computer-controlled players.

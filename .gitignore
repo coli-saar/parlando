@@ -6,7 +6,22 @@
 !space-game/client/package-lock.json
 !games/great-tree/client/package-lock.json
 **/.DS_Store
-rust-server/target/
+
+# Rust build and runtime-stress artifacts
+**/target/
+**/runtime-stress-report.json
+
+# Local Parlando databases, journals, and manual backups
+**/*.sqlite
+**/*.sqlite-shm
+**/*.sqlite-wal
+**/*.sqlite.*backup*
+
+# Internal implementation plans and personal scratch notes
+/notes/
+/notes.txt
+/docs/superpowers/
+
 rust-server/config/*.private.yaml
 rust-server/config/*.private.yml
 space-game/.local/

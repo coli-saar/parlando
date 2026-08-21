@@ -1189,3 +1189,100 @@ Follow-up risks: Endpoint syntax validation establishes a WebSocket destination 
 provider identity, jurisdiction, retention policy, or contractual terms. Operators must review
 custom and proxy endpoints. Any future per-experiment provider credential feature must use explicit
 secret ownership and must not silently fall back to game or environment values.
+# Runtime stress harness uses production process and protocol boundaries
+
+Context: the previous runtime stress tool built Parlando's internal router and
+injected local provider traits. That made it inexpensive, but it bypassed the
+public server builder, production provider clients, process resource boundaries,
+and deployment-style cleanup.
+
+Decision: `cargo stress` now invokes one executable whose public supervisor
+starts hidden `__server` and `__providers` modes through `current_exe`. The
+server mode uses `Server<StressGame>` and the provider mode implements the
+Speechmatics and ElevenLabs WebSocket contracts on an ephemeral loopback
+listener. Provider endpoints are written atomically and stored in the immutable
+experiment configuration. The public CLI exposes only workload scale, duration,
+pairing, presentation, artifact retention, output root, and deterministic seed.
+A repository Cargo alias avoids creating a root workspace.
+
+Tradeoffs: a self-contained protocol peer measures Parlando under a fixed local
+latency/cost profile, not provider capacity. The supervisor and peers share the
+host, so results are conservative and are fixture-specific lower bounds.
+Process groups and descriptor preflight are Unix-complete; non-Unix builds use
+the portable child APIs and report descriptor values as unavailable.
+
+The public server runner installs Axum graceful shutdown for SIGINT and SIGTERM.
+This is production lifecycle behavior rather than a harness-only hook, and lets
+deployments stop accepting new connections while in-flight work drains.
+
+Capacity telemetry and admission count only waiting/running rooms. Completed or
+abandoned rooms remain in memory for diagnostics but no longer reserve active
+session or Speechmatics capacity. The stress harness exposed the previous
+coupling because all transports and agents drained while the reported ASR
+reservation remained nonzero indefinitely.
+
+The stress dashboard derives rolling throughput from the same cumulative
+counters written to the JSON report. It derives one-second rates and retains
+one minute of actions, messages, PCM frames, and TTS publication rates;
+presentation never owns a second measurement path. The shared series selector
+uses Tab to switch graphs without changing workload scheduling.
+
+Follow-up risks: capacity claims require repeated host-specific runs. Provider
+contract fixtures must be updated deliberately when the production adapters'
+wire protocol changes.
+
+## 2026-08-21: The stress dashboard is a supervised workload peer
+
+Context: the stress supervisor previously joined the asynchronous workload before inspecting the
+dashboard thread. If terminal rendering failed or panicked at higher session counts, the visible UI
+disappeared while the workload and child processes continued running. The room heatmap also built
+rows for every session even when the terminal could display only a bounded viewport.
+
+Decision: supervise workload and dashboard completion concurrently. An unexpected dashboard exit
+sets the shared cancellation flag, waits for workload shutdown, restores the terminal after caught
+rendering panics, and returns through the ordinary child cleanup and report path. Bound room tiles
+to the drawable viewport, use one cell per room, and state how many rooms are off-screen.
+
+Tradeoffs: presentation failure now ends a non-headless stress run instead of continuing to gather
+invisible results. Headless operation remains independent of terminal rendering. A narrow terminal
+may hide some room tiles, but the title discloses the count and the JSON report remains authoritative.
+
+Follow-up risks: terminal initialization itself occurs before panic containment because restoration
+requires an initialized terminal. If ratatui initialization can panic on a supported terminal, the
+thread join still reports it and triggers cleanup, but restoration may require the user's shell reset.
+
+Neutral dashboard values use the terminal's default foreground rather than ANSI white. This keeps
+configuration and process metadata legible on both light and dark terminal backgrounds; semantic
+health colors remain explicit. Metric rows reserve a two-column label/value gap so a full-width
+label such as `Messages/s / actions/s` cannot visually run into its measurement.
+
+The workload treats session completion as an acknowledged protocol transition, not a successful
+socket write. During drain it keeps both participant game transports connected until the server
+broadcasts `completed`. Temporary `transcription_not_ready` and `players_not_ready` responses are
+retried for at most ten seconds; expiry becomes a room-specific capacity failure. This prevents the
+harness from racing its own peer disconnect against action evaluation while retaining a bounded,
+actionable signal if server readiness genuinely fails to recover under load.
+
+## 2026-08-21: Runtime-wide ceilings use one embedded configuration asset
+
+Context: the production direct-participant creation ceiling was a literal in request enforcement.
+The stress harness could therefore offer a workload that was deterministically impossible to stage,
+and it learned the limit only after creating hundreds of durable participants and rooms.
+
+Decision: keep non-experiment, process-wide ceilings in
+`rust-server/config/runtime-limits.json`, deserialize and validate that asset through the public
+`bundled_runtime_limits` API, and embed it into consumers at build time. Production enforcement and
+stress preflight both read that API. Stress preflight accounts for one direct participant per
+human-agent session and two per human-human session, and fails before artifacts or child processes
+when the requested staging burst exceeds the configured window ceiling.
+
+Tradeoffs: changing a bundled ceiling requires rebuilding the server and operational tools, which is
+appropriate for a process safety policy and prevents unrecorded environment overrides. The current
+stress profile deliberately rejects an oversized burst rather than stretching staging across rate
+windows, because paced intake would test a different workload. Experiment-specific capacity remains
+in immutable experiment configuration and OS descriptor availability remains a host preflight; they
+do not belong in this asset.
+
+Follow-up risks: future hard-coded process ceilings that can make a workload deterministically
+impossible should join this asset and gain corresponding preflight checks. Dynamic limitations such
+as free storage and provider behavior must continue to be measured at runtime.
