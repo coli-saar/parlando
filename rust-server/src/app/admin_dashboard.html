@@ -540,7 +540,7 @@
       <header class="page-header"><span><h1>Game settings</h1><p class="muted">Settings and build identity shared by every experiment in this process.</p></span></header>
       <div class="settings-content">
         <section class="settings-section" id="gameSettingsPanel"><header class="section-intro"><h2>Shared settings</h2><p class="muted">These values belong to the game process, not to an individual experiment.</p></header><div class="settings-form"><label>Institution<input id="institutionInput" placeholder="Optional institution"></label><label>Administrator IP ranges<textarea id="adminAllowedIpRangesInput" rows="4" placeholder="One CIDR range per line; empty allows every direct peer"></textarea></label><p class="muted small">This list uses the direct network peer. If a reverse proxy hides it, enforce the equivalent range at that trusted proxy.</p></div></section>
-        <section class="settings-section"><header class="section-intro"><h2>Voice services</h2><p class="muted">Connections and credentials shared by every experiment. Language, recognition behavior, and voices remain experiment settings.</p></header><div class="settings-form"><label>Speechmatics realtime URL<input id="speechmaticsRealtimeUrlInput" type="url" placeholder="wss://eu.rt.speechmatics.com/v2"><span class="config-help">Regional or private WebSocket endpoint used for live recognition.</span></label><div id="gameProviderSecrets"></div><p class="muted small">Changes apply when an experiment runtime is next constructed; restart the server to replace a runtime that is already loaded.</p><div class="settings-save-row"><button class="primary" id="saveGameSettings" type="button">Save game settings</button><span class="save-confirmation" id="gameSettingsSaved" role="status" hidden>Settings saved</span></div></div></section>
+        <section class="settings-section"><header class="section-intro"><h2>Voice services</h2><p class="muted">Endpoint defaults copied into newly created experiments, plus credentials shared by every experiment.</p></header><div class="settings-form"><label>Speechmatics realtime URL default<input id="speechmaticsRealtimeUrlInput" type="url" placeholder="wss://eu.rt.speechmatics.com/v2"><span class="config-help">Initial regional or private WebSocket endpoint for new experiments.</span></label><label>ElevenLabs base URL default<input id="ttsBaseUrlInput" type="url" placeholder="wss://api.elevenlabs.io"><span class="config-help">Initial WebSocket service origin for new experiments.</span></label><div id="gameProviderSecrets"></div><p class="muted small">Changing these defaults never changes an existing experiment revision.</p><div class="settings-save-row"><button class="primary" id="saveGameSettings" type="button">Save game settings</button><span class="save-confirmation" id="gameSettingsSaved" role="status" hidden>Settings saved</span></div></div></section>
         <section class="settings-section"><header class="section-intro"><h2>Build information</h2><p class="muted">The compiled game and Parlando versions used by all experiments.</p></header><div id="reproducibility"><div class="empty">Loading build information…</div></div></section>
       </div>
     </section>
@@ -583,6 +583,8 @@
     const saveConfiguration = document.getElementById('saveConfiguration');
     const institutionInput = document.getElementById('institutionInput');
     const adminAllowedIpRangesInput = document.getElementById('adminAllowedIpRangesInput');
+    const speechmaticsRealtimeUrlInput = document.getElementById('speechmaticsRealtimeUrlInput');
+    const ttsBaseUrlInput = document.getElementById('ttsBaseUrlInput');
     const loadOverview = document.getElementById('loadOverview');
     const capacityList = document.getElementById('capacityList');
     const trafficMetrics = document.getElementById('trafficMetrics');
@@ -1312,6 +1314,7 @@
       institutionInput.value = state.gameSettings?.institution || '';
       adminAllowedIpRangesInput.value = (state.gameSettings?.admin_allowed_ip_ranges || []).join('\n');
       speechmaticsRealtimeUrlInput.value = state.gameSettings?.speechmatics_realtime_url || 'wss://eu.rt.speechmatics.com/v2';
+      ttsBaseUrlInput.value = state.gameSettings?.tts_base_url || 'wss://api.elevenlabs.io';
       renderGameProviderSecrets();
       const configKey = state.experiment ? `${state.experiment.experiment_id}:${state.experiment.config_revision}` : null;
       if (configKey && configKey !== state.loadedConfigKey) await loadConfigurationSafely();
@@ -1499,6 +1502,7 @@
         { path: 'transcription.enabled', label: 'Enable speech recognition', help: 'Send live participant audio to Speechmatics and make recognized text available to the game and agents.', type: 'boolean' },
         { path: 'transcription.model', label: 'Recognition model', help: 'Enhanced favors recognition quality; Standard is the lighter operating point.', type: 'select', options: [['enhanced', 'Enhanced'], ['standard', 'Standard']] },
         { path: 'transcription.language', label: 'Spoken language', help: 'Speechmatics language code for the expected participant speech, for example en or de.' },
+        { path: 'speechmatics.realtime_url', label: 'Speechmatics realtime URL', help: 'Exact regional or private WebSocket endpoint that receives participant audio.' },
         { path: 'speechmatics.max_delay', label: 'Maximum transcript delay (seconds)', help: 'Maximum recognition delay; larger values may improve accuracy at the cost of responsiveness.', type: 'decimal', min: 0.1 },
         { path: 'speechmatics.enable_partials', label: 'Show partial transcripts', help: 'Deliver provisional text while the participant is still speaking.', type: 'boolean' },
         { path: 'speechmatics.end_of_utterance_silence_trigger', label: 'End-of-utterance silence (seconds)', help: 'Silence used to close an utterance.', type: 'decimal', min: 0.1 }
@@ -1507,7 +1511,8 @@
         { path: 'tts.enabled', label: 'Enable text to speech', help: 'Synthesize agent messages with ElevenLabs and publish the audio through voice transport.', type: 'boolean' },
         { path: 'tts.model', label: 'Synthesis model', help: 'Choose the ElevenLabs balance of latency, language coverage, and expressiveness.', type: 'select', options: [['eleven_flash_v2_5', 'Flash v2.5'], ['eleven_flash_v2', 'Flash v2'], ['eleven_multilingual_v2', 'Multilingual v2'], ['eleven_v3', 'Eleven v3']] },
         { path: 'tts.voice_id', label: 'ElevenLabs voice id', help: 'Stable ElevenLabs identifier of the voice used for agent speech.' },
-        { path: 'tts.voice_name', label: 'Voice display name', help: 'Human-readable voice label exposed to the participant client.' }
+        { path: 'tts.voice_name', label: 'Voice display name', help: 'Human-readable voice label exposed to the participant client.' },
+        { path: 'tts.base_url', label: 'ElevenLabs base URL', help: 'Exact WebSocket service origin that receives agent message text.' }
       ]},
       { title: 'Players and agents', description: 'Select human pairing or one server-side agent and configure its runtime limits.', fields: [
         { path: 'agents', label: 'Participants', help: 'Pair two people, or pair one person with an agent compiled into this game server.', type: 'agents' }
@@ -2196,6 +2201,7 @@
             institution: institutionInput.value,
             admin_allowed_ip_ranges: adminAllowedIpRanges,
             speechmatics_realtime_url: speechmaticsRealtimeUrlInput.value,
+            tts_base_url: ttsBaseUrlInput.value,
             secret_updates: Object.fromEntries(state.gameProviderSecretUpdates),
             secret_deletions: [...state.gameProviderSecretDeletions]
           })

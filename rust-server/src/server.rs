@@ -89,9 +89,6 @@ impl<G: Game> Server<G> {
             };
             format!("http://{host}:{}", address.port())
         });
-        bootstrap.speechmatics.api_key = std::env::var("SPEECHMATICS_API_KEY").unwrap_or_default();
-        bootstrap.tts.api_key = std::env::var("ELEVENLABS_API_KEY").unwrap_or_default();
-
         let registered = Arc::new(self.agents);
         serve_game(
             self.game,

@@ -1,8 +1,7 @@
 # Full voice-service example for Parlando games.
 #
-# Copy the relevant values into a generated game's private voice overlay, for
-# example `config/experiment.voice.private.yaml`, or into the deployment secret
-# file. Do not commit real credentials.
+# Copy the relevant non-secret values into an experiment revision through the
+# dashboard. Add credentials separately under Game settings.
 #
 # This file intentionally documents configuration only. The Parlando Rust server
 # and browser SDK own the audio relay, Speechmatics, and ElevenLabs runtime behavior.
@@ -14,7 +13,6 @@ voice:
   jitter_buffer_ms: 100
 
 speechmatics:
-  api_key: ${SPEECHMATICS_API_KEY}
   realtime_url: wss://eu.rt.speechmatics.com/v2
   max_delay: 2.0
   enable_partials: true
@@ -32,5 +30,5 @@ tts:
   model: eleven_flash_v2_5
   voice_id: ${ELEVENLABS_VOICE_ID}
   voice_name: Agent Voice
-  api_key: ${ELEVENLABS_API_KEY}
+  base_url: wss://api.elevenlabs.io
   output_format: pcm_24000

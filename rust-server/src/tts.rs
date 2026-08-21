@@ -26,7 +26,6 @@ pub trait StreamingTtsProvider: Send + Sync {
 /// ElevenLabs WebSocket streaming TTS provider.
 pub struct ElevenLabsStreamingTtsProvider {
     config: TtsConfig,
-    base_url: String,
 }
 
 impl ElevenLabsStreamingTtsProvider {
@@ -35,17 +34,7 @@ impl ElevenLabsStreamingTtsProvider {
         if config.api_key.is_empty() || config.voice_id.is_empty() {
             bail!("ElevenLabs TTS requires tts.api_key and tts.voice_id");
         }
-        Ok(Self {
-            config,
-            base_url: "wss://api.elevenlabs.io".to_string(),
-        })
-    }
-
-    #[cfg(test)]
-    fn with_base_url(config: TtsConfig, base_url: String) -> Result<Self> {
-        let mut provider = Self::new(config)?;
-        provider.base_url = base_url;
-        Ok(provider)
+        Ok(Self { config })
     }
 }
 
@@ -55,7 +44,7 @@ impl StreamingTtsProvider for ElevenLabsStreamingTtsProvider {
         let sample_rate = sample_rate_from_output_format(&self.config.output_format);
         let url = format!(
             "{}/v1/text-to-speech/{}/stream-input?model_id={}&output_format={}",
-            self.base_url.trim_end_matches('/'),
+            self.config.base_url.trim_end_matches('/'),
             self.config.voice_id,
             self.config.model,
             self.config.output_format
@@ -140,6 +129,7 @@ mod tests {
             model: "eleven_flash_v2_5".to_string(),
             voice_id: "voice-1".to_string(),
             voice_name: "Voice".to_string(),
+            base_url: "wss://api.elevenlabs.io".to_string(),
             api_key: "api-key".to_string(),
             output_format: "pcm_16000".to_string(),
         }
@@ -186,9 +176,9 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let provider =
-            ElevenLabsStreamingTtsProvider::with_base_url(tts_config(), format!("ws://{addr}"))
-                .unwrap();
+        let mut config = tts_config();
+        config.base_url = format!("ws://{addr}");
+        let provider = ElevenLabsStreamingTtsProvider::new(config).unwrap();
 
         let chunks = provider.synthesize("hello", "msg-1").await.unwrap();
 

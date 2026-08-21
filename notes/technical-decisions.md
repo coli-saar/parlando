@@ -1155,3 +1155,37 @@ Follow-up risks: Deployment capacity still requires repeated acceptance runs on 
 representative game logic, explicit resource and latency thresholds, and an authorized external
 provider/proxy calibration. A future impaired profile can add independently churned transports and
 controlled provider failures without weakening the deterministic acceptance gate.
+
+## 2026-08-21: Experiment revisions own exact provider destinations
+
+Context: `ExperimentConfig` exposed a Speechmatics realtime URL, but persistence removed it and
+runtime hydration replaced it with a game-wide value. The game-wide default could therefore win
+over an accepted experiment value. ElevenLabs used a hardcoded service origin. Provider keys also
+had an implicit process-environment fallback. These paths made the effective external data
+destination differ from the immutable experiment record and could make consent or privacy evidence
+describe settings other than those used by an already constructed runtime.
+
+Decision: Supersede the 2026-08-15 decision that made the Speechmatics endpoint game-wide. Keep
+Speechmatics and ElevenLabs endpoint values in every experiment revision. Game settings hold only
+creation defaults; creating or saving a sparse configuration materializes those defaults without
+overwriting an explicit experiment value. Changing a game default never rewrites an existing
+experiment. Add `tts.base_url`, make the ElevenLabs client consume it, migrate every current and
+historical revision to explicit endpoints, and report exact enabled destinations in the privacy
+record. Keep provider credentials exclusively in the explicit game secret table. Remove
+`SPEECHMATICS_API_KEY` and `ELEVENLABS_API_KEY` environment lookup and fail activation when an
+enabled service has no stored credential. Mark experiment identity, server topology, database
+location, and provider credential fields as non-deserializable experiment data so submitted JSON is
+rejected instead of accepted and overwritten.
+
+Tradeoffs: Endpoint changes now require a new experiment revision, which is intentional because
+they change the external processing boundary. Existing installations receive the endpoint that was
+effective at migration time, including historical revisions whose discarded value cannot be
+recovered. Credentials remain shared by all experiments in one game process; deployments needing
+different provider accounts must deliberately add a future experiment-secret contract rather than
+receiving another fallback chain. Internal test constructors may still place credentials directly
+in an in-memory typed configuration, but serialization omits and rejects those fields.
+
+Follow-up risks: Endpoint syntax validation establishes a WebSocket destination but cannot prove
+provider identity, jurisdiction, retention policy, or contractual terms. Operators must review
+custom and proxy endpoints. Any future per-experiment provider credential feature must use explicit
+secret ownership and must not silently fall back to game or environment values.

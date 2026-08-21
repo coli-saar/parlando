@@ -212,6 +212,12 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(ADMIN_EXPERIMENT_HTML.contains("checkbox-line"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Speechmatics API key"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("ElevenLabs API key"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Speechmatics realtime URL default"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("ElevenLabs base URL default"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("speechmatics.realtime_url"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("tts.base_url"));
+    assert!(ADMIN_EXPERIMENT_HTML
+        .contains("Changing these defaults never changes an existing experiment revision"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("gameProviderSecretUpdates"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("gameSettingsSaved"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Settings saved"));
@@ -378,7 +384,7 @@ fn consent_templates_expand_to_complete_participant_text() {
     }];
     let settings = StoredGameSettings {
         institution: "Saarland University".to_string(),
-        speechmatics_realtime_url: "wss://eu.rt.speechmatics.com/v2".to_string(),
+        speechmatics_realtime_url: "wss://us.rt.speechmatics.com/v2".to_string(),
         ..StoredGameSettings::default()
     };
     let expanded = expanded_consent_items(&config, &settings);
@@ -469,12 +475,12 @@ fn hydrated_configuration_repairs_legacy_agent_secret_references() {
     );
 }
 
-/// Confirms game-wide provider and experiment game secrets require explicit reveal.
+/// Confirms provider credentials come only from the explicit game secret store.
 #[tokio::test]
 async fn administrator_can_store_and_explicitly_reveal_experiment_secrets() {
     let (mut config, _tmp) = sqlite_config();
     config.experiment.id = Some("secret-config".to_string());
-    config.speechmatics.api_key = "bootstrap-speech-secret".to_string();
+    config.speechmatics.api_key = "in-memory-speech-secret".to_string();
     let descriptor = GameMetadata {
         id: "tiny-game".to_string(),
         name: "Tiny Game".to_string(),
@@ -507,7 +513,7 @@ async fn administrator_can_store_and_explicitly_reveal_experiment_secrets() {
     assert_eq!(status, StatusCode::OK);
     assert!(!serde_json::to_string(&current)
         .unwrap()
-        .contains("bootstrap-speech-secret"));
+        .contains("in-memory-speech-secret"));
     assert_eq!(current["configured_secrets"], json!([]));
 
     let (status, catalogue) = json_request(
@@ -518,17 +524,16 @@ async fn administrator_can_store_and_explicitly_reveal_experiment_secrets() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(catalogue["game_provider_secrets"][0]["source"], "server");
+    assert_eq!(catalogue["game_provider_secrets"][0]["source"], "missing");
 
-    let (status, revealed) = json_request(
+    let (status, _) = json_request(
         router.clone(),
         http::Method::POST,
         "/api/admin/game/secrets/reveal",
         json!({"key": "speechmatics.api_key"}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(revealed["value"], "bootstrap-speech-secret");
+    assert_eq!(status, StatusCode::NOT_FOUND);
 
     let (status, updated) = json_request(
         router.clone(),
@@ -539,7 +544,11 @@ async fn administrator_can_store_and_explicitly_reveal_experiment_secrets() {
             "institution": "Test University",
             "admin_allowed_ip_ranges": [],
             "speechmatics_realtime_url": "wss://eu.rt.speechmatics.com/v2",
-            "secret_updates": {"tts.api_key": "stored-elevenlabs-secret"},
+            "tts_base_url": "wss://api.elevenlabs.io",
+            "secret_updates": {
+                "speechmatics.api_key": "stored-speechmatics-secret",
+                "tts.api_key": "stored-elevenlabs-secret"
+            },
             "secret_deletions": []
         }),
     )
@@ -554,6 +563,7 @@ async fn administrator_can_store_and_explicitly_reveal_experiment_secrets() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(catalogue["game_provider_secrets"][0]["source"], "game");
     assert_eq!(catalogue["game_provider_secrets"][1]["source"], "game");
     let (status, revealed) = json_request(
         router.clone(),
@@ -589,6 +599,179 @@ async fn administrator_can_store_and_explicitly_reveal_experiment_secrets() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(revealed["value"], "copy-me");
+}
+
+/// Confirms endpoint defaults are copied once and explicit experiment endpoints always win.
+#[tokio::test]
+async fn experiment_provider_endpoints_are_revisioned_and_override_game_defaults() {
+    let (config, _tmp) = sqlite_config();
+    let descriptor = GameMetadata {
+        id: "tiny-game".to_string(),
+        name: "Tiny Game".to_string(),
+        version: semver::Version::parse("0.4.0").unwrap(),
+        build_manifest: json!({}),
+    };
+    let router = super::build_game_router(TinyAdapter, config, descriptor, |_| {
+        Ok(ServeOptions::default())
+    })
+    .await
+    .unwrap();
+    authenticate_test_admin(router.clone()).await.unwrap();
+
+    let (status, first_defaults) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/game/settings",
+        json!({
+            "expected_revision": 1,
+            "institution": "",
+            "admin_allowed_ip_ranges": [],
+            "speechmatics_realtime_url": "wss://speech-default-one.test/v2",
+            "tts_base_url": "wss://tts-default-one.test",
+            "secret_updates": {},
+            "secret_deletions": []
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first_defaults}");
+
+    let mut sparse = serde_json::to_value(ExperimentConfig::default()).unwrap();
+    sparse["speechmatics"]
+        .as_object_mut()
+        .unwrap()
+        .remove("realtime_url");
+    sparse["tts"].as_object_mut().unwrap().remove("base_url");
+    let (status, created) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiments",
+        json!({"experiment_id": "inherited-endpoints", "config": sparse}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+
+    let (status, inherited) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments/inherited-endpoints/config",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        inherited["experiment"]["config"]["speechmatics"]["realtime_url"],
+        "wss://speech-default-one.test/v2"
+    );
+    assert_eq!(
+        inherited["experiment"]["config"]["tts"]["base_url"],
+        "wss://tts-default-one.test"
+    );
+
+    let (status, second_defaults) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/game/settings",
+        json!({
+            "expected_revision": 2,
+            "institution": "",
+            "admin_allowed_ip_ranges": [],
+            "speechmatics_realtime_url": "wss://speech-default-two.test/v2",
+            "tts_base_url": "wss://tts-default-two.test",
+            "secret_updates": {},
+            "secret_deletions": []
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second_defaults}");
+
+    let (status, unchanged) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments/inherited-endpoints/config",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        unchanged["experiment"]["config"]["speechmatics"]["realtime_url"],
+        "wss://speech-default-one.test/v2"
+    );
+    assert_eq!(
+        unchanged["experiment"]["config"]["tts"]["base_url"],
+        "wss://tts-default-one.test"
+    );
+
+    let mut explicit = serde_json::to_value(ExperimentConfig::default()).unwrap();
+    explicit["speechmatics"]["realtime_url"] = json!("wss://speech-experiment.test/v2");
+    explicit["tts"]["base_url"] = json!("wss://tts-experiment.test");
+    let (status, created) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiments",
+        json!({"experiment_id": "explicit-endpoints", "config": explicit}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let (status, selected) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/experiments/explicit-endpoints/config",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        selected["experiment"]["config"]["speechmatics"]["realtime_url"],
+        "wss://speech-experiment.test/v2"
+    );
+    assert_eq!(
+        selected["experiment"]["config"]["tts"]["base_url"],
+        "wss://tts-experiment.test"
+    );
+}
+
+/// Confirms the first experiment in a new game starts with editable provider URLs populated.
+#[tokio::test]
+async fn new_experiment_populates_default_provider_endpoints() {
+    let (config, _tmp) = sqlite_config();
+    let descriptor = GameMetadata {
+        id: "tiny-game".to_string(),
+        name: "Tiny Game".to_string(),
+        version: semver::Version::parse("0.4.0").unwrap(),
+        build_manifest: json!({}),
+    };
+    let router = super::build_game_router(TinyAdapter, config, descriptor, |_| {
+        Ok(ServeOptions::default())
+    })
+    .await
+    .unwrap();
+    authenticate_test_admin(router.clone()).await.unwrap();
+
+    let (status, created) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiments",
+        json!({"experiment_id": "default-provider-endpoints"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+
+    let (status, response) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/experiments/default-provider-endpoints/config",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        response["experiment"]["config"]["speechmatics"]["realtime_url"],
+        "wss://eu.rt.speechmatics.com/v2"
+    );
+    assert_eq!(
+        response["experiment"]["config"]["tts"]["base_url"],
+        "wss://api.elevenlabs.io"
+    );
 }
 
 /// Confirms the protected load endpoint exposes bounded operational telemetry.
@@ -786,7 +969,7 @@ async fn admin_privacy_status_renders_and_downloads_current_facts() {
     assert!(!markdown_body.contains("Synthesis model"));
 }
 
-/// Confirms an enabled voice/transcription path names its processor without product settings.
+/// Confirms an enabled transcription path reports its exact processor destination.
 #[tokio::test]
 async fn experiment_privacy_reports_only_the_enabled_speech_path() {
     let (mut config, _tmp) = sqlite_config();
@@ -812,7 +995,10 @@ async fn experiment_privacy_reports_only_the_enabled_speech_path() {
         .iter()
         .any(|item| item["setting"] == "Speech transcription"
             && item["status"] == "Enabled"
-            && item["detail"].as_str().unwrap().contains("speechmatics")));
+            && item["detail"]
+                .as_str()
+                .unwrap()
+                .contains("wss://eu.rt.speechmatics.com/v2")));
     let configuration = privacy["configuration"].to_string();
     assert!(!configuration.contains("enhanced"));
     assert!(!configuration.contains("en-US"));
@@ -5118,7 +5304,9 @@ async fn agent_tts_continues_after_provider_failure() {
 #[test]
 fn persisted_configuration_redacts_provider_credentials() {
     let mut config = step_five_config();
+    config.speechmatics.realtime_url = "wss://speech-experiment.test/v2".to_string();
     config.speechmatics.api_key = "speechmatics-sentinel-secret".to_string();
+    config.tts.base_url = "wss://tts-experiment.test".to_string();
     config.tts.api_key = "elevenlabs-sentinel-secret".to_string();
     config.agents.human_vs_agent = Some(crate::config::HumanVsAgentConfig {
         config: json!({
@@ -5136,6 +5324,11 @@ fn persisted_configuration_redacts_provider_credentials() {
     assert!(!serialized.contains("nested-auth-sentinel"));
     assert!(!serialized.contains("nested-client-sentinel"));
     assert!(!serialized.contains("nested-key-sentinel"));
+    assert!(serialized.contains("wss://speech-experiment.test/v2"));
+    assert!(serialized.contains("wss://tts-experiment.test"));
+    assert!(!serialized.contains("\"experiment\""));
+    assert!(!serialized.contains("\"server\""));
+    assert!(!serialized.contains("\"database\""));
 }
 
 #[derive(Clone)]

@@ -84,8 +84,6 @@ Only settings needed before the dashboard opens belong to process bootstrap:
 | `--port` or `PORT` | Listener port | Command line locally; platform environment when required |
 | `--database-url` or `PARLANDO_DATABASE_URL` | SQLite experiment catalogue and session data | Command line or server environment |
 | `--client-dist` or `PARLANDO_CLIENT_DIST` | Compiled browser client | Command line or server environment |
-| `SPEECHMATICS_API_KEY` | Hosted transcription credential | Secret server environment |
-| `ELEVENLABS_API_KEY` | Text-to-speech credential | Secret server environment |
 
 The default Space Game database is `sqlite:///./parlando-space-game.sqlite`, and
 the default client path is `./client/dist`. Override both when the current working
@@ -188,9 +186,9 @@ For Render:
 3. Set `PARLANDO_DATABASE_URL=sqlite:////data/parlando.sqlite`.
 4. Let the platform supply `PORT`, or retain `8000` where fixed ports are
    supported.
-5. Add `SPEECHMATICS_API_KEY` and `ELEVENLABS_API_KEY` only when the corresponding
-   experiment features are enabled.
-6. Deploy, complete administrator setup, configure an experiment, and activate it
+5. Deploy, complete administrator setup, and add provider credentials under Game
+   settings only when the corresponding experiment features are enabled.
+6. Configure an experiment and activate it
    before distributing its participant URL.
 7. Configure the administrator network range in the dashboard or at the trusted
    ingress proxy.

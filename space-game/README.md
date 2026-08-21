@@ -89,7 +89,7 @@ Create or clone an inactive experiment in the dashboard and configure:
 
 The deterministic agent also answers typed or spoken questions about its visible world, including player locations, launch readiness, battery, fuses, breakers, valves, relay state, and its private hints. This makes the configured experiment an end-to-end microphone → transcription → agent → TTS smoke test without requiring an LLM provider.
 
-Set `SPEECHMATICS_API_KEY` and `ELEVENLABS_API_KEY` in the server environment before starting the target; configure the ElevenLabs voice id in the experiment form. The browser only receives public capability metadata and a short-lived credential for Parlando's audio relay.
+Add Speechmatics and ElevenLabs credentials explicitly under Game settings, then configure both exact provider endpoints and the ElevenLabs voice in the experiment form. The browser only receives public capability metadata and a short-lived credential for Parlando's audio relay.
 
 The shared SDK owns PCM framing, output-rate interpolation, jitter buffering, and underrun recovery; the demo game contains no media transport code. See [`docs/audio-transport.md`](../docs/audio-transport.md) for the protocol and operational model.
 

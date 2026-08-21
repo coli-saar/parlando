@@ -268,6 +268,22 @@ async fn sqlite_migrates_experiment_provider_keys_to_game_secrets() {
         .contains_key("speechmatics.api_key"));
 }
 
+/// Confirms a newly initialized game exposes ready-to-use provider endpoint defaults.
+#[tokio::test]
+async fn sqlite_initializes_provider_endpoint_defaults() {
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+
+    let settings = store.game_settings().await.unwrap();
+
+    assert_eq!(
+        settings.speechmatics_realtime_url,
+        "wss://eu.rt.speechmatics.com/v2"
+    );
+    assert_eq!(settings.tts_base_url, "wss://api.elevenlabs.io");
+}
+
 /// Confirms schema migration 10 replaces the former in-progress session label.
 #[tokio::test]
 async fn sqlite_migrates_playing_sessions_to_running() {
@@ -321,6 +337,78 @@ async fn sqlite_migrates_playing_sessions_to_running() {
         .await
         .unwrap();
     assert_eq!(exported["sessions"][0]["status"], "running");
+}
+
+/// Confirms schema migration 11 freezes provider destinations into every stored revision.
+#[tokio::test]
+async fn sqlite_materializes_provider_endpoints_in_experiment_revisions() {
+    let temp = tempdir().expect("tempdir");
+    let database_url = format!(
+        "sqlite:///{}",
+        temp.path().join("endpoint-migration.sqlite").display()
+    );
+    let store = SqliteExperimentStore::connect(&database_url).await.unwrap();
+    store
+        .create_experiment(ExperimentRecord {
+            experiment_id: "endpoint-migration".to_string(),
+            game_version: "0.4.0".to_string(),
+            config: json!({
+                "experiment": {"id": "legacy-copy"},
+                "server": {"public_base_url": "https://legacy.test"},
+                "database": {"url": "sqlite://legacy"},
+                "speechmatics": {"api_key": "legacy-speech-key"},
+                "tts": {"api_key": "legacy-tts-key"}
+            }),
+            server_version: None,
+            version_manifest: None,
+            status: "inactive".to_string(),
+            notes: None,
+        })
+        .await
+        .unwrap();
+    sqlx::query("update game_settings set speechmatics_realtime_url = ?, tts_base_url = ? where singleton = 1")
+        .bind("wss://speech-migration.test/v2")
+        .bind("wss://tts-migration.test")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("delete from schema_migrations where version >= 11")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store.pool.close().await;
+
+    let reopened = SqliteExperimentStore::connect(&database_url).await.unwrap();
+    let definition = reopened
+        .experiment_definition("endpoint-migration")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        definition.config["speechmatics"]["realtime_url"],
+        "wss://speech-migration.test/v2"
+    );
+    assert_eq!(
+        definition.config["tts"]["base_url"],
+        "wss://tts-migration.test"
+    );
+    assert!(definition.config.get("experiment").is_none());
+    assert!(definition.config.get("server").is_none());
+    assert!(definition.config.get("database").is_none());
+    assert!(definition.config["speechmatics"].get("api_key").is_none());
+    assert!(definition.config["tts"].get("api_key").is_none());
+    let revisions = reopened
+        .experiment_revisions("endpoint-migration")
+        .await
+        .unwrap();
+    assert_eq!(
+        revisions[0].config["speechmatics"]["realtime_url"],
+        "wss://speech-migration.test/v2"
+    );
+    assert_eq!(
+        revisions[0].config["tts"]["base_url"],
+        "wss://tts-migration.test"
+    );
 }
 
 /// Confirms session purpose is fixed from lifecycle at creation and never inferred later.
@@ -1292,6 +1380,7 @@ async fn sqlite_game_settings_reject_stale_updates() {
             "Saarland University".to_string(),
             vec!["192.0.2.0/24".to_string()],
             "wss://eu.rt.speechmatics.com/v2".to_string(),
+            "wss://api.elevenlabs.io".to_string(),
             provider_updates,
             vec![],
         )
@@ -1321,6 +1410,7 @@ async fn sqlite_game_settings_reject_stale_updates() {
             "Stale".to_string(),
             vec![],
             "wss://eu.rt.speechmatics.com/v2".to_string(),
+            "wss://api.elevenlabs.io".to_string(),
             HashMap::new(),
             vec![],
         )

@@ -20,7 +20,10 @@ Do not model a Parlando `Study`: the runtime hierarchy is Game, Experiment, Sess
 
 Voice, transcription, and TTS are runtime capabilities, not game decisions. Generated participant applications read narrow `GameSession` capability/status fields and use SDK widgets. Generated servers and clients must not implement audio routes, media framing, provider clients, browser STT/TTS, or credential transport.
 
-Keep `SPEECHMATICS_API_KEY`, `ELEVENLABS_API_KEY`, and any remote-agent model credentials out of source, frontend variables, experiment exports, and checked-in files. Administrators configure non-secret behavior through the dashboard.
+Keep provider and remote-agent credentials out of source, process environment,
+frontend variables, experiment exports, and checked-in files. Administrators add
+provider credentials to the explicit Game settings secret store and configure
+non-secret behavior through the dashboard.
 
 ## Local run
 

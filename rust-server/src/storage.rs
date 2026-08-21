@@ -194,8 +194,10 @@ pub struct StoredGameSettings {
     pub institution: String,
     /// Direct-peer CIDR ranges allowed to access administrator surfaces.
     pub admin_allowed_ip_ranges: Vec<String>,
-    /// Installation-wide Speechmatics realtime WebSocket endpoint.
+    /// Speechmatics endpoint default copied into newly created experiments.
     pub speechmatics_realtime_url: String,
+    /// Default ElevenLabs WebSocket service origin copied into new experiments.
+    pub tts_base_url: String,
     /// Optimistic-concurrency revision for dashboard updates.
     pub revision: i64,
 }
@@ -207,6 +209,7 @@ impl Default for StoredGameSettings {
             institution: String::new(),
             admin_allowed_ip_ranges: Vec::new(),
             speechmatics_realtime_url: "wss://eu.rt.speechmatics.com/v2".to_string(),
+            tts_base_url: "wss://api.elevenlabs.io".to_string(),
             revision: 1,
         }
     }
@@ -474,6 +477,7 @@ pub trait ExperimentStore: Send + Sync {
         institution: String,
         admin_allowed_ip_ranges: Vec<String>,
         speechmatics_realtime_url: String,
+        tts_base_url: String,
         secret_updates: HashMap<String, String>,
         secret_deletions: Vec<String>,
     ) -> Result<i64>;
@@ -728,6 +732,7 @@ impl SqliteExperimentStore {
                 institution text not null default '',
                 admin_allowed_ip_ranges_json text not null default '[]',
                 speechmatics_realtime_url text not null default 'wss://eu.rt.speechmatics.com/v2',
+                tts_base_url text not null default 'wss://api.elevenlabs.io',
                 revision integer not null default 1,
                 updated_at text not null
             )
@@ -1081,6 +1086,49 @@ impl SqliteExperimentStore {
                 .execute(&self.pool)
                 .await?;
             sqlx::query("insert into schema_migrations (version, applied_at) values (10, ?)")
+                .bind(now_iso())
+                .execute(&self.pool)
+                .await?;
+            version = 10;
+        }
+        if version < 11 {
+            self.ensure_column(
+                "game_settings",
+                "tts_base_url",
+                "text not null default 'wss://api.elevenlabs.io'",
+            )
+            .await?;
+            for table in ["experiments", "experiment_config_revisions"] {
+                let statement = format!(
+                    r#"
+                    update {table}
+                    set config_json = json_set(
+                        json_remove(
+                            config_json,
+                            '$.experiment',
+                            '$.server',
+                            '$.database',
+                            '$.speechmatics.api_key',
+                            '$.tts.api_key'
+                        ),
+                        '$.speechmatics.realtime_url',
+                        coalesce(
+                            json_extract(config_json, '$.speechmatics.realtime_url'),
+                            (select speechmatics_realtime_url from game_settings where singleton = 1),
+                            'wss://eu.rt.speechmatics.com/v2'
+                        ),
+                        '$.tts.base_url',
+                        coalesce(
+                            json_extract(config_json, '$.tts.base_url'),
+                            (select tts_base_url from game_settings where singleton = 1),
+                            'wss://api.elevenlabs.io'
+                        )
+                    )
+                    "#,
+                );
+                sqlx::query(&statement).execute(&self.pool).await?;
+            }
+            sqlx::query("insert into schema_migrations (version, applied_at) values (11, ?)")
                 .bind(now_iso())
                 .execute(&self.pool)
                 .await?;
@@ -1757,8 +1805,8 @@ impl ExperimentStore for SqliteExperimentStore {
     }
 
     async fn game_settings(&self) -> Result<StoredGameSettings> {
-        let row = sqlx::query_as::<_, (String, String, String, i64)>(
-            "select institution, admin_allowed_ip_ranges_json, speechmatics_realtime_url, revision from game_settings where singleton = 1",
+        let row = sqlx::query_as::<_, (String, String, String, String, i64)>(
+            "select institution, admin_allowed_ip_ranges_json, speechmatics_realtime_url, tts_base_url, revision from game_settings where singleton = 1",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -1766,7 +1814,8 @@ impl ExperimentStore for SqliteExperimentStore {
             institution: row.0,
             admin_allowed_ip_ranges: serde_json::from_str(&row.1)?,
             speechmatics_realtime_url: row.2,
-            revision: row.3,
+            tts_base_url: row.3,
+            revision: row.4,
         })
     }
 
@@ -1786,6 +1835,7 @@ impl ExperimentStore for SqliteExperimentStore {
         institution: String,
         admin_allowed_ip_ranges: Vec<String>,
         speechmatics_realtime_url: String,
+        tts_base_url: String,
         secret_updates: HashMap<String, String>,
         secret_deletions: Vec<String>,
     ) -> Result<i64> {
@@ -1793,13 +1843,14 @@ impl ExperimentStore for SqliteExperimentStore {
         let next_revision = expected_revision + 1;
         let result = sqlx::query(
             r#"
-            update game_settings set institution = ?, admin_allowed_ip_ranges_json = ?, speechmatics_realtime_url = ?, revision = ?, updated_at = ?
+            update game_settings set institution = ?, admin_allowed_ip_ranges_json = ?, speechmatics_realtime_url = ?, tts_base_url = ?, revision = ?, updated_at = ?
             where singleton = 1 and revision = ?
             "#,
         )
         .bind(institution.trim())
         .bind(serde_json::to_string(&admin_allowed_ip_ranges)?)
         .bind(speechmatics_realtime_url.trim())
+        .bind(tts_base_url.trim())
         .bind(next_revision)
         .bind(now_iso())
         .bind(expected_revision)

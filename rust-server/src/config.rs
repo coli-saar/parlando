@@ -167,6 +167,7 @@ impl Default for VoiceConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SpeechmaticsConfig {
+    #[serde(skip)]
     pub api_key: String,
     pub realtime_url: String,
     pub max_delay: f64,
@@ -214,6 +215,9 @@ pub struct TtsConfig {
     pub model: String,
     pub voice_id: String,
     pub voice_name: String,
+    /// Revisioned WebSocket service origin used for synthesized speech.
+    pub base_url: String,
+    #[serde(skip)]
     pub api_key: String,
     pub output_format: String,
 }
@@ -226,6 +230,7 @@ impl Default for TtsConfig {
             model: "eleven_flash_v2_5".to_string(),
             voice_id: String::new(),
             voice_name: String::new(),
+            base_url: "wss://api.elevenlabs.io".to_string(),
             api_key: String::new(),
             output_format: "pcm_24000".to_string(),
         }
@@ -272,10 +277,13 @@ pub struct AgentsConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ExperimentConfig {
+    #[serde(skip)]
     pub experiment: ExperimentIdentityConfig,
     pub session: SessionConfig,
     pub direct: DirectConfig,
+    #[serde(skip)]
     pub server: ServerConfig,
+    #[serde(skip)]
     pub database: DatabaseConfig,
     pub voice: VoiceConfig,
     pub speechmatics: SpeechmaticsConfig,
@@ -382,6 +390,7 @@ impl ExperimentConfig {
             if self.tts.output_format != "pcm_24000" {
                 bail!("tts.output_format must be pcm_24000");
             }
+            validate_websocket_url("tts.base_url", &self.tts.base_url)?;
         }
         if self.voice.enabled
             && (self.voice.sample_rate_hz != 24_000 || self.voice.frame_duration_ms != 20)
@@ -479,7 +488,7 @@ impl ExperimentConfig {
 }
 
 /// Rejects malformed hosted-service WebSocket URLs.
-fn validate_websocket_url(field: &str, value: &str) -> Result<()> {
+pub(crate) fn validate_websocket_url(field: &str, value: &str) -> Result<()> {
     let uri: http::Uri = value
         .parse()
         .with_context(|| format!("{field} must be a valid URL"))?;
@@ -826,5 +835,34 @@ mod tests {
         assert!(issues[0].contains("Speechmatics"));
         assert!(issues[1].contains("API key"));
         assert!(issues[2].contains("voice id"));
+    }
+
+    /// Confirms process identity, topology, and credentials are not accepted as experiment JSON.
+    #[test]
+    fn deserialization_rejects_non_experiment_fields() {
+        for value in [
+            serde_json::json!({"experiment": {"id": "other"}}),
+            serde_json::json!({"server": {"public_base_url": "https://example.test"}}),
+            serde_json::json!({"database": {"url": "sqlite://other"}}),
+            serde_json::json!({"speechmatics": {"api_key": "secret"}}),
+            serde_json::json!({"tts": {"api_key": "secret"}}),
+        ] {
+            assert!(serde_json::from_value::<ExperimentConfig>(value).is_err());
+        }
+    }
+
+    /// Confirms both revisioned provider destinations are validated when enabled.
+    #[test]
+    fn validation_checks_revisioned_provider_endpoints() {
+        let mut transcription = valid_config();
+        transcription.transcription.enabled = true;
+        transcription.speechmatics.realtime_url = "https://not-websocket.test".to_string();
+        assert!(transcription.validate().is_err());
+
+        let mut synthesis = valid_config();
+        synthesis.tts.enabled = true;
+        synthesis.tts.voice_id = "voice".to_string();
+        synthesis.tts.base_url = "https://not-websocket.test".to_string();
+        assert!(synthesis.validate().is_err());
     }
 }

@@ -14,7 +14,6 @@ struct RuntimeShared<A: Game> {
     game_settings: Arc<RwLock<StoredGameSettings>>,
     telemetry: Arc<RuntimeTelemetry>,
     runtime_registry: Arc<RwLock<HashMap<String, Weak<AppState<A>>>>>,
-    bootstrap_secrets: Arc<HashMap<String, String>>,
 }
 
 /// One compiled game's installation-level dispatcher and lazily built experiment routers.
@@ -29,7 +28,6 @@ struct GameHost<A: Game> {
     routers: RwLock<HashMap<String, Router>>,
     telemetry: Arc<RuntimeTelemetry>,
     runtime_registry: Arc<RwLock<HashMap<String, Weak<AppState<A>>>>>,
-    bootstrap_secrets: Arc<HashMap<String, String>>,
     admin_router: Router,
     health_slots: Semaphore,
 }
@@ -89,13 +87,7 @@ where
         apply_bootstrap_settings(&mut config, &self.bootstrap, experiment_id);
         apply_experiment_secrets(&mut config, &stored_secrets);
         let game_secrets = self.store.game_secrets().await?;
-        let game_settings = self.game_settings.read().await.clone();
-        apply_game_provider_settings(
-            &mut config,
-            &game_settings,
-            &self.bootstrap_secrets,
-            &game_secrets,
-        );
+        apply_game_provider_secrets(&mut config, &game_secrets);
         parse_game_config(self.adapter.as_ref(), &config.game).with_context(|| {
             format!("experiment {experiment_id:?} has invalid game configuration")
         })?;
@@ -111,7 +103,6 @@ where
                 game_settings: self.game_settings.clone(),
                 telemetry: self.telemetry.clone(),
                 runtime_registry: self.runtime_registry.clone(),
-                bootstrap_secrets: self.bootstrap_secrets.clone(),
             }),
             true,
         )
@@ -133,8 +124,6 @@ fn apply_bootstrap_settings(
     config.experiment.id = Some(experiment_id.to_string());
     config.server = bootstrap.server.clone();
     config.database = bootstrap.database.clone();
-    config.speechmatics.api_key = bootstrap.speechmatics.api_key.clone();
-    config.tts.api_key = bootstrap.tts.api_key.clone();
     let experiment_path = format!("/e/{experiment_id}");
     config.server.public_base_url = format!(
         "{}{}",
@@ -374,7 +363,6 @@ where
     let game_settings = Arc::new(RwLock::new(store.game_settings().await?));
     let telemetry = Arc::new(RuntimeTelemetry::default());
     let runtime_registry = Arc::new(RwLock::new(HashMap::new()));
-    let bootstrap_secrets = Arc::new(bootstrap_secret_values(&bootstrap));
     let cleanup_auth = admin_auth.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
@@ -400,7 +388,6 @@ where
         game_settings: game_settings.clone(),
         telemetry: telemetry.clone(),
         runtime_registry: runtime_registry.clone(),
-        bootstrap_secrets: bootstrap_secrets.clone(),
     };
     let mut admin_config = bootstrap.clone();
     admin_config.experiment.id = Some("__dashboard__".to_string());
@@ -425,7 +412,6 @@ where
         routers: RwLock::new(HashMap::new()),
         telemetry,
         runtime_registry,
-        bootstrap_secrets,
         admin_router,
         health_slots: Semaphore::new(1),
     });
@@ -503,7 +489,7 @@ where
 /// Builds one experiment router with optional installation-owned storage and authentication.
 async fn build_router_with_resources<A: Game>(
     adapter: Arc<A>,
-    mut config: ExperimentConfig,
+    config: ExperimentConfig,
     options: ServeOptions<A>,
     shared: Option<RuntimeShared<A>>,
     persist_experiment: bool,
@@ -526,12 +512,8 @@ where
             build_manifest: options.game_version_manifest.clone().unwrap_or(Value::Null),
         });
     game_descriptor.validate()?;
-    let bootstrap_secrets = shared
-        .as_ref()
-        .map(|shared| shared.bootstrap_secrets.clone())
-        .unwrap_or_else(|| Arc::new(bootstrap_secret_values(&config)));
-    let speechmatics_api_key = std::mem::take(&mut config.speechmatics.api_key);
-    let tts_api_key = std::mem::take(&mut config.tts.api_key);
+    let speechmatics_api_key = config.speechmatics.api_key.clone();
+    let tts_api_key = config.tts.api_key.clone();
     let store = if let Some(shared) = shared.as_ref() {
         shared.store.clone()
     } else {
@@ -564,8 +546,6 @@ where
         ("inactive".to_string(), 0)
     };
     let client_dist = config.server.client_dist_path.as_ref().map(PathBuf::from);
-    let tts_provider_is_override = options.tts_provider.is_some();
-    let transcription_provider_is_override = options.transcription_provider.is_some();
     let tts_provider = if options.tts_provider.is_some() {
         options.tts_provider
     } else if config.tts.enabled && !tts_api_key.is_empty() && !config.tts.voice_id.is_empty() {
@@ -649,7 +629,6 @@ where
         experiment_id,
         game_descriptor,
         game_settings,
-        bootstrap_secrets,
         config_revision,
         experiment_lifecycle: RwLock::new(
             ExperimentLifecycle::parse(&lifecycle).map_err(|error| anyhow!(error.message))?,
@@ -663,11 +642,9 @@ where
         pending_agents: Mutex::new(HashMap::new()),
         agent_inboxes: RwLock::new(HashMap::new()),
         tts_provider,
-        tts_provider_is_override,
         audio_publisher,
         audio_rooms,
         transcription_provider,
-        transcription_provider_is_override,
         committed_transcripts: RwLock::new(HashSet::new()),
         participant_auth: ParticipantAuthenticator::default(),
         upgrade_tickets: UpgradeTicketStore::default(),

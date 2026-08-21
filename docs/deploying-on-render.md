@@ -148,19 +148,11 @@ change.
 
 ## Add voice-provider secrets only when needed
 
-Typed games need no provider credentials. If an experiment uses hosted speech
-recognition or text-to-speech, add the corresponding secret in the Render
-dashboard:
-
-```text
-SPEECHMATICS_API_KEY=<secret>
-ELEVENLABS_API_KEY=<secret>
-```
-
-Do not commit either value to the Blueprint. If you want the Blueprint creation
-flow to prompt for them, declare each key with `sync: false`; omit them entirely
-for deployments that do not use those providers. Provider secrets remain on the
-server and are excluded from experiment exports.
+Typed games need no provider credentials. After administrator setup, add a
+Speechmatics or ElevenLabs credential explicitly under Game settings only when
+an experiment uses that provider. Parlando does not read provider credentials
+from the process environment. Provider secrets remain in the server-side secret
+store and are excluded from experiment exports.
 
 ## Operate the deployment
 

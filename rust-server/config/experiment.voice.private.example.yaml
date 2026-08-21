@@ -6,7 +6,6 @@ voice:
   jitter_buffer_ms: 100
 
 speechmatics:
-  api_key: "YOUR_SPEECHMATICS_API_KEY"
   realtime_url: "wss://eu.rt.speechmatics.com/v2"
   max_delay: 2.0
   enable_partials: true
@@ -24,5 +23,5 @@ tts:
   model: eleven_flash_v2_5
   voice_id: "YOUR_ELEVENLABS_VOICE_ID"
   voice_name: "YOUR_VOICE_DISPLAY_NAME"
-  api_key: "YOUR_ELEVENLABS_API_KEY"
+  base_url: "wss://api.elevenlabs.io"
   output_format: pcm_24000

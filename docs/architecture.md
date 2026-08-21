@@ -111,14 +111,16 @@ state help run a live session; exports are reconstructed from persisted rows.
 Configuration is divided according to when it is needed.
 
 **Process bootstrap** contains values required before the dashboard can open:
-listener host and port, database URL, client-build path, and provider credentials.
+listener host and port, database URL, and client-build path.
 These values are not experiment fields and are not stored in experiment revisions.
 
-**Game settings** currently contain the institution shared by the process. They
-have their own optimistic-concurrency revision.
+**Game settings** contain the institution, provider credentials, and endpoint
+defaults used when creating experiments. They have their own
+optimistic-concurrency revision. Provider credentials have no environment fallback.
 
 **Experiment configuration** contains participant information and consent, matchmaking, agent,
-voice, transcription, TTS, conversation, and privacy settings. Each successful
+voice, exact external speech-service endpoints, transcription, TTS, conversation,
+and privacy settings. Each successful
 save creates a new immutable revision. The dashboard provides structured
 controls, and Rust deserialization and semantic validation provide a final
 consistency check before saving.

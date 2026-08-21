@@ -110,19 +110,6 @@ impl<A: Game> Default for ServeOptions<A> {
 /// Produces the only configuration representation allowed to enter durable storage.
 fn persistable_config_json(config: &ExperimentConfig) -> Result<Value> {
     let mut value = serde_json::to_value(config)?;
-    if let Some(object) = value.as_object_mut() {
-        object.remove("experiment");
-        object.remove("server");
-        object.remove("database");
-    }
-    for provider in ["speechmatics", "tts"] {
-        if let Some(settings) = value.get_mut(provider).and_then(Value::as_object_mut) {
-            settings.remove("api_key");
-        }
-    }
-    if let Some(speechmatics) = value.get_mut("speechmatics").and_then(Value::as_object_mut) {
-        speechmatics.remove("realtime_url");
-    }
     redact_secret_fields(&mut value);
     Ok(value)
 }
@@ -171,46 +158,17 @@ fn validate_game_config_contains_no_secrets(value: &Value) -> Result<()> {
 
 /// Restores bootstrap-only fields before strict experiment configuration validation.
 fn experiment_config_from_json(
-    mut value: Value,
+    value: Value,
     bootstrap: &ExperimentConfig,
     experiment_id: &str,
 ) -> Result<ExperimentConfig> {
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| anyhow!("experiment configuration must be a JSON object"))?;
-    object.insert(
-        "server".to_string(),
-        serde_json::to_value(&bootstrap.server)?,
-    );
-    object.insert(
-        "database".to_string(),
-        serde_json::to_value(&bootstrap.database)?,
-    );
-    let experiment = object
-        .entry("experiment")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .ok_or_else(|| anyhow!("experiment configuration identity must be an object"))?;
-    experiment.insert("id".to_string(), Value::String(experiment_id.to_string()));
-    let speechmatics = object
-        .entry("speechmatics")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .ok_or_else(|| anyhow!("speechmatics configuration must be an object"))?;
-    speechmatics.insert(
-        "api_key".to_string(),
-        Value::String(bootstrap.speechmatics.api_key.clone()),
-    );
-    let tts = object
-        .entry("tts")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .ok_or_else(|| anyhow!("TTS configuration must be an object"))?;
-    tts.insert(
-        "api_key".to_string(),
-        Value::String(bootstrap.tts.api_key.clone()),
-    );
-    let config: ExperimentConfig = serde_json::from_value(value)?;
+    if !value.is_object() {
+        bail!("experiment configuration must be a JSON object");
+    }
+    let mut config: ExperimentConfig = serde_json::from_value(value)?;
+    config.experiment.id = Some(experiment_id.to_string());
+    config.server = bootstrap.server.clone();
+    config.database = bootstrap.database.clone();
     config.validate()?;
     Ok(config)
 }
@@ -226,24 +184,47 @@ fn apply_experiment_secrets(config: &mut ExperimentConfig, secrets: &HashMap<Str
         .collect();
 }
 
-/// Applies installation-wide provider connections and credentials to one experiment runtime.
-fn apply_game_provider_settings(
+/// Applies explicit game-wide provider credentials to one experiment runtime.
+fn apply_game_provider_secrets(
     config: &mut ExperimentConfig,
-    settings: &StoredGameSettings,
-    bootstrap_secrets: &HashMap<String, String>,
     stored_secrets: &HashMap<String, String>,
 ) {
-    config.speechmatics.realtime_url = settings.speechmatics_realtime_url.clone();
     config.speechmatics.api_key = stored_secrets
         .get("speechmatics.api_key")
-        .or_else(|| bootstrap_secrets.get("speechmatics.api_key"))
         .cloned()
         .unwrap_or_default();
     config.tts.api_key = stored_secrets
         .get("tts.api_key")
-        .or_else(|| bootstrap_secrets.get("tts.api_key"))
         .cloned()
         .unwrap_or_default();
+}
+
+/// Materializes game endpoint defaults into a new experiment revision without overriding choices.
+fn apply_provider_endpoint_defaults(
+    value: &mut Value,
+    settings: &StoredGameSettings,
+) -> Result<()> {
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("experiment configuration must be a JSON object"))?;
+    for (section, key, default) in [
+        (
+            "speechmatics",
+            "realtime_url",
+            settings.speechmatics_realtime_url.as_str(),
+        ),
+        ("tts", "base_url", settings.tts_base_url.as_str()),
+    ] {
+        let provider = object
+            .entry(section)
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("{section} configuration must be an object"))?;
+        provider
+            .entry(key)
+            .or_insert_with(|| Value::String(default.to_string()));
+    }
+    Ok(())
 }
 
 /// Loads one stored revision with process bootstrap settings and effective credentials applied.
@@ -262,13 +243,7 @@ async fn hydrated_experiment_config<A: Game>(
     apply_experiment_secrets(&mut config, &experiment_secrets);
     repair_legacy_agent_secret_references(&state.agent_definitions, &mut config);
     let game_secrets = state.store.game_secrets().await?;
-    let game_settings = state.game_settings.read().await.clone();
-    apply_game_provider_settings(
-        &mut config,
-        &game_settings,
-        &state.bootstrap_secrets,
-        &game_secrets,
-    );
+    apply_game_provider_secrets(&mut config, &game_secrets);
     Ok(config)
 }
 
@@ -371,10 +346,10 @@ fn activation_issues_for_config<A: Game>(
     state: &AppState<A>,
     config: &mut ExperimentConfig,
 ) -> Vec<String> {
-    if state.transcription_provider_is_override {
+    if state.transcription_provider.is_some() {
         config.speechmatics.api_key = "provided-by-runtime".to_string();
     }
-    if state.tts_provider_is_override {
+    if state.tts_provider.is_some() {
         config.tts.api_key = "provided-by-runtime".to_string();
         config.tts.voice_id = "provided-by-runtime".to_string();
     }
@@ -413,18 +388,6 @@ fn validate_agent_configuration(
         definition.resolve_secrets(&normalized, &config.game_secrets)?;
     }
     Ok(())
-}
-
-/// Extracts non-empty process bootstrap credentials for experiment fallback and reveal.
-fn bootstrap_secret_values(config: &ExperimentConfig) -> HashMap<String, String> {
-    [
-        ("speechmatics.api_key", config.speechmatics.api_key.as_str()),
-        ("tts.api_key", config.tts.api_key.as_str()),
-    ]
-    .into_iter()
-    .filter(|(_, value)| !value.is_empty())
-    .map(|(key, value)| (key.to_string(), value.to_string()))
-    .collect()
 }
 
 /// Recursively removes credential-shaped fields as a defense-in-depth serialization boundary.
@@ -493,9 +456,9 @@ fn expanded_consent_items(
 ) -> Vec<ConsentItemConfig> {
     let information_version = config.direct.participant_information_version.trim();
     let institution = game_settings.institution.trim();
-    let processing_region = if game_settings.speechmatics_realtime_url.contains("//eu.") {
+    let processing_region = if config.speechmatics.realtime_url.contains("//eu.") {
         "the European Union"
-    } else if game_settings.speechmatics_realtime_url.contains("//us.") {
+    } else if config.speechmatics.realtime_url.contains("//us.") {
         "the United States"
     } else {
         "the processing region described in the Participant Information and Privacy Notice"
@@ -1395,8 +1358,6 @@ pub struct AppState<A: Game> {
     pub game_descriptor: GameMetadata,
     /// Settings shared by every experiment of this compiled game.
     pub game_settings: Arc<RwLock<StoredGameSettings>>,
-    /// Process bootstrap credentials used only when an experiment has no override.
-    bootstrap_secrets: Arc<HashMap<String, String>>,
     /// Immutable configuration revision used for newly created sessions.
     pub config_revision: i64,
     experiment_lifecycle: RwLock<ExperimentLifecycle>,
@@ -1410,13 +1371,9 @@ pub struct AppState<A: Game> {
     pending_agents: Mutex<HashMap<String, Box<dyn Agent<A> + Send>>>,
     agent_inboxes: RwLock<HashMap<String, mpsc::Sender<AgentObservation<A>>>>,
     pub tts_provider: Option<Arc<dyn StreamingTtsProvider>>,
-    /// Whether the embedding application supplied TTS independently of dashboard credentials.
-    tts_provider_is_override: bool,
     pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
     pub audio_rooms: SharedAudioRooms,
     pub transcription_provider: Option<Arc<dyn TranscriptionProvider>>,
-    /// Whether the embedding application supplied transcription independently of dashboard credentials.
-    transcription_provider_is_override: bool,
     committed_transcripts: RwLock<HashSet<String>>,
     participant_auth: ParticipantAuthenticator,
     upgrade_tickets: UpgradeTicketStore,
@@ -3456,6 +3413,7 @@ struct AdminGameSettingsRequest {
     institution: String,
     admin_allowed_ip_ranges: Vec<String>,
     speechmatics_realtime_url: Option<String>,
+    tts_base_url: Option<String>,
     #[serde(default)]
     secret_updates: HashMap<String, String>,
     #[serde(default)]
@@ -3655,8 +3613,10 @@ struct PrivacyConfigFacts {
     contract_version: String,
     transcription_enabled: bool,
     transcription_provider: String,
+    transcription_endpoint: String,
     tts_enabled: bool,
     tts_provider: String,
+    tts_endpoint: String,
     voice_enabled: bool,
     human_vs_agent: bool,
     consent_items: usize,
@@ -3692,8 +3652,10 @@ fn privacy_config_facts(config: &Value) -> PrivacyConfigFacts {
         contract_version: privacy_config_string(config, "privacy", "contract_version"),
         transcription_enabled: privacy_config_bool(config, "transcription", "enabled"),
         transcription_provider: privacy_config_string(config, "transcription", "provider"),
+        transcription_endpoint: privacy_config_string(config, "speechmatics", "realtime_url"),
         tts_enabled: privacy_config_bool(config, "tts", "enabled"),
         tts_provider: privacy_config_string(config, "tts", "provider"),
+        tts_endpoint: privacy_config_string(config, "tts", "base_url"),
         voice_enabled: privacy_config_bool(config, "voice", "enabled"),
         human_vs_agent: privacy_config_string(config, "agents", "mode") == "human_vs_agent",
         consent_items: config
@@ -3984,7 +3946,7 @@ async fn privacy_status<A: Game>(
                 setting: "Speech transcription".to_string(),
                 status: if fact.transcription_enabled { "Enabled" } else { "Disabled" }.to_string(),
                 detail: if fact.transcription_enabled {
-                    format!("Participant microphone audio is sent to {} for live speech-to-text processing.", fact.transcription_provider)
+                    format!("Participant microphone audio is sent to {} at {} for live speech-to-text processing.", fact.transcription_provider, fact.transcription_endpoint)
                 } else {
                     "No participant audio is sent to a transcription provider and no speech transcripts are produced."
                         .to_string()
@@ -3994,7 +3956,7 @@ async fn privacy_status<A: Game>(
                 setting: "Agent speech synthesis".to_string(),
                 status: if fact.tts_enabled { "Enabled" } else { "Disabled" }.to_string(),
                 detail: if fact.tts_enabled {
-                    format!("Software-agent message text is sent to {} to generate speech.", fact.tts_provider)
+                    format!("Software-agent message text is sent to {} at {} to generate speech.", fact.tts_provider, fact.tts_endpoint)
                 } else {
                     "No text is sent to a speech-synthesis provider."
                         .to_string()
@@ -4620,7 +4582,7 @@ async fn admin_experiments<A: Game>(
         "game": state.game_descriptor,
         "version_manifest": state.version_manifest,
         "game_settings": game_settings,
-        "game_provider_secrets": configured_provider_secret_statuses(&state.bootstrap_secrets, &game_secrets),
+        "game_provider_secrets": configured_provider_secret_statuses(&game_secrets),
         "experiments": catalogue,
         "csrf_token": admin_session.csrf_token,
     })))
@@ -4659,11 +4621,17 @@ async fn admin_create_experiment<A: Game>(
     Json(request): Json<AdminCreateExperimentRequest>,
 ) -> Result<Json<Value>, AppError> {
     validate_new_experiment_id(&request.experiment_id)?;
-    let mut config = if let Some(value) = request.config {
+    let game_settings = state.game_settings.read().await.clone();
+    let mut config = if let Some(mut value) = request.config {
+        apply_provider_endpoint_defaults(&mut value, &game_settings)
+            .map_err(|error| AppError::bad_request(error.to_string()))?;
         experiment_config_from_json(value, &state.config, &request.experiment_id)
             .map_err(|error| AppError::bad_request(error.to_string()))?
     } else {
-        state.config.clone()
+        let mut config = state.config.clone();
+        config.speechmatics.realtime_url = game_settings.speechmatics_realtime_url;
+        config.tts.base_url = game_settings.tts_base_url;
+        config
     };
     config.experiment.id = Some(request.experiment_id.clone());
     config
@@ -4779,20 +4747,17 @@ async fn admin_experiment_config<A: Game>(
 }
 
 /// Describes secret availability without returning credential values.
-fn configured_provider_secret_statuses(
-    bootstrap: &HashMap<String, String>,
-    stored: &HashMap<String, String>,
-) -> Vec<Value> {
+fn configured_provider_secret_statuses(stored: &HashMap<String, String>) -> Vec<Value> {
     vec![
         json!({
             "key": "speechmatics.api_key",
-            "configured": stored.contains_key("speechmatics.api_key") || bootstrap.contains_key("speechmatics.api_key"),
-            "source": if stored.contains_key("speechmatics.api_key") { "game" } else if bootstrap.contains_key("speechmatics.api_key") { "server" } else { "missing" },
+            "configured": stored.contains_key("speechmatics.api_key"),
+            "source": if stored.contains_key("speechmatics.api_key") { "game" } else { "missing" },
         }),
         json!({
             "key": "tts.api_key",
-            "configured": stored.contains_key("tts.api_key") || bootstrap.contains_key("tts.api_key"),
-            "source": if stored.contains_key("tts.api_key") { "game" } else if bootstrap.contains_key("tts.api_key") { "server" } else { "missing" },
+            "configured": stored.contains_key("tts.api_key"),
+            "source": if stored.contains_key("tts.api_key") { "game" } else { "missing" },
         }),
     ]
 }
@@ -4847,10 +4812,7 @@ async fn admin_reveal_experiment_secret<A: Game>(
         .await?
         .ok_or_else(|| AppError::not_found("Experiment not found."))?;
     let stored = state.store.experiment_secrets(&experiment_id).await?;
-    let value = stored
-        .get(&request.key)
-        .cloned()
-        .or_else(|| state.bootstrap_secrets.get(&request.key).cloned());
+    let value = stored.get(&request.key).cloned();
     let value = value.ok_or_else(|| AppError::not_found("Secret is not configured."))?;
     tracing::warn!(
         experiment_id,
@@ -4919,6 +4881,9 @@ async fn admin_save_experiment_config<A: Game>(
             .ok_or_else(|| AppError::bad_request("configuration must be an object"))?
             .insert("game".to_string(), game);
     }
+    let game_settings = state.game_settings.read().await.clone();
+    apply_provider_endpoint_defaults(&mut config_value, &game_settings)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
     let mut config = experiment_config_from_json(config_value, &state.config, &experiment_id)
         .map_err(|error| AppError::bad_request(error.to_string()))?;
     let mut secrets = state.store.experiment_secrets(&experiment_id).await?;
@@ -4928,13 +4893,7 @@ async fn admin_save_experiment_config<A: Game>(
     secrets.extend(request.secret_updates.clone());
     apply_experiment_secrets(&mut config, &secrets);
     let game_secrets = state.store.game_secrets().await?;
-    let game_settings = state.game_settings.read().await.clone();
-    apply_game_provider_settings(
-        &mut config,
-        &game_settings,
-        &state.bootstrap_secrets,
-        &game_secrets,
-    );
+    apply_game_provider_secrets(&mut config, &game_secrets);
     config.experiment.id = Some(experiment_id.clone());
     config
         .validate()
@@ -5042,13 +5001,16 @@ async fn admin_update_game_settings<A: Game>(
         .unwrap_or(current_realtime_url)
         .trim()
         .to_string();
-    if !(speechmatics_realtime_url.starts_with("wss://")
-        || speechmatics_realtime_url.starts_with("ws://"))
-    {
-        return Err(AppError::bad_request(
-            "Speechmatics realtime URL must use ws:// or wss://",
-        ));
-    }
+    crate::config::validate_websocket_url("Speechmatics realtime URL", &speechmatics_realtime_url)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    let current_tts_base_url = state.game_settings.read().await.tts_base_url.clone();
+    let tts_base_url = request
+        .tts_base_url
+        .unwrap_or(current_tts_base_url)
+        .trim()
+        .to_string();
+    crate::config::validate_websocket_url("ElevenLabs base URL", &tts_base_url)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
     for (key, value) in &request.secret_updates {
         validate_game_provider_secret(key, Some(value))?;
     }
@@ -5062,6 +5024,7 @@ async fn admin_update_game_settings<A: Game>(
             institution.clone(),
             admin_allowed_ip_ranges.clone(),
             speechmatics_realtime_url.clone(),
+            tts_base_url.clone(),
             request.secret_updates,
             request.secret_deletions,
         )
@@ -5071,6 +5034,7 @@ async fn admin_update_game_settings<A: Game>(
         institution,
         admin_allowed_ip_ranges,
         speechmatics_realtime_url,
+        tts_base_url,
         revision,
     };
     Ok(Json(json!({ "revision": revision })))
@@ -5101,7 +5065,6 @@ async fn admin_reveal_game_secret<A: Game>(
     let value = stored
         .get(&request.key)
         .cloned()
-        .or_else(|| state.bootstrap_secrets.get(&request.key).cloned())
         .ok_or_else(|| AppError::not_found("Provider credential is not configured."))?;
     tracing::warn!(
         secret_key = request.key,

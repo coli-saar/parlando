@@ -107,7 +107,8 @@ them. Protocol version 1 fixes `voice.sample_rate_hz` at 24000,
 `voice.frame_duration_ms` at 20, mono PCM, and a TTS output format compatible with
 24 kHz PCM. The normal initial jitter target is 100 ms.
 
-Supply `SPEECHMATICS_API_KEY` and `ELEVENLABS_API_KEY` in the game process
-environment. Configure the Speechmatics realtime options and ElevenLabs voice id
-in the dashboard. Provider keys are process bootstrap secrets: Parlando does not
-display them in the form or persist them in experiment revisions.
+Add Speechmatics and ElevenLabs credentials explicitly under Game settings.
+Parlando has no environment-variable fallback for provider secrets. Configure
+the exact Speechmatics realtime URL, ElevenLabs base URL, recognition behavior,
+and ElevenLabs voice in the experiment revision. Provider keys remain outside
+experiment revisions and exports.
