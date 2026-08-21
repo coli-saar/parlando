@@ -3635,6 +3635,19 @@ async fn javascript_sink_mute_contract_blocks_relay_and_transcription() {
         "ready"
     );
 
+    let (mut game_a, _) = connect_async(
+        game_socket_url(&base_url, &public_session_id, &participant_a).await,
+    )
+    .await
+    .unwrap();
+    let (mut game_b, _) = connect_async(
+        game_socket_url(&base_url, &public_session_id, &participant_b).await,
+    )
+    .await
+    .unwrap();
+    let _ = read_ws_type(&mut game_a, "session_started").await;
+    let _ = read_ws_type(&mut game_b, "session_started").await;
+
     let live = javascript_mute_command(
         &mut child_input,
         &mut child_output,

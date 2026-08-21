@@ -325,14 +325,13 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             )
 
 
-class ProtocolDriftTests(unittest.TestCase):
-    """Keeps the Python package protocol byte-identical to the Rust server source."""
+class ProtocolSourceTests(unittest.TestCase):
+    """Checks that SDK development uses the repository's shared protocol source."""
 
-    def test_bundled_proto_matches_rust_server(self) -> None:
-        """The package copy changes only alongside the authoritative server proto."""
-        sdk_proto = PACKAGE_SRC / "parlando_agent_sdk/protos/parlando_agent_v3.proto"
-        rust_proto = Path(__file__).resolve().parents[3] / "proto/parlando_agent_v3.proto"
-        self.assertEqual(sdk_proto.read_bytes(), rust_proto.read_bytes())
+    def test_shared_agent_proto_exists(self) -> None:
+        """The repository-level agent protocol remains available to the generator."""
+        shared_proto = Path(__file__).resolve().parents[2] / "proto/parlando_agent_v3.proto"
+        self.assertTrue(shared_proto.is_file())
 
 
 if __name__ == "__main__":

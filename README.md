@@ -265,7 +265,9 @@ The repository is divided accordingly:
 - `js-client`: reusable TypeScript client and React startup components;
 - `space-game/server`: example game state, adapter, agents, and server binary;
 - `space-game/client`: example participant interface; and
-- `rust-server/python/parlando-agent-sdk`: SDK for external Python agents.
+- `parlando-agent-sdk`: SDK for external Python agents; and
+- `proto`: language-neutral remote-agent protocol definitions shared by the
+  Rust server and Python SDK.
 
 ## Current scope
 

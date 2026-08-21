@@ -17,4 +17,4 @@ dependencies = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-parlando_agent_sdk = ["py.typed", "protos/*.proto"]
+parlando_agent_sdk = ["py.typed"]

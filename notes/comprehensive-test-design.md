@@ -258,7 +258,7 @@ Completion requires all P0 and P1 cases, no unexplained coverage regression, and
 5. Concurrent `CreateAgent` calls at `max_agents` must not exceed capacity. Concurrent RPC and Shutdown on one agent must have an explicit outcome and never access a removed object unsafely.
 6. Validate `max_agents` and port/host inputs, TLS key/certificate pairing, loopback aliases, non-loopback TLS plus mTLS/token policy, environment-token fallback, secure/insecure port failure, server start failure, termination cancellation, and graceful stop.
 7. Generate protobufs into a temporary package, import them, build a wheel/sdist, install into a clean environment, and run a minimal client/server exchange. Assert `py.typed` and `.proto` package data.
-8. Drift-test the bundled Python proto against `rust-server/proto/parlando_agent_v1.proto`; regenerate output in CI and fail on an unexpected diff.
+8. Regenerate the Python bindings from the shared `proto/parlando_agent_v3.proto` in CI and fail on an unexpected diff.
 
 ## Cross-component and browser acceptance tests
 

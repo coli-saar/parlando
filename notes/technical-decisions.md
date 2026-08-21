@@ -1589,3 +1589,33 @@ schema, but it avoids coupling Parlando releases to model-specific parameters. J
 representation, so game values must be serializable and remote agents remain responsible for validating
 their own configuration and decoding their own observations. Transport credentials remain explicit
 Rust-owned fields and are never mixed into the opaque configuration.
+
+## 2026-08-21: Python agent SDK and protocol are top-level components
+
+Context: the independently packaged Python agent SDK lived below `rust-server/python`, while its gRPC
+contracts were duplicated between the Rust crate and Python package. This layout implied Rust ownership
+of a language-neutral boundary and required a byte-for-byte drift test between protocol copies.
+
+Decision: make `parlando-agent-sdk` a top-level sibling of `rust-server` and `js-client`, and keep the
+authoritative remote-agent and reinforcement-learning contracts in the top-level `proto` directory.
+Rust's build script and the Python binding generator both consume those shared definitions. Published
+Python artifacts contain generated bindings, while protocol regeneration remains a repository
+development operation.
+
+Tradeoffs: an SDK source checkout detached from the repository cannot regenerate its bindings, but
+normal installation and use do not require protoc. A shared protocol directory makes ownership and
+cross-language review explicit and eliminates duplicated source contracts.
+
+## 2026-08-21: Cross-language audio contracts enter the running lifecycle
+
+Context: microphone frames are relayed while a session is waiting, but transcription intentionally
+starts only after both participants have connected to the game transport and the session becomes
+running. The JavaScript mute integration fixture opened audio transports without game transports, so
+it could verify relay but could never observe a transcribed frame.
+
+Decision: make the integration fixture connect both game WebSockets and wait for both targeted
+`session_started` messages before testing live, muted, and resumed capture. Keep the production
+running-session transcription gate unchanged.
+
+Tradeoffs: the test performs more lifecycle setup, but now exercises the same transport ordering as a
+real participant and preserves the privacy boundary that waiting-session audio is not transcribed.

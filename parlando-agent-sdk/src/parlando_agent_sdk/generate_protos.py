@@ -11,7 +11,7 @@ from grpc_tools import protoc
 def main() -> int:
     """Runs grpc_tools.protoc for the bundled Parlando agent protobuf."""
     package_dir = Path(__file__).resolve().parent
-    proto_dir = package_dir / "protos"
+    proto_dir = package_dir.parents[2] / "proto"
     generated_dir = package_dir / "generated"
     generated_dir.mkdir(exist_ok=True)
     init_file = generated_dir / "__init__.py"

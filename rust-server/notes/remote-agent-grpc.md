@@ -15,7 +15,7 @@ The intended backends are:
 
 ## Protocol Shape
 
-The protobuf contract lives at `rust-server/proto/parlando_agent_v3.proto` and defines the `parlando.agent.v3` package for:
+The protobuf contract lives at `proto/parlando_agent_v3.proto` and defines the `parlando.agent.v3` package for:
 
 - agent initialization, including role, seed, protocol version, agent name/version, and config.
 - observation requests for role-specific state snapshots, accepted actions, and messages.
@@ -60,7 +60,7 @@ WebSocket remains a possible future lightweight transport, but it should not be 
 - `RemoteGrpcAgent` lazily connects to the configured gRPC endpoint, sends one `CreateAgent` request, forwards observations through `Start`, `ObserveTransition`, and `ObserveMessage`, delivers the shared terminal result through `Finish`, and asks for responses through `Respond`.
 - Returned actions are deserialized into the game-specific Rust action type and still pass through normal server validation before changing game state.
 - Remote gRPC factories require a non-empty `agent_version` and export durable participant metadata as `participant_kind = agent`, `identity_provider = remote_grpc`, and `external_id = <agent_name>@<agent_version>`. Administration and research exports use a descriptive identifier such as `agent:remote_grpc:<agent_name>@<agent_version>` rather than a human-style random name. Historical stored participants without version metadata remain readable as `unversioned`.
-- The Python SDK wrapper lives in `python/parlando-agent-sdk`. It provides `Agent`, `Response`, `serve`, a protobuf generation command, and a bundled copy of the protocol.
+- The Python SDK wrapper lives in the top-level `parlando-agent-sdk` directory. It provides `Agent`, `Response`, `serve`, and a protobuf generation command that consumes the shared repository protocol.
 - The mock-client integration suite starts an in-process tonic gRPC service and verifies remote-agent messages, actions, terminal delivery, and persisted session events through the real HTTP/WebSocket server.
 
 ## Remaining Risks
