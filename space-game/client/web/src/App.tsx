@@ -110,7 +110,7 @@ function ActiveSpaceGame({ session }: { session: SpaceGameSession }) {
       <section className="session-band" aria-label="Online session controls">
         <div>
           <p className="eyebrow">Online room</p>
-          <strong>{session.roomId}</strong>
+          <strong>{session.sessionId}</strong>
           <span>
             {session.connected ? "Connected" : "Disconnected"} · You are Player {session.role}
             {session.completed && " · Complete"}

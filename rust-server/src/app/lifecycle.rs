@@ -3,7 +3,7 @@ use super::*;
 /// Participant-availability lifecycle for one experiment hosted by a game process.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ExperimentLifecycle {
-    /// New participants and room entry are paused.
+    /// New participants and session entry are paused.
     Inactive,
     /// Participant intake is open, but every new session is test data.
     Testing,

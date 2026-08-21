@@ -8,7 +8,7 @@ use parlando::{
         Definition as AgentDefinition, Factory as AgentFactory, Identity as AgentIdentity,
         Response,
     },
-    PlayerRole,
+    PlayerRole, SessionLogger,
 };
 use serde_json::{json, Value};
 
@@ -70,18 +70,32 @@ const ROOT_BOT_ORIENTATION: &str =
 /// It never interprets the partner's chat for decisions — `handle_message` only replies with
 /// canned lines triggered by simple keyword matching, purely for the human's benefit.
 pub struct RootBotAgent {
+    logger: SessionLogger,
     latest_roots: Option<[RootView; 5]>,
     pending_action: Option<Action>,
     pending_message: Option<String>,
 }
 
 impl RootBotAgent {
-    fn new() -> Self {
+    /// Creates one session-owned RootBot with its runtime-attributed logger.
+    fn new(logger: SessionLogger) -> Self {
         Self {
+            logger,
             latest_roots: None,
             pending_action: None,
             pending_message: None,
         }
+    }
+
+    /// Creates an isolated RootBot for mechanics tests.
+    #[cfg(test)]
+    fn testing() -> Self {
+        Self::new(SessionLogger::testing())
+    }
+
+    /// Records an observational message without letting logging affect play.
+    fn log(&self, message: impl Into<String>) {
+        let _ = self.logger.log(message);
     }
 
     /// Opens the first thawed-but-not-running root found, queuing both the action and a status
@@ -90,14 +104,17 @@ impl RootBotAgent {
         self.latest_roots = Some(*roots);
         for view in roots {
             if view.thawed && !view.running {
-                self.pending_action = Some(Action::SetFlow {
+                let action = Action::SetFlow {
                     root: view.id,
                     open: true,
-                });
+                };
+                self.log(format!("RootBot queued action: {action:?}"));
+                self.pending_action = Some(action);
                 self.pending_message = Some(format!("Opened {:?} — it's running now.", view.id));
                 return;
             }
         }
+        self.log("RootBot observed no thawed root requiring an action");
     }
 
     /// Replies to the partner's chat using plain keyword matching — never full comprehension.
@@ -123,12 +140,14 @@ impl RootBotAgent {
                     Some(_) => format!("{root:?} isn't thawed yet."),
                     None => format!("I don't have a reading on {root:?} yet."),
                 };
+                self.log(format!("RootBot queued status reply for {root:?}"));
                 self.pending_message = Some(reply);
                 return;
             }
         }
 
         if words.iter().any(|w| w == "help" || w == "stuck") || text.contains('?') {
+            self.log("RootBot queued its orientation reply");
             self.pending_message = Some(ROOT_BOT_ORIENTATION.to_string());
             return;
         }
@@ -137,6 +156,7 @@ impl RootBotAgent {
             .iter()
             .any(|w| w == "hi" || w == "hello" || w == "hey")
         {
+            self.log("RootBot queued a greeting reply");
             self.pending_message = Some("Hey! Ready when you are.".to_string());
         }
     }
@@ -145,26 +165,37 @@ impl RootBotAgent {
 #[async_trait]
 impl Agent<GreatTree> for RootBotAgent {
     async fn start(&mut self, initial_observation: GreatTreeObservation) -> Result<()> {
+        self.log("RootBot started and queued its orientation message");
         self.pending_message = Some(ROOT_BOT_ORIENTATION.to_string());
         if let GreatTreeObservation::Root { roots } = initial_observation {
             self.react(&roots);
+        } else {
+            self.log("RootBot received a Crown observation and cannot apply its Root policy");
         }
         Ok(())
     }
 
     async fn observe_transition(
         &mut self,
-        _actor: PlayerRole,
-        _action: Action,
+        actor: PlayerRole,
+        action: Action,
         observation: GreatTreeObservation,
     ) -> Result<()> {
+        self.log(format!(
+            "RootBot observed accepted action from role {}: {action:?}",
+            actor.as_str()
+        ));
         if let GreatTreeObservation::Root { roots } = observation {
             self.react(&roots);
         }
         Ok(())
     }
 
-    async fn observe_message(&mut self, _sender: PlayerRole, text: String) -> Result<()> {
+    async fn observe_message(&mut self, sender: PlayerRole, text: String) -> Result<()> {
+        self.log(format!(
+            "RootBot received message from role {}: {text:?}",
+            sender.as_str()
+        ));
         self.handle_message(&text);
         Ok(())
     }
@@ -175,6 +206,11 @@ impl Agent<GreatTree> for RootBotAgent {
     ) -> Result<Option<Response<Action>>> {
         let action = self.pending_action.take();
         let message = self.pending_message.take();
+        self.log(format!(
+            "RootBot response: action={}, message={}",
+            action.is_some(),
+            message.is_some()
+        ));
         Ok(match (action, message) {
             (Some(action), Some(message)) => Some(Response::action_and_message(action, message)),
             (Some(action), None) => Some(Response::action(action)),
@@ -201,14 +237,19 @@ impl AgentFactory<GreatTree> for RootBotAgentFactory {
         }
     }
 
-    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<GreatTree> + Send>> {
-        Ok(Box::new(RootBotAgent::new()))
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<GreatTree> + Send>> {
+        let _ = context.logger.log(format!(
+            "RootBot constructed for role {} with seed {}",
+            context.role.as_str(),
+            context.seed
+        ));
+        Ok(Box::new(RootBotAgent::new(context.logger)))
     }
 
     fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
         Ok(AgentIdentity {
             name: "RootBotAgent".to_string(),
-            version: "1".to_string(),
+            version: "2".to_string(),
         })
     }
 }
@@ -597,16 +638,19 @@ mod root_bot_tests {
     use super::*;
 
     #[test]
-    fn every_great_tree_agent_uses_identity_version_one() {
+    fn great_tree_agents_expose_their_current_identity_versions() {
         for identity in [
             IdleAgentFactory.identity(&json!({})).unwrap(),
-            RootBotAgentFactory.identity(&json!({})).unwrap(),
             LlmAgentFactory
                 .identity(&json!({"model": "gpt-4o-mini"}))
                 .unwrap(),
         ] {
             assert_eq!(identity.version, "1");
         }
+        assert_eq!(
+            RootBotAgentFactory.identity(&json!({})).unwrap().version,
+            "2"
+        );
     }
 
     fn roots(thawed_running: [(bool, bool); 5]) -> [RootView; 5] {
@@ -634,7 +678,7 @@ mod root_bot_tests {
 
     #[tokio::test]
     async fn opens_a_newly_thawed_root() {
-        let mut agent = RootBotAgent::new();
+        let mut agent = RootBotAgent::testing();
         agent.react(&roots([
             (false, false),
             (true, false), // Knot: thawed, not yet running
@@ -657,7 +701,7 @@ mod root_bot_tests {
 
     #[tokio::test]
     async fn never_reopens_an_already_running_root() {
-        let mut agent = RootBotAgent::new();
+        let mut agent = RootBotAgent::testing();
         agent.react(&roots([
             (true, true), // Hand: thawed and already running
             (false, false),
@@ -670,7 +714,7 @@ mod root_bot_tests {
 
     #[tokio::test]
     async fn never_closes_a_root_on_its_own() {
-        let mut agent = RootBotAgent::new();
+        let mut agent = RootBotAgent::testing();
         agent.react(&roots([
             (false, true), // Tip: running but no longer thawed
             (false, false),
@@ -687,7 +731,7 @@ mod root_bot_tests {
 
     #[tokio::test]
     async fn reports_a_named_roots_status_without_acting_on_it() {
-        let mut agent = RootBotAgent::new();
+        let mut agent = RootBotAgent::testing();
         agent.react(&roots([
             (false, false),
             (false, false),
@@ -708,7 +752,7 @@ mod root_bot_tests {
 
     #[tokio::test]
     async fn replies_to_a_help_request_with_the_orientation_line() {
-        let mut agent = RootBotAgent::new();
+        let mut agent = RootBotAgent::testing();
         agent.handle_message("I'm stuck, what do I do?");
         assert_eq!(
             take_response(&mut agent).await,
@@ -718,7 +762,7 @@ mod root_bot_tests {
 
     #[tokio::test]
     async fn replies_to_a_greeting() {
-        let mut agent = RootBotAgent::new();
+        let mut agent = RootBotAgent::testing();
         agent.handle_message("hey there!");
         assert_eq!(
             take_response(&mut agent).await,
@@ -728,7 +772,7 @@ mod root_bot_tests {
 
     #[tokio::test]
     async fn ignores_a_message_with_no_matching_keyword() {
-        let mut agent = RootBotAgent::new();
+        let mut agent = RootBotAgent::testing();
         agent.handle_message("nice weather today");
         assert_eq!(take_response(&mut agent).await, None);
     }

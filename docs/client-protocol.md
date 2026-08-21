@@ -17,9 +17,9 @@ Participant routes are scoped to `/e/{experiment_id}` when a process hosts multi
 1. `GET /api/config` for participant-visible experiment information.
 2. `POST /api/participants` with `{}` to register.
 3. `POST /api/consent` with consent decisions when required.
-4. `POST /api/rooms` with `{}` to join matchmaking.
-5. `POST /api/rooms/{room_id}/audio-session` when voice is enabled.
-6. `POST /api/rooms/{room_id}/game-session` for a one-use WebSocket ticket.
+4. `POST /api/sessions` with `{}` to join matchmaking.
+5. `POST /api/sessions/{public_session_id}/audio-session` when voice is enabled.
+6. `POST /api/sessions/{public_session_id}/game-session` for a one-use WebSocket ticket.
 7. Open the returned game WebSocket and wait for `session_started`.
 
 Registration returns an opaque bearer credential and a participant-facing random identifier:
@@ -42,7 +42,7 @@ Keep the bearer credential in memory. Send it in the `Authorization: Bearer …`
 
 Append only this ticket as the WebSocket `token` query parameter. Neither the participant credential nor an internal participant-session identifier appears in participant game data.
 
-The room-join response contains `room_id`, `role`, optional `presence`, optional `observation`, and `available_actions`. Observation can be absent while matchmaking is incomplete. The WebSocket `session_started` message is the authoritative signal that active rendering may begin.
+The session-join response contains `public_session_id`, `role`, optional `presence`, optional `observation`, and `available_actions`. Observation can be absent while matchmaking is incomplete. The WebSocket `session_started` message is the authoritative signal that active rendering may begin.
 
 The public config contains only experiment lifecycle status, optional institution and participant-information references, consent copy, and the narrow `voice.enabled` capability. Pairing, capacity, provider selection, storage, privacy, and lifecycle limits remain server-owned.
 
@@ -66,7 +66,7 @@ The following variants are exhaustive for protocol version 1. Fields shown as `n
 {
   "protocol_version": 1,
   "type": "session_started",
-  "room_id": "room-123",
+  "public_session_id": "room-123",
   "role": "A",
   "observation": { "turn": 1 },
   "available_actions": []
@@ -81,7 +81,7 @@ The following variants are exhaustive for protocol version 1. Fields shown as `n
 {
   "protocol_version": 1,
   "type": "transition",
-  "room_id": "room-123",
+  "public_session_id": "room-123",
   "actor": "B",
   "action": { "type": "choose", "value": 3 },
   "observation": { "turn": 2 },
@@ -97,7 +97,7 @@ Replace the current observation and action affordance with these values. `actor`
 {
   "protocol_version": 1,
   "type": "message",
-  "room_id": "room-123",
+  "public_session_id": "room-123",
   "message": {
     "id": "msg-123",
     "sender": "B",
@@ -116,7 +116,7 @@ Replace the current observation and action affordance with these values. `actor`
 {
   "protocol_version": 1,
   "type": "presence",
-  "room_id": "room-123",
+  "public_session_id": "room-123",
   "presence": {
     "A": { "connected": true, "audioReady": true },
     "B": { "connected": false, "audioReady": false }
@@ -132,7 +132,7 @@ Presence is keyed only by `A` and `B`. It contains no participant or controller 
 {
   "protocol_version": 1,
   "type": "voice_status",
-  "room_id": "room-123",
+  "public_session_id": "room-123",
   "voice": {
     "audioReady": true,
     "transcriptionReady": true,
@@ -149,7 +149,7 @@ These are narrow readiness values, not provider configuration.
 {
   "protocol_version": 1,
   "type": "completed",
-  "room_id": "room-123",
+  "public_session_id": "room-123",
   "completion": {
     "winner": "A",
     "player_scores": { "A": 7, "B": 5 }
@@ -161,7 +161,7 @@ These are narrow readiness values, not provider configuration.
 {
   "protocol_version": 1,
   "type": "abandoned",
-  "room_id": "room-123",
+  "public_session_id": "room-123",
   "code": "participant_left"
 }
 ```
@@ -174,7 +174,7 @@ These are narrow readiness values, not provider configuration.
 {
   "protocol_version": 1,
   "type": "action_rejected",
-  "room_id": "room-123",
+  "public_session_id": "room-123",
   "code": "wrong_role"
 }
 ```
@@ -183,7 +183,7 @@ These are narrow readiness values, not provider configuration.
 {
   "protocol_version": 1,
   "type": "error",
-  "room_id": "room-123",
+  "public_session_id": "room-123",
   "code": "invalid_action",
   "fatal": false
 }
@@ -229,7 +229,7 @@ These five variants are the complete client protocol. Consent is submitted throu
 
 `ParticipantApp` supplies a `GameSession<Observation, Action, Completion>` containing:
 
-- `roomId`, `role`, `observation`, nullable `transition`, and nullable `availableActions`;
+- `sessionId`, `role`, `observation`, nullable `transition`, and nullable `availableActions`;
 - `conversation` as `PlayerMessage[]` and role-keyed `presence`;
 - narrow voice status and capability values;
 - `connected`, `completed`, and nullable `completion`; and

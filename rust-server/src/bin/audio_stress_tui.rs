@@ -10,7 +10,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use parlando::test_support::{
-    run_dashboard as run_shared_dashboard, AudioFrame, AudioOutbound, AudioRoomRegistry,
+    run_dashboard as run_shared_dashboard, AudioFrame, AudioOutbound, AudioSessionRegistry,
     DashboardHealth, DashboardMetric, DashboardPanel, DashboardSeries, DashboardSnapshot,
     DashboardTile, AUDIO_FRAME_BYTES, AUDIO_OUTBOUND_QUEUE_CAPACITY,
 };
@@ -23,32 +23,32 @@ const ROOM_TIMEOUT: Duration = Duration::from_secs(2);
 const RATE_WINDOW_SECONDS: usize = 60;
 const LATENCY_WINDOW_SAMPLES: usize = 20_000;
 const TTS_BURST_FRAMES: u16 = 10;
-const IMPAIRED_SLOW_ROOMS_PERCENT: usize = 5;
+const IMPAIRED_SLOW_SESSIONS_PERCENT: usize = 5;
 const IMPAIRED_PAUSE_ROUNDS: u64 = 80;
 const IMPAIRED_CYCLE_ROUNDS: u64 = 750;
 
-/// Standalone audio-room stress dashboard arguments.
+/// Standalone audio-session stress dashboard arguments.
 #[derive(Clone, Debug, Parser)]
-#[command(about = "Stress Parlando's process-local audio rooms with verified PCM frames")]
+#[command(about = "Stress Parlando's process-local audio sessions with verified PCM frames")]
 struct StressArgs {
     /// Workload model: paced production cadence, maximum throughput, or deterministic impairment.
     #[arg(long, value_enum, default_value_t = StressMode::Realistic)]
     mode: StressMode,
-    /// Number of isolated two-participant audio rooms.
+    /// Number of isolated two-participant audio sessions.
     #[arg(long, default_value_t = 200, value_parser = parse_positive_usize)]
-    rooms: usize,
+    sessions: usize,
     /// Wall-clock test duration in seconds.
     #[arg(long, default_value_t = 600, value_parser = parse_positive_u64)]
     seconds: u64,
-    /// Percentage of rooms selected for each simulated agent-TTS burst.
+    /// Percentage of sessions selected for each simulated agent-TTS burst.
     #[arg(long, default_value_t = 10, value_parser = parse_percent)]
-    tts_room_percent: u8,
+    tts_session_percent: u8,
     /// Seconds between ten-frame (200 ms) agent-TTS bursts.
     #[arg(long, default_value_t = 5, value_parser = parse_positive_u64)]
     tts_interval_seconds: u64,
 }
 
-/// Parses a strictly positive room count for the CLI.
+/// Parses a strictly positive session count for the CLI.
 fn parse_positive_usize(value: &str) -> std::result::Result<usize, String> {
     value
         .parse::<usize>()
@@ -114,9 +114,9 @@ impl StressMode {
 #[derive(Clone, Debug)]
 struct StressConfig {
     mode: StressMode,
-    room_count: usize,
+    session_count: usize,
     duration: Duration,
-    tts_room_percent: u8,
+    tts_session_percent: u8,
     tts_interval: Duration,
 }
 
@@ -125,9 +125,9 @@ impl From<StressArgs> for StressConfig {
     fn from(args: StressArgs) -> Self {
         Self {
             mode: args.mode,
-            room_count: args.rooms,
+            session_count: args.sessions,
             duration: Duration::from_secs(args.seconds),
-            tts_room_percent: args.tts_room_percent,
+            tts_session_percent: args.tts_session_percent,
             tts_interval: Duration::from_secs(args.tts_interval_seconds),
         }
     }
@@ -138,7 +138,7 @@ struct StressSnapshot {
     mode: StressMode,
     elapsed: Duration,
     duration: Duration,
-    room_count: usize,
+    session_count: usize,
     rounds: u64,
     verified_frames: u64,
     participant_frames: u64,
@@ -151,7 +151,7 @@ struct StressSnapshot {
     p95_us: u64,
     p99_us: u64,
     max_us: u64,
-    room_pressure: Vec<u64>,
+    session_pressure: Vec<u64>,
     rate_history: Vec<u64>,
     payload_errors: u64,
     timeouts: u64,
@@ -169,7 +169,7 @@ impl StressSnapshot {
     /// Creates an empty dashboard state for the selected workload.
     fn new(config: &StressConfig) -> Self {
         let expected_rate = if config.mode.is_paced() {
-            config.room_count as u64 * 2 * 50
+            config.session_count as u64 * 2 * 50
         } else {
             0
         };
@@ -177,7 +177,7 @@ impl StressSnapshot {
             mode: config.mode,
             elapsed: Duration::ZERO,
             duration: config.duration,
-            room_count: config.room_count,
+            session_count: config.session_count,
             rounds: 0,
             verified_frames: 0,
             participant_frames: 0,
@@ -190,7 +190,7 @@ impl StressSnapshot {
             p95_us: 0,
             p99_us: 0,
             max_us: 0,
-            room_pressure: vec![0; config.room_count],
+            session_pressure: vec![0; config.session_count],
             rate_history: vec![],
             payload_errors: 0,
             timeouts: 0,
@@ -199,9 +199,9 @@ impl StressSnapshot {
             deadline_misses: 0,
             max_schedule_lag_us: 0,
             milestones: vec![format!(
-                "Configured {} mode: {} rooms for {}",
+                "Configured {} mode: {} sessions for {}",
                 config.mode.label(),
-                config.room_count,
+                config.session_count,
                 format_clock(config.duration)
             )],
             finished: false,
@@ -239,7 +239,7 @@ impl StressMetrics {
     }
 
     /// Records one verified frame and its in-memory queue latency.
-    fn record_frame(&mut self, room_index: usize, latency: Duration, source: FrameSource) {
+    fn record_frame(&mut self, session_index: usize, latency: Duration, source: FrameSource) {
         let latency_us = latency.as_micros().min(u128::from(u64::MAX)) as u64;
         self.snapshot.verified_frames += 1;
         self.bucket_frames += 1;
@@ -247,7 +247,7 @@ impl StressMetrics {
             FrameSource::Agent => self.snapshot.tts_frames += 1,
             FrameSource::A | FrameSource::B => self.snapshot.participant_frames += 1,
         }
-        self.snapshot.room_pressure[room_index] = latency_us;
+        self.snapshot.session_pressure[session_index] = latency_us;
         self.snapshot.max_us = self.snapshot.max_us.max(latency_us);
         self.recent_latencies_us.push_back(latency_us);
         if self.recent_latencies_us.len() > LATENCY_WINDOW_SAMPLES {
@@ -255,7 +255,7 @@ impl StressMetrics {
         }
         if self.snapshot.verified_frames >= self.next_milestone {
             self.push_milestone(format!(
-                "{} verified frames without cross-room leakage",
+                "{} verified frames without cross-session leakage",
                 format_count(self.snapshot.verified_frames)
             ));
             self.next_milestone = self.next_milestone.saturating_add(1_000_000);
@@ -263,9 +263,9 @@ impl StressMetrics {
     }
 
     /// Records a deliberately induced bounded-queue drop in impaired mode.
-    fn record_drop(&mut self, room_index: usize) {
+    fn record_drop(&mut self, session_index: usize) {
         self.snapshot.dropped_frames += 1;
-        self.snapshot.room_pressure[room_index] = AUDIO_OUTBOUND_QUEUE_CAPACITY as u64;
+        self.snapshot.session_pressure[session_index] = AUDIO_OUTBOUND_QUEUE_CAPACITY as u64;
     }
 
     /// Rolls one-second verified-frame buckets into the 60-second sparkline.
@@ -345,7 +345,7 @@ struct ExpectedFrame {
 
 #[derive(Debug)]
 struct RoomHarness {
-    room_id: String,
+    public_session_id: String,
     receiver_a: mpsc::Receiver<AudioOutbound>,
     receiver_b: mpsc::Receiver<AudioOutbound>,
     expected_a: VecDeque<ExpectedFrame>,
@@ -370,22 +370,22 @@ async fn main() -> Result<()> {
     stress_result
 }
 
-/// Creates isolated full-duplex rooms and executes the selected workload model.
+/// Creates isolated full-duplex sessions and executes the selected workload model.
 async fn run_stress(
     config: StressConfig,
     snapshots: watch::Sender<StressSnapshot>,
     cancelled: Arc<AtomicBool>,
 ) -> Result<()> {
-    let registry = AudioRoomRegistry::default();
+    let registry = AudioSessionRegistry::default();
     let now = Instant::now();
     let mut metrics = StressMetrics::new(&config, now);
-    let mut rooms = Vec::with_capacity(config.room_count);
-    for room_index in 0..config.room_count {
-        let room_id = format!("stress-room-{room_index}");
-        let (_, receiver_a) = registry.connect(&room_id, "A").await;
-        let (_, receiver_b) = registry.connect(&room_id, "B").await;
-        rooms.push(RoomHarness {
-            room_id,
+    let mut sessions = Vec::with_capacity(config.session_count);
+    for session_index in 0..config.session_count {
+        let public_session_id = format!("stress-session-{session_index}");
+        let (_, receiver_a) = registry.connect(&public_session_id, "A").await;
+        let (_, receiver_b) = registry.connect(&public_session_id, "B").await;
+        sessions.push(RoomHarness {
+            public_session_id,
             receiver_a,
             receiver_b,
             expected_a: VecDeque::with_capacity(AUDIO_OUTBOUND_QUEUE_CAPACITY),
@@ -403,14 +403,14 @@ async fn run_stress(
             pace_round(&config, started_at, metrics.snapshot.rounds, &mut metrics).await;
         }
         let now = Instant::now();
-        if config.tts_room_percent > 0 && now >= next_tts_at {
-            start_tts_burst(&config, &mut rooms, tts_burst_index, &mut metrics);
+        if config.tts_session_percent > 0 && now >= next_tts_at {
+            start_tts_burst(&config, &mut sessions, tts_burst_index, &mut metrics);
             tts_burst_index += 1;
             next_tts_at += config.tts_interval;
         }
 
         let drops_before_round = metrics.snapshot.dropped_frames;
-        send_round(&registry, &mut rooms, &mut metrics).await;
+        send_round(&registry, &mut sessions, &mut metrics).await;
         if config.mode != StressMode::Impaired
             && metrics.snapshot.dropped_frames > drops_before_round
         {
@@ -421,7 +421,7 @@ async fn run_stress(
                 "bounded audio queue dropped a frame outside impaired mode".to_string(),
             );
         }
-        receive_round(&config, &mut rooms, &snapshots, &mut metrics, started_at).await?;
+        receive_round(&config, &mut sessions, &snapshots, &mut metrics, started_at).await?;
         metrics.snapshot.rounds += 1;
         let now = Instant::now();
         metrics.update_rate(now);
@@ -432,7 +432,7 @@ async fn run_stress(
         }
     }
 
-    drain_all_rooms(&config, &mut rooms, &snapshots, &mut metrics, started_at).await?;
+    drain_all_rooms(&config, &mut sessions, &snapshots, &mut metrics, started_at).await?;
     metrics.snapshot.cancelled = cancelled.load(Ordering::Relaxed);
     metrics.snapshot.finished = true;
     metrics.refresh_summary(started_at, Instant::now());
@@ -472,82 +472,84 @@ async fn pace_round(
     }
 }
 
-/// Selects deterministic rooms for a ten-frame agent-TTS burst.
+/// Selects deterministic sessions for a ten-frame agent-TTS burst.
 fn start_tts_burst(
     config: &StressConfig,
-    rooms: &mut [RoomHarness],
+    sessions: &mut [RoomHarness],
     burst_index: u64,
     metrics: &mut StressMetrics,
 ) {
     let mut selected = 0usize;
-    for (room_index, room) in rooms.iter_mut().enumerate() {
-        let selector = (room_index as u64 * 37 + burst_index * 17) % 100;
-        if selector < u64::from(config.tts_room_percent) {
-            room.tts_remaining = TTS_BURST_FRAMES;
+    for (session_index, session) in sessions.iter_mut().enumerate() {
+        let selector = (session_index as u64 * 37 + burst_index * 17) % 100;
+        if selector < u64::from(config.tts_session_percent) {
+            session.tts_remaining = TTS_BURST_FRAMES;
             selected += 1;
         }
     }
     metrics.push_milestone(format!(
-        "Started 200 ms agent-TTS burst in {selected} rooms"
+        "Started 200 ms agent-TTS burst in {selected} sessions"
     ));
 }
 
 /// Sends one participant frame in each direction and active agent frames to both peers.
 async fn send_round(
-    registry: &AudioRoomRegistry,
-    rooms: &mut [RoomHarness],
+    registry: &AudioSessionRegistry,
+    sessions: &mut [RoomHarness],
     metrics: &mut StressMetrics,
 ) {
     let round = metrics.snapshot.rounds;
-    for (room_index, room) in rooms.iter_mut().enumerate() {
+    for (session_index, session) in sessions.iter_mut().enumerate() {
         let now = Instant::now();
-        let from_a = stress_frame(room_index, round, FrameSource::A);
-        let from_b = stress_frame(room_index, round, FrameSource::B);
+        let from_a = stress_frame(session_index, round, FrameSource::A);
+        let from_b = stress_frame(session_index, round, FrameSource::B);
         registry
-            .relay_partner(&room.room_id, "A", from_a.clone())
+            .relay_partner(&session.public_session_id, "A", from_a.clone())
             .await;
         registry
-            .relay_partner(&room.room_id, "B", from_b.clone())
+            .relay_partner(&session.public_session_id, "B", from_b.clone())
             .await;
         enqueue_expected(
-            &mut room.expected_b,
+            &mut session.expected_b,
             from_a,
             now,
             FrameSource::A,
-            room_index,
+            session_index,
             metrics,
         );
         enqueue_expected(
-            &mut room.expected_a,
+            &mut session.expected_a,
             from_b,
             now,
             FrameSource::B,
-            room_index,
+            session_index,
             metrics,
         );
-        if room.tts_remaining > 0 {
-            let agent = stress_frame(room_index, round, FrameSource::Agent);
-            registry.publish_agent(&room.room_id, agent.clone()).await;
+        if session.tts_remaining > 0 {
+            let agent = stress_frame(session_index, round, FrameSource::Agent);
+            registry
+                .publish_agent(&session.public_session_id, agent.clone())
+                .await;
             enqueue_expected(
-                &mut room.expected_a,
+                &mut session.expected_a,
                 agent.clone(),
                 now,
                 FrameSource::Agent,
-                room_index,
+                session_index,
                 metrics,
             );
             enqueue_expected(
-                &mut room.expected_b,
+                &mut session.expected_b,
                 agent,
                 now,
                 FrameSource::Agent,
-                room_index,
+                session_index,
                 metrics,
             );
-            room.tts_remaining -= 1;
+            session.tts_remaining -= 1;
         }
-        metrics.snapshot.room_pressure[room_index] =
-            room.expected_a.len().max(room.expected_b.len()) as u64;
+        metrics.snapshot.session_pressure[session_index] =
+            session.expected_a.len().max(session.expected_b.len()) as u64;
     }
 }
 
@@ -557,11 +559,11 @@ fn enqueue_expected(
     bytes: Vec<u8>,
     sent_at: Instant,
     source: FrameSource,
-    room_index: usize,
+    session_index: usize,
     metrics: &mut StressMetrics,
 ) {
     if queue.len() >= AUDIO_OUTBOUND_QUEUE_CAPACITY {
-        metrics.record_drop(room_index);
+        metrics.record_drop(session_index);
         return;
     }
     queue.push_back(ExpectedFrame {
@@ -571,25 +573,26 @@ fn enqueue_expected(
     });
 }
 
-/// Drains every non-paused room and verifies complete frame identity and ordering.
+/// Drains every non-paused session and verifies complete frame identity and ordering.
 async fn receive_round(
     config: &StressConfig,
-    rooms: &mut [RoomHarness],
+    sessions: &mut [RoomHarness],
     snapshots: &watch::Sender<StressSnapshot>,
     metrics: &mut StressMetrics,
     started_at: Instant,
 ) -> Result<()> {
     let round = metrics.snapshot.rounds;
-    for (room_index, room) in rooms.iter_mut().enumerate() {
-        if config.mode == StressMode::Impaired && slow_consumer_paused(room_index, round) {
-            metrics.snapshot.room_pressure[room_index] =
-                room.expected_a.len().max(room.expected_b.len()) as u64;
+    for (session_index, session) in sessions.iter_mut().enumerate() {
+        if config.mode == StressMode::Impaired && slow_session_consumer_paused(session_index, round)
+        {
+            metrics.snapshot.session_pressure[session_index] =
+                session.expected_a.len().max(session.expected_b.len()) as u64;
             continue;
         }
         drain_room(
             config.mode,
-            room_index,
-            room,
+            session_index,
+            session,
             snapshots,
             metrics,
             started_at,
@@ -602,16 +605,16 @@ async fn receive_round(
 /// Drains all remaining expected frames before a successful final snapshot.
 async fn drain_all_rooms(
     config: &StressConfig,
-    rooms: &mut [RoomHarness],
+    sessions: &mut [RoomHarness],
     snapshots: &watch::Sender<StressSnapshot>,
     metrics: &mut StressMetrics,
     started_at: Instant,
 ) -> Result<()> {
-    for (room_index, room) in rooms.iter_mut().enumerate() {
+    for (session_index, session) in sessions.iter_mut().enumerate() {
         drain_room(
             config.mode,
-            room_index,
-            room,
+            session_index,
+            session,
             snapshots,
             metrics,
             started_at,
@@ -621,33 +624,33 @@ async fn drain_all_rooms(
     Ok(())
 }
 
-/// Verifies both participant queues for one full-duplex room.
+/// Verifies both participant queues for one full-duplex session.
 async fn drain_room(
     mode: StressMode,
-    room_index: usize,
-    room: &mut RoomHarness,
+    session_index: usize,
+    session: &mut RoomHarness,
     snapshots: &watch::Sender<StressSnapshot>,
     metrics: &mut StressMetrics,
     started_at: Instant,
 ) -> Result<()> {
-    while let Some(expected) = room.expected_a.pop_front() {
+    while let Some(expected) = session.expected_a.pop_front() {
         verify_next(
-            &room.room_id,
-            &mut room.receiver_a,
+            &session.public_session_id,
+            &mut session.receiver_a,
             expected,
-            room_index,
+            session_index,
             snapshots,
             metrics,
             started_at,
         )
         .await?;
     }
-    while let Some(expected) = room.expected_b.pop_front() {
+    while let Some(expected) = session.expected_b.pop_front() {
         verify_next(
-            &room.room_id,
-            &mut room.receiver_b,
+            &session.public_session_id,
+            &mut session.receiver_b,
             expected,
-            room_index,
+            session_index,
             snapshots,
             metrics,
             started_at,
@@ -655,17 +658,17 @@ async fn drain_room(
         .await?;
     }
     if mode == StressMode::Impaired {
-        metrics.snapshot.room_pressure[room_index] = 0;
+        metrics.snapshot.session_pressure[session_index] = 0;
     }
     Ok(())
 }
 
-/// Receives and verifies one expected binary frame from a room peer queue.
+/// Receives and verifies one expected binary frame from a session peer queue.
 async fn verify_next(
-    room_id: &str,
+    public_session_id: &str,
     receiver: &mut mpsc::Receiver<AudioOutbound>,
     expected: ExpectedFrame,
-    room_index: usize,
+    session_index: usize,
     snapshots: &watch::Sender<StressSnapshot>,
     metrics: &mut StressMetrics,
     started_at: Instant,
@@ -678,7 +681,7 @@ async fn verify_next(
                 snapshots,
                 metrics,
                 started_at,
-                format!("{room_id} queue closed unexpectedly"),
+                format!("{public_session_id} queue closed unexpectedly"),
             );
         }
         Err(_) => {
@@ -687,7 +690,7 @@ async fn verify_next(
                 snapshots,
                 metrics,
                 started_at,
-                format!("{room_id} exceeded receive timeout"),
+                format!("{public_session_id} exceeded receive timeout"),
             );
         }
     };
@@ -697,7 +700,7 @@ async fn verify_next(
             snapshots,
             metrics,
             started_at,
-            format!("{room_id} received unexpected control message"),
+            format!("{public_session_id} received unexpected control message"),
         );
     };
     if bytes != expected.bytes {
@@ -706,10 +709,10 @@ async fn verify_next(
             snapshots,
             metrics,
             started_at,
-            format!("{room_id} received wrong room, source, sequence, or payload"),
+            format!("{public_session_id} received wrong session, source, sequence, or payload"),
         );
     }
-    metrics.record_frame(room_index, expected.sent_at.elapsed(), expected.source);
+    metrics.record_frame(session_index, expected.sent_at.elapsed(), expected.source);
     Ok(())
 }
 
@@ -728,10 +731,10 @@ fn finish_with_failure(
     bail!(failure)
 }
 
-/// Builds one canonical room-, round-, and source-specific PCM frame.
-fn stress_frame(room_index: usize, round: u64, source: FrameSource) -> Vec<u8> {
+/// Builds one canonical session-, round-, and source-specific PCM frame.
+fn stress_frame(session_index: usize, round: u64, source: FrameSource) -> Vec<u8> {
     let mut pcm = vec![source.marker(); AUDIO_FRAME_BYTES];
-    pcm[..8].copy_from_slice(&(room_index as u64).to_be_bytes());
+    pcm[..8].copy_from_slice(&(session_index as u64).to_be_bytes());
     pcm[8..16].copy_from_slice(&round.to_be_bytes());
     pcm[16] = source.marker();
     AudioFrame {
@@ -747,9 +750,9 @@ fn deterministic_jitter_ms(round: u64) -> i64 {
     ((round.wrapping_mul(17).wrapping_add(3) % 5) as i64) - 2
 }
 
-/// Selects five percent of rooms for an 80-frame consumer pause every 15 seconds.
-fn slow_consumer_paused(room_index: usize, round: u64) -> bool {
-    room_index % 100 < IMPAIRED_SLOW_ROOMS_PERCENT
+/// Selects five percent of sessions for an 80-frame consumer pause every 15 seconds.
+fn slow_session_consumer_paused(session_index: usize, round: u64) -> bool {
+    session_index % 100 < IMPAIRED_SLOW_SESSIONS_PERCENT
         && round % IMPAIRED_CYCLE_ROUNDS < IMPAIRED_PAUSE_ROUNDS
 }
 
@@ -805,7 +808,11 @@ fn audio_dashboard_snapshot(snapshot: &StressSnapshot) -> DashboardSnapshot {
                 metrics: vec![
                     metric(
                         "Rooms / streams",
-                        format!("{} / {}", snapshot.room_count, snapshot.room_count * 2),
+                        format!(
+                            "{} / {}",
+                            snapshot.session_count,
+                            snapshot.session_count * 2
+                        ),
                         DashboardHealth::Neutral,
                     ),
                     metric(
@@ -873,7 +880,7 @@ fn audio_dashboard_snapshot(snapshot: &StressSnapshot) -> DashboardSnapshot {
                 title: " Verification ".to_string(),
                 metrics: vec![
                     metric(
-                        "Wrong room/payload",
+                        "Wrong session/payload",
                         format_count(snapshot.payload_errors),
                         error(snapshot.payload_errors),
                     ),
@@ -908,7 +915,7 @@ fn audio_dashboard_snapshot(snapshot: &StressSnapshot) -> DashboardSnapshot {
             values: snapshot.rate_history.clone(),
         }],
         tiles: snapshot
-            .room_pressure
+            .session_pressure
             .iter()
             .map(|value| DashboardTile {
                 health: if snapshot.mode == StressMode::Impaired
@@ -944,8 +951,8 @@ fn print_final_summary(snapshot: &StressSnapshot) {
         "PASSED"
     };
     eprintln!(
-        "Audio stress {outcome} ({}): {} rooms, {} verified frames in {}; average {} frames/s, p95 {}, drops {}, deadline misses {}, fatal failures {}.",
-        snapshot.mode.label(), snapshot.room_count, format_count(snapshot.verified_frames),
+        "Audio stress {outcome} ({}): {} sessions, {} verified frames in {}; average {} frames/s, p95 {}, drops {}, deadline misses {}, fatal failures {}.",
+        snapshot.mode.label(), snapshot.session_count, format_count(snapshot.verified_frames),
         format_clock(snapshot.elapsed), format_count(snapshot.average_rate), format_latency(snapshot.p95_us),
         format_count(snapshot.dropped_frames), format_count(snapshot.deadline_misses), snapshot.fatal_error_count()
     );
@@ -1006,29 +1013,30 @@ mod tests {
             "audio-stress-tui",
             "--mode",
             "impaired",
-            "--rooms",
+            "--sessions",
             "42",
             "--seconds",
             "30",
-            "--tts-room-percent",
+            "--tts-session-percent",
             "25",
             "--tts-interval-seconds",
             "3",
         ])
         .expect("valid stress arguments should parse");
         assert_eq!(args.mode, StressMode::Impaired);
-        assert_eq!(args.rooms, 42);
+        assert_eq!(args.sessions, 42);
         assert_eq!(args.seconds, 30);
-        assert_eq!(args.tts_room_percent, 25);
+        assert_eq!(args.tts_session_percent, 25);
         assert_eq!(args.tts_interval_seconds, 3);
 
-        assert!(StressArgs::try_parse_from(["audio-stress-tui", "--rooms", "0"]).is_err());
+        assert!(StressArgs::try_parse_from(["audio-stress-tui", "--sessions", "0"]).is_err());
         assert!(
-            StressArgs::try_parse_from(["audio-stress-tui", "--tts-room-percent", "101"]).is_err()
+            StressArgs::try_parse_from(["audio-stress-tui", "--tts-session-percent", "101"])
+                .is_err()
         );
     }
 
-    /// Verifies room, round, and source identities remain distinguishable.
+    /// Verifies session, round, and source identities remain distinguishable.
     #[test]
     fn stress_frames_are_canonical_and_distinguishable() {
         let a = stress_frame(7, 11, FrameSource::A);
@@ -1045,9 +1053,9 @@ mod tests {
             (0..5).map(deterministic_jitter_ms).collect::<Vec<_>>(),
             vec![1, -2, 0, 2, -1]
         );
-        assert!(slow_consumer_paused(0, 10));
-        assert!(!slow_consumer_paused(7, 10));
-        assert!(!slow_consumer_paused(0, 100));
+        assert!(slow_session_consumer_paused(0, 10));
+        assert!(!slow_session_consumer_paused(7, 10));
+        assert!(!slow_session_consumer_paused(0, 100));
         assert_eq!(percentile(&[10, 20, 30, 40, 50], 0.95), 50);
         assert_eq!(format_count(12_345_678), "12,345,678");
     }

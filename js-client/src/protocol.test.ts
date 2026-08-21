@@ -60,7 +60,7 @@ describe("ParticipantClient room helpers", () => {
       }), { status: 200, headers: { "Content-Type": "application/json" } }))
       .mockResolvedValueOnce(new Response(
         JSON.stringify({
-          room_id: "ROOM1",
+          public_session_id: "ROOM1",
           role: "A",
           available_actions: null
         }),
@@ -72,9 +72,9 @@ describe("ParticipantClient room helpers", () => {
     await client.register();
     const room = await client.join();
 
-    expect(room.roomId).toBe("ROOM1");
+    expect(room.sessionId).toBe("ROOM1");
     expect(room.availableActions).toBeNull();
-    expect(fetchMock).toHaveBeenLastCalledWith("http://server.test/api/rooms", {
+    expect(fetchMock).toHaveBeenLastCalledWith("http://server.test/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer credential-1" },
       body: JSON.stringify({})
@@ -162,7 +162,7 @@ describe("ParticipantClient room helpers", () => {
     vi.spyOn(globalThis, "fetch")
       .mockImplementationOnce(() => old.promise)
       .mockImplementationOnce(() => current.promise)
-      .mockResolvedValueOnce(new Response(JSON.stringify({ room_id: "room", role: "A", available_actions: null }), { status: 200 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ public_session_id: "room", role: "A", available_actions: null }), { status: 200 }));
     const client = new ParticipantClient({ baseUrl: "http://server.test" });
 
     const oldRequest = client.register();
@@ -173,7 +173,7 @@ describe("ParticipantClient room helpers", () => {
     await oldRequest;
     await client.join();
 
-    expect(fetch).toHaveBeenLastCalledWith("http://server.test/api/rooms", expect.objectContaining({
+    expect(fetch).toHaveBeenLastCalledWith("http://server.test/api/sessions", expect.objectContaining({
       headers: expect.objectContaining({ Authorization: "Bearer new-credential" })
     }));
   });

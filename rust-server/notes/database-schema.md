@@ -2,7 +2,7 @@
 
 ## Scope
 
-Parlando stores experiment data for clean evaluation, not as a generic audit log. The durable experiment/session keys are `experiment_id` and `session_id`; client-facing values such as `room_id` and `participant_session_id` are live-system handles rather than research identifiers.
+Parlando stores experiment data for clean evaluation, not as a generic audit log. The durable experiment/session keys are `experiment_id` and `session_id`; client-facing values such as `public_session_id` and `participant_session_id` are live-system handles rather than research identifiers.
 
 The reusable server talks to a backend-neutral `ExperimentStore` trait. SQLite is the first implementation, selected with `database.url = sqlite:///...`.
 
@@ -64,7 +64,7 @@ One row per game instance.
 ```sql
 experiment_id text not null
 session_id integer not null
-room_id text not null unique
+public_session_id text not null unique
 dialogue_id text unique
 mode text not null
 status text not null
@@ -75,7 +75,7 @@ completion_json text
 primary key (experiment_id, session_id)
 ```
 
-`session_id` counts upward from `1` inside each experiment. `room_id` is the client-facing room alias. `dialogue_id` is the random human-readable dialogue identifier used consistently in administration and repeated exports.
+`session_id` counts upward from `1` inside each experiment. `public_session_id` is the client-facing room alias. `dialogue_id` is the random human-readable dialogue identifier used consistently in administration and repeated exports.
 
 `status` follows `waiting → running → completed | abandoned | expired`. The transition to `running` sets `started_at`; every terminal state sets `completed_at`.
 

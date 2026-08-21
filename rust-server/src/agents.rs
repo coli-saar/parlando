@@ -6,6 +6,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::game::{AgentDefinition, Game, PlayerRole, SecretValues};
+use crate::SessionLogger;
 
 /// Stable semantic identity recorded for participants created by an agent factory.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -45,6 +46,8 @@ pub struct AgentContext {
     pub factory_secrets: SecretValues,
     /// Secrets explicitly authorized for delivery to the agent instance.
     pub agent_instance_secrets: SecretValues,
+    /// Logger bound to this session, agent participant, and role.
+    pub logger: SessionLogger,
 }
 
 /// Computes the versioned canonical fingerprint of validated non-secret settings.

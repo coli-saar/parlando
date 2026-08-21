@@ -57,7 +57,7 @@ recruitment reopens. Deactivation closes new participant and room creation while
 allowing sessions already in progress to finish.
 
 Each experiment also has explicit room-lifecycle bounds. Waiting rooms expire
-after `session.waiting_room_timeout_seconds`; disconnected rooms after
+after `session.waiting_session_timeout_seconds`; disconnected rooms after
 `session.reconnect_grace_seconds`; active but idle sessions after
 `session.session_idle_timeout_seconds`; and every unfinished session after
 `session.session_max_lifetime_seconds`. Expiration closes live transports and stores

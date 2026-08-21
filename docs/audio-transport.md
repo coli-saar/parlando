@@ -22,10 +22,10 @@ Partner relay, transcription, and agent playback are independent consumers. A sl
 ## Session And Authentication
 
 After joining a room, the browser requests
-`POST /e/{experiment_id}/api/rooms/{room_id}/audio-session` with its participant
+`POST /e/{experiment_id}/api/sessions/{public_session_id}/audio-session` with its participant
 bearer credential. When voice is enabled, the response contains:
 
-- the relative `/e/{experiment_id}/ws/audio/{room_id}` path;
+- the relative `/e/{experiment_id}/ws/audio/{public_session_id}` path;
 - an opaque, random token valid for one minute and one WebSocket upgrade;
 - protocol version, sample rate, channel count, frame duration, and jitter-buffer target.
 

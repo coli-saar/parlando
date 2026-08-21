@@ -27,6 +27,7 @@ message CreateAgentRequest {
 
 message CreateAgentResponse {
   string agent_id = 1;
+  repeated string session_logs = 2;
 }
 
 message StartRequest {
@@ -52,7 +53,9 @@ message FinishRequest {
   google.protobuf.Struct completion = 2;
 }
 
-message ObserveResponse {}
+message ObserveResponse {
+  repeated string session_logs = 1;
+}
 
 message RespondRequest {
   string agent_id = 1;
@@ -67,10 +70,13 @@ message AgentResponse {
 
 message RespondResponse {
   optional AgentResponse response = 1;
+  repeated string session_logs = 2;
 }
 
 message ShutdownRequest {
   string agent_id = 1;
 }
 
-message ShutdownResponse {}
+message ShutdownResponse {
+  repeated string session_logs = 1;
+}

@@ -57,15 +57,15 @@ through the authenticated HTTP endpoint before joining a session.
 
 | Type | Delivery | Main fields | Meaning |
 |---|---|---|---|
-| `session_started` | Targeted to one role | `room_id`, `role`, `observation`, `available_actions` | Supplies the first complete role-specific observation and starts active rendering. |
-| `transition` | Targeted separately to each role | `room_id`, `actor`, `action`, `observation`, `available_actions` | Delivers the shared accepted action and replaces that recipient's role-specific observation. |
-| `message` | Room players | `room_id`, `message` | Delivers one player message with sender role, text, input channel, identifier, and timestamp. |
-| `presence` | Room players | `room_id`, `presence` | Reports narrow connectivity and audio readiness keyed by `A` and `B`. |
-| `voice_status` | Room players | `room_id`, `voice` | Reports narrow audio and transcription readiness without provider configuration. |
-| `completed` | Both roles | `room_id`, `completion` | Delivers the same shared, game-specific terminal result to both players. |
-| `abandoned` | Both roles | `room_id`, `code` | Reports that a participant intentionally ended the session. |
-| `action_rejected` | Targeted to the submitter | `room_id`, `code` | Reports an expected game-rule or session-state rejection without ending the session. |
-| `error` | Normally targeted to the affected participant | `room_id`, `code`, `fatal` | Reports malformed input, transport failure, or runtime failure using presentation-neutral fields. |
+| `session_started` | Targeted to one role | `public_session_id`, `role`, `observation`, `available_actions` | Supplies the first complete role-specific observation and starts active rendering. |
+| `transition` | Targeted separately to each role | `public_session_id`, `actor`, `action`, `observation`, `available_actions` | Delivers the shared accepted action and replaces that recipient's role-specific observation. |
+| `message` | Session participants | `public_session_id`, `message` | Delivers one player message with sender role, text, input channel, identifier, and timestamp. |
+| `presence` | Session participants | `public_session_id`, `presence` | Reports narrow connectivity and audio readiness keyed by `A` and `B`. |
+| `voice_status` | Session participants | `public_session_id`, `voice` | Reports narrow audio and transcription readiness without provider configuration. |
+| `completed` | Both roles | `public_session_id`, `completion` | Delivers the same shared, game-specific terminal result to both players. |
+| `abandoned` | Both roles | `public_session_id`, `code` | Reports that a participant intentionally ended the session. |
+| `action_rejected` | Targeted to the submitter | `public_session_id`, `code` | Reports an expected game-rule or session-state rejection without ending the session. |
+| `error` | Normally targeted to the affected participant | `public_session_id`, `code`, `fatal` | Reports malformed input, transport failure, or runtime failure using presentation-neutral fields. |
 
 `available_actions` is nullable. `null` means that the game does not enumerate
 its action space. An empty array means that it does enumerate the action space

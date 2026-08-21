@@ -1,5 +1,8 @@
 use anyhow::Result;
-use parlando::{ActionRejection, Game, GameInitializationContext, PlayerRole};
+use parlando::{
+    ActionRejection, Game, GameFactory, GameInitializationContext, GameSessionContext, PlayerRole,
+    SessionLogger,
+};
 
 use super::bijection;
 use super::ids::{LimbId, RootId};
@@ -27,12 +30,41 @@ fn role_for_action(state: &GreatTreeState, action: &GreatTreeAction) -> PlayerRo
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct GreatTree;
+#[derive(Clone, Debug)]
+pub struct GreatTree {
+    /// Session-bound logger.
+    logger: SessionLogger,
+}
 
+#[cfg(test)]
 impl GreatTree {
-    pub fn new() -> Self {
-        Self
+    /// Creates an isolated mechanics value for unit tests.
+    fn testing() -> Self {
+        GreatTreeFactory
+            .create(GameSessionContext {
+                logger: SessionLogger::testing(),
+            })
+            .expect("test game construction succeeds")
+    }
+}
+
+/// Reusable constructor for session-local Great Tree behavior values.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GreatTreeFactory;
+
+impl GameFactory for GreatTreeFactory {
+    type Game = GreatTree;
+
+    /// Creates Great Tree mechanics with a fully bound logger.
+    fn create(&self, context: GameSessionContext) -> Result<GreatTree> {
+        Ok(GreatTree {
+            logger: context.logger,
+        })
+    }
+
+    /// Accepts every structurally valid Great Tree configuration.
+    fn validate_config(&self, _config: &GreatTreeConfig) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -42,10 +74,6 @@ impl Game for GreatTree {
     type Action = GreatTreeAction;
     type Observation = GreatTreeObservation;
     type Completion = GreatTreeCompletion;
-
-    fn validate_config(&self, _config: &Self::Config) -> Result<()> {
-        Ok(())
-    }
 
     fn initial_state(
         &self,
@@ -75,14 +103,21 @@ impl Game for GreatTree {
         if actor != role_for_action(state, action) {
             return Err(ActionRejection::new("wrong_role"));
         }
-        match *action {
+        let result = match *action {
             GreatTreeAction::SetSun { limb, lit } => Ok(apply_set_sun(state, limb, lit)),
             GreatTreeAction::SetFlow { root, open } => {
                 apply_set_flow(state, root, open).map_err(|error| match error {
                     FlowRejection::RootFrozen => ActionRejection::new("root_frozen"),
                 })
             }
+        };
+        if result.is_ok() {
+            let _ = self.logger.log(format!(
+                "accepted Great Tree action from role {}: {action:?}",
+                actor.as_str()
+            ));
         }
+        result
     }
 
     fn observation(&self, state: &Self::State, role: PlayerRole) -> Self::Observation {
@@ -177,7 +212,7 @@ mod tests {
 
     #[test]
     fn same_seed_produces_the_same_initial_state() {
-        let game = GreatTree::new();
+        let game = GreatTree::testing();
         let a = init(&game, &config(), 7);
         let b = init(&game, &config(), 7);
         assert_eq!(a.sun_holds, b.sun_holds);
@@ -187,7 +222,7 @@ mod tests {
 
     #[test]
     fn initial_state_has_exactly_one_flowered_limb() {
-        let game = GreatTree::new();
+        let game = GreatTree::testing();
         let state = init(&game, &config(), 7);
         let flowered_count = LimbId::ALL
             .iter()
@@ -198,7 +233,7 @@ mod tests {
 
     #[test]
     fn crown_cannot_send_set_flow() {
-        let game = GreatTree::new();
+        let game = GreatTree::testing();
         let state = init(&game, &config(), 1);
         let result = game.apply_action(
             &state,
@@ -213,7 +248,7 @@ mod tests {
 
     #[test]
     fn root_cannot_send_set_sun() {
-        let game = GreatTree::new();
+        let game = GreatTree::testing();
         let state = init(&game, &config(), 1);
         let result = game.apply_action(
             &state,
@@ -228,7 +263,7 @@ mod tests {
 
     #[test]
     fn crown_observation_never_contains_the_string_bijection() {
-        let game = GreatTree::new();
+        let game = GreatTree::testing();
         let state = init(&game, &config(), 1);
         let obs = game.observation(&state, PlayerRole::A);
         let json = serde_json::to_string(&obs).unwrap().to_lowercase();
@@ -238,7 +273,7 @@ mod tests {
 
     #[test]
     fn root_observation_never_contains_limb_data() {
-        let game = GreatTree::new();
+        let game = GreatTree::testing();
         let state = init(&game, &config(), 1);
         let obs = game.observation(&state, PlayerRole::B);
         assert!(matches!(obs, GreatTreeObservation::Root { .. }));
@@ -246,14 +281,14 @@ mod tests {
 
     #[test]
     fn completion_is_none_below_three_flowered_limbs() {
-        let game = GreatTree::new();
+        let game = GreatTree::testing();
         let state = init(&game, &config(), 1);
         assert_eq!(game.completion(&state), None);
     }
 
     #[test]
     fn completion_fires_the_instant_a_third_limb_flowers() {
-        let game = GreatTree::new();
+        let game = GreatTree::testing();
         let mut state = init(&game, &config(), 1);
         // Use the real seeded bijection so this test doesn't hardcode pairings.
         let starting_limb = LimbId::ALL
@@ -278,7 +313,7 @@ mod tests {
 
     #[test]
     fn default_config_makes_crown_player_a() {
-        let game = GreatTree::new();
+        let game = GreatTree::testing();
         let state = init(&game, &config(), 1);
         assert!(matches!(
             game.observation(&state, PlayerRole::A),
@@ -292,7 +327,7 @@ mod tests {
 
     #[test]
     fn crown_seat_b_swaps_which_player_is_crown() {
-        let game = GreatTree::new();
+        let game = GreatTree::testing();
         let config = GreatTreeConfig {
             crown_seat: CrownSeat::B,
         };

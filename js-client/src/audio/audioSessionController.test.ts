@@ -106,7 +106,7 @@ class FakeSink implements LocalAudioSink {
 
 function context(): AudioSessionContext {
   return {
-    roomId: "room",
+    sessionId: "room",
     role: "A",
     selectedAudioInputId: "default",
     selectedAudioInputLabel: "Default microphone",

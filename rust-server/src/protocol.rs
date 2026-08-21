@@ -39,18 +39,18 @@ pub struct PublicConfigResponse {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConsentRequest {
-    pub room_id: Option<String>,
+    pub public_session_id: Option<String>,
     #[serde(default)]
     pub decisions: std::collections::HashMap<String, bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct CreateRoomRequest {}
+pub struct CreateSessionRequest {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct RoomResponse {
-    pub room_id: String,
+pub struct SessionResponse {
+    pub public_session_id: String,
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presence: Option<Value>,
@@ -60,7 +60,7 @@ pub struct RoomResponse {
     pub available_actions: Option<Vec<Value>>,
 }
 
-pub type CreateRoomResponse = RoomResponse;
+pub type CreateSessionResponse = SessionResponse;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -68,11 +68,11 @@ pub struct AudioSessionRequest {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AudioSessionPlanResponse {
-    /// Whether room audio is enabled for this experiment.
+    /// Whether session audio is enabled for this experiment.
     pub enabled: bool,
     /// Authenticated Parlando audio WebSocket URL without its credential.
     pub websocket_url: Option<String>,
-    /// Short-lived credential bound to the room, participant, and current role.
+    /// Short-lived credential bound to the session, participant, and current role.
     pub token: Option<String>,
     /// Binary audio protocol version understood by the server.
     pub protocol_version: u8,
@@ -91,7 +91,7 @@ pub struct AudioSessionPlanResponse {
 pub struct GameSessionPlanResponse {
     /// Game WebSocket URL without embedded participant identifiers.
     pub websocket_url: String,
-    /// Short-lived, one-use ticket bound to this room and participant role.
+    /// Short-lived, one-use ticket bound to this session and participant role.
     pub token: String,
 }
 
@@ -136,7 +136,7 @@ fn default_typed() -> String {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ConversationMessageResponse {
     pub id: String,
-    pub room_id: String,
+    pub public_session_id: String,
     pub sender_participant_session_id: Option<String>,
     pub sender_role: Option<String>,
     pub text: String,
@@ -213,14 +213,14 @@ pub enum ClientMessage {
 pub enum ServerPayload {
     /// Starts active rendering with the first complete role-specific observation.
     SessionStarted {
-        room_id: String,
+        public_session_id: String,
         role: String,
         observation: Value,
         available_actions: Option<Vec<Value>>,
     },
     /// Reports one accepted action and the receiving role's resulting observation.
     Transition {
-        room_id: String,
+        public_session_id: String,
         actor: String,
         action: Value,
         observation: Value,
@@ -228,22 +228,37 @@ pub enum ServerPayload {
     },
     /// Delivers one player-to-player message.
     Message {
-        room_id: String,
+        public_session_id: String,
         message: PlayerMessageResponse,
     },
     /// Reports current role connectivity and narrow readiness capabilities.
-    Presence { room_id: String, presence: Value },
+    Presence {
+        public_session_id: String,
+        presence: Value,
+    },
     /// Reports current audio and transcription readiness.
-    VoiceStatus { room_id: String, voice: Value },
+    VoiceStatus {
+        public_session_id: String,
+        voice: Value,
+    },
     /// Reports that the game reached a terminal state with its shared game-specific result.
-    Completed { room_id: String, completion: Value },
+    Completed {
+        public_session_id: String,
+        completion: Value,
+    },
     /// Reports that a player intentionally ended the session.
-    Abandoned { room_id: String, code: String },
+    Abandoned {
+        public_session_id: String,
+        code: String,
+    },
     /// Reports an expected game-rule rejection without ending the session.
-    ActionRejected { room_id: String, code: String },
+    ActionRejected {
+        public_session_id: String,
+        code: String,
+    },
     /// Reports a transport or runtime failure using presentation-neutral fields.
     Error {
-        room_id: String,
+        public_session_id: String,
         code: String,
         fatal: bool,
     },
@@ -263,7 +278,7 @@ pub struct ServerMessage {
 }
 
 impl ServerMessage {
-    /// Creates a broadcast message for every player connected to the room bus.
+    /// Creates a broadcast message for every player connected to the session bus.
     pub fn broadcast(payload: ServerPayload) -> Self {
         Self {
             protocol_version: 1,

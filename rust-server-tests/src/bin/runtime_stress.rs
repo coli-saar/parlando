@@ -137,6 +137,17 @@ struct StressCompletion {
 #[derive(Clone)]
 struct StressGame;
 
+struct StressGameFactory;
+
+impl parlando::GameFactory for StressGameFactory {
+    type Game = StressGame;
+
+    /// Creates one stateless stress-session game.
+    fn create(&self, _context: parlando::GameSessionContext) -> Result<StressGame> {
+        Ok(StressGame)
+    }
+}
+
 impl Game for StressGame {
     type Config = Value;
     type State = StressState;
@@ -144,6 +155,7 @@ impl Game for StressGame {
     type Observation = StressObservation;
     type Completion = StressCompletion;
 
+    /// Creates one stateless stress-game value for an admitted session.
     /// Creates one fixed-shape state value per admitted session.
     fn initial_state(&self, _: GameInitializationContext<'_, Value>) -> Result<StressState> {
         Ok(StressState {
@@ -780,7 +792,7 @@ async fn server_child(arguments: &[String]) -> Result<()> {
         version: semver::Version::new(1, 0, 0),
         build_manifest: json!({"harness_revision": HARNESS_REVISION}),
     };
-    Server::new(StressGame, metadata)?
+    Server::new(StressGameFactory, metadata)?
         .database_url(format!("sqlite:///{}", database.display()))
         .agent(StressAgentFactory)?
         .serve(address)
@@ -1128,15 +1140,15 @@ async fn run_workload_inner(
             .with_context(|| format!("staging session {session} participant A"))?;
         consent(&client, &base, &a).await?;
         let room_a = create_room(&client, &base, &a).await?;
-        let room = room_a["room_id"]
+        let room = room_a["public_session_id"]
             .as_str()
-            .context("room admission omitted room_id")?
+            .context("session admission omitted public_session_id")?
             .to_string();
         let b = if args.pairing == Pairing::HumanHuman {
             let b = create_participant(&client, &base).await?;
             consent(&client, &base, &b).await?;
             let room_b = create_room(&client, &base, &b).await?;
-            if room_b["room_id"] != room {
+            if room_b["public_session_id"] != room {
                 bail!("human pair admitted to different rooms");
             }
             Some(b)
@@ -1460,7 +1472,7 @@ async fn create_room(
 ) -> Result<Value> {
     response_value(
         client
-            .post(format!("{base}/api/rooms"))
+            .post(format!("{base}/api/sessions"))
             .bearer_auth(&participant.credential)
             .json(&json!({}))
             .send()
@@ -1503,7 +1515,7 @@ async fn ticket_socket(
 ) -> Result<Socket> {
     let value = response_value(
         client
-            .post(format!("{base}/api/rooms/{room}/{kind}-session"))
+            .post(format!("{base}/api/sessions/{room}/{kind}-session"))
             .bearer_auth(&participant.credential)
             .json(&json!({}))
             .send()

@@ -14,13 +14,14 @@
     "data_inventory": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["participants", "sessions", "events", "actions", "messages"],
+      "required": ["participants", "sessions", "events", "actions", "messages", "logs"],
       "properties": {
         "participants": {"type": "integer", "minimum": 0},
         "sessions": {"type": "integer", "minimum": 0},
         "events": {"type": "integer", "minimum": 0},
         "actions": {"type": "integer", "minimum": 0},
-        "messages": {"type": "integer", "minimum": 0}
+        "messages": {"type": "integer", "minimum": 0},
+        "logs": {"type": "integer", "minimum": 0}
       }
     },
     "experiment": {"$ref": "#/$defs/experiment"}
@@ -83,7 +84,7 @@
         },
         "participants": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/assignment"}},
         "completion": {},
-        "events": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/action"}, {"$ref": "#/$defs/message"}]}}
+        "events": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/action"}, {"$ref": "#/$defs/message"}, {"$ref": "#/$defs/log"}]}}
       }
     },
     "eventBase": {
@@ -113,6 +114,20 @@
           "utterance_timing": {"type": "object", "description": "Speech boundaries on the same game clock as game_time_ms.", "additionalProperties": false, "required": ["origin", "start_ms", "end_ms"], "properties": {"origin": {"const": "game_clock"}, "start_ms": {"type": ["integer", "null"], "minimum": 0}, "end_ms": {"type": ["integer", "null"], "minimum": 0}}}
         }}
       ]
+    },
+    "log": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "game_time_ms", "kind", "source", "participant_id", "role", "text"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 1},
+        "game_time_ms": {"type": "integer", "minimum": 0},
+        "kind": {"const": "log"},
+        "source": {"enum": ["game", "agent"]},
+        "participant_id": {"type": ["string", "null"], "minLength": 1},
+        "role": {"type": ["string", "null"], "minLength": 1},
+        "text": {"type": "string"}
+      }
     }
   }
 }

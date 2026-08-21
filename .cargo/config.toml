@@ -1,2 +1,5 @@
 [alias]
 stress = "run --release --manifest-path rust-server-tests/Cargo.toml --features stress-tui --bin runtime-stress --"
+
+[patch.crates-io]
+parlando = { path = "rust-server" }

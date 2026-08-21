@@ -148,9 +148,9 @@ The experiment id is part of the route, not the request body:
 ```text
 /e/{experiment_id}/
 /e/{experiment_id}/api/participants
-/e/{experiment_id}/api/rooms
-/e/{experiment_id}/ws/game/{room_id}
-/e/{experiment_id}/ws/audio/{room_id}
+/e/{experiment_id}/api/sessions
+/e/{experiment_id}/ws/game/{public_session_id}
+/e/{experiment_id}/ws/audio/{public_session_id}
 ```
 
 The JavaScript client derives API and WebSocket locations from the participant

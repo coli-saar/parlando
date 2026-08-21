@@ -873,7 +873,7 @@ mod tests {
 
     #[test]
     fn observation_filters_other_player_knowledge() {
-        let adapter = SpaceGame::new();
+        let adapter = SpaceGame::testing();
         let state = initial_state();
         let observation_a = adapter.observation(&state, PlayerRole::A);
         let observation_b = adapter.observation(&state, PlayerRole::B);
@@ -885,7 +885,7 @@ mod tests {
 
     #[test]
     fn adapter_exposes_typed_available_actions_with_client_json_shape() {
-        let adapter = SpaceGame::new();
+        let adapter = SpaceGame::testing();
         let mut state = initial_state();
         state.players.a.position = Position { x: 1, y: 1 };
         let actions = adapter.available_actions(&state, PlayerRole::A).unwrap();
@@ -932,7 +932,7 @@ mod tests {
 
     #[test]
     fn completion_serializes_with_client_shape() {
-        let adapter = SpaceGame::new();
+        let adapter = SpaceGame::testing();
         let mut state = initial_state();
         state.beacon_launched = true;
         let completion = adapter.completion(&state).unwrap();

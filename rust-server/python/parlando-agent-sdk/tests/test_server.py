@@ -237,6 +237,31 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(contexts[0].secrets.get("config.token"), "sentinel")
         self.assertNotIn("sentinel", repr(contexts[0].secrets))
 
+    async def test_session_logger_drains_arbitrary_text_into_rpc_responses(self) -> None:
+        """Constructor and callback logs leave the process on the next matching response."""
+        logger: server.SessionLogger | None = None
+
+        def factory(context: server.Context) -> RecordingAgent:
+            """Records one constructor log through the injected session capability."""
+            nonlocal logger
+            logger = context.logger
+            logger.log("constructor: 🌳\n{not-json}")
+            return RecordingAgent()
+
+        service = self.service(factory)
+        created = await service.CreateAgent(self.create_request(), FakeContext())
+        self.assertEqual(created.session_logs, ["constructor: 🌳\n{not-json}"])
+        assert logger is not None
+        logger.log("between callbacks")
+        observed = await service.Start(
+            SimpleNamespace(
+                agent_id=created.agent_id,
+                observation=server._dict_to_struct({"turn": 1}),
+            ),
+            FakeContext(),
+        )
+        self.assertEqual(observed.session_logs, ["between callbacks"])
+
     async def test_observation_and_double_shutdown_delegate_safely(self) -> None:
         """RPC conversion reaches the agent and repeated shutdown closes it only once."""
         agent = RecordingAgent()
@@ -281,17 +306,12 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
 
         service = self.service(factory)
         await service.CreateAgent(self.create_request(), FakeContext())
-        self.assertEqual(
-            contexts,
-            [
-                server.Context(
-                    role="B",
-                    seed=0,
-                    settings={"difficulty": 2.0},
-                    secrets=server.SecretValues({"config.token": "sentinel"}),
-                )
-            ],
-        )
+        self.assertEqual(len(contexts), 1)
+        self.assertEqual(contexts[0].role, "B")
+        self.assertEqual(contexts[0].seed, 0)
+        self.assertEqual(contexts[0].settings, {"difficulty": 2.0})
+        self.assertEqual(contexts[0].secrets.get("config.token"), "sentinel")
+        self.assertIsInstance(contexts[0].logger, server.SessionLogger)
 
     async def test_unknown_agent_ids_abort(self) -> None:
         """Observation RPCs reject unknown capability identifiers."""

@@ -43,7 +43,7 @@ let metadata = GameMetadata {
     build_manifest: serde_json::json!({"version": env!("CARGO_PKG_VERSION")}),
 };
 
-Server::new(MyGame, metadata)?
+Server::new(MyGameFactory, metadata)?
     .database_url(cli.database_url)
     .participant_app(cli.client_dist)
     .agent(DemoAgentFactory)?

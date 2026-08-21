@@ -8,7 +8,7 @@ version = "0.1.0"
 anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
-parlando = "0.3.0"
+parlando = "0.4.0"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
 serde = { version = "1", features = ["derive"] }
@@ -19,4 +19,5 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
+parlando = { version = "0.4.0", features = ["internal-tools"] }
 serde_yaml = "0.9"

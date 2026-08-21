@@ -3,7 +3,7 @@ use std::net::{IpAddr, SocketAddr};
 use anyhow::Result;
 use clap::Parser;
 use parlando::{agent::grpc::Factory as RemoteGrpcAgentFactory, GameMetadata, Server};
-use parlando_space_game::{BackAndForthAgentFactory, SpaceGame};
+use parlando_space_game::{BackAndForthAgentFactory, SpaceGameFactory};
 use serde_json::{json, Value};
 
 #[derive(Debug, Parser)]
@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
         version: semver::Version::parse(env!("CARGO_PKG_VERSION"))?,
         build_manifest: build_manifest.clone(),
     };
-    Server::new(SpaceGame::new(), descriptor)?
+    Server::new(SpaceGameFactory, descriptor)?
         .database_url(cli.database_url)
         .participant_app(cli.client_dist)
         .agent(BackAndForthAgentFactory)?

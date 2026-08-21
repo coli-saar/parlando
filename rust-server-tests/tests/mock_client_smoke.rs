@@ -68,6 +68,17 @@ struct DummySummary {
 #[derive(Clone)]
 struct DummyAdapter;
 
+struct DummyGameFactory;
+
+impl parlando::GameFactory for DummyGameFactory {
+    type Game = DummyAdapter;
+
+    /// Creates one stateless integration-test game.
+    fn create(&self, _context: parlando::GameSessionContext) -> Result<DummyAdapter> {
+        Ok(DummyAdapter)
+    }
+}
+
 impl Game for DummyAdapter {
     type Config = Value;
     type State = DummyState;
@@ -75,6 +86,7 @@ impl Game for DummyAdapter {
     type Observation = DummyObservation;
     type Completion = DummySummary;
 
+    /// Creates one stateless test adapter for an admitted session.
     fn initial_state(
         &self,
         _context: GameInitializationContext<'_, Self::Config>,
@@ -235,6 +247,7 @@ impl AgentService for MockRemoteAgentService {
             .push(request.into_inner());
         Ok(TonicResponse::new(CreateAgentResponse {
             agent_id: "remote-agent-1".to_string(),
+            session_logs: Vec::new(),
         }))
     }
 
@@ -247,21 +260,27 @@ impl AgentService for MockRemoteAgentService {
             .lock()
             .unwrap()
             .push(request.into_inner());
-        Ok(TonicResponse::new(ObserveResponse {}))
+        Ok(TonicResponse::new(ObserveResponse {
+            session_logs: Vec::new(),
+        }))
     }
 
     async fn observe_transition(
         &self,
         _request: TonicRequest<ObserveTransitionRequest>,
     ) -> std::result::Result<TonicResponse<ObserveResponse>, Status> {
-        Ok(TonicResponse::new(ObserveResponse {}))
+        Ok(TonicResponse::new(ObserveResponse {
+            session_logs: Vec::new(),
+        }))
     }
 
     async fn observe_message(
         &self,
         _request: TonicRequest<ObserveMessageRequest>,
     ) -> std::result::Result<TonicResponse<ObserveResponse>, Status> {
-        Ok(TonicResponse::new(ObserveResponse {}))
+        Ok(TonicResponse::new(ObserveResponse {
+            session_logs: Vec::new(),
+        }))
     }
 
     async fn finish(
@@ -273,7 +292,9 @@ impl AgentService for MockRemoteAgentService {
             .lock()
             .unwrap()
             .push(request.into_inner());
-        Ok(TonicResponse::new(ObserveResponse {}))
+        Ok(TonicResponse::new(ObserveResponse {
+            session_logs: Vec::new(),
+        }))
     }
 
     async fn respond(
@@ -290,6 +311,7 @@ impl AgentService for MockRemoteAgentService {
                 message: (decision_count == 1).then(|| "hello from remote grpc".to_string()),
                 action: Some(dummy_action_struct(decision_count > 1)),
             }),
+            session_logs: Vec::new(),
         }))
     }
 
@@ -297,7 +319,9 @@ impl AgentService for MockRemoteAgentService {
         &self,
         _request: TonicRequest<ShutdownRequest>,
     ) -> std::result::Result<TonicResponse<ShutdownResponse>, Status> {
-        Ok(TonicResponse::new(ShutdownResponse {}))
+        Ok(TonicResponse::new(ShutdownResponse {
+            session_logs: Vec::new(),
+        }))
     }
 }
 
@@ -375,7 +399,7 @@ async fn spawn_server(
     config.database = DatabaseConfig {
         url: format!("sqlite:///{}", temp.path().join("mock-client.db").display()),
     };
-    let router = build_router(DummyAdapter, config, options).await?;
+    let router = build_router(DummyGameFactory, config, options).await?;
     let server = spawn_router(router, temp).await?;
     let client = reqwest::Client::new();
     let admin = admin_setup(&client, &server.base_url).await?;
@@ -498,7 +522,7 @@ async fn create_room(
     participant: &TestParticipant,
 ) -> Result<Value> {
     Ok(client
-        .post(format!("{base_url}/api/rooms"))
+        .post(format!("{base_url}/api/sessions"))
         .bearer_auth(&participant.credential)
         .json(&json!({}))
         .send()
@@ -511,12 +535,12 @@ async fn create_room(
 async fn ws_connect(
     client: &reqwest::Client,
     server: &TestServer,
-    room_id: &str,
+    public_session_id: &str,
     participant: &TestParticipant,
 ) -> Result<TestSocket> {
     let plan = client
         .post(format!(
-            "{}/api/rooms/{room_id}/game-session",
+            "{}/api/sessions/{public_session_id}/game-session",
             server.base_url
         ))
         .bearer_auth(&participant.credential)
@@ -530,7 +554,7 @@ async fn ws_connect(
         .as_str()
         .ok_or_else(|| anyhow!("missing game ticket"))?;
     let (socket, _) = connect_async(format!(
-        "{}/ws/game/{room_id}?token={token}",
+        "{}/ws/game/{public_session_id}?token={token}",
         server.ws_base_url
     ))
     .await?;
@@ -628,7 +652,7 @@ async fn public_security_boundaries_reject_anonymous_and_cross_participant_reque
     let b = create_participant(&client, &server.base_url, "B").await?;
 
     let anonymous_room = client
-        .post(format!("{}/api/rooms", server.base_url))
+        .post(format!("{}/api/sessions", server.base_url))
         .json(&json!({"participant_session_id": a.id, "mode": "direct"}))
         .send()
         .await?;
@@ -694,17 +718,17 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
     consent(&client, &server.base_url, &a).await?;
     consent(&client, &server.base_url, &b).await?;
 
-    let room = create_room(&client, &server.base_url, &a).await?;
-    assert_eq!(room["role"], "A");
-    assert!(room["available_actions"].is_null());
-    let room_id = room["room_id"].as_str().unwrap().to_string();
+    let session = create_room(&client, &server.base_url, &a).await?;
+    assert_eq!(session["role"], "A");
+    assert!(session["available_actions"].is_null());
+    let public_session_id = session["public_session_id"].as_str().unwrap().to_string();
     let joined = create_room(&client, &server.base_url, &b).await?;
     assert_eq!(joined["role"], "B");
     assert!(joined["available_actions"].is_null());
 
     let audio = client
         .post(format!(
-            "{}/api/rooms/{room_id}/audio-session",
+            "{}/api/sessions/{public_session_id}/audio-session",
             server.base_url
         ))
         .bearer_auth(&a.credential)
@@ -721,8 +745,8 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
         .as_str()
         .is_some_and(|value| !value.is_empty()));
 
-    let mut socket_a = ws_connect(&client, &server, &room_id, &a).await?;
-    let mut socket_b = ws_connect(&client, &server, &room_id, &b).await?;
+    let mut socket_a = ws_connect(&client, &server, &public_session_id, &a).await?;
+    let mut socket_b = ws_connect(&client, &server, &public_session_id, &b).await?;
     let assigned_a = read_ws_type(&mut socket_a, "session_started").await?;
     let assigned_b = read_ws_type(&mut socket_b, "session_started").await?;
     assert_eq!(assigned_a["role"], "A");
@@ -803,11 +827,11 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
     let admin_cookie = admin_login(&client, &server.base_url).await?;
     let human = create_participant(&client, &server.base_url, "Human").await?;
     consent(&client, &server.base_url, &human).await?;
-    let room = create_room(&client, &server.base_url, &human).await?;
-    assert_eq!(room["role"], "A");
-    let room_id = room["room_id"].as_str().unwrap();
+    let session = create_room(&client, &server.base_url, &human).await?;
+    assert_eq!(session["role"], "A");
+    let public_session_id = session["public_session_id"].as_str().unwrap();
 
-    let mut socket = ws_connect(&client, &server, room_id, &human).await?;
+    let mut socket = ws_connect(&client, &server, public_session_id, &human).await?;
     let assigned = read_ws_type(&mut socket, "session_started").await?;
     assert_eq!(assigned["role"], "A");
     let message = read_ws_type(&mut socket, "message").await?;
@@ -878,10 +902,10 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
     let admin_cookie = admin_login(&client, &server.base_url).await?;
     let human = create_participant(&client, &server.base_url, "Human").await?;
     consent(&client, &server.base_url, &human).await?;
-    let room = create_room(&client, &server.base_url, &human).await?;
-    let room_id = room["room_id"].as_str().unwrap();
+    let session = create_room(&client, &server.base_url, &human).await?;
+    let public_session_id = session["public_session_id"].as_str().unwrap();
 
-    let mut socket = ws_connect(&client, &server, room_id, &human).await?;
+    let mut socket = ws_connect(&client, &server, public_session_id, &human).await?;
     let assigned = read_ws_type(&mut socket, "session_started").await?;
     assert_eq!(assigned["role"], "A");
     let message = read_ws_type(&mut socket, "message").await?;

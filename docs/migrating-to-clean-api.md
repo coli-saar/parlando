@@ -133,7 +133,7 @@ Return `Response::action(action)`, `Response::message(text)`, or `Response::acti
 Register factories on `Server`, not on the game:
 
 ```rust
-let server = Server::new(game, metadata)?
+let server = Server::new(game_factory, metadata)?
     .agent(MyFactory::new())?
     .agent(agent::grpc::Factory::<MyGame>::new())?;
 ```
@@ -191,7 +191,7 @@ Delete imports of `ExperimentConfig`, `ServeOptions`, `serve`, `serve_game`, rou
 use parlando::{GameMetadata, Server};
 
 Server::new(
-    MyGame,
+    MyGameFactory,
     GameMetadata {
         id: "my-game".into(),
         name: "My Game".into(),
@@ -213,11 +213,11 @@ When transferring an old checked-in or stored YAML configuration into the dashbo
 # Old
 study:
   name: My Study
-  waiting_room_timeout_seconds: 600
+  waiting_session_timeout_seconds: 600
 
 # New
 session:
-  waiting_room_timeout_seconds: 600
+  waiting_session_timeout_seconds: 600
 ```
 
 Do not turn a legacy study into a session record, and do not rename the removed `name` to `experiment_name`, `participant_title`, or another presentation setting. A research study remains an external organizing concept; Parlando models game, experiment, and session.
@@ -259,7 +259,7 @@ import {
 
 Render from `session.observation`. Use transition data only for local animation or history, never as a second state channel. Submit typed actions with `session.sendAction(action)` and player messages with `session.sendMessage(text)`.
 
-Construct the lower-level managed client with an options object: `new ParticipantClient({ baseUrl })`. `getExperiment()` returns camel-cased `ExperimentInfo` fields, including `status`, `participantInformationVersion`, and `participantInformationUrl`. `register()` retains the participant credential internally and returns `Promise<void>`; `join()` returns camel-cased `JoinedRoom` data without an internal participant-session identifier. `getGameSession()` and `getAudioSession()` likewise return the exported, camel-cased `GameSessionPlan` and `AudioSessionPlan` values. Other raw HTTP DTOs, server-message unions, credentials, socket helpers, diagnostics, and audio implementation classes are no longer package exports.
+Construct the lower-level managed client with an options object: `new ParticipantClient({ baseUrl })`. `getExperiment()` returns camel-cased `ExperimentInfo` fields, including `status`, `participantInformationVersion`, and `participantInformationUrl`. `register()` retains the participant credential internally and returns `Promise<void>`; `join()` returns camel-cased `JoinedSession` data without an internal participant-session identifier. `getGameSession()` and `getAudioSession()` likewise return the exported, camel-cased `GameSessionPlan` and `AudioSessionPlan` values. Other raw HTTP DTOs, server-message unions, credentials, socket helpers, diagnostics, and audio implementation classes are no longer package exports.
 
 Direct protocol clients must require `protocol_version: 1` and map:
 

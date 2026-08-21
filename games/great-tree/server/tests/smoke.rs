@@ -1,5 +1,5 @@
-use parlando::{Game, PlayerRole};
-use parlando_great_tree::GreatTree;
+use parlando::{Game, GameFactory, GameSessionContext, PlayerRole, SessionLogger};
+use parlando_great_tree::GreatTreeFactory;
 use serde_json::{json, Value};
 
 /// Round-trips an action through JSON, exactly as the wire protocol would, so this test only
@@ -14,7 +14,11 @@ fn set_flow_json(root: &str, open: bool) -> Value {
 
 #[test]
 fn a_full_play_through_reaches_completion() {
-    let game = GreatTree::new();
+    let game = GreatTreeFactory
+        .create(GameSessionContext {
+            logger: SessionLogger::testing(),
+        })
+        .unwrap();
     let config = serde_json::from_value(json!({})).unwrap();
     let secrets = parlando::SecretValues::default();
     let mut state = game

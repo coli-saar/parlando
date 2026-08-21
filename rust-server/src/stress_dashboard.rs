@@ -67,7 +67,7 @@ pub struct DashboardSeries {
     pub values: Vec<u64>,
 }
 
-/// A per-room health tile used by the shared heatmap.
+/// A per-session health tile used by the shared heatmap.
 #[derive(Clone, Debug)]
 pub struct DashboardTile {
     /// Current tile health.
@@ -97,7 +97,7 @@ pub struct DashboardSnapshot {
     pub panels: [DashboardPanel; 3],
     /// One or more selectable rolling series.
     pub series: Vec<DashboardSeries>,
-    /// Current health for each active room.
+    /// Current health for each active session.
     pub tiles: Vec<DashboardTile>,
     /// Heatmap legend supplied by the workload.
     pub tile_legend: String,
@@ -289,7 +289,7 @@ fn visible_series(values: &[u64], width: usize) -> Vec<u64> {
     values[values.len().saturating_sub(visible)..].to_vec()
 }
 
-/// Renders the workload's current per-room health tiles.
+/// Renders the workload's current per-session health tiles.
 fn draw_tiles(frame: &mut Frame, area: Rect, snapshot: &DashboardSnapshot) {
     let tiles_per_row = area.width.saturating_sub(2).max(1) as usize;
     let visible_rows = area.height.saturating_sub(2).max(1) as usize;
@@ -312,7 +312,7 @@ fn draw_tiles(frame: &mut Frame, area: Rect, snapshot: &DashboardSnapshot) {
     frame.render_widget(
         Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).title(format!(
-                " Room activity — {} rooms{visibility} · {} ",
+                " Session activity — {} sessions{visibility} · {} ",
                 snapshot.tiles.len(),
                 snapshot.tile_legend
             )))

@@ -4,26 +4,26 @@ use crate::{
     agents::{AgentFactory, SharedAgentFactory},
     app::{serve_game, ServeOptions},
     config::{AgentsMode, ExperimentConfig},
-    game::{Game, GameMetadata},
+    game::{GameFactory, GameMetadata},
 };
 use anyhow::{anyhow, Result};
 
 /// Configures and runs one compiled game without exposing dashboard-owned policy.
-pub struct Server<G: Game> {
-    game: G,
+pub struct Server<F: GameFactory> {
+    game_factory: F,
     metadata: GameMetadata,
     database_url: String,
     participant_app: Option<PathBuf>,
     public_url: Option<String>,
-    agents: Vec<SharedAgentFactory<G>>,
+    agents: Vec<SharedAgentFactory<F::Game>>,
 }
 
-impl<G: Game> Server<G> {
+impl<F: GameFactory> Server<F> {
     /// Creates a server for one compiled game and validates its stable identity.
-    pub fn new(game: G, metadata: GameMetadata) -> Result<Self> {
+    pub fn new(game_factory: F, metadata: GameMetadata) -> Result<Self> {
         metadata.validate()?;
         Ok(Self {
-            game,
+            game_factory,
             metadata,
             database_url: "sqlite:///./parlando.sqlite".to_string(),
             participant_app: None,
@@ -53,11 +53,11 @@ impl<G: Game> Server<G> {
     }
 
     /// Registers one compiled agent implementation for dashboard selection.
-    pub fn agent<F>(mut self, factory: F) -> Result<Self>
+    pub fn agent<AF>(mut self, factory: AF) -> Result<Self>
     where
-        F: AgentFactory<G>,
+        AF: AgentFactory<F::Game>,
     {
-        let factory: Arc<dyn AgentFactory<G>> = Arc::new(factory);
+        let factory: Arc<dyn AgentFactory<F::Game>> = Arc::new(factory);
         let definition = factory.definition();
         definition.validate()?;
         let id = definition.id;
@@ -91,7 +91,7 @@ impl<G: Game> Server<G> {
         });
         let registered = Arc::new(self.agents);
         serve_game(
-            self.game,
+            self.game_factory,
             bootstrap,
             self.metadata,
             address,

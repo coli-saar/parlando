@@ -142,8 +142,8 @@ pub(crate) enum UpgradePurpose {
 /// Authenticated claims recovered after atomically consuming an upgrade ticket.
 #[derive(Clone, Debug)]
 pub(crate) struct UpgradeTicketClaims {
-    /// Room to which the ticket is bound.
-    pub room_id: String,
+    /// Public session identifier to which the ticket is bound.
+    pub public_session_id: String,
     /// Participant that requested the ticket.
     pub participant_session_id: String,
     /// Authoritative role at ticket issuance.
@@ -180,7 +180,7 @@ impl UpgradeTicketStore {
         let mut tickets = self.tickets.write().await;
         tickets.retain(|_, existing| existing.expires_at > now);
         tickets.retain(|_, existing| {
-            existing.room_id != claims.room_id
+            existing.public_session_id != claims.public_session_id
                 || existing.participant_session_id != claims.participant_session_id
                 || existing.purpose != claims.purpose
         });
@@ -193,7 +193,7 @@ impl UpgradeTicketStore {
         &self,
         ticket: &str,
         purpose: UpgradePurpose,
-        room_id: &str,
+        public_session_id: &str,
     ) -> Option<UpgradeTicketClaims> {
         let claims = self
             .tickets
@@ -202,7 +202,7 @@ impl UpgradeTicketStore {
             .remove(&token_digest(ticket, &self.pepper))?;
         (claims.expires_at > now_timestamp()
             && claims.purpose == purpose
-            && claims.room_id == room_id)
+            && claims.public_session_id == public_session_id)
             .then_some(claims)
     }
 
@@ -600,7 +600,7 @@ mod tests {
         let store = UpgradeTicketStore::default();
         let ticket = store
             .issue(UpgradeTicketClaims {
-                room_id: "room".to_string(),
+                public_session_id: "room".to_string(),
                 participant_session_id: "participant".to_string(),
                 role: "A".to_string(),
                 generation: 1,
@@ -684,9 +684,13 @@ mod tests {
     }
 
     /// Builds claims for ticket-scope tests without obscuring the scope under assertion.
-    fn claims(room_id: &str, participant: &str, purpose: UpgradePurpose) -> UpgradeTicketClaims {
+    fn claims(
+        public_session_id: &str,
+        participant: &str,
+        purpose: UpgradePurpose,
+    ) -> UpgradeTicketClaims {
         UpgradeTicketClaims {
-            room_id: room_id.to_string(),
+            public_session_id: public_session_id.to_string(),
             participant_session_id: participant.to_string(),
             role: "A".to_string(),
             generation: 7,

@@ -14,7 +14,7 @@ import { MicrophoneLevelMeter, TranscriptionProgress } from "./voiceComponents.j
 import {
   ParticipantClient,
   type ExperimentInfo,
-  type JoinedRoom,
+  type JoinedSession,
   type PlayerMessage,
   type PlayerRole,
   type Presence,
@@ -23,7 +23,7 @@ import {
 } from "./protocol.js";
 
 export interface GameSession<TObservation, TAction, TCompletion = Record<string, unknown>> {
-  roomId: string;
+  sessionId: string;
   role: PlayerRole;
   observation: TObservation;
   /** Most recent accepted action, or null for an initial or resynchronized observation. */
@@ -60,8 +60,8 @@ interface ParticipantAppRuntimeProps<TObservation, TAction, TCompletion = Record
   createAudioController: () => AudioSessionController;
 }
 
-interface RoomSession<TObservation, TAction, TCompletion = Record<string, unknown>> {
-  roomId: string;
+interface LiveSession<TObservation, TAction, TCompletion = Record<string, unknown>> {
+  sessionId: string;
   role: PlayerRole;
   observation: TObservation | null;
   transition: GameTransition<TAction> | null;
@@ -155,7 +155,7 @@ function ParticipantAppRuntime<
   const [publicConfig, setPublicConfig] = useState<ExperimentInfo | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
   const [consentDecisions, setConsentDecisions] = useState<Record<string, boolean>>({});
-  const [session, setSession] = useState<RoomSession<TObservation, TAction, TCompletion> | null>(null);
+  const [session, setSession] = useState<LiveSession<TObservation, TAction, TCompletion> | null>(null);
   const [error, setError] = useState("");
   const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
   const [selectedAudioInputId, setSelectedAudioInputId] = useState("");
@@ -163,9 +163,9 @@ function ParticipantAppRuntime<
   const [voicePreflight, setVoicePreflight] = useState<VoicePreflight>(initialVoicePreflight);
   const [voiceReconnectGeneration, setVoiceReconnectGeneration] = useState(0);
   const [entering, setEntering] = useState(false);
-  const sessionRef = useRef<RoomSession<TObservation, TAction, TCompletion> | null>(null);
-  const connectRoomRef = useRef<(room: JoinedRoom<TObservation, TAction>) => Promise<void>>(async () => {});
-  const scheduleGameReconnectRef = useRef<(room: JoinedRoom<TObservation, TAction>) => void>(() => {});
+  const sessionRef = useRef<LiveSession<TObservation, TAction, TCompletion> | null>(null);
+  const connectSessionRef = useRef<(room: JoinedSession<TObservation, TAction>) => Promise<void>>(async () => {});
+  const scheduleGameReconnectRef = useRef<(room: JoinedSession<TObservation, TAction>) => void>(() => {});
   const reconnectEnabledRef = useRef(false);
   const reconnectStartedAtRef = useRef(0);
   const reconnectAttemptsRef = useRef(0);
@@ -205,7 +205,7 @@ function ParticipantAppRuntime<
   }, [apiClient, endCurrentSession]);
 
   const scheduleGameReconnect = useCallback(
-    (room: JoinedRoom<TObservation, TAction>) => {
+    (room: JoinedSession<TObservation, TAction>) => {
       const current = sessionRef.current;
       if (!reconnectEnabledRef.current || !current || current.completed || reconnectTimerRef.current !== null) return;
       if (reconnectStartedAtRef.current === 0) reconnectStartedAtRef.current = Date.now();
@@ -218,7 +218,7 @@ function ParticipantAppRuntime<
       reconnectAttemptsRef.current += 1;
       reconnectTimerRef.current = window.setTimeout(() => {
         reconnectTimerRef.current = null;
-        void connectRoomRef.current(room).catch((caught) => {
+        void connectSessionRef.current(room).catch((caught) => {
           setError(errorMessage(caught, "Could not reconnect to the game channel."));
           scheduleGameReconnectRef.current(room);
         });
@@ -228,15 +228,15 @@ function ParticipantAppRuntime<
   );
   scheduleGameReconnectRef.current = scheduleGameReconnect;
 
-  const connectRoom = useCallback(
-    async (room: JoinedRoom<TObservation, TAction>) => {
-      const gameSession = await apiClient.getGameSession(room.roomId);
+  const connectSession = useCallback(
+    async (room: JoinedSession<TObservation, TAction>) => {
+      const gameSession = await apiClient.getGameSession(room.sessionId);
       const socket = new WebSocket(apiClient.socketUrl(gameSession));
       setSession((current) => {
-        const next = current?.roomId === room.roomId
+        const next = current?.sessionId === room.sessionId
           ? { ...current, socket, connected: false }
           : {
-            roomId: room.roomId,
+            sessionId: room.sessionId,
             role: room.role,
             observation: room.observation,
             transition: null,
@@ -282,7 +282,7 @@ function ParticipantAppRuntime<
             current?.socket === socket
               ? {
                   ...current,
-                  roomId: message.room_id,
+                  sessionId: message.public_session_id,
                   role: message.role,
                   observation: message.observation,
                   transition: null,
@@ -360,7 +360,7 @@ function ParticipantAppRuntime<
     },
     [apiClient, audioController]
   );
-  connectRoomRef.current = connectRoom;
+  connectSessionRef.current = connectSession;
 
   const ensureParticipant = useCallback(async () => {
     if (!publicConfig) throw new Error("Experiment config has not loaded.");
@@ -380,14 +380,14 @@ function ParticipantAppRuntime<
       setError("");
       await ensureParticipant();
       reconnectEnabledRef.current = true;
-      await connectRoom(await apiClient.join<TObservation, TAction>());
+      await connectSession(await apiClient.join<TObservation, TAction>());
     } catch (caught) {
       reconnectEnabledRef.current = false;
       setError(errorMessage(caught, "Could not create the waiting room."));
     } finally {
       setEntering(false);
     }
-  }, [apiClient, connectRoom, ensureParticipant, entering]);
+  }, [apiClient, connectSession, ensureParticipant, entering]);
 
   const prepareVoice = useCallback(async (deviceId = ""): Promise<boolean> => {
     if (!enabled) return false;
@@ -416,14 +416,14 @@ function ParticipantAppRuntime<
     if (!session) return null;
     const selectedAudioInput = audioInputs.find((device) => device.deviceId === selectedAudioInputId);
     const logVoice = (event: string, metadata: Record<string, unknown> = {}) => {
-      apiClient.postVoiceDiagnostic(session.roomId, event, metadata);
+      apiClient.postVoiceDiagnostic(session.sessionId, event, metadata);
     };
     return {
-      roomId: session.roomId,
+      sessionId: session.sessionId,
       role: session.role,
       selectedAudioInputId,
       selectedAudioInputLabel: selectedAudioInput?.label || null,
-      getAudioSession: () => apiClient.getAudioSession(session.roomId),
+      getAudioSession: () => apiClient.getAudioSession(session.sessionId),
       logVoice,
       onVoiceStatus: (status) => audioController.updateVoiceStatus(status)
     };
@@ -548,7 +548,7 @@ function ParticipantAppRuntime<
 
   if (session?.active) {
     const activeSession: GameSession<TObservation, TAction, TCompletion> = {
-      roomId: session.roomId,
+      sessionId: session.sessionId,
       role: session.role,
       observation: session.observation as TObservation,
       transition: session.transition,

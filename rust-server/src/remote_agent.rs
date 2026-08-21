@@ -108,7 +108,7 @@ type AuthenticatedAgentClient =
 pub struct RemoteGrpcAgentFactory<A: Game>(PhantomData<A>);
 
 impl<A: Game> RemoteGrpcAgentFactory<A> {
-    /// Creates a factory that will instantiate one remote agent per room participant.
+    /// Creates a factory that will instantiate one remote agent per session participant.
     pub fn new() -> Self {
         Self(PhantomData)
     }
@@ -193,7 +193,7 @@ impl<A: Game> AgentFactory<A> for RemoteGrpcAgentFactory<A> {
         }
     }
 
-    /// Creates one lazy remote-agent handle for a room participant.
+    /// Creates one lazy remote-agent handle for a session participant.
     async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<A> + Send>> {
         let mut config = remote_config_from_settings(&context.settings)?;
         config.auth_token = context
@@ -231,7 +231,7 @@ fn remote_config_from_settings(settings: &Value) -> Result<RemoteGrpcAgentConfig
     serde_json::from_value(settings).map_err(Into::into)
 }
 
-/// Per-room remote gRPC agent instance.
+/// Per-session remote gRPC agent instance.
 pub struct RemoteGrpcAgent<A: Game> {
     config: RemoteGrpcAgentConfig,
     init_context: AgentContext,
@@ -285,6 +285,7 @@ where
                 .context("remote agent create timed out")?
                 .context("remote agent create failed")?
                 .into_inner();
+        self.record_remote_logs(response.session_logs);
         if response.agent_id.is_empty() {
             bail!("remote agent returned an empty agent_id");
         }
@@ -348,7 +349,13 @@ where
         tokio::time::timeout(self.config.request_timeout, self.client()?.start(request))
             .await
             .context("remote agent start timed out")?
-            .context("remote agent start failed")?;
+            .context("remote agent start failed")?
+            .into_inner()
+            .session_logs
+            .into_iter()
+            .for_each(|entry| {
+                let _ = self.init_context.logger.log(entry);
+            });
         Ok(())
     }
 
@@ -369,10 +376,13 @@ where
             action: Some(action_to_struct(action)?),
             observation: Some(json_to_struct(serde_json::to_value(observation)?)?),
         };
-        tokio::time::timeout(request_timeout, client.observe_transition(request))
+        let logs = tokio::time::timeout(request_timeout, client.observe_transition(request))
             .await
             .context("remote agent observe_transition timed out")?
-            .context("remote agent observe_transition failed")?;
+            .context("remote agent observe_transition failed")?
+            .into_inner()
+            .session_logs;
+        self.record_remote_logs(logs);
         Ok(())
     }
 
@@ -387,10 +397,13 @@ where
             sender: sender.as_str().to_string(),
             text,
         };
-        tokio::time::timeout(request_timeout, client.observe_message(request))
+        let logs = tokio::time::timeout(request_timeout, client.observe_message(request))
             .await
             .context("remote agent observe_message timed out")?
-            .context("remote agent observe_message failed")?;
+            .context("remote agent observe_message failed")?
+            .into_inner()
+            .session_logs;
+        self.record_remote_logs(logs);
         Ok(())
     }
 
@@ -401,10 +414,14 @@ where
             agent_id: self.agent_id()?,
             completion: Some(json_to_struct(serde_json::to_value(completion)?)?),
         };
-        tokio::time::timeout(self.config.request_timeout, self.client()?.finish(request))
-            .await
-            .context("remote agent finish timed out")?
-            .context("remote agent finish failed")?;
+        let logs =
+            tokio::time::timeout(self.config.request_timeout, self.client()?.finish(request))
+                .await
+                .context("remote agent finish timed out")?
+                .context("remote agent finish failed")?
+                .into_inner()
+                .session_logs;
+        self.record_remote_logs(logs);
         Ok(())
     }
 
@@ -421,6 +438,7 @@ where
             .context("remote agent respond timed out")?
             .context("remote agent respond failed")?
             .into_inner();
+        self.record_remote_logs(response.session_logs);
         response.response.map(proto_to_agent_response).transpose()
     }
 
@@ -430,13 +448,16 @@ where
             return Ok(());
         };
         let request_timeout = self.config.request_timeout;
-        tokio::time::timeout(
+        let logs = tokio::time::timeout(
             request_timeout,
             self.client()?.shutdown(ShutdownRequest { agent_id }),
         )
         .await
         .context("remote agent shutdown timed out")?
-        .context("remote agent shutdown failed")?;
+        .context("remote agent shutdown failed")?
+        .into_inner()
+        .session_logs;
+        self.record_remote_logs(logs);
         self.agent_id = None;
         Ok(())
     }
@@ -447,6 +468,13 @@ where
     A: Game,
     A::Action: Serialize,
 {
+    /// Writes response-carried remote entries through the locally scoped session logger.
+    fn record_remote_logs(&self, entries: Vec<String>) {
+        for entry in entries {
+            let _ = self.init_context.logger.log(entry);
+        }
+    }
+
     /// Returns the remote agent id after creation.
     fn agent_id(&self) -> Result<String> {
         self.agent_id

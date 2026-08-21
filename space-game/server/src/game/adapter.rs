@@ -1,5 +1,8 @@
 use anyhow::Result;
-use parlando::{ActionRejection, Game, GameInitializationContext, PlayerRole};
+use parlando::{
+    ActionRejection, Game, GameFactory, GameInitializationContext, GameSessionContext, PlayerRole,
+    SessionLogger,
+};
 use serde::{Deserialize, Serialize};
 
 use super::state_engine::{
@@ -12,14 +15,37 @@ use super::state_engine::{
 #[serde(deny_unknown_fields)]
 pub struct SpaceGameConfig {}
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 /// Defines the Space Game mechanics used by the reusable Parlando runtime.
-pub struct SpaceGame;
+pub struct SpaceGame {
+    /// Session-bound logger.
+    logger: SessionLogger,
+}
 
+#[cfg(test)]
 impl SpaceGame {
-    /// Creates the stateless game used by every experiment runtime in this process.
-    pub fn new() -> Self {
-        Self
+    /// Creates an isolated mechanics value for unit tests.
+    pub(crate) fn testing() -> Self {
+        SpaceGameFactory
+            .create(GameSessionContext {
+                logger: SessionLogger::testing(),
+            })
+            .expect("test game construction succeeds")
+    }
+}
+
+/// Reusable constructor for session-local Space Game behavior values.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SpaceGameFactory;
+
+impl GameFactory for SpaceGameFactory {
+    type Game = SpaceGame;
+
+    /// Creates Space Game mechanics with a fully bound logger.
+    fn create(&self, context: GameSessionContext) -> Result<SpaceGame> {
+        Ok(SpaceGame {
+            logger: context.logger,
+        })
     }
 }
 
@@ -52,7 +78,14 @@ impl Game for SpaceGame {
             debug_assert!(!error.to_string().is_empty());
             ActionRejection::new(code)
         })?;
-        apply_action(state, action).map_err(|_| ActionRejection::new("invalid_action"))
+        let next = apply_action(state, action).map_err(|_| ActionRejection::new("invalid_action"));
+        if next.is_ok() {
+            let _ = self.logger.log(format!(
+                "accepted Space Game action from role {}",
+                actor.as_str()
+            ));
+        }
+        next
     }
 
     fn observation(&self, state: &Self::State, player: PlayerRole) -> Self::Observation {

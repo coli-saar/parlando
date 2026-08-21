@@ -88,7 +88,7 @@ function input() {
 /** Creates one enabled audio-session context and its observable callbacks. */
 function context(overrides: Record<string, unknown> = {}) {
   const value: AudioSessionContext = {
-    roomId: "room",
+    sessionId: "room",
     role: "A",
     selectedAudioInputId: "mic",
     selectedAudioInputLabel: "Mic",

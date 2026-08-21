@@ -53,16 +53,16 @@ export interface ConsentItem {
   required: boolean;
 }
 
-interface RoomResponse<TObservation = unknown, TAction = unknown> {
-  room_id: string;
+interface SessionResponse<TObservation = unknown, TAction = unknown> {
+  public_session_id: string;
   role: PlayerRole;
   presence?: Record<string, unknown>;
   observation?: TObservation | null;
   available_actions: TAction[] | null;
 }
 
-export interface JoinedRoom<TObservation = unknown, TAction = unknown> {
-  roomId: string;
+export interface JoinedSession<TObservation = unknown, TAction = unknown> {
+  sessionId: string;
   role: PlayerRole;
   presence: Presence;
   observation: TObservation | null;
@@ -74,7 +74,7 @@ export interface ParticipantClientOptions {
   baseUrl?: string;
 }
 
-/** Authenticated audio-channel parameters returned for one joined room. */
+/** Authenticated audio-channel parameters returned for one joined session. */
 export interface AudioSessionPlan {
   enabled: boolean;
   websocketUrl: string | null;
@@ -86,7 +86,7 @@ export interface AudioSessionPlan {
   jitterBufferMs: number;
 }
 
-/** Authenticated one-use game-channel parameters returned for one joined room. */
+/** Authenticated one-use game-channel parameters returned for one joined session. */
 export interface GameSessionPlan {
   websocketUrl: string;
   token: string;
@@ -124,34 +124,34 @@ export type ServerMessage<
 > = { protocol_version: 1 } & (
   | {
       type: "session_started";
-      room_id: string;
+      public_session_id: string;
       role: PlayerRole;
       observation: TObservation;
       available_actions: TAction[] | null;
     }
   | {
       type: "transition";
-      room_id: string;
+      public_session_id: string;
       actor: PlayerRole;
       action: TAction;
       observation: TObservation;
       available_actions: TAction[] | null;
     }
-  | { type: "message"; room_id: string; message: WirePlayerMessage }
-  | { type: "completed"; room_id: string; completion: TCompletion }
-  | { type: "abandoned"; room_id: string; code: string }
-  | { type: "presence"; room_id: string; presence: Record<string, unknown> }
+  | { type: "message"; public_session_id: string; message: WirePlayerMessage }
+  | { type: "completed"; public_session_id: string; completion: TCompletion }
+  | { type: "abandoned"; public_session_id: string; code: string }
+  | { type: "presence"; public_session_id: string; presence: Record<string, unknown> }
   | {
       type: "voice_status";
-      room_id: string;
+      public_session_id: string;
       voice: {
         audioReady?: boolean;
         transcriptionReady?: boolean;
         transcriptionStatus?: string;
       };
     }
-  | { type: "action_rejected"; room_id: string; code: string }
-  | { type: "error"; room_id: string; code: string; fatal: boolean }
+  | { type: "action_rejected"; public_session_id: string; code: string }
+  | { type: "error"; public_session_id: string; code: string; fatal: boolean }
 );
 
 /** @internal Resolves the default experiment-scoped API root. */
@@ -209,11 +209,11 @@ export class ParticipantClient {
     return this.postAuthenticated("/api/consent", { decisions });
   }
 
-  /** Joins or waits for one room using the retained participant credential. */
-  async join<TObservation = unknown, TAction = unknown>(): Promise<JoinedRoom<TObservation, TAction>> {
-    const room = await this.postAuthenticated<RoomResponse<TObservation, TAction>>("/api/rooms", {});
+  /** Joins or waits for one session using the retained participant credential. */
+  async join<TObservation = unknown, TAction = unknown>(): Promise<JoinedSession<TObservation, TAction>> {
+    const room = await this.postAuthenticated<SessionResponse<TObservation, TAction>>("/api/sessions", {});
     return {
-      roomId: room.room_id,
+      sessionId: room.public_session_id,
       role: room.role,
       presence: normalizePresence(room.presence),
       observation: room.observation ?? null,
@@ -222,8 +222,8 @@ export class ParticipantClient {
   }
 
   /** Obtains an authenticated audio plan when a custom client needs voice transport. */
-  async getAudioSession(roomId: string): Promise<AudioSessionPlan> {
-    const plan = await this.postAuthenticated<AudioSessionResponse>(`/api/rooms/${roomId}/audio-session`, {});
+  async getAudioSession(sessionId: string): Promise<AudioSessionPlan> {
+    const plan = await this.postAuthenticated<AudioSessionResponse>(`/api/sessions/${sessionId}/audio-session`, {});
     return {
       enabled: plan.enabled,
       websocketUrl: plan.websocket_url ?? null,
@@ -237,18 +237,18 @@ export class ParticipantClient {
   }
 
   /** Obtains an authenticated one-use game-channel plan for a custom client. */
-  async getGameSession(roomId: string): Promise<GameSessionPlan> {
-    const plan = await this.postAuthenticated<GameSessionResponse>(`/api/rooms/${roomId}/game-session`, {});
+  async getGameSession(sessionId: string): Promise<GameSessionPlan> {
+    const plan = await this.postAuthenticated<GameSessionResponse>(`/api/sessions/${sessionId}/game-session`, {});
     return { websocketUrl: plan.websocket_url, token: plan.token };
   }
 
   /** @internal Records transport diagnostics for the standard participant application. */
   postVoiceDiagnostic(
-    roomId: string,
+    sessionId: string,
     event: string,
     metadata: Record<string, unknown> = {}
   ): void {
-    void fetch(`${this.baseUrl}/api/rooms/${roomId}/voice-diagnostics`, {
+    void fetch(`${this.baseUrl}/api/sessions/${sessionId}/voice-diagnostics`, {
       method: "POST",
       headers: this.authHeaders(),
       body: JSON.stringify({

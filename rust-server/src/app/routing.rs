@@ -18,7 +18,7 @@ struct RuntimeShared<A: Game> {
 
 /// One compiled game's installation-level dispatcher and lazily built experiment routers.
 struct GameHost<A: Game> {
-    adapter: Arc<A>,
+    game_factory: Arc<dyn GameFactory<Game = A>>,
     bootstrap: ExperimentConfig,
     descriptor: GameMetadata,
     store: SharedExperimentStore,
@@ -88,13 +88,13 @@ where
         apply_experiment_secrets(&mut config, &stored_secrets);
         let game_secrets = self.store.game_secrets().await?;
         apply_game_provider_secrets(&mut config, &game_secrets);
-        parse_game_config(self.adapter.as_ref(), &config.game).with_context(|| {
+        parse_game_config(self.game_factory.as_ref(), &config.game).with_context(|| {
             format!("experiment {experiment_id:?} has invalid game configuration")
         })?;
         let mut options = (self.options_factory)(&config)?;
         options.game_descriptor = Some(self.descriptor.clone());
         let router = build_router_with_resources(
-            self.adapter.clone(),
+            self.game_factory.clone(),
             config,
             options,
             Some(RuntimeShared {
@@ -343,20 +343,21 @@ async fn dispatch_to_router(
 }
 
 /// Builds one compiled game's multi-experiment router around a migration seed configuration.
-pub async fn build_game_router<A, F>(
-    adapter: A,
+pub async fn build_game_router<A, GF, F>(
+    game_factory: GF,
     bootstrap: ExperimentConfig,
     descriptor: GameMetadata,
     options_factory: F,
 ) -> Result<Router>
 where
     A: Game,
+    GF: GameFactory<Game = A>,
     A::State: Serialize,
     F: Fn(&ExperimentConfig) -> Result<ServeOptions<A>> + Send + Sync + 'static,
 {
     bootstrap.validate()?;
     validate_game_config_contains_no_secrets(&bootstrap.game)?;
-    parse_game_config(&adapter, &bootstrap.game)?;
+    parse_game_config(&game_factory, &bootstrap.game)?;
     descriptor.validate()?;
     let store = experiment_store_from_url(&bootstrap.database.url).await?;
     let admin_auth = Arc::new(AdminAuthenticator::load(store.clone()).await?);
@@ -380,7 +381,7 @@ where
             "closed experiment intake after game-process startup"
         );
     }
-    let adapter = Arc::new(adapter);
+    let game_factory: Arc<dyn GameFactory<Game = A>> = Arc::new(game_factory);
     let options_factory: ServeOptionsFactory<A> = Arc::new(options_factory);
     let shared = RuntimeShared {
         store: store.clone(),
@@ -394,7 +395,7 @@ where
     let mut admin_options = options_factory(&admin_config)?;
     admin_options.game_descriptor = Some(descriptor.clone());
     let admin_router = build_router_with_resources(
-        adapter.clone(),
+        game_factory.clone(),
         admin_config,
         admin_options,
         Some(shared),
@@ -402,7 +403,7 @@ where
     )
     .await?;
     let host = Arc::new(GameHost {
-        adapter,
+        game_factory,
         bootstrap,
         descriptor,
         store,
@@ -451,8 +452,8 @@ where
 }
 
 /// Builds and runs one compiled game's multi-experiment HTTP/WebSocket server.
-pub async fn serve_game<A, F>(
-    adapter: A,
+pub async fn serve_game<A, GF, F>(
+    game_factory: GF,
     bootstrap: ExperimentConfig,
     descriptor: GameMetadata,
     bind_addr: SocketAddr,
@@ -460,10 +461,11 @@ pub async fn serve_game<A, F>(
 ) -> Result<()>
 where
     A: Game,
+    GF: GameFactory<Game = A>,
     A::State: Serialize,
     F: Fn(&ExperimentConfig) -> Result<ServeOptions<A>> + Send + Sync + 'static,
 {
-    let router = build_game_router(adapter, bootstrap, descriptor, options_factory).await?;
+    let router = build_game_router(game_factory, bootstrap, descriptor, options_factory).await?;
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     axum::serve(
         listener,
@@ -494,20 +496,20 @@ async fn termination_signal() {
 
 /// Builds an Axum router for tests or for embedding in a custom server runner.
 #[cfg(any(test, feature = "internal-tools"))]
-pub async fn build_router<A: Game>(
-    adapter: A,
+pub async fn build_router<A: Game, GF: GameFactory<Game = A>>(
+    game_factory: GF,
     config: ExperimentConfig,
     options: ServeOptions<A>,
 ) -> Result<Router>
 where
     A::State: Serialize,
 {
-    build_router_with_resources(Arc::new(adapter), config, options, None, true).await
+    build_router_with_resources(Arc::new(game_factory), config, options, None, true).await
 }
 
 /// Builds one experiment router with optional installation-owned storage and authentication.
 async fn build_router_with_resources<A: Game>(
-    adapter: Arc<A>,
+    game_factory: Arc<dyn GameFactory<Game = A>>,
     config: ExperimentConfig,
     options: ServeOptions<A>,
     shared: Option<RuntimeShared<A>>,
@@ -518,7 +520,7 @@ where
 {
     config.validate()?;
     validate_game_config_contains_no_secrets(&config.game)?;
-    let game_config = parse_game_config(adapter.as_ref(), &config.game)?;
+    let game_config = parse_game_config(game_factory.as_ref(), &config.game)?;
     let clean_admin_sessions = shared.is_none();
     let game_descriptor = options
         .game_descriptor
@@ -577,7 +579,7 @@ where
     } else {
         None
     };
-    let audio_rooms = Arc::new(AudioRoomRegistry::default());
+    let audio_sessions = Arc::new(AudioSessionRegistry::default());
     let transcription_provider = if options.transcription_provider.is_some() {
         options.transcription_provider
     } else if config.transcription.enabled
@@ -596,8 +598,8 @@ where
     let audio_publisher = if options.audio_publisher.is_some() {
         options.audio_publisher
     } else if config.tts.enabled && config.voice.enabled {
-        Some(Arc::new(RoomAgentAudioPublisher::new(
-            audio_rooms.clone(),
+        Some(Arc::new(SessionAgentAudioPublisher::new(
+            audio_sessions.clone(),
             config.voice.jitter_buffer_ms,
         )) as Arc<dyn AgentAudioPublisher>)
     } else {
@@ -642,7 +644,7 @@ where
         }
     }
     let state = Arc::new(AppState {
-        adapter,
+        game_factory,
         config,
         game_config,
         experiment_id,
@@ -653,8 +655,9 @@ where
             ExperimentLifecycle::parse(&lifecycle).map_err(|error| anyhow!(error.message))?,
         ),
         memory: RwLock::new(MemoryState::default()),
+        session_admission: Arc::new(Mutex::new(())),
         store,
-        room_buses: RwLock::new(HashMap::new()),
+        session_buses: RwLock::new(HashMap::new()),
         agent_factory: options.agent_factory,
         agent_definitions,
         started_agents: RwLock::new(HashSet::new()),
@@ -662,7 +665,7 @@ where
         agent_inboxes: RwLock::new(HashMap::new()),
         tts_provider,
         audio_publisher,
-        audio_rooms,
+        audio_sessions,
         transcription_provider,
         committed_transcripts: RwLock::new(HashSet::new()),
         participant_auth: ParticipantAuthenticator::default(),
@@ -673,7 +676,7 @@ where
         rejection_windows: RwLock::new(HashMap::new()),
         telemetry,
         runtime_registry: runtime_registry.clone(),
-        room_transition_locks: RwLock::new(HashMap::new()),
+        session_transition_locks: RwLock::new(HashMap::new()),
         game_connections: RwLock::new(HashMap::new()),
         audio_connections: RwLock::new(HashMap::new()),
         version_manifest,
@@ -703,14 +706,17 @@ where
         ));
     let participant_routes = Router::new()
         .route("/api/consent", post(consent::<A>))
-        .route("/api/rooms", post(create_room::<A>))
-        .route("/api/rooms/:room_id/game-session", post(game_session::<A>))
+        .route("/api/sessions", post(create_session::<A>))
         .route(
-            "/api/rooms/:room_id/audio-session",
+            "/api/sessions/:public_session_id/game-session",
+            post(game_session::<A>),
+        )
+        .route(
+            "/api/sessions/:public_session_id/audio-session",
             post(audio_session::<A>),
         )
         .route(
-            "/api/rooms/:room_id/voice-diagnostics",
+            "/api/sessions/:public_session_id/voice-diagnostics",
             post(add_voice_diagnostic::<A>),
         )
         .route_layer(middleware::from_fn_with_state(
@@ -812,8 +818,8 @@ where
             require_admin_network::<A>,
         ));
     let websocket_routes = Router::new()
-        .route("/ws/game/:room_id", get(game_socket::<A>))
-        .route("/ws/audio/:room_id", get(audio_socket::<A>));
+        .route("/ws/game/:public_session_id", get(game_socket::<A>))
+        .route("/ws/audio/:public_session_id", get(audio_socket::<A>));
     let api = Router::new()
         .merge(public_routes)
         .merge(public_admin_routes)

@@ -32,7 +32,7 @@ export interface MicrophoneInput {
 }
 
 export interface AudioSessionContext {
-  roomId: string;
+  sessionId: string;
   role: PlayerRole;
   selectedAudioInputId: string;
   selectedAudioInputLabel: string | null;

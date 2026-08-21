@@ -98,7 +98,7 @@ const plan = {
   jitterBufferMs: fixture.plan.jitter_buffer_ms
 };
 await sink.connect(input, {
-  roomId: fixture.room_id,
+  sessionId: fixture.public_session_id,
   role: "A",
   selectedAudioInputId: input.deviceId,
   selectedAudioInputLabel: input.deviceLabel,

@@ -358,12 +358,13 @@ mod tests {
             settings: Value::Null,
             factory_secrets: parlando::SecretValues::default(),
             agent_instance_secrets: parlando::SecretValues::default(),
+            logger: parlando::SessionLogger::testing(),
         }
     }
 
     /// Creates and starts one test agent for the given role.
     async fn started_agent(role: PlayerRole) -> BackAndForthAgent {
-        let adapter = SpaceGame::new();
+        let adapter = SpaceGame::testing();
         let mut agent = BackAndForthAgent::new(role.as_str().to_string(), 1);
         agent
             .start(adapter.observation(&initial_state(), role))
@@ -377,7 +378,7 @@ mod tests {
         let factory = BackAndForthAgentFactory;
         let mut first = factory.create(init_context(PlayerRole::A)).await.unwrap();
         let mut second = factory.create(init_context(PlayerRole::A)).await.unwrap();
-        let initial = SpaceGame::new().observation(&initial_state(), PlayerRole::A);
+        let initial = SpaceGame::testing().observation(&initial_state(), PlayerRole::A);
         first.start(initial.clone()).await.unwrap();
         second.start(initial).await.unwrap();
 
@@ -396,7 +397,7 @@ mod tests {
 
     #[tokio::test]
     async fn back_and_forth_agent_speaks_when_other_player_moves() {
-        let adapter = SpaceGame::new();
+        let adapter = SpaceGame::testing();
         let mut agent = started_agent(PlayerRole::B).await;
         let _ = agent.respond(Some(vec![])).await.unwrap();
         agent.last_step_at = Instant::now() - Duration::from_secs(60);
@@ -426,7 +427,7 @@ mod tests {
 
     #[tokio::test]
     async fn back_and_forth_agent_does_not_chain_after_its_own_move() {
-        let adapter = SpaceGame::new();
+        let adapter = SpaceGame::testing();
         let observation = adapter.observation(&initial_state(), PlayerRole::B);
         let mut agent = started_agent(PlayerRole::B).await;
         let first_result = agent.respond(Some(vec![])).await.unwrap();

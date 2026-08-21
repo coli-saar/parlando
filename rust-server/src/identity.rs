@@ -4,7 +4,7 @@ pub fn new_id(prefix: &str) -> String {
     format!("{prefix}_{}", Uuid::new_v4().simple())
 }
 
-pub fn room_code() -> String {
+pub fn session_code() -> String {
     Uuid::new_v4()
         .simple()
         .to_string()

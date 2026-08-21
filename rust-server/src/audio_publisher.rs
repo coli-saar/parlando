@@ -5,7 +5,9 @@ use async_trait::async_trait;
 use tokio::time::{sleep_until, Instant};
 
 use crate::{
-    audio::{AudioFrame, SharedAudioRooms, AUDIO_CHANNELS, AUDIO_FRAME_BYTES, AUDIO_SAMPLE_RATE},
+    audio::{
+        AudioFrame, SharedAudioSessions, AUDIO_CHANNELS, AUDIO_FRAME_BYTES, AUDIO_SAMPLE_RATE,
+    },
     tts::AudioChunk,
 };
 
@@ -22,29 +24,29 @@ pub struct AudioPublishSummary {
     pub channels: u16,
 }
 
-/// Publishes synthesized agent audio into a room-specific audio transport.
+/// Publishes synthesized agent audio into a session-specific audio transport.
 #[async_trait]
 pub trait AgentAudioPublisher: Send + Sync {
     /// Publishes one synthesized message to connected human browsers.
     async fn publish(
         &self,
-        room_id: &str,
+        public_session_id: &str,
         message_id: &str,
         chunks: &[AudioChunk],
     ) -> Result<AudioPublishSummary>;
 }
 
-/// Agent audio publisher backed by the process-local Parlando audio room registry.
-pub(crate) struct RoomAgentAudioPublisher {
-    rooms: SharedAudioRooms,
+/// Agent audio publisher backed by the process-local Parlando audio session registry.
+pub(crate) struct SessionAgentAudioPublisher {
+    sessions: SharedAudioSessions,
     prebuffer_frames: usize,
 }
 
-impl RoomAgentAudioPublisher {
+impl SessionAgentAudioPublisher {
     /// Creates a publisher using the browser's configured initial jitter-buffer target.
-    pub(crate) fn new(rooms: SharedAudioRooms, jitter_buffer_ms: u16) -> Self {
+    pub(crate) fn new(sessions: SharedAudioSessions, jitter_buffer_ms: u16) -> Self {
         Self {
-            rooms,
+            sessions,
             prebuffer_frames: usize::from(jitter_buffer_ms)
                 .div_ceil(usize::from(crate::audio::AUDIO_FRAME_DURATION_MS))
                 .max(1),
@@ -53,10 +55,10 @@ impl RoomAgentAudioPublisher {
 }
 
 #[async_trait]
-impl AgentAudioPublisher for RoomAgentAudioPublisher {
+impl AgentAudioPublisher for SessionAgentAudioPublisher {
     async fn publish(
         &self,
-        room_id: &str,
+        public_session_id: &str,
         _message_id: &str,
         chunks: &[AudioChunk],
     ) -> Result<AudioPublishSummary> {
@@ -81,7 +83,9 @@ impl AgentAudioPublisher for RoomAgentAudioPublisher {
                 timestamp_ms: index as u64 * 20,
                 pcm: padded,
             };
-            self.rooms.publish_agent(room_id, frame.encode()).await;
+            self.sessions
+                .publish_agent(public_session_id, frame.encode())
+                .await;
             count += 1;
         }
         Ok(AudioPublishSummary {

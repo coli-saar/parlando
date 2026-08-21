@@ -32,11 +32,11 @@ Generate a Rust server/game crate, a participant application, pure mechanics tes
 
 ## Rust
 
-Implement `Game` with `Config`, `State`, `Action`, `Observation`, and `Completion`; implement `validate_config`, seeded `initial_state`, actor-aware `apply_action`, `observation`, optional `available_actions`, optional role-neutral `transition_metadata`, and `completion`.
+Implement a session-owned `Game` with `Config`, `State`, `Action`, `Observation`, and `Completion`; implement seeded `initial_state`, actor-aware `apply_action`, `observation`, optional `available_actions`, optional role-neutral `transition_metadata`, and `completion`. Implement a separate process-owned `GameFactory` that validates configuration and constructs a fresh game from `GameSessionContext` for every session.
 
 `apply_action` performs authorization and validation atomically and returns stable `ActionRejection` codes for expected failures. `observation` is the complete player-visible domain model and must filter private data. `transition_metadata` is analysis data for runtime-owned logs, never participant prose.
 
-Start with `Server::new(game, metadata)`, set database and optional participant assets, register optional factories with `.agent(...)`, and call `.serve(address)`. Do not construct `ExperimentConfig`, `ServeOptions`, providers, or routers.
+Start with `Server::new(game_factory, metadata)`, set database and optional participant assets, register optional agent factories with `.agent(...)`, and call `.serve(address)`. Do not construct `ExperimentConfig`, `ServeOptions`, providers, or routers.
 
 ## Agents
 

@@ -3,7 +3,7 @@ export {
   type AudioSessionPlan,
   type ConsentItem,
   type ExperimentInfo,
-  type JoinedRoom,
+  type JoinedSession,
   type GameSessionPlan,
   type MessageInput,
   type PlayerMessage,

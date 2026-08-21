@@ -63,7 +63,7 @@ impl Game for MyGame {
 
 `Completion` is the shared structured terminal payload sent to both roles and stored for dashboards and exports. It may contain public facts such as winner and scores. Put role-private terminal facts in the final role-specific observation instead.
 
-`apply_action` must check the actor and every state-dependent rule before returning a new state. Use a stable `ActionRejection` code for an expected rejection. The method should be deterministic and perform no I/O.
+`apply_action` must check the actor and every state-dependent rule before returning a new state. Use a stable `ActionRejection` code for an expected rejection. The method should be deterministic and perform no I/O. Put semantic configuration validation on `GameFactory::validate_config`.
 
 `available_actions` is optional. `None` means the action space is not enumerated; `Some(vec![])` means it is enumerated and currently empty. It never replaces `apply_action` validation.
 
@@ -72,7 +72,18 @@ When the dashboard or exported log needs game-specific analysis fields, implemen
 ## Run the server
 
 ```rust
-use parlando::{GameMetadata, Server};
+use parlando::{GameFactory, GameMetadata, GameSessionContext, Server};
+
+#[derive(Clone, Copy)]
+struct MyGameFactory;
+
+impl GameFactory for MyGameFactory {
+    type Game = MyGame;
+
+    fn create(&self, context: GameSessionContext) -> anyhow::Result<MyGame> {
+        Ok(MyGame::new(context.logger))
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -83,7 +94,7 @@ async fn main() -> anyhow::Result<()> {
         build_manifest: serde_json::json!({}),
     };
 
-    Server::new(MyGame, metadata)?
+    Server::new(MyGameFactory, metadata)?
         .database_url("sqlite:///./my-game.sqlite")
         .participant_app("../client/dist")
         .serve("127.0.0.1:3000".parse()?)

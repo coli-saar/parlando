@@ -44,10 +44,10 @@ use crate::{
         SharedAgentFactory,
     },
     audio::{
-        AudioFrame, AudioOutbound, AudioRoomRegistry, SharedAudioRooms, AUDIO_CHANNELS,
+        AudioFrame, AudioOutbound, AudioSessionRegistry, SharedAudioSessions, AUDIO_CHANNELS,
         AUDIO_FRAME_DURATION_MS, AUDIO_PROTOCOL_VERSION, AUDIO_SAMPLE_RATE,
     },
-    audio_publisher::{AgentAudioPublisher, RoomAgentAudioPublisher},
+    audio_publisher::{AgentAudioPublisher, SessionAgentAudioPublisher},
     auth::{
         AdminAuthenticator, AdminLoginResult, AdminSession, ParticipantAuthenticator,
         ParticipantPrincipal, UpgradePurpose, UpgradeTicketClaims, UpgradeTicketStore,
@@ -56,14 +56,15 @@ use crate::{
     config::{AgentsMode, ConsentItemConfig, ExperimentConfig},
     game::{
         parse_game_config, ActionRejection, AgentConfigField, AgentConfigValue, AgentDefinition,
-        Game, GameInitializationContext, GameMetadata, PlayerRole, Seat, SecretValues,
+        Game, GameFactory, GameInitializationContext, GameMetadata, GameSessionContext, PlayerRole,
+        Seat, SecretValues,
     },
-    identity::{new_id, room_code},
+    identity::{new_id, session_code},
     protocol::*,
     storage::{
         experiment_store_from_url, generated_experiment_id, now_iso, ConsentDeclarationRecord,
-        ExperimentRecord, GameRoom, MemoryState, ParticipantRecord, RoomParticipant,
-        SessionEventRecord, SessionParticipantRecord, SessionRecord, SharedExperimentStore,
+        ExperimentRecord, LiveSession, MemoryState, ParticipantRecord, SessionEventRecord,
+        SessionParticipant, SessionParticipantRecord, SessionRecord, SharedExperimentStore,
         StoredGameSettings, TranscriptSegment,
     },
     transcription::{
@@ -71,7 +72,26 @@ use crate::{
         TranscriptionInput, TranscriptionProvider, TranscriptionSessionContext,
     },
     tts::{ElevenLabsStreamingTtsProvider, StreamingTtsProvider},
+    SessionLogger,
 };
+
+/// Validated inputs retained until a live session can supply an agent-scoped logger.
+struct PreparedAgentConstruction<A: Game> {
+    session_seed: u64,
+    agent_seed: u64,
+    settings: Value,
+    factory_secrets: SecretValues,
+    agent_instance_secrets: SecretValues,
+    factory: SharedAgentFactory<A>,
+    timeout: f64,
+}
+
+/// Agent constructed during session initialization.
+struct ConstructedAgent<A: Game> {
+    agent: Box<dyn Agent<A> + Send>,
+    participant_session_id: String,
+    event_metadata: Value,
+}
 
 /// Optional runtime components supplied by the game-specific binary.
 #[derive(Clone)]
@@ -84,7 +104,7 @@ pub struct ServeOptions<A: Game> {
     pub agent_definitions: Vec<AgentDefinition>,
     /// Streaming TTS provider used for agent-origin conversation messages.
     pub tts_provider: Option<Arc<dyn StreamingTtsProvider>>,
-    /// Optional publisher used to send synthesized agent audio into the room relay.
+    /// Optional publisher used to send synthesized agent audio into the session relay.
     pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
     /// Optional server-side STT provider override used by tests or local deployments.
     pub transcription_provider: Option<Arc<dyn TranscriptionProvider>>,
@@ -718,9 +738,9 @@ fn spawn_security_cleanup<A: Game>(state: Arc<AppState<A>>, clean_admin_sessions
                 .memory
                 .read()
                 .await
-                .rooms
+                .sessions
                 .values()
-                .flat_map(|room| room.participants.keys().cloned())
+                .flat_map(|session| session.participants.keys().cloned())
                 .collect::<HashSet<_>>();
             state
                 .memory
@@ -731,7 +751,7 @@ fn spawn_security_cleanup<A: Game>(state: Arc<AppState<A>>, clean_admin_sessions
                     !expired_participants.contains(participant_id)
                         || participant_ids_in_rooms.contains(participant_id)
                 });
-            let unattached_timeout = state.config.session.waiting_room_timeout_seconds.max(1);
+            let unattached_timeout = state.config.session.waiting_session_timeout_seconds.max(1);
             let stale_unattached = {
                 let now = chrono::Utc::now();
                 let mut memory = state.memory.write().await;
@@ -777,35 +797,35 @@ fn spawn_security_cleanup<A: Game>(state: Arc<AppState<A>>, clean_admin_sessions
     });
 }
 
-/// Returns whether a runtime room has reached a durable terminal lifecycle state.
-fn room_status_is_terminal(status: &str) -> bool {
+/// Returns whether a runtime session has reached a durable terminal lifecycle state.
+fn session_status_is_terminal(status: &str) -> bool {
     matches!(status, "completed" | "abandoned")
 }
 
-/// Removes or expires transient rooms after configured waiting, idle, and lifetime bounds.
+/// Removes or expires transient sessions after configured waiting, idle, and lifetime bounds.
 async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
     let now = chrono::Utc::now();
-    let waiting_timeout = state.config.session.waiting_room_timeout_seconds.max(1);
+    let waiting_timeout = state.config.session.waiting_session_timeout_seconds.max(1);
     let reconnect_grace = state.config.session.reconnect_grace_seconds.max(1);
     let idle_timeout = state.config.session.session_idle_timeout_seconds.max(1);
     let max_lifetime = state.config.session.session_max_lifetime_seconds.max(1);
     let candidates = {
         let memory = state.memory.read().await;
         memory
-            .rooms
+            .sessions
             .iter()
-            .filter_map(|(room_id, room)| {
-                let created = chrono::DateTime::parse_from_rfc3339(&room.created_at)
+            .filter_map(|(public_session_id, session)| {
+                let created = chrono::DateTime::parse_from_rfc3339(&session.created_at)
                     .ok()?
                     .with_timezone(&chrono::Utc);
-                let updated = chrono::DateTime::parse_from_rfc3339(&room.updated_at)
+                let updated = chrono::DateTime::parse_from_rfc3339(&session.updated_at)
                     .ok()?
                     .with_timezone(&chrono::Utc);
-                let has_connection = room
+                let has_connection = session
                     .participants
                     .values()
                     .any(|participant| participant.connected);
-                let disconnected_since = room
+                let disconnected_since = session
                     .participants
                     .values()
                     .filter_map(|participant| {
@@ -815,24 +835,24 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
                     })
                     .max()
                     .unwrap_or(updated);
-                let reason = if !room_status_is_terminal(&room.status)
+                let reason = if !session_status_is_terminal(&session.status)
                     && created < now - chrono::Duration::seconds(max_lifetime)
                 {
                     Some("maximum_lifetime")
-                } else if room.status == "waiting"
+                } else if session.status == "waiting"
                     && updated < now - chrono::Duration::seconds(waiting_timeout)
                 {
                     Some("waiting_timeout")
-                } else if room.status == "running"
+                } else if session.status == "running"
                     && updated < now - chrono::Duration::seconds(idle_timeout)
                 {
                     Some("idle_timeout")
-                } else if !room_status_is_terminal(&room.status)
+                } else if !session_status_is_terminal(&session.status)
                     && !has_connection
                     && disconnected_since < now - chrono::Duration::seconds(reconnect_grace)
                 {
                     Some("reconnect_timeout")
-                } else if room_status_is_terminal(&room.status)
+                } else if session_status_is_terminal(&session.status)
                     && !has_connection
                     && disconnected_since < now - chrono::Duration::seconds(reconnect_grace)
                 {
@@ -841,25 +861,25 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
                     None
                 }?;
                 Some((
-                    room_id.clone(),
-                    room.experiment_id.clone(),
-                    room.session_id,
-                    room.updated_at.clone(),
+                    public_session_id.clone(),
+                    session.experiment_id.clone(),
+                    session.session_id,
+                    session.updated_at.clone(),
                     reason,
                 ))
             })
             .collect::<Vec<_>>()
     };
     let mut removed = Vec::new();
-    for (room_id, experiment_id, session_id, observed_updated_at, reason) in candidates {
+    for (public_session_id, experiment_id, session_id, observed_updated_at, reason) in candidates {
         let removed_current_room = {
             let mut memory = state.memory.write().await;
             if memory
-                .rooms
-                .get(&room_id)
-                .is_some_and(|room| room.updated_at == observed_updated_at)
+                .sessions
+                .get(&public_session_id)
+                .is_some_and(|session| session.updated_at == observed_updated_at)
             {
-                memory.rooms.remove(&room_id);
+                memory.sessions.remove(&public_session_id);
                 true
             } else {
                 false
@@ -877,31 +897,31 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
             )
             .await;
         }
-        removed.push(room_id);
+        removed.push(public_session_id);
     }
     if removed.is_empty() {
         return;
     }
     let removed_set = removed.iter().collect::<HashSet<_>>();
     state
-        .room_buses
+        .session_buses
         .write()
         .await
-        .retain(|room_id, _| !removed_set.contains(room_id));
+        .retain(|public_session_id, _| !removed_set.contains(public_session_id));
     state
-        .room_transition_locks
+        .session_transition_locks
         .write()
         .await
-        .retain(|room_id, _| !removed_set.contains(room_id));
+        .retain(|public_session_id, _| !removed_set.contains(public_session_id));
     state.committed_transcripts.write().await.retain(|key| {
         !removed
             .iter()
-            .any(|room_id| key.starts_with(&format!("{room_id}:")))
+            .any(|public_session_id| key.starts_with(&format!("{public_session_id}:")))
     });
     state.agent_inboxes.write().await.retain(|key, _| {
         !removed
             .iter()
-            .any(|room_id| key.starts_with(&format!("{room_id}:")))
+            .any(|public_session_id| key.starts_with(&format!("{public_session_id}:")))
     });
     let pending_agents = {
         let mut pending = state.pending_agents.lock().await;
@@ -910,7 +930,7 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
             .filter(|key| {
                 removed
                     .iter()
-                    .any(|room_id| key.starts_with(&format!("{room_id}:")))
+                    .any(|public_session_id| key.starts_with(&format!("{public_session_id}:")))
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -924,17 +944,17 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
     state.game_connections.write().await.retain(|key, _| {
         !removed
             .iter()
-            .any(|room_id| key.starts_with(&format!("{room_id}:")))
+            .any(|public_session_id| key.starts_with(&format!("{public_session_id}:")))
     });
     state.audio_connections.write().await.retain(|key, _| {
         !removed
             .iter()
-            .any(|room_id| key.starts_with(&format!("{room_id}:")))
+            .any(|public_session_id| key.starts_with(&format!("{public_session_id}:")))
     });
     state.rejection_windows.write().await.retain(|key, _| {
         !removed
             .iter()
-            .any(|room_id| key.starts_with(&format!("{room_id}\0")))
+            .any(|public_session_id| key.starts_with(&format!("{public_session_id}\0")))
     });
 }
 
@@ -1349,7 +1369,7 @@ fn administrator_cookie(token: &str, max_age: i64, config: &ExperimentConfig) ->
 
 /// Shared server state used by HTTP handlers, WebSocket tasks, and background agents.
 pub struct AppState<A: Game> {
-    pub adapter: Arc<A>,
+    pub game_factory: Arc<dyn GameFactory<Game = A>>,
     pub config: ExperimentConfig,
     /// Typed game-owned configuration validated when this experiment runtime is built.
     pub game_config: A::Config,
@@ -1361,9 +1381,11 @@ pub struct AppState<A: Game> {
     /// Immutable configuration revision used for newly created sessions.
     pub config_revision: i64,
     experiment_lifecycle: RwLock<ExperimentLifecycle>,
-    pub memory: RwLock<MemoryState<A::State>>,
+    pub memory: RwLock<MemoryState<A>>,
+    /// Serializes matchmaking reservations without blocking live-session state access.
+    session_admission: Arc<Mutex<()>>,
     pub store: SharedExperimentStore,
-    pub room_buses: RwLock<HashMap<String, broadcast::Sender<ServerMessage>>>,
+    pub session_buses: RwLock<HashMap<String, broadcast::Sender<ServerMessage>>>,
     pub agent_factory: Option<SharedAgentFactory<A>>,
     /// Agent choices registered by the compiled server and rendered by the dashboard.
     pub agent_definitions: Vec<AgentDefinition>,
@@ -1372,7 +1394,7 @@ pub struct AppState<A: Game> {
     agent_inboxes: RwLock<HashMap<String, mpsc::Sender<AgentObservation<A>>>>,
     pub tts_provider: Option<Arc<dyn StreamingTtsProvider>>,
     pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
-    pub audio_rooms: SharedAudioRooms,
+    pub audio_sessions: SharedAudioSessions,
     pub transcription_provider: Option<Arc<dyn TranscriptionProvider>>,
     committed_transcripts: RwLock<HashSet<String>>,
     participant_auth: ParticipantAuthenticator,
@@ -1384,7 +1406,7 @@ pub struct AppState<A: Game> {
     telemetry: Arc<RuntimeTelemetry>,
     /// Weak references to every experiment runtime hosted by this game process.
     runtime_registry: Arc<RwLock<HashMap<String, Weak<AppState<A>>>>>,
-    room_transition_locks: RwLock<HashMap<String, Arc<Mutex<()>>>>,
+    session_transition_locks: RwLock<HashMap<String, Arc<Mutex<()>>>>,
     game_connections: RwLock<HashMap<String, ConnectionControl>>,
     audio_connections: RwLock<HashMap<String, ConnectionControl>>,
     pub version_manifest: Value,
@@ -1515,7 +1537,7 @@ enum AgentObservation<A: Game> {
     Message { speaker: PlayerRole, text: String },
 }
 
-/// Cancellation handle for the single live connection that owns a participant room role.
+/// Cancellation handle for the single live connection that owns a participant session role.
 struct ConnectionControl {
     generation: String,
     shutdown: mpsc::Sender<()>,
@@ -1523,10 +1545,10 @@ struct ConnectionControl {
 }
 
 impl<A: Game> AppState<A> {
-    async fn room_bus(&self, room_id: &str) -> broadcast::Sender<ServerMessage> {
-        let mut buses = self.room_buses.write().await;
+    async fn session_bus(&self, public_session_id: &str) -> broadcast::Sender<ServerMessage> {
+        let mut buses = self.session_buses.write().await;
         buses
-            .entry(room_id.to_string())
+            .entry(public_session_id.to_string())
             .or_insert_with(|| broadcast::channel(256).0)
             .clone()
     }
@@ -1545,7 +1567,7 @@ where
 /// Appends a session event after resolving the session and optional actor from the active cache.
 async fn persist_session_event<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     participant_session_id: Option<&str>,
     event_type: &'static str,
     payload: Value,
@@ -1553,18 +1575,18 @@ async fn persist_session_event<A: Game>(
 ) {
     let resolved = {
         let memory = state.memory.read().await;
-        let Some(room) = memory.rooms.get(room_id) else {
+        let Some(session) = memory.sessions.get(public_session_id) else {
             return;
         };
         let actor = participant_session_id.and_then(|id| {
-            room.participants.get(id).map(|participant| {
+            session.participants.get(id).map(|participant| {
                 (
                     participant.participant_id,
                     participant.role.as_str().to_string(),
                 )
             })
         });
-        Some((room.experiment_id.clone(), room.session_id, actor))
+        Some((session.experiment_id.clone(), session.session_id, actor))
     };
     let Some((experiment_id, session_id, actor)) = resolved else {
         return;
@@ -1593,7 +1615,7 @@ async fn persist_session_event<A: Game>(
 /// Appends a session event and propagates any persistence failure to the caller.
 async fn persist_session_event_required<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     participant_session_id: Option<&str>,
     event_type: &'static str,
     payload: Value,
@@ -1601,7 +1623,7 @@ async fn persist_session_event_required<A: Game>(
 ) -> Result<()> {
     let record = session_event_record(
         state,
-        room_id,
+        public_session_id,
         participant_session_id,
         event_type,
         payload,
@@ -1615,7 +1637,7 @@ async fn persist_session_event_required<A: Game>(
 /// Resolves one session event record without writing it, for atomic transition batches.
 async fn session_event_record<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     participant_session_id: Option<&str>,
     event_type: &'static str,
     payload: Value,
@@ -1623,22 +1645,22 @@ async fn session_event_record<A: Game>(
 ) -> Result<SessionEventRecord> {
     let (experiment_id, session_id, actor) = {
         let memory = state.memory.read().await;
-        let room = memory
-            .rooms
-            .get(room_id)
-            .ok_or_else(|| anyhow!("Room not found."))?;
+        let session = memory
+            .sessions
+            .get(public_session_id)
+            .ok_or_else(|| anyhow!("Session not found."))?;
         let actor = participant_session_id.and_then(|id| {
-            room.participants.get(id).map(|participant| {
+            session.participants.get(id).map(|participant| {
                 (
                     participant.participant_id,
                     participant.role.as_str().to_string(),
                 )
             })
         });
-        (room.experiment_id.clone(), room.session_id, actor)
+        (session.experiment_id.clone(), session.session_id, actor)
     };
     if session_id <= 0 {
-        return Err(anyhow!("Room does not have a durable session."));
+        return Err(anyhow!("Session does not have a durable session."));
     }
     let (actor_participant_id, actor_role) = actor
         .map(|(participant_id, role)| (Some(participant_id), Some(role)))
@@ -1654,19 +1676,42 @@ async fn session_event_record<A: Game>(
     })
 }
 
-/// Returns the serialization lock that orders durable transitions for one room.
-async fn room_transition_lock<A: Game>(state: &Arc<AppState<A>>, room_id: &str) -> Arc<Mutex<()>> {
-    let mut locks = state.room_transition_locks.write().await;
+/// Returns the serialization lock that orders durable transitions for one session.
+async fn session_transition_lock<A: Game>(
+    state: &Arc<AppState<A>>,
+    public_session_id: &str,
+) -> Arc<Mutex<()>> {
+    let mut locks = state.session_transition_locks.write().await;
     locks
-        .entry(room_id.to_string())
+        .entry(public_session_id.to_string())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
 }
 
-/// Refreshes a room's meaningful-activity timestamp without treating heartbeats as activity.
-async fn touch_room_activity<A: Game>(state: &Arc<AppState<A>>, room_id: &str) {
-    if let Some(room) = state.memory.write().await.rooms.get_mut(room_id) {
-        room.updated_at = now_iso();
+/// Refreshes a session's meaningful-activity timestamp without treating heartbeats as activity.
+async fn touch_session_activity<A: Game>(state: &Arc<AppState<A>>, public_session_id: &str) {
+    if let Some(session) = state
+        .memory
+        .write()
+        .await
+        .sessions
+        .get_mut(public_session_id)
+    {
+        session.updated_at = now_iso();
+    }
+}
+
+/// Closes and drains the log writer owned by one terminal live session.
+async fn shutdown_session_log<A: Game>(state: &Arc<AppState<A>>, public_session_id: &str) {
+    let writer = state
+        .memory
+        .write()
+        .await
+        .sessions
+        .get_mut(public_session_id)
+        .and_then(|session| session.log_writer.take());
+    if let Some(writer) = writer {
+        writer.shutdown().await;
     }
 }
 
@@ -1729,24 +1774,24 @@ async fn build_load_sample<A: Game>(state: &Arc<AppState<A>>) -> LoadSample {
     let (waiting, active, completed, unattached, transcription) = {
         let memory = state.memory.read().await;
         let waiting = memory
-            .rooms
+            .sessions
             .values()
-            .filter(|room| room.status == "waiting" && room.participants.len() < 2)
+            .filter(|session| session.status == "waiting" && session.participants.len() < 2)
             .count();
         let completed = memory
-            .rooms
+            .sessions
             .values()
-            .filter(|room| room.status == "completed")
+            .filter(|session| session.status == "completed")
             .count();
         let active = memory
-            .rooms
+            .sessions
             .values()
-            .filter(|room| room.status == "running")
+            .filter(|session| session.status == "running")
             .count();
         let attached = memory
-            .rooms
+            .sessions
             .values()
-            .flat_map(|room| room.participants.keys().cloned())
+            .flat_map(|session| session.participants.keys().cloned())
             .collect::<HashSet<_>>();
         let unattached = memory
             .participants
@@ -1755,10 +1800,10 @@ async fn build_load_sample<A: Game>(state: &Arc<AppState<A>>) -> LoadSample {
             .count();
         let transcription = if speechmatics_readiness_required(&state.config) {
             memory
-                .rooms
+                .sessions
                 .values()
-                .filter(|room| matches!(room.status.as_str(), "waiting" | "running"))
-                .flat_map(|room| room.participants.values())
+                .filter(|session| matches!(session.status.as_str(), "waiting" | "running"))
+                .flat_map(|session| session.participants.values())
                 .filter(|participant| participant.source != "agent")
                 .count()
         } else {
@@ -1830,7 +1875,7 @@ async fn build_load_sample<A: Game>(state: &Arc<AppState<A>>) -> LoadSample {
     }
 }
 
-/// Adds one candidate timeout and keeps the earliest deadline affecting a room.
+/// Adds one candidate timeout and keeps the earliest deadline affecting a session.
 fn retain_earliest_deadline(
     current: &mut Option<(chrono::DateTime<chrono::Utc>, String)>,
     timestamp: &str,
@@ -1864,10 +1909,10 @@ struct ParticipantOperationalSnapshot {
     updated_at: String,
 }
 
-/// Minimal room projection that intentionally excludes potentially large game state.
-struct RoomOperationalSnapshot {
+/// Minimal session projection that intentionally excludes potentially large game state.
+struct SessionOperationalSnapshot {
     session_id: i64,
-    room_id: String,
+    public_session_id: String,
     status: String,
     created_at: String,
     updated_at: String,
@@ -1876,18 +1921,18 @@ struct RoomOperationalSnapshot {
 
 /// Builds participant and lifecycle liveness without writing heartbeat data to storage.
 async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<SessionLiveness> {
-    let rooms = {
+    let sessions = {
         let memory = state.memory.read().await;
         memory
-            .rooms
+            .sessions
             .values()
-            .map(|room| RoomOperationalSnapshot {
-                session_id: room.session_id,
-                room_id: room.id.clone(),
-                status: room.status.clone(),
-                created_at: room.created_at.clone(),
-                updated_at: room.updated_at.clone(),
-                participants: room
+            .map(|session| SessionOperationalSnapshot {
+                session_id: session.session_id,
+                public_session_id: session.id.clone(),
+                status: session.status.clone(),
+                created_at: session.created_at.clone(),
+                updated_at: session.updated_at.clone(),
+                participants: session
                     .participants
                     .values()
                     .map(|participant| ParticipantOperationalSnapshot {
@@ -1916,37 +1961,37 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
         .map(|(key, control)| (key.clone(), control.liveness.snapshot()))
         .collect::<HashMap<_, _>>();
     let now_ms = chrono::Utc::now().timestamp_millis();
-    let mut sessions = rooms
+    let mut sessions = sessions
         .into_iter()
-        .map(|room| {
+        .map(|session| {
             let mut deadline = None;
-            if room.status == "waiting" {
+            if session.status == "waiting" {
                 retain_earliest_deadline(
                     &mut deadline,
-                    &room.updated_at,
-                    state.config.session.waiting_room_timeout_seconds,
+                    &session.updated_at,
+                    state.config.session.waiting_session_timeout_seconds,
                     "waiting timeout",
                 );
-            } else if room.status == "running" {
+            } else if session.status == "running" {
                 retain_earliest_deadline(
                     &mut deadline,
-                    &room.updated_at,
+                    &session.updated_at,
                     state.config.session.session_idle_timeout_seconds,
                     "idle timeout",
                 );
             }
-            if !room_status_is_terminal(&room.status) {
+            if !session_status_is_terminal(&session.status) {
                 retain_earliest_deadline(
                     &mut deadline,
-                    &room.created_at,
+                    &session.created_at,
                     state.config.session.session_max_lifetime_seconds,
                     "maximum lifetime",
                 );
             }
-            if !room_status_is_terminal(&room.status)
-                && room.participants.iter().all(|row| !row.connected)
+            if !session_status_is_terminal(&session.status)
+                && session.participants.iter().all(|row| !row.connected)
             {
-                if let Some(latest) = room
+                if let Some(latest) = session
                     .participants
                     .iter()
                     .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
@@ -1959,11 +2004,15 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
                     );
                 }
             }
-            let participants = room
+            let participants = session
                 .participants
                 .iter()
                 .map(|participant| {
-                    let key = format!("{}:{}", room.room_id, participant.role.as_str());
+                    let key = format!(
+                        "{}:{}",
+                        session.public_session_id,
+                        participant.role.as_str()
+                    );
                     let game_transport = game.get(&key).cloned();
                     let game_health = if participant.source == "agent" {
                         "server"
@@ -1971,7 +2020,7 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
                         game_transport
                             .as_ref()
                             .map(|snapshot| game_connection_health(snapshot, now_ms))
-                            .unwrap_or(if room.status == "waiting" {
+                            .unwrap_or(if session.status == "waiting" {
                                 "waiting"
                             } else {
                                 "disconnected"
@@ -1991,8 +2040,8 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
                 .iter()
                 .filter(|participant| participant.source != "agent")
                 .collect::<Vec<_>>();
-            let health = if room_status_is_terminal(&room.status) {
-                if room.status == "completed" {
+            let health = if session_status_is_terminal(&session.status) {
+                if session.status == "completed" {
                     "completed"
                 } else {
                     "abandoned"
@@ -2007,7 +2056,7 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
                 .any(|participant| participant.game_health == "delayed")
             {
                 "delayed"
-            } else if room.status == "running"
+            } else if session.status == "running"
                 && browser_participants
                     .iter()
                     .any(|participant| participant.game_health == "disconnected")
@@ -2018,18 +2067,18 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
                 .any(|participant| participant.game_health == "live")
             {
                 "live"
-            } else if room.status == "waiting" {
+            } else if session.status == "waiting" {
                 "waiting"
             } else {
                 "disconnected"
             };
             SessionLiveness {
                 experiment_id: state.experiment_id.clone(),
-                session_id: room.session_id,
-                room_id: room.room_id,
-                status: room.status,
+                session_id: session.session_id,
+                public_session_id: session.public_session_id,
+                status: session.status,
                 health: health.to_string(),
-                meaningful_activity_at: room.updated_at,
+                meaningful_activity_at: session.updated_at,
                 lifecycle_deadline_at: deadline.as_ref().map(|(value, _)| value.to_rfc3339()),
                 deadline_reason: deadline.map(|(_, reason)| reason),
                 participants,
@@ -2151,22 +2200,22 @@ async fn track_request_load<A: Game>(
 /// Persists one participant's session-local role and connection status.
 async fn persist_session_participant<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     participant_session_id: &str,
 ) -> Result<()> {
     let record = {
         let memory = state.memory.read().await;
-        let room = memory
-            .rooms
-            .get(room_id)
-            .ok_or_else(|| anyhow!("Room not found."))?;
-        let participant = room
+        let session = memory
+            .sessions
+            .get(public_session_id)
+            .ok_or_else(|| anyhow!("Session not found."))?;
+        let participant = session
             .participants
             .get(participant_session_id)
-            .ok_or_else(|| anyhow!("Participant is not in room."))?;
+            .ok_or_else(|| anyhow!("Participant is not in session."))?;
         SessionParticipantRecord {
-            experiment_id: room.experiment_id.clone(),
-            session_id: room.session_id,
+            experiment_id: session.experiment_id.clone(),
+            session_id: session.session_id,
             participant_id: participant.participant_id,
             participant_session_id: participant_session_id.to_string(),
             role: participant.role.as_str().to_string(),
@@ -2282,9 +2331,9 @@ async fn create_participant_inner<A: Game>(
     }
     let mut memory = state.memory.write().await;
     let attached_participants = memory
-        .rooms
+        .sessions
         .values()
-        .flat_map(|room| room.participants.keys())
+        .flat_map(|session| session.participants.keys())
         .collect::<HashSet<_>>();
     let unattached_participants = memory
         .participants
@@ -2371,14 +2420,14 @@ async fn consent<A: Game>(
     if changed_decisions.is_empty() {
         return Ok(Json(json!({"ok": true})));
     }
-    let session_id = if let Some(room_id) = request.room_id.as_ref() {
+    let session_id = if let Some(public_session_id) = request.public_session_id.as_ref() {
         state
             .memory
             .read()
             .await
-            .rooms
-            .get(room_id)
-            .map(|room| room.session_id)
+            .sessions
+            .get(public_session_id)
+            .map(|session| session.session_id)
     } else {
         None
     };
@@ -2412,29 +2461,29 @@ async fn consent<A: Game>(
         .consent_decisions
         .extend(changed_decisions.clone());
     participant.updated_at = now_iso();
-    for room in memory.rooms.values_mut() {
+    for session in memory.sessions.values_mut() {
         if request
-            .room_id
+            .public_session_id
             .as_ref()
-            .is_some_and(|room_id| room_id != &room.id)
+            .is_some_and(|public_session_id| public_session_id != &session.id)
         {
             continue;
         }
-        if let Some(room_participant) = room.participants.get_mut(&participant_session_id) {
-            room_participant
+        if let Some(session_participant) = session.participants.get_mut(&participant_session_id) {
+            session_participant
                 .consent_decisions
                 .extend(changed_decisions.clone());
-            room_participant.updated_at = now_iso();
+            session_participant.updated_at = now_iso();
         }
     }
     Ok(Json(json!({"ok": true})))
 }
 
-async fn create_room<A: Game>(
+async fn create_session<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     principal: Option<Extension<ParticipantPrincipal>>,
-    Json(_request): Json<CreateRoomRequest>,
-) -> Result<Json<CreateRoomResponse>, AppError>
+    Json(_request): Json<CreateSessionRequest>,
+) -> Result<Json<CreateSessionResponse>, AppError>
 where
     A::State: Serialize,
 {
@@ -2444,14 +2493,14 @@ where
     require_session_storage_reserve(&state).await?;
     let requested_mode = "direct".to_string();
     let mut prepared_agent = if state.config.agents.mode == AgentsMode::HumanVsAgent {
-        let room_seed = rand::random::<u64>();
+        let session_seed = rand::random::<u64>();
         let agent_seed = state
             .config
             .agents
             .human_vs_agent
             .as_ref()
             .and_then(|config| config.seed)
-            .unwrap_or(room_seed);
+            .unwrap_or(session_seed);
         let raw_settings = state
             .config
             .agents
@@ -2484,149 +2533,86 @@ where
                     "The configured agent references an unavailable secret",
                 )
             })?;
-        let context = AgentContext {
-            role: PlayerRole::B,
-            seed: agent_seed,
+        Some(PreparedAgentConstruction {
+            session_seed: session_seed,
+            agent_seed,
             settings,
             factory_secrets,
             agent_instance_secrets,
-        };
-        let agent =
-            match tokio::time::timeout(Duration::from_secs_f64(timeout), factory.create(context))
-                .await
-            {
-                Ok(Ok(agent)) => agent,
-                Ok(Err(_)) | Err(_) => {
-                    return Err(AppError::new(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "The configured agent could not be initialized",
-                    ));
-                }
-            };
-        Some((room_seed, agent))
+            factory,
+            timeout,
+        })
     } else {
         None
     };
-    let paired_or_created: Result<(String, Seat, bool), AppError> = {
-        let mut memory = state.memory.write().await;
+    let admission = state.session_admission.clone().lock_owned().await;
+    let paired_or_created: Result<(String, Seat, Option<ConstructedAgent<A>>), AppError> = {
         if state.config.agents.mode == AgentsMode::HumanVsHuman {
-            if let Some(room_id) = open_human_room_for_pairing(
-                &memory,
-                &requested_mode,
-                &memory
-                    .participants
-                    .get(&participant_session_id)
-                    .ok_or_else(|| AppError::not_found("Participant session not found."))?
-                    .purpose,
-            ) {
+            let existing = {
+                let memory = state.memory.read().await;
+                open_human_session_for_pairing(
+                    &memory,
+                    &requested_mode,
+                    &memory
+                        .participants
+                        .get(&participant_session_id)
+                        .ok_or_else(|| AppError::not_found("Participant session not found."))?
+                        .purpose,
+                )
+            };
+            if let Some(public_session_id) = existing {
+                let mut memory = state.memory.write().await;
                 ensure_session_capacity(&state.config, &memory, SessionAdmission::Active, 1)?;
-                let role = add_human_participant_to_room_locked(
+                let role = add_human_participant_to_session_locked(
                     &state,
                     &mut memory,
-                    &room_id,
+                    &public_session_id,
                     &participant_session_id,
                 )?;
-                Ok((room_id, role, false))
+                Ok((public_session_id, role, None))
             } else {
-                ensure_session_capacity(&state.config, &memory, SessionAdmission::Waiting, 1)?;
-                let (room_id, role) = create_room_locked(
+                {
+                    let memory = state.memory.read().await;
+                    ensure_session_capacity(&state.config, &memory, SessionAdmission::Waiting, 1)?;
+                }
+                let (public_session_id, role, agent) = create_live_session_locked(
                     &state,
-                    &mut memory,
                     participant_session_id.clone(),
                     requested_mode.clone(),
                     Seat::A,
                     rand::random::<u64>(),
-                )?;
-                let session_id = match state
-                    .store
-                    .create_session(SessionRecord {
-                        experiment_id: state.experiment_id.clone(),
-                        config_revision: state.config_revision,
-                        game_version: state.game_descriptor.version.to_string(),
-                        room_id: room_id.clone(),
-                        mode: requested_mode.clone(),
-                        status: "waiting".to_string(),
-                        purpose: memory
-                            .rooms
-                            .get(&room_id)
-                            .map(|room| room.purpose.clone())
-                            .ok_or_else(|| AppError::not_found("Room not found."))?,
-                    })
-                    .await
-                {
-                    Ok(session_id) => session_id,
-                    Err(error) => {
-                        memory.rooms.remove(&room_id);
-                        return Err(AppError::from(error));
-                    }
-                };
-                if let Some(room) = memory.rooms.get_mut(&room_id) {
-                    room.session_id = session_id;
-                }
-                Ok((room_id, role, true))
+                    None,
+                )
+                .await?;
+                Ok((public_session_id, role, agent))
             }
         } else {
-            ensure_session_capacity(&state.config, &memory, SessionAdmission::Active, 1)?;
-            let (room_id, role) = create_room_locked(
+            {
+                let memory = state.memory.read().await;
+                ensure_session_capacity(&state.config, &memory, SessionAdmission::Active, 1)?;
+            }
+            let session_seed = prepared_agent
+                .as_ref()
+                .expect("agent was prepared")
+                .session_seed;
+            let (public_session_id, role, agent) = create_live_session_locked(
                 &state,
-                &mut memory,
                 participant_session_id.clone(),
                 requested_mode.clone(),
                 Seat::A,
-                prepared_agent.as_ref().expect("agent was prepared").0,
-            )?;
-            let session_id = match state
-                .store
-                .create_session(SessionRecord {
-                    experiment_id: state.experiment_id.clone(),
-                    config_revision: state.config_revision,
-                    game_version: state.game_descriptor.version.to_string(),
-                    room_id: room_id.clone(),
-                    mode: requested_mode.clone(),
-                    status: "waiting".to_string(),
-                    purpose: memory
-                        .rooms
-                        .get(&room_id)
-                        .map(|room| room.purpose.clone())
-                        .ok_or_else(|| AppError::not_found("Room not found."))?,
-                })
-                .await
-            {
-                Ok(session_id) => session_id,
-                Err(error) => {
-                    memory.rooms.remove(&room_id);
-                    return Err(AppError::from(error));
-                }
-            };
-            if let Some(room) = memory.rooms.get_mut(&room_id) {
-                room.session_id = session_id;
-            }
-            Ok((room_id, role, true))
+                session_seed,
+                prepared_agent.take(),
+            )
+            .await?;
+            Ok((public_session_id, role, agent))
         }
     };
-    let (room_id, role, created_room) = paired_or_created?;
-    if created_room {
-        let seed = state
-            .memory
-            .read()
-            .await
-            .rooms
-            .get(&room_id)
-            .map(|room| room.seed);
-        persist_session_event(
-            &state,
-            &room_id,
-            None,
-            "session_created",
-            json!({"room_id": room_id, "seed": seed}),
-            None,
-        )
-        .await;
-    }
-    persist_session_participant(&state, &room_id, &participant_session_id).await?;
+    drop(admission);
+    let (public_session_id, role, constructed_agent) = paired_or_created?;
+    persist_session_participant(&state, &public_session_id, &participant_session_id).await?;
     persist_session_event(
         &state,
-        &room_id,
+        &public_session_id,
         Some(&participant_session_id),
         "participant_joined",
         json!({"role": role.as_str()}),
@@ -2634,15 +2620,25 @@ where
     )
     .await;
     if state.config.agents.mode == AgentsMode::HumanVsAgent {
-        let agent_id = add_agent_to_room(&state, &room_id).await?;
-        let (_, agent) = prepared_agent.take().expect("agent was prepared");
+        let constructed = constructed_agent.expect("agent session constructed an agent");
+        let agent_id = constructed.participant_session_id.clone();
+        persist_session_participant(&state, &public_session_id, &agent_id).await?;
+        persist_session_event(
+            &state,
+            &public_session_id,
+            Some(&agent_id),
+            "participant_joined",
+            json!({"role": "B", "kind": "agent", "agent": constructed.event_metadata}),
+            None,
+        )
+        .await;
         state
             .pending_agents
             .lock()
             .await
-            .insert(agent_key(&room_id, &agent_id), agent);
+            .insert(agent_key(&public_session_id, &agent_id), constructed.agent);
     }
-    let response = room_response(&state, &room_id, role).await?;
+    let response = session_response(&state, &public_session_id, role).await?;
     Ok(Json(response))
 }
 
@@ -2670,26 +2666,26 @@ async fn require_session_storage_reserve<A: Game>(
 /// Admission class used by the single session-capacity policy.
 #[derive(Clone, Copy)]
 enum SessionAdmission {
-    /// A human-human room still waiting for its second participant.
+    /// A human-human session still waiting for its second participant.
     Waiting,
     /// A fully allocated human-human or human-agent research session.
     Active,
 }
 
-/// Reserves room and ASR capacity before any durable session is created.
-fn ensure_session_capacity<S>(
+/// Reserves session and ASR capacity before any durable session is created.
+fn ensure_session_capacity<G: Game>(
     config: &ExperimentConfig,
-    memory: &MemoryState<S>,
+    memory: &MemoryState<G>,
     admission: SessionAdmission,
     transcription_streams_to_add: usize,
 ) -> Result<(), AppError> {
     let (waiting, active) = memory
-        .rooms
+        .sessions
         .values()
-        .fold((0_usize, 0_usize), |counts, room| {
-            if room.status == "waiting" && room.participants.len() < 2 {
+        .fold((0_usize, 0_usize), |counts, session| {
+            if session.status == "waiting" && session.participants.len() < 2 {
                 (counts.0 + 1, counts.1)
-            } else if room.status == "running" {
+            } else if session.status == "running" {
                 (counts.0, counts.1 + 1)
             } else {
                 counts
@@ -2699,7 +2695,7 @@ fn ensure_session_capacity<S>(
         SessionAdmission::Waiting if waiting >= config.capacity.max_waiting_sessions => {
             return Err(AppError::new(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "Waiting-room capacity is temporarily full",
+                "Waiting-session capacity is temporarily full",
             ));
         }
         SessionAdmission::Active if active >= config.capacity.max_active_sessions => {
@@ -2712,10 +2708,10 @@ fn ensure_session_capacity<S>(
     }
     if speechmatics_readiness_required(config) {
         let reserved_streams = memory
-            .rooms
+            .sessions
             .values()
-            .filter(|room| matches!(room.status.as_str(), "waiting" | "running"))
-            .flat_map(|room| room.participants.values())
+            .filter(|session| matches!(session.status.as_str(), "waiting" | "running"))
+            .flat_map(|session| session.participants.values())
             .filter(|participant| participant.source != "agent")
             .count();
         if reserved_streams + transcription_streams_to_add
@@ -2730,156 +2726,33 @@ fn ensure_session_capacity<S>(
     Ok(())
 }
 
-async fn add_agent_to_room<A: Game>(
-    state: &Arc<AppState<A>>,
-    room_id: &str,
-) -> Result<String, AppError> {
-    let purpose = state
-        .memory
-        .read()
-        .await
-        .rooms
-        .get(room_id)
-        .map(|room| room.purpose.clone())
-        .ok_or_else(|| AppError::not_found("Room not found."))?;
-    let configured_agent = state.config.agents.human_vs_agent.as_ref();
-    let raw_agent_settings = configured_agent
-        .map(|config| config.config.clone())
-        .unwrap_or_else(|| json!({}));
-    let factory_definition = state
-        .agent_factory
-        .as_ref()
-        .map(|factory| factory.definition())
-        .ok_or_else(|| AppError::new(StatusCode::SERVICE_UNAVAILABLE, "No agent is registered"))?;
-    let agent_settings = factory_definition
-        .normalize_settings(&raw_agent_settings)
-        .map_err(AppError::from)?;
-    let fingerprint = configuration_fingerprint(&factory_definition.id, &agent_settings)
-        .map_err(AppError::from)?;
-    let factory_identity = state
-        .agent_factory
-        .as_ref()
-        .map(|factory| factory.identity(&agent_settings))
-        .transpose()
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::new(StatusCode::SERVICE_UNAVAILABLE, "No agent is registered"))?;
-    factory_identity.validate().map_err(AppError::from)?;
-    let external_id = Some(format!(
-        "{}@{}#{fingerprint}",
-        factory_identity.name, factory_identity.version
-    ));
-    let metadata = json!({
-        "agent_name": factory_identity.name,
-        "agent_version": factory_identity.version,
-        "factory": factory_definition.id,
-        "configuration_fingerprint": fingerprint,
-    });
-    let agent_metadata = metadata.clone();
-    let agent_participant_db_id = state
-        .store
-        .upsert_participant(ParticipantRecord {
-            experiment_id: state.experiment_id.clone(),
-            participant_kind: "agent".to_string(),
-            identity_provider: "agent".to_string(),
-            external_id,
-            metadata,
-        })
-        .await?;
-    let agent_research_id = state
-        .store
-        .participant_research_id(agent_participant_db_id)
-        .await?
-        .ok_or_else(|| {
-            AppError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Agent identifier is missing",
-            )
-        })?;
-    let agent_participant_id = {
-        let mut memory = state.memory.write().await;
-        if let Some(existing_agent) = memory
-            .rooms
-            .get(room_id)
-            .and_then(|room| {
-                room.participants
-                    .values()
-                    .find(|participant| participant.source == "agent")
-            })
-            .map(|participant| participant.participant_session_id.clone())
-        {
-            return Ok(existing_agent);
-        }
-        let agent = memory.create_participant(
-            agent_participant_db_id,
-            agent_research_id,
-            "agent".to_string(),
-            purpose,
-        );
-        let room = memory
-            .rooms
-            .get_mut(room_id)
-            .ok_or_else(|| AppError::not_found("Room not found."))?;
-        room.participants.insert(
-            agent.id.clone(),
-            RoomParticipant {
-                participant_session_id: agent.id.clone(),
-                participant_id: agent.participant_id,
-                source: "agent".to_string(),
-                role: Seat::B,
-                connected: true,
-                ready_declared: true,
-                audio_ready: true,
-                consent_decisions: HashMap::new(),
-                joined_at: now_iso(),
-                updated_at: now_iso(),
-            },
-        );
-        agent.id
-    };
-    persist_session_participant(state, room_id, &agent_participant_id).await?;
-    persist_session_event(
-        state,
-        room_id,
-        Some(&agent_participant_id),
-        "participant_joined",
-        json!({
-            "role": "B",
-            "kind": "agent",
-            "agent": agent_event_metadata(&agent_metadata),
-        }),
-        None,
-    )
-    .await;
-    Ok(agent_participant_id)
-}
-
-/// Finds an existing human-human waiting room that can accept one more human.
-fn open_human_room_for_pairing<S>(
-    memory: &MemoryState<S>,
+/// Finds an existing human-human waiting session that can accept one more human.
+fn open_human_session_for_pairing<G: Game>(
+    memory: &MemoryState<G>,
     mode: &str,
     purpose: &str,
 ) -> Option<String> {
     memory
-        .rooms
+        .sessions
         .iter()
-        .find(|(_, room)| {
-            room.status == "waiting"
-                && room.mode == mode
-                && room.purpose == purpose
-                && next_role(room) == Some(Seat::B)
-                && room
+        .find(|(_, session)| {
+            session.status == "waiting"
+                && session.mode == mode
+                && session.purpose == purpose
+                && next_role(session) == Some(Seat::B)
+                && session
                     .participants
                     .values()
                     .all(|participant| participant.source != "agent")
         })
-        .map(|(room_id, _)| room_id.clone())
+        .map(|(public_session_id, _)| public_session_id.clone())
 }
 
-/// Adds a direct human participant to an existing room and returns its assigned seat.
-fn add_human_participant_to_room_locked<A: Game>(
+/// Adds a direct human participant to an existing session and returns its assigned seat.
+fn add_human_participant_to_session_locked<A: Game>(
     state: &AppState<A>,
-    memory: &mut MemoryState<A::State>,
-    room_id: &str,
+    memory: &mut MemoryState<A>,
+    public_session_id: &str,
     participant_session_id: &str,
 ) -> Result<Seat, AppError> {
     let participant = memory
@@ -2887,24 +2760,24 @@ fn add_human_participant_to_room_locked<A: Game>(
         .get(participant_session_id)
         .ok_or_else(|| AppError::not_found("Participant session not found."))?
         .clone();
-    let room = memory
-        .rooms
-        .get_mut(room_id)
-        .ok_or_else(|| AppError::not_found("Room not found."))?;
-    if room.purpose != participant.purpose {
+    let session = memory
+        .sessions
+        .get_mut(public_session_id)
+        .ok_or_else(|| AppError::not_found("Session not found."))?;
+    if session.purpose != participant.purpose {
         return Err(AppError::new(
             StatusCode::CONFLICT,
             "Testing and research participants cannot share a session",
         ));
     }
-    if let Some(existing) = room.participants.get(participant_session_id) {
+    if let Some(existing) = session.participants.get(participant_session_id) {
         return Ok(existing.role);
     }
-    let role =
-        next_role(room).ok_or_else(|| AppError::forbidden("Room already has two players."))?;
-    room.participants.insert(
+    let role = next_role(session)
+        .ok_or_else(|| AppError::forbidden("Session already has two players."))?;
+    session.participants.insert(
         participant_session_id.to_string(),
-        RoomParticipant {
+        SessionParticipant {
             participant_session_id: participant_session_id.to_string(),
             participant_id: participant.participant_id,
             source: "direct".to_string(),
@@ -2920,27 +2793,195 @@ fn add_human_participant_to_room_locked<A: Game>(
     Ok(role)
 }
 
-fn create_room_locked<A: Game>(
+async fn create_live_session_locked<A: Game>(
     state: &AppState<A>,
-    memory: &mut MemoryState<A::State>,
     participant_session_id: String,
     mode: String,
     role: Seat,
     seed: u64,
-) -> Result<(String, Seat), AppError> {
-    let participant = memory
+    prepared_agent: Option<PreparedAgentConstruction<A>>,
+) -> Result<(String, Seat, Option<ConstructedAgent<A>>), AppError> {
+    let participant = state
+        .memory
+        .read()
+        .await
         .participants
         .get(&participant_session_id)
         .ok_or_else(|| AppError::not_found("Participant session not found."))?
         .clone();
-    let mut room_id = room_code();
-    while memory.rooms.contains_key(&room_id) {
-        room_id = room_code();
+    let mut public_session_id = session_code();
+    while state
+        .memory
+        .read()
+        .await
+        .sessions
+        .contains_key(&public_session_id)
+    {
+        public_session_id = session_code();
     }
+    let session_id = state
+        .store
+        .create_session(SessionRecord {
+            experiment_id: state.experiment_id.clone(),
+            config_revision: state.config_revision,
+            game_version: state.game_descriptor.version.to_string(),
+            public_session_id: public_session_id.clone(),
+            mode: mode.clone(),
+            status: "initializing".to_string(),
+            purpose: participant.purpose.clone(),
+        })
+        .await?;
+    if let Err(error) = state
+        .store
+        .append_session_event(SessionEventRecord {
+            experiment_id: state.experiment_id.clone(),
+            session_id,
+            event_type: "session_created".to_string(),
+            actor_participant_id: None,
+            actor_role: None,
+            payload: json!({"public_session_id": public_session_id, "seed": seed}),
+            game_state: None,
+        })
+        .await
+    {
+        let _ = state
+            .store
+            .fail_session_initialization(
+                &state.experiment_id,
+                session_id,
+                "session_event_persistence_failed",
+            )
+            .await;
+        return Err(AppError::from(error));
+    }
+    let (logger, log_writer) =
+        SessionLogger::live(state.store.clone(), state.experiment_id.clone(), session_id);
+    let game = match state.game_factory.create(GameSessionContext {
+        logger: logger.clone(),
+    }) {
+        Ok(game) => game,
+        Err(error) => {
+            let _ = state
+                .store
+                .fail_session_initialization(
+                    &state.experiment_id,
+                    session_id,
+                    "game_construction_failed",
+                )
+                .await;
+            log_writer.shutdown().await;
+            return Err(AppError::bad_request(error.to_string()));
+        }
+    };
+    let mut constructed_agent = if let Some(prepared) = prepared_agent {
+        let definition = prepared.factory.definition();
+        let identity = prepared.factory.identity(&prepared.settings)?;
+        identity.validate()?;
+        let fingerprint = configuration_fingerprint(&definition.id, &prepared.settings)?;
+        let event_metadata = json!({
+            "agent_name": identity.name,
+            "agent_version": identity.version,
+            "factory": definition.id,
+            "configuration_fingerprint": fingerprint.clone(),
+        });
+        let participant_id = state
+            .store
+            .upsert_participant(ParticipantRecord {
+                experiment_id: state.experiment_id.clone(),
+                participant_kind: "agent".to_string(),
+                identity_provider: "agent".to_string(),
+                external_id: Some(format!(
+                    "{}@{}#{}",
+                    event_metadata["agent_name"].as_str().unwrap_or("agent"),
+                    event_metadata["agent_version"]
+                        .as_str()
+                        .unwrap_or("unknown"),
+                    fingerprint
+                )),
+                metadata: event_metadata.clone(),
+            })
+            .await?;
+        let research_id = state
+            .store
+            .participant_research_id(participant_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Agent identifier is missing",
+                )
+            })?;
+        let runtime_participant = state.memory.write().await.create_participant(
+            participant_id,
+            research_id,
+            "agent".to_string(),
+            participant.purpose.clone(),
+        );
+        let participant_session_id = runtime_participant.id.clone();
+        let context = AgentContext {
+            role: PlayerRole::B,
+            seed: prepared.agent_seed,
+            settings: prepared.settings,
+            factory_secrets: prepared.factory_secrets,
+            agent_instance_secrets: prepared.agent_instance_secrets,
+            logger: logger.for_agent(participant_id, PlayerRole::B),
+        };
+        match tokio::time::timeout(
+            Duration::from_secs_f64(prepared.timeout),
+            prepared.factory.create(context),
+        )
+        .await
+        {
+            Ok(Ok(agent)) => Some(ConstructedAgent {
+                agent,
+                participant_session_id,
+                event_metadata: agent_event_metadata(&event_metadata),
+            }),
+            Ok(Err(_)) | Err(_) => {
+                let _ = state
+                    .store
+                    .fail_session_initialization(
+                        &state.experiment_id,
+                        session_id,
+                        "agent_construction_failed",
+                    )
+                    .await;
+                log_writer.shutdown().await;
+                return Err(AppError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "The configured agent could not be initialized",
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    let game_state = match game.initial_state(GameInitializationContext {
+        config: &state.game_config,
+        seed,
+        secrets: &SecretValues::new(state.config.game_secrets.clone().into_iter().collect()),
+    }) {
+        Ok(game_state) => game_state,
+        Err(error) => {
+            if let Some(mut constructed) = constructed_agent {
+                let _ = constructed.agent.shutdown().await;
+            }
+            let _ = state
+                .store
+                .fail_session_initialization(
+                    &state.experiment_id,
+                    session_id,
+                    "game_state_initialization_failed",
+                )
+                .await;
+            log_writer.shutdown().await;
+            return Err(AppError::bad_request(error.to_string()));
+        }
+    };
     let mut participants = HashMap::new();
     participants.insert(
         participant_session_id.clone(),
-        RoomParticipant {
+        SessionParticipant {
             participant_session_id,
             participant_id: participant.participant_id,
             source: participant.source,
@@ -2953,52 +2994,113 @@ fn create_room_locked<A: Game>(
             updated_at: now_iso(),
         },
     );
-    memory.rooms.insert(
-        room_id.clone(),
-        GameRoom {
-            id: room_id.clone(),
+    if let Some(agent_session_id) = constructed_agent
+        .as_ref()
+        .map(|constructed| constructed.participant_session_id.clone())
+    {
+        let memory = state.memory.read().await;
+        let runtime_agent = memory
+            .participants
+            .get(&agent_session_id)
+            .expect("constructed agent participant is retained");
+        participants.insert(
+            agent_session_id.clone(),
+            SessionParticipant {
+                participant_session_id: agent_session_id,
+                participant_id: runtime_agent.participant_id,
+                source: "agent".to_string(),
+                role: Seat::B,
+                connected: true,
+                ready_declared: true,
+                audio_ready: true,
+                consent_decisions: HashMap::new(),
+                joined_at: now_iso(),
+                updated_at: now_iso(),
+            },
+        );
+    }
+    state.memory.write().await.sessions.insert(
+        public_session_id.clone(),
+        LiveSession {
+            id: public_session_id.clone(),
             experiment_id: state.experiment_id.clone(),
-            session_id: 0,
+            session_id,
             mode,
             purpose: participant.purpose,
-            seed,
-            state: state
-                .adapter
-                .initial_state(GameInitializationContext {
-                    config: &state.game_config,
-                    seed,
-                    secrets: &SecretValues::new(
-                        state.config.game_secrets.clone().into_iter().collect(),
-                    ),
-                })
-                .map_err(|error| AppError::bad_request(error.to_string()))?,
+            game,
+            state: game_state,
+            log_writer: Some(log_writer),
             status: "waiting".to_string(),
             participants,
             created_at: now_iso(),
             updated_at: now_iso(),
         },
     );
-    Ok((room_id, role))
+    match state
+        .store
+        .complete_session_initialization(&state.experiment_id, session_id)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            let removed = state
+                .memory
+                .write()
+                .await
+                .sessions
+                .remove(&public_session_id);
+            if let Some(mut session) = removed {
+                if let Some(writer) = session.log_writer.take() {
+                    writer.shutdown().await;
+                }
+            }
+            if let Some(constructed) = constructed_agent.as_mut() {
+                let _ = constructed.agent.shutdown().await;
+            }
+            return Err(AppError::new(
+                StatusCode::CONFLICT,
+                "Session initialization no longer has an active durable record",
+            ));
+        }
+        Err(error) => {
+            let removed = state
+                .memory
+                .write()
+                .await
+                .sessions
+                .remove(&public_session_id);
+            if let Some(mut session) = removed {
+                if let Some(writer) = session.log_writer.take() {
+                    writer.shutdown().await;
+                }
+            }
+            if let Some(constructed) = constructed_agent.as_mut() {
+                let _ = constructed.agent.shutdown().await;
+            }
+            return Err(AppError::from(error));
+        }
+    }
+    Ok((public_session_id, role, constructed_agent))
 }
 
-async fn room_response<A: Game>(
+async fn session_response<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     role: Seat,
-) -> Result<RoomResponse, AppError>
+) -> Result<SessionResponse, AppError>
 where
     A::State: Serialize,
 {
     let (presence, observation, available_actions) = {
         let memory = state.memory.read().await;
-        let room = memory
-            .rooms
-            .get(room_id)
-            .ok_or_else(|| AppError::not_found("Room not found."))?;
-        let presence = room_presence(room);
-        if room.status == "waiting" {
-            return Ok(RoomResponse {
-                room_id: room_id.to_string(),
+        let session = memory
+            .sessions
+            .get(public_session_id)
+            .ok_or_else(|| AppError::not_found("Session not found."))?;
+        let presence = session_presence(session);
+        if session.status == "waiting" {
+            return Ok(SessionResponse {
+                public_session_id: public_session_id.to_string(),
                 role: role.as_str().to_string(),
                 presence: Some(presence),
                 observation: None,
@@ -3009,11 +3111,11 @@ where
         (
             Some(presence),
             Some(protocol_json(
-                &state.adapter.observation(&room.state, player),
+                &session.game.observation(&session.state, player),
             )?),
-            state
-                .adapter
-                .available_actions(&room.state, player)
+            session
+                .game
+                .available_actions(&session.state, player)
                 .map(|actions| {
                     actions
                         .into_iter()
@@ -3023,8 +3125,8 @@ where
                 .transpose()?,
         )
     };
-    Ok(RoomResponse {
-        room_id: room_id.to_string(),
+    Ok(SessionResponse {
+        public_session_id: public_session_id.to_string(),
         role: role.as_str().to_string(),
         presence,
         observation,
@@ -3034,17 +3136,17 @@ where
 
 async fn audio_session<A: Game>(
     State(state): State<Arc<AppState<A>>>,
-    Path(room_id): Path<String>,
+    Path(public_session_id): Path<String>,
     principal: Option<Extension<ParticipantPrincipal>>,
     Json(_request): Json<AudioSessionRequest>,
 ) -> Result<Json<AudioSessionPlanResponse>, AppError> {
     let participant_session_id = authenticated_participant_id(principal.clone())?;
-    let role = participant_role(&state, &room_id, &participant_session_id).await?;
+    let role = participant_role(&state, &public_session_id, &participant_session_id).await?;
     if !state.config.voice.enabled {
         return Ok(Json(AudioSessionPlanResponse::disabled()));
     }
     let claims = UpgradeTicketClaims {
-        room_id: room_id.clone(),
+        public_session_id: public_session_id.clone(),
         participant_session_id,
         role: role.as_str().to_string(),
         generation: principal.map_or(1, |Extension(principal)| principal.generation),
@@ -3056,7 +3158,7 @@ async fn audio_session<A: Game>(
         enabled: true,
         websocket_url: Some(websocket_path(
             &state.config,
-            &format!("ws/audio/{room_id}"),
+            &format!("ws/audio/{public_session_id}"),
         )),
         token: Some(token),
         protocol_version: AUDIO_PROTOCOL_VERSION,
@@ -3070,14 +3172,19 @@ async fn audio_session<A: Game>(
 /// Mints a purpose-bound, one-use game WebSocket upgrade ticket.
 async fn game_session<A: Game>(
     State(state): State<Arc<AppState<A>>>,
-    Path(room_id): Path<String>,
+    Path(public_session_id): Path<String>,
     Extension(principal): Extension<ParticipantPrincipal>,
 ) -> Result<Json<GameSessionPlanResponse>, AppError> {
-    let role = participant_role(&state, &room_id, &principal.participant_session_id).await?;
+    let role = participant_role(
+        &state,
+        &public_session_id,
+        &principal.participant_session_id,
+    )
+    .await?;
     let token = state
         .upgrade_tickets
         .issue(UpgradeTicketClaims {
-            room_id: room_id.clone(),
+            public_session_id: public_session_id.clone(),
             participant_session_id: principal.participant_session_id,
             role: role.as_str().to_string(),
             generation: principal.generation,
@@ -3086,7 +3193,7 @@ async fn game_session<A: Game>(
         })
         .await;
     Ok(Json(GameSessionPlanResponse {
-        websocket_url: websocket_path(&state.config, &format!("ws/game/{room_id}")),
+        websocket_url: websocket_path(&state.config, &format!("ws/game/{public_session_id}")),
         token,
     }))
 }
@@ -3094,20 +3201,20 @@ async fn game_session<A: Game>(
 /// Commits one final provider utterance to storage, conversation, and agents.
 async fn commit_final_transcript<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     participant_session_id: &str,
     stream_started_at: &str,
     utterance: FinalTranscriptUtterance,
 ) -> Result<Option<TranscriptSegment>, AppError> {
-    let role = participant_role(state, room_id, participant_session_id).await?;
-    ensure_room_accepts_game_input(state, room_id).await?;
+    let role = participant_role(state, public_session_id, participant_session_id).await?;
+    ensure_session_accepts_game_input(state, public_session_id).await?;
     let (experiment_id, session_id) = {
         let memory = state.memory.read().await;
-        let room = memory
-            .rooms
-            .get(room_id)
-            .ok_or_else(|| AppError::not_found("Room not found."))?;
-        (room.experiment_id.clone(), room.session_id)
+        let session = memory
+            .sessions
+            .get(public_session_id)
+            .ok_or_else(|| AppError::not_found("Session not found."))?;
+        (session.experiment_id.clone(), session.session_id)
     };
     let stream_start_game_time_ms = state
         .store
@@ -3138,7 +3245,8 @@ async fn commit_final_transcript<A: Game>(
     } else {
         utterance.result_ids.join(",")
     };
-    let idempotency_key = format!("{room_id}:{participant_session_id}:{provider_identity}");
+    let idempotency_key =
+        format!("{public_session_id}:{participant_session_id}:{provider_identity}");
     if !state
         .committed_transcripts
         .write()
@@ -3149,7 +3257,7 @@ async fn commit_final_transcript<A: Game>(
     }
     let stored = TranscriptSegment {
         id: new_id("tr"),
-        room_id: room_id.to_string(),
+        public_session_id: public_session_id.to_string(),
         participant_session_id: participant_session_id.to_string(),
         player: role.as_str().to_string(),
         start_game_time_ms,
@@ -3159,7 +3267,7 @@ async fn commit_final_transcript<A: Game>(
     };
     let message = ConversationMessageResponse {
         id: new_id("msg"),
-        room_id: room_id.to_string(),
+        public_session_id: public_session_id.to_string(),
         sender_participant_session_id: Some(stored.participant_session_id.clone()),
         sender_role: Some(stored.player.clone()),
         text: stored.text.clone(),
@@ -3175,7 +3283,7 @@ async fn commit_final_transcript<A: Game>(
     let persist_result = async {
         persist_session_event_required(
             state,
-            room_id,
+            public_session_id,
             message.sender_participant_session_id.as_deref(),
             "conversation_message",
             conversation_message_event_payload(&message),
@@ -3193,19 +3301,18 @@ async fn commit_final_transcript<A: Game>(
             .remove(&idempotency_key);
         return Err(AppError::from(error));
     }
-    touch_room_activity(state, room_id).await;
+    touch_session_activity(state, public_session_id).await;
     if let Some(player_message) = message.player_message() {
-        let _ =
-            state
-                .room_bus(room_id)
-                .await
-                .send(ServerMessage::broadcast(ServerPayload::Message {
-                    room_id: room_id.to_string(),
-                    message: player_message,
-                }));
+        let _ = state
+            .session_bus(public_session_id)
+            .await
+            .send(ServerMessage::broadcast(ServerPayload::Message {
+                public_session_id: public_session_id.to_string(),
+                message: player_message,
+            }));
     }
     if let Some(speaker) = player_role_from_str(&stored.player) {
-        notify_agents_of_message(state, room_id, speaker, stored.text.clone()).await;
+        notify_agents_of_message(state, public_session_id, speaker, stored.text.clone()).await;
     }
     Ok(Some(stored))
 }
@@ -3222,12 +3329,12 @@ fn conversation_message_event_payload(message: &ConversationMessageResponse) -> 
 /// Accepts a bounded operational voice metric without retaining it in research storage.
 async fn add_voice_diagnostic<A: Game>(
     State(state): State<Arc<AppState<A>>>,
-    Path(room_id): Path<String>,
+    Path(public_session_id): Path<String>,
     principal: Option<Extension<ParticipantPrincipal>>,
     Json(diagnostic): Json<VoiceDiagnosticIn>,
 ) -> Result<Json<Value>, AppError> {
     let participant_session_id = authenticated_participant_id(principal)?;
-    participant_role(&state, &room_id, &participant_session_id).await?;
+    participant_role(&state, &public_session_id, &participant_session_id).await?;
     if diagnostic.event.is_empty()
         || diagnostic.event.len() > 64
         || !diagnostic
@@ -3270,11 +3377,11 @@ fn minimized_voice_diagnostic_metadata(metadata: &Value) -> Value {
 /// Adds a conversation message while honoring the participant-message storage switch.
 async fn add_conversation<A: Game>(
     State(state): State<Arc<AppState<A>>>,
-    Path(room_id): Path<String>,
+    Path(public_session_id): Path<String>,
     Json(input): Json<ConversationMessageIn>,
 ) -> Result<Json<ConversationMessageResponse>, AppError> {
-    require_room(&state, &room_id).await?;
-    ensure_room_accepts_game_input(&state, &room_id).await?;
+    require_session(&state, &public_session_id).await?;
+    ensure_session_accepts_game_input(&state, &public_session_id).await?;
     if input.text.chars().count() > 4_000 {
         return Err(AppError::bad_request("Conversation message is too long"));
     }
@@ -3294,7 +3401,7 @@ async fn add_conversation<A: Game>(
     {
         sender_participant_session_id = Some(candidate.to_string());
         sender_role = Some(
-            participant_role(&state, &room_id, candidate)
+            participant_role(&state, &public_session_id, candidate)
                 .await?
                 .as_str()
                 .to_string(),
@@ -3304,7 +3411,7 @@ async fn add_conversation<A: Game>(
     }
     let message = ConversationMessageResponse {
         id: new_id("msg"),
-        room_id: room_id.clone(),
+        public_session_id: public_session_id.clone(),
         sender_participant_session_id,
         sender_role,
         text: input.text,
@@ -3315,20 +3422,20 @@ async fn add_conversation<A: Game>(
     };
     persist_session_event_required(
         &state,
-        &room_id,
+        &public_session_id,
         message.sender_participant_session_id.as_deref(),
         "conversation_message",
         conversation_message_event_payload(&message),
         None,
     )
     .await?;
-    touch_room_activity(&state, &room_id).await;
+    touch_session_activity(&state, &public_session_id).await;
     if let Some(player_message) = message.player_message() {
         let _ = state
-            .room_bus(&room_id)
+            .session_bus(&public_session_id)
             .await
             .send(ServerMessage::broadcast(ServerPayload::Message {
-                room_id: room_id.clone(),
+                public_session_id: public_session_id.clone(),
                 message: player_message,
             }));
     }
@@ -3340,28 +3447,28 @@ async fn add_conversation<A: Game>(
         .as_deref()
         .and_then(player_role_from_str)
     {
-        notify_agents_of_message(&state, &room_id, speaker, message.text.clone()).await;
+        notify_agents_of_message(&state, &public_session_id, speaker, message.text.clone()).await;
     }
     Ok(Json(message))
 }
 
-/// Rejects participant game-channel input after a room has completed.
-async fn ensure_room_accepts_game_input<A: Game>(
+/// Rejects participant game-channel input after a session has completed.
+async fn ensure_session_accepts_game_input<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
 ) -> Result<(), AppError> {
     let completed = {
         let memory = state.memory.read().await;
         memory
-            .rooms
-            .get(room_id)
-            .ok_or_else(|| AppError::not_found("Room not found."))?
+            .sessions
+            .get(public_session_id)
+            .ok_or_else(|| AppError::not_found("Session not found."))?
             .status
             == "completed"
     };
     if completed {
         return Err(AppError::forbidden(
-            "Room is completed and no longer accepts game messages.",
+            "Session is completed and no longer accepts game messages.",
         ));
     }
     Ok(())
@@ -4058,7 +4165,7 @@ async fn privacy_status<A: Game>(
                 persisted_when_produced: true,
                 purpose: "Operate a two-participant session, support reconnection, and preserve its experimental context and outcome."
                     .to_string(),
-                detail: "For each session, Parlando randomly generates a three-word pseudonym in the form adverb-adjective-place-or-object. It also stores internal session and room identifiers; temporary participant-session identifiers used for access and reconnection; research or testing purpose; participant roles; connection status; creation, start, completion, join, and leave times; final status; and the game-supplied completion record."
+                detail: "For each session, Parlando randomly generates a three-word pseudonym in the form adverb-adjective-place-or-object. It also stores internal numeric and public session identifiers; temporary participant-session identifiers used for access and reconnection; research or testing purpose; participant roles; connection status; creation, start, completion, join, and leave times; final status; and the game-supplied completion record."
                     .to_string(),
             },
             PrivacyStorageStatus {
@@ -4074,6 +4181,14 @@ async fn privacy_status<A: Game>(
                 purpose: "Reconstruct the experimental interaction and analyze game behavior and outcomes."
                     .to_string(),
                 detail: "Event order and game_time_ms, measured in milliseconds from game start; acting participant and role; accepted action; game-supplied information about how the action changed the game; and the complete game state after the action."
+                    .to_string(),
+            },
+            PrivacyStorageStatus {
+                category: "Game and agent logs".to_string(),
+                persisted_when_produced: true,
+                purpose: "Preserve implementation-defined diagnostics attached to the session."
+                    .to_string(),
+                detail: "Games and software agents may store arbitrary text with game or runtime-assigned agent attribution. Parlando bounds log size but does not inspect, redact, or otherwise constrain the text's meaning; extension authors must avoid logging credentials or unnecessary personal data."
                     .to_string(),
             },
             PrivacyStorageStatus {
@@ -4151,8 +4266,8 @@ async fn privacy_status<A: Game>(
             release_status: "corpus_candidate".to_string(),
             content_review_required: true,
             formats: vec!["JSON".to_string(), "YAML".to_string(), "CSV".to_string()],
-            identifiers: "Human participants are represented by Parlando's randomly generated three-word pseudonyms, and sessions by separate randomly generated three-word pseudonyms. These identifiers are not derived from names, contact details, IP addresses, or external participant identifiers. Software agents use an identifier derived from their agent implementation rather than a human identity. Internal numeric keys, room identifiers, and temporary connection identifiers are not written to the corpus. The corpus is pseudonymized, not anonymous: participant-authored text can still contain identifying information and must be reviewed before sharing.".to_string(),
-            structure: "The corpus contains one experiment record with game information and configuration, a list of participants, and a list of sessions. Each session contains its own context, both participant-role assignments, the game-supplied completion record, and ordered accepted-action and participant-message events.".to_string(),
+            identifiers: "Human participants are represented by Parlando's randomly generated three-word pseudonyms, and sessions by separate randomly generated three-word pseudonyms. These identifiers are not derived from names, contact details, IP addresses, or external participant identifiers. Software agents use an identifier derived from their agent implementation rather than a human identity. Internal numeric keys, session identifiers, and temporary connection identifiers are not written to the corpus. The corpus is pseudonymized, not anonymous: participant-authored text can still contain identifying information and must be reviewed before sharing.".to_string(),
+            structure: "The corpus contains one experiment record with game information and configuration, a list of participants, and a list of sessions. Each session contains its own context, both participant-role assignments, the game-supplied completion record, and ordered accepted-action, participant-message, and game/agent log events.".to_string(),
             timing: "Session events are stored and exported as game_time_ms, measured in milliseconds from game start. Transcribed speech start and end positions use the same game clock. The corpus derives only waiting time and session duration from lifecycle timestamps; an invalid or missing start time blocks export instead of producing a misleading value. Game-defined configuration, actions, transition information, state, and completion are included unchanged.".to_string(),
             selection_rule: "Parlando builds a new corpus document and writes only the categories listed below. It does not copy a database-shaped document and then remove columns. A database field that has no listed destination is never written to the corpus.".to_string(),
             included_fields: vec![
@@ -4166,7 +4281,7 @@ async fn privacy_status<A: Game>(
                         "release_status",
                         "content_review_required",
                         "privacy_contract_version",
-                        "data_inventory.{participants,sessions,events,actions,messages}",
+                        "data_inventory.{participants,sessions,events,actions,messages,logs}",
                     ]),
                 },
                 PrivacyExportFieldStatus {
@@ -4245,6 +4360,20 @@ async fn privacy_status<A: Game>(
                         "utterance_timing?.{origin=game_clock,start_ms,end_ms}",
                     ]),
                 },
+                PrivacyExportFieldStatus {
+                    section: "Log event".to_string(),
+                    description: "Order and game_time_ms in milliseconds from game start, runtime-owned game or agent source attribution, optional agent participant and role, and complete game- or agent-authored log text."
+                        .to_string(),
+                    fields: privacy_field_names(&[
+                        "index",
+                        "game_time_ms",
+                        "kind=log",
+                        "source",
+                        "participant_id (agent logs only)",
+                        "role (agent logs only)",
+                        "text",
+                    ]),
+                },
             ],
             not_written: vec![
                 "Testing sessions and participants that occur only in testing sessions."
@@ -4252,7 +4381,7 @@ async fn privacy_status<A: Game>(
                 "Consent declarations, participant-information references, and the configured consent text."
                     .to_string(),
                 "Database-only participant creation metadata.".to_string(),
-                "Internal numeric participant and session keys, room identifiers, temporary participant-session identifiers, connection status, and join or leave times."
+                "Internal numeric participant and session keys, session identifiers, temporary participant-session identifiers, connection status, and join or leave times."
                     .to_string(),
                 "Parlando wall-clock timestamps. The corpus writes stored game-clock event and utterance coordinates plus derived waiting and session durations."
                     .to_string(),
@@ -4262,6 +4391,7 @@ async fn privacy_status<A: Game>(
                     "Operational lifecycle, connection, and rejected-input events."
                 }
                 .to_string(),
+                "Game- and agent-defined log text.".to_string(),
                 "Administrator accounts and sessions, server access settings, provider credentials, and other administrator metadata."
                     .to_string(),
             ],
@@ -4625,7 +4755,7 @@ async fn experiment_catalogue_readiness<A: Game>(
     if let Err(error) = config.validate() {
         return (false, Some(error.to_string()), false, Vec::new());
     }
-    if let Err(error) = parse_game_config(state.adapter.as_ref(), &config.game) {
+    if let Err(error) = parse_game_config(state.game_factory.as_ref(), &config.game) {
         return (false, Some(error.to_string()), false, Vec::new());
     }
     let mut issues = Vec::new();
@@ -4866,7 +4996,7 @@ async fn admin_validate_game_config<A: Game>(
         .map_err(|error| AppError::bad_request(format!("Invalid game YAML: {error}")))?;
     validate_game_config_contains_no_secrets(&game)
         .map_err(|error| AppError::bad_request(error.to_string()))?;
-    parse_game_config(state.adapter.as_ref(), &game)
+    parse_game_config(state.game_factory.as_ref(), &game)
         .map_err(|error| AppError::bad_request(format!("Invalid game configuration: {error}")))?;
     Ok(Json(json!({"valid": true})))
 }
@@ -4924,7 +5054,7 @@ async fn admin_save_experiment_config<A: Game>(
         .map_err(|error| AppError::bad_request(error.to_string()))?;
     validate_game_config_contains_no_secrets(&config.game)
         .map_err(|error| AppError::bad_request(error.to_string()))?;
-    parse_game_config(state.adapter.as_ref(), &config.game)
+    parse_game_config(state.game_factory.as_ref(), &config.game)
         .map_err(|error| AppError::bad_request(format!("Invalid game configuration: {error}")))?;
     let revision = state
         .store
@@ -5760,6 +5890,7 @@ fn is_important_admin_event(event: &crate::storage::StoredSessionEvent) -> bool 
         event.event_type.as_str(),
         "agent_action"
             | "conversation_message"
+            | "log"
             | "game_action_accepted"
             | "game_action_rejected"
             | "game_action_submitted"
@@ -5817,6 +5948,10 @@ fn admin_event_title(event_type: &str, payload: &Value) -> &'static str {
             Some("agent") => "Agent message",
             _ => "Conversation message",
         },
+        "log" => match payload.get("source").and_then(Value::as_str) {
+            Some("agent") => "Agent log",
+            _ => "Game log",
+        },
         "game_action_accepted" => "Action accepted",
         "game_action_rejected" => "Action rejected",
         "game_action_submitted" => "Action submitted",
@@ -5837,7 +5972,7 @@ fn admin_event_title(event_type: &str, payload: &Value) -> &'static str {
 /// Extracts the primary readable text from one admin timeline event.
 fn admin_event_text(event_type: &str, payload: &Value) -> Option<String> {
     match event_type {
-        "conversation_message" | "transcript_segment" => payload
+        "conversation_message" | "log" | "transcript_segment" => payload
             .get("text")
             .and_then(Value::as_str)
             .map(str::to_string),
@@ -5864,6 +5999,9 @@ fn admin_event_detail(event_type: &str, payload: &Value) -> Value {
             "origin": payload.get("origin"),
             "sender_role": payload.get("sender_role"),
             "metadata": payload.get("metadata"),
+        }),
+        "log" => json!({
+            "source": payload.get("source"),
         }),
         "transcript_segment" => json!({
             "player": payload.get("player"),
@@ -6265,6 +6403,7 @@ fn corpus_experiment_export(
     let mut semantic_event_count = 0_usize;
     let mut message_count = 0_usize;
     let mut action_count = 0_usize;
+    let mut log_count = 0_usize;
     let sessions = session_rows
         .iter()
         .map(|session| {
@@ -6316,7 +6455,7 @@ fn corpus_experiment_export(
                 .filter(|row| {
                     matches!(
                         row.get("event_type").and_then(Value::as_str),
-                        Some("game_action_accepted" | "conversation_message")
+                        Some("game_action_accepted" | "conversation_message" | "log")
                     )
                 })
                 .map(|row| {
@@ -6333,14 +6472,14 @@ fn corpus_experiment_export(
                     let participant = row
                         .get("actor_participant_id")
                         .and_then(Value::as_i64)
-                        .and_then(|id| participant_ids.get(&id))
-                        .ok_or_else(|| {
-                            export_integrity_error("a semantic event lacks an exported actor")
-                        })?;
+                        .and_then(|id| participant_ids.get(&id));
                     let payload = row.get("payload").unwrap_or(&Value::Null);
                     semantic_event_count += 1;
                     match row.get("event_type").and_then(Value::as_str) {
                         Some("game_action_accepted") => {
+                            let participant = participant.ok_or_else(|| {
+                                export_integrity_error("an action event lacks an exported actor")
+                            })?;
                             action_count += 1;
                             Ok(json!({
                                 "index": index,
@@ -6354,6 +6493,9 @@ fn corpus_experiment_export(
                             }))
                         }
                         Some("conversation_message") => {
+                            let participant = participant.ok_or_else(|| {
+                                export_integrity_error("a message event lacks an exported actor")
+                            })?;
                             message_count += 1;
                             let mut event = json!({
                                 "index": index,
@@ -6378,6 +6520,18 @@ fn corpus_experiment_export(
                                 });
                             }
                             Ok(event)
+                        }
+                        Some("log") => {
+                            log_count += 1;
+                            Ok(json!({
+                                "index": index,
+                                "game_time_ms": game_time_ms,
+                                "kind": "log",
+                                "source": payload.get("source"),
+                                "participant_id": participant,
+                                "role": row.get("actor_role"),
+                                "text": payload.get("text"),
+                            }))
                         }
                         _ => unreachable!(),
                     }
@@ -6421,6 +6575,7 @@ fn corpus_experiment_export(
             "events": semantic_event_count,
             "actions": action_count,
             "messages": message_count,
+            "logs": log_count,
         },
         "experiment": {
             "experiment_id": experiment.get("experiment_id"),
@@ -6554,7 +6709,7 @@ const CORPUS_EXPORT_SCHEMA_V1: &str = include_str!("app/corpus-export-schema-v1.
 
 async fn game_socket<A: Game>(
     State(state): State<Arc<AppState<A>>>,
-    Path(room_id): Path<String>,
+    Path(public_session_id): Path<String>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
@@ -6568,7 +6723,7 @@ where
         .ok_or_else(|| AppError::bad_request("token query parameter is required"))?;
     let claims = state
         .upgrade_tickets
-        .consume(ticket, UpgradePurpose::Game, &room_id)
+        .consume(ticket, UpgradePurpose::Game, &public_session_id)
         .await
         .ok_or_else(|| AppError::forbidden("Invalid or expired game ticket"))?;
     if !state
@@ -6580,7 +6735,7 @@ where
     }
     let participant_session_id = claims.participant_session_id;
     let claimed_role = Some(claims.role);
-    let role = participant_role(&state, &room_id, &participant_session_id).await?;
+    let role = participant_role(&state, &public_session_id, &participant_session_id).await?;
     if claimed_role
         .as_deref()
         .is_some_and(|claimed| claimed != role.as_str())
@@ -6593,7 +6748,14 @@ where
         .max_frame_size(32 * 1024)
         .max_message_size(64 * 1024)
         .on_upgrade(move |socket| async move {
-            websocket_loop(state, socket, room_id, participant_session_id, role).await;
+            websocket_loop(
+                state,
+                socket,
+                public_session_id,
+                participant_session_id,
+                role,
+            )
+            .await;
         }))
 }
 
@@ -6605,7 +6767,7 @@ struct AudioSocketQuery {
 /// Authenticates and upgrades one participant-owned audio transport.
 async fn audio_socket<A: Game>(
     State(state): State<Arc<AppState<A>>>,
-    Path(room_id): Path<String>,
+    Path(public_session_id): Path<String>,
     Query(query): Query<AudioSocketQuery>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
@@ -6616,7 +6778,7 @@ where
     validate_websocket_origin(&state.config, &headers)?;
     let claims = state
         .upgrade_tickets
-        .consume(&query.token, UpgradePurpose::Audio, &room_id)
+        .consume(&query.token, UpgradePurpose::Audio, &public_session_id)
         .await
         .ok_or_else(|| AppError::forbidden("Invalid or expired audio token"))?;
     if !state
@@ -6627,7 +6789,7 @@ where
         #[cfg(not(test))]
         return Err(AppError::forbidden("Audio ticket credential was revoked"));
     }
-    let role = participant_role(&state, &room_id, &claims.participant_session_id).await?;
+    let role = participant_role(&state, &public_session_id, &claims.participant_session_id).await?;
     if role.as_str() != claims.role {
         return Err(AppError::forbidden(
             "Audio token role no longer matches participant",
@@ -6649,10 +6811,10 @@ async fn audio_websocket_loop<A: Game>(
 ) where
     A::State: Serialize,
 {
-    let room_id = claims.room_id.clone();
+    let public_session_id = claims.public_session_id.clone();
     let role = claims.role.clone();
     let participant_session_id = claims.participant_session_id.clone();
-    let connection_key = format!("{room_id}:{role}");
+    let connection_key = format!("{public_session_id}:{role}");
     let liveness = Arc::new(ConnectionLiveness::new());
     let (connection_generation, mut shutdown, replaced) = register_connection(
         &state.audio_connections,
@@ -6663,7 +6825,10 @@ async fn audio_websocket_loop<A: Game>(
     if replaced {
         state.telemetry.record_reconnection();
     }
-    let (generation, mut outbound) = state.audio_rooms.connect(&room_id, &role).await;
+    let (generation, mut outbound) = state
+        .audio_sessions
+        .connect(&public_session_id, &role)
+        .await;
     let (mut sender, mut incoming) = socket.split();
     let send_task = tokio::spawn(async move {
         while let Some(outbound) = outbound.recv().await {
@@ -6690,11 +6855,11 @@ async fn audio_websocket_loop<A: Game>(
         {
             Ok(Ok(session)) => Some(session),
             Ok(Err(error)) => {
-                tracing::warn!(%error, %room_id, "could not start transcription session");
+                tracing::warn!(%error, %public_session_id, "could not start transcription session");
                 state
-                    .audio_rooms
+                    .audio_sessions
                     .send_control(
-                        &room_id,
+                        &public_session_id,
                         &role,
                         json!({"type":"transcriptionStatus","ready":false,"message":"ASR unavailable"}).to_string(),
                     )
@@ -6702,9 +6867,9 @@ async fn audio_websocket_loop<A: Game>(
                 None
             }
             Err(_) => {
-                tracing::warn!(%room_id, "timed out starting transcription session");
-                state.audio_rooms.send_control(
-                    &room_id,
+                tracing::warn!(%public_session_id, "timed out starting transcription session");
+                state.audio_sessions.send_control(
+                    &public_session_id,
                     &role,
                     json!({"type":"transcriptionStatus","ready":false,"message":"ASR startup timed out"}).to_string(),
                 ).await;
@@ -6718,7 +6883,7 @@ async fn audio_websocket_loop<A: Game>(
     let transcription_stream_started_at = Arc::new(OnceLock::<String>::new());
     let event_task = transcription.map(|mut session| {
         let state = state.clone();
-        let room_id = room_id.clone();
+        let public_session_id = public_session_id.clone();
         let role = role.clone();
         let participant_session_id = participant_session_id.clone();
         let transcription_stream_started_at = transcription_stream_started_at.clone();
@@ -6726,23 +6891,23 @@ async fn audio_websocket_loop<A: Game>(
             while let Some(event) = session.events.recv().await {
                 match event {
                     TranscriptionEvent::Ready => {
-                        state.audio_rooms.send_control(&room_id, &role, json!({"type":"transcriptionStatus","ready":true,"message":"ASR listening"}).to_string()).await;
-                        mark_participant_audio_ready(&state, &room_id, &participant_session_id).await;
-                        let _ = state.room_bus(&room_id).await.send(voice_message(&state, &room_id).await);
-                        maybe_start_game(state.clone(), &room_id).await;
+                        state.audio_sessions.send_control(&public_session_id, &role, json!({"type":"transcriptionStatus","ready":true,"message":"ASR listening"}).to_string()).await;
+                        mark_participant_audio_ready(&state, &public_session_id, &participant_session_id).await;
+                        let _ = state.session_bus(&public_session_id).await.send(voice_message(&state, &public_session_id).await);
+                        maybe_start_game(state.clone(), &public_session_id).await;
                     }
                     TranscriptionEvent::FinalUtterance(utterance) => {
                         let Some(stream_started_at) = transcription_stream_started_at.get() else {
-                            tracing::warn!(%room_id, "transcription result arrived without an audio-stream clock origin");
+                            tracing::warn!(%public_session_id, "transcription result arrived without an audio-stream clock origin");
                             continue;
                         };
-                        if let Err(error) = commit_final_transcript(&state, &room_id, &participant_session_id, stream_started_at, utterance).await {
-                            tracing::warn!(error = %error.message, %room_id, "failed to commit final transcript");
+                        if let Err(error) = commit_final_transcript(&state, &public_session_id, &participant_session_id, stream_started_at, utterance).await {
+                            tracing::warn!(error = %error.message, %public_session_id, "failed to commit final transcript");
                         }
                     }
                     TranscriptionEvent::Failed(error) => {
-                        state.audio_rooms.send_control(&room_id, &role, json!({"type":"transcriptionStatus","ready":false,"message":"ASR error"}).to_string()).await;
-                        tracing::warn!(%error, %room_id, "transcription session failed");
+                        state.audio_sessions.send_control(&public_session_id, &role, json!({"type":"transcriptionStatus","ready":false,"message":"ASR error"}).to_string()).await;
+                        tracing::warn!(%error, %public_session_id, "transcription session failed");
                     }
                 }
             }
@@ -6750,19 +6915,19 @@ async fn audio_websocket_loop<A: Game>(
     });
     if transcription_input.is_none() && !state.config.transcription.enabled {
         state
-            .audio_rooms
+            .audio_sessions
             .send_control(
-                &room_id,
+                &public_session_id,
                 &role,
                 json!({"type":"transcriptionStatus","ready":true,"message":"ASR idle"}).to_string(),
             )
             .await;
-        mark_participant_audio_ready(&state, &room_id, &participant_session_id).await;
+        mark_participant_audio_ready(&state, &public_session_id, &participant_session_id).await;
         let _ = state
-            .room_bus(&room_id)
+            .session_bus(&public_session_id)
             .await
-            .send(voice_message(&state, &room_id).await);
-        maybe_start_game(state.clone(), &room_id).await;
+            .send(voice_message(&state, &public_session_id).await);
+        maybe_start_game(state.clone(), &public_session_id).await;
     }
 
     let mut last_activity_touch = Instant::now();
@@ -6800,22 +6965,24 @@ async fn audio_websocket_loop<A: Game>(
                     last_sequence = Some(frame.sequence);
                     last_timestamp_ms = Some(frame.timestamp_ms);
                     if last_activity_touch.elapsed() >= Duration::from_secs(30) {
-                        touch_room_activity(&state, &room_id).await;
+                        touch_session_activity(&state, &public_session_id).await;
                         last_activity_touch = Instant::now();
                     }
                     if !state
-                        .audio_rooms
-                        .is_current(&room_id, &role, &generation)
+                        .audio_sessions
+                        .is_current(&public_session_id, &role, &generation)
                         .await
                     {
                         break;
                     }
                     state
-                        .audio_rooms
-                        .relay_partner(&room_id, &role, bytes)
+                        .audio_sessions
+                        .relay_partner(&public_session_id, &role, bytes)
                         .await;
                     state.telemetry.record_audio_frame();
-                    if transcription_input.is_some() && room_is_running(&state, &room_id).await {
+                    if transcription_input.is_some()
+                        && session_is_running(&state, &public_session_id).await
+                    {
                         if let Some(input) = &transcription_input {
                             let received_at = now_iso();
                             let _ = transcription_stream_started_at.set(received_at);
@@ -6823,7 +6990,7 @@ async fn audio_websocket_loop<A: Game>(
                                 Ok(()) => {}
                                 Err(_) => {
                                     state.telemetry.record_asr_backpressure();
-                                    state.audio_rooms.send_control(&room_id, &role, json!({"type":"transcriptionStatus","ready":false,"message":"ASR is falling behind"}).to_string()).await;
+                                    state.audio_sessions.send_control(&public_session_id, &role, json!({"type":"transcriptionStatus","ready":false,"message":"ASR is falling behind"}).to_string()).await;
                                 }
                             }
                         }
@@ -6832,7 +6999,7 @@ async fn audio_websocket_loop<A: Game>(
                 Err(error) => {
                     dropped_audio_frames += 1;
                     state.telemetry.record_audio_frame_dropped();
-                    tracing::debug!(%error, %room_id, "dropped invalid browser audio frame")
+                    tracing::debug!(%error, %public_session_id, "dropped invalid browser audio frame")
                 }
             },
             Message::Close(_) => break,
@@ -6847,11 +7014,11 @@ async fn audio_websocket_loop<A: Game>(
         .await;
     }
     if dropped_audio_frames > 0 {
-        tracing::debug!(dropped_audio_frames, %room_id, "browser audio frames were dropped");
+        tracing::debug!(dropped_audio_frames, %public_session_id, "browser audio frames were dropped");
     }
     state
-        .audio_rooms
-        .disconnect(&room_id, &role, &generation)
+        .audio_sessions
+        .disconnect(&public_session_id, &role, &generation)
         .await;
     unregister_connection(
         &state.audio_connections,
@@ -6874,13 +7041,13 @@ async fn audio_websocket_loop<A: Game>(
 async fn websocket_loop<A: Game>(
     state: Arc<AppState<A>>,
     socket: WebSocket,
-    room_id: String,
+    public_session_id: String,
     participant_session_id: String,
     role: Seat,
 ) where
     A::State: Serialize,
 {
-    let connection_key = format!("{room_id}:{}", role.as_str());
+    let connection_key = format!("{public_session_id}:{}", role.as_str());
     let liveness = Arc::new(ConnectionLiveness::new());
     let (connection_generation, mut shutdown, replaced) = register_connection(
         &state.game_connections,
@@ -6893,8 +7060,8 @@ async fn websocket_loop<A: Game>(
     }
     {
         let mut memory = state.memory.write().await;
-        if let Some(room) = memory.rooms.get_mut(&room_id) {
-            if let Some(participant) = room.participants.get_mut(&participant_session_id) {
+        if let Some(session) = memory.sessions.get_mut(&public_session_id) {
+            if let Some(participant) = session.participants.get_mut(&participant_session_id) {
                 participant.connected = true;
                 participant.updated_at = now_iso();
             }
@@ -6911,23 +7078,23 @@ async fn websocket_loop<A: Game>(
     .await;
     persist_session_event(
         &state,
-        &room_id,
+        &public_session_id,
         Some(&participant_session_id),
         "participant_connected",
         Value::Null,
         None,
     )
     .await;
-    let bus = state.room_bus(&room_id).await;
+    let bus = state.session_bus(&public_session_id).await;
     let mut receiver = bus.subscribe();
-    if let Some(message) = presence_message(&state, &room_id).await {
+    if let Some(message) = presence_message(&state, &public_session_id).await {
         let _ = bus.send(message);
     }
-    let _ = bus.send(voice_message(&state, &room_id).await);
-    if room_has_started(&state, &room_id).await {
-        send_role_assignment(&state, &room_id, &participant_session_id, role).await;
+    let _ = bus.send(voice_message(&state, &public_session_id).await);
+    if session_has_started(&state, &public_session_id).await {
+        send_role_assignment(&state, &public_session_id, &participant_session_id, role).await;
     } else {
-        maybe_start_game(state.clone(), &room_id).await;
+        maybe_start_game(state.clone(), &public_session_id).await;
     }
     let (mut sender, mut incoming) = socket.split();
     let outbound_participant_session_id = participant_session_id.clone();
@@ -6963,7 +7130,7 @@ async fn websocket_loop<A: Game>(
         if text.len() > 64 * 1024 {
             let _ = bus.send(error_message(
                 &participant_session_id,
-                &room_id,
+                &public_session_id,
                 "message_too_large",
                 true,
             ));
@@ -6973,7 +7140,7 @@ async fn websocket_loop<A: Game>(
             state.telemetry.record_transport_rejected();
             persist_rejected_input(
                 &state,
-                &room_id,
+                &public_session_id,
                 &participant_session_id,
                 "client_message_rejected",
                 "transport_pacing",
@@ -6986,7 +7153,7 @@ async fn websocket_loop<A: Game>(
         let Ok(client_message) = serde_json::from_str::<ClientMessage>(&text) else {
             let _ = bus.send(error_message(
                 &participant_session_id,
-                &room_id,
+                &public_session_id,
                 "invalid_message",
                 false,
             ));
@@ -7001,7 +7168,7 @@ async fn websocket_loop<A: Game>(
         handle_client_message(
             state.clone(),
             &bus,
-            &room_id,
+            &public_session_id,
             &participant_session_id,
             role,
             client_message,
@@ -7018,11 +7185,11 @@ async fn websocket_loop<A: Game>(
     if !still_owner {
         return;
     }
-    flush_rejected_input_aggregates(&state, &room_id, &participant_session_id).await;
+    flush_rejected_input_aggregates(&state, &public_session_id, &participant_session_id).await;
     {
         let mut memory = state.memory.write().await;
-        if let Some(room) = memory.rooms.get_mut(&room_id) {
-            if let Some(participant) = room.participants.get_mut(&participant_session_id) {
+        if let Some(session) = memory.sessions.get_mut(&public_session_id) {
+            if let Some(participant) = session.participants.get_mut(&participant_session_id) {
                 participant.connected = false;
                 participant.updated_at = now_iso();
             }
@@ -7039,43 +7206,47 @@ async fn websocket_loop<A: Game>(
     .await;
     persist_session_event(
         &state,
-        &room_id,
+        &public_session_id,
         Some(&participant_session_id),
         "participant_disconnected",
         Value::Null,
         None,
     )
     .await;
-    let _ = bus.send(presence_message(&state, &room_id).await.unwrap_or_else(|| {
-        ServerMessage::broadcast(ServerPayload::Presence {
-            room_id: room_id.clone(),
-            presence: Value::Null,
-        })
-    }));
+    let _ = bus.send(
+        presence_message(&state, &public_session_id)
+            .await
+            .unwrap_or_else(|| {
+                ServerMessage::broadcast(ServerPayload::Presence {
+                    public_session_id: public_session_id.clone(),
+                    presence: Value::Null,
+                })
+            }),
+    );
 }
 
-/// Atomically records an intentional departure and closes the room to further game input.
-async fn abandon_room<A: Game>(
+/// Atomically records an intentional departure and closes the session to further game input.
+async fn abandon_session<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     participant_session_id: &str,
 ) -> Result<bool> {
-    let transition_lock = room_transition_lock(state, room_id).await;
+    let transition_lock = session_transition_lock(state, public_session_id).await;
     let _transition_guard = transition_lock.lock().await;
     let status = state
         .memory
         .read()
         .await
-        .rooms
-        .get(room_id)
-        .map(|room| room.status.clone())
-        .ok_or_else(|| anyhow!("Room not found."))?;
-    if room_status_is_terminal(&status) {
+        .sessions
+        .get(public_session_id)
+        .map(|session| session.status.clone())
+        .ok_or_else(|| anyhow!("Session not found."))?;
+    if session_status_is_terminal(&status) {
         return Ok(false);
     }
     let event = session_event_record(
         state,
-        room_id,
+        public_session_id,
         Some(participant_session_id),
         "session_abandoned",
         json!({"reason": "participant_left"}),
@@ -7083,9 +7254,34 @@ async fn abandon_room<A: Game>(
     )
     .await?;
     state.store.abandon_session(event).await?;
-    if let Some(room) = state.memory.write().await.rooms.get_mut(room_id) {
-        room.status = "abandoned".to_string();
-        room.updated_at = now_iso();
+    if let Some(session) = state
+        .memory
+        .write()
+        .await
+        .sessions
+        .get_mut(public_session_id)
+    {
+        session.status = "abandoned".to_string();
+        session.updated_at = now_iso();
+    }
+    if state.config.agents.mode == AgentsMode::HumanVsAgent {
+        let agent_id = state
+            .memory
+            .read()
+            .await
+            .sessions
+            .get(public_session_id)
+            .and_then(|session| session.participants.values().find(|p| p.source == "agent"))
+            .map(|participant| participant.participant_session_id.clone());
+        if let Some(agent_id) = agent_id {
+            state
+                .agent_inboxes
+                .write()
+                .await
+                .remove(&agent_key(public_session_id, &agent_id));
+        }
+    } else {
+        shutdown_session_log(state, public_session_id).await;
     }
     Ok(true)
 }
@@ -7093,7 +7289,7 @@ async fn abandon_room<A: Game>(
 async fn handle_client_message<A: Game>(
     state: Arc<AppState<A>>,
     bus: &broadcast::Sender<ServerMessage>,
-    room_id: &str,
+    public_session_id: &str,
     participant_session_id: &str,
     role: Seat,
     message: ClientMessage,
@@ -7103,15 +7299,15 @@ async fn handle_client_message<A: Game>(
     match message {
         ClientMessage::Heartbeat => {
             // Transport liveness only: heartbeats intentionally cause no database write,
-            // room-activity refresh, presence broadcast, or research event.
+            // session-activity refresh, presence broadcast, or research event.
         }
         ClientMessage::Ready => {
             let first_declaration = {
                 let mut memory = state.memory.write().await;
                 memory
-                    .rooms
-                    .get_mut(room_id)
-                    .and_then(|room| room.participants.get_mut(participant_session_id))
+                    .sessions
+                    .get_mut(public_session_id)
+                    .and_then(|session| session.participants.get_mut(participant_session_id))
                     .is_some_and(|participant| {
                         if participant.ready_declared {
                             return false;
@@ -7126,7 +7322,7 @@ async fn handle_client_message<A: Game>(
             }
             if let Err(error) = persist_session_event_required(
                 &state,
-                room_id,
+                public_session_id,
                 Some(participant_session_id),
                 "ready",
                 Value::Null,
@@ -7138,50 +7334,52 @@ async fn handle_client_message<A: Game>(
                     .memory
                     .write()
                     .await
-                    .rooms
-                    .get_mut(room_id)
-                    .and_then(|room| room.participants.get_mut(participant_session_id))
+                    .sessions
+                    .get_mut(public_session_id)
+                    .and_then(|session| session.participants.get_mut(participant_session_id))
                 {
                     participant.ready_declared = false;
                 }
-                tracing::error!(%error, room_id, "could not durably record readiness");
+                tracing::error!(%error, public_session_id, "could not durably record readiness");
                 let _ = bus.send(error_message(
                     participant_session_id,
-                    room_id,
+                    public_session_id,
                     "readiness_failed",
                     true,
                 ));
                 return;
             }
-            touch_room_activity(&state, room_id).await;
-            if let Some(message) = presence_message(&state, room_id).await {
+            touch_session_activity(&state, public_session_id).await;
+            if let Some(message) = presence_message(&state, public_session_id).await {
                 let _ = bus.send(message);
             }
-            let _ = bus.send(voice_message(&state, room_id).await);
+            let _ = bus.send(voice_message(&state, public_session_id).await);
         }
-        ClientMessage::Leave => match abandon_room(&state, room_id, participant_session_id).await {
-            Ok(true) => {
-                let _ = bus.send(ServerMessage::broadcast(ServerPayload::Abandoned {
-                    room_id: room_id.to_string(),
-                    code: "participant_left".to_string(),
-                }));
+        ClientMessage::Leave => {
+            match abandon_session(&state, public_session_id, participant_session_id).await {
+                Ok(true) => {
+                    let _ = bus.send(ServerMessage::broadcast(ServerPayload::Abandoned {
+                        public_session_id: public_session_id.to_string(),
+                        code: "participant_left".to_string(),
+                    }));
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::error!(%error, public_session_id, "could not abandon session");
+                    let _ = bus.send(error_message(
+                        participant_session_id,
+                        public_session_id,
+                        "session_end_failed",
+                        false,
+                    ));
+                }
             }
-            Ok(false) => {}
-            Err(error) => {
-                tracing::error!(%error, room_id, "could not abandon session");
-                let _ = bus.send(error_message(
-                    participant_session_id,
-                    room_id,
-                    "session_end_failed",
-                    false,
-                ));
-            }
-        },
+        }
         ClientMessage::Message { text } => {
             if text.chars().count() > 4_000 {
                 persist_rejected_input(
                     &state,
-                    room_id,
+                    public_session_id,
                     participant_session_id,
                     "chat_message_rejected",
                     "message_too_large",
@@ -7191,7 +7389,7 @@ async fn handle_client_message<A: Game>(
                 .await;
                 let _ = bus.send(error_message(
                     participant_session_id,
-                    room_id,
+                    public_session_id,
                     "message_too_large",
                     false,
                 ));
@@ -7207,7 +7405,7 @@ async fn handle_client_message<A: Game>(
             if !chat_allowed {
                 persist_rejected_input(
                     &state,
-                    room_id,
+                    public_session_id,
                     participant_session_id,
                     "chat_message_rejected",
                     "human_pacing",
@@ -7217,7 +7415,7 @@ async fn handle_client_message<A: Game>(
                 .await;
                 let _ = bus.send(error_message(
                     participant_session_id,
-                    room_id,
+                    public_session_id,
                     "message_rate_limited",
                     false,
                 ));
@@ -7229,13 +7427,17 @@ async fn handle_client_message<A: Game>(
                 source_message_id: None,
                 metadata: json!({"sender_participant_session_id": participant_session_id}),
             };
-            if let Err(error) =
-                add_conversation(State(state.clone()), Path(room_id.to_string()), Json(input)).await
+            if let Err(error) = add_conversation(
+                State(state.clone()),
+                Path(public_session_id.to_string()),
+                Json(input),
+            )
+            .await
             {
-                tracing::warn!(message = %error.message, room_id, "player message was rejected");
+                tracing::warn!(message = %error.message, public_session_id, "player message was rejected");
                 let _ = bus.send(error_message(
                     participant_session_id,
-                    room_id,
+                    public_session_id,
                     "message_rejected",
                     false,
                 ));
@@ -7247,7 +7449,7 @@ async fn handle_client_message<A: Game>(
                 Err(error) => {
                     persist_rejected_action(
                         &state,
-                        room_id,
+                        public_session_id,
                         participant_session_id,
                         "invalid_action_json",
                         &error.to_string(),
@@ -7256,7 +7458,7 @@ async fn handle_client_message<A: Game>(
                     .await;
                     let _ = bus.send(error_message(
                         participant_session_id,
-                        room_id,
+                        public_session_id,
                         "invalid_action",
                         false,
                     ));
@@ -7266,7 +7468,7 @@ async fn handle_client_message<A: Game>(
             if raw_action_bytes.len() > 4 * 1024 {
                 persist_rejected_action(
                     &state,
-                    room_id,
+                    public_session_id,
                     participant_session_id,
                     "action_too_large",
                     "Action payload exceeds 4096 bytes",
@@ -7275,7 +7477,7 @@ async fn handle_client_message<A: Game>(
                 .await;
                 let _ = bus.send(error_message(
                     participant_session_id,
-                    room_id,
+                    public_session_id,
                     "action_too_large",
                     false,
                 ));
@@ -7286,7 +7488,7 @@ async fn handle_client_message<A: Game>(
                 Err(error) => {
                     persist_rejected_action(
                         &state,
-                        room_id,
+                        public_session_id,
                         participant_session_id,
                         "invalid_action",
                         &error.to_string(),
@@ -7295,7 +7497,7 @@ async fn handle_client_message<A: Game>(
                     .await;
                     let _ = bus.send(error_message(
                         participant_session_id,
-                        room_id,
+                        public_session_id,
                         "invalid_action",
                         false,
                     ));
@@ -7305,24 +7507,34 @@ async fn handle_client_message<A: Game>(
             let observed_action = match protocol_json(&action) {
                 Ok(action) => action,
                 Err(error) => {
-                    tracing::error!(%error, room_id, "could not serialize accepted action");
-                    let _ = bus.send(internal_error_message(participant_session_id, room_id));
+                    tracing::error!(%error, public_session_id, "could not serialize accepted action");
+                    let _ = bus.send(internal_error_message(
+                        participant_session_id,
+                        public_session_id,
+                    ));
                     return;
                 }
             };
-            match submit_action(state.clone(), room_id, participant_session_id, role, action).await
+            match submit_action(
+                state.clone(),
+                public_session_id,
+                participant_session_id,
+                role,
+                action,
+            )
+            .await
             {
                 Ok((completed, completion)) => {
                     broadcast_player_views(
                         state.clone(),
-                        room_id,
+                        public_session_id,
                         role.player_role(),
                         observed_action,
                     )
                     .await;
                     if completed {
                         let _ = bus.send(ServerMessage::broadcast(ServerPayload::Completed {
-                            room_id: room_id.to_string(),
+                            public_session_id: public_session_id.to_string(),
                             completion: completion.unwrap_or(Value::Null),
                         }));
                     }
@@ -7337,13 +7549,16 @@ async fn handle_client_message<A: Game>(
                                 .map(|rejection| rejection.0)
                         });
                     let Some(rejection_code) = rejection_code else {
-                        tracing::error!(%error, room_id, "action submission failed internally");
-                        let _ = bus.send(internal_error_message(participant_session_id, room_id));
+                        tracing::error!(%error, public_session_id, "action submission failed internally");
+                        let _ = bus.send(internal_error_message(
+                            participant_session_id,
+                            public_session_id,
+                        ));
                         return;
                     };
                     persist_rejected_action(
                         &state,
-                        room_id,
+                        public_session_id,
                         participant_session_id,
                         rejection_code,
                         rejection_code,
@@ -7352,7 +7567,7 @@ async fn handle_client_message<A: Game>(
                     .await;
                     let _ = bus.send(action_rejected_message(
                         participant_session_id,
-                        room_id,
+                        public_session_id,
                         rejection_code,
                     ));
                 }
@@ -7364,7 +7579,7 @@ async fn handle_client_message<A: Game>(
 /// Persists one analyzable, size-bounded rejected-action event.
 async fn persist_rejected_action<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     participant_session_id: &str,
     reason_code: &str,
     error: &str,
@@ -7372,7 +7587,7 @@ async fn persist_rejected_action<A: Game>(
 ) {
     persist_rejected_input(
         state,
-        room_id,
+        public_session_id,
         participant_session_id,
         "game_action_rejected",
         reason_code,
@@ -7385,7 +7600,7 @@ async fn persist_rejected_action<A: Game>(
 /// Persists the first and then one periodic aggregate for repeated rejected inputs.
 async fn persist_rejected_input<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     participant_session_id: &str,
     event_type: &'static str,
     reason_code: &str,
@@ -7398,7 +7613,7 @@ async fn persist_rejected_input<A: Game>(
         _ => {}
     }
     let now = chrono::Utc::now().timestamp();
-    let key = format!("{room_id}\0{participant_session_id}\0{event_type}\0{reason_code}");
+    let key = format!("{public_session_id}\0{participant_session_id}\0{event_type}\0{reason_code}");
     let aggregate = {
         let mut windows = state.rejection_windows.write().await;
         let window = windows.entry(key).or_insert(RejectionWindow {
@@ -7441,7 +7656,7 @@ async fn persist_rejected_input<A: Game>(
     }
     persist_session_event(
         state,
-        room_id,
+        public_session_id,
         Some(participant_session_id),
         event_type,
         payload,
@@ -7453,10 +7668,10 @@ async fn persist_rejected_input<A: Game>(
 /// Flushes suppressed rejection counts when the participant's current game transport ends.
 async fn flush_rejected_input_aggregates<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     participant_session_id: &str,
 ) {
-    let prefix = format!("{room_id}\0{participant_session_id}\0");
+    let prefix = format!("{public_session_id}\0{participant_session_id}\0");
     let aggregates = {
         let mut windows = state.rejection_windows.write().await;
         let keys = windows
@@ -7484,7 +7699,7 @@ async fn flush_rejected_input_aggregates<A: Game>(
     for (event_type, reason_code, window) in aggregates {
         persist_session_event(
             state,
-            room_id,
+            public_session_id,
             Some(participant_session_id),
             event_type,
             json!({
@@ -7502,7 +7717,7 @@ async fn flush_rejected_input_aggregates<A: Game>(
 
 async fn submit_action<A: Game>(
     state: Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     participant_session_id: &str,
     role: Seat,
     action: A::Action,
@@ -7511,32 +7726,32 @@ where
     A::State: Serialize,
 {
     let player = role.player_role();
-    let transition_lock = room_transition_lock(&state, room_id).await;
+    let transition_lock = session_transition_lock(&state, public_session_id).await;
     let _transition_guard = transition_lock.lock().await;
     let (after, completion, transition_metadata) = {
         let memory = state.memory.read().await;
-        let room = memory
-            .rooms
-            .get(room_id)
-            .ok_or_else(|| anyhow!("Room not found."))?;
-        if room_status_is_terminal(&room.status) {
+        let session = memory
+            .sessions
+            .get(public_session_id)
+            .ok_or_else(|| anyhow!("Session not found."))?;
+        if session_status_is_terminal(&session.status) {
             return Err(anyhow!(SubmissionRejection("session_complete")));
         }
-        if !room_ready_for_game::<A>(&state.config, room) {
+        if !session_ready_for_game::<A>(&state.config, session) {
             if speechmatics_readiness_required(&state.config) {
                 return Err(anyhow!(SubmissionRejection("transcription_not_ready")));
             }
             return Err(anyhow!(SubmissionRejection("players_not_ready")));
         }
-        let after = state
-            .adapter
-            .apply_action(&room.state, &action, player)
+        let after = session
+            .game
+            .apply_action(&session.state, &action, player)
             .map_err(|rejection| anyhow!(rejection))?;
-        let completion = state.adapter.completion(&after);
+        let completion = session.game.completion(&after);
         let transition_metadata =
-            state
-                .adapter
-                .transition_metadata(&room.state, &after, &action, player);
+            session
+                .game
+                .transition_metadata(&session.state, &after, &action, player);
         (after, completion, transition_metadata)
     };
     let completed = completion.is_some();
@@ -7550,7 +7765,7 @@ where
     let mut durable_events = vec![
         session_event_record(
             &state,
-            room_id,
+            public_session_id,
             Some(participant_session_id),
             "game_action_accepted",
             accepted_payload,
@@ -7562,7 +7777,7 @@ where
         durable_events.push(
             session_event_record(
                 &state,
-                room_id,
+                public_session_id,
                 Some(participant_session_id),
                 "session_completed",
                 completion_json.clone().unwrap_or(Value::Null),
@@ -7579,29 +7794,39 @@ where
         )
         .await
     {
-        tracing::error!(%error, room_id, "could not commit game transition");
+        tracing::error!(%error, public_session_id, "could not commit game transition");
         return Err(anyhow!("Action could not be committed."));
     }
     state.telemetry.record_action_accepted();
     {
         let mut memory = state.memory.write().await;
-        let room = memory
-            .rooms
-            .get_mut(room_id)
-            .ok_or_else(|| anyhow!("Room not found."))?;
-        room.state = after;
-        room.updated_at = now_iso();
+        let session = memory
+            .sessions
+            .get_mut(public_session_id)
+            .ok_or_else(|| anyhow!("Session not found."))?;
+        session.state = after;
+        session.updated_at = now_iso();
         if completed {
-            room.status = "completed".to_string();
+            session.status = "completed".to_string();
         }
     }
-    notify_agents_of_action(&state, room_id, player, action.clone(), completion).await;
+    notify_agents_of_action(
+        &state,
+        public_session_id,
+        player,
+        action.clone(),
+        completion,
+    )
+    .await;
+    if completed && state.config.agents.mode == AgentsMode::HumanVsHuman {
+        shutdown_session_log(&state, public_session_id).await;
+    }
     Ok((completed, completion_json))
 }
 
 async fn broadcast_player_views<A: Game>(
     state: Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     actor: PlayerRole,
     action: Value,
 ) where
@@ -7610,24 +7835,25 @@ async fn broadcast_player_views<A: Game>(
     let participants = {
         let memory = state.memory.read().await;
         memory
-            .rooms
-            .get(room_id)
-            .map(|room| {
-                room.participants
+            .sessions
+            .get(public_session_id)
+            .map(|session| {
+                session
+                    .participants
                     .values()
                     .map(|p| (p.participant_session_id.clone(), p.role))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()
     };
-    let bus = state.room_bus(room_id).await;
+    let bus = state.session_bus(public_session_id).await;
     for (participant_session_id, role) in participants {
-        if let Ok(response) = room_response(&state, room_id, role).await {
+        if let Ok(response) = session_response(&state, public_session_id, role).await {
             if let Some(observation) = response.observation {
                 let _ = bus.send(ServerMessage::targeted(
                     participant_session_id,
                     ServerPayload::Transition {
-                        room_id: room_id.to_string(),
+                        public_session_id: public_session_id.to_string(),
                         actor: actor.as_str().to_string(),
                         action: action.clone(),
                         observation,
@@ -7639,18 +7865,19 @@ async fn broadcast_player_views<A: Game>(
     }
 }
 
-async fn maybe_start_room_agents<A: Game>(state: Arc<AppState<A>>, room_id: &str)
+async fn maybe_start_session_agents<A: Game>(state: Arc<AppState<A>>, public_session_id: &str)
 where
     A::State: Serialize,
 {
     let agents = {
         let memory = state.memory.read().await;
         memory
-            .rooms
-            .get(room_id)
-            .filter(|room| room_ready_for_game::<A>(&state.config, room))
-            .map(|room| {
-                room.participants
+            .sessions
+            .get(public_session_id)
+            .filter(|session| session_ready_for_game::<A>(&state.config, session))
+            .map(|session| {
+                session
+                    .participants
                     .values()
                     .filter(|participant| participant.source == "agent")
                     .map(|participant| {
@@ -7661,12 +7888,12 @@ where
             .unwrap_or_default()
     };
     for (participant_session_id, role) in agents {
-        let key = agent_key(room_id, &participant_session_id);
+        let key = agent_key(public_session_id, &participant_session_id);
         let agent = state.pending_agents.lock().await.remove(&key);
         if let Some(agent) = agent {
             maybe_start_agent(
                 state.clone(),
-                room_id.to_string(),
+                public_session_id.to_string(),
                 participant_session_id,
                 role,
                 agent,
@@ -7676,9 +7903,9 @@ where
     }
 }
 
-/// Builds the stable map key used for one room-local agent instance.
-fn agent_key(room_id: &str, participant_session_id: &str) -> String {
-    format!("{room_id}:{participant_session_id}")
+/// Builds the stable map key used for one session-local agent instance.
+fn agent_key(public_session_id: &str, participant_session_id: &str) -> String {
+    format!("{public_session_id}:{participant_session_id}")
 }
 
 /// Converts a wire-format role string into a player role.
@@ -7690,26 +7917,26 @@ fn player_role_from_str(value: &str) -> Option<PlayerRole> {
     }
 }
 
-/// Returns the currently available actions for an agent role in a room.
+/// Returns the currently available actions for an agent role in a session.
 async fn agent_available_actions<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     role: Seat,
 ) -> Result<Option<Vec<A::Action>>> {
     let memory = state.memory.read().await;
-    let room = memory
-        .rooms
-        .get(room_id)
-        .ok_or_else(|| anyhow!("Room not found."))?;
-    Ok(state
-        .adapter
-        .available_actions(&room.state, role.player_role()))
+    let session = memory
+        .sessions
+        .get(public_session_id)
+        .ok_or_else(|| anyhow!("Session not found."))?;
+    Ok(session
+        .game
+        .available_actions(&session.state, role.player_role()))
 }
 
-/// Sends an accepted-action observation to every started agent in the room.
+/// Sends an accepted-action observation to every started agent in the session.
 async fn notify_agents_of_action<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     actor: PlayerRole,
     action: A::Action,
     completion: Option<A::Completion>,
@@ -7718,21 +7945,22 @@ async fn notify_agents_of_action<A: Game>(
 {
     let observations = {
         let memory = state.memory.read().await;
-        let Some(room) = memory.rooms.get(room_id) else {
+        let Some(session) = memory.sessions.get(public_session_id) else {
             return;
         };
-        room.participants
+        session
+            .participants
             .values()
             .filter(|participant| participant.source == "agent")
             .map(|participant| {
                 (
-                    agent_key(room_id, &participant.participant_session_id),
+                    agent_key(public_session_id, &participant.participant_session_id),
                     AgentObservation::Action {
                         actor,
                         action: action.clone(),
-                        resulting_observation: state
-                            .adapter
-                            .observation(&room.state, participant.role.player_role()),
+                        resulting_observation: session
+                            .game
+                            .observation(&session.state, participant.role.player_role()),
                         completion: completion.clone(),
                     },
                 )
@@ -7750,21 +7978,22 @@ async fn notify_agents_of_action<A: Game>(
 /// Sends a player message only to agents controlling the other role.
 async fn notify_agents_of_message<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     speaker: PlayerRole,
     text: String,
 ) {
     let keys = {
         let memory = state.memory.read().await;
-        let Some(room) = memory.rooms.get(room_id) else {
+        let Some(session) = memory.sessions.get(public_session_id) else {
             return;
         };
-        room.participants
+        session
+            .participants
             .values()
             .filter(|participant| {
                 participant.source == "agent" && participant.role.player_role() != speaker
             })
-            .map(|participant| agent_key(room_id, &participant.participant_session_id))
+            .map(|participant| agent_key(public_session_id, &participant.participant_session_id))
             .collect::<Vec<_>>()
     };
     let inboxes = state.agent_inboxes.read().await;
@@ -7794,7 +8023,7 @@ fn flatten_agent_timeout<T>(
 /// Persists and applies one validated agent response.
 async fn handle_agent_response<A: Game>(
     state: Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     participant_session_id: &str,
     role: Seat,
     response: AgentResponse<A::Action>,
@@ -7808,21 +8037,33 @@ where
         let observed_action = protocol_json(&action)?;
         persist_session_event(
             &state,
-            room_id,
+            public_session_id,
             Some(participant_session_id),
             "agent_action",
             json!({"action": protocol_json(&action).unwrap_or(Value::Null)}),
             None,
         )
         .await;
-        outcome =
-            submit_action(state.clone(), room_id, participant_session_id, role, action).await?;
-        broadcast_player_views(state.clone(), room_id, role.player_role(), observed_action).await;
+        outcome = submit_action(
+            state.clone(),
+            public_session_id,
+            participant_session_id,
+            role,
+            action,
+        )
+        .await?;
+        broadcast_player_views(
+            state.clone(),
+            public_session_id,
+            role.player_role(),
+            observed_action,
+        )
+        .await;
     }
     if let Some(text) = message {
         if let Ok(Json(message)) = add_conversation(
             State(state.clone()),
-            Path(room_id.to_string()),
+            Path(public_session_id.to_string()),
             Json(ConversationMessageIn {
                 text,
                 origin: "agent".to_string(),
@@ -7832,7 +8073,7 @@ where
         )
         .await
         {
-            speak_agent_message(&state, room_id, &message).await;
+            speak_agent_message(&state, public_session_id, &message).await;
         }
     }
     Ok(outcome)
@@ -7842,7 +8083,7 @@ where
 async fn request_agent_decision<A: Game>(
     state: Arc<AppState<A>>,
     agent: &mut Box<dyn Agent<A> + Send>,
-    room_id: &str,
+    public_session_id: &str,
     participant_session_id: &str,
     role: Seat,
     timeout: f64,
@@ -7850,7 +8091,7 @@ async fn request_agent_decision<A: Game>(
 where
     A::State: Serialize,
 {
-    let available_actions = agent_available_actions(&state, room_id, role).await?;
+    let available_actions = agent_available_actions(&state, public_session_id, role).await?;
     let result = tokio::time::timeout(
         Duration::from_secs_f64(timeout),
         agent.respond(available_actions),
@@ -7861,7 +8102,7 @@ where
     };
     let outcome = handle_agent_response(
         state.clone(),
-        room_id,
+        public_session_id,
         participant_session_id,
         role,
         response,
@@ -7873,7 +8114,7 @@ where
 /// Converts one trusted agent message to speech with a network timeout but no application quota.
 async fn speak_agent_message<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     message: &ConversationMessageResponse,
 ) {
     let Some(provider) = state.tts_provider.clone() else {
@@ -7883,7 +8124,7 @@ async fn speak_agent_message<A: Game>(
     let mut failed = false;
     persist_tts_diagnostic(
         state,
-        room_id,
+        public_session_id,
         "tts_message_started",
         json!({"message_id": message.id}),
     )
@@ -7901,7 +8142,7 @@ async fn speak_agent_message<A: Game>(
                     saw_audio = true;
                     persist_tts_diagnostic(
                         state,
-                        room_id,
+                        public_session_id,
                         "tts_first_audio",
                         json!({
                             "message_id": message.id,
@@ -7914,7 +8155,7 @@ async fn speak_agent_message<A: Game>(
             }
             persist_tts_diagnostic(
                 state,
-                room_id,
+                public_session_id,
                 "tts_audio_summary",
                 json!({
                     "message_id": message.id,
@@ -7928,16 +8169,19 @@ async fn speak_agent_message<A: Game>(
             if let Some(publisher) = state.audio_publisher.clone() {
                 persist_tts_diagnostic(
                     state,
-                    room_id,
+                    public_session_id,
                     "tts_publish_started",
                     json!({"message_id": message.id}),
                 )
                 .await;
-                match publisher.publish(room_id, &message.id, &chunks).await {
+                match publisher
+                    .publish(public_session_id, &message.id, &chunks)
+                    .await
+                {
                     Ok(summary) => {
                         persist_tts_diagnostic(
                             state,
-                            room_id,
+                            public_session_id,
                             "tts_publish_completed",
                             json!({
                                 "message_id": message.id,
@@ -7953,7 +8197,7 @@ async fn speak_agent_message<A: Game>(
                         failed = true;
                         persist_tts_diagnostic(
                             state,
-                            room_id,
+                            public_session_id,
                             "tts_publish_failed",
                             json!({"message_id": message.id, "error": error.to_string()}),
                         )
@@ -7963,7 +8207,7 @@ async fn speak_agent_message<A: Game>(
             }
             persist_tts_diagnostic(
                 state,
-                room_id,
+                public_session_id,
                 "tts_message_completed",
                 json!({"message_id": message.id}),
             )
@@ -7973,7 +8217,7 @@ async fn speak_agent_message<A: Game>(
             failed = true;
             persist_tts_diagnostic(
                 state,
-                room_id,
+                public_session_id,
                 "tts_message_failed",
                 json!({"message_id": message.id, "error": error.to_string()}),
             )
@@ -7983,7 +8227,7 @@ async fn speak_agent_message<A: Game>(
             failed = true;
             persist_tts_diagnostic(
                 state,
-                room_id,
+                public_session_id,
                 "tts_message_failed",
                 json!({"message_id": message.id, "error": "TTS network timeout"}),
             )
@@ -7996,13 +8240,13 @@ async fn speak_agent_message<A: Game>(
 // Persists one TTS diagnostic event into the evaluation event stream.
 async fn persist_tts_diagnostic<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     event: &str,
     metadata: Value,
 ) {
     persist_session_event(
         state,
-        room_id,
+        public_session_id,
         None,
         "tts_diagnostic",
         json!({
@@ -8016,7 +8260,7 @@ async fn persist_tts_diagnostic<A: Game>(
 
 async fn maybe_start_agent<A: Game>(
     state: Arc<AppState<A>>,
-    room_id: String,
+    public_session_id: String,
     participant_session_id: String,
     role: Seat,
     mut agent: Box<dyn Agent<A> + Send>,
@@ -8026,7 +8270,7 @@ async fn maybe_start_agent<A: Game>(
     let Some(factory) = state.agent_factory.clone() else {
         return;
     };
-    let key = format!("{room_id}:{participant_session_id}");
+    let key = format!("{public_session_id}:{participant_session_id}");
     {
         let mut started = state.started_agents.write().await;
         if !started.insert(key.clone()) {
@@ -8063,8 +8307,8 @@ async fn maybe_start_agent<A: Game>(
         });
         {
             let mut memory = state.memory.write().await;
-            if let Some(room) = memory.rooms.get_mut(&room_id) {
-                if let Some(participant) = room.participants.get_mut(&participant_session_id) {
+            if let Some(session) = memory.sessions.get_mut(&public_session_id) {
+                if let Some(participant) = session.participants.get_mut(&participant_session_id) {
                     participant.connected = true;
                     participant.updated_at = now_iso();
                 }
@@ -8081,7 +8325,7 @@ async fn maybe_start_agent<A: Game>(
         .await;
         persist_session_event(
             &state,
-            &room_id,
+            &public_session_id,
             Some(&participant_session_id),
             "participant_connected",
             json!({
@@ -8092,14 +8336,13 @@ async fn maybe_start_agent<A: Game>(
         )
         .await;
         let (sender, mut receiver) = mpsc::channel(64);
-        state
-            .agent_inboxes
-            .write()
-            .await
-            .insert(agent_key(&room_id, &participant_session_id), sender);
+        state.agent_inboxes.write().await.insert(
+            agent_key(&public_session_id, &participant_session_id),
+            sender,
+        );
         persist_session_event(
             &state,
-            &room_id,
+            &public_session_id,
             Some(&participant_session_id),
             "agent_started",
             json!({
@@ -8121,9 +8364,9 @@ async fn maybe_start_agent<A: Game>(
         let initial_observation = {
             let memory = state.memory.read().await;
             memory
-                .rooms
-                .get(&room_id)
-                .map(|room| state.adapter.observation(&room.state, role.player_role()))
+                .sessions
+                .get(&public_session_id)
+                .map(|session| session.game.observation(&session.state, role.player_role()))
         };
         let Some(initial_observation) = initial_observation else {
             return;
@@ -8136,7 +8379,7 @@ async fn maybe_start_agent<A: Game>(
         if let Err(error) = flatten_agent_timeout(started, "agent start timeout") {
             persist_session_event(
                 &state,
-                &room_id,
+                &public_session_id,
                 Some(&participant_session_id),
                 "agent_error",
                 json!({"last_error": error.to_string(), "phase": "start"}),
@@ -8158,7 +8401,7 @@ async fn maybe_start_agent<A: Game>(
                 match request_agent_decision(
                     state.clone(),
                     &mut agent,
-                    &room_id,
+                    &public_session_id,
                     &participant_session_id,
                     role,
                     timeout,
@@ -8168,13 +8411,12 @@ async fn maybe_start_agent<A: Game>(
                     Ok(Some((completed, completion))) => {
                         if completed {
                             awaiting_completion = true;
-                            let _ = state
-                                .room_bus(&room_id)
-                                .await
-                                .send(ServerMessage::broadcast(ServerPayload::Completed {
-                                    room_id: room_id.clone(),
+                            let _ = state.session_bus(&public_session_id).await.send(
+                                ServerMessage::broadcast(ServerPayload::Completed {
+                                    public_session_id: public_session_id.clone(),
                                     completion: completion.unwrap_or(Value::Null),
-                                }));
+                                }),
+                            );
                         }
                     }
                     Ok(None) => {}
@@ -8188,7 +8430,7 @@ async fn maybe_start_agent<A: Game>(
                         } else {
                             persist_session_event(
                                 &state,
-                                &room_id,
+                                &public_session_id,
                                 Some(&participant_session_id),
                                 "agent_error",
                                 json!({"last_error": last_error, "phase": "runtime"}),
@@ -8202,7 +8444,7 @@ async fn maybe_start_agent<A: Game>(
                 if invalid_actions >= limit {
                     persist_session_event(
                         &state,
-                        &room_id,
+                        &public_session_id,
                         Some(&participant_session_id),
                         "agent_error",
                         json!({"last_error": last_error}),
@@ -8252,7 +8494,7 @@ async fn maybe_start_agent<A: Game>(
                 if let Err(error) = flatten_agent_timeout(finished, "agent finish timeout") {
                     persist_session_event(
                         &state,
-                        &room_id,
+                        &public_session_id,
                         Some(&participant_session_id),
                         "agent_error",
                         json!({"last_error": error.to_string(), "phase": "finish"}),
@@ -8265,7 +8507,7 @@ async fn maybe_start_agent<A: Game>(
             if invalid_actions >= limit {
                 persist_session_event(
                     &state,
-                    &room_id,
+                    &public_session_id,
                     Some(&participant_session_id),
                     "agent_error",
                     json!({"last_error": last_error}),
@@ -8280,13 +8522,14 @@ async fn maybe_start_agent<A: Game>(
             .agent_inboxes
             .write()
             .await
-            .remove(&agent_key(&room_id, &participant_session_id));
+            .remove(&agent_key(&public_session_id, &participant_session_id));
         match tokio::time::timeout(Duration::from_secs(5), agent.shutdown()).await {
             Ok(Ok(())) => {}
-            Ok(Err(error)) => tracing::warn!(%error, room_id, "agent shutdown failed"),
-            Err(error) => tracing::warn!(%error, room_id, "agent shutdown timed out"),
+            Ok(Err(error)) => tracing::warn!(%error, public_session_id, "agent shutdown failed"),
+            Err(error) => tracing::warn!(%error, public_session_id, "agent shutdown timed out"),
         }
         state.started_agents.write().await.remove(&key);
+        shutdown_session_log(&state, &public_session_id).await;
     });
 }
 
@@ -8325,32 +8568,42 @@ async fn require_consent<A: Game>(
     Ok(())
 }
 
-async fn require_room<A: Game>(state: &Arc<AppState<A>>, room_id: &str) -> Result<(), AppError> {
-    if state.memory.read().await.rooms.contains_key(room_id) {
+async fn require_session<A: Game>(
+    state: &Arc<AppState<A>>,
+    public_session_id: &str,
+) -> Result<(), AppError> {
+    if state
+        .memory
+        .read()
+        .await
+        .sessions
+        .contains_key(public_session_id)
+    {
         Ok(())
     } else {
-        Err(AppError::not_found("Room not found."))
+        Err(AppError::not_found("Session not found."))
     }
 }
 
 async fn participant_role<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     participant_session_id: &str,
 ) -> Result<Seat, AppError> {
     let memory = state.memory.read().await;
-    let room = memory
-        .rooms
-        .get(room_id)
-        .ok_or_else(|| AppError::not_found("Room not found."))?;
-    room.participants
+    let session = memory
+        .sessions
+        .get(public_session_id)
+        .ok_or_else(|| AppError::not_found("Session not found."))?;
+    session
+        .participants
         .get(participant_session_id)
         .map(|participant| participant.role)
-        .ok_or_else(|| AppError::forbidden("Participant is not in this room."))
+        .ok_or_else(|| AppError::forbidden("Participant is not in this session."))
 }
 
-fn next_role<S>(room: &GameRoom<S>) -> Option<Seat> {
-    let roles = room
+fn next_role<G: Game>(session: &LiveSession<G>) -> Option<Seat> {
+    let roles = session
         .participants
         .values()
         .map(|p| p.role)
@@ -8364,13 +8617,13 @@ fn next_role<S>(room: &GameRoom<S>) -> Option<Seat> {
     }
 }
 
-/// Returns whether room start must wait for Speechmatics setup to finish.
+/// Returns whether session start must wait for Speechmatics setup to finish.
 fn speechmatics_readiness_required(config: &ExperimentConfig) -> bool {
     config.transcription.enabled && config.transcription.provider == "speechmatics"
 }
 
-/// Returns whether one room participant can take part in game progression.
-fn participant_ready_for_game(config: &ExperimentConfig, participant: &RoomParticipant) -> bool {
+/// Returns whether one session participant can take part in game progression.
+fn participant_ready_for_game(config: &ExperimentConfig, participant: &SessionParticipant) -> bool {
     participant.connected
         && (participant.source == "agent"
             || participant.source == "worker"
@@ -8379,8 +8632,8 @@ fn participant_ready_for_game(config: &ExperimentConfig, participant: &RoomParti
 }
 
 /// Returns whether both player roles are connected and past required audio setup.
-fn room_ready_for_game<A: Game>(config: &ExperimentConfig, room: &GameRoom<A::State>) -> bool {
-    let ready_roles = room
+fn session_ready_for_game<A: Game>(config: &ExperimentConfig, session: &LiveSession<A>) -> bool {
+    let ready_roles = session
         .participants
         .values()
         .filter(|participant| participant_ready_for_game(config, participant))
@@ -8389,10 +8642,10 @@ fn room_ready_for_game<A: Game>(config: &ExperimentConfig, room: &GameRoom<A::St
     ready_roles == HashSet::from([PlayerRole::A, PlayerRole::B])
 }
 
-/// Marks one participant's room-local audio/STT setup as complete.
+/// Marks one participant's session-local audio/STT setup as complete.
 async fn mark_participant_audio_ready<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     participant_session_id: &str,
 ) where
     A::State: Serialize,
@@ -8400,9 +8653,9 @@ async fn mark_participant_audio_ready<A: Game>(
     let changed = {
         let mut memory = state.memory.write().await;
         memory
-            .rooms
-            .get_mut(room_id)
-            .and_then(|room| room.participants.get_mut(participant_session_id))
+            .sessions
+            .get_mut(public_session_id)
+            .and_then(|session| session.participants.get_mut(participant_session_id))
             .map(|participant| {
                 let changed = !participant.audio_ready;
                 participant.audio_ready = true;
@@ -8412,22 +8665,22 @@ async fn mark_participant_audio_ready<A: Game>(
             .unwrap_or(false)
     };
     if changed {
-        tracing::debug!(%room_id, %participant_session_id, "participant transcription initialized");
+        tracing::debug!(%public_session_id, %participant_session_id, "participant transcription initialized");
     }
 }
 
-/// Starts a room once all humans/agents and required audio setup are ready.
-async fn maybe_start_game<A: Game>(state: Arc<AppState<A>>, room_id: &str)
+/// Starts a session once all humans/agents and required audio setup are ready.
+async fn maybe_start_game<A: Game>(state: Arc<AppState<A>>, public_session_id: &str)
 where
     A::State: Serialize,
 {
-    let transition_lock = room_transition_lock(&state, room_id).await;
+    let transition_lock = session_transition_lock(&state, public_session_id).await;
     let _transition_guard = transition_lock.lock().await;
     let durable_session = {
         let memory = state.memory.read().await;
-        memory.rooms.get(room_id).and_then(|room| {
-            (room.status == "waiting" && room_ready_for_game::<A>(&state.config, room))
-                .then(|| (room.experiment_id.clone(), room.session_id))
+        memory.sessions.get(public_session_id).and_then(|session| {
+            (session.status == "waiting" && session_ready_for_game::<A>(&state.config, session))
+                .then(|| (session.experiment_id.clone(), session.session_id))
         })
     };
     let Some((experiment_id, session_id)) = durable_session else {
@@ -8437,33 +8690,34 @@ where
         Ok(true) => {}
         Ok(false) => {
             tracing::warn!(
-                room_id,
+                public_session_id,
                 session_id,
                 "waiting session was not durably startable"
             );
             return;
         }
         Err(error) => {
-            tracing::error!(%error, room_id, session_id, "could not durably start session");
+            tracing::error!(%error, public_session_id, session_id, "could not durably start session");
             return;
         }
     }
     {
         let mut memory = state.memory.write().await;
-        let Some(room) = memory.rooms.get_mut(room_id) else {
+        let Some(session) = memory.sessions.get_mut(public_session_id) else {
             return;
         };
-        room.status = "running".to_string();
-        room.updated_at = now_iso();
+        session.status = "running".to_string();
+        session.updated_at = now_iso();
     }
 
     let participants = {
         let memory = state.memory.read().await;
         memory
-            .rooms
-            .get(room_id)
-            .map(|room| {
-                room.participants
+            .sessions
+            .get(public_session_id)
+            .map(|session| {
+                session
+                    .participants
                     .values()
                     .map(|participant| {
                         (participant.participant_session_id.clone(), participant.role)
@@ -8473,45 +8727,45 @@ where
             .unwrap_or_default()
     };
     for (participant_session_id, role) in participants {
-        send_role_assignment(&state, room_id, &participant_session_id, role).await;
+        send_role_assignment(&state, public_session_id, &participant_session_id, role).await;
     }
-    maybe_start_room_agents(state, room_id).await;
+    maybe_start_session_agents(state, public_session_id).await;
 }
 
-/// Returns whether a room has already left the waiting-room phase.
-async fn room_has_started<A: Game>(state: &Arc<AppState<A>>, room_id: &str) -> bool {
+/// Returns whether a session has already left the waiting-session phase.
+async fn session_has_started<A: Game>(state: &Arc<AppState<A>>, public_session_id: &str) -> bool {
     let memory = state.memory.read().await;
     memory
-        .rooms
-        .get(room_id)
-        .is_some_and(|room| room.status != "waiting")
+        .sessions
+        .get(public_session_id)
+        .is_some_and(|session| session.status != "waiting")
 }
 
 /// Returns whether game-clock time is active and participant audio may be transcribed.
-async fn room_is_running<A: Game>(state: &Arc<AppState<A>>, room_id: &str) -> bool {
+async fn session_is_running<A: Game>(state: &Arc<AppState<A>>, public_session_id: &str) -> bool {
     let memory = state.memory.read().await;
     memory
-        .rooms
-        .get(room_id)
-        .is_some_and(|room| room.status == "running")
+        .sessions
+        .get(public_session_id)
+        .is_some_and(|session| session.status == "running")
 }
 
 /// Sends the targeted game-start payload for one participant.
 async fn send_role_assignment<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
     participant_session_id: &str,
     role: Seat,
 ) where
     A::State: Serialize,
 {
-    if let Ok(response) = room_response(state, room_id, role).await {
-        let bus = state.room_bus(room_id).await;
+    if let Ok(response) = session_response(state, public_session_id, role).await {
+        let bus = state.session_bus(public_session_id).await;
         if let Some(observation) = response.observation {
             let _ = bus.send(ServerMessage::targeted(
                 participant_session_id,
                 ServerPayload::SessionStarted {
-                    room_id: room_id.to_string(),
+                    public_session_id: public_session_id.to_string(),
                     role: role.as_str().to_string(),
                     observation,
                     available_actions: response.available_actions,
@@ -8523,18 +8777,18 @@ async fn send_role_assignment<A: Game>(
 
 async fn presence_message<A: Game>(
     state: &Arc<AppState<A>>,
-    room_id: &str,
+    public_session_id: &str,
 ) -> Option<ServerMessage> {
     let memory = state.memory.read().await;
-    let room = memory.rooms.get(room_id)?;
+    let session = memory.sessions.get(public_session_id)?;
     Some(ServerMessage::broadcast(ServerPayload::Presence {
-        room_id: room_id.to_string(),
-        presence: room_presence(room),
+        public_session_id: public_session_id.to_string(),
+        presence: session_presence(session),
     }))
 }
 
-fn room_presence<S>(room: &GameRoom<S>) -> Value {
-    json!(room
+fn session_presence<G: Game>(session: &LiveSession<G>) -> Value {
+    json!(session
         .participants
         .values()
         .map(|participant| {
@@ -8549,15 +8803,18 @@ fn room_presence<S>(room: &GameRoom<S>) -> Value {
         .collect::<serde_json::Map<_, _>>())
 }
 
-async fn voice_message<A: Game>(state: &Arc<AppState<A>>, room_id: &str) -> ServerMessage {
+async fn voice_message<A: Game>(
+    state: &Arc<AppState<A>>,
+    public_session_id: &str,
+) -> ServerMessage {
     let (audio_ready, game_ready) = state
         .memory
         .read()
         .await
-        .rooms
-        .get(room_id)
-        .map(|room| {
-            let connected_roles = room
+        .sessions
+        .get(public_session_id)
+        .map(|session| {
+            let connected_roles = session
                 .participants
                 .values()
                 .filter(|participant| participant.connected)
@@ -8565,13 +8822,13 @@ async fn voice_message<A: Game>(state: &Arc<AppState<A>>, room_id: &str) -> Serv
                 .collect::<HashSet<_>>();
             (
                 connected_roles == HashSet::from([PlayerRole::A, PlayerRole::B]),
-                room_ready_for_game::<A>(&state.config, room),
+                session_ready_for_game::<A>(&state.config, session),
             )
         })
         .unwrap_or((false, false));
     let transcription_ready = !state.config.transcription.enabled || game_ready;
     ServerMessage::broadcast(ServerPayload::VoiceStatus {
-        room_id: room_id.to_string(),
+        public_session_id: public_session_id.to_string(),
         voice: json!({
             "audioReady": audio_ready,
             "transcriptionReady": transcription_ready,
@@ -8587,11 +8844,16 @@ async fn voice_message<A: Game>(state: &Arc<AppState<A>>, room_id: &str) -> Serv
 }
 
 /// Builds one presentation-neutral runtime or transport failure.
-fn error_message(recipient: &str, room_id: &str, code: &str, fatal: bool) -> ServerMessage {
+fn error_message(
+    recipient: &str,
+    public_session_id: &str,
+    code: &str,
+    fatal: bool,
+) -> ServerMessage {
     ServerMessage::targeted(
         recipient,
         ServerPayload::Error {
-            room_id: room_id.to_string(),
+            public_session_id: public_session_id.to_string(),
             code: code.to_string(),
             fatal,
         },
@@ -8599,19 +8861,19 @@ fn error_message(recipient: &str, room_id: &str, code: &str, fatal: bool) -> Ser
 }
 
 /// Builds a machine-readable expected game-rule rejection.
-fn action_rejected_message(recipient: &str, room_id: &str, code: &str) -> ServerMessage {
+fn action_rejected_message(recipient: &str, public_session_id: &str, code: &str) -> ServerMessage {
     ServerMessage::targeted(
         recipient,
         ServerPayload::ActionRejected {
-            room_id: room_id.to_string(),
+            public_session_id: public_session_id.to_string(),
             code: code.to_string(),
         },
     )
 }
 
 /// Builds a presentation-neutral internal failure without exposing diagnostics.
-fn internal_error_message(recipient: &str, room_id: &str) -> ServerMessage {
-    error_message(recipient, room_id, "internal_error", true)
+fn internal_error_message(recipient: &str, public_session_id: &str) -> ServerMessage {
+    error_message(recipient, public_session_id, "internal_error", true)
 }
 
 fn protocol_json<T: Serialize>(value: &T) -> Result<Value> {

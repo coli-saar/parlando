@@ -1,5 +1,35 @@
 # Technical Decisions
 
+## 2026-08-21: Sessions own game instances and extension loggers
+
+Context: Parlando's live runtime stores one shared game value per experiment and one
+`GameRoom` containing only state per play-through. That prevents arbitrary game helpers from
+retaining a session logger, while the room/session distinction names the same one-to-one
+play-through twice. The agent-agent runner design similarly gives each run session-local agents
+and state but retains a shared `Arc<G>`.
+
+Decision: use session as the common domain concept, rename the live process-local representation
+to `LiveSession`, and create one game value, agent instance per automated role, and logical
+`SessionLogger` per session. Reusable `GameFactory` and `AgentFactory` values construct those
+session-local objects. The game and agent retain runtime-scoped logger handles, so arbitrary
+implementation helpers can log strings without logger parameters on gameplay methods. Live log
+handles write bounded `extension_log` events through SQLite; headless handles write bounded
+attempt artifacts. Keep live and headless orchestration separate rather than introducing a
+general state-owning `Session<G>` engine.
+
+Tradeoffs: live session creation must become durable before game and agent construction, so
+initialization failures become recorded terminal attempts rather than disappearing before a
+session row exists. Synchronous logging acknowledges bounded queue acceptance rather than an
+immediate durable commit, and a crash can lose the unflushed tail. Arbitrary text expands the
+privacy and storage-abuse boundary, requiring explicit byte limits, disclosure, deletion tests,
+and continued exclusion from fixed corpus exports unless deliberately added. Remote agents need
+a protocol extension because an in-process logger handle cannot cross gRPC.
+
+Follow-up risks: evaluate the initial byte and five-second drain limits, specify headless
+log-artifact configuration, and add remote log sequencing if transport retries are introduced. The complete
+design and comparison with the previous live and runner models are recorded in
+`notes/session-runtime-logging-design.md`.
+
 ## 2026-08-20: Runtime stress retains the ordinary agent deadline
 
 Context: an initial attempt to make a 100-room run pass raised the fixture's agent deadline from
@@ -1286,3 +1316,99 @@ do not belong in this asset.
 Follow-up risks: future hard-coded process ceilings that can make a workload deterministically
 impossible should join this asset and gain corresponding preflight checks. Dynamic limitations such
 as free storage and provider behavior must continue to be measured at runtime.
+
+## 2026-08-21: Games and agents are session-local logging capability owners
+
+Context: game and agent subclass code needs to record arbitrary diagnostic text from any method or
+helper without adding logging parameters throughout the mechanics API. Agents were already created per
+session, but the server shared one game value across every live execution and represented each execution
+as a `GameRoom` containing only state. That made safe implicit session attribution impossible.
+
+Decision: retain one reusable `GameFactory<Game = G>` and require it to construct a session-owned `Game`
+behavior object for each execution. `LiveSession<G>` owns that `G`, its authoritative `G::State`, and a
+session-scoped `SessionLogger`; `AgentContext` supplies a separately attributed clone to each agent.
+Logger calls synchronously enqueue UTF-8 strings and never perform database I/O. Live sinks accept at
+most 64 KiB per entry and 8 MiB per session through a 256-entry bounded queue, then persist
+`log` session events asynchronously. Runtime-owned scopes assign `game` or agent participant
+and role attribution. Remote agents buffer strings in the Python SDK and return them on every gRPC
+response for the Rust runtime to drain. Durable session creation now uses `initializing`, constructs
+session objects only after a database identity and logger exist, then advances to `waiting`; failures
+record `session_initialization_failed` and become `abandoned`.
+
+The participant-facing vocabulary is now session-only: `/api/sessions`, `public_session_id`, and
+`JoinedSession.sessionId`. The process-local `GameRoom` and `RoomParticipant` types are replaced by
+`LiveSession` and `SessionParticipant`. SQLite and Rust storage records use `public_session_id`; the
+manual 0.3-to-0.4 upgrade renames the old column after a verified backup. Game manifests depend on the
+published 0.4 version while the repository Cargo configuration patches that dependency to the local
+crate during development.
+
+Tradeoffs: one lightweight behavior value is allocated per session, but compiled code and large
+immutable resources remain shared normally through types or `Arc`. Logging is observational: queue
+acceptance does not mean durable flush, a crash can lose the tail, and game behavior must not branch on
+logging success. Logs can survive a rejected action or later transition-write failure. Arbitrary strings
+can contain sensitive material, so extension authors retain responsibility for log content and quotas
+bound accidental resource use rather than making it safe.
+
+Follow-up risks: the designed headless `SessionRunner` does not yet exist, so its factory construction
+and bounded attempt-log artifact must be implemented with that runner. Revisit limits and add explicit
+dropped-entry/drain telemetry from production evidence.
+
+## 2026-08-21: Version 0.4 uses distinct game factories and a session-only schema
+
+Context: the first session-logging implementation made `Game` values double as reusable prototypes,
+gave loggers an ordinary no-session default, attached agent identity after construction through an
+atomic sentinel, and retained the physical `room_id` database column. Session creation also held the
+global live-state write lock across database and agent initialization. These shortcuts obscured
+lifecycle invariants and introduced an inconsistent error path.
+
+Decision: `Game` now describes only session-owned behavior. A distinct `GameFactory<Game = G>` creates it and
+owns configuration validation; `Server<G, F>` receives that factory. Runtime loggers have no production
+default or discarding constructor. Agent participants and their durable IDs exist before agent
+construction. A session owns a `SessionLogWriter` that closes its queue, drains accepted entries, and is
+shut down after terminal game and agent callbacks. Session admission has its own serialization lock,
+while the global `MemoryState` lock is held only for short reads and mutations. Initialization errors
+remove any installed live session. Version 0.4 deliberately renames the SQLite column to
+`public_session_id` and provides no automatic database migration; operators back up the stopped
+database and issue one `ALTER TABLE` command. Public route and client renames are intentional 0.4
+breaks documented in `docs/migrating-0.3.0-to-0.4.0.md`.
+
+Tradeoffs: game packages add a small explicit factory type and tests must construct real session games.
+Admission is serialized during initialization to preserve exact capacity without holding the live-state
+lock; slow construction delays new admissions but does not block actions, observations, connections, or
+other live-state work. The manual schema step is operationally stricter but keeps runtime schema code
+clean and makes rollback a database-file restore.
+
+Follow-up risks: all deployed 0.3 databases must be upgraded while stopped. Remote agents and custom
+participant clients must upgrade in lockstep with the 0.4 server. Logger shutdown remains bounded by
+the persistence worker and should gain explicit failure/drop counters if operational evidence requires
+them.
+
+## 2026-08-21: Arbitrary session text uses the ordinary `log` event type
+
+Context: the first implementation persisted game- and agent-authored strings as `extension_log` events.
+The name exposed an internal distinction, and the dashboard's explicit event allowlist initially hid
+those rows even though they were stored correctly.
+
+Decision: persist and expose these entries as `log` events. The dashboard treats `log` as an ordinary,
+non-housekeeping timeline event and labels it `Game log` or `Agent log` from runtime-owned source
+attribution. The corpus export includes the same ordered text as `kind=log`, with nullable actor fields
+for game logs and pseudonymous participant/role attribution for agent logs. Existing development
+database rows are renamed destructively in place; no compatibility alias for `extension_log` remains.
+
+Tradeoffs: consumers inspecting raw event types must use `log`. The simpler name is stable and leaves
+the payload's `source` field responsible for distinguishing game and agent authorship. Arbitrary log
+text is research content and therefore makes the corpus's existing content-review requirement more
+important; excluding it would make exported session traces incomplete.
+
+## 2026-08-21: RootBot logs decisions without depending on logging success
+
+Context: Great Tree mechanics emitted session logs, but its scripted RootBot exposed no account of
+agent construction, observations, or policy decisions in the same session timeline.
+
+Decision: retain RootBot's session-attributed logger and record construction, lifecycle input, queued
+actions and canned replies, and response shape. Logging errors are deliberately ignored so queue
+pressure cannot change game behavior. Increment RootBot's agent identity version from 1 to 2 because
+the research-visible output of the implementation changed even though its playing policy did not.
+
+Tradeoffs: received chat text is duplicated into the session log and therefore consumes additional
+storage and carries the same privacy obligations as the already durable conversation event.

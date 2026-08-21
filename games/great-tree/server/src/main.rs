@@ -3,7 +3,9 @@ use std::net::{IpAddr, SocketAddr};
 use anyhow::Result;
 use clap::Parser;
 use parlando::{GameMetadata, Server};
-use parlando_great_tree::{GreatTree, IdleAgentFactory, LlmAgentFactory, RootBotAgentFactory};
+use parlando_great_tree::{
+    GreatTreeFactory, IdleAgentFactory, LlmAgentFactory, RootBotAgentFactory,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "parlando-great-tree")]
@@ -40,7 +42,7 @@ async fn main() -> Result<()> {
             "version": env!("CARGO_PKG_VERSION"),
         }),
     };
-    Server::new(GreatTree::new(), metadata)?
+    Server::new(GreatTreeFactory, metadata)?
         .database_url(cli.database_url)
         .participant_app(cli.client_dist)
         .agent(IdleAgentFactory)?

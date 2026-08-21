@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, RwLock};
 ///
 /// The relay deliberately uses a bounded queue so a slow browser cannot accumulate
 /// unbounded stale speech or memory. Once this limit is reached, newly relayed audio
-/// is dropped in favor of keeping the room live.
+/// is dropped in favor of keeping the session live.
 pub const AUDIO_OUTBOUND_QUEUE_CAPACITY: usize = 64;
 
 /// Wire protocol version for Parlando PCM audio frames.
@@ -67,7 +67,7 @@ impl AudioFrame {
 }
 
 #[derive(Default)]
-struct AudioRoom {
+struct AudioSession {
     peers: HashMap<String, AudioPeer>,
 }
 
@@ -84,25 +84,25 @@ pub enum AudioOutbound {
     Text(String),
 }
 
-/// In-memory registry for active, process-local audio room connections.
+/// In-memory registry for active, process-local audio session connections.
 #[derive(Default)]
-pub struct AudioRoomRegistry {
-    rooms: RwLock<HashMap<String, AudioRoom>>,
+pub struct AudioSessionRegistry {
+    sessions: RwLock<HashMap<String, AudioSession>>,
 }
 
-impl AudioRoomRegistry {
+impl AudioSessionRegistry {
     /// Registers the latest browser connection for a role and returns its outbound queue.
     pub async fn connect(
         &self,
-        room_id: &str,
+        public_session_id: &str,
         role: &str,
     ) -> (String, mpsc::Receiver<AudioOutbound>) {
         let (sender, receiver) = mpsc::channel(AUDIO_OUTBOUND_QUEUE_CAPACITY);
         let generation = uuid::Uuid::new_v4().to_string();
-        self.rooms
+        self.sessions
             .write()
             .await
-            .entry(room_id.to_string())
+            .entry(public_session_id.to_string())
             .or_default()
             .peers
             .insert(
@@ -116,44 +116,44 @@ impl AudioRoomRegistry {
     }
 
     /// Removes a browser connection only when it is still the current generation.
-    pub async fn disconnect(&self, room_id: &str, role: &str, generation: &str) {
-        let mut rooms = self.rooms.write().await;
-        if let Some(room) = rooms.get_mut(room_id) {
-            if room
+    pub async fn disconnect(&self, public_session_id: &str, role: &str, generation: &str) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get_mut(public_session_id) {
+            if session
                 .peers
                 .get(role)
                 .is_some_and(|peer| peer.generation == generation)
             {
-                room.peers.remove(role);
+                session.peers.remove(role);
             }
-            if room.peers.is_empty() {
-                rooms.remove(room_id);
+            if session.peers.is_empty() {
+                sessions.remove(public_session_id);
             }
         }
     }
 
-    /// Reports whether a connection generation still owns its room role.
-    pub async fn is_current(&self, room_id: &str, role: &str, generation: &str) -> bool {
-        self.rooms
+    /// Reports whether a connection generation still owns its session role.
+    pub async fn is_current(&self, public_session_id: &str, role: &str, generation: &str) -> bool {
+        self.sessions
             .read()
             .await
-            .get(room_id)
-            .and_then(|room| room.peers.get(role))
+            .get(public_session_id)
+            .and_then(|session| session.peers.get(role))
             .is_some_and(|peer| peer.generation == generation)
     }
 
     /// Relays a frame to the other human role without waiting on a slow browser.
-    pub async fn relay_partner(&self, room_id: &str, sender_role: &str, bytes: Vec<u8>) {
+    pub async fn relay_partner(&self, public_session_id: &str, sender_role: &str, bytes: Vec<u8>) {
         let partner_role = match sender_role {
             "A" => "B",
             "B" => "A",
             _ => return,
         };
         let target = {
-            let rooms = self.rooms.read().await;
-            rooms
-                .get(room_id)
-                .and_then(|room| room.peers.get(partner_role))
+            let sessions = self.sessions.read().await;
+            sessions
+                .get(public_session_id)
+                .and_then(|session| session.peers.get(partner_role))
                 .map(|peer| peer.sender.clone())
         };
         if let Some(target) = target {
@@ -162,28 +162,29 @@ impl AudioRoomRegistry {
     }
 
     /// Sends a provider-neutral control message to one connected role.
-    pub async fn send_control(&self, room_id: &str, role: &str, text: String) {
+    pub async fn send_control(&self, public_session_id: &str, role: &str, text: String) {
         let target = self
-            .rooms
+            .sessions
             .read()
             .await
-            .get(room_id)
-            .and_then(|room| room.peers.get(role))
+            .get(public_session_id)
+            .and_then(|session| session.peers.get(role))
             .map(|peer| peer.sender.clone());
         if let Some(target) = target {
             let _ = target.try_send(AudioOutbound::Text(text));
         }
     }
 
-    /// Publishes server-generated agent audio to all connected human browsers in a room.
-    pub async fn publish_agent(&self, room_id: &str, bytes: Vec<u8>) {
+    /// Publishes server-generated agent audio to all connected human browsers in a session.
+    pub async fn publish_agent(&self, public_session_id: &str, bytes: Vec<u8>) {
         let targets = self
-            .rooms
+            .sessions
             .read()
             .await
-            .get(room_id)
-            .map(|room| {
-                room.peers
+            .get(public_session_id)
+            .map(|session| {
+                session
+                    .peers
                     .values()
                     .map(|peer| peer.sender.clone())
                     .collect::<Vec<_>>()
@@ -196,7 +197,7 @@ impl AudioRoomRegistry {
 }
 
 /// Shared handle used by the application and agent TTS publisher.
-pub type SharedAudioRooms = Arc<AudioRoomRegistry>;
+pub type SharedAudioSessions = Arc<AudioSessionRegistry>;
 
 #[cfg(test)]
 mod tests {
@@ -226,41 +227,41 @@ mod tests {
 
     #[tokio::test]
     async fn relay_routes_only_to_partner() {
-        let rooms = AudioRoomRegistry::default();
-        let (_, mut a) = rooms.connect("room", "A").await;
-        let (_, mut b) = rooms.connect("room", "B").await;
-        rooms.relay_partner("room", "A", vec![1]).await;
+        let sessions = AudioSessionRegistry::default();
+        let (_, mut a) = sessions.connect("session", "A").await;
+        let (_, mut b) = sessions.connect("session", "B").await;
+        sessions.relay_partner("session", "A", vec![1]).await;
         assert!(matches!(b.recv().await, Some(AudioOutbound::Binary(bytes)) if bytes == vec![1]));
         assert!(a.try_recv().is_err());
     }
 
     #[tokio::test]
     async fn replacement_connection_owns_role_until_its_own_disconnect() {
-        let rooms = AudioRoomRegistry::default();
-        let (old_generation, _old_receiver) = rooms.connect("room", "A").await;
-        let (new_generation, _new_receiver) = rooms.connect("room", "A").await;
+        let sessions = AudioSessionRegistry::default();
+        let (old_generation, _old_receiver) = sessions.connect("session", "A").await;
+        let (new_generation, _new_receiver) = sessions.connect("session", "A").await;
 
-        assert!(!rooms.is_current("room", "A", &old_generation).await);
-        assert!(rooms.is_current("room", "A", &new_generation).await);
-        rooms.disconnect("room", "A", &old_generation).await;
-        assert!(rooms.is_current("room", "A", &new_generation).await);
-        rooms.disconnect("room", "A", &new_generation).await;
-        assert!(!rooms.is_current("room", "A", &new_generation).await);
+        assert!(!sessions.is_current("session", "A", &old_generation).await);
+        assert!(sessions.is_current("session", "A", &new_generation).await);
+        sessions.disconnect("session", "A", &old_generation).await;
+        assert!(sessions.is_current("session", "A", &new_generation).await);
+        sessions.disconnect("session", "A", &new_generation).await;
+        assert!(!sessions.is_current("session", "A", &new_generation).await);
     }
 
-    /// Confirms a saturated peer queue drops new frames without blocking or harming another room.
+    /// Confirms a saturated peer queue drops new frames without blocking or harming another session.
     #[tokio::test]
     async fn saturated_partner_queue_is_bounded_and_room_local() {
-        let rooms = AudioRoomRegistry::default();
-        let (_, _a) = rooms.connect("busy", "A").await;
-        let (_, mut busy_b) = rooms.connect("busy", "B").await;
-        let (_, _other_a) = rooms.connect("other", "A").await;
-        let (_, mut other_b) = rooms.connect("other", "B").await;
+        let sessions = AudioSessionRegistry::default();
+        let (_, _a) = sessions.connect("busy", "A").await;
+        let (_, mut busy_b) = sessions.connect("busy", "B").await;
+        let (_, _other_a) = sessions.connect("other", "A").await;
+        let (_, mut other_b) = sessions.connect("other", "B").await;
 
         for index in 0..AUDIO_OUTBOUND_QUEUE_CAPACITY + 5 {
-            rooms.relay_partner("busy", "A", vec![index as u8]).await;
+            sessions.relay_partner("busy", "A", vec![index as u8]).await;
         }
-        rooms.relay_partner("other", "A", vec![99]).await;
+        sessions.relay_partner("other", "A", vec![99]).await;
 
         let mut delivered = Vec::new();
         while let Ok(AudioOutbound::Binary(bytes)) = busy_b.try_recv() {
@@ -278,15 +279,15 @@ mod tests {
     /// Verifies control messages target one role and agent audio fans out to every current peer.
     #[tokio::test]
     async fn control_is_targeted_and_agent_audio_fans_out() {
-        let rooms = AudioRoomRegistry::default();
-        let (_, mut a) = rooms.connect("room", "A").await;
-        let (_, mut b) = rooms.connect("room", "B").await;
+        let sessions = AudioSessionRegistry::default();
+        let (_, mut a) = sessions.connect("session", "A").await;
+        let (_, mut b) = sessions.connect("session", "B").await;
 
-        rooms.send_control("room", "A", "ready".into()).await;
+        sessions.send_control("session", "A", "ready".into()).await;
         assert!(matches!(a.recv().await, Some(AudioOutbound::Text(text)) if text == "ready"));
         assert!(b.try_recv().is_err());
 
-        rooms.publish_agent("room", vec![4, 2]).await;
+        sessions.publish_agent("session", vec![4, 2]).await;
         assert!(
             matches!(a.recv().await, Some(AudioOutbound::Binary(bytes)) if bytes == vec![4, 2])
         );
@@ -295,15 +296,19 @@ mod tests {
         );
     }
 
-    /// Confirms missing rooms and invalid role names are safe no-ops.
+    /// Confirms missing sessions and invalid role names are safe no-ops.
     #[tokio::test]
     async fn missing_rooms_and_unknown_roles_are_noops() {
-        let rooms = AudioRoomRegistry::default();
-        let (_, mut a) = rooms.connect("room", "A").await;
-        rooms.relay_partner("missing", "A", vec![1]).await;
-        rooms.relay_partner("room", "spectator", vec![2]).await;
-        rooms.send_control("missing", "A", "ignored".into()).await;
-        rooms.publish_agent("missing", vec![3]).await;
+        let sessions = AudioSessionRegistry::default();
+        let (_, mut a) = sessions.connect("session", "A").await;
+        sessions.relay_partner("missing", "A", vec![1]).await;
+        sessions
+            .relay_partner("session", "spectator", vec![2])
+            .await;
+        sessions
+            .send_control("missing", "A", "ignored".into())
+            .await;
+        sessions.publish_agent("missing", vec![3]).await;
         assert!(a.try_recv().is_err());
     }
 }

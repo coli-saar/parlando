@@ -11,6 +11,7 @@ mod readable_id;
 mod remote_agent;
 mod runtime_limits;
 mod server;
+mod session_log;
 mod storage;
 #[cfg(feature = "stress-tui")]
 mod stress_dashboard;
@@ -18,10 +19,15 @@ mod transcription;
 mod tts;
 
 pub use game::{
-    ActionRejection, Game, GameInitializationContext, GameMetadata, PlayerRole, SecretValues,
+    ActionRejection, Game, GameFactory, GameInitializationContext, GameMetadata,
+    GameSessionContext, PlayerRole, SecretValues,
 };
 pub use runtime_limits::{bundled_runtime_limits, ParticipantCreationLimit, RuntimeLimits};
 pub use server::Server;
+pub use session_log::{
+    SessionLogError, SessionLogger, MAX_SESSION_LOG_BYTES, MAX_SESSION_LOG_ENTRY_BYTES,
+    SESSION_LOG_QUEUE_CAPACITY,
+};
 
 /// APIs for implementing optional computer-controlled players.
 pub mod agent {

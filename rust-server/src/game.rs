@@ -7,6 +7,8 @@ use anyhow::{bail, Context, Result};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
+use crate::SessionLogger;
+
 /// Describes one configuration input accepted by a compiled agent factory.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct AgentConfigField {
@@ -123,6 +125,16 @@ pub struct GameInitializationContext<'a, C> {
     pub seed: u64,
     /// All experiment-owned game secrets, keyed without the `game.` prefix.
     pub secrets: &'a SecretValues,
+}
+
+/// Session-specific capability supplied while constructing one game value.
+///
+/// Unlike [`GameInitializationContext`], which exists only while the initial
+/// authoritative state is produced, this context contains dependencies that a
+/// game may retain and use throughout its session lifetime.
+pub struct GameSessionContext {
+    /// Logger already bound to this session and the game source.
+    pub logger: SessionLogger,
 }
 
 /// Describes one agent implementation registered with a game server.
@@ -445,7 +457,7 @@ impl PlayerRole {
     }
 }
 
-/// Identifies a participant's runtime seat in a room.
+/// Identifies a participant's runtime seat in a live session.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Seat {
@@ -525,11 +537,6 @@ pub trait Game: Send + Sync + 'static {
     /// Put role-private terminal facts only in that role's final [`Game::Observation`].
     type Completion: Serialize + Clone + Send + Sync + 'static;
 
-    /// Validates semantic constraints on already-deserialized game configuration.
-    fn validate_config(&self, _config: &Self::Config) -> Result<()> {
-        Ok(())
-    }
-
     /// Creates a fresh authoritative state from game configuration and a recorded seed.
     fn initial_state(
         &self,
@@ -587,10 +594,31 @@ pub trait Game: Send + Sync + 'static {
     fn completion(&self, state: &Self::State) -> Option<Self::Completion>;
 }
 
+/// Reusable constructor for session-local values of one compiled game.
+///
+/// The server owns one factory for the life of the process. Each call to
+/// [`GameFactory::create`] receives the context for a newly admitted session and
+/// must return a fresh [`Game`] value owned exclusively by that session.
+pub trait GameFactory: Send + Sync + 'static {
+    /// Session-owned game type created by this reusable factory.
+    type Game: Game;
+
+    /// Creates a game instance which belongs to exactly one execution session.
+    fn create(&self, context: GameSessionContext) -> Result<Self::Game>;
+
+    /// Validates semantic constraints on already-deserialized game configuration.
+    fn validate_config(&self, _config: &<Self::Game as Game>::Config) -> Result<()> {
+        Ok(())
+    }
+}
+
 /// Deserializes and semantically validates one stored game configuration value.
-pub(crate) fn parse_game_config<G: Game>(game: &G, value: &Value) -> Result<G::Config> {
+pub(crate) fn parse_game_config<G: Game>(
+    factory: &dyn GameFactory<Game = G>,
+    value: &Value,
+) -> Result<G::Config> {
     let config = serde_json::from_value(value.clone())?;
-    game.validate_config(&config)?;
+    factory.validate_config(&config)?;
     Ok(config)
 }
 

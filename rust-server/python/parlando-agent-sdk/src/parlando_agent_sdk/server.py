@@ -8,6 +8,7 @@ import importlib
 import inspect
 import os
 import sys
+import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,6 +60,39 @@ class SecretValues:
         return isinstance(other, SecretValues) and self._values == other._values
 
 
+class SessionLogger:
+    """Buffers arbitrary text for delivery to the owning Parlando session."""
+
+    _MAX_ENTRY_BYTES = 64 * 1024
+    _MAX_SESSION_BYTES = 8 * 1024 * 1024
+
+    def __init__(self) -> None:
+        """Creates one thread-safe session-local buffer."""
+        self._entries: list[str] = []
+        self._accepted_bytes = 0
+        self._lock = threading.Lock()
+
+    def log(self, message: str) -> None:
+        """Accepts arbitrary text subject to the protocol's bounded byte limits."""
+        if not isinstance(message, str):
+            raise TypeError("session log messages must be strings")
+        size = len(message.encode("utf-8"))
+        if size > self._MAX_ENTRY_BYTES:
+            raise ValueError("session log entry exceeds the byte limit")
+        with self._lock:
+            if self._accepted_bytes + size > self._MAX_SESSION_BYTES:
+                raise ValueError("session log byte limit is exhausted")
+            self._accepted_bytes += size
+            self._entries.append(message)
+
+    def _drain(self) -> list[str]:
+        """Removes entries for one response while retaining the session byte total."""
+        with self._lock:
+            entries = self._entries
+            self._entries = []
+            return entries
+
+
 @dataclass(frozen=True)
 class Context:
     """Session-local information supplied before an agent receives game data."""
@@ -67,6 +101,7 @@ class Context:
     seed: int
     settings: dict[str, Any]
     secrets: SecretValues = field(default_factory=lambda: SecretValues({}))
+    logger: SessionLogger = field(default_factory=SessionLogger)
 
 
 @dataclass(frozen=True)
@@ -146,6 +181,7 @@ class _AgentService:
         self._auth_token = auth_token
         self._max_agents = max_agents
         self._agents: dict[str, Agent] = {}
+        self._loggers: dict[str, SessionLogger] = {}
         self._creating_agents = 0
         self._agent_lock = asyncio.Lock()
         self._pb2, _pb2_grpc = _generated_modules()
@@ -175,11 +211,13 @@ class _AgentService:
                     grpc.StatusCode.RESOURCE_EXHAUSTED, "agent capacity reached"
                 )
             self._creating_agents += 1
+        logger = SessionLogger()
         init_context = Context(
             role=request.role,
             seed=request.seed,
             settings=_struct_to_dict(request.config),
             secrets=SecretValues(_struct_to_dict(request.agent_instance_secrets)),
+            logger=logger,
         )
         try:
             maybe_agent = self._factory(init_context)
@@ -189,10 +227,13 @@ class _AgentService:
             agent_id = str(uuid.uuid4())
             async with self._agent_lock:
                 self._agents[agent_id] = agent
+                self._loggers[agent_id] = logger
         finally:
             async with self._agent_lock:
                 self._creating_agents -= 1
-        return self._pb2.CreateAgentResponse(agent_id=agent_id)
+        return self._pb2.CreateAgentResponse(
+            agent_id=agent_id, session_logs=logger._drain()
+        )
 
     async def Start(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote Start request from the Rust server."""
@@ -201,7 +242,9 @@ class _AgentService:
         if agent is None:
             await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
         await agent.start(_struct_to_dict(request.observation))
-        return self._pb2.ObserveResponse()
+        return self._pb2.ObserveResponse(
+            session_logs=self._loggers[request.agent_id]._drain()
+        )
 
     async def ObserveTransition(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote ObserveTransition request from the Rust server."""
@@ -214,7 +257,9 @@ class _AgentService:
             _struct_to_dict(request.action),
             _struct_to_dict(request.observation),
         )
-        return self._pb2.ObserveResponse()
+        return self._pb2.ObserveResponse(
+            session_logs=self._loggers[request.agent_id]._drain()
+        )
 
     async def ObserveMessage(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote ObserveMessage request from the Rust server."""
@@ -225,7 +270,9 @@ class _AgentService:
         await agent.observe_message(
             request.sender, request.text
         )
-        return self._pb2.ObserveResponse()
+        return self._pb2.ObserveResponse(
+            session_logs=self._loggers[request.agent_id]._drain()
+        )
 
     async def Finish(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote Finish request from the Rust server."""
@@ -234,7 +281,9 @@ class _AgentService:
         if agent is None:
             await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
         await agent.finish(_struct_to_dict(request.completion))
-        return self._pb2.ObserveResponse()
+        return self._pb2.ObserveResponse(
+            session_logs=self._loggers[request.agent_id]._drain()
+        )
 
     async def Respond(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote Respond request from the Rust server."""
@@ -243,18 +292,24 @@ class _AgentService:
         if agent is None:
             await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
         result = await agent.respond(_available_actions(request))
+        logs = self._loggers[request.agent_id]._drain()
         if result is None:
-            return self._pb2.RespondResponse()
-        return self._pb2.RespondResponse(response=_response_to_proto(self._pb2, result))
+            return self._pb2.RespondResponse(session_logs=logs)
+        return self._pb2.RespondResponse(
+            response=_response_to_proto(self._pb2, result), session_logs=logs
+        )
 
     async def Shutdown(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote Shutdown request from the Rust server."""
         await self._authenticate(context)
         async with self._agent_lock:
             agent = self._agents.pop(request.agent_id, None)
+            logger = self._loggers.pop(request.agent_id, None)
         if agent is not None:
             await agent.shutdown()
-        return self._pb2.ShutdownResponse()
+        return self._pb2.ShutdownResponse(
+            session_logs=[] if logger is None else logger._drain()
+        )
 
 
 async def _serve_async(

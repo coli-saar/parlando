@@ -2,7 +2,7 @@
 name = "parlando"
 edition = "2021"
 license = "MIT"
-version = "0.3.0"
+version = "0.4.0"
 description = "Reusable Rust runtime for Parlando dialogue-game experiments."
 repository = "https://github.com/coli-saar/parlando"
 readme = "../README.md"

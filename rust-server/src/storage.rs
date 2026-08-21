@@ -6,9 +6,10 @@ use std::{
 };
 
 use crate::{
-    game::Seat,
+    game::{Game, Seat},
     identity::new_id,
     readable_id::{dialogue_id, participant_id as readable_participant_id},
+    session_log::SessionLogWriter,
 };
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
@@ -234,7 +235,7 @@ pub struct SessionRecord {
     pub config_revision: i64,
     /// Exact game version which executed the session.
     pub game_version: String,
-    pub room_id: String,
+    pub public_session_id: String,
     pub mode: String,
     pub status: String,
     /// Immutable `testing` or `research` data-use purpose.
@@ -299,7 +300,8 @@ pub struct StoredSessionEvent {
 pub struct StoredSessionSummary {
     pub experiment_id: String,
     pub session_id: i64,
-    pub room_id: String,
+    /// Client-facing random identifier for this live session.
+    pub public_session_id: String,
     /// Human-readable random identifier reused for this dialogue in exports and administration.
     pub dialogue_id: String,
     pub mode: String,
@@ -500,8 +502,21 @@ pub trait ExperimentStore: Send + Sync {
     async fn upsert_participant(&self, participant: ParticipantRecord) -> Result<i64>;
     /// Returns the human-readable experiment-specific identifier for a durable participant.
     async fn participant_research_id(&self, participant_id: i64) -> Result<Option<String>>;
-    /// Creates a session for a client-facing room id and returns its per-experiment `session_id`.
+    /// Creates a session for a client-facing session id and returns its per-experiment `session_id`.
     async fn create_session(&self, session: SessionRecord) -> Result<i64>;
+    /// Moves one successfully constructed session from `initializing` to `waiting`.
+    async fn complete_session_initialization(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+    ) -> Result<bool>;
+    /// Terminates initialization and appends a bounded failure event atomically.
+    async fn fail_session_initialization(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+        reason_code: &str,
+    ) -> Result<()>;
     /// Atomically moves one waiting session to running and records its first start time.
     async fn start_session(&self, experiment_id: &str, session_id: i64) -> Result<bool>;
     /// Maps an RFC3339 timestamp onto one running session's authoritative game clock.
@@ -597,7 +612,7 @@ fn sqlite_unique_constraint_for(error: &sqlx::Error, column: &str) -> bool {
 /// Returns game-relative milliseconds, or temporary Unix milliseconds before game start.
 ///
 /// The lookup runs inside the event's write transaction so it cannot race the transaction that
-/// establishes the game-start timestamp and rebases waiting-room events.
+/// establishes the game-start timestamp and rebases waiting-session events.
 async fn stored_game_time_ms(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     experiment_id: &str,
@@ -760,7 +775,7 @@ impl SqliteExperimentStore {
             create table if not exists sessions (
                 experiment_id text not null,
                 session_id integer not null,
-                room_id text not null unique,
+                public_session_id text not null unique,
                 dialogue_id text unique,
                 mode text not null,
                 status text not null,
@@ -2063,14 +2078,14 @@ impl ExperimentStore for SqliteExperimentStore {
         sqlx::query(
             r#"
             insert into sessions
-            (experiment_id, session_id, room_id, dialogue_id, mode, status, purpose, created_at,
+            (experiment_id, session_id, public_session_id, dialogue_id, mode, status, purpose, created_at,
              started_at, config_revision, game_version)
             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(session.experiment_id)
         .bind(next_session_id)
-        .bind(session.room_id)
+        .bind(session.public_session_id)
         .bind(readable_dialogue_id)
         .bind(session.mode)
         .bind(session.status)
@@ -2083,6 +2098,62 @@ impl ExperimentStore for SqliteExperimentStore {
         .await?;
         tx.commit().await?;
         Ok(next_session_id)
+    }
+
+    async fn complete_session_initialization(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            "update sessions set status = 'waiting' where experiment_id = ? and session_id = ? and status = 'initializing'",
+        )
+        .bind(experiment_id)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn fail_session_initialization(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+        reason_code: &str,
+    ) -> Result<()> {
+        let occurred_at = now_iso();
+        let mut tx = self.pool.begin().await?;
+        let event_index = sqlx::query_scalar::<_, i64>(
+            "select coalesce(max(event_index), 0) + 1 from session_events where experiment_id = ? and session_id = ?",
+        )
+        .bind(experiment_id)
+        .bind(session_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            insert into session_events
+            (experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, game_time_ms)
+            values (?, ?, ?, 'session_initialization_failed', null, null, ?, null, ?)
+            "#,
+        )
+        .bind(experiment_id)
+        .bind(session_id)
+        .bind(event_index)
+        .bind(serde_json::to_string(&json!({"reason_code": reason_code}))?)
+        .bind(timestamp_millis(&occurred_at)?)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "update sessions set status = 'abandoned', completed_at = ? where experiment_id = ? and session_id = ? and status in ('initializing', 'waiting')",
+        )
+        .bind(occurred_at)
+        .bind(experiment_id)
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     async fn start_session(&self, experiment_id: &str, session_id: i64) -> Result<bool> {
@@ -2098,7 +2169,7 @@ impl ExperimentStore for SqliteExperimentStore {
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 1 {
-            // Events written while the room was waiting temporarily contain Unix milliseconds;
+            // Events written while the session was waiting temporarily contain Unix milliseconds;
             // rebasing them in this transaction gives every durable event the same game clock.
             sqlx::query(
                 "update session_events set game_time_ms = game_time_ms - ? where experiment_id = ? and session_id = ?",
@@ -2491,7 +2562,7 @@ impl ExperimentStore for SqliteExperimentStore {
             ),
         >(
             r#"
-            select s.experiment_id, s.session_id, s.room_id, s.dialogue_id, s.mode, s.status, s.purpose,
+            select s.experiment_id, s.session_id, s.public_session_id, s.dialogue_id, s.mode, s.status, s.purpose,
                    s.config_revision, s.game_version, s.created_at, s.started_at,
                    s.completed_at, s.completion_json,
                    count(distinct sp.participant_id) as participant_count,
@@ -2517,7 +2588,7 @@ impl ExperimentStore for SqliteExperimentStore {
             Ok(StoredSessionSummary {
                 experiment_id: row.0,
                 session_id: row.1,
-                room_id: row.2,
+                public_session_id: row.2,
                 dialogue_id: row.3,
                 mode: row.4,
                 status: row.5,
@@ -2886,9 +2957,9 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
         ))
     };
     let sessions_sql = if session_id.is_some() {
-        "select experiment_id, session_id, room_id, dialogue_id, mode, status, purpose, config_revision, game_version, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? and session_id = ? order by session_id"
+        "select experiment_id, session_id, public_session_id, dialogue_id, mode, status, purpose, config_revision, game_version, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? and session_id = ? order by session_id"
     } else {
-        "select experiment_id, session_id, room_id, dialogue_id, mode, status, purpose, config_revision, game_version, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? order by session_id"
+        "select experiment_id, session_id, public_session_id, dialogue_id, mode, status, purpose, config_revision, game_version, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? order by session_id"
     };
     let mut sessions_query = sqlx::query_as::<
         _,
@@ -2920,7 +2991,7 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
             json!({
                 "experiment_id": row.0,
                 "session_id": row.1,
-                "room_id": row.2,
+                "public_session_id": row.2,
                 "dialogue_id": row.3,
                 "mode": row.4,
                 "status": row.5,
@@ -3107,9 +3178,9 @@ pub struct ParticipantSession {
     pub updated_at: String,
 }
 
-/// Runtime record for one participant's membership in a room.
+/// Runtime record for one participant's membership in a session.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct RoomParticipant {
+pub struct SessionParticipant {
     pub participant_session_id: String,
     pub participant_id: i64,
     /// Runtime participant source, used to distinguish humans from agents.
@@ -3118,28 +3189,30 @@ pub struct RoomParticipant {
     pub connected: bool,
     /// Whether the browser declared its game channel ready at least once.
     pub ready_declared: bool,
-    /// Whether this participant has completed required audio/STT setup for this room.
+    /// Whether this participant has completed required audio/STT setup for this session.
     pub audio_ready: bool,
     pub consent_decisions: HashMap<String, bool>,
     pub joined_at: String,
     pub updated_at: String,
 }
 
-/// Runtime room record parameterized by a concrete game state type.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct GameRoom<S> {
+/// Runtime session record parameterized by a concrete game state type.
+pub struct LiveSession<G: Game> {
     pub id: String,
     pub experiment_id: String,
     pub session_id: i64,
     pub mode: String,
-    /// Immutable data-use purpose shared by every participant in this room.
+    /// Immutable data-use purpose shared by every participant in this session.
     pub purpose: String,
-    /// Recorded seed used to initialize this session's deterministic game state.
-    pub seed: u64,
-    pub state: S,
+    /// Session-local behavior object retaining session-scoped capabilities.
+    pub game: G,
+    /// Authoritative serializable mechanics state.
+    pub state: G::State,
+    /// Base game-scoped handle for this session's log.
+    pub log_writer: Option<SessionLogWriter>,
     /// Runtime lifecycle status: `waiting`, `running`, `completed`, or `abandoned`.
     pub status: String,
-    pub participants: HashMap<String, RoomParticipant>,
+    pub participants: HashMap<String, SessionParticipant>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -3148,7 +3221,7 @@ pub struct GameRoom<S> {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TranscriptSegment {
     pub id: String,
-    pub room_id: String,
+    pub public_session_id: String,
     pub participant_session_id: String,
     pub player: String,
     /// Speech onset on the session's authoritative game clock.
@@ -3160,22 +3233,21 @@ pub struct TranscriptSegment {
 }
 
 /// In-memory active-session cache used for live WebSocket and game execution state.
-#[derive(Clone, Debug)]
-pub struct MemoryState<S> {
+pub struct MemoryState<G: Game> {
     pub participants: HashMap<String, ParticipantSession>,
-    pub rooms: HashMap<String, GameRoom<S>>,
+    pub sessions: HashMap<String, LiveSession<G>>,
 }
 
-impl<S> Default for MemoryState<S> {
+impl<G: Game> Default for MemoryState<G> {
     fn default() -> Self {
         Self {
             participants: HashMap::new(),
-            rooms: HashMap::new(),
+            sessions: HashMap::new(),
         }
     }
 }
 
-impl<S> MemoryState<S> {
+impl<G: Game> MemoryState<G> {
     /// Creates and stores an active participant session after durable identity creation.
     pub fn create_participant(
         &mut self,

@@ -310,7 +310,8 @@
     .privacy-table { border-collapse: collapse; font-size: 13px; margin: 10px 0 18px; width: 100%; }
     .privacy-table th, .privacy-table td { border-bottom: 1px solid var(--line); padding: 9px 7px; text-align: left; vertical-align: top; }
     .privacy-table th { color: var(--subtle); font-size: 12px; }
-    .event-line { align-items: center; display: grid; gap: 10px; grid-template-columns: 74px auto minmax(140px, 1fr) minmax(0, 2fr); }
+    .event-line { align-items: center; display: grid; gap: 10px; grid-template-columns: 74px 42px minmax(140px, 1fr) minmax(0, 2fr); }
+    .event-line > .role-badge { box-sizing: border-box; min-width: 42px; padding: 0 6px; width: 42px; }
     .role-system { background: #e8edf2; color: #4c5964; font-size: 11px; letter-spacing: .02em; }
     .event-main { min-width: 0; }
     .game-time { color: #4e5b66; font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align: right; }
@@ -367,9 +368,9 @@
       .consent-actions button { justify-self: start; }
       .game-secret-row { grid-template-columns: 1fr auto auto; }
       .game-secret-row .game-secret-key { grid-column: 1 / -1; }
-      .event-line { grid-template-columns: 64px 34px minmax(0, 1fr); }
+      .event-line { grid-template-columns: 64px 42px minmax(0, 1fr); }
       .game-time { grid-column: 1; }
-      .role-badge { grid-column: 2; min-width: 28px; padding: 0; width: 28px; }
+      .event-line > .role-badge { grid-column: 2; min-width: 42px; padding: 0 6px; width: 42px; }
       .event-main, .event-text { grid-column: 3; }
     }
   </style>
@@ -486,6 +487,7 @@
               <header class="events-header">
                 <h2>Session log</h2>
                 <span id="liveStatus" class="muted small">Idle</span>
+                <label class="toggle-row" title="Show game- and agent-authored log messages"><input id="showLogs" type="checkbox"><span>Show game/agent logs</span></label>
                 <label class="toggle-row" title="Show participant, session, and voice setup events"><input id="showHousekeeping" type="checkbox"><span>Show setup events</span></label>
               </header>
               <div id="timeline" class="timeline"></div>
@@ -577,6 +579,7 @@
     const experimentStatusFilter = document.getElementById('experimentStatusFilter');
     const sessionStatusFilter = document.getElementById('sessionStatusFilter');
     const showHousekeeping = document.getElementById('showHousekeeping');
+    const showLogs = document.getElementById('showLogs');
     const configForm = document.getElementById('configForm');
     const configRevision = document.getElementById('configRevision');
     const revisionHistory = document.getElementById('revisionHistory');
@@ -998,7 +1001,7 @@
         <div class="metric-card"><div class="label">SQLite footprint</div><div class="metric">${formatBytes(current.storage?.database_total_bytes || current.storage?.database_bytes || 0)}</div><div class="muted small">${formatBytes(current.storage?.available_bytes)} filesystem free</div></div>`;
       capacityList.innerHTML = [
         capacityGauge('Active/retained sessions', capacity.active_reserved_sessions, capacity.active_session_limit, `${capacity.completed_retained_sessions} completed sessions remain during cleanup grace`),
-        capacityGauge('Waiting rooms', capacity.waiting_sessions, capacity.waiting_session_limit),
+        capacityGauge('Waiting sessions', capacity.waiting_sessions, capacity.waiting_session_limit),
         capacityGauge('Unattached participants', capacity.unattached_participants, capacity.unattached_participant_limit),
         capacityGauge('ASR streams reserved', capacity.transcription_streams_reserved, capacity.transcription_stream_limit),
         current.storage ? capacityGauge('Filesystem used', current.storage.total_bytes - current.storage.available_bytes, current.storage.total_bytes, `${formatBytes(current.storage.available_bytes)} free; admission reserve ${formatBytes(capacity.storage_reserve_bytes)} · WAL ${formatBytes(current.storage.wal_bytes)}`) : '<div class="muted small">Storage capacity is unavailable for the in-memory database.</div>'
@@ -1483,7 +1486,7 @@
 
     const PARLANDO_CONFIG_SECTIONS = [
       { title: 'Session lifecycle', description: 'Timeouts applied uniformly to every session in this experiment.', fields: [
-        { path: 'session.waiting_room_timeout_seconds', label: 'Waiting-room timeout (seconds)', help: 'Time before an unmatched session expires.', type: 'number', min: 1 },
+        { path: 'session.waiting_session_timeout_seconds', label: 'Waiting-session timeout (seconds)', help: 'Time before an unmatched session expires.', type: 'number', min: 1 },
         { path: 'session.reconnect_grace_seconds', label: 'Reconnect grace (seconds)', help: 'Time a disconnected player may return.', type: 'number', min: 0 },
         { path: 'session.session_idle_timeout_seconds', label: 'Idle timeout (seconds)', help: 'Time without meaningful activity before an active session expires.', type: 'number', min: 1 },
         { path: 'session.session_max_lifetime_seconds', label: 'Maximum lifetime (seconds)', help: 'Absolute session lifetime, including waiting.', type: 'number', min: 1 }
@@ -1519,7 +1522,7 @@
       ]},
       { title: 'Capacity', description: 'Admission limits and the disk reserve protecting durable storage.', fields: [
         { path: 'capacity.max_active_sessions', label: 'Maximum active sessions', help: 'Maximum sessions that have paired participants or otherwise occupy active runtime capacity.', type: 'number', min: 1 },
-        { path: 'capacity.max_waiting_sessions', label: 'Maximum waiting rooms', help: 'Maximum unmatched participant sessions waiting for a compatible partner.', type: 'number', min: 1 },
+        { path: 'capacity.max_waiting_sessions', label: 'Maximum waiting sessions', help: 'Maximum unmatched participant sessions waiting for a compatible partner.', type: 'number', min: 1 },
         { path: 'capacity.max_unattached_participants', label: 'Maximum unattached participants', help: 'Maximum issued participant identities that have not yet joined a session.', type: 'number', min: 1 },
         { path: 'capacity.max_transcription_streams', label: 'Maximum recognition streams', help: 'Maximum simultaneous participant audio streams sent to speech recognition.', type: 'number', min: 1 },
         { path: 'capacity.storage_reserve_megabytes', label: 'Disk reserve (MB)', help: 'Pause new session admission when available disk space falls below this reserve.', type: 'number', min: 1 }
@@ -2469,7 +2472,10 @@
 
     // Renders filtered event bundles as the selected session's chronological log.
     function renderEventBundles() {
-      const bundles = (state.eventBundles || []).filter(bundle => showHousekeeping.checked || !bundle.housekeeping);
+      const bundles = (state.eventBundles || []).filter(bundle => {
+        if (bundle.kind === 'log' && !showLogs.checked) return false;
+        return showHousekeeping.checked || !bundle.housekeeping;
+      });
       timeline.innerHTML = '';
       for (const bundle of bundles) {
         timeline.insertAdjacentHTML('beforeend', `
@@ -2529,6 +2535,7 @@
     }
 
     showHousekeeping.addEventListener('change', renderEventBundles);
+    showLogs.addEventListener('change', renderEventBundles);
     document.getElementById('createExperimentButton').addEventListener('click', () => {
       document.getElementById('createExperimentForm').reset();
       createExperimentDialog.showModal();

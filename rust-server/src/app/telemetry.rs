@@ -382,7 +382,7 @@ pub(crate) struct SessionLiveness {
     /// Experiment runtime which owns this session identifier.
     pub experiment_id: String,
     pub session_id: i64,
-    pub room_id: String,
+    pub public_session_id: String,
     pub status: String,
     pub health: String,
     pub meaningful_activity_at: String,

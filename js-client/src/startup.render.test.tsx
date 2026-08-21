@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialVoicePreflight, initialVoiceStatus, type AudioSessionSnapshot } from "./audio/types";
-import type { ExperimentInfo, JoinedRoom } from "./protocol";
+import type { ExperimentInfo, JoinedSession } from "./protocol";
 import { ParticipantAppTestHarness, type GameSession } from "./startup";
 
 class FakeWebSocket extends EventTarget {
@@ -79,8 +79,8 @@ function config(overrides: Partial<ExperimentInfo> = {}): ExperimentInfo {
 
 /** Creates an API double while retaining Vitest call-order metadata. */
 function api(publicConfig: ExperimentInfo = config()) {
-  const room: JoinedRoom<{ view: string }, { type: string }> = {
-    roomId: "ROOM1",
+  const room: JoinedSession<{ view: string }, { type: string }> = {
+    sessionId: "ROOM1",
     role: "A",
     observation: { view: "initial" },
     availableActions: null,
@@ -176,7 +176,7 @@ describe("ParticipantApp rendered state machine", () => {
     act(() => socket.message({
       protocol_version: 1,
       type: "session_started",
-      room_id: "ROOM1",
+      public_session_id: "ROOM1",
       role: "A",
       observation: { view: "assigned" },
       available_actions: null
@@ -185,7 +185,7 @@ describe("ParticipantApp rendered state machine", () => {
     act(() => socket.message({
       protocol_version: 1,
       type: "transition",
-      room_id: "ROOM1",
+      public_session_id: "ROOM1",
       actor: "B",
       action: { type: "move" },
       observation: { view: "moved" },
@@ -196,7 +196,7 @@ describe("ParticipantApp rendered state machine", () => {
     fireEvent.click(screen.getByRole("button", { name: "Move" }));
     expect(client.sendAction).toHaveBeenCalledOnce();
 
-    act(() => socket.message({ protocol_version: 1, type: "completed", room_id: "ROOM1", completion: { outcome: "win" } }));
+    act(() => socket.message({ protocol_version: 1, type: "completed", public_session_id: "ROOM1", completion: { outcome: "win" } }));
     expect(screen.getByText("completed:true")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Move" }));
     expect(client.sendAction).toHaveBeenCalledOnce();
@@ -237,14 +237,14 @@ describe("ParticipantApp rendered state machine", () => {
     act(() => currentSocket.message({
       protocol_version: 1,
       type: "session_started",
-      room_id: "ROOM1",
+      public_session_id: "ROOM1",
       role: "A",
       observation: { view: "current" },
       available_actions: null
     }));
 
     act(() => oldSocket.dispatchEvent(new Event("error")));
-    act(() => oldSocket.message({ protocol_version: 1, type: "error", room_id: "ROOM1", code: "stale_error", fatal: false }));
+    act(() => oldSocket.message({ protocol_version: 1, type: "error", public_session_id: "ROOM1", code: "stale_error", fatal: false }));
     expect(screen.queryByText(/stale error|Retrying/)).not.toBeInTheDocument();
     expect(screen.getByText("observation:current")).toBeInTheDocument();
   });

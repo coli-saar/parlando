@@ -8,13 +8,13 @@ use serde_json::Value;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SessionConfig {
-    /// Maximum time a one-player room may wait for its second role.
-    pub waiting_room_timeout_seconds: i64,
+    /// Maximum time a one-player session may wait for its second role.
+    pub waiting_session_timeout_seconds: i64,
     /// Maximum time a disconnected player may reclaim an active role.
     pub reconnect_grace_seconds: i64,
-    /// Maximum inactivity allowed after a room starts before it is expired.
+    /// Maximum inactivity allowed after a session starts before it is expired.
     pub session_idle_timeout_seconds: i64,
-    /// Maximum wall-clock lifetime of a room, including waiting time.
+    /// Maximum wall-clock lifetime of a session, including waiting time.
     pub session_max_lifetime_seconds: i64,
 }
 
@@ -22,7 +22,7 @@ impl Default for SessionConfig {
     /// Uses conservative lifecycle limits for a modest research deployment.
     fn default() -> Self {
         Self {
-            waiting_room_timeout_seconds: 10 * 60,
+            waiting_session_timeout_seconds: 10 * 60,
             reconnect_grace_seconds: 5 * 60,
             session_idle_timeout_seconds: 30 * 60,
             session_max_lifetime_seconds: 4 * 60 * 60,
@@ -40,9 +40,9 @@ impl Default for SessionConfig {
 pub struct CapacityConfig {
     /// Sessions that may be running or retained during their reconnect grace period.
     pub max_active_sessions: usize,
-    /// Human-human rooms that may wait for their second participant.
+    /// Human-human sessions that may wait for their second participant.
     pub max_waiting_sessions: usize,
-    /// Participant credentials that may exist before they have joined a room.
+    /// Participant credentials that may exist before they have joined a session.
     pub max_unattached_participants: usize,
     /// Browser ASR streams reserved across waiting and active sessions.
     pub max_transcription_streams: usize,
@@ -335,8 +335,8 @@ impl ExperimentConfig {
                 "experiment.id must contain 1 to 128 letters, digits, dots, dashes, or underscores"
             );
         }
-        if self.session.waiting_room_timeout_seconds <= 0 {
-            bail!("session.waiting_room_timeout_seconds must be positive");
+        if self.session.waiting_session_timeout_seconds <= 0 {
+            bail!("session.waiting_session_timeout_seconds must be positive");
         }
         if self.session.reconnect_grace_seconds < 0 {
             bail!("session.reconnect_grace_seconds must not be negative");
@@ -607,7 +607,7 @@ mod tests {
         exact.validate().unwrap();
 
         for mutate in [
-            |config: &mut ExperimentConfig| config.session.waiting_room_timeout_seconds = 0,
+            |config: &mut ExperimentConfig| config.session.waiting_session_timeout_seconds = 0,
             |config: &mut ExperimentConfig| config.session.reconnect_grace_seconds = -1,
             |config: &mut ExperimentConfig| config.session.session_idle_timeout_seconds = 0,
             |config: &mut ExperimentConfig| {

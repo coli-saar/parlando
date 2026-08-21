@@ -12,7 +12,7 @@ import {
   type AudioSessionPlan,
   type ExperimentInfo,
   type GameSessionPlan,
-  type JoinedRoom,
+  type JoinedSession,
   type PlayerMessage,
   type PlayerRole,
   type VoicePreflight,
