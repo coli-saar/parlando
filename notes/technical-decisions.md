@@ -13,12 +13,12 @@ to `LiveSession`, and create one game value, agent instance per automated role, 
 `SessionLogger` per session. Reusable `GameFactory` and `AgentFactory` values construct those
 session-local objects. The game and agent retain runtime-scoped logger handles, so arbitrary
 implementation helpers can log strings without logger parameters on gameplay methods. Live log
-handles write bounded `extension_log` events through SQLite; headless handles write bounded
-attempt artifacts. Keep live and headless orchestration separate rather than introducing a
-general state-owning `Session<G>` engine.
+handles write bounded `extension_log` events through SQLite; headless execution supplies the same
+logger capability without using the live database. Keep live and headless orchestration separate
+rather than introducing a general state-owning `Session<G>` engine.
 
 Tradeoffs: live session creation must become durable before game and agent construction, so
-initialization failures become recorded terminal attempts rather than disappearing before a
+initialization failures become recorded terminal sessions rather than disappearing before a
 session row exists. Synchronous logging acknowledges bounded queue acceptance rather than an
 immediate durable commit, and a crash can lose the unflushed tail. Arbitrary text expands the
 privacy and storage-abuse boundary, requiring explicit byte limits, disclosure, deletion tests,
@@ -1038,11 +1038,11 @@ Tradeoffs: Local mode performs extra package builds and installs on every invoca
 
 Context: A headless agent-agent session needs a logical heartbeat that selects an agent and calls `respond`. Issue #22 adds that facility without changing existing human-human or human-agent execution. An earlier design considered a shared state-owning `Session`, controller hierarchy, activation objects, and declarative scheduling rules.
 
-Decision: Keep `Game` as the complete shared contract for authoritative mechanics and do not add a state-owning `Session` domain object. A `SessionRunner<G>` owns local `Game::State` while it executes one headless session. It uses a small Rust `AgentSchedule<G>` strategy to select the first and subsequent agents. The versioned YAML experiment file selects a compiled schedule by stable kind and ordinary constructor parameters; it does not encode a scheduling transition language. `AgentSchedule::next` receives the existing optional `AgentResponse<G::Action>` plus an optional `ActionRejection`; do not add a near-duplicate `DecisionOutcome` representation. Scheduling controls only when software agents are asked to respond; `Game::apply_action` remains the sole authority on action legality. Runner-owned timeouts, deadlines, decision and message limits, invalid-action limits, and unconditional shutdown remain outside the schedule. `AgentSchedule` is headless-only: issue #22 leaves the live runtime unchanged. The detailed design and examples live in `notes/agent-agent-runner-design.md`.
+Decision: Keep `GameFactory` plus its session-local `Game` as the shared construction and mechanics contracts and do not add a state-owning `Session` domain object. A `SessionRunner<G>` holds the reusable factory, creates one `G` per session, and owns that value and its local `G::State` while it executes one headless session. It uses a small Rust `AgentSchedule<G>` strategy to select the first and subsequent agents. The versioned YAML experiment file selects a compiled schedule by stable kind and ordinary constructor parameters; it does not encode a scheduling transition language. `AgentSchedule::next` receives the existing optional `AgentResponse<G::Action>` plus an optional `ActionRejection`; do not add a near-duplicate `DecisionOutcome` representation. Scheduling controls only when software agents are asked to respond; `Game::apply_action` remains the sole authority on action legality. Runner-owned construction, timeouts, deadlines, decision and message limits, invalid-action limits, and unconditional shutdown remain outside the schedule. `AgentSchedule` is headless-only: issue #22 does not alter live input timing. The detailed design and examples live in `notes/agent-agent-runner-design.md`.
 
 Tradeoffs: The new headless driver is not a universal orchestration abstraction, which keeps the agent-agent heartbeat easy to understand and test and avoids coupling issue #22 to live execution. Some calculation around accepted transitions may initially be duplicated; extract a stateless helper only when concrete duplication warrants it. Adding a new schedule kind requires Rust code and registration, while its selection and small parameters remain convenient in YAML. This avoids maintaining a public scheduling DSL. Reusing `AgentResponse` makes the schedule generic over `G` and exposes typed action and message contents to specialized scheduling code; built-in schedules can ignore those payloads, and this cost is preferable to maintaining a second response classification with invalid representable combinations.
 
-Follow-up risks: The headless driver must conform to the existing public `Game` and `Agent` contracts for callback ordering, completion delivery, and cleanup. Its terminal behavior for `ActionAndMessage` must be tested explicitly; any change to live behavior is separate work. Result artifacts must identify the schedule implementation, version, and parameters for reproducibility. A schedule that repeatedly selects the same agent can fail to make progress, so hard runner limits must remain authoritative and independent of scheduling code.
+Follow-up risks: The headless driver must conform to the existing public `GameFactory`, `Game`, `AgentFactory`, `Agent`, and `SessionLogger` contracts for construction, callback ordering, completion delivery, logging, and cleanup. Its terminal behavior for `ActionAndMessage` must be tested explicitly; any change to live behavior is separate work. Result artifacts must identify the schedule implementation, version, and parameters for reproducibility. A schedule that repeatedly selects the same agent can fail to make progress, so hard runner limits must remain authoritative and independent of scheduling code.
 
 ## 2026-08-20: Privacy records describe the selected experiment's effective configuration
 
@@ -1081,11 +1081,11 @@ so a generic platform capability cannot leak back into an experiment-specific re
 
 Context: Issue #22 requires readable experiment configuration, batch evaluation, tournaments, resumable execution, and optional reinforcement-learning self-play. The design must assign two independently configured agents to seats, run training and held-out scenarios, update a learner after a fixed number of epochs, and validate selected checkpoints without making checkpoint storage or observation encoding runner concerns.
 
-Decision: Make a versioned, strictly validated YAML file the public specification for an agent-agent experiment. Named agents are defined separately and assigned independently to the two seats for each phase; scenario lists contain game configurations, seeds, and repetitions. `ExperimentRunner` expands that file into deterministic `SessionPlan` values, runs `SessionRunner` with bounded concurrency, finalizes artifacts, and, in RL mode, owns the epoch, checkpoint-update, and held-out-validation cadence. Do not add `SessionRecorder`; bounded session results carry optional traces or trajectories, with an internal streaming sink left as a performance substitution. `RLAgent<G>` owns observation and action encoding, inference, optimization, and resolution and persistence of opaque semantically immutable checkpoint IDs. Keep reward outside both `Game` and `RLAgent`: a selected compiled `RewardFunction<G>` may inspect authoritative transitions inside `SessionRunner` but releases only per-role numeric rewards. The initial RL path treats accepted actions as environment steps and supports action-only learning agents. The full design lives in `notes/agent-agent-runner-design.md`.
+Decision: Make a versioned, strictly validated YAML file the public specification for an agent-agent experiment. Named agents are defined separately and assigned independently to the two seats for each phase; scenario lists contain game configurations, seeds, and repetitions. `ExperimentRunner` expands that file into deterministic `SessionPlan` values, runs `SessionRunner` with bounded concurrency, finalizes result, trace, and trajectory artifacts, and, in RL mode, owns the epoch, checkpoint-update, and held-out-validation cadence. Do not add `SessionRecorder`; each bounded `SessionResult` carries compact output and optional artifact references. `RLAgent<G>` owns observation and action encoding, inference, optimization, and resolution and persistence of opaque semantically immutable checkpoint IDs. Keep reward outside both `Game` and `RLAgent`: a selected compiled `RewardFunction<G>` may inspect authoritative transitions inside `SessionRunner` but releases only per-role numeric rewards. The initial RL path treats accepted actions as environment steps and supports action-only learning agents. The full design lives in `notes/agent-agent-runner-design.md`.
 
 Tradeoffs: The YAML schema becomes a compatibility surface that requires versioning, strict validation, and migration discipline. Per-session trajectory buffering is simple and bounded by hard limits but may later need an internal streaming sink. Opaque checkpoint IDs allow in-memory, file-backed, or remote learners and keep save cadence inside `RLAgent`; cross-process resume is possible only when that implementation can resolve a recorded ID. Keeping rewards in a separate trait permits multiple learning objectives per game but requires the experiment to select and record one. Action-only RL postpones communication-policy step and encoding semantics.
 
-Follow-up risks: Canonical YAML normalization, session identity schemas, status codes, shard sizing, training-update idempotency, and the first RL validation game remain implementation choices. Version 1 requires `epochs` to be divisible by `checkpoint_every_epochs`, avoiding an implicit final partial update. Partial shards must never be treated as finalized, remote retries must not duplicate completed logical callbacks, and cleanup must release agents and provider permits on every exit path. The headless driver needs contract tests for accepted transitions, observations, completion, and terminal combined-response behavior; no live runtime change is part of issue #22.
+Follow-up risks: Canonical YAML normalization, run and plan identity schemas, status codes, shard sizing, training-update idempotency, and the first RL validation game remain implementation choices. Version 1 requires `epochs` to be divisible by `checkpoint_every_epochs`, avoiding an implicit final partial update. Partial shards must never be treated as finalized, callback-level transport recovery must not duplicate a completed logical callback, and cleanup must release agents and provider permits on every exit path. The headless driver needs contract tests for accepted transitions, observations, completion, and terminal combined-response behavior; no live runtime change is part of issue #22.
 
 ## 2026-08-20: Experiment exports use dashboard identifiers and deletion removes shared sessions
 
@@ -1350,8 +1350,8 @@ can contain sensitive material, so extension authors retain responsibility for l
 bound accidental resource use rather than making it safe.
 
 Follow-up risks: the designed headless `SessionRunner` does not yet exist, so its factory construction
-and bounded attempt-log artifact must be implemented with that runner. Revisit limits and add explicit
-dropped-entry/drain telemetry from production evidence.
+and logger cleanup must be implemented with that runner. Revisit limits and add explicit
+dropped-entry/drain telemetry only if production evidence requires it.
 
 ## 2026-08-21: Version 0.4 uses distinct game factories and a session-only schema
 
@@ -1412,3 +1412,180 @@ the research-visible output of the implementation changed even though its playin
 
 Tradeoffs: received chat text is duplicated into the session log and therefore consumes additional
 storage and carries the same privacy obligations as the already durable conversation event.
+
+## 2026-08-21: Each headless plan executes once with session-local objects
+
+Context: the implemented 0.4 runtime creates each `Game` and automated `Agent` for a specific session.
+The earlier agent-agent design placed constructed agents outside `SessionRunner` and also imported an
+attempt-and-retry model from batch-job systems that issue #22 does not require.
+
+Decision: `SessionRunner<G>` retains a reusable `GameFactory<Game = G>` but creates one game and two
+agents inside each invocation. One deterministic `SessionPlan` is executed exactly once and produces
+one finalized `SessionResult`, including when construction or execution fails. There are no attempt IDs
+and no automatic session retries. Resume skips every session with a finalized result, successful or
+failed; deliberate re-execution requires a new experiment run identity. Callback-level transport
+recovery, if a remote-agent adapter supports it, remains inside one logical callback and must be
+idempotent. The runner supplies the existing scoped `SessionLogger` during construction and drains it
+during cleanup, but logging is not a separate runner abstraction.
+
+Tradeoffs: failed sessions are not silently retried, so transient failures remain visible in evaluation
+results and operators must deliberately start another run to gather a replacement sample. In return,
+run and plan identity, artifact ownership, resume, and statistical interpretation remain simple: one plan,
+one execution, one result.
+
+Follow-up risks: tests must cover constructor failure, cleanup on every exit path, resume over both
+successful and failed results, concurrent session isolation, and idempotent remote callback recovery.
+
+## 2026-08-21: Agent YAML selects factories without classifying agent kinds
+
+Context: an earlier experiment schema required `kind: factory` for ordinary agents and `kind: rl` for
+learners. Every session participant is created through an `AgentFactory`, including a checkpoint-pinned
+learning policy, so this distinction exposed training internals in the seat configuration and duplicated
+information already known by the compiled registry.
+
+Decision: every named YAML agent selects its implementation with one `factory` key. The same definition
+may include implementation-specific checkpoint and settings fields. When `training.learner` names an
+agent, validation requires the registered factory ID to also have an `RLAgent` training capability.
+Session planning always resolves the definition to an ordinary checkpoint-pinned `AgentFactory`; only
+`ExperimentRunner` asks for the additional learning capability between groups of sessions.
+
+Tradeoffs: the YAML has one uniform agent shape and evaluation code does not branch on an agent kind.
+The compiled registry must associate an optional learner implementation with the same stable factory ID,
+and an invalid training reference is discovered during experiment validation rather than YAML parsing.
+
+## 2026-08-21: Headless results use run and plan IDs, not dashboard session IDs
+
+Context: the runner design called its deterministic plan hash `session_id`, while the dashboard and
+corpus already use `session_id` for a random three-word label attached to a persisted live dialogue.
+The two identifiers have different scopes and properties.
+
+Decision: `run_id` identifies one execution of a complete YAML experiment and is reused when that run
+resumes. `plan_id` is the deterministic hash of one expanded behavior-changing plan, including its
+scenario, repetition, and mirrored-role coordinates; it excludes `run_id` so equivalent plans can be
+recognized across runs. Results and resume use the pair `(run_id, plan_id)`. Headless execution does not
+create a dashboard dialogue label because it does not create a live database session.
+
+Tradeoffs: result consumers must carry a two-part key rather than an overloaded `session_id`. The names
+make scope explicit, permit deliberate re-execution under a new run ID, and avoid suggesting that a
+headless artifact can be joined directly to a dashboard or corpus session.
+
+## 2026-08-21: The first headless runner finalizes one result file per plan
+
+Context: issue #22 needs a usable evaluation runner before its optional RL and distributed-artifact
+phases. The existing crate is generic over a compiled game, while concrete game binaries own the set of
+registered agent factories.
+
+Decision: add a generic public `ExperimentRunner<G>` to the Parlando crate and a Great Tree CLI which
+registers its compiled factories before reading strict versioned YAML. The runner expands canonical
+plans, executes each through one session-owning task, and atomically writes one JSON result per
+`plan_id` under a run manifest. Resume accepts only results whose `(run_id, plan_id)` matches. The
+headless logger preserves the existing bounded capability but discards accepted text; structured traces
+are the runner's diagnostic artifact. Headless YAML maps semantic secret keys to environment-variable
+names while plans and artifacts retain only the existing `game.<key>` references. `fail_fast` forces concurrency to one so stopping cannot cancel
+an in-flight session before agent shutdown. Optional learning reuses the same driver: an `RLAgent`
+resolves opaque checkpoints to ordinary factories and receives role-safe trajectories between epochs,
+while a separate game-specific `RewardFunction` computes numeric rewards from authoritative transitions.
+
+Tradeoffs: one file per plan is simpler and safer for initial resume than shared shards, but very large
+runs may eventually need size-bounded worker shards. Sequential fail-fast sacrifices throughput only
+for runs which explicitly request immediate stopping. Discarding headless extension logs avoids making
+logging a runner subsystem; a later retained backend can replace the sink without changing game or
+agent APIs.
+
+Follow-up risks: add provider-specific concurrency/rate limiting before large remote-model runs and
+define a concrete Python/gRPC learner transport only when its deployment and payload requirements are
+known; it can implement the public `RLAgent` contract without changing session execution.
+
+## 2026-08-21: RL training is a resumable phase over ordinary headless sessions
+
+Context: issue #22 also requires repeated sweeps over training scenarios, learner updates, opaque
+checkpoints, and held-out validation. Encoding observations in a game-independent adapter would either
+leak game semantics into the runner or duplicate work already owned by the learner. Adding rewards to
+the base `Game` trait would burden interactive-only games and prevent multiple objectives.
+
+Decision: register `RLAgent<G>` capabilities by the same factory ID used in uniform agent YAML. A
+learner resolves its YAML checkpoint reference, exposes that checkpoint as a normal `AgentFactory<G>`,
+owns observation/action encoding and checkpoint persistence, and performs idempotent updates using a
+stable run-scoped update ID. Register rewards separately as `RewardFunction<G>` values; they alone may
+inspect pre- and post-action authoritative state, and only per-role numbers enter trajectories. The v1
+loop captures action-only decisions by the named learner, runs one deterministic scenario sweep per
+epoch, updates every configured number of epochs, and validates every configured number of checkpoints.
+Every successful update is followed by an atomic checkpoint record. Resume loads finalized trajectory
+data and checkpoint records, skips all finalized sessions, and never repeats a recorded learner update.
+A failed training session stops checkpoint advancement rather than training on an incomplete epoch.
+
+Tradeoffs: serializing typed observations and actions as JSON keeps the runner and remote boundary
+game-independent while leaving interpretation to `RLAgent<G>`. Action-only capture postpones ambiguous
+credit assignment for messages and yields. Atomic records make ordinary crashes resumable; the learner
+must still treat update IDs idempotently for the narrow crash window after a remote update succeeds but
+before its record is finalized. Physical checkpoint storage and save cadence remain learner concerns.
+
+Follow-up risks: a future communication-learning experiment needs explicit environment-step and reward
+semantics before expanding trajectories. Large training runs may replace per-result JSON with immutable
+shards without changing the public learner, reward, or session contracts.
+
+## 2026-08-21: The first concrete RL experiment uses Python TorchRL and a small Qwen policy
+
+Context: the generic RL runner needs a concrete experiment which can distinguish transport, trajectory,
+checkpoint, validation, and resume failures from failures to solve a difficult dialogue game. Rust has
+general training frameworks and emerging RL support, but the available path to on-policy PPO over a
+LoRA-adapted pretrained Qwen model would require building more model and algorithm integration than the
+Parlando infrastructure being tested.
+
+Decision: implement `experiments/cue-choice-rl` as a two-action contextual-bandit session. A scripted
+player-B dealer acts first; a player-A learner then maps one of four private nonsense cues to one of four
+typed choices. Use Python TorchRL 0.13.3 for generalized advantage estimation with an explicit clipped
+PPO loss, Transformers and PEFT LoRA,
+and the Apache-2.0 `Qwen/Qwen2.5-0.5B-Instruct` checkpoint. Keep game mechanics, scheduling, reward, and
+experiment coordination in Rust. Host ordinary checkpoint-pinned inference through the existing agent
+service and add a narrow learner gRPC service for idempotent training batches; synchronous checkpoint
+resolution validates the opaque YAML string locally, and Python interprets that ID when loading policy state.
+Use a fixed categorical action head and scalar value head over the Qwen representation rather than
+free-form JSON generation. Training and validation share the cue mapping but use disjoint seed-derived
+nonces. Treat learning convergence as a diagnostic; infrastructure acceptance depends on complete,
+role-safe trajectories, checkpoint provenance, validation cadence, and replay-free resume.
+
+Tradeoffs: the one-step learner transition makes reward and return calculation inspectable and the
+fixed action head avoids conflating RL with output parsing. It does not test long-horizon credit
+assignment, communication learning, or open-ended language generation. Python adds a local service and
+environment to operate, but preserves the intended ownership boundary: the learner encodes
+observations, trains the model, and resolves checkpoint storage while Rust owns authoritative state.
+
+Implementation detail: extend `RLAgent::train` with a runner-owned `RLTrainingContext`, and send its
+normalized settings in the learner request rather than configuring training as a side effect of agent
+construction. Add a generic Python SDK helper for registering `AgentService` on an existing asynchronous
+gRPC server, allowing this experiment's inference and learner services to share one loopback endpoint.
+Preload Qwen once per process and keep session agents lightweight. Default to Apple's MPS backend on Mac,
+with explicit `cpu` and capability-selecting `auto` alternatives; keep all training tensors in float32 for
+MPS compatibility. Initialize the categorical policy and scalar value heads to zero so the first policy is
+uniform and the infrastructure experiment does not depend on an arbitrary randomly favored action.
+Include a dependency-light random backend so protocol, checkpoint, validation, and
+resume behavior can be tested without downloading PyTorch or a model.
+
+Follow-up risks: validate TorchRL, Transformers, PEFT, and PyTorch versions together before pinning the
+Python lockfile. The learner keeps intermediate checkpoints in memory, which makes resume
+depend on the same Python process; a production learner must durably retain every checkpoint referenced
+by an active run. Reuse the existing remote-agent endpoint and credential checks before allowing the
+learner service off loopback. A production learner must also reload learner-owned disk checkpoints;
+version 1 only writes selected snapshots and assumes one learner process remains alive for the run.
+
+## 2026-08-21: Remote agent transport is game-independent and owns RL transport
+
+Context: requiring each experiment to implement `RemoteGrpcAgent<G>` and a second Rust learner adapter
+duplicated serialization, checkpoint routing, authentication, and protobuf code. The transport never
+interprets a game's observation or action; Rust's type parameter is needed only while calling the typed
+traits, before values cross the process boundary as JSON.
+
+Decision: expose one non-generic `agent::grpc::RemoteAgent`. Blanket implementations of
+`AgentFactory<G>`, `Agent<G>`, and `RLAgent<G>` perform typed serialization internally without storing
+`G`. Its YAML has transport-owned fields plus one arbitrary `config` value delivered unchanged to the
+remote process. A checkpoint is a separate optional `CreateAgent` field, and training uses the generic
+Parlando learner protocol. The Python SDK registers both services and converts their envelopes to plain
+Python dictionaries. Experiment packages implement only game behavior, reward logic, model inference,
+and training.
+
+Tradeoffs: arbitrary remote configuration cannot receive dashboard controls derived from a compiled
+schema, but it avoids coupling Parlando releases to model-specific parameters. JSON remains the common
+representation, so game values must be serializable and remote agents remain responsible for validating
+their own configuration and decoding their own observations. Transport credentials remain explicit
+Rust-owned fields and are never mixed into the opaque configuration.

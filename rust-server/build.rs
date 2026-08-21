@@ -5,9 +5,16 @@ fn main() {
     tonic_build::configure()
         .build_client(true)
         .build_server(true)
-        .compile_protos(&["proto/parlando_agent_v3.proto"], &["proto"])
-        .expect("Parlando agent protobuf compiles");
+        .compile_protos(
+            &[
+                "proto/parlando_agent_v3.proto",
+                "proto/parlando_rl_v1.proto",
+            ],
+            &["proto"],
+        )
+        .expect("Parlando remote protocols compile");
     println!("cargo:rerun-if-changed=proto/parlando_agent_v3.proto");
+    println!("cargo:rerun-if-changed=proto/parlando_rl_v1.proto");
     emit_build_metadata();
 }
 

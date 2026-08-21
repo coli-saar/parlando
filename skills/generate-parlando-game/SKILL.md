@@ -42,7 +42,7 @@ Start with `Server::new(game_factory, metadata)`, set database and optional part
 
 Implement `agent::Agent<G>` and `agent::Factory<G>`. Factory creation receives role, seed, and agent-owned settings before game delivery. Store the first observation in `start`; observe later accepted actions in `observe_transition`; observe other-player text in `observe_message`; receive the shared terminal result in `finish`; and decide in `respond`.
 
-Return a non-empty `Response::action`, `Response::message`, or `Response::action_and_message`. A message does not change game state. Release per-session resources in `shutdown`. For remote agents, register `agent::grpc::Factory::<G>::new()` and use the Python `Agent`, `Context`, `Response`, and `serve` API; Python combines outputs with `Response.action_with_message`.
+Return a non-empty `Response::action`, `Response::message`, or `Response::action_and_message`. A message does not change game state. Release per-session resources in `shutdown`. For remote agents, register `agent::grpc::RemoteAgent::new()` and use the Python `Agent`, `Context`, `Response`, and `serve` API; Python combines outputs with `Response.action_with_message`.
 
 Do not solve model readiness with game messages. The current construction-ready rule is completion of factory creation; explicit readiness and blocking-load isolation are deferred runtime work.
 

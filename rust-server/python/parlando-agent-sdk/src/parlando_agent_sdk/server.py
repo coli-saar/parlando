@@ -37,6 +37,17 @@ def _generated_modules() -> tuple[Any, Any]:
         ) from exc
 
 
+def _learner_modules() -> tuple[Any, Any]:
+    """Imports the SDK-owned learner protocol modules."""
+    generated_dir = Path(__file__).resolve().parent / "generated"
+    if str(generated_dir) not in sys.path:
+        sys.path.insert(0, str(generated_dir))
+    return (
+        importlib.import_module("parlando_agent_sdk.generated.parlando_rl_v1_pb2"),
+        importlib.import_module("parlando_agent_sdk.generated.parlando_rl_v1_pb2_grpc"),
+    )
+
+
 PlayerRole = Literal["A", "B"]
 
 
@@ -100,6 +111,7 @@ class Context:
     role: PlayerRole
     seed: int
     settings: dict[str, Any]
+    checkpoint_id: str | None = None
     secrets: SecretValues = field(default_factory=lambda: SecretValues({}))
     logger: SessionLogger = field(default_factory=SessionLogger)
 
@@ -216,6 +228,7 @@ class _AgentService:
             role=request.role,
             seed=request.seed,
             settings=_struct_to_dict(request.config),
+            checkpoint_id=_optional_checkpoint(request),
             secrets=SecretValues(_struct_to_dict(request.agent_instance_secrets)),
             logger=logger,
         )
@@ -327,14 +340,6 @@ async def _serve_async(
         raise ValueError("max_agents must be greater than zero")
     if not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
-    pb2, pb2_grpc = _generated_modules()
-
-    def normalized_factory(context: Context) -> Agent | Awaitable[Agent]:
-        """Creates an Agent from either a zero-argument class or a context-aware factory."""
-        if isinstance(factory, type):
-            return factory()
-        return factory(context)
-
     auth_token = auth_token or os.environ.get("PARLANDO_REMOTE_AGENT_TOKEN")
     server = grpc.aio.server(
         options=(
@@ -343,9 +348,7 @@ async def _serve_async(
             ("grpc.max_concurrent_streams", 128),
         )
     )
-    pb2_grpc.add_AgentServiceServicer_to_server(
-        _AgentService(normalized_factory, auth_token, max_agents), server
-    )
+    add_agent_service(server, factory, auth_token=auth_token, max_agents=max_agents)
     if (certificate_chain is None) != (private_key is None):
         raise ValueError("certificate_chain and private_key must be configured together")
     if certificate_chain is not None and private_key is not None:
@@ -363,6 +366,77 @@ async def _serve_async(
         raise ValueError("non-loopback remote-agent bindings require mTLS or a bearer token")
     await server.start()
     await server.wait_for_termination()
+
+
+def add_agent_service(
+    server: grpc.aio.Server,
+    factory: type[Agent] | AgentFactory,
+    *,
+    auth_token: str | None = None,
+    max_agents: int = 128,
+) -> None:
+    """Registers Parlando's agent service on an existing asynchronous gRPC server.
+
+    This is useful when one process must expose an ordinary Parlando agent and a
+    related control service, such as an RL learner, on the same loopback port.
+    The caller owns server binding, startup, and shutdown.
+    """
+    if max_agents <= 0:
+        raise ValueError("max_agents must be greater than zero")
+    _pb2, pb2_grpc = _generated_modules()
+
+    def normalized_factory(context: Context) -> Agent | Awaitable[Agent]:
+        """Creates an Agent from either a zero-argument class or a context-aware factory."""
+        if isinstance(factory, type):
+            return factory()
+        return factory(context)
+
+    pb2_grpc.add_AgentServiceServicer_to_server(
+        _AgentService(normalized_factory, auth_token, max_agents), server
+    )
+
+
+class Learner:
+    """Base class for a remote checkpoint-producing learner."""
+
+    async def train(
+        self,
+        update_id: str,
+        base_checkpoint_id: str,
+        completed_epochs: int,
+        steps: list[dict[str, Any]],
+        settings: dict[str, Any],
+    ) -> str:
+        """Applies one idempotent batch and returns an immutable checkpoint ID."""
+        raise NotImplementedError
+
+
+def add_learner_service(server: grpc.aio.Server, learner: Learner) -> None:
+    """Registers the game-independent Parlando learner service."""
+    pb2, pb2_grpc = _learner_modules()
+
+    class Service(pb2_grpc.LearnerServiceServicer):
+        """Translates protobuf envelopes into ordinary Python values."""
+
+        async def Train(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
+            """Delegates one training batch and maps validation errors to gRPC status."""
+            try:
+                steps = [
+                    json_format.MessageToDict(step, preserving_proto_field_name=True)
+                    for step in request.steps
+                ]
+                checkpoint = await learner.train(
+                    request.update_id,
+                    request.base_checkpoint_id,
+                    request.completed_epochs,
+                    steps,
+                    _struct_to_dict(request.settings),
+                )
+                return pb2.TrainResponse(checkpoint_id=checkpoint)
+            except ValueError as exc:
+                await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
+
+    pb2_grpc.add_LearnerServiceServicer_to_server(Service(), server)
 
 
 def serve(
@@ -393,6 +467,15 @@ def serve(
 def _struct_to_dict(value: Struct) -> dict[str, Any]:
     """Converts a protobuf Struct into a plain Python dictionary."""
     return json_format.MessageToDict(value, preserving_proto_field_name=True)
+
+
+def _optional_checkpoint(request: Any) -> str | None:
+    """Reads the optional checkpoint from protobuf requests and lightweight test doubles."""
+    if not hasattr(request, "checkpoint_id"):
+        return None
+    if hasattr(request, "HasField") and not request.HasField("checkpoint_id"):
+        return None
+    return str(request.checkpoint_id)
 
 
 def _dict_to_struct(value: dict[str, Any]) -> Struct:

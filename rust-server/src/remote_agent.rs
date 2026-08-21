@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, env, fmt, marker::PhantomData, time::Duration};
+use std::{collections::BTreeMap, env, fmt, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
@@ -13,6 +13,7 @@ use tonic::{
 };
 
 use crate::{
+    agent_experiment::{CheckpointId, RLAgent, RLTrainingContext, TrainingBatch, TrajectoryStep},
     agents::{Agent, AgentContext, AgentFactory, AgentIdentity, AgentResponse},
     game::{
         AgentConfigField, AgentConfigValue, AgentDefinition, Game, PlayerRole, SecretPurpose,
@@ -23,6 +24,11 @@ use crate::{
 /// Generated protobuf types and gRPC service clients for remote agents.
 pub mod pb {
     tonic::include_proto!("parlando.agent.v4");
+}
+
+/// Generated protobuf types and gRPC client for remote learners.
+pub mod learner_pb {
+    tonic::include_proto!("parlando.rl.v1");
 }
 
 use pb::{
@@ -44,11 +50,19 @@ struct RemoteGrpcAgentConfig {
     /// Remote-agent protocol version expected by this server.
     #[serde(default = "default_protocol_version")]
     pub protocol_version: String,
+    /// Agent-owned configuration forwarded without local interpretation.
+    #[serde(default = "empty_json_object")]
+    pub config: Value,
     /// Per-request timeout for create and act calls.
     #[serde(skip, default = "default_request_timeout")]
     pub request_timeout: Duration,
     #[serde(skip)]
     auth_token: Option<String>,
+}
+
+/// Returns the default opaque agent configuration.
+fn empty_json_object() -> Value {
+    Value::Object(serde_json::Map::new())
 }
 
 impl fmt::Debug for RemoteGrpcAgentConfig {
@@ -60,6 +74,7 @@ impl fmt::Debug for RemoteGrpcAgentConfig {
             .field("agent_name", &self.agent_name)
             .field("agent_version", &self.agent_version)
             .field("protocol_version", &self.protocol_version)
+            .field("config", &self.config)
             .field("request_timeout", &self.request_timeout)
             .field(
                 "auth_token",
@@ -105,16 +120,16 @@ type AuthenticatedAgentClient =
     AgentServiceClient<InterceptedService<Channel, RemoteAuthInterceptor>>;
 
 /// Agent factory that adapts a gRPC service to Parlando's normal in-process trait.
-pub struct RemoteGrpcAgentFactory<A: Game>(PhantomData<A>);
+pub struct RemoteAgent;
 
-impl<A: Game> RemoteGrpcAgentFactory<A> {
+impl RemoteAgent {
     /// Creates a factory that will instantiate one remote agent per session participant.
     pub fn new() -> Self {
-        Self(PhantomData)
+        Self
     }
 }
 
-impl<A: Game> Default for RemoteGrpcAgentFactory<A> {
+impl Default for RemoteAgent {
     /// Creates the dashboard-configured remote gRPC factory.
     fn default() -> Self {
         Self::new()
@@ -122,7 +137,7 @@ impl<A: Game> Default for RemoteGrpcAgentFactory<A> {
 }
 
 #[async_trait]
-impl<A: Game> AgentFactory<A> for RemoteGrpcAgentFactory<A> {
+impl<A: Game> AgentFactory<A> for RemoteAgent {
     /// Describes the standard remote gRPC agent choice for the dashboard.
     fn definition(&self) -> AgentDefinition {
         AgentDefinition {
@@ -131,6 +146,14 @@ impl<A: Game> AgentFactory<A> for RemoteGrpcAgentFactory<A> {
             description: "Connects to an external agent process using the Parlando agent protocol."
                 .to_string(),
             config_fields: vec![
+                AgentConfigField {
+                    key: "config".to_string(),
+                    label: "Remote configuration".to_string(),
+                    help: "Opaque JSON delivered unchanged to the remote process.".to_string(),
+                    value: AgentConfigValue::Json,
+                    required: false,
+                    default_value: empty_json_object(),
+                },
                 AgentConfigField {
                     key: "endpoint".to_string(),
                     label: "Agent endpoint".to_string(),
@@ -195,20 +218,7 @@ impl<A: Game> AgentFactory<A> for RemoteGrpcAgentFactory<A> {
 
     /// Creates one lazy remote-agent handle for a session participant.
     async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<A> + Send>> {
-        let mut config = remote_config_from_settings(&context.settings)?;
-        config.auth_token = context
-            .factory_secrets
-            .get("config.bearer_token")
-            .map(str::to_string);
-        let mut agent = RemoteGrpcAgent::<A> {
-            config,
-            init_context: context,
-            client: None,
-            agent_id: None,
-            _adapter: PhantomData,
-        };
-        agent.ensure_created().await?;
-        Ok(Box::new(agent))
+        create_remote_instance(context, None).await
     }
 
     /// Returns durable identity metadata for remote gRPC agents.
@@ -218,6 +228,119 @@ impl<A: Game> AgentFactory<A> for RemoteGrpcAgentFactory<A> {
             name: config.agent_name,
             version: config.agent_version,
         })
+    }
+}
+
+/// Creates and initializes a remote agent, optionally pinned to a learner checkpoint.
+async fn create_remote_instance<A: Game>(
+    context: AgentContext,
+    checkpoint: Option<CheckpointId>,
+) -> Result<Box<dyn Agent<A> + Send>> {
+    let mut config = remote_config_from_settings(&context.settings)?;
+    config.auth_token = context
+        .factory_secrets
+        .get("config.bearer_token")
+        .map(str::to_string);
+    let mut agent = RemoteAgentInstance {
+        config,
+        init_context: context,
+        client: None,
+        agent_id: None,
+        checkpoint,
+    };
+    agent.ensure_created().await?;
+    Ok(Box::new(agent))
+}
+
+/// Factory view of one immutable checkpoint owned by a remote learner.
+struct RemoteCheckpointFactory {
+    checkpoint: CheckpointId,
+}
+
+#[async_trait]
+impl<G: Game> AgentFactory<G> for RemoteCheckpointFactory {
+    /// Uses the same transport and opaque configuration schema as [`RemoteAgent`].
+    fn definition(&self) -> AgentDefinition {
+        <RemoteAgent as AgentFactory<G>>::definition(&RemoteAgent)
+    }
+
+    /// Creates an inference agent pinned to this factory's checkpoint.
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<G> + Send>> {
+        create_remote_instance(context, Some(self.checkpoint.clone())).await
+    }
+
+    /// Returns the remote implementation identity independently of checkpoint identity.
+    fn identity(&self, settings: &Value) -> Result<AgentIdentity> {
+        <RemoteAgent as AgentFactory<G>>::identity(&RemoteAgent, settings)
+    }
+}
+
+#[async_trait]
+impl<G: Game> RLAgent<G> for RemoteAgent {
+    /// Returns the standard remote transport factory selector.
+    fn factory_id(&self) -> &str {
+        "remote_grpc"
+    }
+
+    /// Treats a non-empty YAML string as a learner-owned checkpoint identifier.
+    fn resolve_checkpoint(&self, reference: &Value) -> Result<CheckpointId> {
+        CheckpointId::new(
+            reference
+                .as_str()
+                .context("remote checkpoint reference must be a string")?,
+        )
+    }
+
+    /// Exposes an immutable checkpoint through the ordinary agent factory interface.
+    fn factory(&self, checkpoint: &CheckpointId) -> Result<Arc<dyn AgentFactory<G>>> {
+        Ok(Arc::new(RemoteCheckpointFactory {
+            checkpoint: checkpoint.clone(),
+        }))
+    }
+
+    /// Sends an opaque configuration and a language-neutral trajectory to the learner service.
+    async fn train(
+        &mut self,
+        context: &RLTrainingContext,
+        base: &CheckpointId,
+        batch: TrainingBatch,
+    ) -> Result<CheckpointId> {
+        let mut config = remote_config_from_settings(&context.settings)?;
+        config.auth_token = context
+            .factory_secrets
+            .get("config.bearer_token")
+            .map(str::to_string);
+        validate_remote_endpoint(&config.endpoint, config.auth_token.is_some())?;
+        let channel = Channel::from_shared(config.endpoint.clone())?
+            .connect()
+            .await
+            .context("failed to connect to remote learner service")?;
+        let authorization = config
+            .auth_token
+            .as_ref()
+            .map(|token| format!("Bearer {token}").parse::<MetadataValue<Ascii>>())
+            .transpose()?;
+        let mut client = learner_pb::learner_service_client::LearnerServiceClient::with_interceptor(
+            channel,
+            RemoteAuthInterceptor { authorization },
+        );
+        let request = learner_pb::TrainRequest {
+            update_id: batch.update_id,
+            base_checkpoint_id: base.as_str().to_string(),
+            completed_epochs: batch.completed_epochs,
+            steps: batch
+                .steps
+                .into_iter()
+                .map(trajectory_to_proto)
+                .collect::<Result<_>>()?,
+            settings: Some(json_to_struct(config.config)?),
+        };
+        let response = tokio::time::timeout(config.request_timeout, client.train(request))
+            .await
+            .context("remote learner train timed out")?
+            .context("remote learner train failed")?
+            .into_inner();
+        CheckpointId::new(response.checkpoint_id)
     }
 }
 
@@ -232,18 +355,15 @@ fn remote_config_from_settings(settings: &Value) -> Result<RemoteGrpcAgentConfig
 }
 
 /// Per-session remote gRPC agent instance.
-pub struct RemoteGrpcAgent<A: Game> {
+pub struct RemoteAgentInstance {
     config: RemoteGrpcAgentConfig,
     init_context: AgentContext,
     client: Option<AuthenticatedAgentClient>,
     agent_id: Option<String>,
-    _adapter: PhantomData<A>,
+    checkpoint: Option<CheckpointId>,
 }
 
-impl<A> RemoteGrpcAgent<A>
-where
-    A: Game,
-{
+impl RemoteAgentInstance {
     /// Connects to the remote service and sends the create-agent request once.
     async fn ensure_created(&mut self) -> Result<()> {
         if self.agent_id.is_some() {
@@ -270,7 +390,7 @@ where
             agent_version: self.config.agent_version.clone(),
             role: self.init_context.role.as_str().to_string(),
             seed: self.init_context.seed,
-            config: Some(json_to_struct(self.init_context.settings.clone())?),
+            config: Some(json_to_struct(self.config.config.clone())?),
             agent_instance_secrets: Some(json_to_struct(Value::Object(
                 self.init_context
                     .agent_instance_secrets
@@ -278,6 +398,10 @@ where
                     .map(|(key, value)| (key.clone(), Value::String(value.clone())))
                     .collect(),
             ))?),
+            checkpoint_id: self
+                .checkpoint
+                .as_ref()
+                .map(|value| value.as_str().to_string()),
         };
         let response =
             tokio::time::timeout(self.config.request_timeout, client.create_agent(request))
@@ -334,7 +458,7 @@ fn validate_remote_endpoint(endpoint: &str, has_auth_token: bool) -> Result<()> 
 }
 
 #[async_trait]
-impl<A> Agent<A> for RemoteGrpcAgent<A>
+impl<A> Agent<A> for RemoteAgentInstance
 where
     A: Game,
     A::Action: DeserializeOwned + Serialize,
@@ -463,11 +587,7 @@ where
     }
 }
 
-impl<A> RemoteGrpcAgent<A>
-where
-    A: Game,
-    A::Action: Serialize,
-{
+impl RemoteAgentInstance {
     /// Writes response-carried remote entries through the locally scoped session logger.
     fn record_remote_logs(&self, entries: Vec<String>) {
         for entry in entries {
@@ -490,15 +610,15 @@ where
     }
 
     /// Builds a decision request with optional available actions.
-    fn decision_request(
+    fn decision_request<Action: Serialize>(
         &self,
-        available_actions: Option<Vec<A::Action>>,
+        available_actions: Option<Vec<Action>>,
     ) -> Result<RespondRequest> {
         let available_actions_provided = available_actions.is_some();
         let available_actions = available_actions
             .unwrap_or_default()
             .into_iter()
-            .map(action_to_struct::<A::Action>)
+            .map(action_to_struct::<Action>)
             .collect::<Result<Vec<_>>>()?;
         Ok(RespondRequest {
             agent_id: self.agent_id()?,
@@ -602,6 +722,35 @@ fn prost_to_json(value: ProstValue) -> Value {
     }
 }
 
+/// Converts one public trajectory step into the remote learner protocol.
+fn trajectory_to_proto(step: TrajectoryStep) -> Result<learner_pb::TrajectoryStep> {
+    Ok(learner_pb::TrajectoryStep {
+        run_id: step.run_id,
+        plan_id: step.plan_id,
+        decision: step.decision,
+        scenario: step.scenario,
+        role: step.role.as_str().to_string(),
+        agent: step.agent,
+        checkpoint_id: step.checkpoint.as_str().to_string(),
+        reward: step.reward,
+        reward_version: step.reward_version,
+        observation: Some(json_to_prost(step.observation)?),
+        available_actions: Some(json_to_prost(step.available_actions)?),
+        action: Some(json_to_prost(step.action)?),
+        accepted: step.accepted,
+        rejection: step
+            .rejection
+            .map(|value| json_to_struct(serde_json::to_value(value)?))
+            .transpose()?,
+        rewards: step.rewards.map(|value| learner_pb::RoleRewards {
+            player_a: value.player_a,
+            player_b: value.player_b,
+        }),
+        next_observation: Some(json_to_prost(step.next_observation)?),
+        terminal: step.terminal,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -655,13 +804,15 @@ mod tests {
 
     #[test]
     fn remote_identity_requires_agent_version() {
-        let factory = RemoteGrpcAgentFactory::<TestAdapter>::new();
-        let error = factory
-            .identity(&serde_json::json!({
+        let factory = RemoteAgent::new();
+        let error = <RemoteAgent as AgentFactory<TestAdapter>>::identity(
+            &factory,
+            &serde_json::json!({
                 "endpoint": "http://127.0.0.1:50051",
                 "agent_name": "python-agent"
-            }))
-            .unwrap_err();
+            }),
+        )
+        .unwrap_err();
 
         assert!(error.to_string().contains("agent_version"));
     }

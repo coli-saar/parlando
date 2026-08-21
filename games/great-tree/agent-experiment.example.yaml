@@ -1,0 +1,42 @@
+schema: parlando-agent-experiment/v1
+
+game:
+  id: great-tree
+
+agents:
+  idle:
+    factory: great_tree.idle
+  root_bot:
+    factory: great_tree.root_bot
+
+sessions:
+  scenarios:
+    - name: smoke
+      config:
+        crownSeat: a
+      seeds: [1, 2]
+  seats:
+    player_a: idle
+    player_b: root_bot
+  mirror_roles: false
+
+schedule:
+  kind: alternate_every_response
+  first: player_a
+
+limits:
+  callback_timeout_seconds: 5
+  shutdown_timeout_seconds: 2
+  session_timeout_seconds: 30
+  decisions: 20
+  accepted_actions: 10
+  messages: 10
+  rejected_actions: 5
+
+execution:
+  concurrency: 2
+  fail_fast: false
+
+output:
+  directory: results/great-tree-smoke
+  trace: decisions

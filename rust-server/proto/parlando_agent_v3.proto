@@ -23,6 +23,8 @@ message CreateAgentRequest {
   google.protobuf.Struct config = 6;
   // Values explicitly referenced for delivery to the agent instance.
   google.protobuf.Struct agent_instance_secrets = 7;
+  // Opaque learner checkpoint selected by the experiment runner, if any.
+  optional string checkpoint_id = 8;
 }
 
 message CreateAgentResponse {

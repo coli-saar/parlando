@@ -116,7 +116,7 @@ Delete participant events. Derive presentation from observations or accepted tra
 | `AgentResponse<A>` | `agent::Response<A>` |
 | `AgentFactoryDescriptor` | `agent::Definition` |
 | `AgentConfigFieldDescriptor` | `agent::ConfigField` |
-| `RemoteGrpcAgentFactory` | `agent::grpc::Factory` |
+| `RemoteGrpcAgentFactory` | `agent::grpc::RemoteAgent` |
 | `observe_state(observation)` | `start(initial_observation)` |
 | `observe_action(actor, action, observation)` | `observe_transition(actor, action, observation)` |
 | `observe_message(speaker, kind, text)` | `observe_message(sender, text)` |
@@ -135,7 +135,7 @@ Register factories on `Server`, not on the game:
 ```rust
 let server = Server::new(game_factory, metadata)?
     .agent(MyFactory::new())?
-    .agent(agent::grpc::Factory::<MyGame>::new())?;
+    .agent(agent::grpc::RemoteAgent::new())?;
 ```
 
 ## Python remote agents

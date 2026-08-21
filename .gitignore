@@ -9,6 +9,9 @@
 
 # Rust build and runtime-stress artifacts
 **/target/
+**/*.egg-info/
+**/__pycache__/
+**/.pytest_cache/
 **/runtime-stress-report.json
 
 # Local Parlando databases, journals, and manual backups

@@ -1,0 +1,90 @@
+schema: parlando-agent-experiment/v1
+
+game:
+  id: cue-choice
+
+agents:
+  learner:
+    factory: remote_grpc
+    checkpoint: initial
+    settings:
+      endpoint: http://127.0.0.1:50061
+      agent_name: CueChoiceQwenPPO
+      agent_version: "1"
+      config:
+        model: Qwen/Qwen2.5-0.5B-Instruct
+        device: auto
+        temperature: 1.0
+        lora_rank: 8
+        learning_rate: 0.0001
+        ppo_epochs: 4
+        minibatch_size: 32
+        save_every_checkpoints: 3
+        checkpoint_directory: experiments/cue-choice-rl/artifacts/checkpoints
+  dealer:
+    factory: cue_choice.dealer
+
+training:
+  learner: learner
+  scenarios:
+    - name: dax
+      config: { level: dax }
+      seeds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    - name: wug
+      config: { level: wug }
+      seeds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    - name: kiki
+      config: { level: kiki }
+      seeds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    - name: zorp
+      config: { level: zorp }
+      seeds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+  seats:
+    player_a: learner
+    player_b: dealer
+  mirror_roles: false
+  epochs: 12
+  checkpoint_every_epochs: 2
+  reward:
+    kind: cue_choice.correctness
+
+validation:
+  scenarios:
+    - name: dax-held-out
+      config: { level: dax }
+      seeds: [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008]
+    - name: wug-held-out
+      config: { level: wug }
+      seeds: [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008]
+    - name: kiki-held-out
+      config: { level: kiki }
+      seeds: [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008]
+    - name: zorp-held-out
+      config: { level: zorp }
+      seeds: [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008]
+  seats:
+    player_a: learner
+    player_b: dealer
+  mirror_roles: false
+  every_checkpoints: 1
+
+schedule:
+  kind: alternate_every_response
+  first: player_b
+
+limits:
+  callback_timeout_seconds: 30
+  shutdown_timeout_seconds: 5
+  session_timeout_seconds: 60
+  decisions: 2
+  accepted_actions: 2
+  messages: 1
+  rejected_actions: 1
+
+execution:
+  concurrency: 8
+  fail_fast: false
+
+output:
+  directory: experiments/cue-choice-rl/artifacts/qwen-uniform-run
+  trace: decisions

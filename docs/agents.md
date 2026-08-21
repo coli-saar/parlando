@@ -95,7 +95,7 @@ class FirstActionAgent(Agent):
 serve(FirstActionAgent, host="127.0.0.1", port=50051)
 ```
 
-Register `parlando::agent::grpc::Factory::<MyGame>::new()` on the Rust server and configure its endpoint and identity through the dashboard.
+Register `parlando::agent::grpc::RemoteAgent::new()` on the Rust server and configure its endpoint and identity through the dashboard.
 
 Remote protocol v4 delivers `agent_instance_secrets` separately from `config`. Selecting such a reference authorizes delivery to the configured endpoint. Non-loopback endpoints still require HTTPS, an allowed host, and a factory-purpose bearer credential.
 

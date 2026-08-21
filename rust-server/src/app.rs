@@ -315,6 +315,7 @@ fn repair_legacy_agent_secret_fields(
             format!("{parent_path}.{}", field.key)
         };
         match &field.value {
+            AgentConfigValue::Json => {}
             AgentConfigValue::Object { fields } => {
                 if let Some(object) = settings.get_mut(&field.key).and_then(Value::as_object_mut) {
                     repair_legacy_agent_secret_fields(fields, object, factory_id, &path, secrets);

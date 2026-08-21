@@ -180,6 +180,35 @@ pass through the normal game validation and persistence path. Simple agents can
 run inside the Rust game server; Python and other external agents can connect over
 gRPC. See [Agents](docs/agents.md).
 
+Headless agent-agent experiments use the same game and agent implementations
+without starting the browser runtime or writing live-session rows. A compiled
+game registers its factories with `ExperimentRunner` and supplies a small CLI.
+For example, run the checked-in Great Tree smoke experiment from the repository
+root:
+
+```sh
+cargo run --manifest-path games/great-tree/server/Cargo.toml \
+  --bin agent_experiment -- \
+  games/great-tree/agent-experiment.example.yaml
+```
+
+The strict YAML file specifies scenarios, independently assigned agents,
+activation policy, limits, concurrency, and output. A run manifest owns one
+`run_id`; every expanded scenario/repetition/role assignment has a deterministic
+`plan_id`. Repeating the command resumes the same run and skips every finalized
+plan, including failed sessions. Headless runs do not receive the dashboard's
+three-word live-session identifiers.
+
+Training uses the same YAML agent definitions and session driver. An agent may
+add an opaque `checkpoint`; a `training` section names that learner, its scenario
+set, seats, epoch/checkpoint cadence, and a registered reward function. An
+optional `validation` section supplies held-out scenarios and a checkpoint
+cadence. The compiled registry—not a YAML `kind` field—determines whether the
+selected factory supports `RLAgent`. Learners own observation/action encoding
+and checkpoint storage; the runner records role-safe trajectories and resumes
+from atomic checkpoint records without repeating finalized updates. The complete
+schema and design are in `notes/agent-agent-runner-design.md`.
+
 Voice-enabled browsers connect only to Parlando and never receive credentials for
 speech providers. Parlando relays authenticated 24 kHz PCM audio to the other
 player, may stream it to Speechmatics for transcription, and sends synthesized

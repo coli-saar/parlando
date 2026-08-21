@@ -120,12 +120,12 @@ impl SessionLogWriter {
 }
 
 impl SessionLogger {
-    /// Creates a logger which validates limits and then deliberately discards entries.
+    /// Creates a bounded logger for headless execution which discards accepted entries.
     ///
-    /// This constructor is compiled only for Parlando's test-support surface. Production
-    /// game and agent values receive runtime-created, session-bound handles.
-    #[cfg(any(test, feature = "internal-tools"))]
-    pub fn testing() -> Self {
+    /// Headless sessions do not use the live SQLite event store. This sink preserves the
+    /// public byte-limit behavior and gives constructors the same logger capability while
+    /// the runner's first implementation writes only structured result and trace artifacts.
+    pub(crate) fn headless() -> Self {
         Self {
             inner: Arc::new(SessionLoggerInner {
                 sender: None,
@@ -133,6 +133,15 @@ impl SessionLogger {
             }),
             source: SessionLogSource::Game,
         }
+    }
+
+    /// Creates a logger which validates limits and then deliberately discards entries.
+    ///
+    /// This constructor is compiled only for Parlando's test-support surface. Production
+    /// game and agent values receive runtime-created, session-bound handles.
+    #[cfg(any(test, feature = "internal-tools"))]
+    pub fn testing() -> Self {
+        Self::headless()
     }
 
     /// Enqueues one arbitrary UTF-8 string for this logger's session and source.

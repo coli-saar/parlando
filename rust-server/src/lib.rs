@@ -1,3 +1,4 @@
+mod agent_experiment;
 mod agents;
 mod app;
 mod audio;
@@ -18,6 +19,11 @@ mod stress_dashboard;
 mod transcription;
 mod tts;
 
+pub use agent_experiment::{
+    AgentSchedule, AlternateAfterAction, AlternateEveryResponse, CheckpointId,
+    ExperimentRunSummary, ExperimentRunner, RLAgent, RLTrainingContext, ResultAgent,
+    RewardFunction, RoleRewards, SessionResult, SessionStatus, TrainingBatch, TrajectoryStep,
+};
 pub use game::{
     ActionRejection, Game, GameFactory, GameInitializationContext, GameMetadata,
     GameSessionContext, PlayerRole, SecretValues,
@@ -43,7 +49,7 @@ pub mod agent {
 
     /// Adapter for agents hosted behind Parlando's versioned gRPC protocol.
     pub mod grpc {
-        pub use crate::remote_agent::RemoteGrpcAgentFactory as Factory;
+        pub use crate::remote_agent::RemoteAgent;
     }
 }
 

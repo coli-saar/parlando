@@ -2,7 +2,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use anyhow::Result;
 use clap::Parser;
-use parlando::{agent::grpc::Factory as RemoteGrpcAgentFactory, GameMetadata, Server};
+use parlando::{agent::grpc::RemoteAgent, GameMetadata, Server};
 use parlando_space_game::{BackAndForthAgentFactory, SpaceGameFactory};
 use serde_json::{json, Value};
 
@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
         .database_url(cli.database_url)
         .participant_app(cli.client_dist)
         .agent(BackAndForthAgentFactory)?
-        .agent(RemoteGrpcAgentFactory::new())?
+        .agent(RemoteAgent::new())?
         .serve(SocketAddr::new(cli.host, cli.port))
         .await
 }

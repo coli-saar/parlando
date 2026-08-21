@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use parlando::{
-    agent::grpc::Factory as RemoteGrpcAgentFactory,
+    agent::grpc::RemoteAgent,
     agent::{
         Agent, Context as AgentContext, Definition as AgentDefinition, Factory as AgentFactory,
         Identity as AgentIdentity, Response as AgentResponse,
@@ -871,7 +871,7 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
 async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_persistence(
 ) -> Result<()> {
     let remote = spawn_mock_remote_agent().await?;
-    let factory = Arc::new(RemoteGrpcAgentFactory::<DummyAdapter>::new());
+    let factory = Arc::new(RemoteAgent::new());
     let mut experiment_config = config(AgentsMode::HumanVsAgent);
     experiment_config
         .agents

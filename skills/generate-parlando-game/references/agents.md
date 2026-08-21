@@ -21,7 +21,7 @@ async fn shutdown(&mut self) -> Result<()>;
 
 Return `Response::action`, `Response::message`, or `Response::action_and_message`. Return `None` to decline. A message communicates only with the other player and does not change state. Returned actions pass normal validation. Use `shutdown` to release per-session resources; it is lifecycle cleanup, not a terminal-result callback.
 
-Register factories with `Server::agent`. Register remote support with `agent::grpc::Factory::<G>::new()`; endpoint and identity fields are dashboard-selected settings interpreted by that factory.
+Register factories with `Server::agent`. Register remote support with `agent::grpc::RemoteAgent::new()`; endpoint and identity fields are dashboard-selected settings interpreted by that factory.
 
 ## Python
 

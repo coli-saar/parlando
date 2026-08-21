@@ -61,6 +61,8 @@ pub enum SecretPurpose {
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentConfigValue {
+    /// Arbitrary JSON supplied unchanged to an external agent implementation.
+    Json,
     /// A string, optionally carrying a URI semantic constraint.
     String {
         #[serde(default)]
@@ -206,6 +208,7 @@ fn resolve_field_secrets(
         };
         let field_path = format!("{path}.{}", field.key);
         match &field.value {
+            AgentConfigValue::Json => {}
             AgentConfigValue::SecretReference { purpose } => {
                 let reference = value
                     .as_str()
@@ -329,6 +332,7 @@ fn normalize_object(
 
 fn normalize_value(field: &AgentConfigField, value: &Value, path: &str) -> Result<Value> {
     match &field.value {
+        AgentConfigValue::Json => Ok(value.clone()),
         AgentConfigValue::String { format } => {
             let text = value
                 .as_str()

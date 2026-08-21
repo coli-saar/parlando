@@ -91,7 +91,7 @@ The ordinary crate root should be close to four concepts: the game contract, gam
 | `AgentUtteranceKind` | Delete | Messages have a sender and text; transport modality is not an agent callback distinction. |
 | `SharedAgentFactory` | Private or delete | `Arc<dyn Factory<_>>` is an ownership choice rather than a domain concept. |
 | `RemoteGrpcAgentConfig` | Delete from the public API | The registered gRPC factory can interpret experiment-selected agent settings. |
-| `RemoteGrpcAgentFactory` | `agent::grpc::Factory` | One public integration object is sufficient. |
+| `RemoteGrpcAgentFactory<G>` | `agent::grpc::RemoteAgent` | One non-generic integration object is sufficient. |
 | `RemoteGrpcAgent` and `remote_agent::pb` | Private | The per-session client and generated protocol types are implementation details. |
 | `AgentAudioPublisher` and `AudioPublishSummary` | Private | Their present use is runtime composition and testing, not a supported game-author task. |
 | `StreamingTtsProvider`, `TranscriptionProvider`, and provider DTOs | Private | A future provider API should be designed around a concrete external implementation rather than the current built-ins. |

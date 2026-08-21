@@ -41,6 +41,9 @@ shape from a game description.
 3. Use [Data and Monitoring](data-and-monitoring.md) to interpret lifecycle state,
    configuration revisions, session provenance, exports, and participant-data
    deletion.
+4. Use [Agent–Agent and Reinforcement-Learning Experiments](agent-agent-and-rl-experiments.md)
+   to run headless policy evaluations, checkpointed training, and held-out
+   validation.
 
 For voice studies, read [Audio Transport](audio-transport.md) before deployment.
 It defines the authentication, PCM format, transcription boundary, TTS path,
