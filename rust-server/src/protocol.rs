@@ -304,7 +304,9 @@ impl ServerMessage {
 
 #[cfg(test)]
 mod tests {
-    use super::ClientMessage;
+    use serde_json::Value;
+
+    use super::{ClientMessage, ServerMessage};
 
     /// Confirms the game channel accepts only the current five operation names.
     #[test]
@@ -323,5 +325,26 @@ mod tests {
             r#"{"type":"consentUpdated","consent":{"decisions":{}}}"#
         )
         .is_err());
+    }
+
+    /// Keeps every version-one client and server JSON fixture round-trippable in Rust.
+    #[test]
+    fn shared_participant_protocol_fixtures_round_trip() {
+        let fixtures: Value = serde_json::from_str(include_str!(
+            "../../proto/participant_protocol_v1.fixtures.json"
+        ))
+        .unwrap();
+        for fixture in fixtures["client_messages"].as_array().unwrap() {
+            let decoded: ClientMessage = serde_json::from_value(fixture.clone()).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), *fixture);
+        }
+        for fixture in fixtures["server_messages"].as_array().unwrap() {
+            let decoded: ServerMessage = serde_json::from_value(fixture.clone()).unwrap();
+            let encoded = serde_json::to_value(decoded).unwrap();
+            assert_eq!(encoded, *fixture);
+            assert!(encoded.get("recipient").is_none());
+            assert!(encoded.get("room_id").is_none());
+            assert!(encoded.get("participant_session_id").is_none());
+        }
     }
 }

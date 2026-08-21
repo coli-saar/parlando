@@ -1,0 +1,22 @@
+{
+  "cases": [
+    {
+      "name": "zero metadata",
+      "sequence": 0,
+      "timestamp_ms": 0,
+      "header_bytes": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    },
+    {
+      "name": "byte order sentinel",
+      "sequence": 16909060,
+      "timestamp_ms": 283686952306183,
+      "header_bytes": [1, 1, 2, 3, 4, 0, 1, 2, 3, 4, 5, 6, 7]
+    },
+    {
+      "name": "JavaScript exact integer boundary",
+      "sequence": 4294967295,
+      "timestamp_ms": 9007199254740991,
+      "header_bytes": [1, 255, 255, 255, 255, 0, 31, 255, 255, 255, 255, 255, 255]
+    }
+  ]
+}

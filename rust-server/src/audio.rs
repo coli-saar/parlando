@@ -217,6 +217,30 @@ mod tests {
         assert_eq!(AudioFrame::decode(&frame().encode()).unwrap(), frame());
     }
 
+    /// Keeps Rust framing byte-for-byte aligned with the browser implementation.
+    #[test]
+    fn shared_pcm_wire_fixtures_match() {
+        let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+            "../../proto/pcm_frame_v1.fixtures.json"
+        ))
+        .unwrap();
+        for fixture in fixtures["cases"].as_array().unwrap() {
+            let frame = AudioFrame {
+                sequence: fixture["sequence"].as_u64().unwrap() as u32,
+                timestamp_ms: fixture["timestamp_ms"].as_u64().unwrap(),
+                pcm: vec![0; AUDIO_FRAME_BYTES],
+            };
+            let expected: Vec<u8> = fixture["header_bytes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|byte| byte.as_u64().unwrap() as u8)
+                .collect();
+            assert_eq!(&frame.encode()[..AUDIO_HEADER_BYTES], expected);
+            assert_eq!(AudioFrame::decode(&frame.encode()).unwrap(), frame);
+        }
+    }
+
     #[test]
     fn frame_rejects_wrong_version_and_size() {
         let mut encoded = frame().encode();

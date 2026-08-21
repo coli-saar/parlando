@@ -214,7 +214,8 @@ function ParticipantAppRuntime<
         return;
       }
       const delays = [1_000, 2_000, 5_000, 10_000];
-      const delay = delays[Math.min(reconnectAttemptsRef.current, delays.length - 1)];
+      const remaining = 5 * 60_000 - (Date.now() - reconnectStartedAtRef.current);
+      const delay = Math.min(delays[Math.min(reconnectAttemptsRef.current, delays.length - 1)], remaining);
       reconnectAttemptsRef.current += 1;
       reconnectTimerRef.current = window.setTimeout(() => {
         reconnectTimerRef.current = null;
@@ -566,7 +567,12 @@ function ParticipantAppRuntime<
       setMicrophoneMuted,
       leave
     };
-    return <>{renderGame(activeSession)}</>;
+    return (
+      <>
+        {renderGame(activeSession)}
+        {error && <p className="online-error">{error}</p>}
+      </>
+    );
   }
 
   if (session) {

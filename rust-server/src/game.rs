@@ -720,4 +720,195 @@ mod config_tests {
         assert_eq!(factory.get("config.instance"), None);
         assert_eq!(instance.get("unrelated"), None);
     }
+
+    /// Constructs one field definition for compact semantic validation tables.
+    fn field(
+        key: &str,
+        value: AgentConfigValue,
+        required: bool,
+        default_value: Value,
+    ) -> AgentConfigField {
+        AgentConfigField {
+            key: key.into(),
+            label: key.into(),
+            help: String::new(),
+            value,
+            required,
+            default_value,
+        }
+    }
+
+    /// Validates key, choice, numeric-bound, and default-definition invariants.
+    #[test]
+    fn semantic_agent_definitions_reject_invalid_schemas() {
+        let definition = |fields| AgentDefinition {
+            id: "test".into(),
+            name: "Test".into(),
+            description: String::new(),
+            config_fields: fields,
+        };
+        let string = || AgentConfigValue::String {
+            format: StringFormat::Plain,
+        };
+
+        for invalid_key in ["", "has space", "dot.key", &"x".repeat(129)] {
+            assert!(
+                definition(vec![field(invalid_key, string(), false, Value::Null)])
+                    .validate()
+                    .is_err()
+            );
+        }
+        assert!(definition(vec![
+            field("same", string(), false, Value::Null),
+            field("same", string(), false, Value::Null),
+        ])
+        .validate()
+        .is_err());
+        assert!(definition(vec![field(
+            "integer",
+            AgentConfigValue::Integer {
+                minimum: Some(2),
+                maximum: Some(1)
+            },
+            false,
+            Value::Null,
+        )])
+        .validate()
+        .is_err());
+        assert!(definition(vec![field(
+            "number",
+            AgentConfigValue::Number {
+                minimum: Some(f64::NAN),
+                maximum: None
+            },
+            false,
+            Value::Null,
+        )])
+        .validate()
+        .is_err());
+        assert!(definition(vec![field(
+            "choice",
+            AgentConfigValue::Choice {
+                choices: Vec::new()
+            },
+            false,
+            Value::Null,
+        )])
+        .validate()
+        .is_err());
+        assert!(definition(vec![field(
+            "bounded",
+            AgentConfigValue::Integer {
+                minimum: Some(1),
+                maximum: Some(2)
+            },
+            false,
+            json!(3),
+        )])
+        .validate()
+        .is_err());
+    }
+
+    /// Table-tests scalar normalization, inclusive boundaries, and strict URI/reference syntax.
+    #[test]
+    fn semantic_agent_values_enforce_declared_types_and_boundaries() {
+        let definition = AgentDefinition {
+            id: "typed".into(),
+            name: "Typed".into(),
+            description: String::new(),
+            config_fields: vec![
+                field("flag", AgentConfigValue::Boolean, true, Value::Null),
+                field(
+                    "count",
+                    AgentConfigValue::Integer {
+                        minimum: Some(-1),
+                        maximum: Some(1),
+                    },
+                    true,
+                    Value::Null,
+                ),
+                field(
+                    "ratio",
+                    AgentConfigValue::Number {
+                        minimum: Some(0.5),
+                        maximum: Some(1.5),
+                    },
+                    true,
+                    Value::Null,
+                ),
+                field(
+                    "endpoint",
+                    AgentConfigValue::String {
+                        format: StringFormat::Uri,
+                    },
+                    true,
+                    Value::Null,
+                ),
+                field(
+                    "token",
+                    AgentConfigValue::SecretReference {
+                        purpose: SecretPurpose::AgentInstance,
+                    },
+                    true,
+                    Value::Null,
+                ),
+            ],
+        };
+        definition.validate().unwrap();
+        let valid = json!({
+            "flag": false,
+            "count": -1,
+            "ratio": 1.5,
+            "endpoint": "https://agent.example:8443/rpc",
+            "token": "game.api-token"
+        });
+        let normalized = definition.normalize_settings(&valid).unwrap();
+        assert_eq!(
+            definition.normalize_settings(&normalized).unwrap(),
+            normalized
+        );
+
+        for invalid in [
+            json!({"flag": 0, "count": 0, "ratio": 1.0, "endpoint": "https://agent.example", "token": "game.api-token"}),
+            json!({"flag": true, "count": 2, "ratio": 1.0, "endpoint": "https://agent.example", "token": "game.api-token"}),
+            json!({"flag": true, "count": 0, "ratio": 0.4, "endpoint": "https://agent.example", "token": "game.api-token"}),
+            json!({"flag": true, "count": 0, "ratio": 1.0, "endpoint": "file:///tmp/agent", "token": "game.api-token"}),
+            json!({"flag": true, "count": 0, "ratio": 1.0, "endpoint": "https://agent.example", "token": "api-token"}),
+        ] {
+            assert!(
+                definition.normalize_settings(&invalid).is_err(),
+                "accepted {invalid}"
+            );
+        }
+    }
+
+    /// Missing and unrelated secret references fail without exposing any secret value.
+    #[test]
+    fn secret_resolution_fails_closed_without_leaking_values() {
+        let definition = AgentDefinition {
+            id: "secret".into(),
+            name: "Secret".into(),
+            description: String::new(),
+            config_fields: vec![field(
+                "token",
+                AgentConfigValue::SecretReference {
+                    purpose: SecretPurpose::Factory,
+                },
+                true,
+                Value::Null,
+            )],
+        };
+        let settings = definition
+            .normalize_settings(&json!({"token": "game.missing"}))
+            .unwrap();
+        let error = definition
+            .resolve_secrets(
+                &settings,
+                &std::collections::HashMap::from([("other".into(), "sentinel-secret".into())]),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("game.missing"));
+        assert!(!error.contains("sentinel-secret"));
+    }
 }

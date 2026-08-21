@@ -7,6 +7,7 @@ RUST_SERVER_TESTS_DIR := $(PARLANDO_DIR)/rust-server-tests
 JS_CLIENT_DIR := $(PARLANDO_DIR)/js-client
 PYTHON_AGENT_SDK_DIR := $(PARLANDO_DIR)/parlando-agent-sdk
 NPM_CACHE ?= $(PARLANDO_DIR)/.local/npm-cache
+PYTHON ?= python3
 
 .PHONY: all test test-rust test-js-client test-client-server test-python install-local install-js-client package-local package-rust-server-local package-js-client-local publish-dry-run publish-rust-server-dry-run publish-js-client-dry-run publish-rust-server publish-js-client
 
@@ -26,6 +27,7 @@ test-js-client:
 	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" test
 	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" run build
 	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" run test:coverage
+	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" run test:package
 
 # Runs the built JavaScript audio sink against the production Rust audio WebSocket.
 test-client-server: test-js-client
@@ -33,7 +35,7 @@ test-client-server: test-js-client
 
 # Runs the Python SDK suite in an environment where its package dependencies are installed.
 test-python:
-	cd "$(PYTHON_AGENT_SDK_DIR)" && python3 -m unittest discover -s tests -v
+	cd "$(PYTHON_AGENT_SDK_DIR)" && "$(PYTHON)" -m unittest discover -s tests -v
 
 # Install all top-level local dependencies.
 install-local: install-js-client

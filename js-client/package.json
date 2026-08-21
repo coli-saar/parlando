@@ -25,6 +25,7 @@
     "build": "tsc -p tsconfig.json",
     "test": "vitest run src",
     "test:coverage": "vitest run src --coverage --coverage.thresholds.statements=80 --coverage.thresholds.branches=80 --coverage.thresholds.functions=80 --coverage.thresholds.lines=80",
+    "test:package": "tsc --noEmit --strict --module ESNext --moduleResolution Bundler --target ES2022 --jsx react-jsx tests/package-consumer.tsx && node tests/packageSurface.mjs",
     "prepack": "npm run build"
   },
   "peerDependencies": {

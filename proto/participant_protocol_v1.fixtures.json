@@ -1,0 +1,84 @@
+{
+  "client_messages": [
+    { "type": "ready" },
+    { "type": "action", "action": { "type": "move", "distance": 2 } },
+    { "type": "message", "text": "Hello, 🌳" },
+    { "type": "heartbeat" },
+    { "type": "leave" }
+  ],
+  "server_messages": [
+    {
+      "protocol_version": 1,
+      "type": "session_started",
+      "public_session_id": "SESSION1",
+      "role": "A",
+      "observation": { "private_view": "A" },
+      "available_actions": null
+    },
+    {
+      "protocol_version": 1,
+      "type": "transition",
+      "public_session_id": "SESSION1",
+      "actor": "B",
+      "action": { "type": "move", "distance": 2 },
+      "observation": { "private_view": "A", "turn": 2 },
+      "available_actions": []
+    },
+    {
+      "protocol_version": 1,
+      "type": "message",
+      "public_session_id": "SESSION1",
+      "message": {
+        "id": "message-1",
+        "sender": "B",
+        "text": "Hello",
+        "input": "voice_transcript",
+        "created_at": "2026-08-21T12:00:00Z"
+      }
+    },
+    {
+      "protocol_version": 1,
+      "type": "presence",
+      "public_session_id": "SESSION1",
+      "presence": {
+        "A": { "connected": true, "audioReady": false },
+        "B": { "connected": true, "audioReady": true }
+      }
+    },
+    {
+      "protocol_version": 1,
+      "type": "voice_status",
+      "public_session_id": "SESSION1",
+      "voice": {
+        "audioReady": true,
+        "transcriptionReady": true,
+        "transcriptionStatus": "ready"
+      }
+    },
+    {
+      "protocol_version": 1,
+      "type": "completed",
+      "public_session_id": "SESSION1",
+      "completion": { "outcome": "success" }
+    },
+    {
+      "protocol_version": 1,
+      "type": "abandoned",
+      "public_session_id": "SESSION1",
+      "code": "participant_left"
+    },
+    {
+      "protocol_version": 1,
+      "type": "action_rejected",
+      "public_session_id": "SESSION1",
+      "code": "invalid_action"
+    },
+    {
+      "protocol_version": 1,
+      "type": "error",
+      "public_session_id": "SESSION1",
+      "code": "internal_error",
+      "fatal": true
+    }
+  ]
+}

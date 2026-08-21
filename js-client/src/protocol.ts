@@ -248,15 +248,19 @@ export class ParticipantClient {
     event: string,
     metadata: Record<string, unknown> = {}
   ): void {
-    void fetch(`${this.baseUrl}/api/sessions/${sessionId}/voice-diagnostics`, {
-      method: "POST",
-      headers: this.authHeaders(),
-      body: JSON.stringify({
-        event,
-        metadata
-      }),
-      keepalive: true
-    }).catch(() => undefined);
+    try {
+      void fetch(`${this.baseUrl}/api/sessions/${sessionId}/voice-diagnostics`, {
+        method: "POST",
+        headers: this.authHeaders(),
+        body: JSON.stringify({
+          event,
+          metadata
+        }),
+        keepalive: true
+      }).catch(() => undefined);
+    } catch {
+      // Diagnostics are best-effort and must never interrupt participant interaction.
+    }
   }
 
   /** @internal Sends one action for the standard participant application. */
@@ -281,7 +285,12 @@ export class ParticipantClient {
 
   /** @internal Declares an intentional participant departure before closing the game channel. */
   leaveSession(socket: WebSocket | null): void {
-    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "leave" }));
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    try {
+      socket.send(JSON.stringify({ type: "leave" }));
+    } catch {
+      // Closing the socket still informs the server when the explicit message loses the race.
+    }
   }
 
   /** @internal Resolves the standard participant application's game-channel URL. */

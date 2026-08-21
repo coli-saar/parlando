@@ -295,4 +295,81 @@ mod tests {
             Err(SessionLogError::SessionLimitExceeded)
         );
     }
+
+    /// Exercises exact UTF-8 byte boundaries rather than Unicode scalar counts.
+    #[test]
+    fn entry_limit_counts_utf8_bytes_at_the_exact_boundary() {
+        let logger = SessionLogger::testing();
+        let exact = format!("{}🌳", "x".repeat(MAX_SESSION_LOG_ENTRY_BYTES - 4));
+        assert_eq!(exact.len(), MAX_SESSION_LOG_ENTRY_BYTES);
+        assert_eq!(logger.log(exact), Ok(()));
+        assert_eq!(
+            logger.log(format!("{}🌳", "x".repeat(MAX_SESSION_LOG_ENTRY_BYTES - 3))),
+            Err(SessionLogError::EntryTooLarge)
+        );
+    }
+
+    /// A full queue rejects immediately and refunds the rejected entry's byte reservation.
+    #[test]
+    fn full_queue_is_nonblocking_and_refunds_the_session_budget() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let logger = SessionLogger {
+            inner: Arc::new(SessionLoggerInner {
+                sender: Some(sender),
+                accepted_bytes: AtomicUsize::new(0),
+            }),
+            source: SessionLogSource::Game,
+        };
+
+        assert_eq!(logger.log("accepted"), Ok(()));
+        assert_eq!(logger.log("rejected"), Err(SessionLogError::QueueFull));
+        assert_eq!(
+            logger.inner.accepted_bytes.load(Ordering::Acquire),
+            "accepted".len()
+        );
+    }
+
+    /// A closed persistence worker fails locally and leaves the byte allowance reusable.
+    #[test]
+    fn closed_queue_refunds_the_session_budget() {
+        let (sender, receiver) = mpsc::channel(1);
+        drop(receiver);
+        let logger = SessionLogger {
+            inner: Arc::new(SessionLoggerInner {
+                sender: Some(sender),
+                accepted_bytes: AtomicUsize::new(0),
+            }),
+            source: SessionLogSource::Game,
+        };
+
+        assert_eq!(logger.log("not persisted"), Err(SessionLogError::Closed));
+        assert_eq!(logger.inner.accepted_bytes.load(Ordering::Acquire), 0);
+    }
+
+    /// Concurrent clones share one atomic allowance and cannot over-admit log bytes.
+    #[test]
+    fn concurrent_loggers_never_exceed_the_shared_session_limit() {
+        let logger = SessionLogger::testing();
+        let attempts = 160;
+        let entry_bytes = MAX_SESSION_LOG_ENTRY_BYTES;
+        let accepted = std::thread::scope(|scope| {
+            let handles = (0..attempts)
+                .map(|_| {
+                    let logger = logger.clone();
+                    scope.spawn(move || logger.log("x".repeat(entry_bytes)).is_ok())
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .filter(|accepted| *accepted)
+                .count()
+        });
+
+        assert_eq!(accepted * entry_bytes, MAX_SESSION_LOG_BYTES);
+        assert_eq!(
+            logger.inner.accepted_bytes.load(Ordering::Acquire),
+            MAX_SESSION_LOG_BYTES
+        );
+    }
 }

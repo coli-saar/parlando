@@ -62,9 +62,10 @@ export class ParlandoAudioSink implements LocalAudioSink {
         transcriptionReady: false
       });
       this.capture.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
-        if (this.enabled && socket.readyState === WebSocket.OPEN) socket.send(encodeFrame(this.sequence++, Math.round(performance.now() - this.startedAt), event.data));
+        if (this.socket === socket && this.enabled && socket.readyState === WebSocket.OPEN) socket.send(encodeFrame(this.sequence++, Math.round(performance.now() - this.startedAt), event.data));
       };
       socket.addEventListener("message", (event) => {
+        if (this.socket !== socket) return;
         if (typeof event.data === "string") {
           const status = parseTranscriptionStatus(event.data);
           if (status) context.onVoiceStatus(status);
@@ -97,11 +98,28 @@ export class ParlandoAudioSink implements LocalAudioSink {
     for (const track of tracks) track.enabled = false;
   }
   async disconnect(): Promise<void> {
-    this.socket?.close(); this.socket = null;
-    this.capture?.disconnect(); this.playback?.disconnect(); this.source?.disconnect();
-    for (const track of this.stream?.getTracks() ?? []) track.stop();
-    this.capture = null; this.playback = null; this.source = null; this.stream = null;
-    await this.audioContext?.close().catch(() => undefined); this.audioContext = null;
+    const socket = this.socket;
+    const capture = this.capture;
+    const playback = this.playback;
+    const source = this.source;
+    const stream = this.stream;
+    const audioContext = this.audioContext;
+    this.socket = null;
+    this.capture = null;
+    this.playback = null;
+    this.source = null;
+    this.stream = null;
+    this.audioContext = null;
+    if (capture) capture.port.onmessage = null;
+    if (playback) playback.port.onmessage = null;
+    try { socket?.close(); } catch { /* Teardown continues through every owned resource. */ }
+    for (const node of [capture, playback, source]) {
+      try { node?.disconnect(); } catch { /* Teardown continues through every owned resource. */ }
+    }
+    for (const track of stream?.getTracks() ?? []) {
+      try { track.stop(); } catch { /* Teardown continues through every owned resource. */ }
+    }
+    await audioContext?.close().catch(() => undefined);
   }
 }
 

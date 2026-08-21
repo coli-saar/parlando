@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiBase, checkedJson, ParticipantClient, socketUrl } from "./protocol";
+import fixtures from "../../proto/participant_protocol_v1.fixtures.json";
+import { apiBase, checkedJson, ParticipantClient, playerMessage, socketUrl, type ServerMessage } from "./protocol";
 
 /** Creates an externally resolvable response promise for request-order races. */
 function deferredResponse(): { promise: Promise<Response>; resolve: (response: Response) => void } {
@@ -144,6 +145,15 @@ describe("ParticipantClient room helpers", () => {
     expect(send).toHaveBeenCalledWith(JSON.stringify({ type: "leave" }));
   });
 
+  it("does not throw when an open socket closes during an explicit leave", () => {
+    vi.stubGlobal("WebSocket", { OPEN: 1 });
+    const client = new ParticipantClient({ baseUrl: "http://server.test" });
+    const send = vi.fn(() => { throw new Error("closed concurrently"); });
+
+    expect(() => client.leaveSession({ readyState: 1, send } as unknown as WebSocket)).not.toThrow();
+    expect(send).toHaveBeenCalledOnce();
+  });
+
   it("drops actions and chat on non-open or concurrently closing sockets", () => {
     vi.stubGlobal("WebSocket", { OPEN: 1 });
     const client = new ParticipantClient({ baseUrl: "http://server.test" });
@@ -182,6 +192,37 @@ describe("ParticipantClient room helpers", () => {
     const client = new ParticipantClient({ baseUrl: "http://server.test" });
     await expect(client.join()).rejects.toThrow("No participant credential");
   });
+
+  it("retains an established credential when a later registration fails", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(participantResponse("stable", "stable-credential"))
+      .mockRejectedValueOnce(new TypeError("network unavailable"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ public_session_id: "room", role: "A", available_actions: null }), { status: 200 }));
+    const client = new ParticipantClient({ baseUrl: "http://server.test" });
+
+    await client.register();
+    await expect(client.register()).rejects.toThrow("network unavailable");
+    await client.join();
+
+    expect(fetch).toHaveBeenLastCalledWith("http://server.test/api/sessions", expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: "Bearer stable-credential" })
+    }));
+  });
+
+  it("swallows synchronous and asynchronous voice-diagnostic failures", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(participantResponse("one", "credential"))
+      .mockRejectedValueOnce(new TypeError("offline"));
+    const client = new ParticipantClient({ baseUrl: "http://server.test" });
+    await client.register();
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+
+    expect(() => client.postVoiceDiagnostic("ROOM1", "cyclic", cyclic)).not.toThrow();
+    expect(() => client.postVoiceDiagnostic("ROOM1", "offline")).not.toThrow();
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("checkedJson", () => {
@@ -203,5 +244,46 @@ describe("checkedJson", () => {
   it("propagates network rejection without rewriting its cause", async () => {
     const failure = new TypeError("network unavailable");
     await expect(checkedJson(Promise.reject(failure))).rejects.toBe(failure);
+  });
+});
+
+describe("shared participant protocol fixtures", () => {
+  it("covers every client operation and server payload with the current public session identifier", () => {
+    expect(fixtures.client_messages.map((message) => message.type)).toEqual([
+      "ready",
+      "action",
+      "message",
+      "heartbeat",
+      "leave"
+    ]);
+    const messages = fixtures.server_messages as ServerMessage[];
+    expect(messages.map((message) => message.type)).toEqual([
+      "session_started",
+      "transition",
+      "message",
+      "presence",
+      "voice_status",
+      "completed",
+      "abandoned",
+      "action_rejected",
+      "error"
+    ]);
+    for (const message of messages) {
+      expect(message.public_session_id).toBe("SESSION1");
+      expect(message).not.toHaveProperty("room_id");
+      expect(message).not.toHaveProperty("participant_session_id");
+    }
+  });
+
+  it("maps the shared voice-transcript message onto the public camel-case value", () => {
+    const fixture = fixtures.server_messages.find((message) => message.type === "message");
+    if (!fixture || fixture.type !== "message") throw new Error("missing message fixture");
+    expect(playerMessage(fixture.message)).toEqual({
+      id: "message-1",
+      sender: "B",
+      text: "Hello",
+      input: "voice_transcript",
+      createdAt: "2026-08-21T12:00:00Z"
+    });
   });
 });

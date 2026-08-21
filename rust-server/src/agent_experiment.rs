@@ -2346,7 +2346,10 @@ async fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
 
     use async_trait::async_trait;
     use serde::Deserialize;
@@ -2359,7 +2362,10 @@ mod tests {
     struct TinyGame;
 
     /// Reusable constructor for a fresh tiny game per planned session.
-    struct TinyGameFactory;
+    #[derive(Default)]
+    struct TinyGameFactory {
+        creations: Arc<AtomicUsize>,
+    }
 
     /// Strict game configuration used by the YAML fixture.
     #[derive(Deserialize, Serialize)]
@@ -2447,6 +2453,7 @@ mod tests {
 
         /// Creates one stateless tiny game value.
         fn create(&self, _context: GameSessionContext) -> Result<Self::Game> {
+            self.creations.fetch_add(1, Ordering::AcqRel);
             Ok(TinyGame)
         }
     }
@@ -2462,6 +2469,54 @@ mod tests {
         role: PlayerRole,
         acted: bool,
         events: Arc<Mutex<Vec<String>>>,
+    }
+
+    /// Agent whose start callback never completes, used to verify callback deadlines.
+    struct HangingStartAgent;
+
+    #[async_trait]
+    impl Agent<TinyGame> for HangingStartAgent {
+        /// Deliberately remains pending until the runner's callback timeout cancels it.
+        async fn start(&mut self, _initial_observation: TinyObservation) -> Result<()> {
+            std::future::pending().await
+        }
+
+        /// Would yield immediately if execution incorrectly progressed past start.
+        async fn respond(
+            &mut self,
+            _available_actions: Option<Vec<TinyAction>>,
+        ) -> Result<Option<AgentResponse<TinyAction>>> {
+            Ok(None)
+        }
+    }
+
+    /// Creates timeout-test agents without coupling the ordinary scripted fixture to failures.
+    struct HangingStartFactory;
+
+    #[async_trait]
+    impl AgentFactory<TinyGame> for HangingStartFactory {
+        /// Exposes a settings-free timeout-test definition.
+        fn definition(&self) -> AgentDefinition {
+            AgentDefinition {
+                id: "tiny.hanging".to_string(),
+                name: "Hanging start agent".to_string(),
+                description: "Never completes start.".to_string(),
+                config_fields: Vec::new(),
+            }
+        }
+
+        /// Creates one deliberately hanging instance.
+        async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyGame> + Send>> {
+            Ok(Box::new(HangingStartAgent))
+        }
+
+        /// Returns stable timeout-test provenance.
+        fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+            Ok(AgentIdentity {
+                name: "HangingStart".to_string(),
+                version: "1".to_string(),
+            })
+        }
     }
 
     #[async_trait]
@@ -2801,7 +2856,7 @@ output:
                 version: semver::Version::new(1, 0, 0),
                 build_manifest: json!({"test": true}),
             },
-            TinyGameFactory,
+            TinyGameFactory::default(),
         )
         .unwrap()
         .agent(TinyAgentFactory {
@@ -2820,7 +2875,7 @@ output:
                 version: semver::Version::new(1, 0, 0),
                 build_manifest: json!({"test": true}),
             },
-            TinyGameFactory,
+            TinyGameFactory::default(),
         )
         .unwrap()
         .agent(TinyAgentFactory {
@@ -3084,5 +3139,298 @@ output:
             ),
             None
         );
+    }
+
+    /// Checkpoint identities reject empty semantic values and preserve opaque content.
+    #[test]
+    fn checkpoint_ids_are_nonempty_and_opaque() {
+        assert!(CheckpointId::new("").is_err());
+        assert!(CheckpointId::new(" \n\t ").is_err());
+        let checkpoint = CheckpointId::new("models/run 7/checkpoint:β").unwrap();
+        assert_eq!(checkpoint.as_str(), "models/run 7/checkpoint:β");
+    }
+
+    /// Per-role rewards retain fixed game-role meaning instead of acting-seat order.
+    #[test]
+    fn role_rewards_map_to_fixed_roles() {
+        let rewards = RoleRewards {
+            player_a: 1.25,
+            player_b: -0.5,
+        };
+        assert_eq!(rewards.for_role(PlayerRole::A), 1.25);
+        assert_eq!(rewards.for_role(PlayerRole::B), -0.5);
+    }
+
+    /// Canonical hashing ignores object insertion order while retaining array order.
+    #[test]
+    fn canonical_value_hashes_object_order_stably() {
+        let first = json!({"outer": {"b": 2, "a": 1}, "items": [1, 2]});
+        let second = json!({"items": [1, 2], "outer": {"a": 1, "b": 2}});
+        let reordered_array = json!({"items": [2, 1], "outer": {"a": 1, "b": 2}});
+        assert_eq!(hash_value(&first).unwrap(), hash_value(&second).unwrap());
+        assert_ne!(
+            hash_value(&first).unwrap(),
+            hash_value(&reordered_array).unwrap()
+        );
+    }
+
+    /// The every-response schedule alternates after all responses and ends after both yield.
+    #[test]
+    fn alternate_every_response_has_deterministic_handoffs() {
+        let mut schedule = AlternateEveryResponse::new(PlayerRole::B);
+        assert_eq!(
+            <AlternateEveryResponse as AgentSchedule<TinyGame>>::first(&mut schedule),
+            PlayerRole::B
+        );
+        let message = AgentResponse::message("hello");
+        assert_eq!(
+            <AlternateEveryResponse as AgentSchedule<TinyGame>>::next(
+                &mut schedule,
+                PlayerRole::B,
+                Some(&message),
+                None
+            ),
+            Some(PlayerRole::A)
+        );
+        assert_eq!(
+            <AlternateEveryResponse as AgentSchedule<TinyGame>>::next(
+                &mut schedule,
+                PlayerRole::A,
+                None,
+                None
+            ),
+            Some(PlayerRole::B)
+        );
+        assert_eq!(
+            <AlternateEveryResponse as AgentSchedule<TinyGame>>::next(
+                &mut schedule,
+                PlayerRole::B,
+                None,
+                None
+            ),
+            None
+        );
+    }
+
+    /// Rejects invalid experiment topology and limits before creating output or agents.
+    #[test]
+    fn experiment_validation_rejects_invalid_topology_and_limits() {
+        let base = experiment_yaml(Path::new("unused-output"));
+        let cases = [
+            (
+                base.replacen(EXPERIMENT_SCHEMA, "parlando-agent-experiment/v99", 1),
+                "unsupported agent experiment schema",
+            ),
+            (
+                base.replacen("game:\n  id: tiny", "game:\n  id: another", 1),
+                "compiled for",
+            ),
+            (
+                base.replacen("concurrency: 2", "concurrency: 0", 1),
+                "execution.concurrency must be positive",
+            ),
+            (
+                base.replacen("decisions: 4", "decisions: 0", 1),
+                "all session limits must be positive",
+            ),
+            (
+                base.replacen(
+                    "callback_timeout_seconds: 1",
+                    "callback_timeout_seconds: 6",
+                    1,
+                ),
+                "callback timeout must not exceed",
+            ),
+            (
+                base.replacen("player_b: policy", "player_b: missing", 1),
+                "unknown agent",
+            ),
+            (
+                base.replacen("kind: alternate_every_response", "kind: missing", 1),
+                "unknown agent schedule",
+            ),
+            (
+                base.replacen("seeds: [7]", "seeds: []", 1),
+                "names, seeds, and repetitions must be non-empty",
+            ),
+        ];
+
+        for (yaml, expected) in cases {
+            let spec: ExperimentFile = serde_yaml::from_str(&yaml).unwrap();
+            let runner = test_runner(Arc::new(Mutex::new(Vec::new())));
+            let error = runner.validate_spec(&spec).unwrap_err().to_string();
+            assert!(
+                error.contains(expected),
+                "{error:?} did not contain {expected:?}"
+            );
+        }
+    }
+
+    /// Existing output belongs to one immutable normalized experiment specification.
+    #[tokio::test]
+    async fn resume_rejects_corrupt_or_mismatched_run_manifests() {
+        let temporary = TempDir::new().unwrap();
+        let output = temporary.path().join("output");
+        let yaml_path = temporary.path().join("experiment.yaml");
+        tokio::fs::write(&yaml_path, experiment_yaml(&output))
+            .await
+            .unwrap();
+        test_runner(Arc::new(Mutex::new(Vec::new())))
+            .run_yaml(&yaml_path)
+            .await
+            .unwrap();
+
+        tokio::fs::write(output.join("run.json"), b"{truncated")
+            .await
+            .unwrap();
+        let corrupt = test_runner(Arc::new(Mutex::new(Vec::new())))
+            .run_yaml(&yaml_path)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(corrupt.contains("run.json") || corrupt.contains("expected"));
+
+        tokio::fs::write(
+            &yaml_path,
+            experiment_yaml(&output).replace("trace: decisions", "trace: full"),
+        )
+        .await
+        .unwrap();
+        let manifest = RunManifest {
+            schema: EXPERIMENT_SCHEMA.to_string(),
+            run_id: Uuid::new_v4().to_string(),
+            game_id: "tiny".to_string(),
+            game_version: "1.0.0".to_string(),
+            spec_hash: "sha256-stale".to_string(),
+        };
+        write_json_atomic(&output.join("run.json"), &manifest)
+            .await
+            .unwrap();
+        let mismatch = test_runner(Arc::new(Mutex::new(Vec::new())))
+            .run_yaml(&yaml_path)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(mismatch.contains("different experiment specification"));
+    }
+
+    /// A pending agent callback becomes a finalized failure instead of wedging execution or resume.
+    #[tokio::test]
+    async fn callback_timeout_is_bounded_finalized_and_skipped_on_resume() {
+        let temporary = TempDir::new().unwrap();
+        let output = temporary.path().join("timeout-output");
+        let yaml_path = temporary.path().join("timeout.yaml");
+        let yaml = experiment_yaml(&output).replace("factory: tiny.agent", "factory: tiny.hanging");
+        tokio::fs::write(&yaml_path, yaml).await.unwrap();
+        let runner = || {
+            ExperimentRunner::new(
+                GameMetadata {
+                    id: "tiny".to_string(),
+                    name: "Tiny".to_string(),
+                    version: semver::Version::new(1, 0, 0),
+                    build_manifest: json!({"test": true}),
+                },
+                TinyGameFactory::default(),
+            )
+            .unwrap()
+            .agent(HangingStartFactory)
+            .unwrap()
+        };
+
+        let first = tokio::time::timeout(Duration::from_secs(3), runner().run_yaml(&yaml_path))
+            .await
+            .expect("runner exceeded its outer test deadline")
+            .unwrap();
+        assert_eq!(first.failed, 1);
+        let result_path = std::fs::read_dir(output.join("results"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let result: Value =
+            serde_json::from_slice(&tokio::fs::read(result_path).await.unwrap()).unwrap();
+        assert_eq!(result["status"], "failed");
+        assert_eq!(result["failure_phase"], "start");
+        assert_eq!(result["failure_role"], "A");
+        assert!(result["diagnostic"].as_str().unwrap().contains("timed out"));
+
+        let resumed = runner().run_yaml(&yaml_path).await.unwrap();
+        assert_eq!(resumed.skipped, 1);
+        assert_eq!(resumed.failed, 0);
+    }
+
+    /// Result and trace artifacts retain role-safe provenance without raw config or runner secrets.
+    #[tokio::test]
+    async fn result_artifacts_exclude_authoritative_config_and_secrets() {
+        let temporary = TempDir::new().unwrap();
+        let output = temporary.path().join("private-output");
+        let yaml_path = temporary.path().join("private.yaml");
+        tokio::fs::write(
+            &yaml_path,
+            experiment_yaml(&output).replace("trace: decisions", "trace: full"),
+        )
+        .await
+        .unwrap();
+        test_runner(Arc::new(Mutex::new(Vec::new())))
+            .secret("unused", "sentinel-secret-value")
+            .unwrap()
+            .run_yaml(&yaml_path)
+            .await
+            .unwrap();
+
+        let mut artifact_text = tokio::fs::read_to_string(output.join("run.json"))
+            .await
+            .unwrap();
+        let mut results = Vec::new();
+        for entry in std::fs::read_dir(output.join("results")).unwrap() {
+            let text = tokio::fs::read_to_string(entry.unwrap().path())
+                .await
+                .unwrap();
+            results.push(serde_json::from_str::<Value>(&text).unwrap());
+            artifact_text.push_str(&text);
+        }
+        assert!(!artifact_text.contains("sentinel-secret-value"));
+        assert!(!artifact_text.contains("\"target\":1"));
+        assert!(artifact_text.contains("settings_fingerprint"));
+        assert_eq!(results[0]["agents"][0]["role"], "A");
+        assert_eq!(results[0]["agents"][1]["role"], "B");
+    }
+
+    /// Session planning asks the reusable game factory for one fresh value per expanded plan.
+    #[tokio::test]
+    async fn game_factory_creates_exactly_one_instance_per_planned_session() {
+        let temporary = TempDir::new().unwrap();
+        let output = temporary.path().join("factory-output");
+        let yaml_path = temporary.path().join("factory.yaml");
+        tokio::fs::write(
+            &yaml_path,
+            experiment_yaml(&output).replace("seeds: [7]", "seeds: [7, 8]"),
+        )
+        .await
+        .unwrap();
+        let creations = Arc::new(AtomicUsize::new(0));
+        let factory = TinyGameFactory {
+            creations: creations.clone(),
+        };
+        let runner = ExperimentRunner::new(
+            GameMetadata {
+                id: "tiny".to_string(),
+                name: "Tiny".to_string(),
+                version: semver::Version::new(1, 0, 0),
+                build_manifest: json!({"test": true}),
+            },
+            factory,
+        )
+        .unwrap()
+        .agent(TinyAgentFactory {
+            events: Arc::new(Mutex::new(Vec::new())),
+            fail_role: None,
+        })
+        .unwrap();
+
+        let summary = runner.run_yaml(&yaml_path).await.unwrap();
+        assert_eq!(summary.planned, 2);
+        assert_eq!(creations.load(Ordering::Acquire), 2);
     }
 }

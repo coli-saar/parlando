@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fixtures from "../../../proto/pcm_frame_v1.fixtures.json";
 import { encodeFrame, parseTranscriptionStatus, waitForSocketOpen } from "./parlandoAudioSink";
 
 afterEach(() => {
@@ -7,6 +8,13 @@ afterEach(() => {
 });
 
 describe("encodeFrame", () => {
+  it("matches the shared Rust/browser PCM wire fixtures", () => {
+    for (const fixture of fixtures.cases) {
+      const encoded = encodeFrame(fixture.sequence, fixture.timestamp_ms, new ArrayBuffer(960));
+      expect(Array.from(new Uint8Array(encoded, 0, 13)), fixture.name).toEqual(fixture.header_bytes);
+    }
+  });
+
   it("encodes the versioned PCM header in network byte order", () => {
     const pcm = new Uint8Array(960).fill(7).buffer;
     const encoded = encodeFrame(0x01020304, 0x0102030405, pcm);

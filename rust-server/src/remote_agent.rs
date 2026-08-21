@@ -433,7 +433,7 @@ fn validate_remote_endpoint(endpoint: &str, has_auth_token: bool) -> Result<()> 
             let host = uri
                 .host()
                 .ok_or_else(|| anyhow!("remote agent endpoint has no host"))?;
-            if matches!(host, "localhost" | "127.0.0.1" | "::1") {
+            if matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]") {
                 // Literal loopback cleartext is the development-only exception.
             } else {
                 bail!("cleartext remote-agent endpoints are allowed only on loopback; use https")
@@ -444,7 +444,7 @@ fn validate_remote_endpoint(endpoint: &str, has_auth_token: bool) -> Result<()> 
     let host = uri
         .host()
         .ok_or_else(|| anyhow!("remote agent endpoint has no host"))?;
-    if !matches!(host, "localhost" | "127.0.0.1" | "::1") {
+    if !matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]") {
         let allowed = env::var("PARLANDO_REMOTE_AGENT_ALLOWED_HOSTS").unwrap_or_default();
         if !allowed
             .split(',')
@@ -668,11 +668,23 @@ fn json_to_prost(value: Value) -> Result<ProstValue> {
     let kind = match value {
         Value::Null => Kind::NullValue(NullValue::NullValue as i32),
         Value::Bool(value) => Kind::BoolValue(value),
-        Value::Number(value) => Kind::NumberValue(
-            value
-                .as_f64()
-                .ok_or_else(|| anyhow!("remote agent number is not finite"))?,
-        ),
+        Value::Number(value) => {
+            const MAX_EXACT_INTEGER: i128 = 9_007_199_254_740_991;
+            if let Some(integer) = value.as_i64() {
+                if i128::from(integer).abs() > MAX_EXACT_INTEGER {
+                    bail!("remote agent integer exceeds protobuf Struct exact range");
+                }
+            } else if let Some(integer) = value.as_u64() {
+                if i128::from(integer) > MAX_EXACT_INTEGER {
+                    bail!("remote agent integer exceeds protobuf Struct exact range");
+                }
+            }
+            Kind::NumberValue(
+                value
+                    .as_f64()
+                    .ok_or_else(|| anyhow!("remote agent number is not finite"))?,
+            )
+        }
         Value::String(value) => Kind::StringValue(value),
         Value::Array(values) => Kind::ListValue(ListValue {
             values: values
@@ -815,5 +827,54 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("agent_version"));
+    }
+
+    /// Endpoint validation permits only literal loopback cleartext and authenticated TLS remotes.
+    #[test]
+    fn remote_endpoint_validation_rejects_unsafe_transport_shapes() {
+        for endpoint in [
+            "http://localhost:50051",
+            "http://127.0.0.1:50051",
+            "http://[::1]:50051",
+        ] {
+            validate_remote_endpoint(endpoint, false).unwrap();
+        }
+        for (endpoint, authenticated, expected) in [
+            ("http://agent.example:50051", false, "cleartext"),
+            ("https://agent.example", false, "bearer credential"),
+            ("ftp://localhost/service", true, "must use https"),
+            ("not a URI", false, "invalid remote agent endpoint"),
+        ] {
+            let error = validate_remote_endpoint(endpoint, authenticated)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{error:?} did not contain {expected:?}");
+        }
+    }
+
+    /// Protobuf Struct conversion rejects integers that a double would silently round.
+    #[test]
+    fn protobuf_conversion_rejects_inexact_large_integers() {
+        let exact = serde_json::json!({"integer": 9_007_199_254_740_991_u64});
+        assert_eq!(struct_to_json(json_to_struct(exact.clone()).unwrap()), exact);
+        for inexact in [
+            serde_json::json!({"integer": 9_007_199_254_740_992_u64}),
+            serde_json::json!({"integer": -9_007_199_254_740_992_i64}),
+        ] {
+            assert!(json_to_struct(inexact).unwrap_err().to_string().contains("exact range"));
+        }
+    }
+
+    /// Malicious non-finite protobuf numbers normalize to JSON null instead of panicking.
+    #[test]
+    fn protobuf_nonfinite_numbers_fail_closed_to_null() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                prost_to_json(ProstValue {
+                    kind: Some(Kind::NumberValue(value)),
+                }),
+                Value::Null
+            );
+        }
     }
 }

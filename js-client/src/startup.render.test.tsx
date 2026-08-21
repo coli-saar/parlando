@@ -112,6 +112,8 @@ function game(session: GameSession<{ view: string }, { type: string }, { type: s
       )}
       <span>completed:{String(session.completed)}</span>
       {session.completion && <span>completion</span>}
+      <span>conversation:{session.conversation.length}</span>
+      <span>presence:{String(Boolean(session.presence.A?.connected))}:{String(Boolean(session.presence.B?.connected))}</span>
       <button onClick={() => session.sendAction({ type: "move" })}>Move</button>
     </div>
   );
@@ -227,7 +229,10 @@ describe("ParticipantApp rendered state machine", () => {
     });
     const oldSocket = FakeWebSocket.instances[0];
     act(() => oldSocket.open());
-    act(() => oldSocket.dispatchEvent(new CloseEvent("close")));
+    act(() => {
+      oldSocket.readyState = FakeWebSocket.CLOSED;
+      oldSocket.dispatchEvent(new CloseEvent("close"));
+    });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
     });
@@ -247,5 +252,248 @@ describe("ParticipantApp rendered state machine", () => {
     act(() => oldSocket.message({ protocol_version: 1, type: "error", public_session_id: "ROOM1", code: "stale_error", fatal: false }));
     expect(screen.queryByText(/stale error|Retrying/)).not.toBeInTheDocument();
     expect(screen.getByText("observation:current")).toBeInTheDocument();
+  });
+
+  it("moves the heartbeat to the current socket and stops it on unmount", async () => {
+    vi.useFakeTimers();
+    const client = api();
+    const rendered = render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
+    await act(async () => {
+      await vi.runAllTicks();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Enter waiting room" }));
+    await act(async () => {
+      await vi.runAllTicks();
+    });
+    const oldSocket = FakeWebSocket.instances[0];
+    act(() => oldSocket.open());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(oldSocket.sent.filter((message) => message === JSON.stringify({ type: "heartbeat" }))).toHaveLength(1);
+
+    act(() => {
+      oldSocket.readyState = FakeWebSocket.CLOSED;
+      oldSocket.dispatchEvent(new CloseEvent("close"));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    const currentSocket = FakeWebSocket.instances[1];
+    act(() => currentSocket.open());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(oldSocket.sent.filter((message) => message === JSON.stringify({ type: "heartbeat" }))).toHaveLength(1);
+    expect(currentSocket.sent).toContain(JSON.stringify({ type: "heartbeat" }));
+
+    const sentBeforeUnmount = currentSocket.sent.length;
+    rendered.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(currentSocket.sent).toHaveLength(sentBeforeUnmount);
+  });
+
+  it("uses one, then two seconds for consecutive reconnect failures", async () => {
+    vi.useFakeTimers();
+    const client = api();
+    client.getGameSession
+      .mockResolvedValueOnce({ websocketUrl: "/ws/game/ROOM1", token: "first" })
+      .mockRejectedValueOnce(new Error("ticket unavailable"))
+      .mockResolvedValueOnce({ websocketUrl: "/ws/game/ROOM1", token: "third" });
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
+    await act(async () => {
+      await vi.runAllTicks();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Enter waiting room" }));
+    await act(async () => {
+      await vi.runAllTicks();
+    });
+    const firstSocket = FakeWebSocket.instances[0];
+    act(() => firstSocket.open());
+    act(() => {
+      firstSocket.readyState = FakeWebSocket.CLOSED;
+      firstSocket.dispatchEvent(new CloseEvent("close"));
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(999);
+    });
+    expect(client.getGameSession).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(client.getGameSession).toHaveBeenCalledTimes(2);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_999);
+    });
+    expect(client.getGameSession).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(client.getGameSession).toHaveBeenCalledTimes(3);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
+  it("normalizes presence and deduplicates a bounded conversation", async () => {
+    const client = api();
+    const audio = new FakeAudioController();
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.open());
+    act(() => socket.message({
+      protocol_version: 1,
+      type: "session_started",
+      public_session_id: "ROOM1",
+      role: "A",
+      observation: { view: "active" },
+      available_actions: null
+    }));
+    act(() => socket.message({
+      protocol_version: 1,
+      type: "presence",
+      public_session_id: "ROOM1",
+      presence: { A: { connected: 1, private: "hidden" }, B: { connected: true } }
+    }));
+    expect(screen.getByText("presence:true:true")).toBeInTheDocument();
+
+    for (let index = 0; index < 55; index += 1) {
+      act(() => socket.message({
+        protocol_version: 1,
+        type: "message",
+        public_session_id: "ROOM1",
+        message: {
+          id: `message-${index}`,
+          sender: "A",
+          text: String(index),
+          input: "text",
+          created_at: "2026-01-01T00:00:00Z"
+        }
+      }));
+    }
+    act(() => socket.message({
+      protocol_version: 1,
+      type: "message",
+      public_session_id: "ROOM1",
+      message: {
+        id: "message-54",
+        sender: "A",
+        text: "duplicate",
+        input: "text",
+        created_at: "2026-01-01T00:00:00Z"
+      }
+    }));
+    expect(screen.getByText("conversation:50")).toBeInTheDocument();
+
+    act(() => socket.message({
+      protocol_version: 1,
+      type: "voice_status",
+      public_session_id: "ROOM1",
+      voice: { transcriptionReady: true, transcriptionStatus: "ready" }
+    }));
+    expect(audio.updateVoiceStatus).toHaveBeenCalledWith({
+      transcriptionReady: true,
+      transcriptionMessage: "ready"
+    });
+    act(() => socket.message({
+      protocol_version: 1,
+      type: "action_rejected",
+      public_session_id: "ROOM1",
+      code: "invalid_action"
+    }));
+    expect(screen.getByText("Action rejected: invalid_action")).toBeInTheDocument();
+  });
+
+  it("abandons the current generation, disconnects voice, and rejects stale callbacks", async () => {
+    const client = api();
+    const audio = new FakeAudioController();
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.open());
+    act(() => socket.message({
+      protocol_version: 1,
+      type: "session_started",
+      public_session_id: "ROOM1",
+      role: "A",
+      observation: { view: "active" },
+      available_actions: null
+    }));
+    act(() => socket.message({
+      protocol_version: 1,
+      type: "abandoned",
+      public_session_id: "ROOM1",
+      code: "participant_left"
+    }));
+
+    expect(audio.disconnect).toHaveBeenCalledWith(true);
+    expect(socket.close).toHaveBeenCalledOnce();
+    expect(await screen.findByText("This session ended because a player left.")).toBeInTheDocument();
+    expect(screen.queryByText("observation:active")).not.toBeInTheDocument();
+    act(() => socket.message({ protocol_version: 1, type: "error", public_session_id: "ROOM1", code: "stale", fatal: true }));
+    expect(screen.queryByText("The server rejected the last request.")).not.toBeInTheDocument();
+  });
+
+  it("browser teardown closes one owning socket and cancels heartbeats", async () => {
+    vi.useFakeTimers();
+    const client = api();
+    const rendered = render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
+    await act(async () => {
+      await vi.runAllTicks();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Enter waiting room" }));
+    await act(async () => {
+      await vi.runAllTicks();
+    });
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.open());
+    act(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
+    expect(socket.close).toHaveBeenCalledOnce();
+    expect(client.leaveSession).not.toHaveBeenCalled();
+
+    rendered.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(socket.close).toHaveBeenCalledOnce();
+  });
+
+  it("stops reconnecting at the exact five-minute window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-21T12:00:00Z"));
+    const client = api();
+    client.getGameSession
+      .mockResolvedValueOnce({ websocketUrl: "/ws/game/ROOM1", token: "first" })
+      .mockRejectedValue(new Error("ticket unavailable"));
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
+    await act(async () => {
+      await vi.runAllTicks();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Enter waiting room" }));
+    await act(async () => {
+      await vi.runAllTicks();
+    });
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.open());
+    act(() => {
+      socket.readyState = FakeWebSocket.CLOSED;
+      socket.dispatchEvent(new CloseEvent("close"));
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+    });
+    expect(screen.getByText("The five-minute reconnection window expired. Please leave and start a new session.")).toBeInTheDocument();
+    const callsAtExpiry = client.getGameSession.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(client.getGameSession).toHaveBeenCalledTimes(callsAtExpiry);
   });
 });

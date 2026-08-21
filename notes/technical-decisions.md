@@ -1619,3 +1619,74 @@ running-session transcription gate unchanged.
 
 Tradeoffs: the test performs more lifecycle setup, but now exercises the same transport ordering as a
 real participant and preserves the privacy boundary that waiting-session audio is not transcribed.
+
+## 2026-08-21: The post-0.3 reliability round starts at ownership and failure boundaries
+
+Context: Parlando already had broad happy-path coverage after 0.3, while 0.4 added session-scoped game
+construction, bounded asynchronous session logging, semantic agent configuration, resumable headless
+experiments, and additional browser reconnect behavior. Raising aggregate line coverage alone would not
+protect the concurrency and isolation contracts that make these components safe to refactor.
+
+Decision: add the first post-0.3 tests at deterministic ownership and failure boundaries. Rust tests
+exercise exact UTF-8 and aggregate logging limits, concurrent admission, queue refund behavior, semantic
+agent-schema/value validation, secret failure redaction, opaque checkpoint identity, canonical hashing,
+fixed-role rewards, and schedule handoffs. Browser tests exercise heartbeat ownership across replacement
+sockets, reconnect backoff, credential retention, and best-effort leave/diagnostic failures. Treat
+participant-facing teardown and diagnostics as non-throwing operations because transport closure and
+diagnostic serialization are auxiliary to the authoritative server lifecycle.
+
+Tradeoffs: this batch favors fast deterministic component tests over a larger browser or process-level
+suite. It does not yet supply a fault-injecting database, shared Rust/TypeScript protocol fixtures, live
+session-log persistence tests, or the full agent-runner timeout and crash-recovery matrix. Those remain the
+next enabling layer because they require explicit controllable seams rather than timing-based tests.
+
+Follow-up risks: direct construction of the logger's private queue state intentionally tests its resource
+accounting primitive; live SQLite attribution and shutdown draining still need an integration fixture.
+Reconnect timing uses fake browser clocks and should be complemented by one packed-client/real-router test.
+
+## 2026-08-21: Terminality and protocol compatibility are enforced below the UI runtime
+
+Context: the second reliability batch exercised terminal operations concurrently and reused protocol
+messages across Rust and TypeScript. Runtime locks normally serialize completion, abandonment, and expiry,
+but the SQLite transition method could still append a transition and overwrite an already terminal row if
+called after another terminal writer. Separately, handwritten Rust and TypeScript examples could agree
+with themselves while drifting from one another.
+
+Decision: make `commit_session_transition` inspect terminal status inside its transaction and no-op after
+`completed`, `expired`, or `abandoned`, matching the existing expiry and abandonment behavior. Add a
+three-way durable terminal race and a live logger drain/attribution integration test. Establish
+`proto/participant_protocol_v1.fixtures.json` as the shared executable JSON corpus for every participant
+client/server message variant; Rust must deserialize and byte-semantically round-trip it, while TypeScript
+must accept the same variants and public-session naming. Add an external-consumer TypeScript compile test
+and an npm file-allowlist test to the normal JavaScript test lane.
+
+Tradeoffs: terminal transition attempts after terminality return success as idempotent no-ops, so callers do
+not learn which concurrent terminal operation won without reading the session. The JSON fixture is a
+contract corpus rather than a generated schema; adding a protocol variant requires reviewing one shared
+file and both consumers. Package verification invokes `npm pack --dry-run`, which costs an extra build but
+tests the actual publication allowlist.
+
+Follow-up risks: storage fault injection between individual action-transaction statements still requires a
+dedicated controllable store seam. The shared corpus covers protocol shape, while a packed-client browser
+against a real router remains responsible for behavioral compatibility.
+
+## 2026-08-21: Active errors and reconnect expiry are participant-visible exact contracts
+
+Context: rendered state-machine tests showed that action-rejection and server errors were stored while a
+game was active but not rendered anywhere, because the active branch returned only the game component.
+They also showed that exponential backoff could schedule the next expiry check after the documented
+five-minute reconnection window.
+
+Decision: render the standard online-error element beside an active game and cap every reconnect delay by
+the exact time remaining in the five-minute window. Keep reconnect ownership generation-scoped, preserve
+the existing 1/2/5/10-second progression, and stop scheduling once the deadline is reached.
+
+Tradeoffs: the SDK now renders a small error sibling outside the game renderer, giving standard clients a
+consistent failure channel without extending the public `GameSession` API. A retry can occur exactly at
+the deadline before its failure marks the window expired; no attempt is scheduled beyond it.
+## Shared audio wire fixtures and defensive browser teardown (2026-08-21)
+
+- Context: PCM framing is implemented independently in Rust and TypeScript, while browser media resources can throw during both setup and teardown after device loss.
+- Choice: keep representative version/sequence/timestamp headers in `proto/pcm_frame_v1.fixtures.json` and consume them from both suites. Treat the microphone level analyser as optional, and make teardown best-effort so one faulty browser resource cannot leak the rest.
+- Tradeoffs: the fixture intentionally covers framing metadata rather than duplicating a 960-byte zero payload. Browser analyser failure no longer prevents otherwise valid microphone capture, so UI level metering may be absent while voice remains usable.
+- Follow-up risk: any future audio protocol version must update the shared fixture and both encoders together.

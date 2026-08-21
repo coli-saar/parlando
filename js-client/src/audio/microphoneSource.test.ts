@@ -174,4 +174,50 @@ describe("MicrophoneSource", () => {
     expect(listener).toHaveBeenCalledTimes(4);
     expect(microphone.snapshot()).toMatchObject({ requested: false, ready: false, micLevel: 0 });
   });
+
+  it("continues track cleanup when probe and track teardown throw", async () => {
+    const firstTrack = track("Broken teardown");
+    firstTrack.stop.mockImplementation(() => { throw new Error("stop failed"); });
+    const secondTrack = track("Still stopped");
+    const disconnect = vi.fn(() => { throw new Error("disconnect failed"); });
+    const close = vi.fn(async () => undefined);
+    const FakeAudioContext = class {
+      createAnalyser = () => ({ fftSize: 1, smoothingTimeConstant: 0, getByteTimeDomainData: vi.fn() });
+      createMediaStreamSource = () => ({ connect: vi.fn(), disconnect });
+      resume = async () => undefined;
+      close = close;
+    } as unknown as typeof AudioContext;
+    const microphone = new MicrophoneSource({
+      getUserMedia: vi.fn(async () => ({
+        getAudioTracks: () => [firstTrack],
+        getTracks: () => [firstTrack, secondTrack]
+      } as unknown as MediaStream)),
+      isSecureContext: () => true,
+      getAudioContext: () => FakeAudioContext,
+      requestAnimationFrame: () => 1,
+      cancelAnimationFrame: vi.fn()
+    });
+
+    await microphone.prepare("mic");
+    expect(() => microphone.stop()).not.toThrow();
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(firstTrack.stop).toHaveBeenCalledOnce();
+    expect(secondTrack.stop).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps microphone readiness when analyser setup is unavailable", async () => {
+    const selectedTrack = track("Usable microphone");
+    const FakeAudioContext = class {
+      createAnalyser = () => { throw new Error("analyser unavailable"); };
+    } as unknown as typeof AudioContext;
+    const microphone = new MicrophoneSource({
+      getUserMedia: vi.fn(async () => stream(selectedTrack)),
+      isSecureContext: () => true,
+      getAudioContext: () => FakeAudioContext
+    });
+
+    await expect(microphone.prepare("mic")).resolves.toMatchObject({ track: selectedTrack });
+    expect(microphone.snapshot()).toMatchObject({ ready: true, micProbeActive: false });
+  });
 });

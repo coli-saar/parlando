@@ -2327,6 +2327,20 @@ impl ExperimentStore for SqliteExperimentStore {
         let mut tx = self.pool.begin().await?;
         let game_time_ms =
             stored_game_time_ms(&mut tx, &experiment_id, session_id, &occurred_at).await?;
+        let status = sqlx::query_scalar::<_, String>(
+            "select status from sessions where experiment_id = ? and session_id = ?",
+        )
+        .bind(&experiment_id)
+        .bind(session_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(status) = status else {
+            bail!("session not found");
+        };
+        if matches!(status.as_str(), "completed" | "expired" | "abandoned") {
+            tx.rollback().await?;
+            return Ok(());
+        }
         let mut event_index = sqlx::query_scalar::<_, i64>(
             "select coalesce(max(event_index), 0) from session_events where experiment_id = ? and session_id = ?",
         )

@@ -29,10 +29,13 @@ class FakeSource {
 class FakeAudioContext {
   static instances: FakeAudioContext[] = [];
   static addModule = vi.fn(async () => undefined);
+  static resumeFailure: Error | null = null;
   destination = {} as AudioDestinationNode;
   source = new FakeSource();
   audioWorklet = { addModule: FakeAudioContext.addModule };
-  resume = vi.fn(async () => undefined);
+  resume = vi.fn(async () => {
+    if (FakeAudioContext.resumeFailure) throw FakeAudioContext.resumeFailure;
+  });
   close = vi.fn(async () => undefined);
   createMediaStreamSource = vi.fn(() => this.source as unknown as MediaStreamAudioSourceNode);
 
@@ -114,6 +117,7 @@ beforeEach(() => {
   FakeSocket.instances = [];
   FakeAudioContext.instances = [];
   FakeAudioContext.addModule = vi.fn(async () => undefined);
+  FakeAudioContext.resumeFailure = null;
   vi.stubGlobal("AudioContext", FakeAudioContext);
   vi.stubGlobal("AudioWorkletNode", FakeNode);
   vi.stubGlobal("WebSocket", FakeSocket);
@@ -197,6 +201,63 @@ describe("ParlandoAudioSink integration", () => {
     await expect(connecting).rejects.toThrow("closed before connecting");
     expect(microphone.track.stop).toHaveBeenCalledOnce();
     expect(FakeNode.instances.every((node) => node.disconnect.mock.calls.length === 1)).toBe(true);
+    expect(FakeAudioContext.instances[0].close).toHaveBeenCalledOnce();
+  });
+
+  it("ignores capture and inbound audio callbacks owned by a replaced transport", async () => {
+    const sink = new ParlandoAudioSink();
+    const firstConnect = sink.connect(input().value, context());
+    await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1));
+    const oldSocket = FakeSocket.instances[0];
+    oldSocket.open();
+    await firstConnect;
+    const oldCapture = FakeNode.instances[0];
+
+    const secondSession = context();
+    const secondConnect = sink.connect(input().value, secondSession);
+    await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(2));
+    const currentSocket = FakeSocket.instances[1];
+    currentSocket.open();
+    await secondConnect;
+    const currentPlayback = FakeNode.instances[3];
+
+    expect(oldCapture.port.onmessage).toBeNull();
+    oldSocket.dispatchEvent(new MessageEvent("message", { data: new ArrayBuffer(973) }));
+    oldSocket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "transcriptionStatus", ready: true }) }));
+    expect(currentPlayback.port.postMessage).toHaveBeenCalledTimes(1);
+    expect(secondSession.onVoiceStatus).not.toHaveBeenCalledWith(expect.objectContaining({ remoteAudio: true }));
+  });
+
+  it("continues teardown when every browser resource throws", async () => {
+    const sink = new ParlandoAudioSink();
+    const microphone = input();
+    const connecting = sink.connect(microphone.value, context());
+    await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1));
+    const socket = FakeSocket.instances[0];
+    socket.open();
+    await connecting;
+    socket.close.mockImplementation(() => { throw new Error("socket close failed"); });
+    for (const node of FakeNode.instances) {
+      node.disconnect.mockImplementation(() => { throw new Error("node disconnect failed"); });
+    }
+    FakeAudioContext.instances[0].source.disconnect.mockImplementation(() => { throw new Error("source disconnect failed"); });
+    (microphone.track.stop as ReturnType<typeof vi.fn>).mockImplementation(() => { throw new Error("track stop failed"); });
+    FakeAudioContext.instances[0].close.mockRejectedValue(new Error("context close failed"));
+
+    await expect(sink.disconnect()).resolves.toBeUndefined();
+    expect(socket.close).toHaveBeenCalledOnce();
+    expect(FakeNode.instances.every((node) => node.disconnect.mock.calls.length === 1)).toBe(true);
+    expect(FakeAudioContext.instances[0].source.disconnect).toHaveBeenCalledOnce();
+    expect(microphone.track.stop).toHaveBeenCalledOnce();
+    expect(FakeAudioContext.instances[0].close).toHaveBeenCalledOnce();
+  });
+
+  it("cleans the context when AudioContext resume fails", async () => {
+    FakeAudioContext.resumeFailure = new Error("resume failed");
+    const sink = new ParlandoAudioSink();
+    const microphone = input();
+    const connecting = sink.connect(microphone.value, context());
+    await expect(connecting).rejects.toThrow("resume failed");
     expect(FakeAudioContext.instances[0].close).toHaveBeenCalledOnce();
   });
 });

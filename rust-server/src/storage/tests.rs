@@ -1614,3 +1614,175 @@ async fn concurrent_event_appends_are_gap_free() {
         returned
     );
 }
+
+/// Creates one running session for storage-level lifecycle and logging tests.
+async fn running_test_session(store: &SqliteExperimentStore, experiment_id: &str) -> i64 {
+    store
+        .create_experiment(ExperimentRecord {
+            experiment_id: experiment_id.to_string(),
+            game_version: "1.0.0".to_string(),
+            config: json!({}),
+            server_version: None,
+            version_manifest: None,
+            status: "inactive".to_string(),
+            notes: None,
+        })
+        .await
+        .unwrap();
+    store
+        .create_session(SessionRecord {
+            experiment_id: experiment_id.to_string(),
+            config_revision: 1,
+            game_version: "1.0.0".to_string(),
+            public_session_id: format!("{experiment_id}-public"),
+            mode: "direct".to_string(),
+            status: "running".to_string(),
+            purpose: "research".to_string(),
+        })
+        .await
+        .unwrap()
+}
+
+/// Confirms live session logs drain in order with runtime-owned game and agent attribution.
+#[tokio::test]
+async fn live_session_logger_drains_with_exact_attribution() {
+    use crate::{game::PlayerRole, session_log::SessionLogger};
+
+    let store = Arc::new(
+        SqliteExperimentStore::connect("sqlite:///:memory:")
+            .await
+            .unwrap(),
+    );
+    let session_id = running_test_session(&store, "live-logs").await;
+    let participant_id = store
+        .upsert_participant(ParticipantRecord {
+            experiment_id: "live-logs".to_string(),
+            participant_kind: "agent".to_string(),
+            identity_provider: "test".to_string(),
+            external_id: Some("logger@1".to_string()),
+            metadata: json!({"agent_type": "test", "agent_name": "logger", "agent_version": "1"}),
+        })
+        .await
+        .unwrap();
+    let shared: SharedExperimentStore = store.clone();
+    let (game, writer) = SessionLogger::live(shared, "live-logs".to_string(), session_id);
+    let agent = game.for_agent(participant_id, PlayerRole::B);
+
+    game.log("game line").unwrap();
+    agent.log("agent line").unwrap();
+    game.log("last line").unwrap();
+    writer.shutdown().await;
+
+    let events = store
+        .session_events("live-logs", session_id, Some("log"))
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 3);
+    assert_eq!(
+        events[0].payload,
+        json!({"source": "game", "text": "game line"})
+    );
+    assert_eq!(events[0].actor_participant_id, None);
+    assert_eq!(
+        events[1].payload,
+        json!({"source": "agent", "text": "agent line"})
+    );
+    assert_eq!(events[1].actor_participant_id, Some(participant_id));
+    assert_eq!(events[1].actor_role.as_deref(), Some("B"));
+    assert_eq!(
+        events[2].payload,
+        json!({"source": "game", "text": "last line"})
+    );
+}
+
+/// Races all terminal writers and proves the first durable terminal state cannot be overwritten.
+#[tokio::test]
+async fn concurrent_terminal_transitions_have_exactly_one_winner() {
+    let store = Arc::new(
+        SqliteExperimentStore::connect("sqlite:///:memory:")
+            .await
+            .unwrap(),
+    );
+    let session_id = running_test_session(&store, "terminal-race").await;
+    let barrier = Arc::new(tokio::sync::Barrier::new(4));
+
+    let completion = {
+        let store = store.clone();
+        let barrier = barrier.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            store
+                .commit_session_transition(
+                    vec![SessionEventRecord {
+                        experiment_id: "terminal-race".to_string(),
+                        session_id,
+                        event_type: "session_completed".to_string(),
+                        actor_participant_id: None,
+                        actor_role: Some("A".to_string()),
+                        payload: json!({"winner": "completion"}),
+                        game_state: Some(json!({"done": true})),
+                    }],
+                    Some(json!({"winner": "completion"})),
+                )
+                .await
+                .unwrap();
+        })
+    };
+    let expiry = {
+        let store = store.clone();
+        let barrier = barrier.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            store
+                .expire_session("terminal-race", session_id, "idle")
+                .await
+                .unwrap();
+        })
+    };
+    let abandonment = {
+        let store = store.clone();
+        let barrier = barrier.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            store
+                .abandon_session(SessionEventRecord {
+                    experiment_id: "terminal-race".to_string(),
+                    session_id,
+                    event_type: "session_abandoned".to_string(),
+                    actor_participant_id: None,
+                    actor_role: Some("B".to_string()),
+                    payload: json!({"winner": "abandonment"}),
+                    game_state: None,
+                })
+                .await
+                .unwrap();
+        })
+    };
+    barrier.wait().await;
+    completion.await.unwrap();
+    expiry.await.unwrap();
+    abandonment.await.unwrap();
+
+    let export = store
+        .export_session("terminal-race", session_id)
+        .await
+        .unwrap();
+    let status = export["sessions"][0]["status"].as_str().unwrap();
+    assert!(matches!(status, "completed" | "expired" | "abandoned"));
+    let terminal_events = export["session_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| {
+            matches!(
+                event["event_type"].as_str(),
+                Some("session_completed" | "session_expired" | "session_abandoned")
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(terminal_events.len(), 1);
+    assert_eq!(
+        terminal_events[0]["event_type"].as_str().unwrap(),
+        format!("session_{status}")
+    );
+}

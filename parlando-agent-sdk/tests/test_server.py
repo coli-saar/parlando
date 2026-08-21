@@ -17,6 +17,7 @@ if str(PACKAGE_SRC) not in sys.path:
     sys.path.insert(0, str(PACKAGE_SRC))
 
 from parlando_agent_sdk import server  # noqa: E402
+from parlando_agent_sdk.generated import parlando_agent_v3_pb2, parlando_rl_v1_pb2  # noqa: E402
 
 
 class FakeMessage:
@@ -88,6 +89,7 @@ class RecordingAgent(server.Agent):
         """Creates empty observation storage."""
         self.states: list[dict[str, object]] = []
         self.messages: list[tuple[str, str]] = []
+        self.transitions: list[tuple[str, dict[str, object], dict[str, object]]] = []
         self.completions: list[dict[str, object]] = []
         self.shutdowns = 0
 
@@ -98,6 +100,15 @@ class RecordingAgent(server.Agent):
     async def observe_message(self, sender: server.PlayerRole, text: str) -> None:
         """Records a converted utterance."""
         self.messages.append((sender, text))
+
+    async def observe_transition(
+        self,
+        actor: server.PlayerRole,
+        action: dict[str, object],
+        observation: dict[str, object],
+    ) -> None:
+        """Records a role-safe accepted transition."""
+        self.transitions.append((actor, action, observation))
 
     async def finish(self, completion: dict[str, object]) -> None:
         """Records the shared terminal result."""
@@ -157,6 +168,28 @@ class ConversionTests(unittest.TestCase):
         )
         self.assertEqual(converted.message, "moving")
         self.assertEqual(server._struct_to_dict(converted.action.value), {"type": "go"})
+
+    def test_optional_checkpoint_distinguishes_absent_and_present_values(self) -> None:
+        """Generated optional fields and lightweight doubles preserve checkpoint absence."""
+        self.assertIsNone(server._optional_checkpoint(SimpleNamespace()))
+        absent = SimpleNamespace(checkpoint_id="ignored", HasField=lambda _name: False)
+        present = SimpleNamespace(checkpoint_id="checkpoint-7", HasField=lambda _name: True)
+        self.assertIsNone(server._optional_checkpoint(absent))
+        self.assertEqual(server._optional_checkpoint(present), "checkpoint-7")
+
+    def test_session_logger_enforces_utf8_entry_and_shared_session_limits(self) -> None:
+        """Python logging mirrors Rust byte accounting at both exact boundaries."""
+        logger = server.SessionLogger()
+        exact = "x" * (logger._MAX_ENTRY_BYTES - 4) + "🌳"
+        logger.log(exact)
+        with self.assertRaisesRegex(ValueError, "entry exceeds"):
+            logger.log("x" * (logger._MAX_ENTRY_BYTES - 3) + "🌳")
+        for _ in range(logger._MAX_SESSION_BYTES // logger._MAX_ENTRY_BYTES - 1):
+            logger.log("x" * logger._MAX_ENTRY_BYTES)
+        with self.assertRaisesRegex(ValueError, "session log byte limit"):
+            logger.log("one more byte")
+        with self.assertRaisesRegex(TypeError, "must be strings"):
+            logger.log(7)  # type: ignore[arg-type]
 
 
 class ServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -224,6 +257,21 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         created = await service.CreateAgent(self.create_request(), FakeContext())
         self.assertIn(created.agent_id, service._agents)
 
+    async def test_creation_rejects_protocol_and_role_before_factory_invocation(self) -> None:
+        """Protocol and role validation fail closed without reserving agent capacity."""
+        factory = AsyncMock(return_value=RecordingAgent())
+        service = self.service(factory)
+        request = self.create_request()
+        request.protocol_version = "parlando-agent-v999"
+        with self.assertRaises(AbortedRpc):
+            await service.CreateAgent(request, FakeContext())
+        request.protocol_version = "parlando-agent-v4"
+        request.role = "spectator"
+        with self.assertRaises(AbortedRpc):
+            await service.CreateAgent(request, FakeContext())
+        factory.assert_not_awaited()
+        self.assertEqual(service._creating_agents, 0)
+
     async def test_factory_receives_separate_redacting_secrets(self) -> None:
         """Agent-instance values stay separate from ordinary settings and diagnostics."""
         contexts: list[server.Context] = []
@@ -280,6 +328,15 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             ),
             FakeContext(),
         )
+        await service.ObserveTransition(
+            SimpleNamespace(
+                agent_id=created.agent_id,
+                actor="B",
+                action=server._dict_to_struct({"type": "move"}),
+                observation=server._dict_to_struct({"turn": 4}),
+            ),
+            FakeContext(),
+        )
         await service.Finish(
             SimpleNamespace(
                 agent_id=created.agent_id,
@@ -292,6 +349,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         await service.Shutdown(request, FakeContext())
         self.assertEqual(agent.states, [{"turn": 3}])
         self.assertEqual(agent.messages, [("A", "hello")])
+        self.assertEqual(agent.transitions, [("B", {"type": "move"}, {"turn": 4.0})])
         self.assertEqual(agent.completions, [{"winner": "A", "score": 7.0}])
         self.assertEqual(agent.shutdowns, 1)
 
@@ -324,6 +382,58 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
                 FakeContext(),
             )
 
+    async def test_respond_preserves_none_and_combined_response_semantics(self) -> None:
+        """Respond maps yielding and combined message/action decisions without ambiguity."""
+
+        class RespondingAgent(RecordingAgent):
+            """Returns scripted decisions in service order."""
+
+            def __init__(self) -> None:
+                """Creates one yield followed by one combined response."""
+                super().__init__()
+                self.responses = [None, server.Response.action_with_message({"type": "pass"}, "passing")]
+
+            async def respond(self, available_actions: object) -> server.Response | None:
+                """Checks optional action conversion and returns the next script item."""
+                self.asserted_actions = available_actions
+                return self.responses.pop(0)
+
+        agent = RespondingAgent()
+        service = self.service(lambda _: agent)
+        created = await service.CreateAgent(self.create_request(), FakeContext())
+        request = SimpleNamespace(
+            agent_id=created.agent_id,
+            available_actions_provided=True,
+            available_actions=[server._dict_to_struct({"type": "pass"})],
+        )
+        yielded = await service.Respond(request, FakeContext())
+        self.assertFalse(hasattr(yielded, "response"))
+        combined = await service.Respond(request, FakeContext())
+        self.assertEqual(agent.asserted_actions, [{"type": "pass"}])
+        self.assertEqual(combined.response.message, "passing")
+        self.assertEqual(server._struct_to_dict(combined.response.action.value), {"type": "pass"})
+
+
+class ServerValidationTests(unittest.IsolatedAsyncioTestCase):
+    """Exercises public server bounds before network startup."""
+
+    async def test_serve_rejects_capacity_port_tls_and_remote_cleartext(self) -> None:
+        """Invalid listener policies fail deterministically without starting gRPC."""
+        with self.assertRaisesRegex(ValueError, "max_agents"):
+            await server._serve_async(RecordingAgent, max_agents=0)
+        for port in [-1, 65_536]:
+            with self.assertRaisesRegex(ValueError, "port"):
+                await server._serve_async(RecordingAgent, port=port)
+
+        fake_server = SimpleNamespace(add_insecure_port=lambda _address: None, add_secure_port=lambda _address, _credentials: None)
+        with patch.object(server.grpc.aio, "server", return_value=fake_server), patch.object(
+            server, "add_agent_service"
+        ):
+            with self.assertRaisesRegex(ValueError, "configured together"):
+                await server._serve_async(RecordingAgent, certificate_chain=b"certificate")
+            with self.assertRaisesRegex(ValueError, "require TLS"):
+                await server._serve_async(RecordingAgent, host="agent.example")
+
 
 class ProtocolSourceTests(unittest.TestCase):
     """Checks that SDK development uses the repository's shared protocol source."""
@@ -332,6 +442,40 @@ class ProtocolSourceTests(unittest.TestCase):
         """The repository-level agent protocol remains available to the generator."""
         shared_proto = Path(__file__).resolve().parents[2] / "proto/parlando_agent_v3.proto"
         self.assertTrue(shared_proto.is_file())
+
+    def test_generated_agent_descriptor_matches_public_contract(self) -> None:
+        """Generated agent bindings retain package, methods, fields, and optional presence."""
+        descriptor = parlando_agent_v3_pb2.DESCRIPTOR
+        self.assertEqual(descriptor.package, "parlando.agent.v4")
+        self.assertEqual(
+            list(descriptor.services_by_name["AgentService"].methods_by_name),
+            ["CreateAgent", "Start", "ObserveTransition", "ObserveMessage", "Finish", "Respond", "Shutdown"],
+        )
+        request = descriptor.message_types_by_name["CreateAgentRequest"]
+        self.assertEqual(
+            [(field.name, field.number) for field in request.fields],
+            [
+                ("protocol_version", 1), ("agent_name", 2), ("agent_version", 3), ("role", 4),
+                ("seed", 5), ("config", 6), ("agent_instance_secrets", 7), ("checkpoint_id", 8),
+            ],
+        )
+        self.assertTrue(request.fields_by_name["checkpoint_id"].has_presence)
+
+    def test_generated_learner_descriptor_matches_public_contract(self) -> None:
+        """Generated learner bindings retain stable RPC and trajectory field numbers."""
+        descriptor = parlando_rl_v1_pb2.DESCRIPTOR
+        self.assertEqual(descriptor.package, "parlando.rl.v1")
+        self.assertEqual(list(descriptor.services_by_name["LearnerService"].methods_by_name), ["Train"])
+        trajectory = descriptor.message_types_by_name["TrajectoryStep"]
+        self.assertEqual(
+            [(field.name, field.number) for field in trajectory.fields],
+            [
+                ("run_id", 1), ("plan_id", 2), ("decision", 3), ("scenario", 4), ("role", 5),
+                ("agent", 6), ("checkpoint_id", 7), ("reward", 8), ("reward_version", 9),
+                ("observation", 10), ("available_actions", 11), ("action", 12), ("accepted", 13),
+                ("rejection", 14), ("rewards", 15), ("next_observation", 16), ("terminal", 17),
+            ],
+        )
 
 
 if __name__ == "__main__":

@@ -145,10 +145,18 @@ export class MicrophoneSource {
 
   /** Releases the currently owned stream without changing request ownership. */
   private stopCurrentStream(): void {
-    this.cleanupProbe?.();
+    try {
+      this.cleanupProbe?.();
+    } catch {
+      // Browser media implementations may throw while tearing down a lost device.
+    }
     this.cleanupProbe = null;
     for (const track of this.stream?.getTracks() ?? []) {
-      track.stop();
+      try {
+        track.stop();
+      } catch {
+        // Continue releasing the remaining resources after a faulty track.
+      }
     }
     this.stream = null;
     this.track = null;
@@ -163,17 +171,34 @@ export class MicrophoneSource {
   }
 
   private startProbe(): boolean {
-    this.cleanupProbe?.();
+    try {
+      this.cleanupProbe?.();
+    } catch {
+      // A stale probe must not prevent a replacement probe from starting.
+    }
+    this.cleanupProbe = null;
     if (!this.stream) return false;
     const AudioContextClass = this.getAudioContext();
     if (!AudioContextClass) return false;
 
-    const context = new AudioContextClass();
-    const analyser = context.createAnalyser();
+    let context: AudioContext;
+    let analyser: AnalyserNode;
+    let source: MediaStreamAudioSourceNode;
+    try {
+      context = new AudioContextClass();
+      analyser = context.createAnalyser();
+      source = context.createMediaStreamSource(this.stream);
+    } catch {
+      return false;
+    }
     analyser.fftSize = 512;
     analyser.smoothingTimeConstant = 0.72;
-    const source = context.createMediaStreamSource(this.stream);
-    source.connect(analyser);
+    try {
+      source.connect(analyser);
+    } catch {
+      void context.close().catch(() => undefined);
+      return false;
+    }
     const samples = new Uint8Array(analyser.fftSize);
     let animationFrame = 0;
     let closed = false;
@@ -196,7 +221,11 @@ export class MicrophoneSource {
     this.cleanupProbe = () => {
       closed = true;
       this.cancelAnimationFrame(animationFrame);
-      source.disconnect();
+      try {
+        source.disconnect();
+      } catch {
+        // The underlying device may already have disconnected itself.
+      }
       void context.close().catch(() => undefined);
     };
     return true;
