@@ -46,8 +46,10 @@ python -m pip install -e '.[qwen,test]'
 python -m cue_choice_rl.generate_protos
 ```
 
-Start the preloaded learner in one terminal. Apple Silicon uses MPS; use
-`--device cpu` on an Intel Mac or when MPS is unavailable:
+Start the preloaded learner in one terminal. Automatic device selection prefers
+CUDA when available, then Apple MPS, and finally CPU. Use an explicit
+`--device cuda`, `--device mps`, or `--device cpu` only when you need to pin the
+backend:
 
 ```bash
 cue-choice-learner --backend qwen --device auto

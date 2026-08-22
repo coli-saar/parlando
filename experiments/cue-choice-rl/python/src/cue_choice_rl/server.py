@@ -92,7 +92,9 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=50061)
     parser.add_argument("--backend", choices=("random", "qwen"), default="qwen")
     parser.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct")
-    parser.add_argument("--device", choices=("mps", "cpu", "auto"), default="mps")
+    parser.add_argument(
+        "--device", choices=("cuda", "mps", "cpu", "auto"), default="auto"
+    )
     return parser.parse_args()
 
 

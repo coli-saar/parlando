@@ -1590,6 +1590,20 @@ representation, so game values must be serializable and remote agents remain res
 their own configuration and decoding their own observations. Transport credentials remain explicit
 Rust-owned fields and are never mixed into the opaque configuration.
 
+## 2026-08-22: Automatic learner device selection prefers CUDA
+
+Context: the cue-choice learner originally treated `auto` as an Apple-specific choice between MPS and
+CPU. The same experiment should use an available NVIDIA accelerator without requiring a separate code
+path or a manually pinned process argument.
+
+Decision: make `auto` select CUDA first, Apple MPS second, and CPU otherwise. Accept `cuda`, `mps`, and
+`cpu` as explicit process choices and fail at startup when an explicitly requested accelerator is not
+available. Keep the experiment YAML on `auto` so it remains portable across CUDA hosts and Macs.
+
+Tradeoffs: CUDA now takes precedence on machines exposing both CUDA and MPS-compatible interfaces,
+which is the intended accelerator preference. Model weights and training tensors remain float32 for
+cross-device consistency rather than selecting device-specific mixed precision automatically.
+
 ## 2026-08-21: Python agent SDK and protocol are top-level components
 
 Context: the independently packaged Python agent SDK lived below `rust-server/python`, while its gRPC

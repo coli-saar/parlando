@@ -49,12 +49,17 @@ class QwenPpoBackend:
         self._updates: dict[str, str] = {}
 
     def _select_device(self, requested: str) -> Any:
-        """Selects MPS on a capable Mac, with an explicit and predictable CPU fallback."""
+        """Selects explicit hardware or prefers CUDA, then MPS, then CPU in auto mode."""
         torch = self.torch
+        cuda = bool(torch.cuda.is_available())
         mps = bool(torch.backends.mps.is_available())
+        if requested == "cuda" and not cuda:
+            raise RuntimeError("CUDA is unavailable; start the learner with --device auto or cpu")
         if requested == "mps" and not mps:
-            raise RuntimeError("MPS is unavailable; start the learner with --device cpu")
-        return torch.device("mps" if requested == "mps" or requested == "auto" and mps else "cpu")
+            raise RuntimeError("MPS is unavailable; start the learner with --device auto or cpu")
+        if requested == "auto":
+            requested = "cuda" if cuda else "mps" if mps else "cpu"
+        return torch.device(requested)
 
     def _trainable_parameters(self) -> list[Any]:
         """Returns LoRA and task-head parameters while excluding frozen base weights."""
