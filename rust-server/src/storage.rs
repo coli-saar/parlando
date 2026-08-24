@@ -227,6 +227,16 @@ pub struct ParticipantRecord {
     pub metadata: Value,
 }
 
+/// Dashboard-only Prolific correlation attached to one internal participant.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ProlificSubmissionRecord {
+    pub experiment_id: String,
+    pub participant_id: i64,
+    pub prolific_participant_id: String,
+    pub prolific_study_id: String,
+    pub prolific_session_id: String,
+}
+
 /// Input for creating one game session.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SessionRecord {
@@ -316,6 +326,12 @@ pub struct StoredSessionSummary {
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
     pub completion: Option<Value>,
+    /// Provider-neutral terminal category, independent of game completion JSON.
+    pub outcome_kind: Option<String>,
+    /// Stable detailed reason for the terminal category.
+    pub outcome_reason: Option<String>,
+    /// Role responsible for a role-specific terminal transition, when any.
+    pub outcome_actor_role: Option<String>,
     pub participant_count: i64,
     pub event_count: i64,
     /// Latest event position on the authoritative game clock.
@@ -336,7 +352,17 @@ pub struct StoredSessionParticipant {
     pub left_at: Option<String>,
     pub connection_status: String,
     pub participant_kind: Option<String>,
+    /// Durable recruitment-source classification without provider-specific identifiers.
+    pub identity_provider: Option<String>,
     pub metadata: Option<Value>,
+    /// Recipient-specific consequence derived when the shared session ended.
+    pub outcome: Option<String>,
+    /// Private Prolific participant id returned only by administrator session inspection.
+    pub prolific_participant_id: Option<String>,
+    /// Private Prolific study id returned only by administrator session inspection.
+    pub prolific_study_id: Option<String>,
+    /// Private Prolific submission session id returned only by administrator session inspection.
+    pub prolific_session_id: Option<String>,
 }
 
 /// Counts participant-linked records before an administrator confirms deletion.
@@ -500,6 +526,8 @@ pub trait ExperimentStore: Send + Sync {
     async fn deactivate_open_experiments(&self) -> Result<u64>;
     /// Creates or reuses a durable participant identity and returns `participant_id`.
     async fn upsert_participant(&self, participant: ParticipantRecord) -> Result<i64>;
+    /// Stores provider correlation outside all evaluation and export tables.
+    async fn record_prolific_submission(&self, submission: ProlificSubmissionRecord) -> Result<()>;
     /// Returns the human-readable experiment-specific identifier for a durable participant.
     async fn participant_research_id(&self, participant_id: i64) -> Result<Option<String>>;
     /// Creates a session for a client-facing session id and returns its per-experiment `session_id`.
@@ -594,13 +622,6 @@ pub trait ExperimentStore: Send + Sync {
 
 /// Shared trait-object handle for the configured experiment store backend.
 pub type SharedExperimentStore = Arc<dyn ExperimentStore>;
-
-/// Returns whether SQLite rejected a write because a unique value already exists.
-fn sqlite_unique_constraint(error: &sqlx::Error) -> bool {
-    error
-        .as_database_error()
-        .is_some_and(|database_error| database_error.is_unique_violation())
-}
 
 /// Returns whether SQLite names the expected unique column in its constraint error.
 fn sqlite_unique_constraint_for(error: &sqlx::Error, column: &str) -> bool {
@@ -710,7 +731,7 @@ impl SqliteExperimentStore {
             create table if not exists experiments (
                 experiment_id text primary key,
                 created_at text not null,
-                game_version text not null default 'legacy',
+                game_version text not null,
                 config_json text not null,
                 config_revision integer not null default 1,
                 server_version text,
@@ -784,8 +805,11 @@ impl SqliteExperimentStore {
                 started_at text,
                 completed_at text,
                 completion_json text,
+                outcome_kind text,
+                outcome_reason text,
+                outcome_actor_role text,
                 config_revision integer not null default 1,
-                game_version text not null default 'legacy',
+                game_version text not null,
                 primary key (experiment_id, session_id),
                 foreign key (experiment_id) references experiments(experiment_id)
             )
@@ -800,8 +824,25 @@ impl SqliteExperimentStore {
                 joined_at text not null,
                 left_at text,
                 connection_status text not null,
+                outcome text,
                 primary key (experiment_id, session_id, participant_id),
                 foreign key (experiment_id, session_id) references sessions(experiment_id, session_id),
+                foreign key (participant_id) references participants(participant_id)
+            )
+            "#,
+            r#"
+            create table if not exists prolific_submissions (
+                prolific_submission_id integer primary key autoincrement,
+                experiment_id text not null,
+                participant_id integer not null,
+                prolific_participant_id text not null,
+                prolific_study_id text not null,
+                prolific_session_id text not null,
+                received_at text not null,
+                completion_path_key text,
+                completion_code_presented_at text,
+                completion_link_opened_at text,
+                unique (experiment_id, prolific_session_id),
                 foreign key (participant_id) references participants(participant_id)
             )
             "#,
@@ -840,571 +881,51 @@ impl SqliteExperimentStore {
             "create index if not exists idx_session_events_session on session_events(experiment_id, session_id)",
             "create index if not exists idx_session_events_session_type on session_events(experiment_id, session_id, event_type)",
             "create index if not exists idx_session_events_actor_game_time on session_events(actor_participant_id, game_time_ms)",
+            "create unique index if not exists idx_participants_experiment_provider_external on participants(experiment_id, identity_provider, external_id) where external_id is not null",
+            "create unique index if not exists idx_participants_research_id on participants(research_id) where research_id is not null",
+            "create unique index if not exists idx_sessions_dialogue_id on sessions(dialogue_id) where dialogue_id is not null",
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
         }
         self.apply_pending_migrations().await?;
+        sqlx::query("insert or ignore into game_settings (singleton, updated_at) values (1, ?)")
+            .bind(now_iso())
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
-    /// Applies each historical compatibility migration once per database.
+    /// Accepts only the current schema baseline or stamps a genuinely empty database.
     async fn apply_pending_migrations(&self) -> Result<()> {
-        let mut version =
+        const CURRENT_SCHEMA_VERSION: i64 = 12;
+        let version =
             sqlx::query_scalar::<_, Option<i64>>("select max(version) from schema_migrations")
                 .fetch_one(&self.pool)
                 .await?
                 .unwrap_or(0);
-        if version < 1 {
-            self.ensure_column("experiments", "version_manifest_json", "text")
-                .await?;
-            self.ensure_column("experiments", "status", "text not null default 'inactive'")
-                .await?;
-            self.ensure_column("participants", "research_id", "text")
-                .await?;
-            self.ensure_column("participants", "experiment_id", "text")
-                .await?;
-            self.ensure_column("sessions", "dialogue_id", "text")
-                .await?;
-            sqlx::query("drop index if exists idx_participants_provider_external")
-                .execute(&self.pool)
-                .await?;
-            self.scope_legacy_participants().await?;
-            sqlx::query(
-                "create unique index if not exists idx_participants_experiment_provider_external on participants(experiment_id, identity_provider, external_id) where external_id is not null",
-            )
-            .execute(&self.pool)
-            .await?;
-            sqlx::query(
-                "create unique index if not exists idx_participants_research_id on participants(research_id) where research_id is not null",
-            )
-            .execute(&self.pool)
-            .await?;
-            sqlx::query(
-                "create unique index if not exists idx_sessions_dialogue_id on sessions(dialogue_id) where dialogue_id is not null",
-            )
-            .execute(&self.pool)
-            .await?;
-            self.backfill_readable_ids().await?;
-            self.drop_column_if_exists("participants", "display_name")
-                .await?;
-            sqlx::query("insert into schema_migrations (version, applied_at) values (1, ?)")
-                .bind(now_iso())
-                .execute(&self.pool)
-                .await?;
-            version = 1;
+        if version == CURRENT_SCHEMA_VERSION {
+            return Ok(());
         }
-        if version < 2 {
-            self.ensure_column(
-                "experiments",
-                "game_version",
-                "text not null default 'legacy'",
-            )
-            .await?;
-            self.ensure_column(
-                "experiments",
-                "config_revision",
-                "integer not null default 1",
-            )
-            .await?;
-            self.ensure_column("experiments", "pinned", "integer not null default 0")
-                .await?;
-            self.ensure_column("experiments", "obsolete", "integer not null default 0")
-                .await?;
-            self.ensure_column("sessions", "config_revision", "integer not null default 1")
-                .await?;
-            self.ensure_column("sessions", "game_version", "text not null default 'legacy'")
-                .await?;
-            self.backfill_game_versions().await?;
-            sqlx::query(
-                r#"
-                create table if not exists experiment_config_revisions (
-                    experiment_id text not null,
-                    revision integer not null,
-                    config_json text not null,
-                    created_at text not null,
-                    change_summary text,
-                    primary key (experiment_id, revision),
-                    foreign key (experiment_id) references experiments(experiment_id)
-                )
-                "#,
-            )
-            .execute(&self.pool)
-            .await?;
-            sqlx::query(
-                r#"
-                insert or ignore into experiment_config_revisions
-                    (experiment_id, revision, config_json, created_at, change_summary)
-                select experiment_id, 1, config_json, created_at, 'Migrated initial configuration'
-                from experiments
-                "#,
-            )
-            .execute(&self.pool)
-            .await?;
-            sqlx::query(
-                r#"
-                create table if not exists game_settings (
-                    singleton integer primary key check (singleton = 1),
-                    institution text not null default '',
-                    admin_allowed_ip_ranges_json text not null default '[]',
-                    revision integer not null default 1,
-                    updated_at text not null
-                )
-                "#,
-            )
-            .execute(&self.pool)
-            .await?;
-            sqlx::query(
-                "insert or ignore into game_settings (singleton, institution, revision, updated_at) values (1, '', 1, ?)",
-            )
+        if version != 0 {
+            bail!(
+                "database schema version {version} is unsupported; export it with a compatible older Parlando release and import it into a new database"
+            );
+        }
+        let stored_rows = sqlx::query_scalar::<_, i64>(
+            "select (select count(*) from experiments) + (select count(*) from participants) + (select count(*) from sessions)",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if stored_rows != 0 {
+            bail!(
+                "a populated pre-baseline database is unsupported; export it with a compatible older Parlando release and import it into a new database"
+            );
+        }
+        sqlx::query("insert into schema_migrations (version, applied_at) values (?, ?)")
+            .bind(CURRENT_SCHEMA_VERSION)
             .bind(now_iso())
             .execute(&self.pool)
             .await?;
-            sqlx::query("insert into schema_migrations (version, applied_at) values (2, ?)")
-                .bind(now_iso())
-                .execute(&self.pool)
-                .await?;
-            version = 2;
-        }
-        if version < 3 {
-            self.ensure_column(
-                "game_settings",
-                "admin_allowed_ip_ranges_json",
-                "text not null default '[]'",
-            )
-            .await?;
-            sqlx::query("insert into schema_migrations (version, applied_at) values (3, ?)")
-                .bind(now_iso())
-                .execute(&self.pool)
-                .await?;
-            version = 3;
-        }
-        if version < 4 {
-            sqlx::query("update experiments set status = 'archived' where obsolete = 1")
-                .execute(&self.pool)
-                .await?;
-            self.drop_column_if_exists("experiments", "obsolete")
-                .await?;
-            sqlx::query("insert into schema_migrations (version, applied_at) values (4, ?)")
-                .bind(now_iso())
-                .execute(&self.pool)
-                .await?;
-            version = 4;
-        }
-        if version < 5 {
-            self.ensure_column("sessions", "purpose", "text not null default 'research'")
-                .await?;
-            sqlx::query("insert into schema_migrations (version, applied_at) values (5, ?)")
-                .bind(now_iso())
-                .execute(&self.pool)
-                .await?;
-            version = 5;
-        }
-        if version < 6 {
-            self.ensure_column(
-                "consent_declarations",
-                "purpose",
-                "text not null default 'research'",
-            )
-            .await?;
-            sqlx::query("insert into schema_migrations (version, applied_at) values (6, ?)")
-                .bind(now_iso())
-                .execute(&self.pool)
-                .await?;
-            version = 6;
-        }
-        if version < 7 {
-            sqlx::query(
-                r#"
-                create table if not exists experiment_secrets (
-                    experiment_id text not null,
-                    secret_key text not null,
-                    secret_value text not null,
-                    updated_at text not null,
-                    primary key (experiment_id, secret_key),
-                    foreign key (experiment_id) references experiments(experiment_id)
-                )
-                "#,
-            )
-            .execute(&self.pool)
-            .await?;
-            sqlx::query("insert into schema_migrations (version, applied_at) values (7, ?)")
-                .bind(now_iso())
-                .execute(&self.pool)
-                .await?;
-            version = 7;
-        }
-        if version < 8 {
-            sqlx::query(
-                r#"
-                create table if not exists administrator_sessions (
-                    token_digest text primary key,
-                    role text not null,
-                    csrf_token text not null,
-                    created_at integer not null,
-                    last_seen_at integer not null
-                )
-                "#,
-            )
-            .execute(&self.pool)
-            .await?;
-            sqlx::query("insert into schema_migrations (version, applied_at) values (8, ?)")
-                .bind(now_iso())
-                .execute(&self.pool)
-                .await?;
-            version = 8;
-        }
-        if version < 9 {
-            self.ensure_column(
-                "game_settings",
-                "speechmatics_realtime_url",
-                "text not null default 'wss://eu.rt.speechmatics.com/v2'",
-            )
-            .await?;
-            sqlx::query(
-                r#"
-                create table if not exists game_secrets (
-                    secret_key text primary key,
-                    secret_value text not null,
-                    updated_at text not null
-                )
-                "#,
-            )
-            .execute(&self.pool)
-            .await?;
-            sqlx::query(
-                r#"
-                insert or replace into game_secrets (secret_key, secret_value, updated_at)
-                select source.secret_key, source.secret_value, source.updated_at
-                from experiment_secrets source
-                where source.secret_key in ('speechmatics.api_key', 'tts.api_key')
-                  and source.updated_at = (
-                    select max(candidate.updated_at) from experiment_secrets candidate
-                    where candidate.secret_key = source.secret_key
-                  )
-                "#,
-            )
-            .execute(&self.pool)
-            .await?;
-            sqlx::query(
-                "delete from experiment_secrets where secret_key in ('speechmatics.api_key', 'tts.api_key')",
-            )
-            .execute(&self.pool)
-            .await?;
-            sqlx::query("insert into schema_migrations (version, applied_at) values (9, ?)")
-                .bind(now_iso())
-                .execute(&self.pool)
-                .await?;
-            version = 9;
-        }
-        if version < 10 {
-            sqlx::query("update sessions set status = 'running' where status = 'playing'")
-                .execute(&self.pool)
-                .await?;
-            sqlx::query("insert into schema_migrations (version, applied_at) values (10, ?)")
-                .bind(now_iso())
-                .execute(&self.pool)
-                .await?;
-            version = 10;
-        }
-        if version < 11 {
-            self.ensure_column(
-                "game_settings",
-                "tts_base_url",
-                "text not null default 'wss://api.elevenlabs.io'",
-            )
-            .await?;
-            for table in ["experiments", "experiment_config_revisions"] {
-                let statement = format!(
-                    r#"
-                    update {table}
-                    set config_json = json_set(
-                        json_remove(
-                            config_json,
-                            '$.experiment',
-                            '$.server',
-                            '$.database',
-                            '$.speechmatics.api_key',
-                            '$.tts.api_key'
-                        ),
-                        '$.speechmatics.realtime_url',
-                        coalesce(
-                            json_extract(config_json, '$.speechmatics.realtime_url'),
-                            (select speechmatics_realtime_url from game_settings where singleton = 1),
-                            'wss://eu.rt.speechmatics.com/v2'
-                        ),
-                        '$.tts.base_url',
-                        coalesce(
-                            json_extract(config_json, '$.tts.base_url'),
-                            (select tts_base_url from game_settings where singleton = 1),
-                            'wss://api.elevenlabs.io'
-                        )
-                    )
-                    "#,
-                );
-                sqlx::query(&statement).execute(&self.pool).await?;
-            }
-            sqlx::query("insert into schema_migrations (version, applied_at) values (11, ?)")
-                .bind(now_iso())
-                .execute(&self.pool)
-                .await?;
-        }
-        Ok(())
-    }
-
-    /// Recovers exact historical game versions from stored manifests when available.
-    async fn backfill_game_versions(&self) -> Result<()> {
-        let rows = sqlx::query_as::<_, (String, Option<String>)>(
-            "select experiment_id, version_manifest_json from experiments where game_version = 'legacy'",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        for (experiment_id, manifest) in rows {
-            let version = manifest
-                .as_deref()
-                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-                .and_then(|value| {
-                    value
-                        .get("game")
-                        .and_then(|game| game.get("version"))
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                });
-            if let Some(version) = version {
-                sqlx::query("update experiments set game_version = ? where experiment_id = ?")
-                    .bind(version)
-                    .bind(experiment_id)
-                    .execute(&self.pool)
-                    .await?;
-            }
-        }
-        sqlx::query(
-            r#"
-            update sessions
-            set game_version = coalesce(
-                    (select game_version from experiments
-                     where experiments.experiment_id = sessions.experiment_id),
-                    'legacy'
-                ),
-                config_revision = coalesce(
-                    (select config_revision from experiments
-                     where experiments.experiment_id = sessions.experiment_id),
-                    1
-                )
-            where game_version = 'legacy'
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    /// Splits legacy participant rows that were shared by more than one experiment.
-    async fn scope_legacy_participants(&self) -> Result<()> {
-        let participant_ids = sqlx::query_scalar::<_, i64>(
-            "select participant_id from participants where experiment_id is null",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        for participant_id in participant_ids {
-            let experiment_ids = sqlx::query_scalar::<_, String>(
-                r#"
-                select experiment_id from session_participants where participant_id = ?
-                union select experiment_id from consent_declarations where participant_id = ?
-                union select experiment_id from session_events where actor_participant_id = ?
-                order by experiment_id
-                "#,
-            )
-            .bind(participant_id)
-            .bind(participant_id)
-            .bind(participant_id)
-            .fetch_all(&self.pool)
-            .await?;
-            let Some((first_experiment, remaining_experiments)) = experiment_ids.split_first()
-            else {
-                sqlx::query(
-                    "update participants set experiment_id = 'legacy_unassigned' where participant_id = ?",
-                )
-                .bind(participant_id)
-                .execute(&self.pool)
-                .await?;
-                continue;
-            };
-            sqlx::query("update participants set experiment_id = ? where participant_id = ?")
-                .bind(first_experiment)
-                .bind(participant_id)
-                .execute(&self.pool)
-                .await?;
-            for experiment_id in remaining_experiments {
-                let source = sqlx::query_as::<
-                    _,
-                    (String, String, Option<String>, Option<String>, String),
-                >(
-                    "select participant_kind, identity_provider, external_id, metadata_json, created_at from participants where participant_id = ?",
-                )
-                .bind(participant_id)
-                .fetch_one(&self.pool)
-                .await?;
-                let new_participant_id = loop {
-                    let result = sqlx::query(
-                        r#"
-                        insert into participants
-                        (research_id, experiment_id, participant_kind, identity_provider, external_id, metadata_json, created_at)
-                        values (?, ?, ?, ?, ?, ?, ?)
-                        "#,
-                    )
-                    .bind(readable_participant_id())
-                    .bind(experiment_id)
-                    .bind(&source.0)
-                    .bind(&source.1)
-                    .bind(&source.2)
-                    .bind(&source.3)
-                    .bind(&source.4)
-                    .execute(&self.pool)
-                    .await;
-                    match result {
-                        Ok(result) => break result.last_insert_rowid(),
-                        Err(error)
-                            if sqlite_unique_constraint_for(&error, "participants.research_id") =>
-                        {
-                            continue
-                        }
-                        Err(error) => return Err(error.into()),
-                    }
-                };
-                for table in ["session_participants", "consent_declarations"] {
-                    sqlx::query(&format!(
-                        "update {table} set participant_id = ? where experiment_id = ? and participant_id = ?"
-                    ))
-                    .bind(new_participant_id)
-                    .bind(experiment_id)
-                    .bind(participant_id)
-                    .execute(&self.pool)
-                    .await?;
-                }
-                sqlx::query(
-                    "update session_events set actor_participant_id = ? where experiment_id = ? and actor_participant_id = ?",
-                )
-                .bind(new_participant_id)
-                .bind(experiment_id)
-                .bind(participant_id)
-                .execute(&self.pool)
-                .await?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Backfills human random names, descriptive non-human ids, and missing dialogue ids.
-    async fn backfill_readable_ids(&self) -> Result<()> {
-        let participants =
-            sqlx::query_as::<_, (i64, String, String, String, Option<String>, Option<String>)>(
-                r#"
-            select participant_id, experiment_id, participant_kind, identity_provider,
-                   external_id, metadata_json
-            from participants
-            where (
-                participant_kind = 'human'
-                and (research_id is null or research_id like 'research_%')
-            ) or (
-                participant_kind not in ('human', 'deleted')
-                and (research_id is null or research_id not like participant_kind || ':%')
-            )
-            "#,
-            )
-            .fetch_all(&self.pool)
-            .await?;
-        for (
-            participant_id,
-            experiment_id,
-            participant_kind,
-            identity_provider,
-            external_id,
-            metadata_json,
-        ) in participants
-        {
-            let participant = ParticipantRecord {
-                experiment_id,
-                participant_kind,
-                identity_provider,
-                external_id,
-                metadata: metadata_json
-                    .as_deref()
-                    .map(serde_json::from_str)
-                    .transpose()?
-                    .unwrap_or(Value::Null),
-            };
-            let mut identifier_attempt = 1;
-            loop {
-                let candidate = participant_identifier_candidate(&participant, identifier_attempt);
-                let result =
-                    sqlx::query("update participants set research_id = ? where participant_id = ?")
-                        .bind(candidate)
-                        .bind(participant_id)
-                        .execute(&self.pool)
-                        .await;
-                match result {
-                    Ok(_) => break,
-                    Err(error) if sqlite_unique_constraint(&error) => {
-                        identifier_attempt += 1;
-                        continue;
-                    }
-                    Err(error) => return Err(error.into()),
-                }
-            }
-        }
-        let sessions = sqlx::query_as::<_, (String, i64)>(
-            "select experiment_id, session_id from sessions where dialogue_id is null",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        for (experiment_id, session_id) in sessions {
-            loop {
-                let candidate = dialogue_id();
-                let result = sqlx::query(
-                    "update sessions set dialogue_id = ? where experiment_id = ? and session_id = ?",
-                )
-                .bind(candidate)
-                .bind(&experiment_id)
-                .bind(session_id)
-                .execute(&self.pool)
-                .await;
-                match result {
-                    Ok(_) => break,
-                    Err(error) if sqlite_unique_constraint(&error) => continue,
-                    Err(error) => return Err(error.into()),
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Drops a legacy SQLite column when it is present.
-    async fn drop_column_if_exists(&self, table: &str, column: &str) -> Result<()> {
-        let pragma = format!("pragma table_info({table})");
-        let columns = sqlx::query_as::<_, (i64, String, String, i64, Option<String>, i64)>(&pragma)
-            .fetch_all(&self.pool)
-            .await?;
-        if columns.iter().any(|row| row.1 == column) {
-            sqlx::query(&format!("alter table {table} drop column {column}"))
-                .execute(&self.pool)
-                .await?;
-        }
-        Ok(())
-    }
-
-    async fn ensure_column(&self, table: &str, column: &str, definition: &str) -> Result<()> {
-        let pragma = format!("pragma table_info({table})");
-        let columns = sqlx::query_as::<_, (i64, String, String, i64, Option<String>, i64)>(&pragma)
-            .fetch_all(&self.pool)
-            .await?;
-        if columns.iter().any(|row| row.1 == column) {
-            return Ok(());
-        }
-        sqlx::query(&format!(
-            "alter table {table} add column {column} {definition}"
-        ))
-        .execute(&self.pool)
-        .await?;
         Ok(())
     }
 
@@ -2039,6 +1560,36 @@ impl ExperimentStore for SqliteExperimentStore {
         }
     }
 
+    async fn record_prolific_submission(&self, submission: ProlificSubmissionRecord) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"
+            insert into prolific_submissions
+                (experiment_id, participant_id, prolific_participant_id,
+                 prolific_study_id, prolific_session_id, received_at)
+            values (?, ?, ?, ?, ?, ?)
+            on conflict(experiment_id, prolific_session_id) do nothing
+            "#,
+        )
+        .bind(&submission.experiment_id)
+        .bind(submission.participant_id)
+        .bind(&submission.prolific_participant_id)
+        .bind(&submission.prolific_study_id)
+        .bind(&submission.prolific_session_id)
+        .bind(now_iso())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "update participants set identity_provider = 'prolific' where experiment_id = ? and participant_id = ?",
+        )
+        .bind(&submission.experiment_id)
+        .bind(submission.participant_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn participant_research_id(&self, participant_id: i64) -> Result<Option<String>> {
         Ok(sqlx::query_scalar::<_, String>(
             "select research_id from participants where participant_id = ?",
@@ -2297,7 +1848,7 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(event_index)
         .bind(event.event_type)
         .bind(event.actor_participant_id)
-        .bind(event.actor_role)
+        .bind(&event.actor_role)
         .bind(serde_json::to_string(&event.payload)?)
         .bind(event.game_state.map(|state| serde_json::to_string(&state)).transpose()?)
         .bind(game_time_ms)
@@ -2371,10 +1922,17 @@ impl ExperimentStore for SqliteExperimentStore {
         }
         if let Some(completion) = completion {
             sqlx::query(
-                "update sessions set status = 'completed', completed_at = ?, completion_json = ? where experiment_id = ? and session_id = ?",
+                "update sessions set status = 'completed', completed_at = ?, completion_json = ?, outcome_kind = 'game_completed', outcome_reason = 'game_completed' where experiment_id = ? and session_id = ?",
             )
             .bind(now_iso())
             .bind(serde_json::to_string(&completion)?)
+            .bind(&experiment_id)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "update session_participants set outcome = 'completed' where experiment_id = ? and session_id = ?",
+            )
             .bind(&experiment_id)
             .bind(session_id)
             .execute(&mut *tx)
@@ -2430,10 +1988,25 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(game_time_ms)
         .execute(&mut *tx)
         .await?;
+        let outcome = if reason == "waiting_timeout" {
+            "partner_unavailable"
+        } else {
+            "timed_out"
+        };
         sqlx::query(
-            "update sessions set status = 'expired', completed_at = ? where experiment_id = ? and session_id = ?",
+            "update sessions set status = 'expired', completed_at = ?, outcome_kind = ?, outcome_reason = ? where experiment_id = ? and session_id = ?",
         )
         .bind(now_iso())
+        .bind(outcome)
+        .bind(reason)
+        .bind(experiment_id)
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "update session_participants set outcome = ? where experiment_id = ? and session_id = ?",
+        )
+        .bind(outcome)
         .bind(experiment_id)
         .bind(session_id)
         .execute(&mut *tx)
@@ -2443,6 +2016,18 @@ impl ExperimentStore for SqliteExperimentStore {
     }
 
     async fn abandon_session(&self, event: SessionEventRecord) -> Result<()> {
+        let actor_role = event.actor_role.clone();
+        let reason = event
+            .payload
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("participant_left")
+            .to_string();
+        let actor_outcome = if reason == "reconnect_timeout" {
+            "timed_out"
+        } else {
+            "withdrew"
+        };
         let occurred_at = now_iso();
         let mut tx = self.pool.begin().await?;
         let game_time_ms = stored_game_time_ms(
@@ -2486,7 +2071,7 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(event_index)
         .bind(event.event_type)
         .bind(event.actor_participant_id)
-        .bind(event.actor_role)
+        .bind(&event.actor_role)
         .bind(serde_json::to_string(&event.payload)?)
         .bind(
             event
@@ -2498,9 +2083,21 @@ impl ExperimentStore for SqliteExperimentStore {
         .execute(&mut *tx)
         .await?;
         sqlx::query(
-            "update sessions set status = 'abandoned', completed_at = ? where experiment_id = ? and session_id = ?",
+            "update sessions set status = 'abandoned', completed_at = ?, outcome_kind = ?, outcome_reason = ?, outcome_actor_role = ? where experiment_id = ? and session_id = ?",
         )
         .bind(now_iso())
+        .bind(&reason)
+        .bind(&reason)
+        .bind(&actor_role)
+        .bind(&event.experiment_id)
+        .bind(event.session_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "update session_participants set outcome = case when role = ? then ? else 'partner_left' end where experiment_id = ? and session_id = ?",
+        )
+        .bind(&actor_role)
+        .bind(actor_outcome)
         .bind(&event.experiment_id)
         .bind(event.session_id)
         .execute(&mut *tx)
@@ -2557,7 +2154,6 @@ impl ExperimentStore for SqliteExperimentStore {
         let sessions = sqlx::query_as::<
             _,
             (
-                String,
                 i64,
                 String,
                 String,
@@ -2570,15 +2166,17 @@ impl ExperimentStore for SqliteExperimentStore {
                 Option<String>,
                 Option<String>,
                 Option<String>,
+                String,
                 i64,
                 i64,
                 Option<i64>,
             ),
         >(
             r#"
-            select s.experiment_id, s.session_id, s.public_session_id, s.dialogue_id, s.mode, s.status, s.purpose,
+            select s.session_id, s.public_session_id, s.dialogue_id, s.mode, s.status, s.purpose,
                    s.config_revision, s.game_version, s.created_at, s.started_at,
                    s.completed_at, s.completion_json,
+                   json_object('kind', s.outcome_kind, 'reason', s.outcome_reason, 'actor_role', s.outcome_actor_role),
                    count(distinct sp.participant_id) as participant_count,
                    count(distinct se.event_id) as event_count,
                    max(se.game_time_ms) as last_event_game_time_ms
@@ -2599,23 +2197,27 @@ impl ExperimentStore for SqliteExperimentStore {
         .await?
         .into_iter()
         .map(|row| {
+            let outcome: Value = serde_json::from_str(&row.12)?;
             Ok(StoredSessionSummary {
-                experiment_id: row.0,
-                session_id: row.1,
-                public_session_id: row.2,
-                dialogue_id: row.3,
-                mode: row.4,
-                status: row.5,
-                purpose: row.6,
-                config_revision: row.7,
-                game_version: row.8,
-                created_at: row.9,
-                started_at: row.10,
-                completed_at: row.11,
+                experiment_id: experiment_id.to_string(),
+                session_id: row.0,
+                public_session_id: row.1,
+                dialogue_id: row.2,
+                mode: row.3,
+                status: row.4,
+                purpose: row.5,
+                config_revision: row.6,
+                game_version: row.7,
+                created_at: row.8,
+                started_at: row.9,
+                completed_at: row.10,
                 completion: row
-                    .12
+                    .11
                     .map(|raw| serde_json::from_str::<Value>(&raw))
                     .transpose()?,
+                outcome_kind: outcome.get("kind").and_then(Value::as_str).map(str::to_string),
+                outcome_reason: outcome.get("reason").and_then(Value::as_str).map(str::to_string),
+                outcome_actor_role: outcome.get("actor_role").and_then(Value::as_str).map(str::to_string),
                 participant_count: row.13,
                 event_count: row.14,
                 last_event_game_time_ms: row.15,
@@ -2644,14 +2246,24 @@ impl ExperimentStore for SqliteExperimentStore {
                 Option<String>,
                 Option<String>,
                 Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
             ),
         >(
             r#"
             select sp.experiment_id, sp.session_id, sp.participant_id,
                    sp.participant_session_id, sp.role, sp.joined_at, sp.left_at,
-                   sp.connection_status, p.research_id, p.participant_kind, p.metadata_json
+                   sp.connection_status, p.research_id, p.participant_kind, p.identity_provider,
+                   p.metadata_json,
+                   sp.outcome, ps.prolific_participant_id, ps.prolific_study_id,
+                   ps.prolific_session_id
             from session_participants sp
             left join participants p on p.participant_id = sp.participant_id
+            left join prolific_submissions ps
+              on ps.experiment_id = sp.experiment_id and ps.participant_id = sp.participant_id
             where sp.experiment_id = ? and sp.session_id = ?
             order by sp.role, sp.joined_at
             "#,
@@ -2673,10 +2285,15 @@ impl ExperimentStore for SqliteExperimentStore {
                 connection_status: row.7,
                 research_id: row.8,
                 participant_kind: row.9,
+                identity_provider: row.10,
                 metadata: row
-                    .10
+                    .11
                     .map(|raw| serde_json::from_str::<Value>(&raw))
                     .transpose()?,
+                outcome: row.12,
+                prolific_participant_id: row.13,
+                prolific_study_id: row.14,
+                prolific_session_id: row.15,
             })
         })
         .collect::<Result<Vec<_>>>()?;

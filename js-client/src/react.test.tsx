@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { VoiceStatus } from "./audio/types";
 import { initialVoiceStatus } from "./audio/types";
-import { MicrophoneMuteButton } from "./react";
+import { MicrophoneMuteButton, PartnerReconnectNotice } from "./react";
 import { MicrophoneLevelMeter, TranscriptionProgress } from "./voiceComponents";
 
 afterEach(cleanup);
@@ -57,4 +57,19 @@ describe("voice React components", () => {
     expect(screen.getAllByRole("listitem").every((item) => item.className === "done")).toBe(true);
   });
 
+});
+
+describe("partner reconnect widget", () => {
+  it("counts down from an absolute server deadline and never becomes negative", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-21T12:00:00Z"));
+    render(<PartnerReconnectNotice deadlineAt="2026-08-21T12:00:05Z" />);
+    expect(screen.getByRole("status")).toHaveTextContent("game is paused");
+    expect(screen.getByRole("status")).toHaveTextContent("5 seconds");
+    act(() => vi.advanceTimersByTime(3_250));
+    expect(screen.getByRole("status")).toHaveTextContent("2 seconds");
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(screen.getByRole("status")).toHaveTextContent("0 seconds");
+    vi.useRealTimers();
+  });
 });

@@ -85,7 +85,7 @@ run-local: build-local
 
 # Remove generated browser-client dependencies and build output.
 clean-client:
-	cd "$(CLIENT_DIR)" && rm -rf dist node_modules package-lock.json
+	cd "$(CLIENT_DIR)" && rm -rf dist node_modules
 
 # Remove generated Space Game artifacts.
 clean: clean-client

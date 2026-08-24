@@ -21,7 +21,7 @@ def main() -> int:
         proto_dir / "parlando_rl_v1.proto",
     ]
     bundled_proto_dir = Path(grpc_tools.__file__).resolve().parent / "_proto"
-    return protoc.main(
+    result = protoc.main(
         [
             "grpc_tools.protoc",
             f"--proto_path={proto_dir}",
@@ -31,6 +31,13 @@ def main() -> int:
             *(str(path) for path in proto_files),
         ]
     )
+    if result != 0:
+        return result
+    for path in generated_dir.glob("*_pb2_grpc.py"):
+        source = path.read_text()
+        source = source.replace("\nimport parlando_", "\nfrom . import parlando_")
+        path.write_text(source)
+    return 0
 
 
 if __name__ == "__main__":

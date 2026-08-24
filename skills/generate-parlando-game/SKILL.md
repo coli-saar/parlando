@@ -48,11 +48,11 @@ Do not solve model readiness with game messages. The current construction-ready 
 
 ## Participant application
 
-Use `ParticipantApp` and `GameSession<Observation, Action, Completion>` from `@coli-saar/parlando-client/react`. Render current state from `session.observation`; use the nullable `session.transition` only when the presentation needs the most recent accepted actor and action. Send actions with `sendAction` and player messages with `sendMessage`. Use the shared `completion`, `voiceEnabled`, `voiceStatus`, and the exported microphone/transcription widgets as needed.
+Use `ParticipantApp` and `GameSession<Observation, Action, Completion>` from `@coli-saar/parlando-client/react`. Render current state from `session.observation`; use the nullable `session.transition` only when the presentation needs the most recent accepted actor and action. Send actions with `sendAction` and player messages with `sendMessage`. Disable game controls unless `session.interactionEnabled` is true. Use the shared `completion`, `voiceEnabled`, `voiceStatus`, and the exported microphone/transcription widgets as needed. `ParticipantApp` owns credential recovery, partner-disconnect pausing, the standard `PartnerReconnectNotice`, recipient-specific terminal outcomes, and recruitment handoff.
 
 Do not read authoritative state, generic events, complete experiment configuration, provider credentials, or peer controller type. Do not build custom audio transport, transcription, TTS, startup lifecycle, or WebSocket message handling when the SDK supplies it.
 
-When complete, render a terminal view and disable normal game controls. Presentation is frontend-owned; completion is determined by Rust `Game::completion` and its shared payload must be safe for both roles. Put private terminal facts in each role's final observation.
+Do not implement transport-disconnect or recruitment end screens in game code. `ParticipantApp` renders the standard terminal surface and prevents normal controls after every terminal outcome. Completion is determined by Rust `Game::completion`, and its shared payload must be safe for both roles. Put private terminal facts in each role's final observation.
 
 ## Configuration and deployment
 
@@ -62,6 +62,6 @@ Keep provider secrets in server or remote-agent environment variables. Never pla
 
 ## Validate
 
-Run formatting, Rust checks/tests, JS build/tests, and Python tests when used. Test deterministic initialization, every legal/illegal action, A/B observation privacy, success and failure completion, transition metadata shape, messages not changing state, agent lifecycle, and terminal UI. Inspect generated code for old names listed in `docs/migrating-to-clean-api.md`; none may remain.
+Run formatting, Rust checks/tests, JS build/tests, and Python tests when used. Test deterministic initialization, every legal/illegal action, A/B observation privacy, success and failure completion, transition metadata shape, messages not changing state, agent lifecycle, disabled controls while `interactionEnabled` is false, and compatibility with the SDK terminal/reconnect UI. Inspect generated code for old names listed in `docs/migrating-to-clean-api.md`; none may remain.
 
 End with changed files, commands and results, exact run command, dashboard URL, agent commands, deployment notes, and assumptions.

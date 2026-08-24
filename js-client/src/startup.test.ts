@@ -141,6 +141,7 @@ describe("Parlando startup helpers", () => {
 
   it("guards participant game messages after completion", () => {
     expect(canSendGameMessage({ completed: false })).toBe(true);
+    expect(canSendGameMessage({ completed: false, leaving: true })).toBe(false);
     expect(canSendGameMessage({ completed: true })).toBe(false);
     expect(canSendGameMessage(null)).toBe(false);
   });
@@ -154,6 +155,8 @@ describe("Parlando startup helpers", () => {
 
     sendActionIfGameActive(apiClient, { socket, completed: true }, { type: "finish" });
     sendMessageIfGameActive(apiClient, { socket, completed: true }, "late hello");
+    sendActionIfGameActive(apiClient, { socket, completed: false, leaving: true }, { type: "finish" });
+    sendMessageIfGameActive(apiClient, { socket, completed: false, leaving: true }, "leaving hello");
     expect(apiClient.sendAction).not.toHaveBeenCalled();
     expect(apiClient.sendMessage).not.toHaveBeenCalled();
 

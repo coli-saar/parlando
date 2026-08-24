@@ -5,7 +5,7 @@ import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialVoicePreflight, initialVoiceStatus, type AudioSessionSnapshot } from "./audio/types";
 import type { ExperimentInfo, JoinedSession } from "./protocol";
-import { ParticipantAppTestHarness, type GameSession } from "./startup";
+import { ParticipantAppTestHarness, ProlificHandoff, type GameSession } from "./startup";
 
 class FakeWebSocket extends EventTarget {
   static CONNECTING = 0;
@@ -115,6 +115,7 @@ function game(session: GameSession<{ view: string }, { type: string }, { type: s
       <span>conversation:{session.conversation.length}</span>
       <span>presence:{String(Boolean(session.presence.A?.connected))}:{String(Boolean(session.presence.B?.connected))}</span>
       <button onClick={() => session.sendAction({ type: "move" })}>Move</button>
+      <button onClick={session.leave}>Leave game</button>
     </div>
   );
 }
@@ -125,6 +126,10 @@ beforeEach(() => {
   Object.defineProperty(navigator, "mediaDevices", {
     configurable: true,
     value: { enumerateDevices: vi.fn(async () => []), addEventListener: vi.fn(), removeEventListener: vi.fn() }
+  });
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: vi.fn(async () => undefined) }
   });
 });
 
@@ -167,6 +172,29 @@ describe("ParticipantApp rendered state machine", () => {
     expect(client.acceptConsents.mock.invocationCallOrder[0]).toBeLessThan(client.join.mock.invocationCallOrder[0]);
   });
 
+  it("pairs explicit consent and decline actions only for Prolific intake", async () => {
+    const consent = [{ id: "study", title: "Study consent", body: "I agree", required: true }];
+    const prolific = api(config({
+      consents: consent,
+      recruitment: {
+        provider: "prolific",
+        decline_url: "https://app.prolific.com/submissions"
+      }
+    }));
+    const { unmount } = render(<ParticipantAppTestHarness apiClient={prolific as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
+    const decline = await screen.findByRole("link", { name: "Do not consent" });
+    expect(decline.closest(".lobby-actions")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Enter waiting room" })).toBeInTheDocument();
+    expect(decline).toHaveAttribute("href", "https://app.prolific.com/submissions");
+
+    unmount();
+    const direct = api(config({ consents: consent, recruitment: { provider: "direct" } }));
+    render(<ParticipantAppTestHarness apiClient={direct as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
+    await screen.findByRole("checkbox", { name: /Study consent/ });
+    expect(screen.queryByRole("link", { name: "Do not consent" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Enter waiting room" })).toBeInTheDocument();
+  });
+
   it("activates on role assignment, applies completion, and blocks late actions", async () => {
     const client = api();
     render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
@@ -198,10 +226,139 @@ describe("ParticipantApp rendered state machine", () => {
     fireEvent.click(screen.getByRole("button", { name: "Move" }));
     expect(client.sendAction).toHaveBeenCalledOnce();
 
-    act(() => socket.message({ protocol_version: 1, type: "completed", public_session_id: "ROOM1", completion: { outcome: "win" } }));
-    expect(screen.getByText("completed:true")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Move" }));
+    act(() => socket.message({ protocol_version: 1, type: "session_ended", public_session_id: "ROOM1", outcome: "completed", reason: "game_completed", completion: { outcome: "win" }, handoff: null }));
+    expect(screen.getByRole("heading", { name: "Session complete" })).toBeInTheDocument();
     expect(client.sendAction).toHaveBeenCalledOnce();
+  });
+
+  it("keeps game-specific completion content and appends the premade Prolific handoff", async () => {
+    const client = api();
+    render(<ParticipantAppTestHarness
+      apiClient={client as never}
+      createAudioController={() => new FakeAudioController() as never}
+      renderGame={game}
+      renderCompletion={(completion: { outcome: string }) => <h1>Game result: {completion.outcome}</h1>}
+    />);
+    fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.open());
+    act(() => socket.message({ protocol_version: 1, type: "session_started", public_session_id: "ROOM1", role: "A", observation: { view: "assigned" }, available_actions: null }));
+    act(() => socket.message({
+      protocol_version: 1,
+      type: "session_ended",
+      public_session_id: "ROOM1",
+      outcome: "completed",
+      reason: "game_completed",
+      completion: { outcome: "win" },
+      handoff: { provider: "prolific", code: "CLEARWREN", url: "https://app.prolific.com/submissions/complete?cc=CLEARWREN" }
+    }));
+    expect(screen.getByRole("heading", { name: "Game result: win" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Session complete" })).not.toBeInTheDocument();
+    expect(document.querySelector(".parlando-game-completion")).not.toBeNull();
+    expect(screen.getByText("CLEARWREN")).toHaveClass("parlando-completion-code");
+    const copyCode = screen.getByRole("button", { name: "Copy Prolific completion code" });
+    fireEvent.click(copyCode);
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("CLEARWREN"));
+    expect(copyCode).toHaveTextContent("Copied");
+    expect(screen.getByText("Copied to clipboard.")).toHaveAttribute("aria-live", "polite");
+    expect(screen.getByRole("link", { name: "Return to Prolific" })).toHaveAttribute(
+      "href",
+      "https://app.prolific.com/submissions/complete?cc=CLEARWREN"
+    );
+  });
+
+  it("keeps the game socket open until explicit leave resolves to the terminal screen", async () => {
+    const client = api();
+    const audio = new FakeAudioController();
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.open());
+    act(() => socket.message({
+      protocol_version: 1,
+      type: "session_started",
+      public_session_id: "ROOM1",
+      role: "A",
+      observation: { view: "active" },
+      available_actions: null
+    }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Leave game" }));
+
+    expect(client.leaveSession).toHaveBeenCalledWith(socket);
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(audio.disconnect).toHaveBeenCalledWith(true);
+    expect(screen.getByRole("heading", { name: "Ending session" })).toBeInTheDocument();
+    expect(screen.queryByText("observation:active")).not.toBeInTheDocument();
+
+    act(() => socket.message({
+      protocol_version: 1,
+      type: "session_ended",
+      public_session_id: "ROOM1",
+      outcome: "withdrew",
+      reason: "participant_left",
+      completion: null,
+      handoff: null
+    }));
+
+    expect(socket.close).toHaveBeenCalledOnce();
+    expect(screen.getByRole("heading", { name: "Session ended" })).toBeInTheDocument();
+    expect(screen.getByText("You left the session. Your responses up to that point have been recorded.")).toBeInTheDocument();
+  });
+
+  it("adds no-code return instructions when a Prolific participant leaves", async () => {
+    const client = api(config({
+      recruitment: {
+        provider: "prolific",
+        return_url: "https://app.prolific.com/submissions"
+      }
+    }));
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => new FakeAudioController() as never} renderGame={game} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.open());
+    act(() => socket.message({
+      protocol_version: 1,
+      type: "session_started",
+      public_session_id: "ROOM1",
+      role: "A",
+      observation: { view: "active" },
+      available_actions: null
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "Leave game" }));
+    act(() => socket.message({
+      protocol_version: 1,
+      type: "session_ended",
+      public_session_id: "ROOM1",
+      outcome: "withdrew",
+      reason: "participant_left",
+      completion: null,
+      handoff: null
+    }));
+
+    expect(screen.getByText("No completion code is issued for a voluntary withdrawal.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Return to Prolific" })).toHaveAttribute(
+      "href",
+      "https://app.prolific.com/submissions"
+    );
+    expect(screen.getByText(/return this submission/i)).toBeInTheDocument();
+  });
+
+  it("keeps the Prolific code selectable when clipboard copying fails", async () => {
+    vi.mocked(navigator.clipboard.writeText).mockRejectedValueOnce(new Error("denied"));
+    render(<ProlificHandoff handoff={{
+      provider: "prolific",
+      code: "AMBERBADGER",
+      url: "https://app.prolific.com/submissions/complete?cc=AMBERBADGER"
+    }} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy Prolific completion code" }));
+
+    expect(await screen.findByText("Could not copy automatically. Select the code and copy it manually.")).toBeInTheDocument();
+    expect(screen.getByText("AMBERBADGER")).toHaveClass("parlando-completion-code");
   });
 
   it("closes malformed server messages with a protocol error", async () => {
@@ -427,14 +584,17 @@ describe("ParticipantApp rendered state machine", () => {
     }));
     act(() => socket.message({
       protocol_version: 1,
-      type: "abandoned",
+      type: "session_ended",
       public_session_id: "ROOM1",
-      code: "participant_left"
+      outcome: "partner_left",
+      reason: "participant_left",
+      completion: null,
+      handoff: null
     }));
 
     expect(audio.disconnect).toHaveBeenCalledWith(true);
     expect(socket.close).toHaveBeenCalledOnce();
-    expect(await screen.findByText("This session ended because a player left.")).toBeInTheDocument();
+    expect(await screen.findByText("Your partner left or could not reconnect, so the session cannot continue.")).toBeInTheDocument();
     expect(screen.queryByText("observation:active")).not.toBeInTheDocument();
     act(() => socket.message({ protocol_version: 1, type: "error", public_session_id: "ROOM1", code: "stale", fatal: true }));
     expect(screen.queryByText("The server rejected the last request.")).not.toBeInTheDocument();
@@ -464,7 +624,7 @@ describe("ParticipantApp rendered state machine", () => {
     expect(socket.close).toHaveBeenCalledOnce();
   });
 
-  it("stops reconnecting at the exact five-minute window", async () => {
+  it("stops reconnecting at the exact fifteen-second window", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-21T12:00:00Z"));
     const client = api();
@@ -487,9 +647,9 @@ describe("ParticipantApp rendered state machine", () => {
     });
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      await vi.advanceTimersByTimeAsync(15_000);
     });
-    expect(screen.getByText("The five-minute reconnection window expired. Please leave and start a new session.")).toBeInTheDocument();
+    expect(screen.getByText("The connection could not be restored in time.")).toBeInTheDocument();
     const callsAtExpiry = client.getGameSession.mock.calls.length;
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000);

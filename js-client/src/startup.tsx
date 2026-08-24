@@ -13,11 +13,14 @@ import { experimentAllowsIntake, requiredConsentsAccepted } from "./helpers.js";
 import { MicrophoneLevelMeter, TranscriptionProgress } from "./voiceComponents.js";
 import {
   ParticipantClient,
+  decodeServerMessage,
   type ExperimentInfo,
   type JoinedSession,
   type PlayerMessage,
   type PlayerRole,
   type Presence,
+  type ParticipantOutcome,
+  type RecruitmentHandoff,
   playerMessage,
   type ServerMessage
 } from "./protocol.js";
@@ -37,6 +40,8 @@ export interface GameSession<TObservation, TAction, TCompletion = Record<string,
   connected: boolean;
   completed: boolean;
   completion: TCompletion | null;
+  outcome: ParticipantOutcome | null;
+  interactionEnabled: boolean;
   sendAction(action: TAction): void;
   sendMessage(text: string): void;
   setMicrophoneMuted(muted: boolean): Promise<void>;
@@ -51,11 +56,14 @@ export interface GameTransition<TAction> {
 
 export interface ParticipantAppProps<TObservation, TAction, TCompletion = Record<string, unknown>> {
   renderGame(session: GameSession<TObservation, TAction, TCompletion>): ReactNode;
+  /** Renders game-specific public success content inside the standard terminal shell. */
+  renderCompletion?(completion: TCompletion): ReactNode;
   baseUrl?: string;
 }
 
 interface ParticipantAppRuntimeProps<TObservation, TAction, TCompletion = Record<string, unknown>> {
   renderGame(session: GameSession<TObservation, TAction, TCompletion>): ReactNode;
+  renderCompletion?(completion: TCompletion): ReactNode;
   apiClient: ParticipantClient;
   createAudioController: () => AudioSessionController;
 }
@@ -69,8 +77,13 @@ interface LiveSession<TObservation, TAction, TCompletion = Record<string, unknow
   socket: WebSocket;
   connected: boolean;
   active: boolean;
+  leaving: boolean;
   completed: boolean;
   completion: TCompletion | null;
+  outcome: ParticipantOutcome | null;
+  endReason: string | null;
+  handoff: RecruitmentHandoff | null;
+  partnerReconnectDeadline: string | null;
   presence: Presence;
   conversation: PlayerMessage[];
 }
@@ -78,6 +91,7 @@ interface LiveSession<TObservation, TAction, TCompletion = Record<string, unknow
 /** @internal Minimal channel state used by source-level tests. */
 export interface GameInputSession {
   socket: WebSocket;
+  leaving?: boolean;
   completed: boolean;
 }
 
@@ -93,8 +107,8 @@ export function completedSessionPatch<TCompletion>(completion: TCompletion | und
 }
 
 /** @internal Returns whether participant game-channel messages should still be sent. */
-export function canSendGameMessage(session: { completed: boolean } | null): boolean {
-  return Boolean(session && !session.completed);
+export function canSendGameMessage(session: { completed: boolean; leaving?: boolean } | null): boolean {
+  return Boolean(session && !session.completed && !session.leaving);
 }
 
 /** @internal Sends an action only while the reusable session is still accepting game input. */
@@ -103,7 +117,7 @@ export function sendActionIfGameActive<TAction>(
   session: GameInputSession | null,
   action: TAction
 ): void {
-  if (!session || session.completed) return;
+  if (!session || !canSendGameMessage(session)) return;
   apiClient.sendAction(session.socket, action);
 }
 
@@ -113,7 +127,7 @@ export function sendMessageIfGameActive(
   session: GameInputSession | null,
   text: string
 ): void {
-  if (!session || session.completed) return;
+  if (!session || !canSendGameMessage(session)) return;
   apiClient.sendMessage(session.socket, text);
 }
 
@@ -122,13 +136,14 @@ export function ParticipantApp<
   TObservation,
   TAction = unknown,
   TCompletion = Record<string, unknown>
->({ renderGame, baseUrl }: ParticipantAppProps<TObservation, TAction, TCompletion>) {
+>({ renderGame, renderCompletion, baseUrl }: ParticipantAppProps<TObservation, TAction, TCompletion>) {
   const apiClient = useMemo(() => new ParticipantClient({ baseUrl }), [baseUrl]);
   return (
     <ParticipantAppRuntime
       apiClient={apiClient}
       createAudioController={createDefaultAudioController}
       renderGame={renderGame}
+      renderCompletion={renderCompletion}
     />
   );
 }
@@ -147,7 +162,7 @@ function ParticipantAppRuntime<
   TObservation,
   TAction = unknown,
   TCompletion = Record<string, unknown>
->({ renderGame, apiClient, createAudioController }: ParticipantAppRuntimeProps<TObservation, TAction, TCompletion>) {
+>({ renderGame, renderCompletion, apiClient, createAudioController }: ParticipantAppRuntimeProps<TObservation, TAction, TCompletion>) {
   const audioControllerRef = useRef<AudioSessionController | null>(null);
   if (!audioControllerRef.current) audioControllerRef.current = createAudioController();
   const audioController = audioControllerRef.current;
@@ -194,27 +209,35 @@ function ParticipantAppRuntime<
     closeSessionSocket(sessionRef.current);
   }, [audioController]);
 
+  /** Starts a durable leave handshake while retaining the socket needed for its terminal reply. */
   const leave = useCallback(() => {
-    apiClient.leaveSession(sessionRef.current?.socket ?? null);
-    endCurrentSession();
+    const current = sessionRef.current;
+    if (!current || current.completed || current.leaving) return;
+    reconnectEnabledRef.current = false;
+    if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current);
+    reconnectTimerRef.current = null;
+    void audioController.disconnect(true);
+    const leaving = { ...current, leaving: true };
+    sessionRef.current = leaving;
     setSession((current) => {
-      closeSessionSocket(current);
-      return null;
+      if (!current || current.socket !== leaving.socket) return current;
+      return leaving;
     });
+    apiClient.leaveSession(leaving.socket);
     setError("");
-  }, [apiClient, endCurrentSession]);
+  }, [apiClient, audioController]);
 
   const scheduleGameReconnect = useCallback(
     (room: JoinedSession<TObservation, TAction>) => {
       const current = sessionRef.current;
       if (!reconnectEnabledRef.current || !current || current.completed || reconnectTimerRef.current !== null) return;
       if (reconnectStartedAtRef.current === 0) reconnectStartedAtRef.current = Date.now();
-      if (Date.now() - reconnectStartedAtRef.current >= 5 * 60_000) {
-        setError("The five-minute reconnection window expired. Please leave and start a new session.");
+      if (Date.now() - reconnectStartedAtRef.current >= 15_000) {
+        setError("The connection could not be restored in time.");
         return;
       }
       const delays = [1_000, 2_000, 5_000, 10_000];
-      const remaining = 5 * 60_000 - (Date.now() - reconnectStartedAtRef.current);
+      const remaining = 15_000 - (Date.now() - reconnectStartedAtRef.current);
       const delay = Math.min(delays[Math.min(reconnectAttemptsRef.current, delays.length - 1)], remaining);
       reconnectAttemptsRef.current += 1;
       reconnectTimerRef.current = window.setTimeout(() => {
@@ -233,6 +256,7 @@ function ParticipantAppRuntime<
     async (room: JoinedSession<TObservation, TAction>) => {
       const gameSession = await apiClient.getGameSession(room.sessionId);
       const socket = new WebSocket(apiClient.socketUrl(gameSession));
+      let terminal = false;
       setSession((current) => {
         const next = current?.sessionId === room.sessionId
           ? { ...current, socket, connected: false }
@@ -245,8 +269,13 @@ function ParticipantAppRuntime<
             socket,
             connected: false,
             active: false,
+            leaving: false,
             completed: false,
             completion: null,
+            outcome: null,
+            endReason: null,
+            handoff: null,
+            partnerReconnectDeadline: null,
             presence: room.presence,
             conversation: []
             };
@@ -267,12 +296,11 @@ function ParticipantAppRuntime<
         setError("Could not connect to the game channel. Retrying…");
       });
       socket.addEventListener("message", (event) => {
-        if (sessionRef.current?.socket !== socket) return;
+        if (terminal || sessionRef.current?.socket !== socket) return;
         let message: ServerMessage<TObservation, TAction, TCompletion>;
         try {
           if (typeof event.data !== "string") throw new Error("non-text message");
-          message = JSON.parse(event.data) as ServerMessage<TObservation, TAction, TCompletion>;
-          if (message.protocol_version !== 1) throw new Error("unsupported protocol version");
+          message = decodeServerMessage<TObservation, TAction, TCompletion>(JSON.parse(event.data));
         } catch {
           setError("The server sent an invalid game message.");
           socket.close(1002, "Invalid server message");
@@ -326,9 +354,15 @@ function ParticipantAppRuntime<
           );
           return;
         }
-        if (message.type === "completed") {
+        if (message.type === "partner_reconnecting") {
           setSession((current) =>
-            current?.socket === socket ? { ...current, ...completedSessionPatch(message.completion) } : current
+            current?.socket === socket ? { ...current, partnerReconnectDeadline: message.deadline_at } : current
+          );
+          return;
+        }
+        if (message.type === "partner_reconnected") {
+          setSession((current) =>
+            current?.socket === socket ? { ...current, partnerReconnectDeadline: null } : current
           );
           return;
         }
@@ -336,17 +370,28 @@ function ParticipantAppRuntime<
           setError(`Action rejected: ${message.code}`);
           return;
         }
-        if (message.type === "abandoned") {
+        if (message.type === "session_ended") {
+          terminal = true;
           reconnectEnabledRef.current = false;
           void audioController.disconnect(true);
           socket.close();
-          setSession(null);
-          setError(errorText(message.code));
+          setSession((current) => current?.socket === socket ? {
+            ...current,
+            completed: true,
+            completion: message.completion,
+            outcome: message.outcome,
+            endReason: message.reason,
+            handoff: message.handoff,
+            partnerReconnectDeadline: null
+          } : current);
           return;
         }
         if (message.type === "error") {
           setError(errorText(message.code));
+          return;
         }
+        const unreachable: never = message;
+        throw new Error(`unhandled server message ${String(unreachable)}`);
       });
       socket.addEventListener("close", () => {
         setSession((current) => {
@@ -468,6 +513,17 @@ function ParticipantAppRuntime<
     };
   }, [apiClient]);
 
+  // A reload reuses the tab-scoped credential and asks the server for the same room.
+  useEffect(() => {
+    if (!publicConfig || session || typeof apiClient.hasCredential !== "function" || !apiClient.hasCredential()) return;
+    reconnectEnabledRef.current = true;
+    void apiClient.join<TObservation, TAction>()
+      .then(connectSession)
+      .catch(() => {
+        reconnectEnabledRef.current = false;
+      });
+  }, [apiClient, connectSession, publicConfig, session]);
+
   // Rechecks closed intake so a waiting visitor can proceed after an administrator opens it.
   useEffect(() => {
     if (!publicConfig || experimentAllowsIntake(publicConfig.status) || session) return;
@@ -504,13 +560,13 @@ function ParticipantAppRuntime<
   // One-second transport heartbeat. It is deliberately not research activity and
   // therefore never extends the server's meaningful session-idle deadline.
   useEffect(() => {
-    if (!session) return;
+    if (!session || session.leaving || session.completed) return;
     const socket = session.socket;
     const timer = window.setInterval(() => {
       if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "heartbeat" }));
     }, CLIENT_HEARTBEAT_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [session?.socket]);
+  }, [session?.socket, session?.leaving, session?.completed]);
 
   useEffect(() => () => {
     endCurrentSession();
@@ -547,6 +603,32 @@ function ParticipantAppRuntime<
     );
   }
 
+  if (session?.completed) {
+    return (
+      <SessionOutcomePanel
+        outcome={session.outcome}
+        reason={session.endReason}
+        handoff={session.handoff}
+        recruitment={publicConfig.recruitment}
+        completionContent={session.outcome === "completed" && session.completion !== null
+          ? renderCompletion?.(session.completion)
+          : null}
+      />
+    );
+  }
+
+  if (session?.leaving) {
+    return (
+      <StartupShell
+        gameName={publicConfig.gameName}
+        institution={publicConfig.institution}
+        heading="Ending session"
+        body="Recording that you left the session. Please keep this page open for the next step."
+        error={error}
+      />
+    );
+  }
+
   if (session?.active) {
     const activeSession: GameSession<TObservation, TAction, TCompletion> = {
       sessionId: session.sessionId,
@@ -562,6 +644,8 @@ function ParticipantAppRuntime<
       connected: session.connected,
       completed: session.completed,
       completion: session.completion,
+      outcome: session.outcome,
+      interactionEnabled: session.connected && !session.completed && !session.leaving && !session.partnerReconnectDeadline,
       sendAction: (action) => sendActionIfGameActive(apiClient, session, action),
       sendMessage: (text) => sendMessageIfGameActive(apiClient, session, text),
       setMicrophoneMuted,
@@ -570,6 +654,7 @@ function ParticipantAppRuntime<
     return (
       <>
         {renderGame(activeSession)}
+        {session.partnerReconnectDeadline && <PartnerReconnectNotice deadlineAt={session.partnerReconnectDeadline} />}
         {error && <p className="online-error">{error}</p>}
       </>
     );
@@ -668,12 +753,130 @@ function ParticipantAppRuntime<
         </div>
       )}
       <div className="lobby-actions">
-        <button disabled={!canEnter} onClick={createDirectRoom}>
+        <button disabled={!canEnter} onClick={createDirectRoom} type="button">
           Enter waiting room
         </button>
+        {publicConfig.recruitment?.provider === "prolific" && publicConfig.recruitment.decline_url && (
+          <a className="parlando-decline-consent" href={publicConfig.recruitment.decline_url}>
+            Do not consent
+          </a>
+        )}
       </div>
     </StartupShell>
   );
+}
+
+/** Stylable, self-updating notice shown while a required partner may reconnect. */
+export function PartnerReconnectNotice({ deadlineAt }: { deadlineAt: string }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, []);
+  const seconds = Math.max(0, Math.ceil((Date.parse(deadlineAt) - now) / 1000));
+  return (
+    <section aria-live="polite" className="parlando-partner-reconnect" role="status">
+      <strong>Your partner lost their connection</strong>
+      <span>The game is paused while they reconnect. It will end in {seconds} second{seconds === 1 ? "" : "s"}.</span>
+    </section>
+  );
+}
+
+/** Standard terminal surface for provider-neutral outcomes and recruitment handoff. */
+function SessionOutcomePanel({
+  outcome,
+  reason,
+  handoff,
+  recruitment,
+  completionContent
+}: {
+  outcome: ParticipantOutcome | null;
+  reason: string | null;
+  handoff: RecruitmentHandoff | null;
+  recruitment?: ExperimentInfo["recruitment"];
+  completionContent?: ReactNode;
+}) {
+  const heading = outcome === "completed" ? "Session complete" : "Session ended";
+  return (
+    <section className={`parlando-session-outcome outcome-${outcome ?? "unknown"}`}>
+      {completionContent ? (
+        <div className="parlando-game-completion">{completionContent}</div>
+      ) : (
+        <>
+          <h1>{heading}</h1>
+          <p>{outcomeText(outcome, reason)}</p>
+        </>
+      )}
+      {handoff && (
+        <ProlificHandoff handoff={handoff} />
+      )}
+      {!handoff && outcome === "withdrew" && recruitment?.provider === "prolific" && (
+        <ProlificWithdrawal returnUrl={recruitment.return_url ?? "https://app.prolific.com/submissions"} />
+      )}
+    </section>
+  );
+}
+
+/** Premade Prolific instructions for a voluntary withdrawal, which has no completion code. */
+export function ProlificWithdrawal({ returnUrl }: { returnUrl: string }) {
+  return (
+    <div className="parlando-recruitment-handoff parlando-prolific-withdrawal">
+      <p>No completion code is issued for a voluntary withdrawal.</p>
+      <a href={returnUrl}>Return to Prolific</a>
+      <p>On Prolific, return this submission instead of entering a completion code.</p>
+    </div>
+  );
+}
+
+/** Premade Prolific completion-code widget appended to a game's terminal content. */
+export function ProlificHandoff({ handoff }: { handoff: RecruitmentHandoff }) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+
+  /** Copies the completion code and exposes the result to sighted and screen-reader users. */
+  async function copyCode(): Promise<void> {
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard API unavailable");
+      await navigator.clipboard.writeText(handoff.code);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  }
+
+  return (
+    <div className="parlando-recruitment-handoff">
+      <p>Use this completion code in Prolific:</p>
+      <div className="parlando-completion-code-row">
+        <strong className="parlando-completion-code">{handoff.code}</strong>
+        <button
+          aria-label="Copy Prolific completion code"
+          className="parlando-copy-completion-code"
+          onClick={copyCode}
+          type="button"
+        >
+          {copyState === "copied" ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <span aria-live="polite" className="parlando-copy-status">
+        {copyState === "copied" && "Copied to clipboard."}
+        {copyState === "failed" && "Could not copy automatically. Select the code and copy it manually."}
+      </span>
+      <a href={handoff.url}>Return to Prolific</a>
+    </div>
+  );
+}
+
+/** Converts stable outcomes into concise participant-facing explanations. */
+function outcomeText(outcome: ParticipantOutcome | null, reason: string | null): string {
+  switch (outcome) {
+    case "completed": return "Thank you. Your responses have been recorded.";
+    case "withdrew": return "You left the session. Your responses up to that point have been recorded.";
+    case "partner_left": return "Your partner left or could not reconnect, so the session cannot continue.";
+    case "partner_unavailable": return "No partner became available before the waiting period ended.";
+    case "timed_out": return "The session ended after its time limit.";
+    case "technical_failure": return "A technical problem prevented the session from continuing.";
+    default: return reason ? `The session ended (${reason}).` : "The session can no longer continue.";
+  }
 }
 
 function StartupShell({

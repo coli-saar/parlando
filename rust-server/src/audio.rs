@@ -220,10 +220,8 @@ mod tests {
     /// Keeps Rust framing byte-for-byte aligned with the browser implementation.
     #[test]
     fn shared_pcm_wire_fixtures_match() {
-        let fixtures: serde_json::Value = serde_json::from_str(include_str!(
-            "../../proto/pcm_frame_v1.fixtures.json"
-        ))
-        .unwrap();
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../../proto/pcm_frame_v1.fixtures.json")).unwrap();
         for fixture in fixtures["cases"].as_array().unwrap() {
             let frame = AudioFrame {
                 sequence: fixture["sequence"].as_u64().unwrap() as u32,

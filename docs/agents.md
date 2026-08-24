@@ -99,6 +99,10 @@ Register `parlando::agent::grpc::RemoteAgent::new()` on the Rust server and conf
 
 Remote protocol v4 delivers `agent_instance_secrets` separately from `config`. Selecting such a reference authorizes delivery to the configured endpoint. Non-loopback endpoints still require HTTPS, an allowed host, and a factory-purpose bearer credential.
 
-## Readiness follow-up
+## Construction readiness
 
-Today the runtime considers an agent constructed when async factory creation, or remote `CreateAgent`, returns. `start` then delivers the initial observation. A separate readiness signal, initialization-specific timeout and cancellation, and isolation for synchronous model loading are not yet specified. They are the first planned lifecycle follow-up; agents should not emulate readiness with player messages or game actions.
+The runtime considers an agent constructed when asynchronous factory creation, or remote
+`CreateAgent`, returns. `start` then delivers the initial observation. The protocol has no separate
+readiness signal and no distinct timeout for initialization. Synchronous model loading can therefore
+block the agent process, and long initialization consumes the configured action-timeout budget.
+Agents must not emulate readiness with player messages or game actions.

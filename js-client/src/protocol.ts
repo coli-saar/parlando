@@ -33,6 +33,7 @@ export interface ExperimentInfo {
   participantInformationUrl?: string | null;
   consents: ConsentItem[];
   voice?: { enabled?: boolean };
+  recruitment?: RecruitmentInfo;
 }
 
 interface ExperimentResponse {
@@ -43,6 +44,14 @@ interface ExperimentResponse {
   participant_information_url?: string | null;
   consents: ConsentItem[];
   voice?: { enabled?: boolean };
+  recruitment?: RecruitmentInfo;
+}
+
+/** Participant-visible recruitment behavior required during intake. */
+export interface RecruitmentInfo {
+  provider?: "direct" | "prolific";
+  decline_url?: string | null;
+  return_url?: string | null;
 }
 
 export interface ConsentItem {
@@ -72,6 +81,22 @@ export interface JoinedSession<TObservation = unknown, TAction = unknown> {
 export interface ParticipantClientOptions {
   /** Experiment-scoped API root; defaults to the current browser route. */
   baseUrl?: string;
+}
+
+/** Provider-neutral consequence shown to one participant after a terminal session event. */
+export type ParticipantOutcome =
+  | "completed"
+  | "withdrew"
+  | "partner_left"
+  | "partner_unavailable"
+  | "timed_out"
+  | "technical_failure";
+
+/** Optional external recruitment handoff selected by the server. */
+export interface RecruitmentHandoff {
+  provider: "prolific";
+  code: string;
+  url: string;
 }
 
 /** Authenticated audio-channel parameters returned for one joined session. */
@@ -138,8 +163,16 @@ export type ServerMessage<
       available_actions: TAction[] | null;
     }
   | { type: "message"; public_session_id: string; message: WirePlayerMessage }
-  | { type: "completed"; public_session_id: string; completion: TCompletion }
-  | { type: "abandoned"; public_session_id: string; code: string }
+  | { type: "partner_reconnecting"; public_session_id: string; deadline_at: string }
+  | { type: "partner_reconnected"; public_session_id: string }
+  | {
+      type: "session_ended";
+      public_session_id: string;
+      outcome: ParticipantOutcome;
+      reason: string;
+      completion: TCompletion | null;
+      handoff: RecruitmentHandoff | null;
+    }
   | { type: "presence"; public_session_id: string; presence: Record<string, unknown> }
   | {
       type: "voice_status";
@@ -153,6 +186,112 @@ export type ServerMessage<
   | { type: "action_rejected"; public_session_id: string; code: string }
   | { type: "error"; public_session_id: string; code: string; fatal: boolean }
 );
+
+/** @internal Decodes and validates one untrusted version-one game-channel message. */
+export function decodeServerMessage<
+  TObservation = unknown,
+  TAction = unknown,
+  TCompletion = Record<string, unknown>
+>(input: unknown): ServerMessage<TObservation, TAction, TCompletion> {
+  if (!isRecord(input) || input.protocol_version !== 1 || typeof input.type !== "string") {
+    throw new Error("invalid participant protocol envelope");
+  }
+  requireString(input, "public_session_id");
+  switch (input.type) {
+    case "session_started":
+      requireRole(input, "role");
+      requireField(input, "observation");
+      requireActions(input);
+      break;
+    case "transition":
+      requireRole(input, "actor");
+      requireField(input, "action");
+      requireField(input, "observation");
+      requireActions(input);
+      break;
+    case "message": {
+      if (!isRecord(input.message)) throw new Error("invalid player message");
+      requireString(input.message, "id");
+      requireRole(input.message, "sender");
+      requireString(input.message, "text");
+      requireString(input.message, "created_at");
+      if (input.message.input !== "text" && input.message.input !== "voice_transcript") {
+        throw new Error("invalid player message input");
+      }
+      break;
+    }
+    case "presence":
+      if (!isRecord(input.presence)) throw new Error("invalid presence payload");
+      break;
+    case "voice_status":
+      if (!isRecord(input.voice)) throw new Error("invalid voice-status payload");
+      break;
+    case "partner_reconnecting":
+      requireString(input, "deadline_at");
+      break;
+    case "partner_reconnected":
+      break;
+    case "session_ended":
+      requireOutcome(input, "outcome");
+      requireString(input, "reason");
+      requireField(input, "completion");
+      if (input.handoff !== null && !isRecruitmentHandoff(input.handoff)) {
+        throw new Error("invalid recruitment handoff");
+      }
+      break;
+    case "action_rejected":
+      requireString(input, "code");
+      break;
+    case "error":
+      requireString(input, "code");
+      if (typeof input.fatal !== "boolean") throw new Error("invalid fatal flag");
+      break;
+    default:
+      throw new Error(`unknown participant protocol message ${input.type}`);
+  }
+  return input as ServerMessage<TObservation, TAction, TCompletion>;
+}
+
+/** Returns whether one untrusted value is a plain JSON object shape. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Requires one own field even when the game-specific value itself is null. */
+function requireField(value: Record<string, unknown>, key: string): void {
+  if (!Object.prototype.hasOwnProperty.call(value, key)) throw new Error(`missing ${key}`);
+}
+
+/** Requires one non-empty string field. */
+function requireString(value: Record<string, unknown>, key: string): void {
+  if (typeof value[key] !== "string" || value[key].length === 0) {
+    throw new Error(`invalid ${key}`);
+  }
+}
+
+/** Requires one exact two-player role. */
+function requireRole(value: Record<string, unknown>, key: string): void {
+  if (value[key] !== "A" && value[key] !== "B") throw new Error(`invalid ${key}`);
+}
+
+/** Requires one participant outcome from the stable provider-neutral vocabulary. */
+function requireOutcome(value: Record<string, unknown>, key: string): void {
+  if (!["completed", "withdrew", "partner_left", "partner_unavailable", "timed_out", "technical_failure"].includes(String(value[key]))) {
+    throw new Error(`invalid ${key}`);
+  }
+}
+
+/** Validates a server-selected recruitment handoff without following it. */
+function isRecruitmentHandoff(value: unknown): value is RecruitmentHandoff {
+  return isRecord(value) && value.provider === "prolific" && typeof value.code === "string" && typeof value.url === "string";
+}
+
+/** Preserves the distinction between an unknown and an empty action catalogue. */
+function requireActions(value: Record<string, unknown>): void {
+  if (value.available_actions !== null && !Array.isArray(value.available_actions)) {
+    throw new Error("invalid available_actions");
+  }
+}
 
 /** @internal Resolves the default experiment-scoped API root. */
 export function apiBase(): string {
@@ -176,6 +315,12 @@ export class ParticipantClient {
   /** Creates a managed client for one experiment-scoped API root. */
   constructor(options: ParticipantClientOptions = {}) {
     this.baseUrl = options.baseUrl ?? apiBase();
+    this.participantCredential = readSessionCredential(this.baseUrl);
+  }
+
+  /** Returns whether this tab retains a credential suitable for reload recovery. */
+  hasCredential(): boolean {
+    return this.participantCredential !== null;
   }
 
   /** Reads the participant-visible experiment configuration. */
@@ -188,7 +333,8 @@ export class ParticipantClient {
       participantInformationVersion: experiment.participant_information_version,
       participantInformationUrl: experiment.participant_information_url,
       consents: experiment.consents,
-      voice: experiment.voice
+      voice: experiment.voice,
+      recruitment: experiment.recruitment
     };
   }
 
@@ -197,10 +343,11 @@ export class ParticipantClient {
     const generation = ++this.participantGeneration;
     const participant = await this.post<ParticipantCreateResponse>(
       "/api/participants",
-      {}
+      prolificIntakeParameters()
     );
     if (generation === this.participantGeneration) {
       this.participantCredential = participant.participant_credential;
+      writeSessionCredential(this.baseUrl, participant.participant_credential);
     }
   }
 
@@ -329,6 +476,41 @@ export class ParticipantClient {
       "Content-Type": "application/json",
       Authorization: `Bearer ${credential}`
     };
+  }
+}
+
+/** Reads the current Prolific query parameters and removes them from the visible URL. */
+function prolificIntakeParameters(): Record<string, unknown> {
+  if (typeof window === "undefined") return {};
+  const query = new URLSearchParams(window.location.search);
+  const participantId = query.get("PROLIFIC_PID");
+  const studyId = query.get("STUDY_ID");
+  const sessionId = query.get("SESSION_ID");
+  if (!participantId && !studyId && !sessionId) return {};
+  if (!participantId || !studyId || !sessionId) throw new Error("The Prolific link is missing required parameters.");
+  for (const key of ["PROLIFIC_PID", "STUDY_ID", "SESSION_ID"]) query.delete(key);
+  const suffix = query.toString();
+  window.history.replaceState(null, "", `${window.location.pathname}${suffix ? `?${suffix}` : ""}${window.location.hash}`);
+  return { prolific: { participant_id: participantId, study_id: studyId, session_id: sessionId } };
+}
+
+/** Loads one tab-scoped participant credential while tolerating disabled browser storage. */
+function readSessionCredential(baseUrl: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.sessionStorage.getItem(`parlando.participant.${baseUrl}`);
+  } catch {
+    return null;
+  }
+}
+
+/** Persists one credential only for this browser tab and experiment route. */
+function writeSessionCredential(baseUrl: string, credential: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(`parlando.participant.${baseUrl}`, credential);
+  } catch {
+    // Reload recovery is best-effort when storage is disabled.
   }
 }
 

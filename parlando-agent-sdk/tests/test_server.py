@@ -170,10 +170,9 @@ class ConversionTests(unittest.TestCase):
         self.assertEqual(server._struct_to_dict(converted.action.value), {"type": "go"})
 
     def test_optional_checkpoint_distinguishes_absent_and_present_values(self) -> None:
-        """Generated optional fields and lightweight doubles preserve checkpoint absence."""
-        self.assertIsNone(server._optional_checkpoint(SimpleNamespace()))
-        absent = SimpleNamespace(checkpoint_id="ignored", HasField=lambda _name: False)
-        present = SimpleNamespace(checkpoint_id="checkpoint-7", HasField=lambda _name: True)
+        """Generated optional protobuf fields preserve checkpoint absence."""
+        absent = parlando_agent_v3_pb2.CreateAgentRequest()
+        present = parlando_agent_v3_pb2.CreateAgentRequest(checkpoint_id="checkpoint-7")
         self.assertIsNone(server._optional_checkpoint(absent))
         self.assertEqual(server._optional_checkpoint(present), "checkpoint-7")
 
@@ -208,6 +207,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             agent_version="1.0.0",
             role="B",
             seed=0,
+            checkpoint_id="",
+            HasField=lambda name: name != "checkpoint_id",
             config=server._dict_to_struct({"difficulty": 2}),
             agent_instance_secrets=server._dict_to_struct({"config.token": "sentinel"}),
         )

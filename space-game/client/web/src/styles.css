@@ -208,6 +208,23 @@ p {
   gap: 0.65rem;
 }
 
+.parlando-decline-consent {
+  border: 1px solid #566675;
+  border-radius: 7px;
+  color: #d5e0e8;
+  justify-self: start;
+  padding: 0.5rem 0.62rem;
+  text-decoration: none;
+}
+
+.parlando-decline-consent:hover,
+.parlando-decline-consent:focus-visible {
+  background: #222b32;
+  border-color: #a8d7f1;
+  color: #f5f8fb;
+  outline: none;
+}
+
 .consent-row span {
   display: grid;
   gap: 0.25rem;

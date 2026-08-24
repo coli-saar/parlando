@@ -3,7 +3,19 @@ use serde_json::Value;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct ParticipantCreateRequest {}
+pub struct ParticipantCreateRequest {
+    /// Prolific correlation values captured from the external-study URL.
+    pub prolific: Option<ProlificParticipantRequest>,
+}
+
+/// Prolific correlation values which never enter participant-visible session data or exports.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProlificParticipantRequest {
+    pub participant_id: String,
+    pub study_id: String,
+    pub session_id: String,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ParticipantCreateResponse {
@@ -34,6 +46,8 @@ pub struct PublicConfigResponse {
     pub participant_information_url: Option<String>,
     pub consents: Vec<ConsentItemResponse>,
     pub voice: Value,
+    /// Narrow intake capability; study ids and completion codes remain private.
+    pub recruitment: Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -120,20 +134,6 @@ pub struct VoiceDiagnosticIn {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ConversationMessageIn {
-    pub text: String,
-    #[serde(default = "default_typed")]
-    pub origin: String,
-    pub source_message_id: Option<String>,
-    #[serde(default)]
-    pub metadata: Value,
-}
-
-fn default_typed() -> String {
-    "typed".to_string()
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ConversationMessageResponse {
     pub id: String,
     pub public_session_id: String,
@@ -191,6 +191,26 @@ impl ConversationMessageResponse {
     }
 }
 
+/// Provider-neutral result experienced by one participant when their session ends.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParticipantOutcomeKind {
+    Completed,
+    Withdrew,
+    PartnerLeft,
+    PartnerUnavailable,
+    TimedOut,
+    TechnicalFailure,
+}
+
+/// Recruitment-provider handoff selected after durable participant outcome derivation.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RecruitmentHandoff {
+    pub provider: String,
+    pub code: String,
+    pub url: String,
+}
+
 /// One participant operation accepted by the game WebSocket.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -241,15 +261,20 @@ pub enum ServerPayload {
         public_session_id: String,
         voice: Value,
     },
-    /// Reports that the game reached a terminal state with its shared game-specific result.
-    Completed {
+    /// Pauses interaction while the other required human role may reconnect.
+    PartnerReconnecting {
         public_session_id: String,
-        completion: Value,
+        deadline_at: String,
     },
-    /// Reports that a player intentionally ended the session.
-    Abandoned {
+    /// Reports that the other required role reclaimed its assignment.
+    PartnerReconnected { public_session_id: String },
+    /// Reports one recipient-specific terminal outcome and optional normal game completion.
+    SessionEnded {
         public_session_id: String,
-        code: String,
+        outcome: ParticipantOutcomeKind,
+        reason: String,
+        completion: Option<Value>,
+        handoff: Option<RecruitmentHandoff>,
     },
     /// Reports an expected game-rule rejection without ending the session.
     ActionRejected {

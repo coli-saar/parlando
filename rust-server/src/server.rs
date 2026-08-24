@@ -106,9 +106,8 @@ impl<F: GameFactory> Server<F> {
                         .human_vs_agent
                         .as_ref()
                         .and_then(|config| config.factory.as_deref())
-                        .or_else(|| definitions.first().map(|definition| definition.id.as_str()))
                         .ok_or_else(|| {
-                            anyhow!("human-versus-agent mode has no registered agent")
+                            anyhow!("human-versus-agent mode requires an explicit agent factory")
                         })?;
                     Some(
                         registered

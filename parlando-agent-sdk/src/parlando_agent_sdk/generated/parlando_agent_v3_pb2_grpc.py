@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-import parlando_agent_v3_pb2 as parlando__agent__v3__pb2
+from . import parlando_agent_v3_pb2 as parlando__agent__v3__pb2
 
 GRPC_GENERATED_VERSION = '1.83.0'
 GRPC_VERSION = grpc.__version__

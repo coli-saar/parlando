@@ -464,6 +464,11 @@ procedure.
 
 ## Use the cue-choice implementation as a reference
 
+The accompanying [cue–choice Qwen study](cue-choice-qwen-rl-paper/main.pdf)
+documents the experimental question, learning method, validation design, and
+results. Read it when you need a research-level account of how the components
+below form a reproducible Parlando experiment.
+
 The [cue-choice RL experiment](../experiments/cue-choice-rl/README.md) is a
 complete local example. Its source shows:
 

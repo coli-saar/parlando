@@ -57,15 +57,23 @@
     },
     {
       "protocol_version": 1,
-      "type": "completed",
+      "type": "partner_reconnecting",
       "public_session_id": "SESSION1",
-      "completion": { "outcome": "success" }
+      "deadline_at": "2026-08-21T12:00:15Z"
     },
     {
       "protocol_version": 1,
-      "type": "abandoned",
+      "type": "partner_reconnected",
+      "public_session_id": "SESSION1"
+    },
+    {
+      "protocol_version": 1,
+      "type": "session_ended",
       "public_session_id": "SESSION1",
-      "code": "participant_left"
+      "outcome": "completed",
+      "reason": "game_completed",
+      "completion": { "outcome": "success" },
+      "handoff": null
     },
     {
       "protocol_version": 1,

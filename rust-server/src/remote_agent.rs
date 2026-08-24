@@ -848,7 +848,10 @@ mod tests {
             let error = validate_remote_endpoint(endpoint, authenticated)
                 .unwrap_err()
                 .to_string();
-            assert!(error.contains(expected), "{error:?} did not contain {expected:?}");
+            assert!(
+                error.contains(expected),
+                "{error:?} did not contain {expected:?}"
+            );
         }
     }
 
@@ -856,12 +859,18 @@ mod tests {
     #[test]
     fn protobuf_conversion_rejects_inexact_large_integers() {
         let exact = serde_json::json!({"integer": 9_007_199_254_740_991_u64});
-        assert_eq!(struct_to_json(json_to_struct(exact.clone()).unwrap()), exact);
+        assert_eq!(
+            struct_to_json(json_to_struct(exact.clone()).unwrap()),
+            exact
+        );
         for inexact in [
             serde_json::json!({"integer": 9_007_199_254_740_992_u64}),
             serde_json::json!({"integer": -9_007_199_254_740_992_i64}),
         ] {
-            assert!(json_to_struct(inexact).unwrap_err().to_string().contains("exact range"));
+            assert!(json_to_struct(inexact)
+                .unwrap_err()
+                .to_string()
+                .contains("exact range"));
         }
     }
 

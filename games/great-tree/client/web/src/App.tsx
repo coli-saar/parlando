@@ -15,16 +15,13 @@ export function App() {
     <main className="app-shell">
       <ParticipantApp<GreatTreeObservation, GreatTreeAction, GreatTreeCompletion>
         renderGame={(session) => <ActiveGreatTree session={session} />}
+        renderCompletion={(completion) => <GreatTreeSuccess completion={completion} />}
       />
     </main>
   );
 }
 
 export function ActiveGreatTree({ session }: { session: Session }) {
-  if (session.completed) {
-    return <TerminalScreen completion={session.completion} onLeave={session.leave} />;
-  }
-
   const observation = session.observation;
   return (
     <div className="game-shell">
@@ -88,21 +85,16 @@ function SessionBar({ session }: { session: Session }) {
   );
 }
 
-function TerminalScreen({
-  completion,
-  onLeave
-}: {
-  completion: GreatTreeCompletion | null;
-  onLeave: () => void;
-}) {
-  const count = completion?.floweredLimbs.length ?? 0;
+/** Describes Great Tree's cooperative win inside Parlando's standard terminal shell. */
+export function GreatTreeSuccess({ completion }: { completion: GreatTreeCompletion }) {
+  const count = completion.floweredLimbs.length;
   return (
-    <div className="terminal-screen">
-      <h1>The tree is in bloom.</h1>
-      <p>{count} of five limbs flowered together.</p>
-      <button type="button" className="leave-button" onClick={onLeave}>
-        Leave game
-      </button>
+    <div className="great-tree-success">
+      <span aria-hidden="true" className="success-mark">✶</span>
+      <p className="success-kicker">Success</p>
+      <h1>The Great Tree is in bloom!</h1>
+      <p>You worked together to bring the tree back to life.</p>
+      <p className="success-count">{count} of five limbs flowered together.</p>
     </div>
   );
 }

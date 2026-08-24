@@ -1,8 +1,10 @@
-# Umgesetzte Datenschutz-Roadmap für Parlando
+# Technische Datenschutzfunktionen von Parlando
 
-**Stand:** 14. August 2026<br>
-**Status:** Die vereinbarten sechs Änderungen sind umgesetzt.<br>
-**Bezug:** [`datenschutz-pruefvorlage.md`](datenschutz-pruefvorlage.md) und die maßgeblichen [`security-ground-rules.md`](security-ground-rules.md)
+Dieses Dokument beschreibt die implementierten Datenschutzfunktionen des Plattformkerns. Es ergänzt
+die [`datenschutz-pruefvorlage.md`](datenschutz-pruefvorlage.md) und die maßgeblichen
+[`security-ground-rules.md`](../security-ground-rules.md). Organisatorische Entscheidungen der
+betreibenden Einrichtung, insbesondere Rechtsgrundlage, Aufbewahrung und Freigabe, bleiben außerhalb
+des Plattformkerns.
 
 ## Ziel und Grenzen
 

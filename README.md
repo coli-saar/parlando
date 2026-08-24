@@ -206,8 +206,9 @@ optional `validation` section supplies held-out scenarios and a checkpoint
 cadence. The compiled registry—not a YAML `kind` field—determines whether the
 selected factory supports `RLAgent`. Learners own observation/action encoding
 and checkpoint storage; the runner records role-safe trajectories and resumes
-from atomic checkpoint records without repeating finalized updates. The complete
-schema and design are in `notes/agent-agent-runner-design.md`.
+from atomic checkpoint records without repeating finalized updates. See
+[Agent–Agent and Reinforcement-Learning Experiments](docs/agent-agent-and-rl-experiments.md)
+for the complete configuration and execution guide.
 
 Voice-enabled browsers connect only to Parlando and never receive credentials for
 speech providers. Parlando relays authenticated 24 kHz PCM audio to the other

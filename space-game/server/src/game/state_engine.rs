@@ -23,18 +23,12 @@ pub enum SpaceAction {
     },
     #[serde(rename = "holdOverride")]
     HoldOverride { player: String, held: bool },
-    #[serde(rename = "togglePlate")]
-    TogglePlate { player: String },
     #[serde(rename = "chargeBattery")]
     ChargeBattery { player: String },
     #[serde(rename = "moveBattery")]
     MoveBattery { player: String },
-    #[serde(rename = "setRelay")]
-    SetRelay { player: String, mode: String },
     #[serde(rename = "cycleRelay")]
     CycleRelay { player: String },
-    #[serde(rename = "runDiagnostic")]
-    RunDiagnostic { player: String },
     #[serde(rename = "launchBeacon")]
     LaunchBeacon { player: String },
 }
@@ -48,12 +42,9 @@ impl SpaceAction {
             | Self::ToggleBreaker { player, .. }
             | Self::SetValve { player, .. }
             | Self::HoldOverride { player, .. }
-            | Self::TogglePlate { player }
             | Self::ChargeBattery { player }
             | Self::MoveBattery { player }
-            | Self::SetRelay { player, .. }
             | Self::CycleRelay { player }
-            | Self::RunDiagnostic { player }
             | Self::LaunchBeacon { player } => Some(player),
         }
     }
@@ -66,12 +57,9 @@ impl SpaceAction {
             Self::ToggleBreaker { .. } => "toggleBreaker",
             Self::SetValve { .. } => "setValve",
             Self::HoldOverride { .. } => "holdOverride",
-            Self::TogglePlate { .. } => "togglePlate",
             Self::ChargeBattery { .. } => "chargeBattery",
             Self::MoveBattery { .. } => "moveBattery",
-            Self::SetRelay { .. } => "setRelay",
             Self::CycleRelay { .. } => "cycleRelay",
-            Self::RunDiagnostic { .. } => "runDiagnostic",
             Self::LaunchBeacon { .. } => "launchBeacon",
         }
     }
@@ -412,17 +400,11 @@ pub fn apply_action(state: &SpaceGameState, action: &SpaceAction) -> Result<Spac
         }
         SpaceAction::ChargeBattery { player } => charge_battery(&mut next, &before, player),
         SpaceAction::MoveBattery { player } => move_battery(&mut next, player),
-        SpaceAction::SetRelay { mode, .. } => set_relay(&mut next, &before, mode, &mut effects),
         SpaceAction::CycleRelay { player: _ } => {
             let mode = next_relay(&next.relay).to_string();
             set_relay(&mut next, &before, &mode, &mut effects);
         }
-        SpaceAction::RunDiagnostic { player } => {
-            let diagnostic = diagnostic_for(&next, player);
-            reveal(&mut next, player, diagnostic);
-        }
         SpaceAction::LaunchBeacon { player } => launch_beacon(&mut next, &before, player),
-        SpaceAction::TogglePlate { .. } => {}
     }
     Ok(finalize(next, before, effects))
 }
@@ -830,9 +812,11 @@ mod tests {
                 valve: "A".to_string(),
                 open: true,
             },
-            SpaceAction::SetRelay {
+            SpaceAction::CycleRelay {
                 player: "B".to_string(),
-                mode: "array".to_string(),
+            },
+            SpaceAction::CycleRelay {
+                player: "B".to_string(),
             },
         ]);
         let ready = holding_plate(ready);
@@ -915,10 +899,14 @@ mod tests {
 
     #[test]
     fn early_array_relay_reveals_python_compatible_diagnostics() {
-        let state = apply(vec![SpaceAction::SetRelay {
-            player: "B".to_string(),
-            mode: "array".to_string(),
-        }]);
+        let state = apply(vec![
+            SpaceAction::CycleRelay {
+                player: "B".to_string(),
+            },
+            SpaceAction::CycleRelay {
+                player: "B".to_string(),
+            },
+        ]);
 
         assert!(state.knowledge.a.contains(
             &"ARRAY mode should wait until charged battery and coolant are both ready.".to_string()

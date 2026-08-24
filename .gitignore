@@ -14,6 +14,9 @@
 **/.pytest_cache/
 **/runtime-stress-report.json
 
+# Generated documentation artifacts
+/docs/**/*.pdf
+
 # Local Parlando databases, journals, and manual backups
 **/*.sqlite
 **/*.sqlite-shm
@@ -23,7 +26,6 @@
 # Internal implementation plans and personal scratch notes
 /notes/
 /notes.txt
-/docs/superpowers/
 
 rust-server/config/*.private.yaml
 rust-server/config/*.private.yml

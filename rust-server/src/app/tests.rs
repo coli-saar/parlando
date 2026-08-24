@@ -283,11 +283,42 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(ADMIN_EXPERIMENT_HTML.contains("html { height: 100%; overflow: hidden; }"));
     assert!(ADMIN_EXPERIMENT_HTML.contains(".simple-panel { flex: 1;"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("overflow-y: auto; overscroll-behavior: contain"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("@media (max-width: 1240px)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("@media (max-width: 760px)"));
+    assert!(ADMIN_EXPERIMENT_HTML
+        .contains(".workspace-navigation .tab { flex: 0 0 auto; white-space: nowrap; }"));
+    assert!(
+        ADMIN_EXPERIMENT_HTML.contains(".participant-copy > .muted { overflow-wrap: anywhere; }")
+    );
     assert!(ADMIN_EXPERIMENT_HTML.contains("'Unarchive'"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("/archive"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Experiment unavailable"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("experimentWorkspaceTabs.hidden = !hasExperiment;"));
+    assert!(!ADMIN_EXPERIMENT_HTML
+        .contains("experimentWorkspaceTabs.hidden = !hasExperiment || state.configLoadFailed"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Generate two-word code"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Prolific recruitment and completion paths"));
+    assert!(ADMIN_EXPERIMENT_HTML
+        .contains("Parlando outcome: completed — Prolific custom completion code"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Data collection → Completion paths"));
+    assert!(
+        ADMIN_EXPERIMENT_HTML.find("Text to speech")
+            < ADMIN_EXPERIMENT_HTML.find("Prolific recruitment and completion paths")
+    );
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("padStart(4, '0')"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("participantPageHref(experiment)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("state.configValue : null"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("renderConfigurationForm(data.experiment.config"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("url.searchParams.set('PROLIFIC_PID'"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("url.searchParams.set('STUDY_ID', prolific.study_id)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("url.searchParams.set('SESSION_ID'"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("new-experiment"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("experimentStatusFilter"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("<dt>Recruitment</dt>"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("row.identity_provider === 'prolific'"));
+    assert!(ADMIN_EXPERIMENT_HTML
+        .contains("row.prolific_participant_id ? `<span class=\"muted small\">Prolific"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("<dt>Mode</dt>"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-status-filter"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("initializeStatusFilter"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("All statuses"));
@@ -375,31 +406,32 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(!sessions_panel.contains("<h2>Players</h2>"));
 }
 
-/// Confirms legacy consent-template macros never reach participants or evidence hashes.
+/// Confirms reviewed consent prose enters evidence hashes without runtime rewriting.
 #[test]
-fn consent_templates_expand_to_complete_participant_text() {
+fn consent_hash_uses_exact_stored_participant_text() {
     let mut config = ExperimentConfig::default();
     config.direct.participant_information_version = "local-v3".to_string();
+    config.direct.participant_information_url = "https://example.test/information".to_string();
     config.direct.consents = vec![crate::config::ConsentItemConfig {
         id: "template".to_string(),
         title: "Template".to_string(),
         required: true,
-        body: "Version {{LOCAL_INFORMATION_VERSION}}; controller {{INSTITUTION_NAME}}; provider {{SPEECHMATICS_ENTITY_AND_SERVICE}} in {{SPEECHMATICS_PROCESSING_REGION}}."
-            .to_string(),
+        body: "Reviewed exact consent prose.".to_string(),
     }];
-    let settings = StoredGameSettings {
-        institution: "Saarland University".to_string(),
-        speechmatics_realtime_url: "wss://us.rt.speechmatics.com/v2".to_string(),
-        ..StoredGameSettings::default()
-    };
-    let expanded = expanded_consent_items(&config, &settings);
-    assert_eq!(
-        expanded[0].body,
-        "Version local-v3; controller Saarland University; provider Speechmatics in the European Union."
-    );
-    assert!(!expanded[0].body.contains("{{"));
-    let hash = consent_configuration_hash(&config, &settings).unwrap();
+    let hash = consent_configuration_hash(&config).unwrap();
     assert!(hash.starts_with("sha256:"));
+}
+
+/// Confirms current validation errors do not prevent a stored revision from being inspected.
+#[test]
+fn dashboard_configuration_parsing_does_not_apply_runtime_validation() {
+    let config = step_five_config();
+    let mut stored = persistable_config_json(&config).unwrap();
+    stored["session"]["reconnect_grace_seconds"] = json!(61);
+
+    assert!(experiment_config_from_json(stored.clone(), &config, "step5").is_err());
+    let visible = experiment_config_from_json_unvalidated(stored, &config, "step5").unwrap();
+    assert_eq!(visible.session.reconnect_grace_seconds, 61);
 }
 
 /// Confirms administrator cookies remain first-party and work on loopback HTTP in Brave.
@@ -453,31 +485,6 @@ fn persisted_configuration_distinguishes_secret_references_from_values() {
     let mut credential = json!({"api_key": "sentinel-secret-value"});
     redact_secret_fields(&mut credential);
     assert_eq!(credential["api_key"], "");
-}
-
-/// Repairs a historically blanked reference when its separately stored secret survives.
-#[test]
-fn hydrated_configuration_repairs_legacy_agent_secret_references() {
-    let mut config = ExperimentConfig::default();
-    config.agents = AgentsConfig {
-        mode: AgentsMode::HumanVsAgent,
-        human_vs_agent: Some(crate::config::HumanVsAgentConfig {
-            factory: Some("secret.agent".to_string()),
-            config: json!({"api_key": ""}),
-            ..Default::default()
-        }),
-    };
-    config.game_secrets.insert(
-        "agent_secret_agent_api_key".to_string(),
-        "sentinel-secret-value".to_string(),
-    );
-
-    repair_legacy_agent_secret_references(&[SecretAgentFactory.definition()], &mut config);
-
-    assert_eq!(
-        config.agents.human_vs_agent.unwrap().config["api_key"],
-        "game.agent_secret_agent_api_key"
-    );
 }
 
 /// Confirms provider credentials come only from the explicit game secret store.
@@ -2299,6 +2306,51 @@ struct NoopAgentFactory;
 
 struct SecretAgentFactory;
 
+struct ShutdownRecordingAgent {
+    shutdowns: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Agent<TinyAdapter> for ShutdownRecordingAgent {
+    /// Waits for observations without producing autonomous game activity.
+    async fn respond(
+        &mut self,
+        _available_actions: Option<Vec<TinyAction>>,
+    ) -> Result<Option<AgentResponse<TinyAction>>> {
+        Ok(None)
+    }
+
+    /// Records that the runtime cleanly shut the agent down.
+    async fn shutdown(&mut self) -> Result<()> {
+        self.shutdowns.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+struct ShutdownRecordingAgentFactory {
+    shutdowns: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl AgentFactory<TinyAdapter> for ShutdownRecordingAgentFactory {
+    /// Describes the runtime-only shutdown test agent.
+    fn definition(&self) -> AgentDefinition {
+        test_agent_definition()
+    }
+
+    /// Creates one agent that reports its clean shutdown.
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
+        Ok(Box::new(ShutdownRecordingAgent {
+            shutdowns: self.shutdowns.clone(),
+        }))
+    }
+
+    /// Returns stable non-secret identity metadata for the test agent.
+    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+        test_agent_identity()
+    }
+}
+
 /// Returns the stable identity shared by runtime-only test factories.
 fn test_agent_identity() -> Result<AgentIdentity> {
     Ok(AgentIdentity {
@@ -2844,6 +2896,7 @@ fn human_vs_agent_config() -> ExperimentConfig {
     config.agents = AgentsConfig {
         mode: AgentsMode::HumanVsAgent,
         human_vs_agent: Some(crate::config::HumanVsAgentConfig {
+            factory: Some("test.agent".to_string()),
             act_timeout_seconds: 1.0,
             invalid_action_limit: 2,
             ..Default::default()
@@ -3312,6 +3365,21 @@ async fn health_and_public_config_expose_client_bootstrap_shape() {
     config.tts.voice_id = "voice-1".to_string();
     config.tts.api_key = "tts-secret".to_string();
     config.tts.voice_name = "Agent Voice".to_string();
+    config.recruitment.prolific.enabled = true;
+    config.recruitment.prolific.study_id = "TEST-STUDY".to_string();
+    config.recruitment.prolific.completion_paths.completed = "CLEARWREN".to_string();
+    config.recruitment.prolific.completion_paths.partner_left = "AMBERBADGER".to_string();
+    config
+        .recruitment
+        .prolific
+        .completion_paths
+        .partner_unavailable = "MINTFALCON".to_string();
+    config.recruitment.prolific.completion_paths.timed_out = "CEDAROTTER".to_string();
+    config
+        .recruitment
+        .prolific
+        .completion_paths
+        .technical_failure = "SILVERHERON".to_string();
     let router = build_router(TinyAdapter, config, ServeOptions::default())
         .await
         .unwrap();
@@ -3330,6 +3398,11 @@ async fn health_and_public_config_expose_client_bootstrap_shape() {
     assert!(public_config["institution"].is_null());
     assert_eq!(public_config["consents"][0]["id"], "study");
     assert_eq!(public_config["voice"]["enabled"], true);
+    assert_eq!(public_config["recruitment"]["provider"], "prolific");
+    assert_eq!(
+        public_config["recruitment"]["return_url"],
+        "https://app.prolific.com/submissions"
+    );
     assert!(public_config.get("transcription").is_none());
     assert!(public_config.get("tts").is_none());
     assert!(public_config.get("agents").is_none());
@@ -3635,16 +3708,14 @@ async fn javascript_sink_mute_contract_blocks_relay_and_transcription() {
         "ready"
     );
 
-    let (mut game_a, _) = connect_async(
-        game_socket_url(&base_url, &public_session_id, &participant_a).await,
-    )
-    .await
-    .unwrap();
-    let (mut game_b, _) = connect_async(
-        game_socket_url(&base_url, &public_session_id, &participant_b).await,
-    )
-    .await
-    .unwrap();
+    let (mut game_a, _) =
+        connect_async(game_socket_url(&base_url, &public_session_id, &participant_a).await)
+            .await
+            .unwrap();
+    let (mut game_b, _) =
+        connect_async(game_socket_url(&base_url, &public_session_id, &participant_b).await)
+            .await
+            .unwrap();
     let _ = read_ws_type(&mut game_a, "session_started").await;
     let _ = read_ws_type(&mut game_b, "session_started").await;
 
@@ -4359,6 +4430,7 @@ async fn websocket_role_assignment_is_targeted_to_one_connection() {
     server.abort();
 }
 
+// Verifies that explicit departure terminates both participant views and all later input.
 #[tokio::test]
 async fn explicit_leave_abandons_session_and_notifies_partner() {
     let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
@@ -4387,9 +4459,27 @@ async fn explicit_leave_abandons_session_and_notifies_partner() {
     assert!(running_export["sessions"][0]["started_at"].is_string());
 
     send_ws_json(&mut socket_a, json!({"type": "leave"})).await;
-    let abandoned = read_ws_type(&mut socket_b, "abandoned").await;
+    let withdrew = read_ws_type(&mut socket_a, "session_ended").await;
+    assert_eq!(withdrew["public_session_id"], public_session_id);
+    assert_eq!(withdrew["outcome"], "withdrew");
+    let abandoned = read_ws_type(&mut socket_b, "session_ended").await;
     assert_eq!(abandoned["public_session_id"], public_session_id);
-    assert_eq!(abandoned["code"], "participant_left");
+    assert_eq!(abandoned["outcome"], "partner_left");
+
+    send_ws_json(
+        &mut socket_a,
+        json!({"type": "action", "action": {"finish": false}}),
+    )
+    .await;
+    let rejected_action = read_ws_type(&mut socket_a, "action_rejected").await;
+    assert_eq!(rejected_action["code"], "session_complete");
+    send_ws_json(
+        &mut socket_a,
+        json!({"type": "message", "text": "This must not be recorded"}),
+    )
+    .await;
+    let rejected_message = read_ws_type(&mut socket_a, "error").await;
+    assert_eq!(rejected_message["code"], "message_rejected");
 
     let export = wait_for_export_event(router, "session_abandoned").await;
     assert_eq!(export["sessions"][0]["status"], "abandoned");
@@ -4401,6 +4491,116 @@ async fn explicit_leave_abandons_session_and_notifies_partner() {
         .unwrap();
     assert_eq!(event["actor_role"], "A");
     assert_eq!(event["payload"]["reason"], "participant_left");
+    assert!(!export["session_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event["event_type"] == "conversation_message"
+                && event["payload"]["text"] == "This must not be recorded"
+        }));
+    server.abort();
+}
+
+// Verifies that abandonment closes a human-versus-agent runtime through normal shutdown.
+#[tokio::test]
+async fn explicit_leave_shuts_down_the_session_agent() {
+    let shutdowns = Arc::new(AtomicUsize::new(0));
+    let router = build_router(
+        TinyAdapter,
+        human_vs_agent_config(),
+        ServeOptions {
+            agent_factory: Some(Arc::new(ShutdownRecordingAgentFactory {
+                shutdowns: shutdowns.clone(),
+            })),
+            ..ServeOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    let (human, public_session_id) = create_human_vs_agent_room(router.clone(), "Human").await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
+    let (mut socket, _) =
+        connect_async(game_socket_url(&base_url, &public_session_id, &human).await)
+            .await
+            .unwrap();
+    let _ = read_ws_type(&mut socket, "session_started").await;
+    let _ = wait_for_export_event(router.clone(), "agent_started").await;
+
+    send_ws_json(&mut socket, json!({"type": "leave"})).await;
+    let ended = read_ws_type(&mut socket, "session_ended").await;
+    assert_eq!(ended["outcome"], "withdrew");
+    let export = wait_for_export_event(router, "session_abandoned").await;
+    assert_eq!(export["sessions"][0]["status"], "abandoned");
+
+    for _ in 0..20 {
+        if shutdowns.load(Ordering::SeqCst) == 1 {
+            server.abort();
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    server.abort();
+    panic!("expected the abandoned session agent to shut down");
+}
+
+#[tokio::test]
+async fn brief_disconnect_pauses_partner_and_reconnect_preserves_session() {
+    let mut config = step_five_config();
+    config.session.reconnect_grace_seconds = 2;
+    let router = build_router(TinyAdapter, config, ServeOptions::default())
+        .await
+        .unwrap();
+    let (a, b, public_session_id) = create_joined_room(router.clone()).await;
+    let (base_url, server) = spawn_test_server(router).await;
+    let (mut socket_a, _) = connect_async(game_socket_url(&base_url, &public_session_id, &a).await)
+        .await
+        .unwrap();
+    let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &public_session_id, &b).await)
+        .await
+        .unwrap();
+    let _ = read_ws_type(&mut socket_a, "session_started").await;
+    let _ = read_ws_type(&mut socket_b, "session_started").await;
+
+    socket_a.close(None).await.unwrap();
+    let reconnecting = read_ws_type(&mut socket_b, "partner_reconnecting").await;
+    assert!(reconnecting["deadline_at"].as_str().is_some());
+
+    let (mut replacement_a, _) =
+        connect_async(game_socket_url(&base_url, &public_session_id, &a).await)
+            .await
+            .unwrap();
+    let reconnected = read_ws_type(&mut socket_b, "partner_reconnected").await;
+    assert_eq!(reconnected["public_session_id"], public_session_id);
+    send_ws_json(&mut replacement_a, json!({"type": "heartbeat"})).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn disconnect_past_grace_gives_partner_a_terminal_outcome() {
+    let mut config = step_five_config();
+    config.session.reconnect_grace_seconds = 1;
+    let router = build_router(TinyAdapter, config, ServeOptions::default())
+        .await
+        .unwrap();
+    let (a, b, public_session_id) = create_joined_room(router.clone()).await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
+    let (mut socket_a, _) = connect_async(game_socket_url(&base_url, &public_session_id, &a).await)
+        .await
+        .unwrap();
+    let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &public_session_id, &b).await)
+        .await
+        .unwrap();
+    let _ = read_ws_type(&mut socket_a, "session_started").await;
+    let _ = read_ws_type(&mut socket_b, "session_started").await;
+
+    socket_a.close(None).await.unwrap();
+    let _ = read_ws_type(&mut socket_b, "partner_reconnecting").await;
+    let ended = read_ws_type(&mut socket_b, "session_ended").await;
+    assert_eq!(ended["outcome"], "partner_left");
+    assert_eq!(ended["reason"], "reconnect_timeout");
+    let export = wait_for_export_event(router, "session_abandoned").await;
+    assert_eq!(export["sessions"][0]["status"], "abandoned");
     server.abort();
 }
 
@@ -4513,7 +4713,7 @@ async fn accepted_actions_always_store_resulting_game_state() {
         json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
-    let _completed = read_ws_type(&mut socket_a, "completed").await;
+    let _completed = read_ws_type(&mut socket_a, "session_ended").await;
 
     let (export_status, export) =
         json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
@@ -4558,7 +4758,7 @@ async fn human_human_game_accepts_actions_after_second_human_connects() {
         json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
-    let completed = read_ws_type(&mut socket_a, "completed").await;
+    let completed = read_ws_type(&mut socket_a, "session_ended").await;
     assert_eq!(completed["completion"]["done"], true);
     server.abort();
 }
@@ -4607,8 +4807,8 @@ async fn websocket_accepts_actions_chat_completion_and_persists_state_changes() 
         json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
-    let completed_a = read_ws_type(&mut socket_a, "completed").await;
-    let completed_b = read_ws_type(&mut socket_b, "completed").await;
+    let completed_a = read_ws_type(&mut socket_a, "session_ended").await;
+    let completed_b = read_ws_type(&mut socket_b, "session_ended").await;
     assert_eq!(completed_a["completion"]["done"], true);
     assert_eq!(completed_a["completion"]["outcome"], "success");
     assert_eq!(completed_a["completion"]["dyad_score"], 10);
@@ -4663,7 +4863,7 @@ async fn loss_completion_is_broadcast_and_exported() {
         json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
-    let completed = read_ws_type(&mut socket_a, "completed").await;
+    let completed = read_ws_type(&mut socket_a, "session_ended").await;
     assert_eq!(completed["completion"]["done"], true);
     assert_eq!(completed["completion"]["outcome"], "loss");
     assert_eq!(completed["completion"]["dyad_score"], 0);
@@ -4710,7 +4910,7 @@ async fn completed_rooms_reject_late_game_channel_input() {
         json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
-    let _completed_a = read_ws_type(&mut socket_a, "completed").await;
+    let _completed_a = read_ws_type(&mut socket_a, "session_ended").await;
 
     send_ws_json(
         &mut socket_a,
@@ -5185,7 +5385,7 @@ async fn agent_runtime_observes_actions_with_resulting_observation() {
         json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
-    let _ = read_ws_type(&mut socket, "completed").await;
+    let _ = read_ws_type(&mut socket, "session_ended").await;
     for _ in 0..20 {
         let captured = observations.lock().unwrap().clone();
         if captured.contains(&"finish:success:10".to_string()) {
@@ -5240,7 +5440,7 @@ async fn agent_runtime_persists_messages_and_validated_actions() {
     assert_eq!(message["message"]["sender"], "B");
     assert_eq!(message["message"]["input"], "text");
     assert_eq!(message["message"]["text"], "agent says hello");
-    let completed = read_ws_type(&mut socket, "completed").await;
+    let completed = read_ws_type(&mut socket, "session_ended").await;
     assert_eq!(completed["completion"]["done"], true);
 
     let export = wait_for_export_event(router, "session_completed").await;

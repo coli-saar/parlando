@@ -28,12 +28,9 @@ export type GameAction =
   | { type: "toggleBreaker"; player: PlayerId; breaker: BreakerId }
   | { type: "setValve"; player: PlayerId; valve: ValveId; open: boolean }
   | { type: "holdOverride"; player: PlayerId; held: boolean }
-  | { type: "togglePlate"; player: PlayerId }
   | { type: "chargeBattery"; player: PlayerId }
   | { type: "moveBattery"; player: PlayerId }
-  | { type: "setRelay"; player: PlayerId; mode: RelayMode }
   | { type: "cycleRelay"; player: PlayerId }
-  | { type: "runDiagnostic"; player: PlayerId }
   | { type: "launchBeacon"; player: PlayerId };
 
 export interface PlayerState {
@@ -42,7 +39,8 @@ export interface PlayerState {
   plateHeld: boolean;
 }
 
-export interface StationState {
+/** Exact role-specific observation produced by the authoritative Rust game. */
+export interface StationObservation {
   players: Record<PlayerId, PlayerState>;
   fuses: Record<FuseColor, boolean>;
   breakers: Record<BreakerId, boolean>;
@@ -60,21 +58,13 @@ export interface StationState {
   visualEffects: string[];
   log: string[];
   beaconLaunched: boolean;
-  moveCount: number;
+  role: PlayerId;
+  systems: DerivedSystems;
+  privateKnowledge: string[];
 }
 
-export interface StationObservation extends StationState {
-  role?: PlayerId;
-  systems?: DerivedSystems;
-  privateKnowledge?: string[];
-}
-
-export interface ObservationEvent {
-  type: string;
-  text?: string;
-  move_count?: number | null;
-  actor?: PlayerId | null;
-}
+/** Presentation alias retained inside the client; it is never an authoritative state type. */
+export type StationState = StationObservation;
 
 export interface DerivedSystems {
   pumpPowered: boolean;

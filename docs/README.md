@@ -45,6 +45,16 @@ shape from a game description.
    to run headless policy evaluations, checkpointed training, and held-out
    validation.
 
+The [cue–choice Qwen study](cue-choice-qwen-rl-paper/main.pdf) is a complete
+worked research example. It explains the task, learning method, Parlando
+configuration, validation protocol, and results of a checkpointed agent–agent
+experiment.
+
+When recruiting through Prolific, follow
+[Prolific Integration](prolific-integration.md) to
+configure participant URL parameters, completion paths, consent and withdrawal behavior, local
+testing, and the dashboard-only privacy boundary.
+
 For voice studies, read [Audio Transport](audio-transport.md) before deployment.
 It defines the authentication, PCM format, transcription boundary, TTS path,
 buffering behavior, and process-local scaling constraint. Use
@@ -62,13 +72,17 @@ matter rather than a software vulnerability.
 
 ## Privacy and institutional review
 
-- [Unterlage zur datenschutzrechtlichen Plattformbewertung](datenschutz-pruefvorlage.md)
+The [Privacy and data protection](privacy/README.md) section explains how the
+participant materials, institutional assessment, platform mechanisms, and
+operational guidance fit together.
+
+- [Unterlage zur datenschutzrechtlichen Plattformbewertung](privacy/datenschutz-pruefvorlage.md)
   is the German basis for a reusable DPO assessment of a self-hosted deployment.
-- [Umgesetzte Datenschutz-Roadmap](datenschutz-code-roadmap.md) records the
+- [Technische Datenschutzfunktionen](privacy/datenschutz-funktionen.md) documents the
   implemented privacy functions and their technical boundaries.
-- [Participant Information and Privacy Notice v1.0](participant-information-v1.0.md)
+- [Participant Information and Privacy Notice v1.0](privacy/participant-information-v1.0.md)
   is the English participant-facing template.
-- [Consent Items v1.0](consent-items-v1.0.yaml) contains the corresponding
+- [Consent Items v1.0](privacy/consent-items-v1.0.yaml) contains the corresponding
   machine-readable consent template.
 
 Together, these materials provide a concrete starting point for institutional

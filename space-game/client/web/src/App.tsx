@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { type PlayerMessage, type VoicePreflight, type VoiceStatus } from "@coli-saar/parlando-client";
 import {
   MicrophoneLevelMeter,
@@ -16,8 +16,8 @@ import {
   roomById,
   roomRegions
 } from "./game/level";
-import { availableActions, deriveSystems, describeAction } from "./game/stateEngine";
-import type { DeviceDefinition, Direction, GameAction, PlayerId, Position, StationState } from "./game/types";
+import { describeAction } from "./game/stateEngine";
+import type { DerivedSystems, DeviceDefinition, Direction, GameAction, PlayerId, Position, StationState } from "./game/types";
 import type { StationObservation } from "./game/types";
 const movementKeys: Record<string, Direction> = {
   arrowup: "up",
@@ -47,8 +47,8 @@ function ActiveSpaceGame({ session }: { session: SpaceGameSession }) {
   const [preview, setPreview] = useState<ActionPreview | null>(null);
   const [chatDraft, setChatDraft] = useState("");
   const state = session.observation;
-  const systems = useMemo(() => deriveSystems(state), [state]);
-  const serverAvailableActions = session?.availableActions ?? [];
+  const systems = state.systems;
+  const serverAvailableActions = session.availableActions ?? [];
   const assignedRole = session?.role === "A" || session?.role === "B" ? session.role : null;
   const voiceEnabled = session.voiceEnabled;
   const status = session.voiceStatus;
@@ -82,7 +82,7 @@ function ActiveSpaceGame({ session }: { session: SpaceGameSession }) {
       }
 
       if (key === "enter" && assignedRole) {
-        const firstAction = session.availableActions?.[0] ?? availableActions(state, assignedRole)[0];
+        const firstAction = session.availableActions?.[0];
         if (firstAction) {
           event.preventDefault();
           dispatch(firstAction);
@@ -248,7 +248,7 @@ function StationPlayfield({
 }: {
   preview: ActionPreview | null;
   state: StationState;
-  systems: ReturnType<typeof deriveSystems>;
+  systems: DerivedSystems;
 }) {
   const visibleDevices = devicesForState(state);
 
@@ -346,7 +346,7 @@ function DeviceSprite({
   device: DeviceDefinition;
   isPreviewed: boolean;
   state: StationState;
-  systems: ReturnType<typeof deriveSystems>;
+  systems: DerivedSystems;
 }) {
   return (
     <span
@@ -368,7 +368,7 @@ function SharedConsole({
 }: {
   preview: ActionPreview | null;
   state: StationState;
-  systems: ReturnType<typeof deriveSystems>;
+  systems: DerivedSystems;
 }) {
   const recentEvents =
     state.log.length > 0
@@ -651,7 +651,7 @@ function devicesForState(state: StationState): DeviceDefinition[] {
 
 function roomEffectClass(
   room: string,
-  systems: ReturnType<typeof deriveSystems>,
+  systems: DerivedSystems,
   state: StationState
 ): string {
   if (room === "power" && systems.powerStable) return "room-powered";
@@ -691,7 +691,7 @@ function deviceGlyph(device: DeviceDefinition, state: StationState): string {
 function deviceStateClass(
   device: DeviceDefinition,
   state: StationState,
-  systems: ReturnType<typeof deriveSystems>
+  systems: DerivedSystems
 ): string {
   if (device.id === "fuse-blue") return state.fuses.blue ? "active" : "";
   if (device.id === "fuse-yellow") return state.fuses.yellow ? "active yellow" : "";
@@ -717,12 +717,9 @@ function actionIcon(action: GameAction): string {
     toggleBreaker: "⏻",
     setValve: "◌",
     holdOverride: "⫷",
-    togglePlate: "▣",
     chargeBattery: "⚡",
     moveBattery: "⇥",
-    setRelay: "⌁",
     cycleRelay: "⌁",
-    runDiagnostic: "?",
     launchBeacon: "▲"
   };
   return icons[action.type];

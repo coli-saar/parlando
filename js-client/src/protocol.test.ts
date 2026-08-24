@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import fixtures from "../../proto/participant_protocol_v1.fixtures.json";
-import { apiBase, checkedJson, ParticipantClient, playerMessage, socketUrl, type ServerMessage } from "./protocol";
+import { apiBase, checkedJson, decodeServerMessage, ParticipantClient, playerMessage, socketUrl, type ServerMessage } from "./protocol";
 
 /** Creates an externally resolvable response promise for request-order races. */
 function deferredResponse(): { promise: Promise<Response>; resolve: (response: Response) => void } {
@@ -256,15 +256,16 @@ describe("shared participant protocol fixtures", () => {
       "heartbeat",
       "leave"
     ]);
-    const messages = fixtures.server_messages as ServerMessage[];
+    const messages = fixtures.server_messages.map((message) => decodeServerMessage(message));
     expect(messages.map((message) => message.type)).toEqual([
       "session_started",
       "transition",
       "message",
       "presence",
       "voice_status",
-      "completed",
-      "abandoned",
+      "partner_reconnecting",
+      "partner_reconnected",
+      "session_ended",
       "action_rejected",
       "error"
     ]);
@@ -273,6 +274,13 @@ describe("shared participant protocol fixtures", () => {
       expect(message).not.toHaveProperty("room_id");
       expect(message).not.toHaveProperty("participant_session_id");
     }
+  });
+
+  it("rejects unknown variants and malformed fields instead of trusting a type assertion", () => {
+    expect(() => decodeServerMessage({ protocol_version: 1, type: "future", public_session_id: "SESSION1" })).toThrow("unknown");
+    expect(() => decodeServerMessage({ protocol_version: 1, type: "session_started", public_session_id: "SESSION1", role: "C", observation: {}, available_actions: null })).toThrow("role");
+    expect(() => decodeServerMessage({ protocol_version: 1, type: "transition", public_session_id: "SESSION1", actor: "A", observation: {}, available_actions: null })).toThrow("action");
+    expect(() => decodeServerMessage({ protocol_version: 2, type: "completed", public_session_id: "SESSION1", completion: {} })).toThrow("envelope");
   });
 
   it("maps the shared voice-transcript message onto the public camel-case value", () => {

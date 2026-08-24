@@ -23,7 +23,7 @@ impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             waiting_session_timeout_seconds: 10 * 60,
-            reconnect_grace_seconds: 5 * 60,
+            reconnect_grace_seconds: 15,
             session_idle_timeout_seconds: 30 * 60,
             session_max_lifetime_seconds: 4 * 60 * 60,
         }
@@ -91,6 +91,44 @@ impl Default for DirectConfig {
             consents: vec![],
         }
     }
+}
+
+/// Prolific completion paths selected from provider-neutral participant outcomes.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProlificCompletionPaths {
+    /// Code used after ordinary game completion.
+    pub completed: String,
+    /// Code used for the participant whose partner deliberately or implicitly left.
+    pub partner_left: String,
+    /// Code used when matchmaking never supplied the second participant.
+    pub partner_unavailable: String,
+    /// Code used for a participant whose own session timed out.
+    pub timed_out: String,
+    /// Code used when Parlando, rather than either participant, ended the session.
+    pub technical_failure: String,
+    /// Optional game-declared outcome keys, such as `bonus`, mapped to completion codes.
+    pub game: HashMap<String, String>,
+}
+
+/// Dashboard-owned settings for one Prolific recruitment source.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProlificConfig {
+    /// Requires Prolific URL parameters during participant intake.
+    pub enabled: bool,
+    /// Exact Prolific study id accepted by this experiment.
+    pub study_id: String,
+    /// Completion codes copied from the matching Prolific completion paths.
+    pub completion_paths: ProlificCompletionPaths,
+}
+
+/// Recruitment-provider behavior owned by the experiment dashboard.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RecruitmentConfig {
+    /// Optional Prolific intake and handoff behavior.
+    pub prolific: ProlificConfig,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -281,6 +319,7 @@ pub struct ExperimentConfig {
     pub experiment: ExperimentIdentityConfig,
     pub session: SessionConfig,
     pub direct: DirectConfig,
+    pub recruitment: RecruitmentConfig,
     #[serde(skip)]
     pub server: ServerConfig,
     #[serde(skip)]
@@ -306,6 +345,7 @@ impl Default for ExperimentConfig {
             experiment: ExperimentIdentityConfig::default(),
             session: SessionConfig::default(),
             direct: DirectConfig::default(),
+            recruitment: RecruitmentConfig::default(),
             server: ServerConfig::default(),
             database: DatabaseConfig::default(),
             voice: VoiceConfig::default(),
@@ -340,6 +380,67 @@ impl ExperimentConfig {
         }
         if self.session.reconnect_grace_seconds < 0 {
             bail!("session.reconnect_grace_seconds must not be negative");
+        }
+        if self.session.reconnect_grace_seconds > 60 {
+            bail!("session.reconnect_grace_seconds must not exceed 60");
+        }
+        if self.recruitment.prolific.enabled && self.recruitment.prolific.study_id.trim().is_empty()
+        {
+            bail!("recruitment.prolific.study_id is required when Prolific is enabled");
+        }
+        if self.recruitment.prolific.enabled {
+            let paths = &self.recruitment.prolific.completion_paths;
+            if [
+                &paths.completed,
+                &paths.partner_left,
+                &paths.partner_unavailable,
+                &paths.timed_out,
+                &paths.technical_failure,
+            ]
+            .iter()
+            .any(|code| code.is_empty())
+            {
+                bail!("every standard Prolific completion path requires a code when Prolific is enabled");
+            }
+        }
+        for (name, code) in [
+            (
+                "completed",
+                &self.recruitment.prolific.completion_paths.completed,
+            ),
+            (
+                "partner_left",
+                &self.recruitment.prolific.completion_paths.partner_left,
+            ),
+            (
+                "partner_unavailable",
+                &self
+                    .recruitment
+                    .prolific
+                    .completion_paths
+                    .partner_unavailable,
+            ),
+            (
+                "timed_out",
+                &self.recruitment.prolific.completion_paths.timed_out,
+            ),
+            (
+                "technical_failure",
+                &self.recruitment.prolific.completion_paths.technical_failure,
+            ),
+        ] {
+            validate_prolific_code(name, code)?;
+        }
+        for (key, code) in &self.recruitment.prolific.completion_paths.game {
+            if key.is_empty()
+                || key.chars().count() > 64
+                || !key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+            {
+                bail!("Prolific game outcome keys must contain lowercase letters, digits, or underscores");
+            }
+            validate_prolific_code(key, code)?;
         }
         if self.session.session_idle_timeout_seconds <= 0 {
             bail!("session.session_idle_timeout_seconds must be positive");
@@ -452,6 +553,9 @@ impl ExperimentConfig {
             if item.body.trim().is_empty() || item.body.chars().count() > 20_000 {
                 bail!("direct consent bodies must contain 1 to 20000 characters");
             }
+            if item.body.contains("{{") || item.body.contains("}}") {
+                bail!("direct consent bodies must not contain unresolved template placeholders");
+            }
         }
         let has_information_version = !self
             .direct
@@ -485,6 +589,17 @@ impl ExperimentConfig {
         }
         issues
     }
+}
+
+/// Validates one optional Prolific completion code without treating it as a secret.
+fn validate_prolific_code(name: &str, code: &str) -> Result<()> {
+    if code.is_empty() {
+        return Ok(());
+    }
+    if code.chars().count() > 64 || !code.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        bail!("Prolific completion code {name} must contain at most 64 letters or digits");
+    }
+    Ok(())
 }
 
 /// Rejects malformed hosted-service WebSocket URLs.
@@ -864,5 +979,25 @@ mod tests {
         synthesis.tts.voice_id = "voice".to_string();
         synthesis.tts.base_url = "https://not-websocket.test".to_string();
         assert!(synthesis.validate().is_err());
+    }
+
+    /// Confirms Prolific intake cannot be enabled with partial or unsafe completion paths.
+    #[test]
+    fn validation_requires_complete_prolific_handoff_configuration() {
+        let mut config = valid_config();
+        config.recruitment.prolific.enabled = true;
+        config.recruitment.prolific.study_id = "study-1".to_string();
+        assert!(config.validate().is_err());
+
+        let paths = &mut config.recruitment.prolific.completion_paths;
+        paths.completed = "AMBEROTTER".to_string();
+        paths.partner_left = "CORALRIVER".to_string();
+        paths.partner_unavailable = "FROSTCEDAR".to_string();
+        paths.timed_out = "LUNARCOMET".to_string();
+        paths.technical_failure = "MINTFALCON".to_string();
+        assert!(config.validate().is_ok());
+
+        config.recruitment.prolific.completion_paths.completed = "not-safe".to_string();
+        assert!(config.validate().is_err());
     }
 }

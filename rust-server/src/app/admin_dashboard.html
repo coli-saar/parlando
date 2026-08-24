@@ -95,7 +95,8 @@
     .workspace-title code { background: #f0f1f2; border-radius: 4px; font-size: 12px; justify-self: start; padding: 2px 6px; }
     .workspace-facts { align-items: center; display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 4px; }
     .workspace-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
-    .workspace-navigation { border-bottom: 1px solid var(--strong-line); display: flex; gap: 3px; margin: 20px 0 0; }
+    .workspace-navigation { border-bottom: 1px solid var(--strong-line); display: flex; gap: 3px; margin: 20px 0 0; max-width: 100%; overflow-x: auto; scrollbar-width: thin; }
+    .workspace-navigation .tab { flex: 0 0 auto; white-space: nowrap; }
     .empty-experiment-workspace { align-items: center; align-self: center; display: grid; gap: 14px; justify-items: center; margin: auto; max-width: 520px; padding: 56px 24px; text-align: center; }
     .empty-experiment-workspace[hidden], .workspace-header[hidden], .workspace-navigation[hidden] { display: none; }
     .empty-experiment-workspace .large-icon { color: var(--accent); height: 32px; width: 32px; }
@@ -111,14 +112,14 @@
     .session-main { display: grid; gap: 4px; min-width: 0; }
     .session strong { display: inline; margin: 0; overflow-wrap: anywhere; }
     .session-detail { display: flex; flex-direction: column; min-height: 0; min-width: 0; padding-left: 24px; }
-    .session-summary { background: #fff; border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 18px; padding: 18px; }
+    .session-summary { background: #fff; border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 18px; min-width: 0; padding: 18px; }
     .session-summary h2 { margin: 0; }
     .session-facts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; }
-    .session-facts > div { border-left: 1px solid var(--strong-line); display: grid; gap: 5px; padding: 0 18px; }
+    .session-facts > div { border-left: 1px solid var(--strong-line); display: grid; gap: 5px; min-width: 0; padding: 0 18px; }
     .session-facts > div:first-child { border-left: 0; padding-left: 0; }
     .session-facts dt { color: var(--subtle); font-size: 12px; }
-    .session-facts dd { margin: 0; }
-    .status-chip { align-items: center; background: #f2f4f6; border-radius: 999px; display: inline-flex; gap: 6px; padding: 4px 9px; white-space: nowrap; }
+    .session-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+    .status-chip { align-items: center; background: #f2f4f6; border-radius: 999px; display: inline-flex; gap: 6px; max-width: 100%; padding: 4px 9px; white-space: nowrap; }
     .purpose-marker { align-items: center; color: #654caf; display: inline-flex; gap: 5px; font-weight: 600; }
     .participant-assignments { border-top: 1px solid var(--line); column-gap: 37px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding-top: 14px; position: relative; }
     .participant-assignments::after { background: var(--strong-line); bottom: 0; content: ""; left: 50%; position: absolute; top: 14px; width: 1px; }
@@ -131,6 +132,7 @@
     .role-b { background: #faebd6; color: #76501b; }
     .participant-copy { display: grid; gap: 2px; min-width: 0; }
     .participant-copy strong { color: var(--text); font-size: 15px; overflow-wrap: anywhere; }
+    .participant-copy > .muted { overflow-wrap: anywhere; }
     .participant-name-line { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; min-width: 0; }
     .delete-participant { height: 26px; justify-content: center; padding: 0; width: 26px; }
     .delete-participant .icon { height: 14px; width: 14px; }
@@ -138,18 +140,18 @@
     .configuration-identity summary { align-items: center; background: #eef4f8; border: 1px solid #c9dce8; border-radius: 999px; color: #245f7d; cursor: pointer; display: inline-flex; font-size: 11px; font-weight: 700; gap: 5px; list-style: none; padding: 3px 8px; white-space: nowrap; }
     .configuration-identity summary::-webkit-details-marker { display: none; }
     .configuration-identity[open] summary { background: #dcecf5; }
-    .configuration-identity-card { background: #fff; border: 1px solid var(--strong-line); border-radius: 7px; box-shadow: 0 10px 28px rgba(32, 38, 44, .16); display: grid; gap: 10px; left: 0; min-width: 330px; padding: 13px; position: absolute; top: calc(100% + 6px); z-index: 10; }
+    .configuration-identity-card { background: #fff; border: 1px solid var(--strong-line); border-radius: 7px; box-shadow: 0 10px 28px rgba(32, 38, 44, .16); display: grid; gap: 10px; left: 0; max-width: calc(100vw - 48px); min-width: min(330px, calc(100vw - 48px)); padding: 13px; position: absolute; top: calc(100% + 6px); z-index: 10; }
     .configuration-identity-card dl { display: grid; gap: 6px; grid-template-columns: auto minmax(0, 1fr); margin: 0; }
     .configuration-identity-card dt { color: var(--subtle); }
     .configuration-identity-card dd { margin: 0; overflow-wrap: anywhere; }
     .configuration-fingerprint { background: var(--surface); border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; padding: 7px; user-select: all; }
-    .session-log { flex: 1; margin-top: 24px; min-height: 0; overflow-y: auto; }
-    .events-header { align-items: center; border-bottom: 1px solid var(--strong-line); display: flex; gap: 14px; justify-content: flex-end; padding-bottom: 12px; }
+    .session-log { flex: 1; margin-top: 24px; min-height: 0; min-width: 0; overflow-y: auto; }
+    .events-header { align-items: center; border-bottom: 1px solid var(--strong-line); display: flex; flex-wrap: wrap; gap: 10px 14px; justify-content: flex-end; padding-bottom: 12px; }
     .events-header h2 { margin: 0 auto 0 0; }
     .toggle-row { align-items: center; display: inline-flex; gap: 7px; white-space: nowrap; }
     .toggle-row input { height: 16px; width: 16px; }
     .timeline { display: grid; gap: 0; }
-    .event { background: transparent; border: 0; border-bottom: 1px solid var(--line); border-left: 3px solid #91b8ce; border-radius: 0; box-shadow: none; padding: 12px 10px; }
+    .event { background: transparent; border: 0; border-bottom: 1px solid var(--line); border-left: 3px solid #91b8ce; border-radius: 0; box-shadow: none; min-width: 0; padding: 12px 10px; }
     .event.action { border-left-color: var(--active); }
     .event.transcript { border-left-color: var(--draft); }
     .event.problem { background: #fff7f6; border-left-color: var(--danger); }
@@ -327,10 +329,7 @@
     .action-key, .action-value { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
     .action-key { color: #185f8f; font-weight: 800; }
     .empty { color: var(--subtle); padding: 28px; text-align: center; }
-    @media (max-width: 900px) {
-      html, body { height: auto; min-height: 100%; overflow: auto; }
-      .dashboard-main { overflow: visible; }
-      .scope-screen { height: auto; min-height: calc(100vh - 113px); }
+    @media (max-width: 1240px) {
       .menu-button { display: inline-flex; }
       .product-row { grid-template-columns: auto minmax(0, 1fr); }
       .product-identity { display: none; }
@@ -338,8 +337,14 @@
       .experiment-scope { grid-template-columns: 1fr; height: auto; overflow: visible; }
       .experiment-catalogue { background: #fff; bottom: 0; box-shadow: 0 16px 50px rgba(20,34,45,.22); left: 0; max-width: 88vw; position: fixed; top: 111px; transform: translateX(-102%); transition: transform 160ms ease; width: 340px; z-index: 10; }
       body.sidebar-open .experiment-catalogue { transform: translateX(0); }
-      .column-resizer { display: none; }
+      .experiment-scope > .column-resizer { display: none; }
+    }
+    @media (max-width: 900px) {
+      html, body { height: auto; min-height: 100%; overflow-x: hidden; overflow-y: auto; }
+      .dashboard-main { overflow: visible; }
+      .scope-screen { height: auto; min-height: calc(100vh - 113px); }
       .session-workspace { grid-template-columns: 1fr; }
+      .session-workspace > .column-resizer { display: none; }
       .session-picker { border-bottom: 1px solid var(--line); padding: 0 0 20px; }
       .session-list { display: flex; overflow-x: auto; }
       .session { flex: 0 0 200px; }
@@ -351,6 +356,13 @@
       .plain-section:nth-child(2) { border-left: 0; border-top: 1px solid var(--line); padding-left: 0; }
       .plain-section.span-two { grid-column: auto; }
     }
+    @media (max-width: 760px) {
+      .session-facts, .participant-assignments { grid-template-columns: 1fr; }
+      .session-facts > div { border-left: 0; border-top: 1px solid var(--line); padding: 10px 0 0; }
+      .session-facts > div:first-child { border-top: 0; padding-top: 0; }
+      .participant-assignments { gap: 12px; }
+      .participant-assignments::after { display: none; }
+    }
     @media (max-width: 620px) {
       .product-row { padding-inline: 14px; }
       .scope-navigation { overflow-x: auto; padding-inline: 12px; }
@@ -358,10 +370,10 @@
       .experiment-workspace, .page-scope { padding: 20px 16px; }
       .workspace-header { display: grid; }
       .workspace-actions { justify-content: flex-start; }
-      .session-facts, .participant-assignments, .load-overview, .settings-section, .export-controls { grid-template-columns: 1fr; }
-      .session-facts > div { border-left: 0; border-top: 1px solid var(--line); padding: 10px 0 0; }
-      .participant-assignments { gap: 12px; }
-      .participant-assignments::after { display: none; }
+      .load-overview, .settings-section, .export-controls { grid-template-columns: 1fr; }
+      .session-summary { gap: 14px; padding: 14px; }
+      .events-header { justify-content: flex-start; }
+      .events-header h2 { flex-basis: 100%; }
       .settings-section { gap: 16px; }
       .configuration-save, .config-group, .config-field-row, .consent-item-fields { grid-template-columns: 1fr; }
       .consent-actions { align-items: stretch; grid-template-columns: 1fr; }
@@ -557,7 +569,7 @@
     </form>
   </dialog>
   <script>
-    const state = { experiment: null, experiments: [], game: null, gameSettings: null, load: null, privacy: null, activationIssues: [], sessions: [], selected: null, selectedSession: null, selectedParticipants: [], events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, csrfToken: null, activeScope: 'experiments', activeTab: 'sessions', loadedConfigKey: null, configLoadFailed: false, configValue: null, configuredSecrets: [], gameSecretKeys: [], secretDeletions: new Set(), agentFactories: [], gameProviderSecrets: [], gameProviderSecretDeletions: new Set(), gameProviderSecretUpdates: new Map(), gameSettingsConfirmationTimer: null, notesMode: 'write', notesSource: '', notesDirty: false };
+    const state = { experiment: null, experiments: [], game: null, gameSettings: null, load: null, privacy: null, activationIssues: [], sessions: [], selected: null, selectedSession: null, selectedParticipants: [], events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, csrfToken: null, activeScope: 'experiments', activeTab: 'sessions', loadedConfigKey: null, configLoadFailed: false, configValue: null, configuredSecrets: [], gameSecretKeys: [], secretDeletions: new Set(), agentFactories: [], gameProviderSecrets: [], gameProviderSecretDeletions: new Set(), gameProviderSecretUpdates: new Map(), prolificTestIdentities: new Map(), gameSettingsConfirmationTimer: null, notesMode: 'write', notesSource: '', notesDirty: false };
     const experimentList = document.getElementById('experimentList');
     const menuButton = document.getElementById('menuButton');
     const experimentHeader = document.getElementById('experimentHeader');
@@ -868,7 +880,7 @@
 
     // Converts a machine status into a compact human-readable label.
     function statusText(status) {
-      const value = String(status || 'unknown').replaceAll('-', ' ');
+      const value = String(status || 'unknown').replaceAll('-', ' ').replaceAll('_', ' ');
       return value.charAt(0).toUpperCase() + value.slice(1);
     }
 
@@ -1148,7 +1160,7 @@
         </span>
       `;
       experimentStats.innerHTML = `
-        <a class="secondary" href="/e/${encodeURIComponent(experiment.experiment_id)}/" target="_blank" rel="noopener">${icon('external')}Participant page</a>
+        <a class="secondary" href="${escapeHtml(participantPageHref(experiment))}" target="_blank" rel="noopener" title="${escapeHtml(participantPageTitle(experiment))}">${icon('external')}Participant page</a>
         <button class="secondary" id="cloneButton" type="button">${icon('copy')}Clone</button>
         <button class="secondary" id="archiveButton" type="button" ${['active', 'testing'].includes(experiment.status) ? 'disabled title="Stop intake before archiving this experiment"' : ''}>${icon(experiment.status === 'archived' ? 'restore' : 'archive')}${experiment.status === 'archived' ? 'Unarchive' : 'Archive'}</button>
         ${lifecycleActions(experiment)}
@@ -1160,21 +1172,48 @@
       document.getElementById('archiveButton').addEventListener('click', experiment.status === 'archived' ? () => updateExperimentStatus('inactive') : archiveSelectedExperiment);
     }
 
+    // Builds a directly usable participant URL, including synthetic Prolific intake identity in tests.
+    function participantPageHref(experiment) {
+      const url = new URL(`/e/${encodeURIComponent(experiment.experiment_id)}/`, window.location.origin);
+      const selectedConfig = state.experiment?.experiment_id === experiment.experiment_id ? state.configValue : null;
+      const prolific = selectedConfig?.recruitment?.prolific || experiment.config?.recruitment?.prolific;
+      if (!prolific?.enabled) return `${url.pathname}${url.search}`;
+      let identity = state.prolificTestIdentities.get(experiment.experiment_id);
+      if (!identity) {
+        const participantToken = crypto.randomUUID().replaceAll('-', '').toUpperCase();
+        const sessionToken = crypto.randomUUID().replaceAll('-', '').toUpperCase();
+        identity = {
+          participantId: `TEST${participantToken}`,
+          sessionId: `TEST${sessionToken}`
+        };
+        state.prolificTestIdentities.set(experiment.experiment_id, identity);
+      }
+      url.searchParams.set('PROLIFIC_PID', identity.participantId);
+      url.searchParams.set('STUDY_ID', prolific.study_id);
+      url.searchParams.set('SESSION_ID', identity.sessionId);
+      return `${url.pathname}${url.search}`;
+    }
+
+    // Explains whether the dashboard link carries local synthetic recruitment identity.
+    function participantPageTitle(experiment) {
+      const selectedConfig = state.experiment?.experiment_id === experiment.experiment_id ? state.configValue : null;
+      const prolific = selectedConfig?.recruitment?.prolific || experiment.config?.recruitment?.prolific;
+      return prolific?.enabled
+        ? 'Open with synthetic Prolific participant and session IDs for testing'
+        : 'Open participant page';
+    }
+
     // Shows a dedicated creation prompt instead of experiment controls when the catalogue is empty.
     function renderExperimentWorkspaceState() {
       const hasExperiment = Boolean(state.experiment);
       experimentWorkspaceHeader.hidden = !hasExperiment;
       emptyExperimentWorkspace.hidden = hasExperiment;
-      experimentWorkspaceTabs.hidden = !hasExperiment || state.configLoadFailed;
-      if (hasExperiment && !state.configLoadFailed) {
+      experimentWorkspaceTabs.hidden = !hasExperiment;
+      if (hasExperiment) {
         renderTabs();
         return;
       }
       Object.values(tabPanels).forEach(panel => { panel.hidden = true; });
-      if (hasExperiment && state.configLoadFailed) {
-        emptyExperimentWorkspace.hidden = false;
-        emptyExperimentWorkspace.innerHTML = `<svg class="icon large-icon" aria-hidden="true"><use href="#icon-archive"></use></svg><h1>Experiment unavailable</h1><p class="muted">This experiment cannot be opened by the current game. Hover its validity badge for the diagnostic.</p>`;
-      }
     }
 
     // Returns state-appropriate intake and completion controls for one experiment.
@@ -1403,6 +1442,7 @@
         renderExperimentDetails();
       }
       renderConfigurationForm(data.experiment.config, data.game_yaml || '{}\n');
+      renderExperimentHeader();
       upgradeYamlEditor();
       configRevision.textContent = `Revision ${data.experiment.config_revision}`;
       state.loadedConfigKey = `${data.experiment.experiment_id}:${data.experiment.config_revision}`;
@@ -1461,7 +1501,10 @@
         id: 'research_data_consent_v1_0',
         title: 'Voluntary participation and research data',
         required: true,
-        body: ({ institution }) => `I voluntarily agree to participate and consent to ${institution || 'the institution responsible for this study'} processing the study-specific identifiers, game actions, timing, results, and the messages or final transcripts enabled for this study. I understand that these data will be used for this study, scientific verification and reuse, and the preparation and publication of anonymized research corpora as described in the Participant Information and Privacy Notice. I understand how to withdraw my consent while my data can still be linked to my study-specific participant identifier.`
+        body: ({ institution }) => {
+          if (!institution) throw new Error('Configure the responsible institution before adding this consent template.');
+          return `I voluntarily agree to participate and consent to ${institution} processing the study-specific identifiers, game actions, timing, results, and the messages or final transcripts enabled for this study. I understand that these data will be used for this study, scientific verification and reuse, and the preparation and publication of anonymized research corpora as described in the Participant Information and Privacy Notice. I understand how to withdraw my consent while my data can still be linked to my study-specific participant identifier.`;
+        }
       },
       privacyRules: {
         id: 'participant_privacy_rules_v1_0',
@@ -1517,6 +1560,15 @@
         { path: 'tts.voice_name', label: 'Voice display name', help: 'Human-readable voice label exposed to the participant client.' },
         { path: 'tts.base_url', label: 'ElevenLabs base URL', help: 'Exact WebSocket service origin that receives agent message text.' }
       ]},
+      { title: 'Prolific recruitment and completion paths', description: 'The five rows below are Parlando session outcomes, not built-in Prolific path names. Create a custom path for each under Prolific → Data collection → Completion paths, choose an appropriate Prolific label and submission-processing action, then enter that path’s custom completion code here. Parlando uses the code to build the completion URL. Private intake identifiers never enter exports.', fields: [
+        { path: 'recruitment.prolific.enabled', label: 'Enable Prolific intake', help: 'Require and privately retain the PROLIFIC_PID, STUDY_ID, and SESSION_ID URL parameters.', type: 'boolean' },
+        { path: 'recruitment.prolific.study_id', label: 'Accepted study id', help: 'Must exactly match the STUDY_ID supplied by Prolific.' },
+        { path: 'recruitment.prolific.completion_paths.completed', label: 'Parlando outcome: completed — Prolific custom completion code', help: 'Used when this participant finishes the game normally. Map it to the custom completion path and processing action you choose in Prolific.', type: 'completion-code' },
+        { path: 'recruitment.prolific.completion_paths.partner_left', label: 'Parlando outcome: partner left — Prolific custom completion code', help: 'Used when this participant’s partner leaves or cannot reconnect. This is a Parlando outcome, not a predefined Prolific label.', type: 'completion-code' },
+        { path: 'recruitment.prolific.completion_paths.partner_unavailable', label: 'Parlando outcome: partner unavailable — Prolific custom completion code', help: 'Used when matchmaking times out before a partner becomes available. This is a Parlando outcome, not a predefined Prolific label.', type: 'completion-code' },
+        { path: 'recruitment.prolific.completion_paths.timed_out', label: 'Parlando outcome: timed out — Prolific custom completion code', help: 'Used when this participant reaches a session time limit. This is a Parlando outcome, not a predefined Prolific label.', type: 'completion-code' },
+        { path: 'recruitment.prolific.completion_paths.technical_failure', label: 'Parlando outcome: technical failure — Prolific custom completion code', help: 'Used when infrastructure prevents the session from continuing. This is a Parlando outcome, not a predefined Prolific label.', type: 'completion-code' }
+      ]},
       { title: 'Players and agents', description: 'Select human pairing or one server-side agent and configure its runtime limits.', fields: [
         { path: 'agents', label: 'Participants', help: 'Pair two people, or pair one person with an agent compiled into this game server.', type: 'agents' }
       ]},
@@ -1570,6 +1622,12 @@
       configForm.querySelectorAll('[data-secret-placeholder="true"]').forEach(installSecretReplacementInput);
       configForm.querySelectorAll('[data-consent-editor]').forEach(initializeConsentEditor);
       configForm.querySelectorAll('[data-agent-editor]').forEach(initializeAgentEditor);
+      configForm.querySelectorAll('[data-generate-completion-code]').forEach(button => button.addEventListener('click', () => {
+        const input = configForm.querySelector(`[data-config-path="${CSS.escape(button.dataset.generateCompletionCode)}"]`);
+        if (!input) return;
+        input.value = randomCompletionWord();
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }));
       configForm.querySelectorAll('[data-config-path], [data-secret-update]').forEach(control => {
         control.addEventListener('input', refreshDraftActivationWarning);
         control.addEventListener('change', refreshDraftActivationWarning);
@@ -1590,8 +1648,28 @@
       else if (field.type === 'decimal') control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="number" type="text" inputmode="decimal" pattern="-?[0-9]+(?:\\.[0-9]+)?" value="${escapeHtml(value)}" placeholder="1.2" title="Use a decimal point, for example 1.2">`;
       else if (field.type === 'select') control = `<select data-config-path="${escapeHtml(field.path)}" data-config-type="string">${field.options.map(([option, label]) => `<option value="${escapeHtml(option)}" ${value === option ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select>`;
       else if (field.type === 'json') control = `<textarea data-config-path="${escapeHtml(field.path)}" data-config-type="json" rows="${field.rows || 5}" spellcheck="false">${escapeHtml(JSON.stringify(value, null, 2))}</textarea>`;
+      else if (field.type === 'completion-code') control = `<span class="secret-control"><input data-config-path="${escapeHtml(field.path)}" data-config-type="string" type="text" maxlength="64" pattern="[A-Za-z0-9]*" value="${escapeHtml(value ?? '')}"><button class="secondary" data-generate-completion-code="${escapeHtml(field.path)}" type="button">Generate two-word code</button></span>`;
       else control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="string" type="${field.type === 'url' ? 'url' : 'text'}" value="${escapeHtml(value ?? '')}">`;
       return `<label class="config-field"><span>${escapeHtml(field.label)}</span>${control}${help}</label>`;
+    }
+
+    // Generates a memorable adjective-noun code without sending configuration anywhere.
+    function randomCompletionWord() {
+      const adjectives = [
+        'AMBER', 'AUTUMN', 'BRAVE', 'BRIGHT', 'BRISK', 'CALM', 'CEDAR', 'CLEAR',
+        'CORAL', 'COSMIC', 'DAWN', 'EMBER', 'FAIR', 'FROST', 'GENTLE', 'GOLDEN',
+        'GREEN', 'HAPPY', 'IVORY', 'LUNAR', 'MINT', 'NOBLE', 'OCEAN', 'QUIET',
+        'RAPID', 'ROYAL', 'SILVER', 'SOLAR', 'STILL', 'SUNNY', 'SWIFT', 'VIOLET'
+      ];
+      const nouns = [
+        'BADGER', 'BIRCH', 'CEDAR', 'COMET', 'CRANE', 'DOLPHIN', 'FALCON', 'FERN',
+        'FINCH', 'FOREST', 'HARBOR', 'HAWK', 'HERON', 'ISLAND', 'JUNIPER', 'LAKE',
+        'MAPLE', 'MEADOW', 'ORCHID', 'OTTER', 'PANDA', 'RAVEN', 'RIVER', 'ROBIN',
+        'SPRUCE', 'STAR', 'SWAN', 'THRUSH', 'TIGER', 'VALLEY', 'WILLOW', 'WREN'
+      ];
+      const values = new Uint32Array(2);
+      crypto.getRandomValues(values);
+      return `${adjectives[values[0] % adjectives.length]}${nouns[values[1] % nouns.length]}`;
     }
 
     // Renders fields owned by one compiled agent factory without exposing raw JSON.
@@ -1613,22 +1691,22 @@
         if (field.type === 'boolean') control = `<input ${attributes} type="checkbox" ${value ? 'checked' : ''}>`;
         else if (field.type === 'integer' || field.type === 'number') control = `<input ${attributes} type="number" value="${escapeHtml(value)}" ${field.minimum != null ? `min="${field.minimum}"` : ''} ${field.maximum != null ? `max="${field.maximum}"` : ''} step="${field.type === 'integer' ? '1' : 'any'}">`;
         else if (field.type === 'choice') control = `<select ${attributes}>${(field.choices || []).map(choice => `<option value="${escapeHtml(choice.value)}" ${choice.value === value ? 'selected' : ''}>${escapeHtml(choice.label)}</option>`).join('')}</select>`;
-        else if (field.type === 'secret_reference') return agentSecretFieldMarkup(field, path, factoryId, value);
+        else if (field.type === 'secret_reference') return agentSecretFieldMarkup(field, path, value);
         else control = `<input ${attributes} type="${field.format === 'uri' ? 'url' : 'text'}" value="${escapeHtml(value ?? '')}">`;
         return `<label class="config-field"><span>${escapeHtml(field.label)}</span>${control}<span class="config-help">${escapeHtml(field.help || '')}</span></label>`;
       }).join('');
     }
 
-    // Derives the hidden experiment-secret reference used by one agent credential field.
-    function agentSecretReference(factoryId, path, configuredReference) {
+    // Uses the explicit stored reference or the server-owned default for one agent credential.
+    function agentSecretReference(field, configuredReference) {
       if (typeof configuredReference === 'string' && configuredReference.startsWith('game.')) return configuredReference;
-      const suffix = `agent_${factoryId}_${path}`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 128);
-      return `game.${suffix}`;
+      if (typeof field.secret_reference === 'string' && field.secret_reference.startsWith('game.')) return field.secret_reference;
+      throw new Error(`Agent secret field ${field.key} has no server-defined reference`);
     }
 
     // Presents an agent secret as the same write-only control used by provider credentials.
-    function agentSecretFieldMarkup(field, path, factoryId, configuredReference) {
-      const reference = agentSecretReference(factoryId, path, configuredReference);
+    function agentSecretFieldMarkup(field, path, configuredReference) {
+      const reference = agentSecretReference(field, configuredReference);
       const configured = state.configuredSecrets.some(item => item.key === reference && item.configured) && !state.secretDeletions.has(reference);
       return `<label class="config-field ${configured ? 'secret-configured' : 'secret-missing'}" data-agent-secret-field>
         <span>${escapeHtml(field.label)}</span>
@@ -1746,9 +1824,7 @@
     function hydrateConsentTemplate(template) {
       const informationVersion = configForm.querySelector('[data-config-path="direct.participant_information_version"]')?.value.trim();
       const institution = state.gameSettings?.institution?.trim();
-      const body = typeof template.body === 'function'
-        ? template.body({ informationVersion, institution })
-        : template.body;
+      const body = typeof template.body === 'function' ? template.body({ informationVersion, institution }) : template.body;
       return { ...template, body };
     }
 
@@ -1765,7 +1841,14 @@
       const container = editor.querySelector('.consent-items');
       container.querySelector('.consent-empty')?.remove();
       const count = container.querySelectorAll('.consent-item').length;
-      container.insertAdjacentHTML('beforeend', consentItemMarkup(hydrateConsentTemplate(template), count));
+      let hydrated;
+      try {
+        hydrated = hydrateConsentTemplate(template);
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : 'Could not resolve consent template.');
+        return;
+      }
+      container.insertAdjacentHTML('beforeend', consentItemMarkup(hydrated, count));
       refreshConsentEditor(editor);
       container.querySelector('.consent-item:last-child [data-consent-field="body"]')?.focus();
     }
@@ -1824,36 +1907,13 @@
     }
 
     // Returns whether a draft has an existing or newly entered credential after pending deletions.
-    function draftHasSecret(key) {
-      if (matchesGameProviderSecret(key)) {
-        return state.gameProviderSecrets.some(item => item.key === key && item.configured);
-      }
-      if (state.secretDeletions.has(key)) return false;
-      const input = configForm.querySelector(`[data-secret-update="${CSS.escape(key)}"]`);
-      if (input?.dataset.secretPlaceholder === 'true') return true;
-      if (input?.value.trim()) return true;
-      return state.configuredSecrets.some(item => item.key === key && item.configured);
-    }
-
-    // Identifies credentials that belong to the game installation rather than one experiment.
-    function matchesGameProviderSecret(key) {
-      return key === 'speechmatics.api_key' || key === 'tts.api_key';
-    }
-
-    // Recomputes hosted-service start blockers immediately as the inactive draft is edited.
+    // Renders the activation blockers computed by the authoritative server validator.
     function refreshDraftActivationWarning() {
-      const issues = [];
-      const transcriptionEnabled = configForm.querySelector('[data-config-path="transcription.enabled"]')?.checked;
-      const ttsEnabled = configForm.querySelector('[data-config-path="tts.enabled"]')?.checked;
-      if (transcriptionEnabled && !draftHasSecret('speechmatics.api_key')) issues.push('Speechmatics API key is required when transcription is enabled.');
-      if (ttsEnabled && !draftHasSecret('tts.api_key')) issues.push('ElevenLabs API key is required when text to speech is enabled.');
-      const voiceId = configForm.querySelector('[data-config-path="tts.voice_id"]')?.value.trim();
-      if (ttsEnabled && !voiceId) issues.push('ElevenLabs voice id is required when text to speech is enabled.');
       const warning = document.getElementById('activationWarning');
       const items = document.getElementById('activationWarningItems');
       if (!warning || !items) return;
-      warning.hidden = issues.length === 0;
-      items.textContent = issues.join(' ');
+      warning.hidden = state.activationIssues.length === 0;
+      items.textContent = state.activationIssues.join(' ');
     }
 
     // Reconstructs typed Parlando JSON while leaving game YAML and credentials separate.
@@ -2358,14 +2418,15 @@
     function renderSummary(session, participantRows) {
       const live = sessionLiveness(session.session_id);
       const health = live?.health || (session.status === 'completed' ? 'completed' : 'unavailable');
+      const recruitmentProvider = participantRows.some(row => row.identity_provider === 'prolific') ? 'Prolific' : 'Direct';
       summary.innerHTML = `
         <h2>Session #${escapeHtml(session.session_id)}</h2>
         <dl class="session-facts">
           <div><dt>Status</dt><dd><span class="status-chip">${statusLabel(session.status)}</span></dd></div>
           <div><dt>Health</dt><dd>${livenessBadge(health, live ? `Meaningful activity ${formatAge(new Date(live.meaningful_activity_at).getTime())}` : 'Session is not present in this process runtime')}</dd></div>
           <div><dt>Purpose</dt><dd><span class="status-chip">${statusLabel(session.purpose || 'research')}</span></dd></div>
-          <div><dt>Mode</dt><dd>${escapeHtml(statusText(session.mode))}</dd></div>
-          <div><dt>Created</dt><dd>${escapeHtml(fmtTime(session.created_at))}</dd></div>
+          <div><dt>Recruitment</dt><dd>${recruitmentProvider}</dd></div>
+          <div><dt>Outcome</dt><dd>${escapeHtml(statusText(session.outcome_kind || 'pending'))}</dd></div>
         </dl>
         ${participantAssignments(participantRows)}
       `;
@@ -2419,7 +2480,7 @@
         <div class="participant-assignment participant-role-${row.role === 'B' ? 'b' : 'a'}" title="${escapeHtml(row.connection_status || '')}">
           ${roleBadge(row.role)}
           ${participantIcon(row.participant_kind)}
-          <span class="participant-copy"><span class="participant-name-line"><strong>${escapeHtml(participantDisplayName(row))}</strong>${row.participant_kind !== 'agent' && row.research_id ? `<button class="danger delete-participant" data-research-id="${escapeHtml(row.research_id)}" type="button" title="Delete participant data" aria-label="Delete participant data">${icon('trash')}</button>` : ''}${configurationIdentityMarkup(row)}</span></span>
+          <span class="participant-copy"><span class="participant-name-line"><strong>${escapeHtml(participantDisplayName(row))}</strong>${row.outcome ? `<span class="status-chip">${escapeHtml(statusText(row.outcome))}</span>` : ''}${row.participant_kind !== 'agent' && row.research_id ? `<button class="danger delete-participant" data-research-id="${escapeHtml(row.research_id)}" type="button" title="Delete participant data" aria-label="Delete participant data">${icon('trash')}</button>` : ''}${configurationIdentityMarkup(row)}</span>${row.prolific_participant_id ? `<span class="muted small">Prolific ${escapeHtml(row.prolific_participant_id)} · study ${escapeHtml(row.prolific_study_id)} · session ${escapeHtml(row.prolific_session_id)}</span>` : ''}</span>
         </div>`).join('')}</div>`;
     }
 

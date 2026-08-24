@@ -4,48 +4,33 @@ from __future__ import annotations
 
 import asyncio
 import hmac
-import importlib
 import inspect
 import os
-import sys
 import threading
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Optional
 
 import grpc
 from google.protobuf import json_format
 from google.protobuf.struct_pb2 import Struct
 
+from .generated import (
+    parlando_agent_v3_pb2,
+    parlando_agent_v3_pb2_grpc,
+    parlando_rl_v1_pb2,
+    parlando_rl_v1_pb2_grpc,
+)
+
 
 def _generated_modules() -> tuple[Any, Any]:
-    """Imports generated protobuf modules and explains how to create them if missing."""
-    try:
-        generated_dir = Path(__file__).resolve().parent / "generated"
-        if str(generated_dir) not in sys.path:
-            sys.path.insert(0, str(generated_dir))
-        pb2 = importlib.import_module("parlando_agent_sdk.generated.parlando_agent_v3_pb2")
-        pb2_grpc = importlib.import_module(
-            "parlando_agent_sdk.generated.parlando_agent_v3_pb2_grpc"
-        )
-        return pb2, pb2_grpc
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "Parlando agent protobuf modules are missing. Run "
-            "`python -m parlando_agent_sdk.generate_protos` after installing the SDK."
-        ) from exc
+    """Returns the package-relative generated agent protocol modules."""
+    return parlando_agent_v3_pb2, parlando_agent_v3_pb2_grpc
 
 
 def _learner_modules() -> tuple[Any, Any]:
-    """Imports the SDK-owned learner protocol modules."""
-    generated_dir = Path(__file__).resolve().parent / "generated"
-    if str(generated_dir) not in sys.path:
-        sys.path.insert(0, str(generated_dir))
-    return (
-        importlib.import_module("parlando_agent_sdk.generated.parlando_rl_v1_pb2"),
-        importlib.import_module("parlando_agent_sdk.generated.parlando_rl_v1_pb2_grpc"),
-    )
+    """Returns the package-relative generated learner protocol modules."""
+    return parlando_rl_v1_pb2, parlando_rl_v1_pb2_grpc
 
 
 PlayerRole = Literal["A", "B"]
@@ -470,12 +455,8 @@ def _struct_to_dict(value: Struct) -> dict[str, Any]:
 
 
 def _optional_checkpoint(request: Any) -> str | None:
-    """Reads the optional checkpoint from protobuf requests and lightweight test doubles."""
-    if not hasattr(request, "checkpoint_id"):
-        return None
-    if hasattr(request, "HasField") and not request.HasField("checkpoint_id"):
-        return None
-    return str(request.checkpoint_id)
+    """Reads checkpoint presence using the generated protobuf presence contract."""
+    return str(request.checkpoint_id) if request.HasField("checkpoint_id") else None
 
 
 def _dict_to_struct(value: dict[str, Any]) -> Struct:

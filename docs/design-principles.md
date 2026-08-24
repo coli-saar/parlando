@@ -55,7 +55,11 @@ The Rust server must not depend on React or on the implementation of a participa
 
 Serving compiled participant assets from `Server::participant_app` is a deployment convenience, not architectural coupling. The protocol must remain implementable by a separately hosted or non-React client without changing the game semantics or server protocol.
 
-The current `Server` builder supports same-origin assets and deployments that put a frontend and server behind one reverse-proxy origin. It does not yet expose an allowed-origin policy for a browser frontend hosted on a different origin. That is deliberate deferred work, not a protocol dependency: add a narrow, explicit origin allowlist to `Server` before advertising cross-origin browser deployment. Do not expose the complete internal server configuration to solve it.
+The current `Server` builder supports same-origin assets and deployments that put a frontend and
+server behind one reverse-proxy origin. It does not expose an allowed-origin policy for a browser
+frontend hosted on a different origin. Cross-origin browser deployment is therefore unsupported.
+A future public contract would need a narrow origin allowlist; exposing the complete internal server
+configuration is not an acceptable substitute.
 
 The protocol carries accepted actions with role-specific resulting observations, messages, presence, shared completion, and narrow capabilities. It does not carry authoritative state, generic presentation events, server credentials, provider configuration, or storage records.
 
@@ -65,7 +69,11 @@ Agent construction precedes game delivery. `Factory::create(context).await` rece
 
 This mirrors a human participant entering before receiving game information and avoids requiring game initialization to wait before agent initialization can begin. Subsequent accepted actions call `observe_transition`; other-player messages call `observe_message`; normal game termination calls `finish` with the shared completion before `shutdown`; and `respond` may produce one non-empty action, message, or combined response. `finish` communicates domain information, while `shutdown` releases resources.
 
-The current runtime treats completion of `create` as construction readiness and temporarily applies the selected agent's action timeout to that await. A distinct readiness protocol, initialization timeouts and cancellation, and isolation of synchronous model loading remain deliberately unresolved and are the first lifecycle follow-up after the API cleanup. That follow-up must also guarantee that queued transitions cannot overtake `start` and that inbox removal and `shutdown` run on every exit path.
+Completion of `create` defines construction readiness, and the runtime applies the selected agent's
+action timeout to that await. The public lifecycle has no separate readiness signal,
+initialization-specific timeout, or isolation for synchronous model loading. Implementations must
+complete asynchronous construction within the action-timeout budget. The runtime preserves callback
+ordering and runs inbox removal and `shutdown` on terminal exit paths.
 
 ## Determinism and replay
 
@@ -93,10 +101,20 @@ There is no configurable participant title. The standard participant application
 
 In particular, there is no public `StudyConfig`, participant-page configuration object, session-limits object, provider configuration, or pairing-mode type in the game-author API. The server builder exposes only process composition needed before the dashboard opens: game metadata, storage location, optional participant assets, registered agent factories, public origin, and listening address.
 
+## Preserve durable data and historical dashboard access
+
+Database schema changes use a backup-first, in-place upgrade procedure. Before changing an existing database, create a restorable backup and verify the target database and schema version. Then apply the smallest explicit transformation directly to that database. Do not build a general migration framework, retain an indefinite ladder of historical migrations, or require export into a replacement database for an ordinary schema change. The backup is the rollback boundary.
+
+Code and schema changes must preserve dashboard access to every stored experiment. An older experiment may become invalid under current configuration rules, but the dashboard must still show the experiment, all of its sessions, and its configuration. The configuration must remain editable so an experimenter can bring it forward. Validation may mark the experiment invalid and must prevent new sessions until the configuration is corrected; validation must never make historical data or the configuration editor unavailable.
+
+Dashboard read paths therefore tolerate configurations that are structurally readable but invalid under current rules. Runtime construction, activation, and configuration saves remain strict. Any schema change must include compatibility tests that exercise an older stored experiment through session listing and configuration display/editing, not only tests that open a newly created database.
+
 ## Public API discipline
 
 A symbol is public only when downstream game, agent, or participant-application authors need a supported contract. Use by Parlando's dashboard, internal binaries, storage, or tests does not justify public exposure.
 
 Prefer domain operations over bags of implementation options. Prefer one operation that enforces an invariant over two operations callers must order correctly. Prefer adding a focused extension when a real integration needs it over publishing speculative provider or storage abstractions.
 
-Do not preserve obsolete public aliases during this cleanup. The ecosystem is still small, and one explicit migration is less costly than carrying two vocabularies and ambiguous semantics indefinitely. Future removals should be rarer and follow versioned migration guidance.
+Do not preserve obsolete public aliases merely to carry two vocabularies indefinitely. A breaking
+removal requires explicit versioned migration guidance, and supported contracts should otherwise
+remain stable within their compatibility window.

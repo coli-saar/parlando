@@ -30,6 +30,8 @@ export function MicrophoneMuteButton({
 
 export {
   ParticipantApp,
+  PartnerReconnectNotice,
+  ProlificHandoff,
   type GameSession,
   type GameTransition,
   type ParticipantAppProps

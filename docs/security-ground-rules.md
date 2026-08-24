@@ -3,12 +3,11 @@
 Status: **Authoritative**  
 Applies to: Parlando security reviews, release decisions, and deployment guidance
 
-This document defines what Parlando is trying to protect, which risks the project
-accepts, and how future security findings must be classified. When another audit,
-plan, note, or checklist conflicts with this document, this document controls.
-Changing these ground rules requires an intentional product decision recorded in
-`notes/technical-decisions.md`, not merely a new scanner result or generic security
-recommendation.
+This document defines what Parlando protects, which risks the project accepts,
+and how security findings are classified. When another public guide or audit
+conflicts with this document, this document controls. Changing these ground rules
+requires an explicit product decision; a scanner result or generic recommendation
+does not change the supported security model by itself.
 
 Security reviews should describe concrete limitations, likelihood, and deployment
 conditions. A finding is evidence for a release decision, not an automatic

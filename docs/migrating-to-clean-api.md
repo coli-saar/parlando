@@ -314,6 +314,11 @@ Do not add deprecated aliases. Port or delete tests that depend on obsolete beha
 - Custom clients reject unsupported protocol versions.
 - Rust, JavaScript, Python, and end-to-end suites pass.
 
-## Deferred readiness question
+## Construction-readiness limitation
 
-This migration preserves the current rule: an agent is considered constructed when `Factory::create(...).await` (or remote `CreateAgent`) returns; the current runtime temporarily bounds that await with the selected action timeout, and `start(initial_observation)` then begins game delivery. It does not define a separate readiness signal, initialization timeout/cancellation semantics, or isolation for synchronous model loading. Review these as the first follow-up after this API change; do not invent game-specific readiness messages while migrating.
+An agent is considered constructed when `Factory::create(...).await`, or remote `CreateAgent`,
+returns. The runtime bounds that operation with the selected action timeout, after which
+`start(initial_observation)` begins game delivery. There is no separate readiness signal,
+initialization timeout, cancellation contract, or isolation for synchronous model loading. Do not
+invent game-specific readiness messages while migrating; keep initialization within the supported
+factory contract.

@@ -53,19 +53,19 @@ use crate::{
         ParticipantPrincipal, UpgradePurpose, UpgradeTicketClaims, UpgradeTicketStore,
         ADMIN_ABSOLUTE_SECONDS,
     },
-    config::{AgentsMode, ConsentItemConfig, ExperimentConfig},
+    config::{AgentsMode, ExperimentConfig},
     game::{
-        parse_game_config, ActionRejection, AgentConfigField, AgentConfigValue, AgentDefinition,
-        Game, GameFactory, GameInitializationContext, GameMetadata, GameSessionContext, PlayerRole,
-        Seat, SecretValues,
+        parse_game_config, ActionRejection, AgentDefinition, Game, GameFactory,
+        GameInitializationContext, GameMetadata, GameSessionContext, PlayerRole, Seat,
+        SecretValues,
     },
     identity::{new_id, session_code},
     protocol::*,
     storage::{
         experiment_store_from_url, generated_experiment_id, now_iso, ConsentDeclarationRecord,
-        ExperimentRecord, LiveSession, MemoryState, ParticipantRecord, SessionEventRecord,
-        SessionParticipant, SessionParticipantRecord, SessionRecord, SharedExperimentStore,
-        StoredGameSettings, TranscriptSegment,
+        ExperimentRecord, LiveSession, MemoryState, ParticipantRecord, ProlificSubmissionRecord,
+        SessionEventRecord, SessionParticipant, SessionParticipantRecord, SessionRecord,
+        SharedExperimentStore, StoredGameSettings, TranscriptSegment,
     },
     transcription::{
         FinalTranscriptUtterance, SpeechmaticsTranscriptionProvider, TranscriptionEvent,
@@ -182,6 +182,17 @@ fn experiment_config_from_json(
     bootstrap: &ExperimentConfig,
     experiment_id: &str,
 ) -> Result<ExperimentConfig> {
+    let config = experiment_config_from_json_unvalidated(value, bootstrap, experiment_id)?;
+    config.validate()?;
+    Ok(config)
+}
+
+/// Restores bootstrap-only fields while preserving invalid revisions for dashboard inspection.
+fn experiment_config_from_json_unvalidated(
+    value: Value,
+    bootstrap: &ExperimentConfig,
+    experiment_id: &str,
+) -> Result<ExperimentConfig> {
     if !value.is_object() {
         bail!("experiment configuration must be a JSON object");
     }
@@ -189,7 +200,6 @@ fn experiment_config_from_json(
     config.experiment.id = Some(experiment_id.to_string());
     config.server = bootstrap.server.clone();
     config.database = bootstrap.database.clone();
-    config.validate()?;
     Ok(config)
 }
 
@@ -261,84 +271,12 @@ async fn hydrated_experiment_config<A: Game>(
         .map_err(|error| AppError::bad_request(error.to_string()))?;
     let experiment_secrets = state.store.experiment_secrets(experiment_id).await?;
     apply_experiment_secrets(&mut config, &experiment_secrets);
-    repair_legacy_agent_secret_references(&state.agent_definitions, &mut config);
     let game_secrets = state.store.game_secrets().await?;
     apply_game_provider_secrets(&mut config, &game_secrets);
     Ok(config)
 }
 
-/// Repairs references erased by the former credential-shaped-field redactor.
-fn repair_legacy_agent_secret_references(
-    definitions: &[AgentDefinition],
-    config: &mut ExperimentConfig,
-) {
-    let Some(selected) = config.agents.human_vs_agent.as_mut() else {
-        return;
-    };
-    let Some(factory_id) = selected
-        .factory
-        .as_deref()
-        .or_else(|| definitions.first().map(|definition| definition.id.as_str()))
-    else {
-        return;
-    };
-    let Some(definition) = definitions
-        .iter()
-        .find(|definition| definition.id == factory_id)
-    else {
-        return;
-    };
-    let Some(settings) = selected.config.as_object_mut() else {
-        return;
-    };
-    repair_legacy_agent_secret_fields(
-        &definition.config_fields,
-        settings,
-        factory_id,
-        "",
-        &config.game_secrets,
-    );
-}
-
-/// Restores only empty references whose dashboard-derived secret actually exists.
-fn repair_legacy_agent_secret_fields(
-    fields: &[AgentConfigField],
-    settings: &mut serde_json::Map<String, Value>,
-    factory_id: &str,
-    parent_path: &str,
-    secrets: &HashMap<String, String>,
-) {
-    for field in fields {
-        let path = if parent_path.is_empty() {
-            field.key.clone()
-        } else {
-            format!("{parent_path}.{}", field.key)
-        };
-        match &field.value {
-            AgentConfigValue::Json => {}
-            AgentConfigValue::Object { fields } => {
-                if let Some(object) = settings.get_mut(&field.key).and_then(Value::as_object_mut) {
-                    repair_legacy_agent_secret_fields(fields, object, factory_id, &path, secrets);
-                }
-            }
-            AgentConfigValue::SecretReference { .. } => {
-                let missing = settings
-                    .get(&field.key)
-                    .is_none_or(|value| value.as_str().is_none_or(str::is_empty));
-                if !missing {
-                    continue;
-                }
-                let key = derived_agent_secret_key(factory_id, &path);
-                if secrets.contains_key(&key) {
-                    settings.insert(field.key.clone(), Value::String(format!("game.{key}")));
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Mirrors the dashboard's stable hidden key for an agent-owned credential.
+/// Returns the stable hidden key for one dashboard-managed agent credential.
 fn derived_agent_secret_key(factory_id: &str, path: &str) -> String {
     format!("agent_{factory_id}_{path}")
         .chars()
@@ -351,6 +289,63 @@ fn derived_agent_secret_key(factory_id: &str, path: &str) -> String {
         })
         .take(128)
         .collect()
+}
+
+/// Adds server-owned default secret references to serialized agent field descriptors.
+fn dashboard_agent_definitions(definitions: &[AgentDefinition]) -> Result<Value> {
+    fn decorate(fields: &mut [Value], factory_id: &str, parent_path: &str) {
+        for field in fields {
+            let Some(object) = field.as_object_mut() else {
+                continue;
+            };
+            let Some(key) = object
+                .get("key")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let path = if parent_path.is_empty() {
+                key
+            } else {
+                format!("{parent_path}.{key}")
+            };
+            match object.get("type").and_then(Value::as_str) {
+                Some("secret_reference") => {
+                    object.insert(
+                        "secret_reference".to_string(),
+                        Value::String(format!(
+                            "game.{}",
+                            derived_agent_secret_key(factory_id, &path)
+                        )),
+                    );
+                }
+                Some("object") => {
+                    if let Some(children) = object.get_mut("fields").and_then(Value::as_array_mut) {
+                        decorate(children, factory_id, &path);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut value = serde_json::to_value(definitions)?;
+    for definition in value.as_array_mut().into_iter().flatten() {
+        let Some(object) = definition.as_object_mut() else {
+            continue;
+        };
+        let Some(factory_id) = object.get("id").and_then(Value::as_str).map(str::to_string) else {
+            continue;
+        };
+        if let Some(fields) = object
+            .get_mut("config_fields")
+            .and_then(Value::as_array_mut)
+        {
+            decorate(fields, &factory_id, "");
+        }
+    }
+    Ok(value)
 }
 
 /// Computes intake blockers while honoring providers injected by an embedding application.
@@ -398,7 +393,6 @@ fn validate_agent_configuration(
     let factory_id = selected
         .factory
         .as_deref()
-        .or_else(|| definitions.first().map(|definition| definition.id.as_str()))
         .context("no agent factory is selected")?;
     let definition = definitions
         .iter()
@@ -470,62 +464,12 @@ fn nonempty_string(value: &str) -> Option<String> {
     (!value.trim().is_empty()).then(|| value.to_string())
 }
 
-/// Resolves legacy dashboard-template placeholders into complete participant-facing prose.
-fn expanded_consent_items(
-    config: &ExperimentConfig,
-    game_settings: &StoredGameSettings,
-) -> Vec<ConsentItemConfig> {
-    let information_version = config.direct.participant_information_version.trim();
-    let institution = game_settings.institution.trim();
-    let processing_region = if config.speechmatics.realtime_url.contains("//eu.") {
-        "the European Union"
-    } else if config.speechmatics.realtime_url.contains("//us.") {
-        "the United States"
-    } else {
-        "the processing region described in the Participant Information and Privacy Notice"
-    };
-    config
-        .direct
-        .consents
-        .iter()
-        .cloned()
-        .map(|mut item| {
-            if information_version.is_empty() {
-                item.body = item.body.replace(
-                    ", version {{LOCAL_INFORMATION_VERSION}}, linked above",
-                    " linked above",
-                );
-            } else {
-                item.body = item
-                    .body
-                    .replace("{{LOCAL_INFORMATION_VERSION}}", information_version);
-            }
-            item.body = item.body.replace(
-                "{{INSTITUTION_NAME}}",
-                if institution.is_empty() {
-                    "the institution responsible for this study"
-                } else {
-                    institution
-                },
-            );
-            item.body = item
-                .body
-                .replace("{{SPEECHMATICS_ENTITY_AND_SERVICE}}", "Speechmatics")
-                .replace("{{SPEECHMATICS_PROCESSING_REGION}}", processing_region);
-            item
-        })
-        .collect()
-}
-
-/// Hashes the exact participant-information reference and expanded consent presentation.
-fn consent_configuration_hash(
-    config: &ExperimentConfig,
-    game_settings: &StoredGameSettings,
-) -> Result<String, AppError> {
+/// Hashes the exact reviewed participant-information reference and stored consent prose.
+fn consent_configuration_hash(config: &ExperimentConfig) -> Result<String, AppError> {
     let presented = json!({
         "participant_information_version": config.direct.participant_information_version,
         "participant_information_url": config.direct.participant_information_url,
-        "consents": expanded_consent_items(config, game_settings),
+        "consents": config.direct.consents,
     });
     let canonical = serde_json::to_string(&presented)
         .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
@@ -873,20 +817,14 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
     };
     let mut removed = Vec::new();
     for (public_session_id, experiment_id, session_id, observed_updated_at, reason) in candidates {
-        let removed_current_room = {
-            let mut memory = state.memory.write().await;
-            if memory
-                .sessions
-                .get(&public_session_id)
-                .is_some_and(|session| session.updated_at == observed_updated_at)
-            {
-                memory.sessions.remove(&public_session_id);
-                true
-            } else {
-                false
-            }
-        };
-        if !removed_current_room {
+        let room_is_current = state
+            .memory
+            .read()
+            .await
+            .sessions
+            .get(&public_session_id)
+            .is_some_and(|session| session.updated_at == observed_updated_at);
+        if !room_is_current {
             continue;
         }
         if reason != "terminal_cleanup" && session_id > 0 {
@@ -897,7 +835,14 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
                     .expire_session(&experiment_id, session_id, reason),
             )
             .await;
+            send_session_ended(state, &public_session_id, None, reason, None).await;
         }
+        state
+            .memory
+            .write()
+            .await
+            .sessions
+            .remove(&public_session_id);
         removed.push(public_session_id);
     }
     if removed.is_empty() {
@@ -2299,7 +2244,9 @@ async fn public_config<A: Game>(
             &config.direct.participant_information_version,
         ),
         participant_information_url: nonempty_string(&config.direct.participant_information_url),
-        consents: expanded_consent_items(config, &game_settings)
+        consents: config
+            .direct
+            .consents
             .iter()
             .map(|item| ConsentItemResponse {
                 id: item.id.clone(),
@@ -2311,6 +2258,16 @@ async fn public_config<A: Game>(
         voice: json!({
             "enabled": config.voice.enabled,
         }),
+        recruitment: if config.recruitment.prolific.enabled {
+            json!({
+                "provider": "prolific",
+                "decline_url": (!config.direct.consents.is_empty())
+                    .then_some("https://app.prolific.com/submissions"),
+                "return_url": "https://app.prolific.com/submissions",
+            })
+        } else {
+            json!({ "provider": "direct" })
+        },
     })
 }
 
@@ -2323,13 +2280,33 @@ async fn create_participant<A: Game>(
 
 async fn create_participant_inner<A: Game>(
     state: Arc<AppState<A>>,
-    _request: ParticipantCreateRequest,
+    request: ParticipantCreateRequest,
 ) -> Result<ParticipantCreateResponse, AppError> {
     let _intake_guard = require_open_experiment(&state).await?;
     enforce_creation_rate(&state).await?;
-    if !state.config.direct.enabled {
+    if !state.config.direct.enabled && !state.config.recruitment.prolific.enabled {
         return Err(AppError::not_found("Direct mode is disabled."));
     }
+    let prolific = if state.config.recruitment.prolific.enabled {
+        let prolific = request.prolific.ok_or_else(|| {
+            AppError::bad_request("Prolific participant parameters are required.")
+        })?;
+        if prolific.study_id != state.config.recruitment.prolific.study_id {
+            return Err(AppError::bad_request(
+                "This Prolific study id is not accepted.",
+            ));
+        }
+        for value in [&prolific.participant_id, &prolific.session_id] {
+            if value.is_empty() || value.len() > 128 || !value.is_ascii() {
+                return Err(AppError::bad_request(
+                    "Invalid Prolific participant parameters.",
+                ));
+            }
+        }
+        Some(prolific)
+    } else {
+        None
+    };
     let mut memory = state.memory.write().await;
     let attached_participants = memory
         .sessions
@@ -2367,10 +2344,27 @@ async fn create_participant_inner<A: Game>(
                 "Participant identifier is missing",
             )
         })?;
+    if let Some(prolific) = prolific {
+        state
+            .store
+            .record_prolific_submission(ProlificSubmissionRecord {
+                experiment_id: state.experiment_id.clone(),
+                participant_id,
+                prolific_participant_id: prolific.participant_id,
+                prolific_study_id: prolific.study_id,
+                prolific_session_id: prolific.session_id,
+            })
+            .await?;
+    }
     let participant = memory.create_participant(
         participant_id,
         research_id,
-        "direct".to_string(),
+        if state.config.recruitment.prolific.enabled {
+            "prolific"
+        } else {
+            "direct"
+        }
+        .to_string(),
         _intake_guard.data_purpose().to_string(),
     );
     let participant_credential = state.participant_auth.issue(participant.id.clone()).await;
@@ -2432,8 +2426,7 @@ async fn consent<A: Game>(
     } else {
         None
     };
-    let game_settings = state.game_settings.read().await.clone();
-    let consent_text_hash = Some(consent_configuration_hash(&state.config, &game_settings)?);
+    let consent_text_hash = Some(consent_configuration_hash(&state.config)?);
     let consent_metadata = json!({
         "participant_information_version": nonempty_string(&state.config.direct.participant_information_version),
         "participant_information_url": nonempty_string(&state.config.direct.participant_information_url),
@@ -2488,8 +2481,22 @@ async fn create_session<A: Game>(
 where
     A::State: Serialize,
 {
-    let _intake_guard = require_open_experiment(&state).await?;
     let participant_session_id = authenticated_participant_id(principal)?;
+    let existing = {
+        let memory = state.memory.read().await;
+        memory.sessions.values().find_map(|session| {
+            session
+                .participants
+                .get(&participant_session_id)
+                .map(|participant| (session.id.clone(), participant.role))
+        })
+    };
+    if let Some((public_session_id, role)) = existing {
+        return Ok(Json(
+            session_response(&state, &public_session_id, role).await?,
+        ));
+    }
+    let _intake_guard = require_open_experiment(&state).await?;
     require_consent(&state, &participant_session_id).await?;
     require_session_storage_reserve(&state).await?;
     let requested_mode = "direct".to_string();
@@ -3266,54 +3273,27 @@ async fn commit_final_transcript<A: Game>(
         text: utterance.text,
         metadata: json!({"provider":state.config.transcription.provider,"result_ids":utterance.result_ids}),
     };
-    let message = ConversationMessageResponse {
-        id: new_id("msg"),
-        public_session_id: public_session_id.to_string(),
-        sender_participant_session_id: Some(stored.participant_session_id.clone()),
-        sender_role: Some(stored.player.clone()),
-        text: stored.text.clone(),
-        origin: "voice_transcript".to_string(),
-        source_message_id: Some(stored.id.clone()),
-        metadata: json!({
+    let message = commit_conversation_message(
+        state,
+        public_session_id,
+        &stored.participant_session_id,
+        ConversationOrigin::VoiceTranscript,
+        stored.text.clone(),
+        Some(stored.id.clone()),
+        json!({
             "start_game_time_ms": stored.start_game_time_ms,
             "end_game_time_ms": stored.end_game_time_ms,
             "client_metadata": stored.metadata,
         }),
-        created_at: now_iso(),
-    };
-    let persist_result = async {
-        persist_session_event_required(
-            state,
-            public_session_id,
-            message.sender_participant_session_id.as_deref(),
-            "conversation_message",
-            conversation_message_event_payload(&message),
-            None,
-        )
-        .await?;
-        Result::<()>::Ok(())
-    }
+    )
     .await;
-    if let Err(error) = persist_result {
+    if let Err(error) = message {
         state
             .committed_transcripts
             .write()
             .await
             .remove(&idempotency_key);
-        return Err(AppError::from(error));
-    }
-    touch_session_activity(state, public_session_id).await;
-    if let Some(player_message) = message.player_message() {
-        let _ = state
-            .session_bus(public_session_id)
-            .await
-            .send(ServerMessage::broadcast(ServerPayload::Message {
-                public_session_id: public_session_id.to_string(),
-                message: player_message,
-            }));
-    }
-    if let Some(speaker) = player_role_from_str(&stored.player) {
-        notify_agents_of_message(state, public_session_id, speaker, stored.text.clone()).await;
+        return Err(error);
     }
     Ok(Some(stored))
 }
@@ -3375,101 +3355,109 @@ fn minimized_voice_diagnostic_metadata(metadata: &Value) -> Value {
     Value::Object(minimized)
 }
 
-/// Adds a conversation message while honoring the participant-message storage switch.
-async fn add_conversation<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
-    Path(public_session_id): Path<String>,
-    Json(input): Json<ConversationMessageIn>,
+/// Trusted source of one accepted conversation message.
+#[derive(Clone, Copy)]
+enum ConversationOrigin {
+    Typed,
+    VoiceTranscript,
+    Agent,
+}
+
+impl ConversationOrigin {
+    /// Returns the stable research-record origin label.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Typed => "typed",
+            Self::VoiceTranscript => "voice_transcript",
+            Self::Agent => "agent",
+        }
+    }
+}
+
+/// Commits and publishes one already-attributed player message through a single pipeline.
+async fn commit_conversation_message<A: Game>(
+    state: &Arc<AppState<A>>,
+    public_session_id: &str,
+    sender_participant_session_id: &str,
+    origin: ConversationOrigin,
+    text: String,
+    source_message_id: Option<String>,
+    metadata: Value,
 ) -> Result<Json<ConversationMessageResponse>, AppError> {
-    require_session(&state, &public_session_id).await?;
-    ensure_session_accepts_game_input(&state, &public_session_id).await?;
-    if input.text.chars().count() > 4_000 {
+    require_session(state, public_session_id).await?;
+    ensure_session_accepts_game_input(state, public_session_id).await?;
+    if text.chars().count() > 4_000 {
         return Err(AppError::bad_request("Conversation message is too long"));
     }
-    if serde_json::to_vec(&input.metadata)
+    if serde_json::to_vec(&metadata)
         .map_err(|error| AppError::bad_request(error.to_string()))?
         .len()
         > 8 * 1024
     {
         return Err(AppError::bad_request("Conversation metadata is too large"));
     }
-    let mut sender_participant_session_id = None;
-    let mut sender_role = None;
-    if let Some(candidate) = input
-        .metadata
-        .get("sender_participant_session_id")
-        .and_then(Value::as_str)
-    {
-        sender_participant_session_id = Some(candidate.to_string());
-        sender_role = Some(
-            participant_role(&state, &public_session_id, candidate)
-                .await?
-                .as_str()
-                .to_string(),
-        );
-    } else if let Some(role) = input.metadata.get("sender_role").and_then(Value::as_str) {
-        sender_role = Some(role.to_string());
-    }
+    let sender_role =
+        participant_role(state, public_session_id, sender_participant_session_id).await?;
     let message = ConversationMessageResponse {
         id: new_id("msg"),
-        public_session_id: public_session_id.clone(),
-        sender_participant_session_id,
-        sender_role,
-        text: input.text,
-        origin: input.origin,
-        source_message_id: input.source_message_id,
-        metadata: input.metadata,
+        public_session_id: public_session_id.to_string(),
+        sender_participant_session_id: Some(sender_participant_session_id.to_string()),
+        sender_role: Some(sender_role.as_str().to_string()),
+        text,
+        origin: origin.as_str().to_string(),
+        source_message_id,
+        metadata,
         created_at: now_iso(),
     };
     persist_session_event_required(
-        &state,
-        &public_session_id,
+        state,
+        public_session_id,
         message.sender_participant_session_id.as_deref(),
         "conversation_message",
         conversation_message_event_payload(&message),
         None,
     )
     .await?;
-    touch_session_activity(&state, &public_session_id).await;
+    touch_session_activity(state, public_session_id).await;
     if let Some(player_message) = message.player_message() {
         let _ = state
-            .session_bus(&public_session_id)
+            .session_bus(public_session_id)
             .await
             .send(ServerMessage::broadcast(ServerPayload::Message {
-                public_session_id: public_session_id.clone(),
+                public_session_id: public_session_id.to_string(),
                 message: player_message,
             }));
     }
-    if message.origin == "typed" {
+    if matches!(origin, ConversationOrigin::Typed) {
         state.telemetry.record_chat_accepted();
     }
-    if let Some(speaker) = message
-        .sender_role
-        .as_deref()
-        .and_then(player_role_from_str)
-    {
-        notify_agents_of_message(&state, &public_session_id, speaker, message.text.clone()).await;
-    }
+    notify_agents_of_message(
+        state,
+        public_session_id,
+        sender_role.player_role(),
+        message.text.clone(),
+    )
+    .await;
     Ok(Json(message))
 }
 
-/// Rejects participant game-channel input after a session has completed.
+/// Rejects participant game-channel input after any durable terminal outcome.
 async fn ensure_session_accepts_game_input<A: Game>(
     state: &Arc<AppState<A>>,
     public_session_id: &str,
 ) -> Result<(), AppError> {
-    let completed = {
+    let terminal = {
         let memory = state.memory.read().await;
-        memory
+        let status = &memory
             .sessions
             .get(public_session_id)
             .ok_or_else(|| AppError::not_found("Session not found."))?
-            .status
-            == "completed"
+            .status;
+        session_status_is_terminal(status)
     };
-    if completed {
+    if terminal {
         return Err(AppError::forbidden(
-            "Session is completed and no longer accepts game messages.",
+            "Session has ended and no longer accepts game messages.",
         ));
     }
     Ok(())
@@ -4883,19 +4871,30 @@ async fn admin_experiment_config<A: Game>(
     let configured_secrets = configured_secret_statuses(&stored_secrets);
     let activation_issues = if experiment.game_version == state.game_descriptor.version.to_string()
     {
-        let mut normalized = hydrated_experiment_config(&state, &experiment_id).await?;
-        let game_settings = state.game_settings.read().await.clone();
-        normalized.direct.consents = expanded_consent_items(&normalized, &game_settings);
-        experiment.config = persistable_config_json(&normalized)
-            .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-        experiment_activation_issues(&state, &experiment_id).await?
+        match experiment_config_from_json_unvalidated(
+            experiment.config.clone(),
+            &state.config,
+            &experiment_id,
+        ) {
+            Ok(mut normalized) => {
+                experiment.config = persistable_config_json(&normalized).map_err(|error| {
+                    AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                })?;
+                match normalized.validate() {
+                    Ok(()) => activation_issues_for_config(&state, &mut normalized),
+                    Err(error) => vec![error.to_string()],
+                }
+            }
+            Err(error) => vec![error.to_string()],
+        }
     } else {
         Vec::new()
     };
     Ok(Json(json!({
         "experiment": experiment,
         "game_yaml": game_yaml,
-        "agent_factories": state.agent_definitions,
+        "agent_factories": dashboard_agent_definitions(&state.agent_definitions)
+            .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?,
         "configured_secrets": configured_secrets,
         "activation_issues": activation_issues,
     })))
@@ -7087,6 +7086,11 @@ async fn websocket_loop<A: Game>(
     )
     .await;
     let bus = state.session_bus(&public_session_id).await;
+    let _ = bus.send(ServerMessage::broadcast(
+        ServerPayload::PartnerReconnected {
+            public_session_id: public_session_id.clone(),
+        },
+    ));
     let mut receiver = bus.subscribe();
     if let Some(message) = presence_message(&state, &public_session_id).await {
         let _ = bus.send(message);
@@ -7118,7 +7122,7 @@ async fn websocket_loop<A: Game>(
     loop {
         let next_message = tokio::select! {
             _ = shutdown.recv() => break,
-            _ = tokio::time::sleep(Duration::from_secs(90)) => break,
+            _ = tokio::time::sleep(Duration::from_secs(5)) => break,
             message = FuturesStreamExt::next(&mut incoming) => message,
         };
         let Some(Ok(message)) = next_message else {
@@ -7224,6 +7228,143 @@ async fn websocket_loop<A: Game>(
                 })
             }),
     );
+    let grace_seconds = state.config.session.reconnect_grace_seconds.max(0) as u64;
+    if grace_seconds == 0 {
+        let _ = abandon_session(
+            &state,
+            &public_session_id,
+            &participant_session_id,
+            "reconnect_timeout",
+        )
+        .await;
+        return;
+    }
+    let deadline = chrono::Utc::now() + chrono::Duration::seconds(grace_seconds as i64);
+    let _ = bus.send(ServerMessage::broadcast(
+        ServerPayload::PartnerReconnecting {
+            public_session_id: public_session_id.clone(),
+            deadline_at: deadline.to_rfc3339(),
+        },
+    ));
+    let reconnect_state = state.clone();
+    let reconnect_session_id = public_session_id.clone();
+    let reconnect_participant_id = participant_session_id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(grace_seconds)).await;
+        let still_disconnected = reconnect_state
+            .memory
+            .read()
+            .await
+            .sessions
+            .get(&reconnect_session_id)
+            .and_then(|session| session.participants.get(&reconnect_participant_id))
+            .is_some_and(|participant| !participant.connected);
+        if !still_disconnected {
+            return;
+        }
+        if let Ok(true) = abandon_session(
+            &reconnect_state,
+            &reconnect_session_id,
+            &reconnect_participant_id,
+            "reconnect_timeout",
+        )
+        .await
+        {
+            send_session_ended(
+                &reconnect_state,
+                &reconnect_session_id,
+                Some(&reconnect_participant_id),
+                "reconnect_timeout",
+                None,
+            )
+            .await;
+        }
+    });
+}
+
+/// Sends terminal state as a recipient-specific consequence with an optional Prolific handoff.
+async fn send_session_ended<A: Game>(
+    state: &Arc<AppState<A>>,
+    public_session_id: &str,
+    actor_participant_session_id: Option<&str>,
+    reason: &str,
+    completion: Option<Value>,
+) {
+    let recipients = state
+        .memory
+        .read()
+        .await
+        .sessions
+        .get(public_session_id)
+        .map(|session| {
+            session
+                .participants
+                .values()
+                .filter(|participant| participant.source != "agent")
+                .map(|participant| {
+                    (
+                        participant.participant_session_id.clone(),
+                        participant.source.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let bus = state.session_bus(public_session_id).await;
+    for (recipient, source) in recipients {
+        let outcome = if reason == "game_completed" {
+            ParticipantOutcomeKind::Completed
+        } else if reason == "waiting_timeout" {
+            ParticipantOutcomeKind::PartnerUnavailable
+        } else if matches!(reason, "idle_timeout" | "maximum_lifetime") {
+            ParticipantOutcomeKind::TimedOut
+        } else if actor_participant_session_id == Some(recipient.as_str()) {
+            if reason == "reconnect_timeout" {
+                ParticipantOutcomeKind::TimedOut
+            } else {
+                ParticipantOutcomeKind::Withdrew
+            }
+        } else {
+            ParticipantOutcomeKind::PartnerLeft
+        };
+        let handoff = (source == "prolific")
+            .then(|| prolific_handoff(&state.config, &outcome))
+            .flatten();
+        let _ = bus.send(ServerMessage::targeted(
+            recipient,
+            ServerPayload::SessionEnded {
+                public_session_id: public_session_id.to_string(),
+                outcome,
+                reason: reason.to_string(),
+                completion: completion.clone(),
+                handoff,
+            },
+        ));
+    }
+}
+
+/// Selects a configured Prolific code only after a durable provider-neutral outcome exists.
+fn prolific_handoff(
+    config: &ExperimentConfig,
+    outcome: &ParticipantOutcomeKind,
+) -> Option<RecruitmentHandoff> {
+    let paths = &config.recruitment.prolific.completion_paths;
+    let code = match outcome {
+        ParticipantOutcomeKind::Completed => &paths.completed,
+        ParticipantOutcomeKind::PartnerLeft => &paths.partner_left,
+        ParticipantOutcomeKind::PartnerUnavailable => &paths.partner_unavailable,
+        ParticipantOutcomeKind::TimedOut => &paths.timed_out,
+        ParticipantOutcomeKind::TechnicalFailure => &paths.technical_failure,
+        ParticipantOutcomeKind::Withdrew => return None,
+    };
+    if code.is_empty() {
+        return None;
+    }
+    Some(RecruitmentHandoff {
+        provider: "prolific".to_string(),
+        code: code.clone(),
+        url: format!("https://app.prolific.com/submissions/complete?cc={code}"),
+    })
 }
 
 /// Atomically records an intentional departure and closes the session to further game input.
@@ -7231,6 +7372,7 @@ async fn abandon_session<A: Game>(
     state: &Arc<AppState<A>>,
     public_session_id: &str,
     participant_session_id: &str,
+    reason: &str,
 ) -> Result<bool> {
     let transition_lock = session_transition_lock(state, public_session_id).await;
     let _transition_guard = transition_lock.lock().await;
@@ -7250,7 +7392,7 @@ async fn abandon_session<A: Game>(
         public_session_id,
         Some(participant_session_id),
         "session_abandoned",
-        json!({"reason": "participant_left"}),
+        json!({"reason": reason}),
         None,
     )
     .await?;
@@ -7357,12 +7499,23 @@ async fn handle_client_message<A: Game>(
             let _ = bus.send(voice_message(&state, public_session_id).await);
         }
         ClientMessage::Leave => {
-            match abandon_session(&state, public_session_id, participant_session_id).await {
+            match abandon_session(
+                &state,
+                public_session_id,
+                participant_session_id,
+                "participant_left",
+            )
+            .await
+            {
                 Ok(true) => {
-                    let _ = bus.send(ServerMessage::broadcast(ServerPayload::Abandoned {
-                        public_session_id: public_session_id.to_string(),
-                        code: "participant_left".to_string(),
-                    }));
+                    send_session_ended(
+                        &state,
+                        public_session_id,
+                        Some(participant_session_id),
+                        "participant_left",
+                        None,
+                    )
+                    .await;
                 }
                 Ok(false) => {}
                 Err(error) => {
@@ -7422,16 +7575,14 @@ async fn handle_client_message<A: Game>(
                 ));
                 return;
             }
-            let input = ConversationMessageIn {
+            if let Err(error) = commit_conversation_message(
+                &state,
+                public_session_id,
+                participant_session_id,
+                ConversationOrigin::Typed,
                 text,
-                origin: "typed".to_string(),
-                source_message_id: None,
-                metadata: json!({"sender_participant_session_id": participant_session_id}),
-            };
-            if let Err(error) = add_conversation(
-                State(state.clone()),
-                Path(public_session_id.to_string()),
-                Json(input),
+                None,
+                json!({}),
             )
             .await
             {
@@ -7525,7 +7676,7 @@ async fn handle_client_message<A: Game>(
             )
             .await
             {
-                Ok((completed, completion)) => {
+                Ok(outcome) => {
                     broadcast_player_views(
                         state.clone(),
                         public_session_id,
@@ -7533,11 +7684,15 @@ async fn handle_client_message<A: Game>(
                         observed_action,
                     )
                     .await;
-                    if completed {
-                        let _ = bus.send(ServerMessage::broadcast(ServerPayload::Completed {
-                            public_session_id: public_session_id.to_string(),
-                            completion: completion.unwrap_or(Value::Null),
-                        }));
+                    if let TransitionOutcome::Completed(completion) = outcome {
+                        send_session_ended(
+                            &state,
+                            public_session_id,
+                            None,
+                            "game_completed",
+                            Some(completion),
+                        )
+                        .await;
                     }
                 }
                 Err(error) => {
@@ -7716,13 +7871,19 @@ async fn flush_rejected_input_aggregates<A: Game>(
     }
 }
 
+/// Complete result of one committed action without an invalid Boolean/optional pairing.
+enum TransitionOutcome {
+    Continued,
+    Completed(Value),
+}
+
 async fn submit_action<A: Game>(
     state: Arc<AppState<A>>,
     public_session_id: &str,
     participant_session_id: &str,
     role: Seat,
     action: A::Action,
-) -> Result<(bool, Option<Value>)>
+) -> Result<TransitionOutcome>
 where
     A::State: Serialize,
 {
@@ -7774,14 +7935,14 @@ where
         )
         .await?,
     ];
-    if completed {
+    if let Some(completion_json) = completion_json.as_ref() {
         durable_events.push(
             session_event_record(
                 &state,
                 public_session_id,
                 Some(participant_session_id),
                 "session_completed",
-                completion_json.clone().unwrap_or(Value::Null),
+                completion_json.clone(),
                 None,
             )
             .await?,
@@ -7789,10 +7950,7 @@ where
     }
     if let Err(error) = state
         .store
-        .commit_session_transition(
-            durable_events,
-            completed.then(|| completion_json.clone().unwrap_or(Value::Null)),
-        )
+        .commit_session_transition(durable_events, completion_json.clone())
         .await
     {
         tracing::error!(%error, public_session_id, "could not commit game transition");
@@ -7822,7 +7980,10 @@ where
     if completed && state.config.agents.mode == AgentsMode::HumanVsHuman {
         shutdown_session_log(&state, public_session_id).await;
     }
-    Ok((completed, completion_json))
+    Ok(match completion_json {
+        Some(completion) => TransitionOutcome::Completed(completion),
+        None => TransitionOutcome::Continued,
+    })
 }
 
 async fn broadcast_player_views<A: Game>(
@@ -7907,15 +8068,6 @@ where
 /// Builds the stable map key used for one session-local agent instance.
 fn agent_key(public_session_id: &str, participant_session_id: &str) -> String {
     format!("{public_session_id}:{participant_session_id}")
-}
-
-/// Converts a wire-format role string into a player role.
-fn player_role_from_str(value: &str) -> Option<PlayerRole> {
-    match value {
-        "A" => Some(PlayerRole::A),
-        "B" => Some(PlayerRole::B),
-        _ => None,
-    }
 }
 
 /// Returns the currently available actions for an agent role in a session.
@@ -8028,12 +8180,12 @@ async fn handle_agent_response<A: Game>(
     participant_session_id: &str,
     role: Seat,
     response: AgentResponse<A::Action>,
-) -> Result<(bool, Option<Value>)>
+) -> Result<TransitionOutcome>
 where
     A::State: Serialize,
 {
     let (action, message) = response.into_parts();
-    let mut outcome = (false, None);
+    let mut outcome = TransitionOutcome::Continued;
     if let Some(action) = action {
         let observed_action = protocol_json(&action)?;
         persist_session_event(
@@ -8062,15 +8214,14 @@ where
         .await;
     }
     if let Some(text) = message {
-        if let Ok(Json(message)) = add_conversation(
-            State(state.clone()),
-            Path(public_session_id.to_string()),
-            Json(ConversationMessageIn {
-                text,
-                origin: "agent".to_string(),
-                source_message_id: None,
-                metadata: json!({"sender_participant_session_id": participant_session_id}),
-            }),
+        if let Ok(Json(message)) = commit_conversation_message(
+            &state,
+            public_session_id,
+            participant_session_id,
+            ConversationOrigin::Agent,
+            text,
+            None,
+            json!({}),
         )
         .await
         {
@@ -8088,7 +8239,7 @@ async fn request_agent_decision<A: Game>(
     participant_session_id: &str,
     role: Seat,
     timeout: f64,
-) -> Result<Option<(bool, Option<Value>)>>
+) -> Result<Option<TransitionOutcome>>
 where
     A::State: Serialize,
 {
@@ -8409,17 +8560,18 @@ async fn maybe_start_agent<A: Game>(
                 )
                 .await
                 {
-                    Ok(Some((completed, completion))) => {
-                        if completed {
-                            awaiting_completion = true;
-                            let _ = state.session_bus(&public_session_id).await.send(
-                                ServerMessage::broadcast(ServerPayload::Completed {
-                                    public_session_id: public_session_id.clone(),
-                                    completion: completion.unwrap_or(Value::Null),
-                                }),
-                            );
-                        }
+                    Ok(Some(TransitionOutcome::Completed(completion))) => {
+                        awaiting_completion = true;
+                        send_session_ended(
+                            &state,
+                            &public_session_id,
+                            None,
+                            "game_completed",
+                            Some(completion),
+                        )
+                        .await;
                     }
+                    Ok(Some(TransitionOutcome::Continued)) => {}
                     Ok(None) => {}
                     Err(error) => {
                         last_error = Some(error.to_string());

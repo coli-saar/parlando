@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { ActiveGreatTree } from "./App";
+import { ActiveGreatTree, GreatTreeSuccess } from "./App";
 import { ALL_LIMB_IDS, ALL_ROOT_IDS } from "./game/types";
 import type { GreatTreeObservation, GreatTreeCompletion } from "./game/types";
 
@@ -65,14 +65,10 @@ describe("ActiveGreatTree", () => {
     expect(screen.getByRole("img", { name: /roots/i })).toBeInTheDocument();
   });
 
-  it("shows a terminal screen and hides the gates once completed", () => {
-    const session = makeSession({
-      observation: { role: "crown", limbs: ALL_LIMB_IDS.map((id) => ({ id, sun: true, water: true })) },
-      completion: { floweredLimbs: ["spire", "hook", "fork"] }
-    });
-    render(<ActiveGreatTree session={session} />);
-    expect(screen.getByText(/the tree/i)).toBeInTheDocument();
-    expect(screen.queryAllByRole("button", { name: "gate" })).toHaveLength(0);
-    expect(screen.getByRole("button", { name: /leave game/i })).toBeInTheDocument();
+  it("describes normal completion as a cooperative success", () => {
+    render(<GreatTreeSuccess completion={{ floweredLimbs: ["spire", "hook", "fork"] }} />);
+    expect(screen.getByText("Success")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "The Great Tree is in bloom!" })).toBeInTheDocument();
+    expect(screen.getByText("3 of five limbs flowered together.")).toBeInTheDocument();
   });
 });

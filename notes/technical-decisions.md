@@ -1704,3 +1704,235 @@ the deadline before its failure marks the window expired; no attempt is schedule
 - Choice: keep representative version/sequence/timestamp headers in `proto/pcm_frame_v1.fixtures.json` and consume them from both suites. Treat the microphone level analyser as optional, and make teardown best-effort so one faulty browser resource cannot leak the rest.
 - Tradeoffs: the fixture intentionally covers framing metadata rather than duplicating a 960-byte zero payload. Browser analyser failure no longer prevents otherwise valid microphone capture, so UI level metering may be absent while voice remains usable.
 - Follow-up risk: any future audio protocol version must update the shared fixture and both encoders together.
+
+## 2026-08-22: The storage trait remains an acceptable single-implementation seam
+
+Context: `ExperimentStore` currently has one production implementation,
+`SqliteExperimentStore`. A code audit questioned whether the broad trait added useful abstraction
+while no alternative backend exists.
+
+Decision: retain `ExperimentStore` and its shared trait-object handle. The boundary is useful for
+keeping authentication, session logging, routing, and runtime orchestration independent of SQLx
+types, and a single implementation is acceptable. Do not invent another backend or split the trait
+merely to justify it; revisit the shape only when a concrete second implementation or a narrower
+fault-injection seam requires a change.
+
+Tradeoffs: the trait remains broader than any individual consumer and adds dynamic dispatch, but
+the cost is small beside database I/O and preserves a clear durable-storage ownership boundary.
+SQLite-specific behavior may be documented by methods whose current implementation necessarily
+reflects the only supported backend.
+
+Follow-up risk: new methods can turn the trait into an unstructured mirror of the SQLite store.
+Add operations only when they express an application-level atomicity or query contract, not as a
+mechanical wrapper around arbitrary SQL.
+
+## 2026-08-22: Browser games consume server-owned observations and affordances exactly
+
+Context: Space Game retained a TypeScript copy of its initial state, transitions, derived systems,
+and available-action calculation. The live client could use that calculation when the server sent
+an empty action list, creating a second mechanics authority and preserving unused action variants.
+
+Decision: keep all mechanics, derived semantic state, and action availability in Rust. The browser
+models the exact role-specific observation, renders its supplied `systems` value, and submits only
+actions advertised by the server or explicit movement controls that the server validates. Remove
+the duplicate TypeScript engine and action variants that no current affordance produces.
+
+Tradeoffs: presentation code still understands action shapes to label and preview controls, and
+movement keys may optimistically submit a rejected move. It no longer predicts authoritative state
+or manufactures a supposedly available device action.
+
+Follow-up risk: changes to a game's observation or action JSON remain a coordinated Rust and
+TypeScript contract change until game-specific type generation is introduced.
+
+## 2026-08-22: Protocol inputs and agent configuration fail closed
+
+Context: the browser accepted parsed JSON as a trusted server union, while agent startup repaired
+missing factories and secret references from registration order and naming conventions. Those
+fallbacks hid configuration drift and made behavior depend on incidental catalogue order.
+
+Decision: decode every participant-server message at runtime, reject unknown versions, variants,
+and malformed fields, and make handling exhaustive. Require every configured agent to name its
+factory. Publish server-owned secret references in the agent field descriptors and require the
+dashboard to use those references exactly; do not repair stored configurations during startup.
+
+Tradeoffs: malformed messages and incomplete old agent configurations now fail visibly instead of
+being guessed into a runnable shape. Adding a protocol variant requires updating the decoder and
+shared fixtures, and adding a secret field requires declaring its reference in the server schema.
+
+## 2026-08-22: Consent and conversation records preserve their direct source
+
+Context: consent text was expanded from placeholder-bearing templates at read time, so the hash
+could describe inferred text rather than the stored revision. Typed chat, voice transcripts, and
+agent messages also followed separate persistence and broadcast paths with pseudo-attribution in
+metadata.
+
+Decision: reject consent placeholders and hash the exact stored consent items. Require concrete
+study information in each configured revision. Commit all conversation messages through one
+origin-aware pipeline that derives the sender role from the participant identity, persists the
+same canonical event, broadcasts it, updates activity, and notifies agents.
+
+Tradeoffs: operators must save complete participant-facing text rather than rely on installation
+fallbacks. The shared message path is stricter about sender identity and metadata size, but removes
+three subtly different definitions of an accepted conversation message.
+
+## 2026-08-22: Generated Python protocol modules use normal package imports
+
+Context: the Python SDK modified `sys.path` and dynamically imported checked-in generated modules,
+and its protobuf presence helper supported arbitrary lightweight objects in production code.
+
+Decision: use package-relative imports for generated modules, make proto generation rewrite gRPC's
+absolute sibling imports to relative imports, and rely on protobuf `HasField` semantics for optional
+checkpoint identity. Keep test doubles conformant to the production request contract.
+
+Tradeoffs: generated modules must remain present in the package, as already required by the build.
+Regeneration includes a small deterministic import-normalization pass, avoiding runtime import-path
+mutation and test-only compatibility branches.
+
+## 2026-08-22: SQLite starts from one current schema baseline
+
+Context: application startup carried eleven historical, data-rewriting SQLite migrations even
+though this codebase no longer promises in-place upgrades from those releases. The ladder also
+kept obsolete columns, status names, identifier schemes, and provider-placement rules alive in
+production and in tests.
+
+Decision: create the complete current schema directly and stamp empty databases with baseline
+version 11. Open databases already stamped at version 11 without mutation. Reject older versions
+and populated unstamped databases with an explicit export/import instruction; do not guess at or
+rewrite their historical shape in the running server.
+
+Tradeoffs: deployment upgrades from a pre-baseline database require using a compatible older
+release to export data and importing it into a fresh current database. New installations have a
+shorter, deterministic initialization path, and production no longer contains dormant legacy data
+transformations.
+
+Follow-up risk: the schema version must be advanced deliberately whenever an in-place current-era
+schema change is introduced. That change should come with a bounded upgrade policy rather than a
+new indefinite historical ladder.
+
+## 2026-08-23: Session endings derive participant-specific recruitment outcomes
+
+Context: game completion, explicit departure, lifecycle expiry, transient disconnects, page reloads,
+and Prolific completion paths affect a shared session and its two participants differently. Treating
+each case as one session status cannot express that a departing participant withdrew while their
+partner lost a peer, and a long reconnect grace leaves the connected participant without useful
+feedback.
+
+Decision: design one atomic session-ending record that derives one immutable outcome per human
+participant. Detect dead game connections after approximately five seconds, pause play, and reserve
+the role for a fifteen-second reconnect window displayed through a reusable client widget. Support
+same-tab reload with an opaque credential in experiment-scoped `sessionStorage` and an authenticated
+resume snapshot. Keep all Prolific participant and submission identifiers in a deletable,
+dashboard-only table excluded from every export; map provider-neutral participant outcomes to
+dashboard-configured completion paths. The complete design and deterministic lifecycle test matrix
+are in `docs/session-ending-prolific-reconnection-design.md`.
+
+Tradeoffs: a short reconnect window handles ordinary transport interruptions and reloads without
+making the partner wait minutes, but it does not recover a session after a server restart or across
+devices. The runtime and client gain an explicit pause/resume protocol, while generated games only
+render and style the supplied widget. Persistent Prolific correlation remains present in database
+backups until their separate retention window expires.
+
+Follow-up risks: finalize the game outcome-key API, Prolific repeat-submission and retention policy,
+experiment-clone behavior, and the browser automation lane before implementation.
+## 2026-08-23: Centralize participant termination, reload recovery, and recruitment handoff
+
+- Context: Games need consistent behavior for normal completion, participant departure, short network loss, matchmaking timeout, and infrastructure failure. Prolific correlation must remain private and excluded from research exports.
+- Decision: The Rust runtime owns durable shared termination reasons and recipient-specific participant outcomes. Prolific URL identifiers live only in `prolific_submissions`; the table is deliberately absent from export queries. Experiment configuration maps provider-neutral outcomes to completion codes. The JS participant SDK owns tab-scoped credential recovery, a 15-second reconnect loop, the stylable partner countdown, the standard terminal surface, and the provider handoff. Game code supplies only normal `Game::completion` data and gates controls on `interactionEnabled`.
+- Tradeoffs: `sessionStorage` makes ordinary reloads recoverable without sharing credentials across tabs, but cannot recover a closed tab or browser. A 15-second grace period admits quick Wi-Fi/page-reload recovery while avoiding a long ambiguous wait for the partner. Prolific identifiers remain persistent until the private table is explicitly retired.
+- Risks and follow-up: Server restart recovery still requires reconstructing live game state from durable events and is outside this change. The runtime should eventually expose an explicit read-only resume endpoint so reload recovery does not reuse the join operation. Add operational retention/deletion controls for `prolific_submissions` before retiring Prolific integration.
+
+## 2026-08-23: Configuration validity never gates historical session inspection
+
+- Context: Tightening a configuration validator made an older experiment revision temporarily invalid. The dashboard coupled configuration loading to workspace visibility, hiding sessions that remained intact in storage.
+- Decision: A selected experiment always retains its workspace tabs and read-only session access. Configuration load failure disables only configuration editing and lifecycle actions that require a runnable configuration; it does not hide sessions, notes, exports, or privacy inspection.
+- Tradeoff: Some non-configuration views may independently report that a runtime-specific operation is unavailable, but durable historical data remains inspectable.
+
+## 2026-08-23: Generated Prolific codes use two dictionary words
+
+- Context: Numeric suffixes made generated completion codes harder to read and communicate.
+- Decision: The dashboard generator concatenates one uppercase adjective and one uppercase noun, without digits or punctuation. Manual Prolific codes remain accepted as alphanumeric strings because externally created codes may not follow this presentation convention.
+- Tradeoff: The bundled 32-by-32 vocabulary has 1,024 combinations, so experimenters should still check that codes are distinct within an experiment.
+
+## 2026-08-23: Dashboard participant links simulate Prolific intake
+
+- Context: Prolific-enabled intake correctly rejects participant pages without all three provider query parameters, which made the dashboard's plain participant link unusable for local testing.
+- Decision: For a Prolific-enabled experiment, the dashboard link includes a synthetic `PROLIFIC_PID`, the experiment's exact configured `STUDY_ID`, and a synthetic `SESSION_ID`. Synthetic participant and session identifiers are unique per dashboard page load and stable across its periodic rerenders. Direct experiments retain their clean participant URL.
+- Tradeoff: Opening the same generated link more than once represents the same synthetic Prolific visit. Reloading the dashboard generates a fresh test identity.
+
+## 2026-08-23: Use Prolific completion-path terminology in configuration
+
+- Context: Outcome-specific code fields were technically correct but did not tell experimenters where the values correspond in Prolific.
+- Decision: Dashboard copy calls each mapping a Prolific completion path with a custom completion code, points to Data collection → Completion paths, and explains that Parlando constructs the completion URL from that code. Parlando outcome names remain visible so the routing condition is unambiguous.
+- Tradeoff: Submission-processing actions remain configured in Prolific rather than duplicated in Parlando; the dashboard does not prescribe approval, return, or rejection policy.
+
+## 2026-08-23: Declining consent returns to Prolific before registration
+
+- Context: Prolific participants must be able to decline configured consent items, while direct participants do not need a provider-return action.
+- Decision: When consent items exist, the shared participant landing page places a succinct “Do not consent” secondary action beside “Enter waiting room” only for Prolific intake. It returns to the participant's Prolific submissions page before participant registration, consent recording, or matchmaking; Parlando does not require or emit a no-consent completion code.
+- Tradeoff: Generated games must style the shared `.parlando-decline-consent` lifecycle class. The participant completes Prolific's own “Stop Without Completing” flow rather than following an outcome-specific completion-code redirect.
+
+## 2026-08-23: Dashboard configuration reads tolerate invalid revisions
+
+- Context: A newly introduced validation rule made an older stored revision unavailable in the dashboard, preventing the experimenter from viewing and correcting an otherwise structurally readable configuration.
+- Decision: Dashboard configuration reads deserialize and normalize stored revisions without applying current runtime validation. Validation failures are returned as activation issues inside the editable configuration view. Saving, activating, and constructing a runtime remain strictly validated.
+- Tradeoff: A structurally malformed configuration can still lack fields the curated editor expects, but the raw revision remains visible and repairable instead of turning the entire configuration tab into an error page.
+
+## 2026-08-24: Schema upgrades are backup-first and in place
+
+- Context: Rejecting an older database or requiring export and import preserved a clean runtime but made ordinary code upgrades operationally disruptive. A long-lived migration ladder would create the opposite problem by retaining obsolete historical transformations indefinitely.
+- Decision: Before a schema change, make a restorable backup of the database and then apply one explicit, bounded transformation to the database in place. Do not introduce a general migration framework or an accumulating migration ladder. This decision supersedes the 2026-08-22 export/import requirement for post-baseline schema changes.
+- Tradeoff: Each schema change needs a deliberately reviewed upgrade operation and a verified backup rather than relying on generic automatic migration machinery. Rollback restores the backup.
+
+## 2026-08-24: Historical experiments remain inspectable and repairable
+
+- Context: Configuration and schema evolution can make an older experiment invalid according to current runtime rules. Treating that invalidity as a read failure hides the information needed to diagnose and repair the experiment.
+- Decision: Every code and schema change must preserve dashboard display of stored experiments, their sessions, and an editable configuration. Current validation may classify an older experiment as invalid and block new sessions, but it must be reported inside the dashboard rather than gating historical reads or editing. Compatibility tests must cover session visibility and configuration display/editing for an older stored experiment.
+- Tradeoff: Dashboard read models must tolerate some values that runtime construction and saves reject. The system maintains a strict write and activation boundary while deliberately accepting a broader read boundary.
+
+## 2026-08-24: Games supply completion content inside a provider-neutral terminal shell
+
+- Context: A generic “Session complete” screen hid the meaning of Great Tree's cooperative win, while letting games replace the entire terminal surface would duplicate Prolific handoff behavior and invite provider-specific branches.
+- Decision: `ParticipantApp` accepts a game-owned `renderCompletion` function for normal game completion. The game controls the semantic result content and styles the shared terminal classes. Parlando appends its premade Prolific handoff widget only when the participant arrived through Prolific; direct and Prolific participants otherwise see identical game-ending content. Runtime failures and disconnect outcomes remain runtime-owned.
+- Tradeoff: Generated game CSS must deliberately cover the terminal shell and handoff classes. Games gain presentation control over normal completion without gaining recruitment-provider logic.
+
+## 2026-08-24: Recruitment source is a dashboard-only session fact
+
+- Context: The session summary labeled a legacy, hardcoded `mode` value as “Mode,” causing Prolific sessions to appear as Direct. Prolific correlation is intentionally stored only in a private dashboard table and excluded from exports.
+- Decision: Replace the dashboard's Mode row with Recruitment. Derive its value from the selected session's private participant rows: any attached Prolific submission makes the session Prolific; otherwise it is Direct. Do not repurpose the exported session `mode` field to carry recruitment-provider information.
+- Tradeoff: Recruitment is derived when the dashboard loads participant details rather than duplicated on the exported session record. This also classifies existing sessions correctly without a database schema change.
+
+## 2026-08-24: Shared lifecycle cards remain content-sized inside game shells
+
+- Context: Great Tree's full-height flex shell stretched the shared landing card along the flex cross axis. Because the card uses a grid layout, its rows then distributed the extra viewport height between the consent, voice-preparation, and action sections, producing large empty gaps and an apparently broken landing page.
+- Decision: Game shells that host Parlando lifecycle surfaces explicitly align their cards at the start of the flex cross axis. Lifecycle cards size to their content with a bounded responsive width; terminal cards opt into vertical centering with their own margins. Great Tree styles every shared lifecycle state as one coherent system, including consent, voice preparation, waiting, reconnect, errors, normal completion, and Prolific handoff. The game-generation guidance requires desktop and mobile checks for these states.
+- Tradeoff: Games retain control of their visual language and terminal content, while their stylesheet must honor the shared lifecycle class contract. The explicit alignment prevents future full-height shell changes from silently stretching lifecycle grids.
+
+## 2026-08-24: The shared Prolific handoff owns completion-code copying
+
+- Context: Participants may need to transfer a custom completion code from Parlando into Prolific. Selecting and copying codewords manually is needlessly error-prone, while implementing clipboard behavior in each game would duplicate recruitment-provider logic.
+- Decision: The JS client's premade Prolific handoff places a keyboard-accessible copy button beside the completion code. It uses the browser Clipboard API, announces successful copying, and preserves a selectable code with explicit manual-copy guidance when clipboard access fails. Games style the shared code row, button, and status classes but do not implement copying themselves.
+- Tradeoff: Automatic copying requires a secure browser context and clipboard permission. Failure remains recoverable because the code is visible and selectable, and participants can still continue through the existing Prolific return link.
+
+## 2026-08-24: Recruitment source survives deletion of private Prolific identifiers
+
+- Context: Dashboard session details display private Prolific participant, study, and submission identifiers beside their A/B assignments. Those isolated correlation rows are intended to be purged independently of durable experiment sessions. Inferring recruitment source from the presence of those rows would relabel historical Prolific sessions as Direct after the purge.
+- Decision: Recording a Prolific submission transactionally stamps the participant record's non-identifying `identity_provider` classification as `prolific`. Session inspection returns that classification separately from optional data in `prolific_submissions`. The dashboard derives its Recruitment label from the durable classification and renders the detailed Prolific identifier line only while the private row exists. Existing rows created before this rule are corrected once by backing up and editing the database in place. Deleting all Prolific correlation rows for an experiment therefore leaves A/B assignments, research identifiers, outcomes, and the Prolific recruitment classification intact.
+- Tradeoff: The durable participant record retains the fact that recruitment used Prolific, but none of Prolific's participant, study, or submission identifiers. This provider classification remains dashboard-visible and does not add those private identifiers to exports.
+
+## 2026-08-24: The dashboard uses three responsive workspace modes
+
+- Context: The experiment catalogue, session list, and session detail remained side by side until a 900-pixel viewport breakpoint. At intermediate widths, the two fixed navigation columns left too little room for session facts, participant assignments, and event text, causing overlapping labels and near-vertical event content.
+- Decision: Keep all three columns only on wide desktops. At 1240 pixels and below, move the experiment catalogue into its existing menu drawer while retaining the useful session-list/detail split. At 900 pixels and below, stack session detail beneath a horizontally scrollable session picker. At 760 pixels and below, stack session facts and A/B participant cards. Navigation tabs scroll horizontally rather than widening the document, and long identifiers and event values wrap inside their own bounded columns.
+- Tradeoff: Intermediate-width users open the experiment catalogue through the menu button, but gain a substantially wider working area for the selected session. Narrow layouts favor readable vertical flow over simultaneous visibility of every dashboard column.
+
+## 2026-08-24: Explicit leave is a durable terminal handshake
+
+- Context: The participant client sent the runtime's `leave` message and immediately closed its game socket. The runtime durably recorded abandonment and broadcast the correct recipient-specific outcomes, but the leaving browser destroyed the channel carrying its own `withdrew` result and continued to look like an active game.
+- Decision: `session.leave` immediately disables reconnection, voice, heartbeats, and game input and replaces the game with an “Ending session” state, while keeping the game socket open until the runtime sends `session_ended`. The shared terminal screen then explains the withdrawal. A Prolific participant receives a premade no-code widget directing them back to Prolific to return the submission; voluntary withdrawal does not invent a completion code. The runtime treats both completed and abandoned sessions as closed to actions and conversation, and abandoning a human-versus-agent session closes the agent inbox and runs its normal shutdown lifecycle.
+- Tradeoff: The browser briefly waits for durable server confirmation instead of presenting an optimistic final result. This preserves the authoritative participant outcome and recruitment instructions; a future transport-level acknowledgement or authenticated HTTP fallback may be useful if explicit leave must also survive a connection failure at the exact moment of departure.
+
+## 2026-08-24: Public documentation and internal notes have separate lifecycles
+
+- Context: Versioned `docs/` had accumulated implementation proposals, research working papers, and future-work language beside operator and API guides. This made it unclear which behavior users could rely on and published internal work products as if they were supported contracts.
+- Decision: Everything in `docs/` is versioned, user-facing documentation written in the academic-exposition style. It explains supported tasks, current contracts, concrete limitations, migration behavior, and public worked examples. Internal plans, design specifications, audit working papers, private drafts, and decision history live in ignored `notes/` and are never linked from versioned documentation. When an internal design becomes implemented behavior, write fresh public documentation rather than promoting the working note unchanged.
+- Tradeoff: Internal reasoning is not available in a normal source checkout, so public documents must be self-contained and code changes must not depend on readers finding a private note. Contributors retain local history in `notes/`, while the repository exposes a smaller and more reliable public manual.
