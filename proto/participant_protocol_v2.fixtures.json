@@ -1,0 +1,20 @@
+{
+  "client_messages": [
+    { "type": "ready" },
+    { "type": "action", "action": { "move": 1 } },
+    { "type": "message", "text": "Hello" },
+    { "type": "heartbeat" }
+  ],
+  "server_messages": [
+    { "protocol_version": 2, "type": "participant_state", "participant_state": { "state": "waiting", "public_session_id": "SESSION1", "role": "A", "presence": {} } },
+    { "protocol_version": 2, "type": "participant_state", "participant_state": { "state": "active", "public_session_id": "SESSION1", "role": "A", "observation": {}, "available_actions": null, "presence": {} } },
+    { "protocol_version": 2, "type": "participant_state", "participant_state": { "state": "paused", "public_session_id": "SESSION1", "role": "A", "reason": { "type": "partner_reconnecting", "deadline_at": "2026-08-21T12:01:00Z" }, "observation": {}, "available_actions": null, "presence": {} } },
+    { "protocol_version": 2, "type": "participant_state", "participant_state": { "state": "ended", "public_session_id": "SESSION1", "role": "A", "result": { "outcome": "completed", "reason": "game_completed", "completion": {}, "final_observation": {}, "handoff": null } } },
+    { "protocol_version": 2, "type": "transition", "public_session_id": "SESSION1", "actor": "A", "action": { "move": 1 }, "observation": {}, "available_actions": null },
+    { "protocol_version": 2, "type": "message", "public_session_id": "SESSION1", "message": { "id": "message-1", "sender": "B", "text": "Hello", "input": "voice_transcript", "created_at": "2026-08-21T12:00:00Z" } },
+    { "protocol_version": 2, "type": "presence", "public_session_id": "SESSION1", "presence": {} },
+    { "protocol_version": 2, "type": "voice_status", "public_session_id": "SESSION1", "voice": {} },
+    { "protocol_version": 2, "type": "action_rejected", "public_session_id": "SESSION1", "code": "not_active" },
+    { "protocol_version": 2, "type": "error", "public_session_id": "SESSION1", "code": "failed", "fatal": false }
+  ]
+}

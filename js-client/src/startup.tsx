@@ -14,13 +14,14 @@ import { MicrophoneLevelMeter, TranscriptionProgress } from "./voiceComponents.j
 import {
   ParticipantClient,
   decodeServerMessage,
+  reduceParticipantState,
   type ExperimentInfo,
-  type JoinedSession,
+  type ParticipantState,
+  type ParticipantOutcome,
+  type RecruitmentHandoff,
   type PlayerMessage,
   type PlayerRole,
   type Presence,
-  type ParticipantOutcome,
-  type RecruitmentHandoff,
   playerMessage,
   type ServerMessage
 } from "./protocol.js";
@@ -38,9 +39,6 @@ export interface GameSession<TObservation, TAction, TCompletion = Record<string,
   voicePreflight: VoicePreflight;
   voiceEnabled: boolean;
   connected: boolean;
-  completed: boolean;
-  completion: TCompletion | null;
-  outcome: ParticipantOutcome | null;
   interactionEnabled: boolean;
   sendAction(action: TAction): void;
   sendMessage(text: string): void;
@@ -69,30 +67,18 @@ interface ParticipantAppRuntimeProps<TObservation, TAction, TCompletion = Record
 }
 
 interface LiveSession<TObservation, TAction, TCompletion = Record<string, unknown>> {
-  sessionId: string;
-  role: PlayerRole;
-  observation: TObservation | null;
+  participantState: ParticipantState<TObservation, TAction, TCompletion>;
   transition: GameTransition<TAction> | null;
-  availableActions: TAction[] | null;
   socket: WebSocket;
-  connected: boolean;
-  active: boolean;
-  leaving: boolean;
-  completed: boolean;
-  completion: TCompletion | null;
-  outcome: ParticipantOutcome | null;
-  endReason: string | null;
-  handoff: RecruitmentHandoff | null;
-  partnerReconnectDeadline: string | null;
-  presence: Presence;
+  synchronization: "connecting" | "connected" | "reconnecting";
   conversation: PlayerMessage[];
 }
 
 /** @internal Minimal channel state used by source-level tests. */
 export interface GameInputSession {
   socket: WebSocket;
-  leaving?: boolean;
-  completed: boolean;
+  participantState: { state: string };
+  synchronization: "connecting" | "connected" | "reconnecting";
 }
 
 /** @internal Game-channel heartbeat cadence; heartbeats are never research activity. */
@@ -107,8 +93,8 @@ export function completedSessionPatch<TCompletion>(completion: TCompletion | und
 }
 
 /** @internal Returns whether participant game-channel messages should still be sent. */
-export function canSendGameMessage(session: { completed: boolean; leaving?: boolean } | null): boolean {
-  return Boolean(session && !session.completed && !session.leaving);
+export function canSendGameMessage(session: Pick<GameInputSession, "participantState" | "synchronization"> | null): boolean {
+  return Boolean(session?.participantState.state === "active" && session.synchronization === "connected");
 }
 
 /** @internal Sends an action only while the reusable session is still accepting game input. */
@@ -179,8 +165,8 @@ function ParticipantAppRuntime<
   const [voiceReconnectGeneration, setVoiceReconnectGeneration] = useState(0);
   const [entering, setEntering] = useState(false);
   const sessionRef = useRef<LiveSession<TObservation, TAction, TCompletion> | null>(null);
-  const connectSessionRef = useRef<(room: JoinedSession<TObservation, TAction>) => Promise<void>>(async () => {});
-  const scheduleGameReconnectRef = useRef<(room: JoinedSession<TObservation, TAction>) => void>(() => {});
+  const connectSessionRef = useRef<(state: ParticipantState<TObservation, TAction, TCompletion>) => Promise<void>>(async () => {});
+  const scheduleGameReconnectRef = useRef<(state: ParticipantState<TObservation, TAction, TCompletion>) => void>(() => {});
   const reconnectEnabledRef = useRef(false);
   const reconnectStartedAtRef = useRef(0);
   const reconnectAttemptsRef = useRef(0);
@@ -209,28 +195,31 @@ function ParticipantAppRuntime<
     closeSessionSocket(sessionRef.current);
   }, [audioController]);
 
-  /** Starts a durable leave handshake while retaining the socket needed for its terminal reply. */
+  /** Commits an explicit leave over HTTP, then closes transports after receiving the terminal state. */
   const leave = useCallback(() => {
     const current = sessionRef.current;
-    if (!current || current.completed || current.leaving) return;
+    if (!current || current.participantState.state === "registered" || current.participantState.state === "ended") return;
+    const sessionId = current.participantState.public_session_id;
     reconnectEnabledRef.current = false;
     if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current);
     reconnectTimerRef.current = null;
     void audioController.disconnect(true);
-    const leaving = { ...current, leaving: true };
-    sessionRef.current = leaving;
-    setSession((current) => {
-      if (!current || current.socket !== leaving.socket) return current;
-      return leaving;
-    });
-    apiClient.leaveSession(leaving.socket);
     setError("");
+    void apiClient.leaveSession<TObservation, TAction, TCompletion>(sessionId).then((participantState) => {
+      setSession((current) => {
+        if (!current || current.participantState.state === "registered" || current.participantState.public_session_id !== sessionId) return current;
+        const next = { ...current, participantState };
+        sessionRef.current = next;
+        closeSessionSocket(next);
+        return next;
+      });
+    }).catch((caught) => setError(errorMessage(caught, "Could not record that you left the session.")));
   }, [apiClient, audioController]);
 
   const scheduleGameReconnect = useCallback(
-    (room: JoinedSession<TObservation, TAction>) => {
+    (participantState: ParticipantState<TObservation, TAction, TCompletion>) => {
       const current = sessionRef.current;
-      if (!reconnectEnabledRef.current || !current || current.completed || reconnectTimerRef.current !== null) return;
+      if (!reconnectEnabledRef.current || !current || current.participantState.state === "ended" || reconnectTimerRef.current !== null) return;
       if (reconnectStartedAtRef.current === 0) reconnectStartedAtRef.current = Date.now();
       if (Date.now() - reconnectStartedAtRef.current >= 15_000) {
         setError("The connection could not be restored in time.");
@@ -242,9 +231,9 @@ function ParticipantAppRuntime<
       reconnectAttemptsRef.current += 1;
       reconnectTimerRef.current = window.setTimeout(() => {
         reconnectTimerRef.current = null;
-        void connectSessionRef.current(room).catch((caught) => {
+        void connectSessionRef.current(participantState).catch((caught) => {
           setError(errorMessage(caught, "Could not reconnect to the game channel."));
-          scheduleGameReconnectRef.current(room);
+          scheduleGameReconnectRef.current(participantState);
         });
       }, delay);
     },
@@ -253,30 +242,25 @@ function ParticipantAppRuntime<
   scheduleGameReconnectRef.current = scheduleGameReconnect;
 
   const connectSession = useCallback(
-    async (room: JoinedSession<TObservation, TAction>) => {
-      const gameSession = await apiClient.getGameSession(room.sessionId);
+    async (participantState: ParticipantState<TObservation, TAction, TCompletion>) => {
+      if (participantState.state === "registered" || participantState.state === "ended") {
+        if (participantState.state === "ended") {
+          setSession((current) => current ? { ...current, participantState } : current);
+        }
+        return;
+      }
+      const sessionId = participantState.public_session_id;
+      const gameSession = await apiClient.getGameSession(sessionId);
       const socket = new WebSocket(apiClient.socketUrl(gameSession));
-      let terminal = false;
       setSession((current) => {
-        const next = current?.sessionId === room.sessionId
-          ? { ...current, socket, connected: false }
+        const currentId = current?.participantState.state === "registered" ? null : current?.participantState.public_session_id;
+        const next = currentId === sessionId
+          ? { ...current!, participantState, socket, synchronization: "connecting" as const }
           : {
-            sessionId: room.sessionId,
-            role: room.role,
-            observation: room.observation,
+            participantState,
             transition: null,
-            availableActions: room.availableActions,
             socket,
-            connected: false,
-            active: false,
-            leaving: false,
-            completed: false,
-            completion: null,
-            outcome: null,
-            endReason: null,
-            handoff: null,
-            partnerReconnectDeadline: null,
-            presence: room.presence,
+            synchronization: "connecting" as const,
             conversation: []
             };
         sessionRef.current = next;
@@ -289,14 +273,14 @@ function ParticipantAppRuntime<
         reconnectAttemptsRef.current = 0;
         setError("");
         socket.send(JSON.stringify({ type: "ready" }));
-        setSession((current) => (current?.socket === socket ? { ...current, connected: true } : current));
+        setSession((current) => (current?.socket === socket ? { ...current, synchronization: "connected" } : current));
       });
       socket.addEventListener("error", () => {
         if (sessionRef.current?.socket !== socket) return;
         setError("Could not connect to the game channel. Retrying…");
       });
       socket.addEventListener("message", (event) => {
-        if (terminal || sessionRef.current?.socket !== socket) return;
+        if (sessionRef.current?.socket !== socket) return;
         let message: ServerMessage<TObservation, TAction, TCompletion>;
         try {
           if (typeof event.data !== "string") throw new Error("non-text message");
@@ -306,21 +290,22 @@ function ParticipantAppRuntime<
           socket.close(1002, "Invalid server message");
           return;
         }
-        if (message.type === "session_started") {
+        if (message.type === "participant_state") {
           setSession((current) =>
             current?.socket === socket
               ? {
                   ...current,
-                  sessionId: message.public_session_id,
-                  role: message.role,
-                  observation: message.observation,
+                  participantState: reduceParticipantState(current.participantState, message.participant_state),
                   transition: null,
-                  availableActions: message.available_actions,
-                  connected: true,
-                  active: true
+                  synchronization: "connected"
                 }
               : current
           );
+          if (message.participant_state.state === "ended") {
+            reconnectEnabledRef.current = false;
+            void audioController.disconnect(true);
+            socket.close();
+          }
           return;
         }
         if (message.type === "transition") {
@@ -329,8 +314,9 @@ function ParticipantAppRuntime<
               ? {
                   ...current,
                   transition: { actor: message.actor, action: message.action },
-                  observation: message.observation,
-                  availableActions: message.available_actions
+                  participantState: current.participantState.state === "active"
+                    ? { ...current.participantState, observation: message.observation, available_actions: message.available_actions }
+                    : current.participantState
                 }
               : current
           );
@@ -338,7 +324,9 @@ function ParticipantAppRuntime<
         }
         if (message.type === "presence") {
           setSession((current) =>
-            current?.socket === socket ? { ...current, presence: normalizePresence(message.presence) } : current
+            current?.socket === socket && ["waiting", "active", "paused"].includes(current.participantState.state)
+              ? { ...current, participantState: { ...current.participantState, presence: message.presence } as ParticipantState<TObservation, TAction, TCompletion> }
+              : current
           );
           return;
         }
@@ -354,36 +342,8 @@ function ParticipantAppRuntime<
           );
           return;
         }
-        if (message.type === "partner_reconnecting") {
-          setSession((current) =>
-            current?.socket === socket ? { ...current, partnerReconnectDeadline: message.deadline_at } : current
-          );
-          return;
-        }
-        if (message.type === "partner_reconnected") {
-          setSession((current) =>
-            current?.socket === socket ? { ...current, partnerReconnectDeadline: null } : current
-          );
-          return;
-        }
         if (message.type === "action_rejected") {
           setError(`Action rejected: ${message.code}`);
-          return;
-        }
-        if (message.type === "session_ended") {
-          terminal = true;
-          reconnectEnabledRef.current = false;
-          void audioController.disconnect(true);
-          socket.close();
-          setSession((current) => current?.socket === socket ? {
-            ...current,
-            completed: true,
-            completion: message.completion,
-            outcome: message.outcome,
-            endReason: message.reason,
-            handoff: message.handoff,
-            partnerReconnectDeadline: null
-          } : current);
           return;
         }
         if (message.type === "error") {
@@ -395,13 +355,21 @@ function ParticipantAppRuntime<
       });
       socket.addEventListener("close", () => {
         setSession((current) => {
-          const next = current?.socket === socket ? { ...current, connected: false } : current;
+          const next = current?.socket === socket ? { ...current, synchronization: "reconnecting" as const } : current;
           sessionRef.current = next;
           return next;
         });
         const current = sessionRef.current;
-        if (!reconnectEnabledRef.current || current?.socket !== socket || current.completed) return;
-        scheduleGameReconnectRef.current(room);
+        if (!reconnectEnabledRef.current || current?.socket !== socket || current.participantState.state === "ended") return;
+        void apiClient.getParticipantState<TObservation, TAction, TCompletion>().then((reconciled) => {
+          if (reconciled.state === "ended") {
+            setSession((current) => current?.socket === socket
+              ? { ...current, participantState: reconciled }
+              : current);
+            return;
+          }
+          scheduleGameReconnectRef.current(reconciled as ParticipantState<TObservation, TAction, TCompletion>);
+        }).catch(() => scheduleGameReconnectRef.current(participantState));
       });
     },
     [apiClient, audioController]
@@ -426,7 +394,7 @@ function ParticipantAppRuntime<
       setError("");
       await ensureParticipant();
       reconnectEnabledRef.current = true;
-      await connectSession(await apiClient.join<TObservation, TAction>());
+      await connectSession(await apiClient.join<TObservation, TAction, TCompletion>());
     } catch (caught) {
       reconnectEnabledRef.current = false;
       setError(errorMessage(caught, "Could not create the waiting room."));
@@ -459,17 +427,18 @@ function ParticipantAppRuntime<
 
   /** Builds the current room-bound context shared by voice connection and mute operations. */
   const currentAudioContext = useCallback((): AudioSessionContext | null => {
-    if (!session) return null;
+    if (!session || session.participantState.state === "registered" || session.participantState.state === "ended") return null;
+    const participantState = session.participantState;
     const selectedAudioInput = audioInputs.find((device) => device.deviceId === selectedAudioInputId);
     const logVoice = (event: string, metadata: Record<string, unknown> = {}) => {
-      apiClient.postVoiceDiagnostic(session.sessionId, event, metadata);
+      apiClient.postVoiceDiagnostic(participantState.public_session_id, event, metadata);
     };
     return {
-      sessionId: session.sessionId,
-      role: session.role,
+      sessionId: participantState.public_session_id,
+      role: participantState.role,
       selectedAudioInputId,
       selectedAudioInputLabel: selectedAudioInput?.label || null,
-      getAudioSession: () => apiClient.getAudioSession(session.sessionId),
+      getAudioSession: () => apiClient.getAudioSession(participantState.public_session_id),
       logVoice,
       onVoiceStatus: (status) => audioController.updateVoiceStatus(status)
     };
@@ -517,7 +486,7 @@ function ParticipantAppRuntime<
   useEffect(() => {
     if (!publicConfig || session || typeof apiClient.hasCredential !== "function" || !apiClient.hasCredential()) return;
     reconnectEnabledRef.current = true;
-    void apiClient.join<TObservation, TAction>()
+    void apiClient.join<TObservation, TAction, TCompletion>()
       .then(connectSession)
       .catch(() => {
         reconnectEnabledRef.current = false;
@@ -560,13 +529,13 @@ function ParticipantAppRuntime<
   // One-second transport heartbeat. It is deliberately not research activity and
   // therefore never extends the server's meaningful session-idle deadline.
   useEffect(() => {
-    if (!session || session.leaving || session.completed) return;
+    if (!session || session.participantState.state === "ended") return;
     const socket = session.socket;
     const timer = window.setInterval(() => {
       if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "heartbeat" }));
     }, CLIENT_HEARTBEAT_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [session?.socket, session?.leaving, session?.completed]);
+  }, [session?.socket, session?.participantState.state]);
 
   useEffect(() => () => {
     endCurrentSession();
@@ -583,14 +552,14 @@ function ParticipantAppRuntime<
   }, [endCurrentSession]);
 
   useEffect(() => {
-    if (!session?.connected || !enabled || !voicePreflight.ready || status.connected || status.connecting) return;
+    if (session?.synchronization !== "connected" || !enabled || !voicePreflight.ready || status.connected || status.connecting) return;
     const delays = [1_000, 2_000, 5_000, 10_000];
     const timer = window.setTimeout(
       () => void connectVoice(),
       delays[Math.min(voiceReconnectGeneration, delays.length - 1)]
     );
     return () => window.clearTimeout(timer);
-  }, [connectVoice, session?.connected, enabled, voicePreflight.ready, status.connected, status.connecting, voiceReconnectGeneration]);
+  }, [connectVoice, session?.synchronization, enabled, voicePreflight.ready, status.connected, status.connecting, voiceReconnectGeneration]);
 
   if (configLoading || !publicConfig) {
     return (
@@ -603,49 +572,36 @@ function ParticipantAppRuntime<
     );
   }
 
-  if (session?.completed) {
+  if (session?.participantState.state === "ended") {
+    const result = session.participantState.result;
     return (
       <SessionOutcomePanel
-        outcome={session.outcome}
-        reason={session.endReason}
-        handoff={session.handoff}
+        outcome={result.outcome}
+        reason={result.reason}
+        handoff={result.handoff}
         recruitment={publicConfig.recruitment}
-        completionContent={session.outcome === "completed" && session.completion !== null
-          ? renderCompletion?.(session.completion)
+        completionContent={result.outcome === "completed" && result.completion !== null
+          ? renderCompletion?.(result.completion)
           : null}
       />
     );
   }
 
-  if (session?.leaving) {
-    return (
-      <StartupShell
-        gameName={publicConfig.gameName}
-        institution={publicConfig.institution}
-        heading="Ending session"
-        body="Recording that you left the session. Please keep this page open for the next step."
-        error={error}
-      />
-    );
-  }
-
-  if (session?.active) {
+  if (session?.participantState.state === "active" || session?.participantState.state === "paused") {
+    const participantState = session.participantState;
     const activeSession: GameSession<TObservation, TAction, TCompletion> = {
-      sessionId: session.sessionId,
-      role: session.role,
-      observation: session.observation as TObservation,
+      sessionId: participantState.public_session_id,
+      role: participantState.role,
+      observation: participantState.observation,
       transition: session.transition,
-      availableActions: session.availableActions,
+      availableActions: participantState.available_actions,
       conversation: session.conversation,
-      presence: session.presence,
+      presence: normalizePresence(participantState.presence),
       voiceStatus: status,
       voicePreflight,
       voiceEnabled: enabled,
-      connected: session.connected,
-      completed: session.completed,
-      completion: session.completion,
-      outcome: session.outcome,
-      interactionEnabled: session.connected && !session.completed && !session.leaving && !session.partnerReconnectDeadline,
+      connected: session.synchronization === "connected",
+      interactionEnabled: participantState.state === "active" && session.synchronization === "connected",
       sendAction: (action) => sendActionIfGameActive(apiClient, session, action),
       sendMessage: (text) => sendMessageIfGameActive(apiClient, session, text),
       setMicrophoneMuted,
@@ -654,13 +610,16 @@ function ParticipantAppRuntime<
     return (
       <>
         {renderGame(activeSession)}
-        {session.partnerReconnectDeadline && <PartnerReconnectNotice deadlineAt={session.partnerReconnectDeadline} />}
+        {participantState.state === "paused" && participantState.reason.type === "partner_reconnecting" && <PartnerReconnectNotice deadlineAt={participantState.reason.deadline_at} />}
         {error && <p className="online-error">{error}</p>}
       </>
     );
   }
 
   if (session) {
+    const presence = session.participantState.state === "waiting"
+      ? normalizePresence(session.participantState.presence)
+      : {};
     return (
       <StartupShell
         gameName={publicConfig.gameName}
@@ -670,12 +629,12 @@ function ParticipantAppRuntime<
         error={error}
       >
         <ReadinessBoard
-          connected={session.connected}
+          connected={session.synchronization === "connected"}
           enabled={enabled}
-          presence={session.presence}
+          presence={presence}
           status={status}
         />
-        {enabled && <TranscriptionProgress connected={session.connected} status={status} />}
+        {enabled && <TranscriptionProgress connected={session.synchronization === "connected"} status={status} />}
         <div className="voice-preflight">
           <div>
             <strong>Voice chat</strong>

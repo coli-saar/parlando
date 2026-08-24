@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -62,19 +63,13 @@ pub struct ConsentRequest {
 #[serde(deny_unknown_fields)]
 pub struct CreateSessionRequest {}
 
+/// One authoritative participant lifecycle snapshot returned by HTTP.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct SessionResponse {
-    pub public_session_id: String,
-    pub role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub presence: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub observation: Option<Value>,
-    /// `None` means the game does not enumerate actions; an empty vector means none are available.
-    pub available_actions: Option<Vec<Value>>,
+pub struct ParticipantStateResponse {
+    pub participant_state: ParticipantState,
 }
 
-pub type CreateSessionResponse = SessionResponse;
+pub type CreateSessionResponse = ParticipantStateResponse;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -192,7 +187,7 @@ impl ConversationMessageResponse {
 }
 
 /// Provider-neutral result experienced by one participant when their session ends.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParticipantOutcomeKind {
     Completed,
@@ -203,12 +198,128 @@ pub enum ParticipantOutcomeKind {
     TechnicalFailure,
 }
 
+/// Why one shared session reached its single terminal lifecycle state.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SessionEndCause {
+    /// The game produced its normal shared completion value.
+    GameCompleted,
+    /// One role explicitly withdrew from a forming or running session.
+    ParticipantLeft { actor: String },
+    /// Matchmaking ended before another required participant became available.
+    PartnerUnavailable,
+    /// One disconnected role did not return before its reconnect deadline.
+    ReconnectTimedOut { disconnected_role: String },
+    /// A running session exceeded its meaningful-activity deadline.
+    IdleTimedOut,
+    /// A forming or running session exceeded its absolute lifetime.
+    LifetimeTimedOut,
+    /// Infrastructure prevented the session from continuing.
+    TechnicalFailure,
+}
+
 /// Recruitment-provider handoff selected after durable participant outcome derivation.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RecruitmentHandoff {
     pub provider: String,
     pub code: String,
     pub url: String,
+}
+
+/// Immutable recipient-specific result derived from one shared session ending.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ParticipantResult {
+    pub outcome: ParticipantOutcomeKind,
+    pub reason: String,
+    pub completion: Option<Value>,
+    pub final_observation: Option<Value>,
+    pub handoff: Option<RecruitmentHandoff>,
+}
+
+/// Complete terminal session value committed atomically with all human results.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SessionEnd {
+    pub cause: SessionEndCause,
+    pub completion: Option<Value>,
+    /// Recipient results keyed by the stable two-player role names `A` and `B`.
+    pub participant_results: HashMap<String, ParticipantResult>,
+}
+
+/// The participant lifecycle inventory shared by the Rust runtime and clients.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ParticipantState {
+    /// The authenticated participant has not joined a session.
+    Registered,
+    /// The participant belongs to a session which has not started.
+    Waiting {
+        public_session_id: String,
+        role: String,
+        presence: Value,
+    },
+    /// The running session currently accepts meaningful participant input.
+    Active {
+        public_session_id: String,
+        role: String,
+        observation: Value,
+        available_actions: Option<Vec<Value>>,
+        presence: Value,
+    },
+    /// The running session preserves its projection while interaction is unavailable.
+    Paused {
+        public_session_id: String,
+        role: String,
+        reason: ParticipantPauseReason,
+        observation: Value,
+        available_actions: Option<Vec<Value>>,
+        presence: Value,
+    },
+    /// The participant has one immutable recipient-specific terminal result.
+    Ended {
+        public_session_id: String,
+        role: String,
+        result: ParticipantResult,
+    },
+}
+
+/// Lifecycle-only participant phase used to validate transitions independently of payload data.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParticipantPhase {
+    Registered,
+    Waiting,
+    Active,
+    Paused,
+    Ended,
+}
+
+/// Reports whether two distinct participant phases form an allowed lifecycle transition.
+#[cfg(test)]
+pub fn participant_transition_allowed(from: ParticipantPhase, to: ParticipantPhase) -> bool {
+    matches!(
+        (from, to),
+        (ParticipantPhase::Registered, ParticipantPhase::Waiting)
+            | (
+                ParticipantPhase::Waiting,
+                ParticipantPhase::Active | ParticipantPhase::Ended
+            )
+            | (
+                ParticipantPhase::Active,
+                ParticipantPhase::Paused | ParticipantPhase::Ended
+            )
+            | (
+                ParticipantPhase::Paused,
+                ParticipantPhase::Active | ParticipantPhase::Ended
+            )
+    )
+}
+
+/// The deliberately closed participant pause-reason vocabulary.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ParticipantPauseReason {
+    /// A required role may reclaim its assignment until the supplied deadline.
+    PartnerReconnecting { deadline_at: String },
 }
 
 /// One participant operation accepted by the game WebSocket.
@@ -223,21 +334,14 @@ pub enum ClientMessage {
     Message { text: String },
     /// Maintains transport liveness without recording research activity.
     Heartbeat,
-    /// Intentionally leaves and abandons the session.
-    Leave,
 }
 
 /// One exact payload variant in the versioned participant WebSocket protocol.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerPayload {
-    /// Starts active rendering with the first complete role-specific observation.
-    SessionStarted {
-        public_session_id: String,
-        role: String,
-        observation: Value,
-        available_actions: Option<Vec<Value>>,
-    },
+    /// Replaces lifecycle inference with one complete authoritative participant snapshot.
+    ParticipantState { participant_state: ParticipantState },
     /// Reports one accepted action and the receiving role's resulting observation.
     Transition {
         public_session_id: String,
@@ -260,21 +364,6 @@ pub enum ServerPayload {
     VoiceStatus {
         public_session_id: String,
         voice: Value,
-    },
-    /// Pauses interaction while the other required human role may reconnect.
-    PartnerReconnecting {
-        public_session_id: String,
-        deadline_at: String,
-    },
-    /// Reports that the other required role reclaimed its assignment.
-    PartnerReconnected { public_session_id: String },
-    /// Reports one recipient-specific terminal outcome and optional normal game completion.
-    SessionEnded {
-        public_session_id: String,
-        outcome: ParticipantOutcomeKind,
-        reason: String,
-        completion: Option<Value>,
-        handoff: Option<RecruitmentHandoff>,
     },
     /// Reports an expected game-rule rejection without ending the session.
     ActionRejected {
@@ -306,7 +395,7 @@ impl ServerMessage {
     /// Creates a broadcast message for every player connected to the session bus.
     pub fn broadcast(payload: ServerPayload) -> Self {
         Self {
-            protocol_version: 1,
+            protocol_version: 2,
             payload,
             recipient: None,
         }
@@ -315,7 +404,7 @@ impl ServerMessage {
     /// Creates a message routed only to one authenticated participant session.
     pub fn targeted(recipient: impl Into<String>, payload: ServerPayload) -> Self {
         Self {
-            protocol_version: 1,
+            protocol_version: 2,
             payload,
             recipient: Some(recipient.into()),
         }
@@ -331,9 +420,33 @@ impl ServerMessage {
 mod tests {
     use serde_json::Value;
 
+    use super::{participant_transition_allowed, ParticipantPhase};
     use super::{ClientMessage, ServerMessage};
 
-    /// Confirms the game channel accepts only the current five operation names.
+    /// Locks the deliberately small participant transition graph, including its absorbing end.
+    #[test]
+    fn participant_transition_graph_is_strict() {
+        use ParticipantPhase::*;
+        let allowed = [
+            (Registered, Waiting),
+            (Waiting, Active),
+            (Waiting, Ended),
+            (Active, Paused),
+            (Active, Ended),
+            (Paused, Active),
+            (Paused, Ended),
+        ];
+        for from in [Registered, Waiting, Active, Paused, Ended] {
+            for to in [Registered, Waiting, Active, Paused, Ended] {
+                assert_eq!(
+                    participant_transition_allowed(from, to),
+                    allowed.contains(&(from, to))
+                );
+            }
+        }
+    }
+
+    /// Confirms the game channel accepts only the current four operation names.
     #[test]
     fn client_message_protocol_has_no_legacy_consent_variant() {
         for payload in [
@@ -341,7 +454,6 @@ mod tests {
             r#"{"type":"action","action":{"move":1}}"#,
             r#"{"type":"message","text":"hello"}"#,
             r#"{"type":"heartbeat"}"#,
-            r#"{"type":"leave"}"#,
         ] {
             serde_json::from_str::<ClientMessage>(payload).unwrap();
         }
@@ -352,11 +464,11 @@ mod tests {
         .is_err());
     }
 
-    /// Keeps every version-one client and server JSON fixture round-trippable in Rust.
+    /// Keeps every version-two client and server JSON fixture round-trippable in Rust.
     #[test]
     fn shared_participant_protocol_fixtures_round_trip() {
         let fixtures: Value = serde_json::from_str(include_str!(
-            "../../proto/participant_protocol_v1.fixtures.json"
+            "../../proto/participant_protocol_v2.fixtures.json"
         ))
         .unwrap();
         for fixture in fixtures["client_messages"].as_array().unwrap() {

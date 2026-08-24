@@ -643,6 +643,16 @@ async fn read_ws_type(socket: &mut TestSocket, expected: &str) -> Result<Value> 
     bail!("timed out waiting for websocket message type {expected}");
 }
 
+/// Reads canonical participant snapshots until the requested lifecycle state appears.
+async fn read_participant_state(socket: &mut TestSocket, expected: &str) -> Result<Value> {
+    loop {
+        let message = read_ws_type(socket, "participant_state").await?;
+        if message["participant_state"]["state"] == expected {
+            return Ok(message["participant_state"].clone());
+        }
+    }
+}
+
 #[tokio::test]
 async fn public_security_boundaries_reject_anonymous_and_cross_participant_requests() -> Result<()>
 {
@@ -719,12 +729,10 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
     consent(&client, &server.base_url, &b).await?;
 
     let session = create_room(&client, &server.base_url, &a).await?;
-    assert_eq!(session["role"], "A");
-    assert!(session["available_actions"].is_null());
-    let public_session_id = session["public_session_id"].as_str().unwrap().to_string();
+    assert_eq!(session["participant_state"]["role"], "A");
+    let public_session_id = session["participant_state"]["public_session_id"].as_str().unwrap().to_string();
     let joined = create_room(&client, &server.base_url, &b).await?;
-    assert_eq!(joined["role"], "B");
-    assert!(joined["available_actions"].is_null());
+    assert_eq!(joined["participant_state"]["role"], "B");
 
     let audio = client
         .post(format!(
@@ -747,8 +755,8 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
 
     let mut socket_a = ws_connect(&client, &server, &public_session_id, &a).await?;
     let mut socket_b = ws_connect(&client, &server, &public_session_id, &b).await?;
-    let assigned_a = read_ws_type(&mut socket_a, "session_started").await?;
-    let assigned_b = read_ws_type(&mut socket_b, "session_started").await?;
+    let assigned_a = read_participant_state(&mut socket_a, "active").await?;
+    let assigned_b = read_participant_state(&mut socket_b, "active").await?;
     assert_eq!(assigned_a["role"], "A");
     assert_eq!(assigned_b["role"], "B");
     assert_eq!(assigned_a["available_actions"].as_array().unwrap().len(), 2);
@@ -769,10 +777,10 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
         json!({"type": "action", "action": {"type": "mark", "finish": true}}),
     )
     .await?;
-    let completed_a = read_ws_type(&mut socket_a, "completed").await?;
-    let completed_b = read_ws_type(&mut socket_b, "completed").await?;
-    assert_eq!(completed_a["completion"]["done"], true);
-    assert_eq!(completed_b["completion"]["done"], true);
+    let completed_a = read_participant_state(&mut socket_a, "ended").await?;
+    let completed_b = read_participant_state(&mut socket_b, "ended").await?;
+    assert_eq!(completed_a["result"]["completion"]["done"], true);
+    assert_eq!(completed_b["result"]["completion"]["done"], true);
 
     let mut export = Value::Null;
     for _ in 0..20 {
@@ -828,19 +836,19 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
     let human = create_participant(&client, &server.base_url, "Human").await?;
     consent(&client, &server.base_url, &human).await?;
     let session = create_room(&client, &server.base_url, &human).await?;
-    assert_eq!(session["role"], "A");
-    let public_session_id = session["public_session_id"].as_str().unwrap();
+    assert_eq!(session["participant_state"]["role"], "A");
+    let public_session_id = session["participant_state"]["public_session_id"].as_str().unwrap();
 
     let mut socket = ws_connect(&client, &server, public_session_id, &human).await?;
-    let assigned = read_ws_type(&mut socket, "session_started").await?;
+    let assigned = read_participant_state(&mut socket, "active").await?;
     assert_eq!(assigned["role"], "A");
     let message = read_ws_type(&mut socket, "message").await?;
     assert_eq!(message["message"]["sender"], "B");
     assert_eq!(message["message"]["input"], "text");
     assert_eq!(message["message"]["text"], "agent says hello");
     send_ws(&mut socket, json!({"type": "message", "text": "continue"})).await?;
-    let completed = read_ws_type(&mut socket, "completed").await?;
-    assert_eq!(completed["completion"]["done"], true);
+    let completed = read_participant_state(&mut socket, "ended").await?;
+    assert_eq!(completed["result"]["completion"]["done"], true);
 
     for _ in 0..20 {
         if tts
@@ -903,18 +911,18 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
     let human = create_participant(&client, &server.base_url, "Human").await?;
     consent(&client, &server.base_url, &human).await?;
     let session = create_room(&client, &server.base_url, &human).await?;
-    let public_session_id = session["public_session_id"].as_str().unwrap();
+    let public_session_id = session["participant_state"]["public_session_id"].as_str().unwrap();
 
     let mut socket = ws_connect(&client, &server, public_session_id, &human).await?;
-    let assigned = read_ws_type(&mut socket, "session_started").await?;
+    let assigned = read_participant_state(&mut socket, "active").await?;
     assert_eq!(assigned["role"], "A");
     let message = read_ws_type(&mut socket, "message").await?;
     assert_eq!(message["message"]["sender"], "B");
     assert_eq!(message["message"]["input"], "text");
     assert_eq!(message["message"]["text"], "hello from remote grpc");
     send_ws(&mut socket, json!({"type": "message", "text": "continue"})).await?;
-    let completed = read_ws_type(&mut socket, "completed").await?;
-    assert_eq!(completed["completion"]["done"], true);
+    let completed = read_participant_state(&mut socket, "ended").await?;
+    assert_eq!(completed["result"]["completion"]["done"], true);
 
     for _ in 0..20 {
         if !remote.state.finish_requests.lock().unwrap().is_empty() {

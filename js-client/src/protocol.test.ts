@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import fixtures from "../../proto/participant_protocol_v1.fixtures.json";
-import { apiBase, checkedJson, decodeServerMessage, ParticipantClient, playerMessage, socketUrl, type ServerMessage } from "./protocol";
+import fixtures from "../../proto/participant_protocol_v2.fixtures.json";
+import { apiBase, checkedJson, decodeServerMessage, ParticipantClient, playerMessage, reduceParticipantState, socketUrl, type ServerMessage } from "./protocol";
 
 /** Creates an externally resolvable response promise for request-order races. */
 function deferredResponse(): { promise: Promise<Response>; resolve: (response: Response) => void } {
@@ -60,11 +60,9 @@ describe("ParticipantClient room helpers", () => {
         participant_id: "research-1"
       }), { status: 200, headers: { "Content-Type": "application/json" } }))
       .mockResolvedValueOnce(new Response(
-        JSON.stringify({
-          public_session_id: "ROOM1",
-          role: "A",
-          available_actions: null
-        }),
+        JSON.stringify({ participant_state: {
+          state: "waiting", public_session_id: "ROOM1", role: "A", presence: {}
+        } }),
         { status: 200, headers: { "Content-Type": "application/json" } }
       )
     );
@@ -73,8 +71,7 @@ describe("ParticipantClient room helpers", () => {
     await client.register();
     const room = await client.join();
 
-    expect(room.sessionId).toBe("ROOM1");
-    expect(room.availableActions).toBeNull();
+    expect(room).toMatchObject({ state: "waiting", public_session_id: "ROOM1", role: "A" });
     expect(fetchMock).toHaveBeenLastCalledWith("http://server.test/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer credential-1" },
@@ -133,25 +130,18 @@ describe("ParticipantClient room helpers", () => {
     });
   });
 
-  it("sends an explicit leave message only on an open game channel", () => {
-    vi.stubGlobal("WebSocket", { OPEN: 1 });
+  it("commits leave over HTTP and returns the terminal participant snapshot", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(participantResponse("one", "credential-1"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ participant_state: {
+        state: "ended", public_session_id: "ROOM1", role: "A",
+        result: { outcome: "withdrew", reason: "participant_left", completion: null, final_observation: {}, handoff: null }
+      } }), { status: 200 }));
     const client = new ParticipantClient({ baseUrl: "http://server.test" });
-    const send = vi.fn();
+    await client.register();
 
-    client.leaveSession({ readyState: 1, send } as unknown as WebSocket);
-    client.leaveSession({ readyState: 3, send } as unknown as WebSocket);
-
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(send).toHaveBeenCalledWith(JSON.stringify({ type: "leave" }));
-  });
-
-  it("does not throw when an open socket closes during an explicit leave", () => {
-    vi.stubGlobal("WebSocket", { OPEN: 1 });
-    const client = new ParticipantClient({ baseUrl: "http://server.test" });
-    const send = vi.fn(() => { throw new Error("closed concurrently"); });
-
-    expect(() => client.leaveSession({ readyState: 1, send } as unknown as WebSocket)).not.toThrow();
-    expect(send).toHaveBeenCalledOnce();
+    await expect(client.leaveSession("ROOM1")).resolves.toMatchObject({ state: "ended" });
+    expect(fetchMock).toHaveBeenLastCalledWith("http://server.test/api/sessions/ROOM1/leave", expect.objectContaining({ method: "POST" }));
   });
 
   it("drops actions and chat on non-open or concurrently closing sockets", () => {
@@ -172,7 +162,7 @@ describe("ParticipantClient room helpers", () => {
     vi.spyOn(globalThis, "fetch")
       .mockImplementationOnce(() => old.promise)
       .mockImplementationOnce(() => current.promise)
-      .mockResolvedValueOnce(new Response(JSON.stringify({ public_session_id: "room", role: "A", available_actions: null }), { status: 200 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ participant_state: { state: "waiting", public_session_id: "room", role: "A", presence: {} } }), { status: 200 }));
     const client = new ParticipantClient({ baseUrl: "http://server.test" });
 
     const oldRequest = client.register();
@@ -197,7 +187,7 @@ describe("ParticipantClient room helpers", () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(participantResponse("stable", "stable-credential"))
       .mockRejectedValueOnce(new TypeError("network unavailable"))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ public_session_id: "room", role: "A", available_actions: null }), { status: 200 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ participant_state: { state: "waiting", public_session_id: "room", role: "A", presence: {} } }), { status: 200 }));
     const client = new ParticipantClient({ baseUrl: "http://server.test" });
 
     await client.register();
@@ -248,39 +238,47 @@ describe("checkedJson", () => {
 });
 
 describe("shared participant protocol fixtures", () => {
+  it("enforces the simplified transition graph independently", () => {
+    const waiting = { state: "waiting", public_session_id: "SESSION1", role: "A", presence: {} } as const;
+    const active = { state: "active", public_session_id: "SESSION1", role: "A", observation: {}, available_actions: null, presence: {} } as const;
+    const paused = { ...active, state: "paused", reason: { type: "partner_reconnecting", deadline_at: "2030-01-01T00:00:00Z" } } as const;
+    expect(reduceParticipantState(waiting, active)).toBe(active);
+    expect(reduceParticipantState(active, paused)).toBe(paused);
+    expect(reduceParticipantState(paused, active)).toBe(active);
+    expect(() => reduceParticipantState(active, waiting)).toThrow("active->waiting");
+    expect(() => reduceParticipantState({ state: "registered" }, { state: "registered" })).not.toThrow();
+  });
   it("covers every client operation and server payload with the current public session identifier", () => {
     expect(fixtures.client_messages.map((message) => message.type)).toEqual([
       "ready",
       "action",
       "message",
-      "heartbeat",
-      "leave"
+      "heartbeat"
     ]);
     const messages = fixtures.server_messages.map((message) => decodeServerMessage(message));
     expect(messages.map((message) => message.type)).toEqual([
-      "session_started",
+      "participant_state",
+      "participant_state",
+      "participant_state",
+      "participant_state",
       "transition",
       "message",
       "presence",
       "voice_status",
-      "partner_reconnecting",
-      "partner_reconnected",
-      "session_ended",
       "action_rejected",
       "error"
     ]);
     for (const message of messages) {
-      expect(message.public_session_id).toBe("SESSION1");
       expect(message).not.toHaveProperty("room_id");
       expect(message).not.toHaveProperty("participant_session_id");
     }
   });
 
   it("rejects unknown variants and malformed fields instead of trusting a type assertion", () => {
-    expect(() => decodeServerMessage({ protocol_version: 1, type: "future", public_session_id: "SESSION1" })).toThrow("unknown");
-    expect(() => decodeServerMessage({ protocol_version: 1, type: "session_started", public_session_id: "SESSION1", role: "C", observation: {}, available_actions: null })).toThrow("role");
-    expect(() => decodeServerMessage({ protocol_version: 1, type: "transition", public_session_id: "SESSION1", actor: "A", observation: {}, available_actions: null })).toThrow("action");
-    expect(() => decodeServerMessage({ protocol_version: 2, type: "completed", public_session_id: "SESSION1", completion: {} })).toThrow("envelope");
+    expect(() => decodeServerMessage({ protocol_version: 2, type: "future", public_session_id: "SESSION1" })).toThrow("unknown");
+    expect(() => decodeServerMessage({ protocol_version: 2, type: "participant_state", participant_state: { state: "active", public_session_id: "SESSION1", role: "C" } })).toThrow("role");
+    expect(() => decodeServerMessage({ protocol_version: 2, type: "transition", public_session_id: "SESSION1", actor: "A", observation: {}, available_actions: null })).toThrow("action");
+    expect(() => decodeServerMessage({ protocol_version: 1, type: "participant_state", participant_state: { state: "registered" } })).toThrow("envelope");
   });
 
   it("maps the shared voice-transcript message onto the public camel-case value", () => {

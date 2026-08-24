@@ -62,20 +62,46 @@ export interface ConsentItem {
   required: boolean;
 }
 
-interface SessionResponse<TObservation = unknown, TAction = unknown> {
-  public_session_id: string;
-  role: PlayerRole;
-  presence?: Record<string, unknown>;
-  observation?: TObservation | null;
-  available_actions: TAction[] | null;
+/** Why an active participant is temporarily unable to interact. */
+export type ParticipantPauseReason = {
+  type: "partner_reconnecting";
+  deadline_at: string;
+};
+
+/** Immutable recipient-specific consequence of one ended session. */
+export interface ParticipantResult<TObservation = unknown, TCompletion = Record<string, unknown>> {
+  outcome: ParticipantOutcome;
+  reason: string;
+  completion: TCompletion | null;
+  final_observation: TObservation | null;
+  handoff: RecruitmentHandoff | null;
 }
 
-export interface JoinedSession<TObservation = unknown, TAction = unknown> {
-  sessionId: string;
-  role: PlayerRole;
-  presence: Presence;
-  observation: TObservation | null;
-  availableActions: TAction[] | null;
+/** Canonical participant lifecycle shared with the server. */
+export type ParticipantState<TObservation = unknown, TAction = unknown, TCompletion = Record<string, unknown>> =
+  | { state: "registered" }
+  | { state: "waiting"; public_session_id: string; role: PlayerRole; presence: Record<string, unknown> }
+  | { state: "active"; public_session_id: string; role: PlayerRole; observation: TObservation; available_actions: TAction[] | null; presence: Record<string, unknown> }
+  | { state: "paused"; public_session_id: string; role: PlayerRole; reason: ParticipantPauseReason; observation: TObservation; available_actions: TAction[] | null; presence: Record<string, unknown> }
+  | { state: "ended"; public_session_id: string; role: PlayerRole; result: ParticipantResult<TObservation, TCompletion> };
+
+/** Applies a complete snapshot while rejecting impossible lifecycle jumps. */
+export function reduceParticipantState<TObservation, TAction, TCompletion>(
+  current: ParticipantState<TObservation, TAction, TCompletion> | null,
+  next: ParticipantState<TObservation, TAction, TCompletion>
+): ParticipantState<TObservation, TAction, TCompletion> {
+  if (!current || current.state === next.state) return next;
+  const transition = `${current.state}->${next.state}`;
+  const allowed = new Set([
+    "registered->waiting", "waiting->active", "waiting->ended",
+    "active->paused", "active->ended", "paused->active", "paused->ended"
+  ]);
+  if (!allowed.has(transition)) throw new Error(`invalid participant transition ${transition}`);
+  return next;
+}
+
+interface ParticipantStateResponse<TObservation = unknown, TAction = unknown, TCompletion = Record<string, unknown>> {
+  participant_state: ParticipantState<TObservation, TAction, TCompletion>;
 }
 
 export interface ParticipantClientOptions {
@@ -146,13 +172,10 @@ export type ServerMessage<
   TObservation = unknown,
   TAction = unknown,
   TCompletion = Record<string, unknown>
-> = { protocol_version: 1 } & (
+> = { protocol_version: 2 } & (
   | {
-      type: "session_started";
-      public_session_id: string;
-      role: PlayerRole;
-      observation: TObservation;
-      available_actions: TAction[] | null;
+      type: "participant_state";
+      participant_state: ParticipantState<TObservation, TAction, TCompletion>;
     }
   | {
       type: "transition";
@@ -163,16 +186,6 @@ export type ServerMessage<
       available_actions: TAction[] | null;
     }
   | { type: "message"; public_session_id: string; message: WirePlayerMessage }
-  | { type: "partner_reconnecting"; public_session_id: string; deadline_at: string }
-  | { type: "partner_reconnected"; public_session_id: string }
-  | {
-      type: "session_ended";
-      public_session_id: string;
-      outcome: ParticipantOutcome;
-      reason: string;
-      completion: TCompletion | null;
-      handoff: RecruitmentHandoff | null;
-    }
   | { type: "presence"; public_session_id: string; presence: Record<string, unknown> }
   | {
       type: "voice_status";
@@ -187,21 +200,18 @@ export type ServerMessage<
   | { type: "error"; public_session_id: string; code: string; fatal: boolean }
 );
 
-/** @internal Decodes and validates one untrusted version-one game-channel message. */
+/** @internal Decodes and validates one untrusted version-two game-channel message. */
 export function decodeServerMessage<
   TObservation = unknown,
   TAction = unknown,
   TCompletion = Record<string, unknown>
 >(input: unknown): ServerMessage<TObservation, TAction, TCompletion> {
-  if (!isRecord(input) || input.protocol_version !== 1 || typeof input.type !== "string") {
+  if (!isRecord(input) || input.protocol_version !== 2 || typeof input.type !== "string") {
     throw new Error("invalid participant protocol envelope");
   }
-  requireString(input, "public_session_id");
   switch (input.type) {
-    case "session_started":
-      requireRole(input, "role");
-      requireField(input, "observation");
-      requireActions(input);
+    case "participant_state":
+      requireParticipantState(input.participant_state);
       break;
     case "transition":
       requireRole(input, "actor");
@@ -226,19 +236,6 @@ export function decodeServerMessage<
     case "voice_status":
       if (!isRecord(input.voice)) throw new Error("invalid voice-status payload");
       break;
-    case "partner_reconnecting":
-      requireString(input, "deadline_at");
-      break;
-    case "partner_reconnected":
-      break;
-    case "session_ended":
-      requireOutcome(input, "outcome");
-      requireString(input, "reason");
-      requireField(input, "completion");
-      if (input.handoff !== null && !isRecruitmentHandoff(input.handoff)) {
-        throw new Error("invalid recruitment handoff");
-      }
-      break;
     case "action_rejected":
       requireString(input, "code");
       break;
@@ -250,6 +247,30 @@ export function decodeServerMessage<
       throw new Error(`unknown participant protocol message ${input.type}`);
   }
   return input as ServerMessage<TObservation, TAction, TCompletion>;
+}
+
+/** Validates one complete participant-state snapshot. */
+function requireParticipantState(value: unknown): void {
+  if (!isRecord(value) || !["registered", "waiting", "active", "paused", "ended"].includes(String(value.state))) {
+    throw new Error("invalid participant state");
+  }
+  if (value.state === "registered") return;
+  requireString(value, "public_session_id");
+  requireRole(value, "role");
+  if (value.state === "waiting") {
+    if (!isRecord(value.presence)) throw new Error("invalid participant presence");
+    return;
+  }
+  if (value.state === "ended") {
+    if (!isRecord(value.result)) throw new Error("invalid participant result");
+    requireOutcome(value.result, "outcome");
+    requireString(value.result, "reason");
+    return;
+  }
+  requireField(value, "observation");
+  requireActions(value);
+  if (!isRecord(value.presence)) throw new Error("invalid participant presence");
+  if (value.state === "paused" && !isRecord(value.reason)) throw new Error("invalid pause reason");
 }
 
 /** Returns whether one untrusted value is a plain JSON object shape. */
@@ -356,16 +377,22 @@ export class ParticipantClient {
     return this.postAuthenticated("/api/consent", { decisions });
   }
 
-  /** Joins or waits for one session using the retained participant credential. */
-  async join<TObservation = unknown, TAction = unknown>(): Promise<JoinedSession<TObservation, TAction>> {
-    const room = await this.postAuthenticated<SessionResponse<TObservation, TAction>>("/api/sessions", {});
-    return {
-      sessionId: room.public_session_id,
-      role: room.role,
-      presence: normalizePresence(room.presence),
-      observation: room.observation ?? null,
-      availableActions: room.available_actions
-    };
+  /** Joins or reuses one session and returns the authoritative participant snapshot. */
+  async join<TObservation = unknown, TAction = unknown, TCompletion = Record<string, unknown>>(): Promise<ParticipantState<TObservation, TAction, TCompletion>> {
+    const response = await this.postAuthenticated<ParticipantStateResponse<TObservation, TAction, TCompletion>>("/api/sessions", {});
+    return response.participant_state;
+  }
+
+  /** Reconciles participant lifecycle independently of any WebSocket connection. */
+  async getParticipantState<TObservation = unknown, TAction = unknown, TCompletion = Record<string, unknown>>(): Promise<ParticipantState<TObservation, TAction, TCompletion>> {
+    const response = await this.getAuthenticated<ParticipantStateResponse<TObservation, TAction, TCompletion>>("/api/participant-state");
+    return response.participant_state;
+  }
+
+  /** Idempotently leaves a waiting, active, or paused session over reliable HTTP. */
+  async leaveSession<TObservation = unknown, TAction = unknown, TCompletion = Record<string, unknown>>(sessionId: string): Promise<ParticipantState<TObservation, TAction, TCompletion>> {
+    const response = await this.postAuthenticated<ParticipantStateResponse<TObservation, TAction, TCompletion>>(`/api/sessions/${sessionId}/leave`, {});
+    return response.participant_state;
   }
 
   /** Obtains an authenticated audio plan when a custom client needs voice transport. */
@@ -430,16 +457,6 @@ export class ParticipantClient {
     }
   }
 
-  /** @internal Declares an intentional participant departure before closing the game channel. */
-  leaveSession(socket: WebSocket | null): void {
-    if (socket?.readyState !== WebSocket.OPEN) return;
-    try {
-      socket.send(JSON.stringify({ type: "leave" }));
-    } catch {
-      // Closing the socket still informs the server when the explicit message loses the race.
-    }
-  }
-
   /** @internal Resolves the standard participant application's game-channel URL. */
   socketUrl(plan: GameSessionPlan): string {
     return socketUrl(plan.websocketUrl, plan.token);
@@ -467,6 +484,10 @@ export class ParticipantClient {
         body: JSON.stringify(body)
       })
     );
+  }
+
+  private getAuthenticated<T>(path: string): Promise<T> {
+    return checkedJson(fetch(`${this.baseUrl}${path}`, { headers: this.authHeaders() }));
   }
 
   private authHeaders(): Record<string, string> {

@@ -270,4 +270,4 @@ code.
 - The dashboard shows the expected recruitment source and private identifiers.
 - Exports contain no Prolific identifiers.
 - Participant-data deletion, Prolific-correlation retention, and backup retention are documented for
-  the study.
+  We

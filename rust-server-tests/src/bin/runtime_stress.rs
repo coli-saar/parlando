@@ -1140,7 +1140,7 @@ async fn run_workload_inner(
             .with_context(|| format!("staging session {session} participant A"))?;
         consent(&client, &base, &a).await?;
         let room_a = create_room(&client, &base, &a).await?;
-        let room = room_a["public_session_id"]
+        let room = room_a["participant_state"]["public_session_id"]
             .as_str()
             .context("session admission omitted public_session_id")?
             .to_string();
@@ -1148,7 +1148,7 @@ async fn run_workload_inner(
             let b = create_participant(&client, &base).await?;
             consent(&client, &base, &b).await?;
             let room_b = create_room(&client, &base, &b).await?;
-            if room_b["public_session_id"] != room {
+            if room_b["participant_state"]["public_session_id"] != room {
                 bail!("human pair admitted to different rooms");
             }
             Some(b)
@@ -1252,10 +1252,10 @@ async fn drive_session(
     } else {
         None
     };
-    read_type(&mut game_a, "session_started").await?;
+    read_participant_state(&mut game_a, "active").await?;
     send_json(&mut game_a, json!({"type":"ready"})).await?;
     if let Some(game) = &mut game_b {
-        read_type(game, "session_started").await?;
+        read_participant_state(game, "active").await?;
         send_json(game, json!({"type":"ready"})).await?;
     }
     if pairing == Pairing::HumanAgent {
@@ -1282,7 +1282,7 @@ async fn drive_session(
             let _ = audio_a.close(None).await;
             game_a = game_socket(&client, &base, &ws, &staged.room, &staged.a).await?;
             audio_a = audio_socket(&client, &base, &ws, &staged.room, &staged.a).await?;
-            read_type(&mut game_a, "session_started").await?;
+            read_participant_state(&mut game_a, "active").await?;
             send_json(&mut game_a, json!({"type":"ready"})).await?;
             counters.reconnects.fetch_add(2, Ordering::Relaxed);
             reconnected = true;
@@ -1411,7 +1411,9 @@ async fn read_finish_outcome(game: &mut Socket, deadline: time::Instant) -> Resu
         };
         let value: Value = serde_json::from_str(&text)?;
         match value["type"].as_str() {
-            Some("completed") => return Ok(FinishOutcome::Completed),
+            Some("participant_state") if value["participant_state"]["state"] == "ended" => {
+                return Ok(FinishOutcome::Completed)
+            }
             Some("action_rejected") => {
                 let code = value["code"]
                     .as_str()
@@ -1419,7 +1421,7 @@ async fn read_finish_outcome(game: &mut Socket, deadline: time::Instant) -> Resu
                     .to_string();
                 if matches!(
                     code.as_str(),
-                    "transcription_not_ready" | "players_not_ready"
+                    "transcription_not_ready" | "participant_not_active"
                 ) {
                     return Ok(FinishOutcome::Retryable(code));
                 }
@@ -1551,6 +1553,16 @@ async fn read_type(socket: &mut Socket, expected: &str) -> Result<Value> {
         }
     }
     bail!("did not receive {expected}")
+}
+
+/// Reads canonical participant snapshots until the requested lifecycle state appears.
+async fn read_participant_state(socket: &mut Socket, expected: &str) -> Result<Value> {
+    loop {
+        let message = read_type(socket, "participant_state").await?;
+        if message["participant_state"]["state"] == expected {
+            return Ok(message["participant_state"].clone());
+        }
+    }
 }
 
 /// Sends one game protocol JSON message.

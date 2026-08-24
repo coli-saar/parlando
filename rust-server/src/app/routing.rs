@@ -706,7 +706,12 @@ where
         ));
     let participant_routes = Router::new()
         .route("/api/consent", post(consent::<A>))
+        .route("/api/participant-state", get(get_participant_state::<A>))
         .route("/api/sessions", post(create_session::<A>))
+        .route(
+            "/api/sessions/:public_session_id/leave",
+            post(leave_session::<A>),
+        )
         .route(
             "/api/sessions/:public_session_id/game-session",
             post(game_session::<A>),

@@ -8,6 +8,7 @@ use std::{
 use crate::{
     game::{Game, Seat},
     identity::new_id,
+    protocol::{ParticipantResult, SessionEnd},
     readable_id::{dialogue_id, participant_id as readable_participant_id},
     session_log::SessionLogWriter,
 };
@@ -247,7 +248,7 @@ pub struct SessionRecord {
     pub game_version: String,
     pub public_session_id: String,
     pub mode: String,
-    pub status: String,
+    pub lifecycle: String,
     /// Immutable `testing` or `research` data-use purpose.
     pub purpose: String,
 }
@@ -315,7 +316,7 @@ pub struct StoredSessionSummary {
     /// Human-readable random identifier reused for this dialogue in exports and administration.
     pub dialogue_id: String,
     pub mode: String,
-    pub status: String,
+    pub lifecycle: String,
     /// Immutable data-use classification selected from experiment lifecycle at creation.
     pub purpose: String,
     /// Immutable experiment configuration revision used for this session.
@@ -324,14 +325,10 @@ pub struct StoredSessionSummary {
     pub game_version: String,
     pub created_at: String,
     pub started_at: Option<String>,
-    pub completed_at: Option<String>,
+    pub ended_at: Option<String>,
     pub completion: Option<Value>,
-    /// Provider-neutral terminal category, independent of game completion JSON.
-    pub outcome_kind: Option<String>,
-    /// Stable detailed reason for the terminal category.
-    pub outcome_reason: Option<String>,
-    /// Role responsible for a role-specific terminal transition, when any.
-    pub outcome_actor_role: Option<String>,
+    /// Structured shared reason and recipient results for one ended session.
+    pub session_end: Option<SessionEnd>,
     pub participant_count: i64,
     pub event_count: i64,
     /// Latest event position on the authoritative game clock.
@@ -355,14 +352,22 @@ pub struct StoredSessionParticipant {
     /// Durable recruitment-source classification without provider-specific identifiers.
     pub identity_provider: Option<String>,
     pub metadata: Option<Value>,
-    /// Recipient-specific consequence derived when the shared session ended.
-    pub outcome: Option<String>,
+    /// Immutable recipient-specific consequence derived when the shared session ended.
+    pub terminal_result: Option<ParticipantResult>,
     /// Private Prolific participant id returned only by administrator session inspection.
     pub prolific_participant_id: Option<String>,
     /// Private Prolific study id returned only by administrator session inspection.
     pub prolific_study_id: Option<String>,
     /// Private Prolific submission session id returned only by administrator session inspection.
     pub prolific_session_id: Option<String>,
+}
+
+/// Durable terminal participant projection used after live-room cleanup.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StoredTerminalParticipantState {
+    pub public_session_id: String,
+    pub role: String,
+    pub result: ParticipantResult,
 }
 
 /// Counts participant-linked records before an administrator confirms deletion.
@@ -568,21 +573,21 @@ pub trait ExperimentStore: Send + Sync {
         -> Result<()>;
     /// Appends one ordered session event and returns its event index.
     async fn append_session_event(&self, event: SessionEventRecord) -> Result<i64>;
-    /// Atomically appends one game transition's events and optional completion update.
+    /// Atomically appends one game transition and optionally commits its terminal value.
     async fn commit_session_transition(
         &self,
         events: Vec<SessionEventRecord>,
-        completion: Option<Value>,
-    ) -> Result<()>;
-    /// Marks an unfinished session expired and appends its bounded terminal reason.
-    async fn expire_session(
+        session_end: Option<SessionEnd>,
+    ) -> Result<bool>;
+    /// Atomically commits one non-game terminal transition and its participant results.
+    async fn end_session(&self, event: SessionEventRecord, session_end: SessionEnd)
+        -> Result<bool>;
+    /// Reads a retained terminal result by the authenticated participant-session handle.
+    async fn terminal_participant_state(
         &self,
         experiment_id: &str,
-        session_id: i64,
-        reason: &str,
-    ) -> Result<()>;
-    /// Marks an unfinished session abandoned and atomically appends its departure event.
-    async fn abandon_session(&self, event: SessionEventRecord) -> Result<()>;
+        participant_session_id: &str,
+    ) -> Result<Option<StoredTerminalParticipantState>>;
     /// Returns ordered events for one session, optionally filtered by event type.
     async fn session_events(
         &self,
@@ -652,6 +657,45 @@ async fn stored_game_time_ms(
         Some(started_at) => relative_game_time_ms(&started_at, timestamp),
         None => timestamp_millis(timestamp),
     }
+}
+
+/// Persists an ended session and every recipient-specific terminal result in one transaction.
+async fn persist_terminal_value(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    experiment_id: &str,
+    session_id: i64,
+    session_end: &SessionEnd,
+) -> Result<()> {
+    let ended_at = now_iso();
+    sqlx::query(
+        "update sessions set lifecycle = 'ended', ended_at = ?, completion_json = ?, session_end_json = ? where experiment_id = ? and session_id = ? and lifecycle != 'ended'",
+    )
+    .bind(&ended_at)
+    .bind(
+        session_end
+            .completion
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?,
+    )
+    .bind(serde_json::to_string(session_end)?)
+    .bind(experiment_id)
+    .bind(session_id)
+    .execute(&mut **tx)
+    .await?;
+    for (role, result) in &session_end.participant_results {
+        sqlx::query(
+            "update session_participants set terminal_result_json = ?, left_at = coalesce(left_at, ?) where experiment_id = ? and session_id = ? and role = ?",
+        )
+        .bind(serde_json::to_string(result)?)
+        .bind(&ended_at)
+        .bind(experiment_id)
+        .bind(session_id)
+        .bind(role)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
 }
 
 /// SQLite implementation of the evaluation-oriented experiment store.
@@ -799,15 +843,14 @@ impl SqliteExperimentStore {
                 public_session_id text not null unique,
                 dialogue_id text unique,
                 mode text not null,
-                status text not null,
+                lifecycle text not null,
+                initialization_complete integer not null default 0,
                 purpose text not null default 'research',
                 created_at text not null,
                 started_at text,
-                completed_at text,
+                ended_at text,
                 completion_json text,
-                outcome_kind text,
-                outcome_reason text,
-                outcome_actor_role text,
+                session_end_json text,
                 config_revision integer not null default 1,
                 game_version text not null,
                 primary key (experiment_id, session_id),
@@ -824,7 +867,7 @@ impl SqliteExperimentStore {
                 joined_at text not null,
                 left_at text,
                 connection_status text not null,
-                outcome text,
+                terminal_result_json text,
                 primary key (experiment_id, session_id, participant_id),
                 foreign key (experiment_id, session_id) references sessions(experiment_id, session_id),
                 foreign key (participant_id) references participants(participant_id)
@@ -897,7 +940,7 @@ impl SqliteExperimentStore {
 
     /// Accepts only the current schema baseline or stamps a genuinely empty database.
     async fn apply_pending_migrations(&self) -> Result<()> {
-        const CURRENT_SCHEMA_VERSION: i64 = 12;
+        const CURRENT_SCHEMA_VERSION: i64 = 13;
         let version =
             sqlx::query_scalar::<_, Option<i64>>("select max(version) from schema_migrations")
                 .fetch_one(&self.pool)
@@ -1440,7 +1483,7 @@ impl ExperimentStore for SqliteExperimentStore {
                    e.version_manifest_json, e.status, e.notes, e.pinned,
                    e.config_revision,
                    count(s.session_id) as session_count,
-                   sum(case when s.status = 'completed' then 1 else 0 end) as completed_session_count,
+                   sum(case when s.lifecycle = 'ended' then 1 else 0 end) as completed_session_count,
                    max(s.created_at) as last_session_at
             from experiments e
             left join sessions s on s.experiment_id = e.experiment_id
@@ -1625,11 +1668,11 @@ impl ExperimentStore for SqliteExperimentStore {
             }
         };
         let created_at = now_iso();
-        let started_at = (session.status == "running").then(|| created_at.clone());
+        let started_at = (session.lifecycle == "running").then(|| created_at.clone());
         sqlx::query(
             r#"
             insert into sessions
-            (experiment_id, session_id, public_session_id, dialogue_id, mode, status, purpose, created_at,
+            (experiment_id, session_id, public_session_id, dialogue_id, mode, lifecycle, purpose, created_at,
              started_at, config_revision, game_version)
             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
@@ -1639,7 +1682,7 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(session.public_session_id)
         .bind(readable_dialogue_id)
         .bind(session.mode)
-        .bind(session.status)
+        .bind(session.lifecycle)
         .bind(session.purpose)
         .bind(created_at)
         .bind(started_at)
@@ -1657,7 +1700,7 @@ impl ExperimentStore for SqliteExperimentStore {
         session_id: i64,
     ) -> Result<bool> {
         let result = sqlx::query(
-            "update sessions set status = 'waiting' where experiment_id = ? and session_id = ? and status = 'initializing'",
+            "update sessions set initialization_complete = 1 where experiment_id = ? and session_id = ? and lifecycle = 'forming' and initialization_complete = 0",
         )
         .bind(experiment_id)
         .bind(session_id)
@@ -1695,10 +1738,16 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(timestamp_millis(&occurred_at)?)
         .execute(&mut *tx)
         .await?;
+        let session_end = SessionEnd {
+            cause: crate::protocol::SessionEndCause::TechnicalFailure,
+            completion: None,
+            participant_results: HashMap::new(),
+        };
         sqlx::query(
-            "update sessions set status = 'abandoned', completed_at = ? where experiment_id = ? and session_id = ? and status in ('initializing', 'waiting')",
+            "update sessions set lifecycle = 'ended', initialization_complete = 1, ended_at = ?, session_end_json = ? where experiment_id = ? and session_id = ? and lifecycle = 'forming'",
         )
         .bind(occurred_at)
+        .bind(serde_json::to_string(&session_end)?)
         .bind(experiment_id)
         .bind(session_id)
         .execute(&mut *tx)
@@ -1712,7 +1761,7 @@ impl ExperimentStore for SqliteExperimentStore {
         let started_at_ms = timestamp_millis(&started_at)?;
         let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
-            "update sessions set status = 'running', started_at = ? where experiment_id = ? and session_id = ? and status = 'waiting'",
+            "update sessions set lifecycle = 'running', started_at = ? where experiment_id = ? and session_id = ? and lifecycle = 'forming' and initialization_complete = 1",
         )
         .bind(&started_at)
         .bind(experiment_id)
@@ -1861,10 +1910,10 @@ impl ExperimentStore for SqliteExperimentStore {
     async fn commit_session_transition(
         &self,
         events: Vec<SessionEventRecord>,
-        completion: Option<Value>,
-    ) -> Result<()> {
+        session_end: Option<SessionEnd>,
+    ) -> Result<bool> {
         let Some(first) = events.first() else {
-            return Ok(());
+            return Ok(false);
         };
         let experiment_id = first.experiment_id.clone();
         let session_id = first.session_id;
@@ -1878,19 +1927,19 @@ impl ExperimentStore for SqliteExperimentStore {
         let mut tx = self.pool.begin().await?;
         let game_time_ms =
             stored_game_time_ms(&mut tx, &experiment_id, session_id, &occurred_at).await?;
-        let status = sqlx::query_scalar::<_, String>(
-            "select status from sessions where experiment_id = ? and session_id = ?",
+        let lifecycle = sqlx::query_scalar::<_, String>(
+            "select lifecycle from sessions where experiment_id = ? and session_id = ?",
         )
         .bind(&experiment_id)
         .bind(session_id)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some(status) = status else {
+        let Some(lifecycle) = lifecycle else {
             bail!("session not found");
         };
-        if matches!(status.as_str(), "completed" | "expired" | "abandoned") {
+        if lifecycle == "ended" {
             tx.rollback().await?;
-            return Ok(());
+            return Ok(false);
         }
         let mut event_index = sqlx::query_scalar::<_, i64>(
             "select coalesce(max(event_index), 0) from session_events where experiment_id = ? and session_id = ?",
@@ -1920,114 +1969,18 @@ impl ExperimentStore for SqliteExperimentStore {
             .execute(&mut *tx)
             .await?;
         }
-        if let Some(completion) = completion {
-            sqlx::query(
-                "update sessions set status = 'completed', completed_at = ?, completion_json = ?, outcome_kind = 'game_completed', outcome_reason = 'game_completed' where experiment_id = ? and session_id = ?",
-            )
-            .bind(now_iso())
-            .bind(serde_json::to_string(&completion)?)
-            .bind(&experiment_id)
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query(
-                "update session_participants set outcome = 'completed' where experiment_id = ? and session_id = ?",
-            )
-            .bind(&experiment_id)
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await?;
+        if let Some(session_end) = session_end.as_ref() {
+            persist_terminal_value(&mut tx, &experiment_id, session_id, session_end).await?;
         }
         tx.commit().await?;
-        Ok(())
+        Ok(true)
     }
 
-    async fn expire_session(
+    async fn end_session(
         &self,
-        experiment_id: &str,
-        session_id: i64,
-        reason: &str,
-    ) -> Result<()> {
-        let occurred_at = now_iso();
-        let mut tx = self.pool.begin().await?;
-        let game_time_ms =
-            stored_game_time_ms(&mut tx, experiment_id, session_id, &occurred_at).await?;
-        let status = sqlx::query_scalar::<_, String>(
-            "select status from sessions where experiment_id = ? and session_id = ?",
-        )
-        .bind(experiment_id)
-        .bind(session_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let Some(status) = status else {
-            bail!("session not found");
-        };
-        if matches!(status.as_str(), "completed" | "expired" | "abandoned") {
-            tx.rollback().await?;
-            return Ok(());
-        }
-        let event_index = sqlx::query_scalar::<_, i64>(
-            "select coalesce(max(event_index), 0) + 1 from session_events where experiment_id = ? and session_id = ?",
-        )
-        .bind(experiment_id)
-        .bind(session_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        sqlx::query(
-            r#"
-            insert into session_events
-            (experiment_id, session_id, event_index, event_type, actor_participant_id,
-             actor_role, payload_json, game_state_json, game_time_ms)
-            values (?, ?, ?, 'session_expired', null, null, ?, null, ?)
-            "#,
-        )
-        .bind(experiment_id)
-        .bind(session_id)
-        .bind(event_index)
-        .bind(serde_json::to_string(&json!({"reason": reason}))?)
-        .bind(game_time_ms)
-        .execute(&mut *tx)
-        .await?;
-        let outcome = if reason == "waiting_timeout" {
-            "partner_unavailable"
-        } else {
-            "timed_out"
-        };
-        sqlx::query(
-            "update sessions set status = 'expired', completed_at = ?, outcome_kind = ?, outcome_reason = ? where experiment_id = ? and session_id = ?",
-        )
-        .bind(now_iso())
-        .bind(outcome)
-        .bind(reason)
-        .bind(experiment_id)
-        .bind(session_id)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "update session_participants set outcome = ? where experiment_id = ? and session_id = ?",
-        )
-        .bind(outcome)
-        .bind(experiment_id)
-        .bind(session_id)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    async fn abandon_session(&self, event: SessionEventRecord) -> Result<()> {
-        let actor_role = event.actor_role.clone();
-        let reason = event
-            .payload
-            .get("reason")
-            .and_then(Value::as_str)
-            .unwrap_or("participant_left")
-            .to_string();
-        let actor_outcome = if reason == "reconnect_timeout" {
-            "timed_out"
-        } else {
-            "withdrew"
-        };
+        event: SessionEventRecord,
+        session_end: SessionEnd,
+    ) -> Result<bool> {
         let occurred_at = now_iso();
         let mut tx = self.pool.begin().await?;
         let game_time_ms = stored_game_time_ms(
@@ -2037,19 +1990,19 @@ impl ExperimentStore for SqliteExperimentStore {
             &occurred_at,
         )
         .await?;
-        let status = sqlx::query_scalar::<_, String>(
-            "select status from sessions where experiment_id = ? and session_id = ?",
+        let lifecycle = sqlx::query_scalar::<_, String>(
+            "select lifecycle from sessions where experiment_id = ? and session_id = ?",
         )
         .bind(&event.experiment_id)
         .bind(event.session_id)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some(status) = status else {
+        let Some(lifecycle) = lifecycle else {
             bail!("session not found");
         };
-        if matches!(status.as_str(), "completed" | "expired" | "abandoned") {
+        if lifecycle == "ended" {
             tx.rollback().await?;
-            return Ok(());
+            return Ok(false);
         }
         let event_index = sqlx::query_scalar::<_, i64>(
             "select coalesce(max(event_index), 0) + 1 from session_events where experiment_id = ? and session_id = ?",
@@ -2071,7 +2024,7 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(event_index)
         .bind(event.event_type)
         .bind(event.actor_participant_id)
-        .bind(&event.actor_role)
+        .bind(event.actor_role)
         .bind(serde_json::to_string(&event.payload)?)
         .bind(
             event
@@ -2082,28 +2035,44 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(game_time_ms)
         .execute(&mut *tx)
         .await?;
-        sqlx::query(
-            "update sessions set status = 'abandoned', completed_at = ?, outcome_kind = ?, outcome_reason = ?, outcome_actor_role = ? where experiment_id = ? and session_id = ?",
+        persist_terminal_value(
+            &mut tx,
+            &event.experiment_id,
+            event.session_id,
+            &session_end,
         )
-        .bind(now_iso())
-        .bind(&reason)
-        .bind(&reason)
-        .bind(&actor_role)
-        .bind(&event.experiment_id)
-        .bind(event.session_id)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "update session_participants set outcome = case when role = ? then ? else 'partner_left' end where experiment_id = ? and session_id = ?",
-        )
-        .bind(&actor_role)
-        .bind(actor_outcome)
-        .bind(&event.experiment_id)
-        .bind(event.session_id)
-        .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(())
+        Ok(true)
+    }
+
+    async fn terminal_participant_state(
+        &self,
+        experiment_id: &str,
+        participant_session_id: &str,
+    ) -> Result<Option<StoredTerminalParticipantState>> {
+        let row = sqlx::query_as::<_, (String, String, String)>(
+            r#"
+            select s.public_session_id, sp.role, sp.terminal_result_json
+            from session_participants sp
+            join sessions s
+              on s.experiment_id = sp.experiment_id and s.session_id = sp.session_id
+            where sp.experiment_id = ? and sp.participant_session_id = ?
+              and s.lifecycle = 'ended' and sp.terminal_result_json is not null
+            "#,
+        )
+        .bind(experiment_id)
+        .bind(participant_session_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|(public_session_id, role, raw_result)| {
+            Ok(StoredTerminalParticipantState {
+                public_session_id,
+                role,
+                result: serde_json::from_str(&raw_result)?,
+            })
+        })
+        .transpose()
     }
 
     async fn session_events(
@@ -2166,17 +2135,16 @@ impl ExperimentStore for SqliteExperimentStore {
                 Option<String>,
                 Option<String>,
                 Option<String>,
-                String,
+                Option<String>,
                 i64,
                 i64,
                 Option<i64>,
             ),
         >(
             r#"
-            select s.session_id, s.public_session_id, s.dialogue_id, s.mode, s.status, s.purpose,
+            select s.session_id, s.public_session_id, s.dialogue_id, s.mode, s.lifecycle, s.purpose,
                    s.config_revision, s.game_version, s.created_at, s.started_at,
-                   s.completed_at, s.completion_json,
-                   json_object('kind', s.outcome_kind, 'reason', s.outcome_reason, 'actor_role', s.outcome_actor_role),
+                   s.ended_at, s.completion_json, s.session_end_json,
                    count(distinct sp.participant_id) as participant_count,
                    count(distinct se.event_id) as event_count,
                    max(se.game_time_ms) as last_event_game_time_ms
@@ -2197,27 +2165,27 @@ impl ExperimentStore for SqliteExperimentStore {
         .await?
         .into_iter()
         .map(|row| {
-            let outcome: Value = serde_json::from_str(&row.12)?;
             Ok(StoredSessionSummary {
                 experiment_id: experiment_id.to_string(),
                 session_id: row.0,
                 public_session_id: row.1,
                 dialogue_id: row.2,
                 mode: row.3,
-                status: row.4,
+                lifecycle: row.4,
                 purpose: row.5,
                 config_revision: row.6,
                 game_version: row.7,
                 created_at: row.8,
                 started_at: row.9,
-                completed_at: row.10,
+                ended_at: row.10,
                 completion: row
                     .11
                     .map(|raw| serde_json::from_str::<Value>(&raw))
                     .transpose()?,
-                outcome_kind: outcome.get("kind").and_then(Value::as_str).map(str::to_string),
-                outcome_reason: outcome.get("reason").and_then(Value::as_str).map(str::to_string),
-                outcome_actor_role: outcome.get("actor_role").and_then(Value::as_str).map(str::to_string),
+                session_end: row
+                    .12
+                    .map(|raw| serde_json::from_str::<SessionEnd>(&raw))
+                    .transpose()?,
                 participant_count: row.13,
                 event_count: row.14,
                 last_event_game_time_ms: row.15,
@@ -2258,7 +2226,7 @@ impl ExperimentStore for SqliteExperimentStore {
                    sp.participant_session_id, sp.role, sp.joined_at, sp.left_at,
                    sp.connection_status, p.research_id, p.participant_kind, p.identity_provider,
                    p.metadata_json,
-                   sp.outcome, ps.prolific_participant_id, ps.prolific_study_id,
+                   sp.terminal_result_json, ps.prolific_participant_id, ps.prolific_study_id,
                    ps.prolific_session_id
             from session_participants sp
             left join participants p on p.participant_id = sp.participant_id
@@ -2290,7 +2258,10 @@ impl ExperimentStore for SqliteExperimentStore {
                     .11
                     .map(|raw| serde_json::from_str::<Value>(&raw))
                     .transpose()?,
-                outcome: row.12,
+                terminal_result: row
+                    .12
+                    .map(|raw| serde_json::from_str::<ParticipantResult>(&raw))
+                    .transpose()?,
                 prolific_participant_id: row.13,
                 prolific_study_id: row.14,
                 prolific_session_id: row.15,
@@ -2333,7 +2304,7 @@ impl ExperimentStore for SqliteExperimentStore {
             join session_participants sp
               on sp.experiment_id = s.experiment_id and sp.session_id = s.session_id
             where sp.experiment_id = ? and sp.participant_id = ?
-              and s.status not in ('completed', 'abandoned', 'expired')
+              and s.lifecycle != 'ended'
             "#,
         )
         .bind(experiment_id)
@@ -2458,7 +2429,7 @@ async fn sqlite_participant_data_preview(
     .await?;
     let sessions = sqlx::query_as::<_, (String, String)>(
         r#"
-        select s.dialogue_id, s.status from sessions s
+        select s.dialogue_id, s.lifecycle from sessions s
         join session_participants sp
           on sp.experiment_id = s.experiment_id and sp.session_id = s.session_id
         where sp.experiment_id = ? and sp.participant_id = ?
@@ -2496,9 +2467,7 @@ async fn sqlite_participant_data_preview(
         other_event_count,
         session_ids: sessions.iter().map(|(id, _)| id.clone()).collect(),
         other_participant_ids,
-        has_non_terminal_session: sessions
-            .iter()
-            .any(|(_, status)| !matches!(status.as_str(), "completed" | "abandoned" | "expired")),
+        has_non_terminal_session: sessions.iter().any(|(_, lifecycle)| lifecycle != "ended"),
     })
 }
 
@@ -2588,9 +2557,9 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
         ))
     };
     let sessions_sql = if session_id.is_some() {
-        "select experiment_id, session_id, public_session_id, dialogue_id, mode, status, purpose, config_revision, game_version, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? and session_id = ? order by session_id"
+        "select experiment_id, session_id, public_session_id, dialogue_id, mode, lifecycle, purpose, config_revision, game_version, created_at, started_at, ended_at, completion_json, session_end_json from sessions where experiment_id = ? and session_id = ? order by session_id"
     } else {
-        "select experiment_id, session_id, public_session_id, dialogue_id, mode, status, purpose, config_revision, game_version, created_at, started_at, completed_at, completion_json from sessions where experiment_id = ? order by session_id"
+        "select experiment_id, session_id, public_session_id, dialogue_id, mode, lifecycle, purpose, config_revision, game_version, created_at, started_at, ended_at, completion_json, session_end_json from sessions where experiment_id = ? order by session_id"
     };
     let mut sessions_query = sqlx::query_as::<
         _,
@@ -2605,6 +2574,7 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
             i64,
             String,
             String,
+            Option<String>,
             Option<String>,
             Option<String>,
             Option<String>,
@@ -2625,14 +2595,15 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
                 "public_session_id": row.2,
                 "dialogue_id": row.3,
                 "mode": row.4,
-                "status": row.5,
+                "lifecycle": row.5,
                 "purpose": row.6,
                 "config_revision": row.7,
                 "game_version": row.8,
                 "created_at": row.9,
                 "started_at": row.10,
-                "completed_at": row.11,
+                "ended_at": row.11,
                 "completion": row.12.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
+                "session_end": row.13.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
             })
         })
         .collect::<Vec<_>>();
@@ -2819,7 +2790,7 @@ pub struct SessionParticipant {
     pub role: Seat,
     pub connected: bool,
     /// Whether the browser declared its game channel ready at least once.
-    pub ready_declared: bool,
+    pub ready: bool,
     /// Whether this participant has completed required audio/STT setup for this session.
     pub audio_ready: bool,
     pub consent_decisions: HashMap<String, bool>,
@@ -2841,11 +2812,41 @@ pub struct LiveSession<G: Game> {
     pub state: G::State,
     /// Base game-scoped handle for this session's log.
     pub log_writer: Option<SessionLogWriter>,
-    /// Runtime lifecycle status: `waiting`, `running`, `completed`, or `abandoned`.
-    pub status: String,
+    /// Authoritative shared lifecycle for this forming, running, or ended session.
+    pub lifecycle: SessionLifecycle,
+    /// Temporary interaction pause while a required role may reconnect.
+    pub pause: Option<crate::protocol::ParticipantPauseReason>,
     pub participants: HashMap<String, SessionParticipant>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Typed shared session lifecycle used by every runtime transition.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "state", content = "end", rename_all = "snake_case")]
+pub enum SessionLifecycle {
+    /// Participants or required services are still assembling.
+    Forming,
+    /// The game has started and may be active or temporarily paused.
+    Running,
+    /// One immutable shared terminal value has been committed.
+    Ended(SessionEnd),
+}
+
+impl SessionLifecycle {
+    /// Returns the stable database lifecycle value.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Forming => "forming",
+            Self::Running => "running",
+            Self::Ended(_) => "ended",
+        }
+    }
+
+    /// Reports whether the session has reached its absorbing state.
+    pub fn is_ended(&self) -> bool {
+        matches!(self, Self::Ended(_))
+    }
 }
 
 /// Stored transcript segment received from the browser transcription flow.

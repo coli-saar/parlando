@@ -1,5 +1,53 @@
 # Technical Decisions
 
+## 2026-08-24: The dashboard projects canonical lifecycle and participant phase directly
+
+Context: after the participant-state redesign, durable session responses exposed `lifecycle` with
+`forming | running | ended`, but the dashboard still read `status`, filtered by the removed
+`waiting | completed | abandoned | expired` vocabulary, and looked for obsolete participant
+`outcome` fields. A running session therefore rendered as `Unknown`, and participant phases were
+not visible. Durable participant connection strings also could not represent a live pause.
+
+Decision: use `lifecycle` throughout the administrator session API, query parameters, telemetry,
+filters, and rendering. Display the structured session-end cause separately from lifecycle and
+transport health. Project each attached participant as `waiting`, `active`, `paused`, or `ended`
+from the authoritative live session snapshot; attach recipient-specific terminal results from
+durable storage. Publish the same live participant phase in the five-second operational snapshot
+so an already-selected dashboard session follows pauses and reconnections without conflating them
+with socket health. When a nonterminal durable session is absent from the current runtime, render
+its participant phase as unavailable rather than inventing `active` or `paused`.
+
+Tradeoffs and risks: the administrator participant projection intentionally exposes the canonical
+phase and terminal result, not role observations or available actions. Those gameplay payloads are
+unnecessary for monitoring and remain on the participant protocol. Runtime-absent nonterminal
+sessions expose an honest availability gap; restart recovery or forced termination remains a
+separate lifecycle policy. Tests cover the complete session inventory, the attached participant
+inventory, invalid lifecycle filters, and live pause/reconnect changes through real WebSockets and
+administrator HTTP requests.
+
+## 2026-08-24: Existing Great Tree data is converted once, outside the runtime
+
+Context: the Great Tree catalogue at `games/great-tree/server/parlando-great-tree.sqlite` was a
+populated schema-12 database. The schema-13 participant-state implementation intentionally has no
+runtime migration, fallback decoder, or dual representation, so the server correctly refused to
+open that file.
+
+Decision: create a consistent SQLite backup beside the catalogue, then convert the live database
+in place in one immediate transaction. Rename the session lifecycle and terminal timestamp columns,
+add initialization and structured terminal-value columns, derive typed session ends and
+recipient-specific participant results from the existing completion values and terminal events,
+remove the superseded outcome columns, and stamp schema 13. Preserve running sessions as running.
+The application remains schema-13-only; this is an operational data conversion, not application
+migration code.
+
+Tradeoffs and risks: historical terminal records do not contain final role observations or
+recruitment handoffs, so those optional result fields remain absent. Waiting timeout maps to
+`PartnerUnavailable`; running idle timeout maps to `IdleTimedOut`; recorded participant departures
+preserve their actor role. The backup
+`games/great-tree/server/parlando-great-tree.schema12-backup-2026-08-24.sqlite` is the recovery point.
+SQLite integrity, foreign keys, terminal JSON validity, and terminal-result completeness were
+checked after conversion.
+
 ## 2026-08-21: Sessions own game instances and extension loggers
 
 Context: Parlando's live runtime stores one shared game value per experiment and one
@@ -1666,13 +1714,12 @@ but the SQLite transition method could still append a transition and overwrite a
 called after another terminal writer. Separately, handwritten Rust and TypeScript examples could agree
 with themselves while drifting from one another.
 
-Decision: make `commit_session_transition` inspect terminal status inside its transaction and no-op after
-`completed`, `expired`, or `abandoned`, matching the existing expiry and abandonment behavior. Add a
-three-way durable terminal race and a live logger drain/attribution integration test. Establish
-`proto/participant_protocol_v1.fixtures.json` as the shared executable JSON corpus for every participant
-client/server message variant; Rust must deserialize and byte-semantically round-trip it, while TypeScript
-must accept the same variants and public-session naming. Add an external-consumer TypeScript compile test
-and an npm file-allowlist test to the normal JavaScript test lane.
+Decision at the time: make `commit_session_transition` inspect terminal status inside its transaction and
+no-op after `completed`, `expired`, or `abandoned`, matching the then-current expiry and abandonment
+behavior. Add a three-way durable terminal race and a live logger drain/attribution integration test. The
+participant protocol fixture introduced by this decision has since been replaced outright by protocol 2;
+there is no retained protocol-1 fixture or compatibility decoder. Add an external-consumer TypeScript
+compile test and an npm file-allowlist test to the normal JavaScript test lane.
 
 Tradeoffs: terminal transition attempts after terminality return success as idempotent no-ops, so callers do
 not learn which concurrent terminal operation won without reading the session. The JSON fixture is a
@@ -1936,3 +1983,11 @@ experiment-clone behavior, and the browser automation lane before implementation
 - Context: Versioned `docs/` had accumulated implementation proposals, research working papers, and future-work language beside operator and API guides. This made it unclear which behavior users could rely on and published internal work products as if they were supported contracts.
 - Decision: Everything in `docs/` is versioned, user-facing documentation written in the academic-exposition style. It explains supported tasks, current contracts, concrete limitations, migration behavior, and public worked examples. Internal plans, design specifications, audit working papers, private drafts, and decision history live in ignored `notes/` and are never linked from versioned documentation. When an internal design becomes implemented behavior, write fresh public documentation rather than promoting the working note unchanged.
 - Tradeoff: Internal reasoning is not available in a normal source checkout, so public documents must be self-contained and code changes must not depend on readers finding a private note. Contributors retain local history in `notes/`, while the repository exposes a smaller and more reliable public manual.
+
+## 2026-08-24: Server and clients share one participant-state inventory
+
+- Context: Participant lifecycle is currently represented by overlapping React booleans, runtime session-status strings, connection/readiness flags, and one-shot WebSocket messages. Keeping the socket open during explicit leave fixes the ordinary early-close bug, but losing the connection after the durable terminal write can still prevent the browser from receiving its recipient-specific outcome and Prolific handoff.
+- Decision: Define one canonical `Registered | Waiting | Active | Paused | Ended` participant-state inventory shared by Rust and TypeScript. The server owns the authoritative state and clients replicate authenticated snapshots. Participant states are projections of a clean `Forming | Running | Ended` session lifecycle, running-session interaction availability, membership, and recipient-specific terminal results. Client connection, leave-request, rendering, and audio states remain separate local machines. `Ended` is immutable, explicit leave is allowed from every attached nonterminal state and is recoverable through a read-only participant-state snapshot, and all meaningful input is accepted only in `Active`. Leave disables game interaction but retains terminal reconciliation, superseding the earlier decision to disable reconnection completely while waiting for `session_ended`. The internal design and test matrix are recorded in `notes/participant-state-machine-design.md`.
+- Tradeoff: This replaces the existing lifecycle scheme across the participant protocol, storage model, server transition service, JavaScript controller, input guards, external clients, tests, skills, and public documentation. The core session model drops completed, abandoned, expired, and failed as lifecycle values in favor of `Ended` plus a structured cause. Protocol version 2 is a coordinated clean cut: no legacy lifecycle messages, WebSocket leave operation, coarse-status export, or compatibility adapter remains. The design makes terminal delivery recoverable without claiming running-game recovery after a server restart.
+
+- Implementation: Persist `SessionEnd` and every human role's `ParticipantResult` atomically, retain those results after live-room cleanup, and expose them through `GET /api/participant-state`. Use idempotent HTTP leave and keep the socket open until its terminal response arrives. WebSocket protocol 2 begins with and changes lifecycle through complete `participant_state` snapshots; compact game deltas remain non-lifecycle messages. The browser reducer validates the seven-edge graph and tracks connection synchronization separately. SQLite schema 13 is the clean baseline and intentionally rejects earlier populated schema versions rather than carrying old columns or conversion branches in production.

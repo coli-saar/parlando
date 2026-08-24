@@ -1,7 +1,17 @@
+use crate::protocol::SessionEndCause;
 use serde_json::json;
 use tempfile::tempdir;
 
 use super::*;
+
+/// Builds a compact terminal value for storage-boundary tests.
+fn test_session_end(cause: SessionEndCause, completion: Option<Value>) -> SessionEnd {
+    SessionEnd {
+        cause,
+        completion,
+        participant_results: HashMap::new(),
+    }
+}
 
 /// Confirms agent identifiers expose the configured type, implementation name, and version.
 #[test]
@@ -224,7 +234,7 @@ async fn sqlite_stamps_testing_and_research_session_purpose() {
             game_version: "0.4.0".to_string(),
             public_session_id: "TESTING".to_string(),
             mode: "direct".to_string(),
-            status: "waiting".to_string(),
+            lifecycle: "forming".to_string(),
             purpose: "testing".to_string(),
         })
         .await
@@ -240,7 +250,7 @@ async fn sqlite_stamps_testing_and_research_session_purpose() {
             game_version: "0.4.0".to_string(),
             public_session_id: "RESEARCH".to_string(),
             mode: "direct".to_string(),
-            status: "waiting".to_string(),
+            lifecycle: "forming".to_string(),
             purpose: "research".to_string(),
         })
         .await
@@ -443,7 +453,7 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
             game_version: "0.4.0".to_string(),
             public_session_id: "ROOM1".to_string(),
             mode: "direct".to_string(),
-            status: "waiting".to_string(),
+            lifecycle: "forming".to_string(),
             purpose: "research".to_string(),
         })
         .await
@@ -455,7 +465,7 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
             game_version: "0.4.0".to_string(),
             public_session_id: "ROOM2".to_string(),
             mode: "direct".to_string(),
-            status: "waiting".to_string(),
+            lifecycle: "forming".to_string(),
             purpose: "research".to_string(),
         })
         .await
@@ -547,6 +557,10 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
         .delete_participant_data("exp_eval", participant_id)
         .await
         .is_err());
+    assert!(store
+        .complete_session_initialization("exp_eval", session_one)
+        .await
+        .unwrap());
     assert!(store.start_session("exp_eval", session_one).await.unwrap());
     let rebased = store
         .session_events("exp_eval", session_one, None)
@@ -573,7 +587,10 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
                 payload: json!({"outcome": "test"}),
                 game_state: None,
             }],
-            Some(json!({"outcome": "test"})),
+            Some(test_session_end(
+                SessionEndCause::GameCompleted,
+                Some(json!({"outcome": "test"})),
+            )),
         )
         .await
         .unwrap();
@@ -651,7 +668,7 @@ async fn sqlite_allows_returning_participant_in_multiple_sessions_with_different
             game_version: "0.4.0".to_string(),
             public_session_id: "ROOM_A".to_string(),
             mode: "human_vs_human".to_string(),
-            status: "running".to_string(),
+            lifecycle: "running".to_string(),
             purpose: "research".to_string(),
         })
         .await
@@ -663,7 +680,7 @@ async fn sqlite_allows_returning_participant_in_multiple_sessions_with_different
             game_version: "0.4.0".to_string(),
             public_session_id: "ROOM_B".to_string(),
             mode: "role_swap_replay".to_string(),
-            status: "running".to_string(),
+            lifecycle: "running".to_string(),
             purpose: "research".to_string(),
         })
         .await
@@ -772,7 +789,7 @@ async fn sqlite_session_participants_survive_prolific_correlation_purge() {
             game_version: "0.4.0".to_string(),
             public_session_id: "ROOM_PURGE".to_string(),
             mode: "human_vs_human".to_string(),
-            status: "completed".to_string(),
+            lifecycle: "ended".to_string(),
             purpose: "research".to_string(),
         })
         .await
@@ -911,7 +928,7 @@ async fn sqlite_holds_mixed_participant_and_event_shapes_for_weird_experiments()
             game_version: "0.4.0".to_string(),
             public_session_id: "ROOM_WEIRD".to_string(),
             mode: "human_agent_with_worker".to_string(),
-            status: "running".to_string(),
+            lifecycle: "running".to_string(),
             purpose: "research".to_string(),
         })
         .await
@@ -1160,23 +1177,124 @@ async fn sqlite_session_expiry_records_reason_and_status_atomically() {
             game_version: "0.4.0".to_string(),
             public_session_id: "EXPIRING".to_string(),
             mode: "direct".to_string(),
-            status: "running".to_string(),
+            lifecycle: "running".to_string(),
             purpose: "research".to_string(),
         })
         .await
         .unwrap();
 
     store
-        .expire_session("expiry", session_id, "idle_timeout")
+        .end_session(
+            SessionEventRecord {
+                experiment_id: "expiry".to_string(),
+                session_id,
+                event_type: "session_ended".to_string(),
+                actor_participant_id: None,
+                actor_role: None,
+                payload: json!({"reason": "idle_timeout"}),
+                game_state: None,
+            },
+            test_session_end(SessionEndCause::IdleTimedOut, None),
+        )
         .await
         .unwrap();
     let exported = store.export_session("expiry", session_id).await.unwrap();
-    assert_eq!(exported["sessions"][0]["status"], "expired");
+    assert_eq!(exported["sessions"][0]["lifecycle"], "ended");
     assert_eq!(exported["session_events"].as_array().unwrap().len(), 1);
     assert_eq!(
         exported["session_events"][0]["payload"]["reason"],
         "idle_timeout"
     );
+}
+
+/// Proves terminal participant state remains recoverable after the live room has been removed.
+#[tokio::test]
+async fn sqlite_retains_recipient_terminal_state_for_reconciliation() {
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+    store
+        .create_experiment(ExperimentRecord {
+            experiment_id: "reconcile".to_string(),
+            game_version: "0.4.0".to_string(),
+            config: json!({}),
+            server_version: None,
+            version_manifest: None,
+            status: "inactive".to_string(),
+            notes: None,
+        })
+        .await
+        .unwrap();
+    let participant_id = store
+        .upsert_participant(ParticipantRecord {
+            experiment_id: "reconcile".to_string(),
+            participant_kind: "human".to_string(),
+            identity_provider: "direct".to_string(),
+            external_id: None,
+            metadata: Value::Null,
+        })
+        .await
+        .unwrap();
+    let session_id = store
+        .create_session(SessionRecord {
+            experiment_id: "reconcile".to_string(),
+            config_revision: 1,
+            game_version: "0.4.0".to_string(),
+            public_session_id: "RETAINED".to_string(),
+            mode: "direct".to_string(),
+            lifecycle: "running".to_string(),
+            purpose: "research".to_string(),
+        })
+        .await
+        .unwrap();
+    store
+        .add_session_participant(SessionParticipantRecord {
+            experiment_id: "reconcile".to_string(),
+            session_id,
+            participant_id,
+            participant_session_id: "participant-handle".to_string(),
+            role: "A".to_string(),
+            connection_status: "connected".to_string(),
+        })
+        .await
+        .unwrap();
+    let result = ParticipantResult {
+        outcome: crate::protocol::ParticipantOutcomeKind::TimedOut,
+        reason: "idle_timeout".to_string(),
+        completion: None,
+        final_observation: Some(json!({"turn": 4})),
+        handoff: None,
+    };
+    let mut results = HashMap::new();
+    results.insert("A".to_string(), result.clone());
+    store
+        .end_session(
+            SessionEventRecord {
+                experiment_id: "reconcile".to_string(),
+                session_id,
+                event_type: "session_ended".to_string(),
+                actor_participant_id: None,
+                actor_role: None,
+                payload: json!({"reason": "idle_timeout"}),
+                game_state: None,
+            },
+            SessionEnd {
+                cause: SessionEndCause::IdleTimedOut,
+                completion: None,
+                participant_results: results,
+            },
+        )
+        .await
+        .unwrap();
+
+    let recovered = store
+        .terminal_participant_state("reconcile", "participant-handle")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(recovered.public_session_id, "RETAINED");
+    assert_eq!(recovered.role, "A");
+    assert_eq!(recovered.result, result);
 }
 
 /// Confirms intentional departure has its own terminal status and durable actor event.
@@ -1204,31 +1322,35 @@ async fn sqlite_session_abandonment_records_actor_and_status_atomically() {
             game_version: "0.4.0".to_string(),
             public_session_id: "ABANDONED".to_string(),
             mode: "direct".to_string(),
-            status: "running".to_string(),
+            lifecycle: "running".to_string(),
             purpose: "research".to_string(),
         })
         .await
         .unwrap();
 
     store
-        .abandon_session(SessionEventRecord {
-            experiment_id: "departure".to_string(),
-            session_id,
-            event_type: "session_abandoned".to_string(),
-            actor_participant_id: None,
-            actor_role: Some("A".to_string()),
-            payload: json!({"reason": "participant_left"}),
-            game_state: None,
-        })
-        .await
-        .unwrap();
-    store
-        .expire_session("departure", session_id, "reconnect_timeout")
+        .end_session(
+            SessionEventRecord {
+                experiment_id: "departure".to_string(),
+                session_id,
+                event_type: "session_abandoned".to_string(),
+                actor_participant_id: None,
+                actor_role: Some("A".to_string()),
+                payload: json!({"reason": "participant_left"}),
+                game_state: None,
+            },
+            test_session_end(
+                SessionEndCause::ParticipantLeft {
+                    actor: "A".to_string(),
+                },
+                None,
+            ),
+        )
         .await
         .unwrap();
 
     let exported = store.export_session("departure", session_id).await.unwrap();
-    assert_eq!(exported["sessions"][0]["status"], "abandoned");
+    assert_eq!(exported["sessions"][0]["lifecycle"], "ended");
     assert_eq!(
         exported["session_events"][0]["event_type"],
         "session_abandoned"
@@ -1321,7 +1443,7 @@ async fn concurrent_event_appends_are_gap_free() {
             game_version: "1.0.0".to_string(),
             public_session_id: "CONCURRENT_EVENTS".to_string(),
             mode: "direct".to_string(),
-            status: "running".to_string(),
+            lifecycle: "running".to_string(),
             purpose: "research".to_string(),
         })
         .await
@@ -1385,7 +1507,7 @@ async fn running_test_session(store: &SqliteExperimentStore, experiment_id: &str
             game_version: "1.0.0".to_string(),
             public_session_id: format!("{experiment_id}-public"),
             mode: "direct".to_string(),
-            status: "running".to_string(),
+            lifecycle: "running".to_string(),
             purpose: "research".to_string(),
         })
         .await
@@ -1471,7 +1593,10 @@ async fn concurrent_terminal_transitions_have_exactly_one_winner() {
                         payload: json!({"winner": "completion"}),
                         game_state: Some(json!({"done": true})),
                     }],
-                    Some(json!({"winner": "completion"})),
+                    Some(test_session_end(
+                        SessionEndCause::GameCompleted,
+                        Some(json!({"winner": "completion"})),
+                    )),
                 )
                 .await
                 .unwrap();
@@ -1483,7 +1608,18 @@ async fn concurrent_terminal_transitions_have_exactly_one_winner() {
         tokio::spawn(async move {
             barrier.wait().await;
             store
-                .expire_session("terminal-race", session_id, "idle")
+                .end_session(
+                    SessionEventRecord {
+                        experiment_id: "terminal-race".to_string(),
+                        session_id,
+                        event_type: "session_ended".to_string(),
+                        actor_participant_id: None,
+                        actor_role: None,
+                        payload: json!({"winner": "expiry"}),
+                        game_state: None,
+                    },
+                    test_session_end(SessionEndCause::IdleTimedOut, None),
+                )
                 .await
                 .unwrap();
         })
@@ -1494,15 +1630,23 @@ async fn concurrent_terminal_transitions_have_exactly_one_winner() {
         tokio::spawn(async move {
             barrier.wait().await;
             store
-                .abandon_session(SessionEventRecord {
-                    experiment_id: "terminal-race".to_string(),
-                    session_id,
-                    event_type: "session_abandoned".to_string(),
-                    actor_participant_id: None,
-                    actor_role: Some("B".to_string()),
-                    payload: json!({"winner": "abandonment"}),
-                    game_state: None,
-                })
+                .end_session(
+                    SessionEventRecord {
+                        experiment_id: "terminal-race".to_string(),
+                        session_id,
+                        event_type: "session_abandoned".to_string(),
+                        actor_participant_id: None,
+                        actor_role: Some("B".to_string()),
+                        payload: json!({"winner": "abandonment"}),
+                        game_state: None,
+                    },
+                    test_session_end(
+                        SessionEndCause::ParticipantLeft {
+                            actor: "B".to_string(),
+                        },
+                        None,
+                    ),
+                )
                 .await
                 .unwrap();
         })
@@ -1516,8 +1660,7 @@ async fn concurrent_terminal_transitions_have_exactly_one_winner() {
         .export_session("terminal-race", session_id)
         .await
         .unwrap();
-    let status = export["sessions"][0]["status"].as_str().unwrap();
-    assert!(matches!(status, "completed" | "expired" | "abandoned"));
+    assert_eq!(export["sessions"][0]["lifecycle"], "ended");
     let terminal_events = export["session_events"]
         .as_array()
         .unwrap()
@@ -1525,13 +1668,13 @@ async fn concurrent_terminal_transitions_have_exactly_one_winner() {
         .filter(|event| {
             matches!(
                 event["event_type"].as_str(),
-                Some("session_completed" | "session_expired" | "session_abandoned")
+                Some("session_completed" | "session_ended" | "session_abandoned")
             )
         })
         .collect::<Vec<_>>();
     assert_eq!(terminal_events.len(), 1);
-    assert_eq!(
-        terminal_events[0]["event_type"].as_str().unwrap(),
-        format!("session_{status}")
-    );
+    assert!(matches!(
+        terminal_events[0]["event_type"].as_str(),
+        Some("session_completed" | "session_ended" | "session_abandoned")
+    ));
 }

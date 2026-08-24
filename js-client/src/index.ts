@@ -1,9 +1,12 @@
 export {
   ParticipantClient,
+  reduceParticipantState,
   type AudioSessionPlan,
   type ConsentItem,
   type ExperimentInfo,
-  type JoinedSession,
+  type ParticipantState,
+  type ParticipantResult,
+  type ParticipantPauseReason,
   type GameSessionPlan,
   type MessageInput,
   type PlayerMessage,

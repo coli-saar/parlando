@@ -370,20 +370,22 @@ pub(crate) struct ConnectionLivenessSnapshot {
 pub(crate) struct ParticipantLiveness {
     pub role: String,
     pub source: String,
+    /// Canonical participant phase projected from the same live session snapshot.
+    pub participant_state: String,
     pub game_health: String,
     pub game: Option<ConnectionLivenessSnapshot>,
     pub audio: Option<ConnectionLivenessSnapshot>,
     pub audio_ready: bool,
 }
 
-/// Runtime-only session status used by dashboard liveness views.
+/// Runtime-only session lifecycle and transport health used by dashboard views.
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct SessionLiveness {
     /// Experiment runtime which owns this session identifier.
     pub experiment_id: String,
     pub session_id: i64,
     pub public_session_id: String,
-    pub status: String,
+    pub lifecycle: String,
     pub health: String,
     pub meaningful_activity_at: String,
     pub lifecycle_deadline_at: Option<String>,

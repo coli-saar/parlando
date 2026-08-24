@@ -140,9 +140,10 @@ describe("Parlando startup helpers", () => {
   });
 
   it("guards participant game messages after completion", () => {
-    expect(canSendGameMessage({ completed: false })).toBe(true);
-    expect(canSendGameMessage({ completed: false, leaving: true })).toBe(false);
-    expect(canSendGameMessage({ completed: true })).toBe(false);
+    expect(canSendGameMessage({ participantState: { state: "active" }, synchronization: "connected" })).toBe(true);
+    expect(canSendGameMessage({ participantState: { state: "paused" }, synchronization: "connected" })).toBe(false);
+    expect(canSendGameMessage({ participantState: { state: "ended" }, synchronization: "connected" })).toBe(false);
+    expect(canSendGameMessage({ participantState: { state: "active" }, synchronization: "reconnecting" })).toBe(false);
     expect(canSendGameMessage(null)).toBe(false);
   });
 
@@ -153,15 +154,13 @@ describe("Parlando startup helpers", () => {
       sendMessage: vi.fn()
     };
 
-    sendActionIfGameActive(apiClient, { socket, completed: true }, { type: "finish" });
-    sendMessageIfGameActive(apiClient, { socket, completed: true }, "late hello");
-    sendActionIfGameActive(apiClient, { socket, completed: false, leaving: true }, { type: "finish" });
-    sendMessageIfGameActive(apiClient, { socket, completed: false, leaving: true }, "leaving hello");
+    sendActionIfGameActive(apiClient, { socket, participantState: { state: "ended" }, synchronization: "connected" }, { type: "finish" });
+    sendMessageIfGameActive(apiClient, { socket, participantState: { state: "paused" }, synchronization: "connected" }, "late hello");
     expect(apiClient.sendAction).not.toHaveBeenCalled();
     expect(apiClient.sendMessage).not.toHaveBeenCalled();
 
-    sendActionIfGameActive(apiClient, { socket, completed: false }, { type: "finish" });
-    sendMessageIfGameActive(apiClient, { socket, completed: false }, "hello");
+    sendActionIfGameActive(apiClient, { socket, participantState: { state: "active" }, synchronization: "connected" }, { type: "finish" });
+    sendMessageIfGameActive(apiClient, { socket, participantState: { state: "active" }, synchronization: "connected" }, "hello");
     expect(apiClient.sendAction).toHaveBeenCalledWith(socket, { type: "finish" });
     expect(apiClient.sendMessage).toHaveBeenCalledWith(socket, "hello");
   });

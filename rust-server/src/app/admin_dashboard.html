@@ -77,10 +77,10 @@
     .capability-badge.invalid, .capability-badge.blocked { background: #fff1ef; color: #ac3832; }
     .new-experiment { margin-top: auto; width: 100%; }
     .status-dot { background: var(--archived); border-radius: 50%; display: inline-block; flex: 0 0 auto; height: 7px; width: 7px; }
-    .status-dot.inactive, .status-dot.waiting, .status-dot.delayed { background: var(--draft); }
+    .status-dot.inactive, .status-dot.forming, .status-dot.waiting, .status-dot.delayed, .status-dot.paused { background: var(--draft); }
     .status-dot.testing { background: var(--testing); }
     .status-dot.active, .status-dot.running, .status-dot.live, .status-dot.research { background: var(--active); }
-    .status-dot.completed { background: var(--completed); }
+    .status-dot.completed, .status-dot.ended { background: var(--completed); }
     .status-dot.archived, .status-dot.unavailable { background: var(--archived); }
     .status-dot.disconnected, .status-dot.stale, .status-dot.expired, .status-dot.abandoned { background: var(--danger); }
     .status-dot.server { background: #7057a3; }
@@ -476,15 +476,13 @@
             <div class="session-toolbar">
               <h2>Sessions</h2>
               <div class="status-filter" data-status-filter>
-                <input id="sessionStatusFilter" type="hidden" value="">
-                <button class="status-filter-trigger" type="button" aria-label="Filter sessions by status" aria-haspopup="listbox" aria-expanded="false"><span class="status-filter-current">All</span></button>
-                <div class="status-filter-menu" role="listbox" aria-label="Session status" hidden>
+                <input id="sessionLifecycleFilter" type="hidden" value="">
+                <button class="status-filter-trigger" type="button" aria-label="Filter sessions by lifecycle" aria-haspopup="listbox" aria-expanded="false"><span class="status-filter-current">All</span></button>
+                <div class="status-filter-menu" role="listbox" aria-label="Session lifecycle" hidden>
                   <button class="status-filter-option" type="button" role="option" data-value="" aria-selected="true">All</button>
-                  <button class="status-filter-option" type="button" role="option" data-value="waiting" aria-selected="false"><span class="status-dot waiting" aria-hidden="true"></span>Waiting</button>
+                  <button class="status-filter-option" type="button" role="option" data-value="forming" aria-selected="false"><span class="status-dot forming" aria-hidden="true"></span>Forming</button>
                   <button class="status-filter-option" type="button" role="option" data-value="running" aria-selected="false"><span class="status-dot running" aria-hidden="true"></span>Running</button>
-                  <button class="status-filter-option" type="button" role="option" data-value="completed" aria-selected="false"><span class="status-dot completed" aria-hidden="true"></span>Completed</button>
-                  <button class="status-filter-option" type="button" role="option" data-value="abandoned" aria-selected="false"><span class="status-dot abandoned" aria-hidden="true"></span>Abandoned</button>
-                  <button class="status-filter-option" type="button" role="option" data-value="expired" aria-selected="false"><span class="status-dot expired" aria-hidden="true"></span>Expired</button>
+                  <button class="status-filter-option" type="button" role="option" data-value="ended" aria-selected="false"><span class="status-dot ended" aria-hidden="true"></span>Ended</button>
                 </div>
               </div>
             </div>
@@ -589,7 +587,7 @@
     const gameBuild = document.getElementById('gameBuild');
     const experimentLabel = document.getElementById('experimentLabel');
     const experimentStatusFilter = document.getElementById('experimentStatusFilter');
-    const sessionStatusFilter = document.getElementById('sessionStatusFilter');
+    const sessionLifecycleFilter = document.getElementById('sessionLifecycleFilter');
     const showHousekeeping = document.getElementById('showHousekeeping');
     const showLogs = document.getElementById('showLogs');
     const configForm = document.getElementById('configForm');
@@ -909,7 +907,7 @@
 
     // Renders a consistent status marker for session and participant health.
     function livenessBadge(health, detail = '') {
-      const normalized = ['live', 'delayed', 'stale', 'disconnected', 'waiting', 'completed', 'server', 'unavailable'].includes(health) ? health : 'unavailable';
+      const normalized = ['live', 'delayed', 'stale', 'disconnected', 'waiting', 'ended', 'server', 'unavailable'].includes(health) ? health : 'unavailable';
       const title = detail ? ` title="${escapeHtml(detail)}"` : '';
       return `<span class="status-chip"${title}>${statusLabel(normalized)}</span>`;
     }
@@ -1057,7 +1055,7 @@
       }
       livenessTable.innerHTML = `<table class="load-table"><thead><tr><th>Experiment / session</th><th>Liveness</th><th>Participants</th><th>Meaningful activity</th><th>Next lifecycle deadline</th></tr></thead><tbody>${sessions.map(session => `
         <tr class="load-session" data-experiment="${escapeHtml(session.experiment_id)}" data-session="${session.session_id}">
-          <td><strong>${escapeHtml(session.experiment_id)} · #${session.session_id}</strong><div class="muted small">${escapeHtml(session.status)}</div></td>
+          <td><strong>${escapeHtml(session.experiment_id)} · #${session.session_id}</strong><div class="muted small">${escapeHtml(session.lifecycle)}</div></td>
           <td>${livenessBadge(session.health)}</td>
           <td>${session.participants.map(participant => participant.source === 'agent' ? `<div class="participant-liveness">${escapeHtml(participant.role)} ${livenessBadge('server', 'Trusted server-side agent')}</div>` : `<div class="participant-liveness">${escapeHtml(participant.role)} ${livenessBadge(participant.game_health, participant.game ? `Last game message ${formatAge(participant.game.last_message_at_ms)}` : 'No current game socket')}<div class="muted small">game ${participant.game ? formatAge(participant.game.last_message_at_ms) : 'disconnected'} · audio ${participant.audio ? formatAge(participant.audio.last_message_at_ms) : 'disconnected'}</div></div>`).join('')}</td>
           <td>${escapeHtml(formatAge(new Date(session.meaningful_activity_at).getTime()))}</td>
@@ -1284,7 +1282,7 @@
       sessionList.innerHTML = state.sessions.map(session => `
         <button class="session ${state.selected === session.session_id ? 'active' : ''}" data-session="${session.session_id}">
           <span class="session-main">
-            <span class="session-name">${statusLabel(session.status, true)}<strong>${escapeHtml(session.dialogue_id || `Session #${session.session_id}`)}</strong></span>
+            <span class="session-name">${statusLabel(session.lifecycle, true)}<strong>${escapeHtml(session.dialogue_id || `Session #${session.session_id}`)}</strong></span>
             <span class="muted small">#${session.session_id} · ${escapeHtml(fmtTime(session.created_at))}${session.purpose === 'testing' ? ` · <span class="purpose-marker"><span class="status-dot testing" aria-hidden="true"></span>Testing</span>` : ''}</span>
           </span>
           <span class="session-count small" title="${session.event_count} events">${icon('list-tree', 'count-icon')}${session.event_count}</span>
@@ -1299,7 +1297,7 @@
     async function loadSessions() {
       if (!state.experiment) return;
       const params = new URLSearchParams({ limit: '80' });
-      if (sessionStatusFilter.value) params.set('status', sessionStatusFilter.value);
+      if (sessionLifecycleFilter.value) params.set('lifecycle', sessionLifecycleFilter.value);
       const response = await fetch(`${runtimeApi('sessions')}?${params}`);
       if (!response.ok) throw new Error(await response.text());
       const data = await response.json();
@@ -2417,16 +2415,16 @@
     // Renders a compact session header that separates durable lifecycle from runtime health.
     function renderSummary(session, participantRows) {
       const live = sessionLiveness(session.session_id);
-      const health = live?.health || (session.status === 'completed' ? 'completed' : 'unavailable');
+      const health = live?.health || (session.lifecycle === 'ended' ? 'ended' : 'unavailable');
       const recruitmentProvider = participantRows.some(row => row.identity_provider === 'prolific') ? 'Prolific' : 'Direct';
       summary.innerHTML = `
         <h2>Session #${escapeHtml(session.session_id)}</h2>
         <dl class="session-facts">
-          <div><dt>Status</dt><dd><span class="status-chip">${statusLabel(session.status)}</span></dd></div>
+          <div><dt>Lifecycle</dt><dd><span class="status-chip">${statusLabel(session.lifecycle)}</span></dd></div>
           <div><dt>Health</dt><dd>${livenessBadge(health, live ? `Meaningful activity ${formatAge(new Date(live.meaningful_activity_at).getTime())}` : 'Session is not present in this process runtime')}</dd></div>
           <div><dt>Purpose</dt><dd><span class="status-chip">${statusLabel(session.purpose || 'research')}</span></dd></div>
           <div><dt>Recruitment</dt><dd>${recruitmentProvider}</dd></div>
-          <div><dt>Outcome</dt><dd>${escapeHtml(statusText(session.outcome_kind || 'pending'))}</dd></div>
+          <div><dt>End cause</dt><dd>${escapeHtml(statusText(session.session_end?.cause?.type || 'pending'))}</dd></div>
         </dl>
         ${participantAssignments(participantRows)}
       `;
@@ -2473,14 +2471,30 @@
       return icon(kind === 'agent' ? 'bot' : 'user', 'participant-icon');
     }
 
+    // Returns current transport health for one participant without conflating it with participant state.
+    function participantTransportHealth(row) {
+      const live = sessionLiveness(row.session_id);
+      const participant = live?.participants?.find(item => item.role === row.role);
+      return participant?.game_health || row.connection_status || 'unavailable';
+    }
+
+    // Renders the authoritative participant phase and its recipient-specific terminal outcome.
+    function participantStateMarkup(row) {
+      const live = sessionLiveness(row.session_id);
+      const liveParticipant = live?.participants?.find(item => item.role === row.role);
+      const phase = liveParticipant?.participant_state || row.participant_state?.state || 'unavailable';
+      const outcome = row.participant_state?.result?.outcome || row.terminal_result?.outcome;
+      return `<span class="status-chip">${statusLabel(phase)}</span>${outcome ? `<span class="status-chip">${escapeHtml(statusText(outcome))}</span>` : ''}`;
+    }
+
     // Renders the two session roles as crisp peer assignments.
     function participantAssignments(rows) {
       if (!rows.length) return '';
       return `<div class="participant-assignments" aria-label="Session participants">${rows.map(row => `
-        <div class="participant-assignment participant-role-${row.role === 'B' ? 'b' : 'a'}" title="${escapeHtml(row.connection_status || '')}">
+        <div class="participant-assignment participant-role-${row.role === 'B' ? 'b' : 'a'}">
           ${roleBadge(row.role)}
           ${participantIcon(row.participant_kind)}
-          <span class="participant-copy"><span class="participant-name-line"><strong>${escapeHtml(participantDisplayName(row))}</strong>${row.outcome ? `<span class="status-chip">${escapeHtml(statusText(row.outcome))}</span>` : ''}${row.participant_kind !== 'agent' && row.research_id ? `<button class="danger delete-participant" data-research-id="${escapeHtml(row.research_id)}" type="button" title="Delete participant data" aria-label="Delete participant data">${icon('trash')}</button>` : ''}${configurationIdentityMarkup(row)}</span>${row.prolific_participant_id ? `<span class="muted small">Prolific ${escapeHtml(row.prolific_participant_id)} · study ${escapeHtml(row.prolific_study_id)} · session ${escapeHtml(row.prolific_session_id)}</span>` : ''}</span>
+          <span class="participant-copy"><span class="participant-name-line"><strong>${escapeHtml(participantDisplayName(row))}</strong>${participantStateMarkup(row)}${livenessBadge(participantTransportHealth(row))}${row.participant_kind !== 'agent' && row.research_id ? `<button class="danger delete-participant" data-research-id="${escapeHtml(row.research_id)}" type="button" title="Delete participant data" aria-label="Delete participant data">${icon('trash')}</button>` : ''}${configurationIdentityMarkup(row)}</span>${row.prolific_participant_id ? `<span class="muted small">Prolific ${escapeHtml(row.prolific_participant_id)} · study ${escapeHtml(row.prolific_study_id)} · session ${escapeHtml(row.prolific_session_id)}</span>` : ''}</span>
         </div>`).join('')}</div>`;
     }
 
@@ -2638,7 +2652,7 @@
     });
     document.querySelectorAll('[data-status-filter]').forEach(initializeStatusFilter);
     experimentStatusFilter.addEventListener('change', renderExperiment);
-    sessionStatusFilter.addEventListener('change', () => {
+    sessionLifecycleFilter.addEventListener('change', () => {
       state.selected = null;
       state.selectedSession = null;
       state.selectedParticipants = [];

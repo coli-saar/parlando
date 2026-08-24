@@ -22,3 +22,11 @@
 - Avoid keeping legacy code around. Our aim is a clean codebase, not the preservation of old code parts. If it can be cut without compromising functionality, cut it.
 - Existence of a test for a piece of code does not justify keeping that code around. Consider deleting both the test and the piece of code.
 - Aim for clean generalizations over ad-hoc patches.
+
+## Breaking database schema changes
+- Do not add runtime migrations, compatibility readers, fallback paths, legacy schema branches, or export/import detours unless the user explicitly requests them.
+- When a clean schema change makes a populated workspace database incompatible, treat updating that database as part of the implementation: identify the database actually used by the affected application, make a consistent backup beside it, and convert the live database in place with a one-off transactional operation.
+- Preserve all information that has a clean correspondence in the new model. When old data is genuinely less expressive, derive the new value from durable records such as events where possible and document any unavoidable loss or interpretation.
+- Remove superseded columns and representations after conversion. The finished application and database must expose only the new design; the backup is the recovery mechanism, not a second supported format.
+- Before conversion, verify the source schema and that the database is not open by a running process. After conversion, verify the schema version, integrity, foreign keys, row counts, and validity and completeness of newly structured values.
+- Record the backup path, conversion correspondence, validation results, and any historical-data limitations in `notes/technical-decisions.md`.

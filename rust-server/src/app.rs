@@ -64,8 +64,8 @@ use crate::{
     storage::{
         experiment_store_from_url, generated_experiment_id, now_iso, ConsentDeclarationRecord,
         ExperimentRecord, LiveSession, MemoryState, ParticipantRecord, ProlificSubmissionRecord,
-        SessionEventRecord, SessionParticipant, SessionParticipantRecord, SessionRecord,
-        SharedExperimentStore, StoredGameSettings, TranscriptSegment,
+        SessionEventRecord, SessionLifecycle, SessionParticipant, SessionParticipantRecord,
+        SessionRecord, SharedExperimentStore, StoredGameSettings, TranscriptSegment,
     },
     transcription::{
         FinalTranscriptUtterance, SpeechmaticsTranscriptionProvider, TranscriptionEvent,
@@ -743,8 +743,103 @@ fn spawn_security_cleanup<A: Game>(state: Arc<AppState<A>>, clean_admin_sessions
 }
 
 /// Returns whether a runtime session has reached a durable terminal lifecycle state.
-fn session_status_is_terminal(status: &str) -> bool {
-    matches!(status, "completed" | "abandoned")
+fn session_lifecycle_is_ended(lifecycle: &str) -> bool {
+    lifecycle == "ended"
+}
+
+/// Ends one timed-out live session with a shared cause and per-participant results.
+async fn expire_live_session<A: Game>(
+    state: &Arc<AppState<A>>,
+    public_session_id: &str,
+    reason: &str,
+) -> Result<bool>
+where
+    A::State: Serialize,
+{
+    let (event, session_end) = {
+        let memory = state.memory.read().await;
+        let session = memory
+            .sessions
+            .get(public_session_id)
+            .ok_or_else(|| anyhow!("Session not found."))?;
+        if session.lifecycle.is_ended() {
+            return Ok(false);
+        }
+        let cause = match reason {
+            "waiting_timeout" => SessionEndCause::PartnerUnavailable,
+            "idle_timeout" => SessionEndCause::IdleTimedOut,
+            "maximum_lifetime" => SessionEndCause::LifetimeTimedOut,
+            "reconnect_timeout" => SessionEndCause::ReconnectTimedOut {
+                disconnected_role: session
+                    .participants
+                    .values()
+                    .find(|participant| !participant.connected)
+                    .map(|participant| participant.role.as_str().to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+            },
+            _ => SessionEndCause::TechnicalFailure,
+        };
+        let participant_results = session
+            .participants
+            .values()
+            .filter(|participant| participant.source != "agent")
+            .map(|participant| {
+                let outcome = match cause {
+                    SessionEndCause::PartnerUnavailable => {
+                        ParticipantOutcomeKind::PartnerUnavailable
+                    }
+                    SessionEndCause::TechnicalFailure => ParticipantOutcomeKind::TechnicalFailure,
+                    _ => ParticipantOutcomeKind::TimedOut,
+                };
+                Ok((
+                    participant.role.as_str().to_string(),
+                    ParticipantResult {
+                        handoff: (participant.source == "prolific")
+                            .then(|| prolific_handoff(&state.config, &outcome))
+                            .flatten(),
+                        outcome,
+                        reason: reason.to_string(),
+                        completion: None,
+                        final_observation: Some(protocol_json(
+                            &session
+                                .game
+                                .observation(&session.state, participant.role.player_role()),
+                        )?),
+                    },
+                ))
+            })
+            .collect::<Result<HashMap<_, _>>>()?;
+        let end = SessionEnd {
+            cause,
+            completion: None,
+            participant_results,
+        };
+        let event = SessionEventRecord {
+            experiment_id: session.experiment_id.clone(),
+            session_id: session.session_id,
+            event_type: "session_ended".to_string(),
+            actor_participant_id: None,
+            actor_role: None,
+            payload: serde_json::to_value(&end)?,
+            game_state: None,
+        };
+        (event, end)
+    };
+    if !state.store.end_session(event, session_end.clone()).await? {
+        return Ok(false);
+    }
+    if let Some(session) = state
+        .memory
+        .write()
+        .await
+        .sessions
+        .get_mut(public_session_id)
+    {
+        session.lifecycle = SessionLifecycle::Ended(session_end);
+        session.pause = None;
+        session.updated_at = now_iso();
+    }
+    Ok(true)
 }
 
 /// Removes or expires transient sessions after configured waiting, idle, and lifetime bounds.
@@ -780,24 +875,24 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
                     })
                     .max()
                     .unwrap_or(updated);
-                let reason = if !session_status_is_terminal(&session.status)
+                let reason = if !session.lifecycle.is_ended()
                     && created < now - chrono::Duration::seconds(max_lifetime)
                 {
                     Some("maximum_lifetime")
-                } else if session.status == "waiting"
+                } else if session.lifecycle == SessionLifecycle::Forming
                     && updated < now - chrono::Duration::seconds(waiting_timeout)
                 {
                     Some("waiting_timeout")
-                } else if session.status == "running"
+                } else if session.lifecycle == SessionLifecycle::Running
                     && updated < now - chrono::Duration::seconds(idle_timeout)
                 {
                     Some("idle_timeout")
-                } else if !session_status_is_terminal(&session.status)
+                } else if !session.lifecycle.is_ended()
                     && !has_connection
                     && disconnected_since < now - chrono::Duration::seconds(reconnect_grace)
                 {
                     Some("reconnect_timeout")
-                } else if session_status_is_terminal(&session.status)
+                } else if session.lifecycle.is_ended()
                     && !has_connection
                     && disconnected_since < now - chrono::Duration::seconds(reconnect_grace)
                 {
@@ -807,7 +902,6 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
                 }?;
                 Some((
                     public_session_id.clone(),
-                    session.experiment_id.clone(),
                     session.session_id,
                     session.updated_at.clone(),
                     reason,
@@ -816,7 +910,7 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
             .collect::<Vec<_>>()
     };
     let mut removed = Vec::new();
-    for (public_session_id, experiment_id, session_id, observed_updated_at, reason) in candidates {
+    for (public_session_id, session_id, observed_updated_at, reason) in candidates {
         let room_is_current = state
             .memory
             .read()
@@ -830,12 +924,10 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
         if reason != "terminal_cleanup" && session_id > 0 {
             persist_event(
                 "session_expired",
-                state
-                    .store
-                    .expire_session(&experiment_id, session_id, reason),
+                expire_live_session(state, &public_session_id, reason),
             )
             .await;
-            send_session_ended(state, &public_session_id, None, reason, None).await;
+            broadcast_participant_states(state, &public_session_id).await;
         }
         state
             .memory
@@ -1722,17 +1814,19 @@ async fn build_load_sample<A: Game>(state: &Arc<AppState<A>>) -> LoadSample {
         let waiting = memory
             .sessions
             .values()
-            .filter(|session| session.status == "waiting" && session.participants.len() < 2)
+            .filter(|session| {
+                session.lifecycle == SessionLifecycle::Forming && session.participants.len() < 2
+            })
             .count();
         let completed = memory
             .sessions
             .values()
-            .filter(|session| session.status == "completed")
+            .filter(|session| session.lifecycle.is_ended())
             .count();
         let active = memory
             .sessions
             .values()
-            .filter(|session| session.status == "running")
+            .filter(|session| session.lifecycle == SessionLifecycle::Running)
             .count();
         let attached = memory
             .sessions
@@ -1748,7 +1842,7 @@ async fn build_load_sample<A: Game>(state: &Arc<AppState<A>>) -> LoadSample {
             memory
                 .sessions
                 .values()
-                .filter(|session| matches!(session.status.as_str(), "waiting" | "running"))
+                .filter(|session| !session.lifecycle.is_ended())
                 .flat_map(|session| session.participants.values())
                 .filter(|participant| participant.source != "agent")
                 .count()
@@ -1859,7 +1953,8 @@ struct ParticipantOperationalSnapshot {
 struct SessionOperationalSnapshot {
     session_id: i64,
     public_session_id: String,
-    status: String,
+    lifecycle: String,
+    paused: bool,
     created_at: String,
     updated_at: String,
     participants: Vec<ParticipantOperationalSnapshot>,
@@ -1875,7 +1970,8 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
             .map(|session| SessionOperationalSnapshot {
                 session_id: session.session_id,
                 public_session_id: session.id.clone(),
-                status: session.status.clone(),
+                lifecycle: session.lifecycle.as_str().to_string(),
+                paused: session.pause.is_some(),
                 created_at: session.created_at.clone(),
                 updated_at: session.updated_at.clone(),
                 participants: session
@@ -1911,14 +2007,14 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
         .into_iter()
         .map(|session| {
             let mut deadline = None;
-            if session.status == "waiting" {
+            if session.lifecycle == "forming" {
                 retain_earliest_deadline(
                     &mut deadline,
                     &session.updated_at,
                     state.config.session.waiting_session_timeout_seconds,
                     "waiting timeout",
                 );
-            } else if session.status == "running" {
+            } else if session.lifecycle == "running" {
                 retain_earliest_deadline(
                     &mut deadline,
                     &session.updated_at,
@@ -1926,7 +2022,7 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
                     "idle timeout",
                 );
             }
-            if !session_status_is_terminal(&session.status) {
+            if !session_lifecycle_is_ended(&session.lifecycle) {
                 retain_earliest_deadline(
                     &mut deadline,
                     &session.created_at,
@@ -1934,7 +2030,7 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
                     "maximum lifetime",
                 );
             }
-            if !session_status_is_terminal(&session.status)
+            if !session_lifecycle_is_ended(&session.lifecycle)
                 && session.participants.iter().all(|row| !row.connected)
             {
                 if let Some(latest) = session
@@ -1966,7 +2062,7 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
                         game_transport
                             .as_ref()
                             .map(|snapshot| game_connection_health(snapshot, now_ms))
-                            .unwrap_or(if session.status == "waiting" {
+                            .unwrap_or(if session.lifecycle == "forming" {
                                 "waiting"
                             } else {
                                 "disconnected"
@@ -1975,6 +2071,16 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
                     ParticipantLiveness {
                         role: participant.role.as_str().to_string(),
                         source: participant.source.clone(),
+                        participant_state: if session.lifecycle == "forming" {
+                            "waiting"
+                        } else if session.lifecycle == "ended" {
+                            "ended"
+                        } else if session.paused {
+                            "paused"
+                        } else {
+                            "active"
+                        }
+                        .to_string(),
                         game_health: game_health.to_string(),
                         game: game_transport,
                         audio: audio.get(&key).cloned(),
@@ -1986,12 +2092,8 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
                 .iter()
                 .filter(|participant| participant.source != "agent")
                 .collect::<Vec<_>>();
-            let health = if session_status_is_terminal(&session.status) {
-                if session.status == "completed" {
-                    "completed"
-                } else {
-                    "abandoned"
-                }
+            let health = if session_lifecycle_is_ended(&session.lifecycle) {
+                "ended"
             } else if browser_participants
                 .iter()
                 .any(|participant| participant.game_health == "stale")
@@ -2002,7 +2104,7 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
                 .any(|participant| participant.game_health == "delayed")
             {
                 "delayed"
-            } else if session.status == "running"
+            } else if session.lifecycle == "running"
                 && browser_participants
                     .iter()
                     .any(|participant| participant.game_health == "disconnected")
@@ -2013,7 +2115,7 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
                 .any(|participant| participant.game_health == "live")
             {
                 "live"
-            } else if session.status == "waiting" {
+            } else if session.lifecycle == "forming" {
                 "waiting"
             } else {
                 "disconnected"
@@ -2022,7 +2124,7 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
                 experiment_id: state.experiment_id.clone(),
                 session_id: session.session_id,
                 public_session_id: session.public_session_id,
-                status: session.status,
+                lifecycle: session.lifecycle,
                 health: health.to_string(),
                 meaningful_activity_at: session.updated_at,
                 lifecycle_deadline_at: deadline.as_ref().map(|(value, _)| value.to_rfc3339()),
@@ -2493,7 +2595,7 @@ where
     };
     if let Some((public_session_id, role)) = existing {
         return Ok(Json(
-            session_response(&state, &public_session_id, role).await?,
+            participant_state_response(&state, &public_session_id, role).await?,
         ));
     }
     let _intake_guard = require_open_experiment(&state).await?;
@@ -2646,8 +2748,95 @@ where
             .await
             .insert(agent_key(&public_session_id, &agent_id), constructed.agent);
     }
-    let response = session_response(&state, &public_session_id, role).await?;
+    let response = participant_state_response(&state, &public_session_id, role).await?;
     Ok(Json(response))
+}
+
+/// Returns the authoritative lifecycle snapshot for the authenticated participant.
+async fn get_participant_state<A: Game>(
+    State(state): State<Arc<AppState<A>>>,
+    principal: Option<Extension<ParticipantPrincipal>>,
+) -> Result<Json<ParticipantStateResponse>, AppError>
+where
+    A::State: Serialize,
+{
+    let participant_session_id = authenticated_participant_id(principal)?;
+    let live = {
+        let memory = state.memory.read().await;
+        memory.sessions.values().find_map(|session| {
+            session
+                .participants
+                .get(&participant_session_id)
+                .map(|participant| (session.id.clone(), participant.role))
+        })
+    };
+    if let Some((public_session_id, role)) = live {
+        return Ok(Json(
+            participant_state_response(&state, &public_session_id, role).await?,
+        ));
+    }
+    if let Some(stored) = state
+        .store
+        .terminal_participant_state(&state.experiment_id, &participant_session_id)
+        .await?
+    {
+        return Ok(Json(ParticipantStateResponse {
+            participant_state: ParticipantState::Ended {
+                public_session_id: stored.public_session_id,
+                role: stored.role,
+                result: stored.result,
+            },
+        }));
+    }
+    Ok(Json(ParticipantStateResponse {
+        participant_state: ParticipantState::Registered,
+    }))
+}
+
+/// Idempotently records an explicit participant leave and returns the terminal snapshot.
+async fn leave_session<A: Game>(
+    State(state): State<Arc<AppState<A>>>,
+    principal: Option<Extension<ParticipantPrincipal>>,
+    Path(public_session_id): Path<String>,
+) -> Result<Json<ParticipantStateResponse>, AppError>
+where
+    A::State: Serialize,
+{
+    let participant_session_id = authenticated_participant_id(principal)?;
+    let role = {
+        let memory = state.memory.read().await;
+        memory
+            .sessions
+            .get(&public_session_id)
+            .and_then(|session| session.participants.get(&participant_session_id))
+            .map(|participant| participant.role)
+    };
+    if let Some(role) = role {
+        abandon_session(
+            &state,
+            &public_session_id,
+            &participant_session_id,
+            "participant_left",
+        )
+        .await?;
+        let response = participant_state_response(&state, &public_session_id, role).await?;
+        broadcast_participant_states(&state, &public_session_id).await;
+        return Ok(Json(response));
+    }
+    if let Some(stored) = state
+        .store
+        .terminal_participant_state(&state.experiment_id, &participant_session_id)
+        .await?
+    {
+        return Ok(Json(ParticipantStateResponse {
+            participant_state: ParticipantState::Ended {
+                public_session_id: stored.public_session_id,
+                role: stored.role,
+                result: stored.result,
+            },
+        }));
+    }
+    Err(AppError::not_found("Session not found."))
 }
 
 /// Pauses only new session admission before SQLite exhausts its filesystem.
@@ -2691,9 +2880,9 @@ fn ensure_session_capacity<G: Game>(
         .sessions
         .values()
         .fold((0_usize, 0_usize), |counts, session| {
-            if session.status == "waiting" && session.participants.len() < 2 {
+            if session.lifecycle == SessionLifecycle::Forming && session.participants.len() < 2 {
                 (counts.0 + 1, counts.1)
-            } else if session.status == "running" {
+            } else if session.lifecycle == SessionLifecycle::Running {
                 (counts.0, counts.1 + 1)
             } else {
                 counts
@@ -2718,7 +2907,7 @@ fn ensure_session_capacity<G: Game>(
         let reserved_streams = memory
             .sessions
             .values()
-            .filter(|session| matches!(session.status.as_str(), "waiting" | "running"))
+            .filter(|session| !session.lifecycle.is_ended())
             .flat_map(|session| session.participants.values())
             .filter(|participant| participant.source != "agent")
             .count();
@@ -2744,7 +2933,7 @@ fn open_human_session_for_pairing<G: Game>(
         .sessions
         .iter()
         .find(|(_, session)| {
-            session.status == "waiting"
+            session.lifecycle == SessionLifecycle::Forming
                 && session.mode == mode
                 && session.purpose == purpose
                 && next_role(session) == Some(Seat::B)
@@ -2791,7 +2980,7 @@ fn add_human_participant_to_session_locked<A: Game>(
             source: "direct".to_string(),
             role,
             connected: false,
-            ready_declared: false,
+            ready: false,
             audio_ready: !speechmatics_readiness_required(&state.config),
             consent_decisions: participant.consent_decisions,
             joined_at: now_iso(),
@@ -2835,7 +3024,7 @@ async fn create_live_session_locked<A: Game>(
             game_version: state.game_descriptor.version.to_string(),
             public_session_id: public_session_id.clone(),
             mode: mode.clone(),
-            status: "initializing".to_string(),
+            lifecycle: "forming".to_string(),
             purpose: participant.purpose.clone(),
         })
         .await?;
@@ -2995,7 +3184,7 @@ async fn create_live_session_locked<A: Game>(
             source: participant.source,
             role,
             connected: false,
-            ready_declared: false,
+            ready: false,
             audio_ready: !speechmatics_readiness_required(&state.config),
             consent_decisions: participant.consent_decisions,
             joined_at: now_iso(),
@@ -3019,7 +3208,7 @@ async fn create_live_session_locked<A: Game>(
                 source: "agent".to_string(),
                 role: Seat::B,
                 connected: true,
-                ready_declared: true,
+                ready: true,
                 audio_ready: true,
                 consent_decisions: HashMap::new(),
                 joined_at: now_iso(),
@@ -3038,7 +3227,8 @@ async fn create_live_session_locked<A: Game>(
             game,
             state: game_state,
             log_writer: Some(log_writer),
-            status: "waiting".to_string(),
+            lifecycle: SessionLifecycle::Forming,
+            pause: None,
             participants,
             created_at: now_iso(),
             updated_at: now_iso(),
@@ -3091,11 +3281,19 @@ async fn create_live_session_locked<A: Game>(
     Ok((public_session_id, role, constructed_agent))
 }
 
-async fn session_response<A: Game>(
+/// Role-specific game view used to assemble snapshots and transition deltas.
+struct ParticipantView {
+    presence: Value,
+    observation: Option<Value>,
+    available_actions: Option<Vec<Value>>,
+}
+
+/// Computes one role-specific game view without assigning lifecycle meaning.
+async fn participant_view<A: Game>(
     state: &Arc<AppState<A>>,
     public_session_id: &str,
     role: Seat,
-) -> Result<SessionResponse, AppError>
+) -> Result<ParticipantView, AppError>
 where
     A::State: Serialize,
 {
@@ -3106,18 +3304,16 @@ where
             .get(public_session_id)
             .ok_or_else(|| AppError::not_found("Session not found."))?;
         let presence = session_presence(session);
-        if session.status == "waiting" {
-            return Ok(SessionResponse {
-                public_session_id: public_session_id.to_string(),
-                role: role.as_str().to_string(),
-                presence: Some(presence),
+        if session.lifecycle == SessionLifecycle::Forming {
+            return Ok(ParticipantView {
+                presence,
                 observation: None,
                 available_actions: None,
             });
         }
         let player = role.player_role();
         (
-            Some(presence),
+            presence,
             Some(protocol_json(
                 &session.game.observation(&session.state, player),
             )?),
@@ -3133,13 +3329,71 @@ where
                 .transpose()?,
         )
     };
-    Ok(SessionResponse {
-        public_session_id: public_session_id.to_string(),
-        role: role.as_str().to_string(),
+    Ok(ParticipantView {
         presence,
         observation,
         available_actions,
     })
+}
+
+/// Builds the canonical participant lifecycle snapshot from authoritative live-session facts.
+async fn participant_state_response<A: Game>(
+    state: &Arc<AppState<A>>,
+    public_session_id: &str,
+    role: Seat,
+) -> Result<ParticipantStateResponse, AppError>
+where
+    A::State: Serialize,
+{
+    let view = participant_view(state, public_session_id, role).await?;
+    let memory = state.memory.read().await;
+    let session = memory
+        .sessions
+        .get(public_session_id)
+        .ok_or_else(|| AppError::not_found("Session not found."))?;
+    let presence = view.presence;
+    let participant_state = match &session.lifecycle {
+        SessionLifecycle::Forming => ParticipantState::Waiting {
+            public_session_id: public_session_id.to_string(),
+            role: role.as_str().to_string(),
+            presence,
+        },
+        SessionLifecycle::Running => match &session.pause {
+            Some(reason) => ParticipantState::Paused {
+                public_session_id: public_session_id.to_string(),
+                role: role.as_str().to_string(),
+                reason: reason.clone(),
+                observation: view.observation.unwrap_or(Value::Null),
+                available_actions: view.available_actions,
+                presence,
+            },
+            None => ParticipantState::Active {
+                public_session_id: public_session_id.to_string(),
+                role: role.as_str().to_string(),
+                observation: view.observation.unwrap_or(Value::Null),
+                available_actions: view.available_actions,
+                presence,
+            },
+        },
+        SessionLifecycle::Ended(session_end) => {
+            let result = session_end
+                .participant_results
+                .get(role.as_str())
+                .cloned()
+                .ok_or_else(|| {
+                    AppError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Terminal participant result is missing",
+                    )
+                })?;
+            ParticipantState::Ended {
+                public_session_id: public_session_id.to_string(),
+                role: role.as_str().to_string(),
+                result,
+            }
+        }
+    };
+    Ok(ParticipantStateResponse { participant_state })
 }
 
 async fn audio_session<A: Game>(
@@ -3215,7 +3469,7 @@ async fn commit_final_transcript<A: Game>(
     utterance: FinalTranscriptUtterance,
 ) -> Result<Option<TranscriptSegment>, AppError> {
     let role = participant_role(state, public_session_id, participant_session_id).await?;
-    ensure_session_accepts_game_input(state, public_session_id).await?;
+    ensure_participant_interaction_active(state, public_session_id).await?;
     let (experiment_id, session_id) = {
         let memory = state.memory.read().await;
         let session = memory
@@ -3385,7 +3639,7 @@ async fn commit_conversation_message<A: Game>(
     metadata: Value,
 ) -> Result<Json<ConversationMessageResponse>, AppError> {
     require_session(state, public_session_id).await?;
-    ensure_session_accepts_game_input(state, public_session_id).await?;
+    ensure_participant_interaction_active(state, public_session_id).await?;
     if text.chars().count() > 4_000 {
         return Err(AppError::bad_request("Conversation message is too long"));
     }
@@ -3441,23 +3695,22 @@ async fn commit_conversation_message<A: Game>(
     Ok(Json(message))
 }
 
-/// Rejects participant game-channel input after any durable terminal outcome.
-async fn ensure_session_accepts_game_input<A: Game>(
+/// Rejects meaningful participant input unless the projected lifecycle is exactly `Active`.
+async fn ensure_participant_interaction_active<A: Game>(
     state: &Arc<AppState<A>>,
     public_session_id: &str,
 ) -> Result<(), AppError> {
-    let terminal = {
+    let active = {
         let memory = state.memory.read().await;
-        let status = &memory
+        let session = memory
             .sessions
             .get(public_session_id)
-            .ok_or_else(|| AppError::not_found("Session not found."))?
-            .status;
-        session_status_is_terminal(status)
+            .ok_or_else(|| AppError::not_found("Session not found."))?;
+        session.lifecycle == SessionLifecycle::Running && session.pause.is_none()
     };
-    if terminal {
+    if !active {
         return Err(AppError::forbidden(
-            "Session has ended and no longer accepts game messages.",
+            "Participant is not active and cannot send meaningful game input.",
         ));
     }
     Ok(())
@@ -3466,7 +3719,7 @@ async fn ensure_session_accepts_game_input<A: Game>(
 #[derive(Clone, Debug, Deserialize)]
 struct AdminSessionsQuery {
     limit: Option<i64>,
-    status: Option<String>,
+    lifecycle: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -5323,6 +5576,15 @@ async fn admin_sessions<A: Game>(
     Query(query): Query<AdminSessionsQuery>,
 ) -> Result<Json<Value>, AppError> {
     let experiment_id = admin_experiment_id(&state, scope.as_ref());
+    if query
+        .lifecycle
+        .as_deref()
+        .is_some_and(|lifecycle| !matches!(lifecycle, "forming" | "running" | "ended"))
+    {
+        return Err(AppError::bad_request(
+            "Session lifecycle must be forming, running, or ended.",
+        ));
+    }
     let sessions = state
         .store
         .recent_sessions(&experiment_id, query.limit.unwrap_or(50))
@@ -5331,9 +5593,9 @@ async fn admin_sessions<A: Game>(
         .into_iter()
         .filter(|session| {
             query
-                .status
+                .lifecycle
                 .as_ref()
-                .is_none_or(|status| &session.status == status)
+                .is_none_or(|lifecycle| session.lifecycle == *lifecycle)
         })
         .collect::<Vec<_>>();
     Ok(Json(json!({
@@ -5358,6 +5620,27 @@ async fn admin_session_detail<A: Game>(
         .and_then(|sessions| sessions.first())
         .cloned()
         .ok_or_else(|| AppError::not_found("Session not found."))?;
+    let public_session_id = session["public_session_id"].as_str().ok_or_else(|| {
+        AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Stored session has no public identifier.",
+        )
+    })?;
+    let durable_lifecycle = session["lifecycle"].as_str().unwrap_or_default();
+    let live_participant_state = {
+        let memory = state.memory.read().await;
+        memory
+            .sessions
+            .get(public_session_id)
+            .map(|live| match &live.lifecycle {
+                SessionLifecycle::Forming => json!({"state": "waiting"}),
+                SessionLifecycle::Running => match &live.pause {
+                    Some(reason) => json!({"state": "paused", "reason": reason}),
+                    None => json!({"state": "active"}),
+                },
+                SessionLifecycle::Ended(_) => json!({"state": "ended"}),
+            })
+    };
     let participants = state
         .store
         .session_participants(&experiment_id, session_id)
@@ -5367,6 +5650,17 @@ async fn admin_session_detail<A: Game>(
         .map(|participant| {
             let mut value = serde_json::to_value(&participant).unwrap_or(Value::Null);
             value["research_id"] = json!(participant.research_id);
+            value["participant_state"] = if let Some(result) = &participant.terminal_result {
+                json!({"state": "ended", "result": result})
+            } else if let Some(live_state) = &live_participant_state {
+                live_state.clone()
+            } else if durable_lifecycle == "forming" {
+                json!({"state": "waiting"})
+            } else if durable_lifecycle == "ended" {
+                json!({"state": "ended"})
+            } else {
+                Value::Null
+            };
             value
         })
         .collect::<Vec<_>>();
@@ -6975,13 +7269,16 @@ async fn audio_websocket_loop<A: Game>(
                     {
                         break;
                     }
+                    if !session_accepts_audio(&state, &public_session_id).await {
+                        continue;
+                    }
                     state
                         .audio_sessions
                         .relay_partner(&public_session_id, &role, bytes)
                         .await;
                     state.telemetry.record_audio_frame();
                     if transcription_input.is_some()
-                        && session_is_running(&state, &public_session_id).await
+                        && session_is_active(&state, &public_session_id).await
                     {
                         if let Some(input) = &transcription_input {
                             let received_at = now_iso();
@@ -7065,6 +7362,13 @@ async fn websocket_loop<A: Game>(
                 participant.connected = true;
                 participant.updated_at = now_iso();
             }
+            if session
+                .participants
+                .values()
+                .all(|participant| participant.connected)
+            {
+                session.pause = None;
+            }
         }
     }
     persist_event(
@@ -7086,18 +7390,21 @@ async fn websocket_loop<A: Game>(
     )
     .await;
     let bus = state.session_bus(&public_session_id).await;
-    let _ = bus.send(ServerMessage::broadcast(
-        ServerPayload::PartnerReconnected {
-            public_session_id: public_session_id.clone(),
-        },
-    ));
     let mut receiver = bus.subscribe();
+    if let Ok(response) = participant_state_response(&state, &public_session_id, role).await {
+        let _ = bus.send(ServerMessage::targeted(
+            participant_session_id.clone(),
+            ServerPayload::ParticipantState {
+                participant_state: response.participant_state,
+            },
+        ));
+    }
     if let Some(message) = presence_message(&state, &public_session_id).await {
         let _ = bus.send(message);
     }
     let _ = bus.send(voice_message(&state, &public_session_id).await);
     if session_has_started(&state, &public_session_id).await {
-        send_role_assignment(&state, &public_session_id, &participant_session_id, role).await;
+        broadcast_participant_states(&state, &public_session_id).await;
     } else {
         maybe_start_game(state.clone(), &public_session_id).await;
     }
@@ -7240,12 +7547,17 @@ async fn websocket_loop<A: Game>(
         return;
     }
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(grace_seconds as i64);
-    let _ = bus.send(ServerMessage::broadcast(
-        ServerPayload::PartnerReconnecting {
-            public_session_id: public_session_id.clone(),
-            deadline_at: deadline.to_rfc3339(),
-        },
-    ));
+    {
+        let mut memory = state.memory.write().await;
+        if let Some(session) = memory.sessions.get_mut(&public_session_id) {
+            if session.lifecycle == SessionLifecycle::Running {
+                session.pause = Some(ParticipantPauseReason::PartnerReconnecting {
+                    deadline_at: deadline.to_rfc3339(),
+                });
+            }
+        }
+    }
+    broadcast_participant_states(&state, &public_session_id).await;
     let reconnect_state = state.clone();
     let reconnect_session_id = public_session_id.clone();
     let reconnect_participant_id = participant_session_id.clone();
@@ -7270,26 +7582,16 @@ async fn websocket_loop<A: Game>(
         )
         .await
         {
-            send_session_ended(
-                &reconnect_state,
-                &reconnect_session_id,
-                Some(&reconnect_participant_id),
-                "reconnect_timeout",
-                None,
-            )
-            .await;
+            broadcast_participant_states(&reconnect_state, &reconnect_session_id).await;
         }
     });
 }
 
-/// Sends terminal state as a recipient-specific consequence with an optional Prolific handoff.
-async fn send_session_ended<A: Game>(
-    state: &Arc<AppState<A>>,
-    public_session_id: &str,
-    actor_participant_session_id: Option<&str>,
-    reason: &str,
-    completion: Option<Value>,
-) {
+/// Broadcasts one authoritative lifecycle snapshot targeted to each human participant.
+async fn broadcast_participant_states<A: Game>(state: &Arc<AppState<A>>, public_session_id: &str)
+where
+    A::State: Serialize,
+{
     let recipients = state
         .memory
         .read()
@@ -7301,45 +7603,20 @@ async fn send_session_ended<A: Game>(
                 .participants
                 .values()
                 .filter(|participant| participant.source != "agent")
-                .map(|participant| {
-                    (
-                        participant.participant_session_id.clone(),
-                        participant.source.clone(),
-                    )
-                })
+                .map(|participant| (participant.participant_session_id.clone(), participant.role))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
     let bus = state.session_bus(public_session_id).await;
-    for (recipient, source) in recipients {
-        let outcome = if reason == "game_completed" {
-            ParticipantOutcomeKind::Completed
-        } else if reason == "waiting_timeout" {
-            ParticipantOutcomeKind::PartnerUnavailable
-        } else if matches!(reason, "idle_timeout" | "maximum_lifetime") {
-            ParticipantOutcomeKind::TimedOut
-        } else if actor_participant_session_id == Some(recipient.as_str()) {
-            if reason == "reconnect_timeout" {
-                ParticipantOutcomeKind::TimedOut
-            } else {
-                ParticipantOutcomeKind::Withdrew
-            }
-        } else {
-            ParticipantOutcomeKind::PartnerLeft
-        };
-        let handoff = (source == "prolific")
-            .then(|| prolific_handoff(&state.config, &outcome))
-            .flatten();
-        let _ = bus.send(ServerMessage::targeted(
-            recipient,
-            ServerPayload::SessionEnded {
-                public_session_id: public_session_id.to_string(),
-                outcome,
-                reason: reason.to_string(),
-                completion: completion.clone(),
-                handoff,
-            },
-        ));
+    for (recipient, role) in recipients {
+        if let Ok(response) = participant_state_response(state, public_session_id, role).await {
+            let _ = bus.send(ServerMessage::targeted(
+                recipient,
+                ServerPayload::ParticipantState {
+                    participant_state: response.participant_state,
+                },
+            ));
+        }
     }
 }
 
@@ -7376,17 +7653,56 @@ async fn abandon_session<A: Game>(
 ) -> Result<bool> {
     let transition_lock = session_transition_lock(state, public_session_id).await;
     let _transition_guard = transition_lock.lock().await;
-    let status = state
-        .memory
-        .read()
-        .await
-        .sessions
-        .get(public_session_id)
-        .map(|session| session.status.clone())
-        .ok_or_else(|| anyhow!("Session not found."))?;
-    if session_status_is_terminal(&status) {
-        return Ok(false);
-    }
+    let session_end = {
+        let memory = state.memory.read().await;
+        let session = memory
+            .sessions
+            .get(public_session_id)
+            .ok_or_else(|| anyhow!("Session not found."))?;
+        if session.lifecycle.is_ended() {
+            return Ok(false);
+        }
+        let actor_role = session
+            .participants
+            .get(participant_session_id)
+            .ok_or_else(|| anyhow!("Participant not in session."))?
+            .role;
+        let participant_results = session
+            .participants
+            .values()
+            .filter(|participant| participant.source != "agent")
+            .map(|participant| {
+                let outcome = if participant.participant_session_id == participant_session_id {
+                    ParticipantOutcomeKind::Withdrew
+                } else {
+                    ParticipantOutcomeKind::PartnerLeft
+                };
+                Ok((
+                    participant.role.as_str().to_string(),
+                    ParticipantResult {
+                        handoff: (participant.source == "prolific")
+                            .then(|| prolific_handoff(&state.config, &outcome))
+                            .flatten(),
+                        outcome,
+                        reason: reason.to_string(),
+                        completion: None,
+                        final_observation: Some(protocol_json(
+                            &session
+                                .game
+                                .observation(&session.state, participant.role.player_role()),
+                        )?),
+                    },
+                ))
+            })
+            .collect::<Result<HashMap<_, _>>>()?;
+        SessionEnd {
+            cause: SessionEndCause::ParticipantLeft {
+                actor: actor_role.as_str().to_string(),
+            },
+            completion: None,
+            participant_results,
+        }
+    };
     let event = session_event_record(
         state,
         public_session_id,
@@ -7396,7 +7712,9 @@ async fn abandon_session<A: Game>(
         None,
     )
     .await?;
-    state.store.abandon_session(event).await?;
+    if !state.store.end_session(event, session_end.clone()).await? {
+        return Ok(false);
+    }
     if let Some(session) = state
         .memory
         .write()
@@ -7404,7 +7722,8 @@ async fn abandon_session<A: Game>(
         .sessions
         .get_mut(public_session_id)
     {
-        session.status = "abandoned".to_string();
+        session.lifecycle = SessionLifecycle::Ended(session_end);
+        session.pause = None;
         session.updated_at = now_iso();
     }
     if state.config.agents.mode == AgentsMode::HumanVsAgent {
@@ -7452,10 +7771,10 @@ async fn handle_client_message<A: Game>(
                     .get_mut(public_session_id)
                     .and_then(|session| session.participants.get_mut(participant_session_id))
                     .is_some_and(|participant| {
-                        if participant.ready_declared {
+                        if participant.ready {
                             return false;
                         }
-                        participant.ready_declared = true;
+                        participant.ready = true;
                         participant.updated_at = now_iso();
                         true
                     })
@@ -7481,7 +7800,7 @@ async fn handle_client_message<A: Game>(
                     .get_mut(public_session_id)
                     .and_then(|session| session.participants.get_mut(participant_session_id))
                 {
-                    participant.ready_declared = false;
+                    participant.ready = false;
                 }
                 tracing::error!(%error, public_session_id, "could not durably record readiness");
                 let _ = bus.send(error_message(
@@ -7497,37 +7816,6 @@ async fn handle_client_message<A: Game>(
                 let _ = bus.send(message);
             }
             let _ = bus.send(voice_message(&state, public_session_id).await);
-        }
-        ClientMessage::Leave => {
-            match abandon_session(
-                &state,
-                public_session_id,
-                participant_session_id,
-                "participant_left",
-            )
-            .await
-            {
-                Ok(true) => {
-                    send_session_ended(
-                        &state,
-                        public_session_id,
-                        Some(participant_session_id),
-                        "participant_left",
-                        None,
-                    )
-                    .await;
-                }
-                Ok(false) => {}
-                Err(error) => {
-                    tracing::error!(%error, public_session_id, "could not abandon session");
-                    let _ = bus.send(error_message(
-                        participant_session_id,
-                        public_session_id,
-                        "session_end_failed",
-                        false,
-                    ));
-                }
-            }
         }
         ClientMessage::Message { text } => {
             if text.chars().count() > 4_000 {
@@ -7684,15 +7972,8 @@ async fn handle_client_message<A: Game>(
                         observed_action,
                     )
                     .await;
-                    if let TransitionOutcome::Completed(completion) = outcome {
-                        send_session_ended(
-                            &state,
-                            public_session_id,
-                            None,
-                            "game_completed",
-                            Some(completion),
-                        )
-                        .await;
+                    if let TransitionOutcome::Completed = outcome {
+                        broadcast_participant_states(&state, public_session_id).await;
                     }
                 }
                 Err(error) => {
@@ -7874,7 +8155,48 @@ async fn flush_rejected_input_aggregates<A: Game>(
 /// Complete result of one committed action without an invalid Boolean/optional pairing.
 enum TransitionOutcome {
     Continued,
-    Completed(Value),
+    Completed,
+}
+
+/// Derives the terminal value for normal game completion from the final game state.
+fn completed_session_end<A: Game>(
+    config: &ExperimentConfig,
+    session: &LiveSession<A>,
+    final_state: &A::State,
+    completion: Value,
+) -> Result<SessionEnd>
+where
+    A::State: Serialize,
+{
+    let participant_results = session
+        .participants
+        .values()
+        .filter(|participant| participant.source != "agent")
+        .map(|participant| {
+            let outcome = ParticipantOutcomeKind::Completed;
+            Ok((
+                participant.role.as_str().to_string(),
+                ParticipantResult {
+                    handoff: (participant.source == "prolific")
+                        .then(|| prolific_handoff(config, &outcome))
+                        .flatten(),
+                    outcome,
+                    reason: "game_completed".to_string(),
+                    completion: Some(completion.clone()),
+                    final_observation: Some(protocol_json(
+                        &session
+                            .game
+                            .observation(final_state, participant.role.player_role()),
+                    )?),
+                },
+            ))
+        })
+        .collect::<Result<HashMap<_, _>>>()?;
+    Ok(SessionEnd {
+        cause: SessionEndCause::GameCompleted,
+        completion: Some(completion),
+        participant_results,
+    })
 }
 
 async fn submit_action<A: Game>(
@@ -7896,8 +8218,11 @@ where
             .sessions
             .get(public_session_id)
             .ok_or_else(|| anyhow!("Session not found."))?;
-        if session_status_is_terminal(&session.status) {
+        if session.lifecycle.is_ended() {
             return Err(anyhow!(SubmissionRejection("session_complete")));
+        }
+        if session.lifecycle != SessionLifecycle::Running || session.pause.is_some() {
+            return Err(anyhow!(SubmissionRejection("participant_not_active")));
         }
         if !session_ready_for_game::<A>(&state.config, session) {
             if speechmatics_readiness_required(&state.config) {
@@ -7920,6 +8245,21 @@ where
     let after_json = protocol_json(&after)?;
     let stored_game_state = Some(after_json.clone());
     let completion_json = completion.as_ref().map(protocol_json).transpose()?;
+    let session_end = if let Some(completion_json) = completion_json.clone() {
+        let memory = state.memory.read().await;
+        let session = memory
+            .sessions
+            .get(public_session_id)
+            .ok_or_else(|| anyhow!("Session not found."))?;
+        Some(completed_session_end(
+            &state.config,
+            session,
+            &after,
+            completion_json,
+        )?)
+    } else {
+        None
+    };
     let accepted_payload = json!({
         "action": protocol_json(&action)?,
         "metadata": transition_metadata,
@@ -7950,7 +8290,7 @@ where
     }
     if let Err(error) = state
         .store
-        .commit_session_transition(durable_events, completion_json.clone())
+        .commit_session_transition(durable_events, session_end.clone())
         .await
     {
         tracing::error!(%error, public_session_id, "could not commit game transition");
@@ -7966,7 +8306,9 @@ where
         session.state = after;
         session.updated_at = now_iso();
         if completed {
-            session.status = "completed".to_string();
+            session.lifecycle = SessionLifecycle::Ended(
+                session_end.expect("completed transition has a terminal value"),
+            );
         }
     }
     notify_agents_of_action(
@@ -7981,7 +8323,7 @@ where
         shutdown_session_log(&state, public_session_id).await;
     }
     Ok(match completion_json {
-        Some(completion) => TransitionOutcome::Completed(completion),
+        Some(_) => TransitionOutcome::Completed,
         None => TransitionOutcome::Continued,
     })
 }
@@ -8010,7 +8352,7 @@ async fn broadcast_player_views<A: Game>(
     };
     let bus = state.session_bus(public_session_id).await;
     for (participant_session_id, role) in participants {
-        if let Ok(response) = session_response(&state, public_session_id, role).await {
+        if let Ok(response) = participant_view(&state, public_session_id, role).await {
             if let Some(observation) = response.observation {
                 let _ = bus.send(ServerMessage::targeted(
                     participant_session_id,
@@ -8560,16 +8902,9 @@ async fn maybe_start_agent<A: Game>(
                 )
                 .await
                 {
-                    Ok(Some(TransitionOutcome::Completed(completion))) => {
+                    Ok(Some(TransitionOutcome::Completed)) => {
                         awaiting_completion = true;
-                        send_session_ended(
-                            &state,
-                            &public_session_id,
-                            None,
-                            "game_completed",
-                            Some(completion),
-                        )
-                        .await;
+                        broadcast_participant_states(&state, &public_session_id).await;
                     }
                     Ok(Some(TransitionOutcome::Continued)) => {}
                     Ok(None) => {}
@@ -8832,8 +9167,9 @@ where
     let durable_session = {
         let memory = state.memory.read().await;
         memory.sessions.get(public_session_id).and_then(|session| {
-            (session.status == "waiting" && session_ready_for_game::<A>(&state.config, session))
-                .then(|| (session.experiment_id.clone(), session.session_id))
+            (session.lifecycle == SessionLifecycle::Forming
+                && session_ready_for_game::<A>(&state.config, session))
+            .then(|| (session.experiment_id.clone(), session.session_id))
         })
     };
     let Some((experiment_id, session_id)) = durable_session else {
@@ -8859,7 +9195,8 @@ where
         let Some(session) = memory.sessions.get_mut(public_session_id) else {
             return;
         };
-        session.status = "running".to_string();
+        session.lifecycle = SessionLifecycle::Running;
+        session.pause = None;
         session.updated_at = now_iso();
     }
 
@@ -8891,19 +9228,30 @@ async fn session_has_started<A: Game>(state: &Arc<AppState<A>>, public_session_i
     memory
         .sessions
         .get(public_session_id)
-        .is_some_and(|session| session.status != "waiting")
+        .is_some_and(|session| session.lifecycle != SessionLifecycle::Forming)
 }
 
-/// Returns whether game-clock time is active and participant audio may be transcribed.
-async fn session_is_running<A: Game>(state: &Arc<AppState<A>>, public_session_id: &str) -> bool {
+/// Returns whether meaningful participant input, including transcription, is currently active.
+async fn session_is_active<A: Game>(state: &Arc<AppState<A>>, public_session_id: &str) -> bool {
     let memory = state.memory.read().await;
     memory
         .sessions
         .get(public_session_id)
-        .is_some_and(|session| session.status == "running")
+        .is_some_and(|session| {
+            session.lifecycle == SessionLifecycle::Running && session.pause.is_none()
+        })
 }
 
-/// Sends the targeted game-start payload for one participant.
+/// Allows audio setup while forming but suppresses media during pause or after termination.
+async fn session_accepts_audio<A: Game>(state: &Arc<AppState<A>>, public_session_id: &str) -> bool {
+    let memory = state.memory.read().await;
+    memory
+        .sessions
+        .get(public_session_id)
+        .is_some_and(|session| !session.lifecycle.is_ended() && session.pause.is_none())
+}
+
+/// Sends the targeted authoritative snapshot after a participant becomes active.
 async fn send_role_assignment<A: Game>(
     state: &Arc<AppState<A>>,
     public_session_id: &str,
@@ -8912,19 +9260,14 @@ async fn send_role_assignment<A: Game>(
 ) where
     A::State: Serialize,
 {
-    if let Ok(response) = session_response(state, public_session_id, role).await {
+    if let Ok(response) = participant_state_response(state, public_session_id, role).await {
         let bus = state.session_bus(public_session_id).await;
-        if let Some(observation) = response.observation {
-            let _ = bus.send(ServerMessage::targeted(
-                participant_session_id,
-                ServerPayload::SessionStarted {
-                    public_session_id: public_session_id.to_string(),
-                    role: role.as_str().to_string(),
-                    observation,
-                    available_actions: response.available_actions,
-                },
-            ));
-        }
+        let _ = bus.send(ServerMessage::targeted(
+            participant_session_id,
+            ServerPayload::ParticipantState {
+                participant_state: response.participant_state,
+            },
+        ));
     }
 }
 

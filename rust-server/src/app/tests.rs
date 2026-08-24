@@ -323,6 +323,15 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(ADMIN_EXPERIMENT_HTML.contains("initializeStatusFilter"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("All statuses"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-value=\"running\""));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("data-value=\"forming\""));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("data-value=\"ended\""));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("data-value=\"waiting\""));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("data-value=\"abandoned\""));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("session.status"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("session.lifecycle"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("participantStateMarkup(row)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("row.participant_state?.state"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("participantTransportHealth(row)"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("data-value=\"playing\""));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("🟠"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("🟢"));
@@ -1762,7 +1771,9 @@ async fn compiled_game_router_hosts_multiple_experiments() {
     )
     .await;
     assert_eq!(room_status, StatusCode::OK);
-    let public_session_id = room["public_session_id"].as_str().unwrap();
+    let public_session_id = room["participant_state"]["public_session_id"]
+        .as_str()
+        .unwrap();
     let (session_status, session) = json_request(
         router.clone(),
         http::Method::POST,
@@ -3105,6 +3116,21 @@ where
     }
 }
 
+/// Reads lifecycle snapshots until the requested canonical participant state appears.
+async fn read_participant_state<S>(socket: &mut S, state: &str) -> Value
+where
+    S: futures_util::Stream<
+            Item = Result<TungsteniteMessage, tokio_tungstenite::tungstenite::Error>,
+        > + Unpin,
+{
+    loop {
+        let message = read_ws_type(socket, "participant_state").await;
+        if message["participant_state"]["state"] == state {
+            return message["participant_state"].clone();
+        }
+    }
+}
+
 // Reads the next JSON WebSocket server message without filtering by type.
 async fn read_next_ws_value<S>(socket: &mut S) -> Value
 where
@@ -3178,7 +3204,10 @@ async fn create_joined_room(router: Router) -> (String, String, String) {
         json!({"participant_session_id": a}),
     )
     .await;
-    let public_session_id = created["public_session_id"].as_str().unwrap().to_string();
+    let public_session_id = created["participant_state"]["public_session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let (_, joined) = json_request(
         router,
         http::Method::POST,
@@ -3186,7 +3215,10 @@ async fn create_joined_room(router: Router) -> (String, String, String) {
         json!({"participant_session_id": b}),
     )
     .await;
-    assert_eq!(joined["public_session_id"], public_session_id);
+    assert_eq!(
+        joined["participant_state"]["public_session_id"],
+        public_session_id
+    );
     (a, b, public_session_id)
 }
 
@@ -3281,10 +3313,13 @@ async fn create_human_vs_agent_room(router: Router, name: &str) -> (String, Stri
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(created["role"], "A");
+    assert_eq!(created["participant_state"]["role"], "A");
     (
         human,
-        created["public_session_id"].as_str().unwrap().to_string(),
+        created["participant_state"]["public_session_id"]
+            .as_str()
+            .unwrap()
+            .to_string(),
     )
 }
 
@@ -3669,7 +3704,7 @@ async fn javascript_sink_mute_contract_blocks_relay_and_transcription() {
         create_joined_room(router.clone()).await;
     let plan_a = request_audio_plan(router.clone(), &public_session_id, &participant_a).await;
     let plan_b = request_audio_plan(router.clone(), &public_session_id, &participant_b).await;
-    let (base_url, server) = spawn_test_server(router).await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
     let host = base_url.trim_start_matches("http://");
     let (mut socket_b, _) = connect_async(format!(
         "ws://{host}/ws/audio/{public_session_id}?token={}",
@@ -3716,8 +3751,8 @@ async fn javascript_sink_mute_contract_blocks_relay_and_transcription() {
         connect_async(game_socket_url(&base_url, &public_session_id, &participant_b).await)
             .await
             .unwrap();
-    let _ = read_ws_type(&mut game_a, "session_started").await;
-    let _ = read_ws_type(&mut game_b, "session_started").await;
+    let _ = read_participant_state(&mut game_a, "active").await;
+    let _ = read_participant_state(&mut game_b, "active").await;
 
     let live = javascript_mute_command(
         &mut child_input,
@@ -3891,8 +3926,8 @@ async fn audio_websocket_relays_pcm_and_commits_one_final_utterance() {
     let (mut game_b, _) = connect_async(game_socket_url(&base_url, &public_session_id, &b).await)
         .await
         .unwrap();
-    let _ = read_ws_type(&mut game_a, "session_started").await;
-    let _ = read_ws_type(&mut game_b, "session_started").await;
+    let _ = read_participant_state(&mut game_a, "active").await;
+    let _ = read_participant_state(&mut game_b, "active").await;
     let frame = AudioFrame {
         sequence: 1,
         timestamp_ms: 20,
@@ -4159,8 +4194,8 @@ async fn direct_room_creation_requires_consent_then_assigns_role_a() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(room.get("participant_session_id").is_none());
-    assert_eq!(room["role"], "A");
-    assert!(room["public_session_id"]
+    assert_eq!(room["participant_state"]["role"], "A");
+    assert!(room["participant_state"]["public_session_id"]
         .as_str()
         .is_some_and(|id| !id.is_empty()));
 }
@@ -4249,20 +4284,22 @@ async fn two_independent_waiting_room_entries_pair_into_one_room() {
 
     assert_eq!(first_status, StatusCode::OK);
     assert_eq!(second_status, StatusCode::OK);
-    assert_eq!(first_room["role"], "A");
-    assert_eq!(second_room["role"], "B");
+    assert_eq!(first_room["participant_state"]["role"], "A");
+    assert_eq!(second_room["participant_state"]["role"], "B");
     assert_eq!(
-        first_room["public_session_id"],
-        second_room["public_session_id"]
+        first_room["participant_state"]["public_session_id"],
+        second_room["participant_state"]["public_session_id"]
     );
-    assert!(first_room["presence"]["A"]
+    assert!(first_room["participant_state"]["presence"]["A"]
         .get("participantSessionId")
         .is_none());
-    assert!(first_room["presence"].get("B").is_none());
-    assert!(second_room["presence"]["A"]
+    assert!(first_room["participant_state"]["presence"]
+        .get("B")
+        .is_none());
+    assert!(second_room["participant_state"]["presence"]["A"]
         .get("participantSessionId")
         .is_none());
-    assert!(second_room["presence"]["B"]
+    assert!(second_room["participant_state"]["presence"]["B"]
         .get("participantSessionId")
         .is_none());
 
@@ -4357,8 +4394,11 @@ async fn room_routes_persist_evaluation_session_and_join_events() {
         json!({"participant_session_id": a}),
     )
     .await;
-    assert_eq!(created["role"], "A");
-    let public_session_id = created["public_session_id"].as_str().unwrap().to_string();
+    assert_eq!(created["participant_state"]["role"], "A");
+    let public_session_id = created["participant_state"]["public_session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let (_, joined) = json_request(
         router.clone(),
         http::Method::POST,
@@ -4366,8 +4406,11 @@ async fn room_routes_persist_evaluation_session_and_join_events() {
         json!({"participant_session_id": b}),
     )
     .await;
-    assert_eq!(joined["role"], "B");
-    assert_eq!(joined["public_session_id"], public_session_id);
+    assert_eq!(joined["participant_state"]["role"], "B");
+    assert_eq!(
+        joined["participant_state"]["public_session_id"],
+        public_session_id
+    );
 
     let (export_status, export) = json_request(
         router,
@@ -4417,16 +4460,16 @@ async fn websocket_role_assignment_is_targeted_to_one_connection() {
     let (mut socket_a, _) = connect_async(game_socket_url(&base_url, &public_session_id, &a).await)
         .await
         .unwrap();
-    assert_no_ws_type(&mut socket_a, "session_started").await;
+    let _ = read_participant_state(&mut socket_a, "waiting").await;
 
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &public_session_id, &b).await)
         .await
         .unwrap();
-    let assigned_a = read_ws_type(&mut socket_a, "session_started").await;
+    let assigned_a = read_participant_state(&mut socket_a, "active").await;
     assert_eq!(assigned_a["role"], "A");
-    let assigned_b = read_ws_type(&mut socket_b, "session_started").await;
+    let assigned_b = read_participant_state(&mut socket_b, "active").await;
     assert_eq!(assigned_b["role"], "B");
-    assert_no_ws_type(&mut socket_a, "session_started").await;
+    assert_no_ws_type(&mut socket_a, "participant_state").await;
     server.abort();
 }
 
@@ -4444,8 +4487,8 @@ async fn explicit_leave_abandons_session_and_notifies_partner() {
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &public_session_id, &b).await)
         .await
         .unwrap();
-    let _assigned_a = read_ws_type(&mut socket_a, "session_started").await;
-    let _assigned_b = read_ws_type(&mut socket_b, "session_started").await;
+    let _assigned_a = read_participant_state(&mut socket_a, "active").await;
+    let _assigned_b = read_participant_state(&mut socket_b, "active").await;
 
     let (export_status, running_export) = json_request(
         router.clone(),
@@ -4455,16 +4498,23 @@ async fn explicit_leave_abandons_session_and_notifies_partner() {
     )
     .await;
     assert_eq!(export_status, StatusCode::OK);
-    assert_eq!(running_export["sessions"][0]["status"], "running");
+    assert_eq!(running_export["sessions"][0]["lifecycle"], "running");
     assert!(running_export["sessions"][0]["started_at"].is_string());
 
-    send_ws_json(&mut socket_a, json!({"type": "leave"})).await;
-    let withdrew = read_ws_type(&mut socket_a, "session_ended").await;
+    let (leave_status, leave_response) = json_request(
+        router.clone(),
+        http::Method::POST,
+        &format!("/api/sessions/{public_session_id}/leave"),
+        json!({"participant_session_id": a}),
+    )
+    .await;
+    assert_eq!(leave_status, StatusCode::OK);
+    let withdrew = leave_response["participant_state"].clone();
     assert_eq!(withdrew["public_session_id"], public_session_id);
-    assert_eq!(withdrew["outcome"], "withdrew");
-    let abandoned = read_ws_type(&mut socket_b, "session_ended").await;
+    assert_eq!(withdrew["result"]["outcome"], "withdrew");
+    let abandoned = read_participant_state(&mut socket_b, "ended").await;
     assert_eq!(abandoned["public_session_id"], public_session_id);
-    assert_eq!(abandoned["outcome"], "partner_left");
+    assert_eq!(abandoned["result"]["outcome"], "partner_left");
 
     send_ws_json(
         &mut socket_a,
@@ -4481,8 +4531,8 @@ async fn explicit_leave_abandons_session_and_notifies_partner() {
     let rejected_message = read_ws_type(&mut socket_a, "error").await;
     assert_eq!(rejected_message["code"], "message_rejected");
 
-    let export = wait_for_export_event(router, "session_abandoned").await;
-    assert_eq!(export["sessions"][0]["status"], "abandoned");
+    let export = wait_for_export_event(router.clone(), "session_abandoned").await;
+    assert_eq!(export["sessions"][0]["lifecycle"], "ended");
     let event = export["session_events"]
         .as_array()
         .unwrap()
@@ -4524,14 +4574,21 @@ async fn explicit_leave_shuts_down_the_session_agent() {
         connect_async(game_socket_url(&base_url, &public_session_id, &human).await)
             .await
             .unwrap();
-    let _ = read_ws_type(&mut socket, "session_started").await;
+    let _ = read_participant_state(&mut socket, "active").await;
     let _ = wait_for_export_event(router.clone(), "agent_started").await;
 
-    send_ws_json(&mut socket, json!({"type": "leave"})).await;
-    let ended = read_ws_type(&mut socket, "session_ended").await;
-    assert_eq!(ended["outcome"], "withdrew");
+    let (leave_status, response) = json_request(
+        router.clone(),
+        http::Method::POST,
+        &format!("/api/sessions/{public_session_id}/leave"),
+        json!({"participant_session_id": human}),
+    )
+    .await;
+    assert_eq!(leave_status, StatusCode::OK);
+    let ended = &response["participant_state"];
+    assert_eq!(ended["result"]["outcome"], "withdrew");
     let export = wait_for_export_event(router, "session_abandoned").await;
-    assert_eq!(export["sessions"][0]["status"], "abandoned");
+    assert_eq!(export["sessions"][0]["lifecycle"], "ended");
 
     for _ in 0..20 {
         if shutdowns.load(Ordering::SeqCst) == 1 {
@@ -4552,26 +4609,106 @@ async fn brief_disconnect_pauses_partner_and_reconnect_preserves_session() {
         .await
         .unwrap();
     let (a, b, public_session_id) = create_joined_room(router.clone()).await;
-    let (base_url, server) = spawn_test_server(router).await;
+    let (_, forming_sessions) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/sessions",
+        Value::Null,
+    )
+    .await;
+    let forming_session_id = forming_sessions["sessions"][0]["session_id"]
+        .as_i64()
+        .unwrap();
+    assert_eq!(forming_sessions["sessions"][0]["lifecycle"], "forming");
+    let (_, forming_detail) = json_request(
+        router.clone(),
+        http::Method::GET,
+        &format!("/api/admin/sessions/{forming_session_id}"),
+        Value::Null,
+    )
+    .await;
+    assert!(forming_detail["participants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|participant| participant["participant_state"]["state"] == "waiting"));
+    let (base_url, server) = spawn_test_server(router.clone()).await;
     let (mut socket_a, _) = connect_async(game_socket_url(&base_url, &public_session_id, &a).await)
         .await
         .unwrap();
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &public_session_id, &b).await)
         .await
         .unwrap();
-    let _ = read_ws_type(&mut socket_a, "session_started").await;
-    let _ = read_ws_type(&mut socket_b, "session_started").await;
+    let _ = read_participant_state(&mut socket_a, "active").await;
+    let _ = read_participant_state(&mut socket_b, "active").await;
 
     socket_a.close(None).await.unwrap();
-    let reconnecting = read_ws_type(&mut socket_b, "partner_reconnecting").await;
-    assert!(reconnecting["deadline_at"].as_str().is_some());
+    let reconnecting = read_participant_state(&mut socket_b, "paused").await;
+    assert!(reconnecting["reason"]["deadline_at"].as_str().is_some());
+    let (_, sessions) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/sessions",
+        Value::Null,
+    )
+    .await;
+    let session_id = sessions["sessions"][0]["session_id"].as_i64().unwrap();
+    assert_eq!(session_id, forming_session_id);
+    let (_, paused_detail) = json_request(
+        router.clone(),
+        http::Method::GET,
+        &format!("/api/admin/sessions/{session_id}"),
+        Value::Null,
+    )
+    .await;
+    assert!(paused_detail["participants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|participant| participant["participant_state"]["state"] == "paused"));
+    let (_, paused_load) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/load",
+        Value::Null,
+    )
+    .await;
+    assert!(paused_load["sessions"][0]["participants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|participant| participant["participant_state"] == "paused"));
 
     let (mut replacement_a, _) =
         connect_async(game_socket_url(&base_url, &public_session_id, &a).await)
             .await
             .unwrap();
-    let reconnected = read_ws_type(&mut socket_b, "partner_reconnected").await;
+    let reconnected = read_participant_state(&mut socket_b, "active").await;
     assert_eq!(reconnected["public_session_id"], public_session_id);
+    let (_, active_detail) = json_request(
+        router.clone(),
+        http::Method::GET,
+        &format!("/api/admin/sessions/{session_id}"),
+        Value::Null,
+    )
+    .await;
+    assert!(active_detail["participants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|participant| participant["participant_state"]["state"] == "active"));
+    let (_, active_load) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/load",
+        Value::Null,
+    )
+    .await;
+    assert!(active_load["sessions"][0]["participants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|participant| participant["participant_state"] == "active"));
     send_ws_json(&mut replacement_a, json!({"type": "heartbeat"})).await;
     server.abort();
 }
@@ -4591,16 +4728,30 @@ async fn disconnect_past_grace_gives_partner_a_terminal_outcome() {
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &public_session_id, &b).await)
         .await
         .unwrap();
-    let _ = read_ws_type(&mut socket_a, "session_started").await;
-    let _ = read_ws_type(&mut socket_b, "session_started").await;
+    let _ = read_participant_state(&mut socket_a, "active").await;
+    let _ = read_participant_state(&mut socket_b, "active").await;
 
     socket_a.close(None).await.unwrap();
-    let _ = read_ws_type(&mut socket_b, "partner_reconnecting").await;
-    let ended = read_ws_type(&mut socket_b, "session_ended").await;
-    assert_eq!(ended["outcome"], "partner_left");
-    assert_eq!(ended["reason"], "reconnect_timeout");
-    let export = wait_for_export_event(router, "session_abandoned").await;
-    assert_eq!(export["sessions"][0]["status"], "abandoned");
+    let _ = read_participant_state(&mut socket_b, "paused").await;
+    let ended = read_participant_state(&mut socket_b, "ended").await;
+    assert_eq!(ended["result"]["outcome"], "partner_left");
+    assert_eq!(ended["result"]["reason"], "reconnect_timeout");
+    let export = wait_for_export_event(router.clone(), "session_abandoned").await;
+    assert_eq!(export["sessions"][0]["lifecycle"], "ended");
+    let session_id = export["sessions"][0]["session_id"].as_i64().unwrap();
+    let (_, ended_detail) = json_request(
+        router.clone(),
+        http::Method::GET,
+        &format!("/api/admin/sessions/{session_id}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(ended_detail["session"]["lifecycle"], "ended");
+    assert!(ended_detail["participants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|participant| participant["participant_state"]["state"] == "ended"));
     server.abort();
 }
 
@@ -4621,7 +4772,7 @@ async fn websocket_rejects_actions_until_both_players_are_connected() {
     )
     .await;
     let error = read_ws_type(&mut socket_a, "action_rejected").await;
-    assert_eq!(error["code"], "players_not_ready");
+    assert_eq!(error["code"], "participant_not_active");
 
     let (export_status, export) = json_request(
         router,
@@ -4637,7 +4788,7 @@ async fn websocket_rejects_actions_until_both_players_are_connected() {
         .iter()
         .any(|event| {
             event["event_type"] == "game_action_rejected"
-                && event["payload"]["reason_code"] == "players_not_ready"
+                && event["payload"]["reason_code"] == "participant_not_active"
         }));
     server.abort();
 }
@@ -4656,8 +4807,8 @@ async fn oversized_action_rejection_is_bounded_and_analyzable() {
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &public_session_id, &b).await)
         .await
         .unwrap();
-    let _assigned_a = read_ws_type(&mut socket_a, "session_started").await;
-    let _assigned_b = read_ws_type(&mut socket_b, "session_started").await;
+    let _assigned_a = read_participant_state(&mut socket_a, "active").await;
+    let _assigned_b = read_participant_state(&mut socket_b, "active").await;
 
     send_ws_json(
         &mut socket_a,
@@ -4706,14 +4857,14 @@ async fn accepted_actions_always_store_resulting_game_state() {
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &public_session_id, &b).await)
         .await
         .unwrap();
-    let _assigned_a = read_ws_type(&mut socket_a, "session_started").await;
-    let _assigned_b = read_ws_type(&mut socket_b, "session_started").await;
+    let _assigned_a = read_participant_state(&mut socket_a, "active").await;
+    let _assigned_b = read_participant_state(&mut socket_b, "active").await;
     send_ws_json(
         &mut socket_a,
         json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
-    let _completed = read_ws_type(&mut socket_a, "session_ended").await;
+    let _completed = read_participant_state(&mut socket_a, "ended").await;
 
     let (export_status, export) =
         json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
@@ -4738,7 +4889,7 @@ async fn human_human_game_accepts_actions_after_second_human_connects() {
     let (mut socket_a, _) = connect_async(game_socket_url(&base_url, &public_session_id, &a).await)
         .await
         .unwrap();
-    assert_no_ws_type(&mut socket_a, "session_started").await;
+    let _ = read_participant_state(&mut socket_a, "waiting").await;
 
     send_ws_json(
         &mut socket_a,
@@ -4746,20 +4897,20 @@ async fn human_human_game_accepts_actions_after_second_human_connects() {
     )
     .await;
     let waiting_error = read_ws_type(&mut socket_a, "action_rejected").await;
-    assert_eq!(waiting_error["code"], "players_not_ready");
+    assert_eq!(waiting_error["code"], "participant_not_active");
 
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &public_session_id, &b).await)
         .await
         .unwrap();
-    let _assigned_a = read_ws_type(&mut socket_a, "session_started").await;
-    let _assigned_b = read_ws_type(&mut socket_b, "session_started").await;
+    let _assigned_a = read_participant_state(&mut socket_a, "active").await;
+    let _assigned_b = read_participant_state(&mut socket_b, "active").await;
     send_ws_json(
         &mut socket_a,
         json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
-    let completed = read_ws_type(&mut socket_a, "session_ended").await;
-    assert_eq!(completed["completion"]["done"], true);
+    let completed = read_participant_state(&mut socket_a, "ended").await;
+    assert_eq!(completed["result"]["completion"]["done"], true);
     server.abort();
 }
 
@@ -4776,8 +4927,8 @@ async fn websocket_accepts_actions_chat_completion_and_persists_state_changes() 
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &public_session_id, &b).await)
         .await
         .unwrap();
-    let _assigned_a = read_ws_type(&mut socket_a, "session_started").await;
-    let _assigned_b = read_ws_type(&mut socket_b, "session_started").await;
+    let _assigned_a = read_participant_state(&mut socket_a, "active").await;
+    let _assigned_b = read_participant_state(&mut socket_b, "active").await;
 
     send_ws_json(
         &mut socket_a,
@@ -4807,15 +4958,17 @@ async fn websocket_accepts_actions_chat_completion_and_persists_state_changes() 
         json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
-    let completed_a = read_ws_type(&mut socket_a, "session_ended").await;
-    let completed_b = read_ws_type(&mut socket_b, "session_ended").await;
-    assert_eq!(completed_a["completion"]["done"], true);
-    assert_eq!(completed_a["completion"]["outcome"], "success");
-    assert_eq!(completed_a["completion"]["dyad_score"], 10);
-    assert_eq!(completed_a["completion"]["player_scores"]["A"], 6);
-    assert_eq!(completed_a["completion"]["player_scores"]["B"], 4);
-    assert_eq!(completed_b["completion"]["done"], true);
-    assert_eq!(completed_b["completion"], completed_a["completion"]);
+    let completed_a = read_participant_state(&mut socket_a, "ended").await;
+    let completed_b = read_participant_state(&mut socket_b, "ended").await;
+    assert_eq!(completed_a["result"]["completion"]["done"], true);
+    assert_eq!(completed_a["result"]["completion"]["outcome"], "success");
+    assert_eq!(completed_a["result"]["completion"]["dyad_score"], 10);
+    assert_eq!(completed_a["result"]["completion"]["player_scores"]["A"], 6);
+    assert_eq!(completed_a["result"]["completion"]["player_scores"]["B"], 4);
+    assert_eq!(
+        completed_b["result"]["completion"],
+        completed_a["result"]["completion"]
+    );
 
     let (export_status, export) = json_request(
         router,
@@ -4855,20 +5008,20 @@ async fn loss_completion_is_broadcast_and_exported() {
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &public_session_id, &b).await)
         .await
         .unwrap();
-    let _assigned_a = read_ws_type(&mut socket_a, "session_started").await;
-    let _assigned_b = read_ws_type(&mut socket_b, "session_started").await;
+    let _assigned_a = read_participant_state(&mut socket_a, "active").await;
+    let _assigned_b = read_participant_state(&mut socket_b, "active").await;
 
     send_ws_json(
         &mut socket_a,
         json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
-    let completed = read_ws_type(&mut socket_a, "session_ended").await;
-    assert_eq!(completed["completion"]["done"], true);
-    assert_eq!(completed["completion"]["outcome"], "loss");
-    assert_eq!(completed["completion"]["dyad_score"], 0);
-    assert_eq!(completed["completion"]["player_scores"]["A"], 0);
-    assert_eq!(completed["completion"]["player_scores"]["B"], 0);
+    let completed = read_participant_state(&mut socket_a, "ended").await;
+    assert_eq!(completed["result"]["completion"]["done"], true);
+    assert_eq!(completed["result"]["completion"]["outcome"], "loss");
+    assert_eq!(completed["result"]["completion"]["dyad_score"], 0);
+    assert_eq!(completed["result"]["completion"]["player_scores"]["A"], 0);
+    assert_eq!(completed["result"]["completion"]["player_scores"]["B"], 0);
 
     let (export_status, export) = json_request(
         router,
@@ -4902,15 +5055,15 @@ async fn completed_rooms_reject_late_game_channel_input() {
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &public_session_id, &b).await)
         .await
         .unwrap();
-    let _assigned_a = read_ws_type(&mut socket_a, "session_started").await;
-    let _assigned_b = read_ws_type(&mut socket_b, "session_started").await;
+    let _assigned_a = read_participant_state(&mut socket_a, "active").await;
+    let _assigned_b = read_participant_state(&mut socket_b, "active").await;
 
     send_ws_json(
         &mut socket_a,
         json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
-    let _completed_a = read_ws_type(&mut socket_a, "session_ended").await;
+    let _completed_a = read_participant_state(&mut socket_a, "ended").await;
 
     send_ws_json(
         &mut socket_a,
@@ -5079,8 +5232,8 @@ async fn admin_sessions_api_reads_actions_from_database() {
     let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &public_session_id, &b).await)
         .await
         .unwrap();
-    let _assigned_a = read_ws_type(&mut socket_a, "session_started").await;
-    let _assigned_b = read_ws_type(&mut socket_b, "session_started").await;
+    let _assigned_a = read_participant_state(&mut socket_a, "active").await;
+    let _assigned_b = read_participant_state(&mut socket_b, "active").await;
 
     send_ws_json(
         &mut socket_a,
@@ -5114,7 +5267,26 @@ async fn admin_sessions_api_reads_actions_from_database() {
     .await;
     assert_eq!(sessions_status, StatusCode::OK);
     let session_id = sessions["sessions"][0]["session_id"].as_i64().unwrap();
+    assert_eq!(sessions["sessions"][0]["lifecycle"], "running");
+    assert!(sessions["sessions"][0].get("status").is_none());
     assert!(sessions["sessions"][0]["event_count"].as_i64().unwrap() >= 6);
+    let (filter_status, filtered) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/sessions?lifecycle=running",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(filter_status, StatusCode::OK);
+    assert_eq!(filtered["sessions"].as_array().unwrap().len(), 1);
+    let (invalid_filter_status, _) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/sessions?lifecycle=completed",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(invalid_filter_status, StatusCode::BAD_REQUEST);
 
     let (detail_status, detail) = json_request(
         router.clone(),
@@ -5125,6 +5297,11 @@ async fn admin_sessions_api_reads_actions_from_database() {
     .await;
     assert_eq!(detail_status, StatusCode::OK);
     assert_eq!(detail["participants"].as_array().unwrap().len(), 2);
+    assert!(detail["participants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|participant| participant["participant_state"]["state"] == "active"));
     let events = detail["events"].as_array().unwrap();
     assert!(events.iter().any(|event| {
         event["event_type"] == "game_action_accepted"
@@ -5171,9 +5348,15 @@ async fn human_vs_agent_direct_room_supplies_agent_role_b_immediately() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(created["role"], "A");
-    assert_eq!(created["presence"]["B"]["connected"], true);
-    assert_eq!(created["presence"]["B"]["audioReady"], true);
+    assert_eq!(created["participant_state"]["role"], "A");
+    assert_eq!(
+        created["participant_state"]["presence"]["B"]["connected"],
+        true
+    );
+    assert_eq!(
+        created["participant_state"]["presence"]["B"]["audioReady"],
+        true
+    );
 
     let (export_status, export) = json_request(
         router,
@@ -5220,8 +5403,8 @@ async fn agent_runtime_creates_one_fresh_agent_per_room() {
     let (mut socket_2, _) = connect_async(game_socket_url(&base_url, &room_2, &human_2).await)
         .await
         .unwrap();
-    let _ = read_ws_type(&mut socket_1, "session_started").await;
-    let _ = read_ws_type(&mut socket_2, "session_started").await;
+    let _ = read_participant_state(&mut socket_1, "active").await;
+    let _ = read_participant_state(&mut socket_2, "active").await;
 
     for _ in 0..20 {
         if factory.created_count() == 2 {
@@ -5255,7 +5438,7 @@ async fn agent_runtime_receives_same_available_action_affordance_as_ui() {
         connect_async(game_socket_url(&base_url, &public_session_id, &human).await)
             .await
             .unwrap();
-    let assigned = read_ws_type(&mut socket, "session_started").await;
+    let assigned = read_participant_state(&mut socket, "active").await;
     let ui_available_actions = assigned["available_actions"].as_array().unwrap();
     assert_eq!(ui_available_actions.len(), 1);
     assert_eq!(ui_available_actions[0]["finish"], true);
@@ -5300,7 +5483,7 @@ async fn agent_runtime_observes_messages_with_speaker_and_modality() {
         connect_async(game_socket_url(&base_url, &public_session_id, &human).await)
             .await
             .unwrap();
-    let _ = read_ws_type(&mut socket, "session_started").await;
+    let _ = read_participant_state(&mut socket, "active").await;
     let _ = wait_for_export_event(router.clone(), "agent_started").await;
 
     send_ws_json(
@@ -5358,7 +5541,7 @@ async fn agent_runtime_observes_actions_with_resulting_observation() {
         connect_async(game_socket_url(&base_url, &public_session_id, &human).await)
             .await
             .unwrap();
-    let _ = read_ws_type(&mut socket, "session_started").await;
+    let _ = read_participant_state(&mut socket, "active").await;
     let _ = wait_for_export_event(router.clone(), "agent_started").await;
 
     send_ws_json(
@@ -5385,7 +5568,7 @@ async fn agent_runtime_observes_actions_with_resulting_observation() {
         json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
-    let _ = read_ws_type(&mut socket, "session_ended").await;
+    let _ = read_participant_state(&mut socket, "ended").await;
     for _ in 0..20 {
         let captured = observations.lock().unwrap().clone();
         if captured.contains(&"finish:success:10".to_string()) {
@@ -5433,15 +5616,15 @@ async fn agent_runtime_persists_messages_and_validated_actions() {
         connect_async(game_socket_url(&base_url, &public_session_id, &human).await)
             .await
             .unwrap();
-    let _ = read_ws_type(&mut socket, "session_started").await;
+    let _ = read_participant_state(&mut socket, "active").await;
     let first_update = read_next_ws_value(&mut socket).await;
     assert_eq!(first_update["type"], "transition");
     let message = read_ws_type(&mut socket, "message").await;
     assert_eq!(message["message"]["sender"], "B");
     assert_eq!(message["message"]["input"], "text");
     assert_eq!(message["message"]["text"], "agent says hello");
-    let completed = read_ws_type(&mut socket, "session_ended").await;
-    assert_eq!(completed["completion"]["done"], true);
+    let completed = read_participant_state(&mut socket, "ended").await;
+    assert_eq!(completed["result"]["completion"]["done"], true);
 
     let export = wait_for_export_event(router, "session_completed").await;
     let events = export["session_events"].as_array().unwrap();
@@ -5479,7 +5662,7 @@ async fn agent_runtime_observes_accepted_action_before_next_decision() {
         connect_async(game_socket_url(&base_url, &public_session_id, &human).await)
             .await
             .unwrap();
-    let _ = read_ws_type(&mut socket, "session_started").await;
+    let _ = read_participant_state(&mut socket, "active").await;
 
     for _ in 0..20 {
         let snapshot = log.lock().unwrap().clone();
@@ -5538,7 +5721,7 @@ async fn agent_runtime_stops_invalid_agents_cleanly() {
         connect_async(game_socket_url(&base_url, &public_session_id, &human).await)
             .await
             .unwrap();
-    let _ = read_ws_type(&mut socket, "session_started").await;
+    let _ = read_participant_state(&mut socket, "active").await;
 
     let export = wait_for_export_event(router, "agent_error").await;
     let events = export["session_events"].as_array().unwrap();
@@ -5593,7 +5776,7 @@ async fn agent_tts_records_diagnostics_for_agent_messages() {
         connect_async(game_socket_url(&base_url, &public_session_id, &human).await)
             .await
             .unwrap();
-    let _ = read_ws_type(&mut socket, "session_started").await;
+    let _ = read_participant_state(&mut socket, "active").await;
 
     let export = wait_for_tts_diagnostic(router, "tts_message_completed").await;
     let diagnostics = export["session_events"]
@@ -5640,7 +5823,7 @@ async fn agent_tts_continues_after_provider_failure() {
         connect_async(game_socket_url(&base_url, &public_session_id, &human).await)
             .await
             .unwrap();
-    let _ = read_ws_type(&mut socket, "session_started").await;
+    let _ = read_participant_state(&mut socket, "active").await;
 
     let _ = wait_for_tts_diagnostic(router.clone(), "tts_message_failed").await;
     send_ws_json(
