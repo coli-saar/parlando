@@ -36,6 +36,8 @@ pub enum StringFormat {
     Plain,
     /// An absolute HTTP or HTTPS URI.
     Uri,
+    /// An empty document or YAML mapping serialized as text.
+    Yaml,
 }
 
 /// One stable stored choice and its human-readable label.
@@ -104,9 +106,6 @@ impl SecretValues {
     /// Returns whether this isolated set contains no values.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
-    }
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&String, &String)> {
-        self.0.iter()
     }
 }
 
@@ -340,13 +339,23 @@ fn normalize_value(field: &AgentConfigField, value: &Value, path: &str) -> Resul
             if field.required && text.trim().is_empty() {
                 bail!("{path} must not be empty");
             }
-            if matches!(format, StringFormat::Uri) {
-                let uri = text
-                    .parse::<http::Uri>()
-                    .with_context(|| format!("{path} must be a URI"))?;
-                if !matches!(uri.scheme_str(), Some("http" | "https")) || uri.host().is_none() {
-                    bail!("{path} must be an absolute HTTP or HTTPS URI");
+            match format {
+                StringFormat::Uri => {
+                    let uri = text
+                        .parse::<http::Uri>()
+                        .with_context(|| format!("{path} must be a URI"))?;
+                    if !matches!(uri.scheme_str(), Some("http" | "https")) || uri.host().is_none() {
+                        bail!("{path} must be an absolute HTTP or HTTPS URI");
+                    }
                 }
+                StringFormat::Yaml if !text.trim().is_empty() => {
+                    let document: Value = serde_yaml::from_str(text)
+                        .with_context(|| format!("{path} must be valid YAML"))?;
+                    if !document.is_object() {
+                        bail!("{path} must be a YAML mapping");
+                    }
+                }
+                StringFormat::Plain | StringFormat::Yaml => {}
             }
             Ok(value.clone())
         }
@@ -672,6 +681,37 @@ mod config_tests {
         assert!(definition
             .normalize_settings(&json!({"nested": {"count": 5}}))
             .is_err());
+    }
+
+    /// YAML string fields accept an empty document or mapping and reject other shapes.
+    #[test]
+    fn yaml_agent_settings_require_a_mapping() {
+        let definition = AgentDefinition {
+            id: "yaml".into(),
+            name: "YAML".into(),
+            description: String::new(),
+            config_fields: vec![AgentConfigField {
+                key: "settings".into(),
+                label: "Settings".into(),
+                help: String::new(),
+                required: false,
+                default_value: Value::String(String::new()),
+                value: AgentConfigValue::String {
+                    format: StringFormat::Yaml,
+                },
+            }],
+        };
+
+        for valid in ["", "model: local\nnested:\n  enabled: true\n"] {
+            assert!(definition
+                .normalize_settings(&json!({"settings": valid}))
+                .is_ok());
+        }
+        for invalid in ["- item\n", "key: [\n"] {
+            assert!(definition
+                .normalize_settings(&json!({"settings": invalid}))
+                .is_err());
+        }
     }
 
     /// Debug formatting never exposes secret values.

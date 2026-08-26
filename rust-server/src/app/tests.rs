@@ -201,6 +201,8 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(!ADMIN_EXPERIMENT_HTML.contains("Experiment name"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("escapeHtml(factory.name)"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("escapeHtml(factory.display_name)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("field.format === 'yaml'"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Optional; empty means {}"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"emptyExperimentWorkspace\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"showLogs\" type=\"checkbox\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("<span>Show game/agent logs</span>"));

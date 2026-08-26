@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## Unreleased
 
+### Changed
+
+- Simplified the dashboard-configured remote agent to an endpoint and optional YAML mapping. Remote
+  protocol v5 removes editable name/version/protocol fields and agent-secret delivery; transport
+  authentication is read from `PARLANDO_REMOTE_AGENT_TOKEN` by both processes.
+
 ## [0.3.0] - 2026-08-16
 
 Version 0.3.0 introduces a number of major changes:

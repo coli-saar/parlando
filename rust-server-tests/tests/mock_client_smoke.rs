@@ -730,7 +730,10 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
 
     let session = create_room(&client, &server.base_url, &a).await?;
     assert_eq!(session["participant_state"]["role"], "A");
-    let public_session_id = session["participant_state"]["public_session_id"].as_str().unwrap().to_string();
+    let public_session_id = session["participant_state"]["public_session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let joined = create_room(&client, &server.base_url, &b).await?;
     assert_eq!(joined["participant_state"]["role"], "B");
 
@@ -837,7 +840,9 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
     consent(&client, &server.base_url, &human).await?;
     let session = create_room(&client, &server.base_url, &human).await?;
     assert_eq!(session["participant_state"]["role"], "A");
-    let public_session_id = session["participant_state"]["public_session_id"].as_str().unwrap();
+    let public_session_id = session["participant_state"]["public_session_id"]
+        .as_str()
+        .unwrap();
 
     let mut socket = ws_connect(&client, &server, public_session_id, &human).await?;
     let assigned = read_participant_state(&mut socket, "active").await?;
@@ -894,9 +899,7 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
         .unwrap()
         .config = json!({
         "endpoint": remote.endpoint,
-        "agent_name": "mock-python-agent",
-        "agent_version": "test-1",
-        "protocol_version": "parlando-agent-v4"
+        "config_yaml": "difficulty: 2\n"
     });
     let server = spawn_server(
         experiment_config,
@@ -911,7 +914,9 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
     let human = create_participant(&client, &server.base_url, "Human").await?;
     consent(&client, &server.base_url, &human).await?;
     let session = create_room(&client, &server.base_url, &human).await?;
-    let public_session_id = session["participant_state"]["public_session_id"].as_str().unwrap();
+    let public_session_id = session["participant_state"]["public_session_id"]
+        .as_str()
+        .unwrap();
 
     let mut socket = ws_connect(&client, &server, public_session_id, &human).await?;
     let assigned = read_participant_state(&mut socket, "active").await?;
@@ -933,10 +938,17 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
 
     let create_requests = remote.state.create_requests.lock().unwrap().clone();
     assert_eq!(create_requests.len(), 1);
-    assert_eq!(create_requests[0].protocol_version, "parlando-agent-v4");
-    assert_eq!(create_requests[0].agent_name, "mock-python-agent");
-    assert_eq!(create_requests[0].agent_version, "test-1");
     assert_eq!(create_requests[0].role, "B");
+    assert_eq!(
+        create_requests[0]
+            .config
+            .as_ref()
+            .unwrap()
+            .fields
+            .get("difficulty")
+            .and_then(|value| value.kind.as_ref()),
+        Some(&Kind::NumberValue(2.0))
+    );
 
     let start_requests = remote.state.start_requests.lock().unwrap().clone();
     assert_eq!(start_requests.len(), 1);
@@ -983,7 +995,7 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
     assert!(remote_participant["participant_id"]
         .as_str()
         .unwrap()
-        .contains("mock-python-agent"));
+        .contains("remote-agent"));
     assert!(
         remote_participant["agent_identity"]["configuration_fingerprint"]
             .as_str()
@@ -992,11 +1004,11 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
     );
     assert_eq!(
         remote_participant["agent_identity"]["agent_name"],
-        "mock-python-agent"
+        "remote-agent"
     );
     assert_eq!(
         remote_participant["agent_identity"]["agent_version"],
-        "test-1"
+        "parlando-agent-v5"
     );
     assert!(events
         .iter()

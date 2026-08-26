@@ -1,5 +1,46 @@
 # Technical Decisions
 
+## 2026-08-26: Remote-agent configuration exposes only endpoint and YAML settings
+
+Context: the standard remote factory exposed opaque JSON, endpoint, agent name, agent version,
+protocol version, a transport bearer credential, and an agent-instance secret in the experiment
+dashboard. JSON rendered as `[object Object]`, optional secret references were materialized even
+when unset, and the Python service ignored the user-supplied name and version. Protocol and
+transport-authentication details were mixed with agent-owned experiment settings.
+
+Decision: replace the remote settings shape with `endpoint` plus an optional `config_yaml` string.
+The dashboard renders YAML as a multiline editor with an empty default; Rust requires an empty
+document or mapping and sends the parsed mapping as the protocol `config`. Protocol v5 removes
+protocol, name, version, and secret fields from `CreateAgent`. Remote processes own model/provider
+credentials. Both the Rust adapter and Python SDK automatically read the deployment-level
+`PARLANDO_REMOTE_AGENT_TOKEN`; it never enters an experiment record or dashboard response. Keep
+the existing HTTPS and explicit host-allowlist requirements for non-loopback endpoints.
+
+Tradeoffs and risks: remote participant provenance now identifies the standard transport as
+`remote-agent@parlando-agent-v5` plus the exact endpoint/YAML settings fingerprint; it
+does not claim to identify mutable code or model weights behind an endpoint. Remote deployments
+must arrange the same transport token in both process environments. The v5 protocol deliberately
+has no compatibility reader for v4. Neither populated workspace database contained a
+`remote_grpc` experiment configuration, so no live data conversion or backup was required; the
+open Great Tree database was left untouched.
+
+## 2026-08-24: Every game server exposes the remote gRPC agent
+
+Context: the dashboard derives its agent choices from factories registered by each game binary.
+Remote gRPC support therefore appeared only when a binary explicitly registered `RemoteAgent`,
+even though the transport and its configuration schema are part of the Parlando server.
+
+Decision: add the standard remote gRPC factory when `Server::serve` finalizes the registered
+factory set. Preserve an explicitly registered `remote_grpc` factory and add no duplicate. The
+dashboard and runtime continue to consume the same factory set, so every displayed choice is also
+instantiable. Game binaries register only their additional in-process factories.
+
+Tradeoffs and risks: every dashboard now exposes remote endpoint, identity, and credential fields,
+including deployments that use only in-process agents. Selecting the option still subjects the
+endpoint to the existing transport, allowlist, authentication, and activation validation. The
+default is injected at the public server boundary; lower-level internal router test hooks retain
+explicit factory control.
+
 ## 2026-08-24: The dashboard projects canonical lifecycle and participant phase directly
 
 Context: after the participant-state redesign, durable session responses exposed `lifecycle` with

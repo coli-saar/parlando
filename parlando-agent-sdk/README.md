@@ -9,8 +9,7 @@ Agent authors implement async observation callbacks such as `start`,
 `observe_transition`, `observe_message`, and `finish`, then respond from
 `respond(available_actions)`. A factory may receive a small immutable `Context`
 containing the player's role, deterministic seed, normalized agent settings, and
-an isolated redacting `secrets` lookup for values explicitly authorized for the
-remote agent instance.
+the session logger.
 It receives no room identity, transport details, frontend data, or initial game
 observation.
 
@@ -39,8 +38,7 @@ def create_agent(context: Context) -> Agent:
 serve(create_agent, host="127.0.0.1", port=50051)
 ```
 
-See [Agents](../docs/agents.md) for experiment configuration, deployment,
-authentication, and agent identity/version recording.
+See [Agents](../docs/agents.md) for experiment configuration and deployment.
 
 Run the SDK unit and protocol-drift suite from an environment containing the package dependencies:
 

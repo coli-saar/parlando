@@ -98,7 +98,7 @@ destructure the context must accept the new field. An agent may retain
 the session, participant, and role; agent code supplies only text.
 
 Remote-agent protocol responses now contain repeated `session_logs` strings.
-Regenerate clients from `parlando_agent_v3.proto`, or upgrade the Python SDK and
+Regenerate clients from `parlando_agent_v5.proto`, or upgrade the Python SDK and
 use its injected `Context.logger`.
 
 ## Update participant HTTP and WebSocket clients

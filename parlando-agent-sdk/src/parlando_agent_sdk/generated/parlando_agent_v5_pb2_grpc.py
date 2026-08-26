@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from . import parlando_agent_v3_pb2 as parlando__agent__v3__pb2
+from . import parlando_agent_v5_pb2 as parlando__agent__v5__pb2
 
 GRPC_GENERATED_VERSION = '1.83.0'
 GRPC_VERSION = grpc.__version__
@@ -18,7 +18,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + ' but the generated code in parlando_agent_v3_pb2_grpc.py depends on'
+        + ' but the generated code in parlando_agent_v5_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
@@ -35,39 +35,39 @@ class AgentServiceStub:
             channel: A grpc.Channel.
         """
         self.CreateAgent = channel.unary_unary(
-                '/parlando.agent.v4.AgentService/CreateAgent',
-                request_serializer=parlando__agent__v3__pb2.CreateAgentRequest.SerializeToString,
-                response_deserializer=parlando__agent__v3__pb2.CreateAgentResponse.FromString,
+                '/parlando.agent.v5.AgentService/CreateAgent',
+                request_serializer=parlando__agent__v5__pb2.CreateAgentRequest.SerializeToString,
+                response_deserializer=parlando__agent__v5__pb2.CreateAgentResponse.FromString,
                 _registered_method=True)
         self.Start = channel.unary_unary(
-                '/parlando.agent.v4.AgentService/Start',
-                request_serializer=parlando__agent__v3__pb2.StartRequest.SerializeToString,
-                response_deserializer=parlando__agent__v3__pb2.ObserveResponse.FromString,
+                '/parlando.agent.v5.AgentService/Start',
+                request_serializer=parlando__agent__v5__pb2.StartRequest.SerializeToString,
+                response_deserializer=parlando__agent__v5__pb2.ObserveResponse.FromString,
                 _registered_method=True)
         self.ObserveTransition = channel.unary_unary(
-                '/parlando.agent.v4.AgentService/ObserveTransition',
-                request_serializer=parlando__agent__v3__pb2.ObserveTransitionRequest.SerializeToString,
-                response_deserializer=parlando__agent__v3__pb2.ObserveResponse.FromString,
+                '/parlando.agent.v5.AgentService/ObserveTransition',
+                request_serializer=parlando__agent__v5__pb2.ObserveTransitionRequest.SerializeToString,
+                response_deserializer=parlando__agent__v5__pb2.ObserveResponse.FromString,
                 _registered_method=True)
         self.ObserveMessage = channel.unary_unary(
-                '/parlando.agent.v4.AgentService/ObserveMessage',
-                request_serializer=parlando__agent__v3__pb2.ObserveMessageRequest.SerializeToString,
-                response_deserializer=parlando__agent__v3__pb2.ObserveResponse.FromString,
+                '/parlando.agent.v5.AgentService/ObserveMessage',
+                request_serializer=parlando__agent__v5__pb2.ObserveMessageRequest.SerializeToString,
+                response_deserializer=parlando__agent__v5__pb2.ObserveResponse.FromString,
                 _registered_method=True)
         self.Finish = channel.unary_unary(
-                '/parlando.agent.v4.AgentService/Finish',
-                request_serializer=parlando__agent__v3__pb2.FinishRequest.SerializeToString,
-                response_deserializer=parlando__agent__v3__pb2.ObserveResponse.FromString,
+                '/parlando.agent.v5.AgentService/Finish',
+                request_serializer=parlando__agent__v5__pb2.FinishRequest.SerializeToString,
+                response_deserializer=parlando__agent__v5__pb2.ObserveResponse.FromString,
                 _registered_method=True)
         self.Respond = channel.unary_unary(
-                '/parlando.agent.v4.AgentService/Respond',
-                request_serializer=parlando__agent__v3__pb2.RespondRequest.SerializeToString,
-                response_deserializer=parlando__agent__v3__pb2.RespondResponse.FromString,
+                '/parlando.agent.v5.AgentService/Respond',
+                request_serializer=parlando__agent__v5__pb2.RespondRequest.SerializeToString,
+                response_deserializer=parlando__agent__v5__pb2.RespondResponse.FromString,
                 _registered_method=True)
         self.Shutdown = channel.unary_unary(
-                '/parlando.agent.v4.AgentService/Shutdown',
-                request_serializer=parlando__agent__v3__pb2.ShutdownRequest.SerializeToString,
-                response_deserializer=parlando__agent__v3__pb2.ShutdownResponse.FromString,
+                '/parlando.agent.v5.AgentService/Shutdown',
+                request_serializer=parlando__agent__v5__pb2.ShutdownRequest.SerializeToString,
+                response_deserializer=parlando__agent__v5__pb2.ShutdownResponse.FromString,
                 _registered_method=True)
 
 
@@ -121,44 +121,44 @@ def add_AgentServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'CreateAgent': grpc.unary_unary_rpc_method_handler(
                     servicer.CreateAgent,
-                    request_deserializer=parlando__agent__v3__pb2.CreateAgentRequest.FromString,
-                    response_serializer=parlando__agent__v3__pb2.CreateAgentResponse.SerializeToString,
+                    request_deserializer=parlando__agent__v5__pb2.CreateAgentRequest.FromString,
+                    response_serializer=parlando__agent__v5__pb2.CreateAgentResponse.SerializeToString,
             ),
             'Start': grpc.unary_unary_rpc_method_handler(
                     servicer.Start,
-                    request_deserializer=parlando__agent__v3__pb2.StartRequest.FromString,
-                    response_serializer=parlando__agent__v3__pb2.ObserveResponse.SerializeToString,
+                    request_deserializer=parlando__agent__v5__pb2.StartRequest.FromString,
+                    response_serializer=parlando__agent__v5__pb2.ObserveResponse.SerializeToString,
             ),
             'ObserveTransition': grpc.unary_unary_rpc_method_handler(
                     servicer.ObserveTransition,
-                    request_deserializer=parlando__agent__v3__pb2.ObserveTransitionRequest.FromString,
-                    response_serializer=parlando__agent__v3__pb2.ObserveResponse.SerializeToString,
+                    request_deserializer=parlando__agent__v5__pb2.ObserveTransitionRequest.FromString,
+                    response_serializer=parlando__agent__v5__pb2.ObserveResponse.SerializeToString,
             ),
             'ObserveMessage': grpc.unary_unary_rpc_method_handler(
                     servicer.ObserveMessage,
-                    request_deserializer=parlando__agent__v3__pb2.ObserveMessageRequest.FromString,
-                    response_serializer=parlando__agent__v3__pb2.ObserveResponse.SerializeToString,
+                    request_deserializer=parlando__agent__v5__pb2.ObserveMessageRequest.FromString,
+                    response_serializer=parlando__agent__v5__pb2.ObserveResponse.SerializeToString,
             ),
             'Finish': grpc.unary_unary_rpc_method_handler(
                     servicer.Finish,
-                    request_deserializer=parlando__agent__v3__pb2.FinishRequest.FromString,
-                    response_serializer=parlando__agent__v3__pb2.ObserveResponse.SerializeToString,
+                    request_deserializer=parlando__agent__v5__pb2.FinishRequest.FromString,
+                    response_serializer=parlando__agent__v5__pb2.ObserveResponse.SerializeToString,
             ),
             'Respond': grpc.unary_unary_rpc_method_handler(
                     servicer.Respond,
-                    request_deserializer=parlando__agent__v3__pb2.RespondRequest.FromString,
-                    response_serializer=parlando__agent__v3__pb2.RespondResponse.SerializeToString,
+                    request_deserializer=parlando__agent__v5__pb2.RespondRequest.FromString,
+                    response_serializer=parlando__agent__v5__pb2.RespondResponse.SerializeToString,
             ),
             'Shutdown': grpc.unary_unary_rpc_method_handler(
                     servicer.Shutdown,
-                    request_deserializer=parlando__agent__v3__pb2.ShutdownRequest.FromString,
-                    response_serializer=parlando__agent__v3__pb2.ShutdownResponse.SerializeToString,
+                    request_deserializer=parlando__agent__v5__pb2.ShutdownRequest.FromString,
+                    response_serializer=parlando__agent__v5__pb2.ShutdownResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'parlando.agent.v4.AgentService', rpc_method_handlers)
+            'parlando.agent.v5.AgentService', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('parlando.agent.v4.AgentService', rpc_method_handlers)
+    server.add_registered_method_handlers('parlando.agent.v5.AgentService', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -179,9 +179,9 @@ class AgentService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/parlando.agent.v4.AgentService/CreateAgent',
-            parlando__agent__v3__pb2.CreateAgentRequest.SerializeToString,
-            parlando__agent__v3__pb2.CreateAgentResponse.FromString,
+            '/parlando.agent.v5.AgentService/CreateAgent',
+            parlando__agent__v5__pb2.CreateAgentRequest.SerializeToString,
+            parlando__agent__v5__pb2.CreateAgentResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -206,9 +206,9 @@ class AgentService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/parlando.agent.v4.AgentService/Start',
-            parlando__agent__v3__pb2.StartRequest.SerializeToString,
-            parlando__agent__v3__pb2.ObserveResponse.FromString,
+            '/parlando.agent.v5.AgentService/Start',
+            parlando__agent__v5__pb2.StartRequest.SerializeToString,
+            parlando__agent__v5__pb2.ObserveResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -233,9 +233,9 @@ class AgentService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/parlando.agent.v4.AgentService/ObserveTransition',
-            parlando__agent__v3__pb2.ObserveTransitionRequest.SerializeToString,
-            parlando__agent__v3__pb2.ObserveResponse.FromString,
+            '/parlando.agent.v5.AgentService/ObserveTransition',
+            parlando__agent__v5__pb2.ObserveTransitionRequest.SerializeToString,
+            parlando__agent__v5__pb2.ObserveResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -260,9 +260,9 @@ class AgentService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/parlando.agent.v4.AgentService/ObserveMessage',
-            parlando__agent__v3__pb2.ObserveMessageRequest.SerializeToString,
-            parlando__agent__v3__pb2.ObserveResponse.FromString,
+            '/parlando.agent.v5.AgentService/ObserveMessage',
+            parlando__agent__v5__pb2.ObserveMessageRequest.SerializeToString,
+            parlando__agent__v5__pb2.ObserveResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -287,9 +287,9 @@ class AgentService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/parlando.agent.v4.AgentService/Finish',
-            parlando__agent__v3__pb2.FinishRequest.SerializeToString,
-            parlando__agent__v3__pb2.ObserveResponse.FromString,
+            '/parlando.agent.v5.AgentService/Finish',
+            parlando__agent__v5__pb2.FinishRequest.SerializeToString,
+            parlando__agent__v5__pb2.ObserveResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -314,9 +314,9 @@ class AgentService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/parlando.agent.v4.AgentService/Respond',
-            parlando__agent__v3__pb2.RespondRequest.SerializeToString,
-            parlando__agent__v3__pb2.RespondResponse.FromString,
+            '/parlando.agent.v5.AgentService/Respond',
+            parlando__agent__v5__pb2.RespondRequest.SerializeToString,
+            parlando__agent__v5__pb2.RespondResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -341,9 +341,9 @@ class AgentService:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/parlando.agent.v4.AgentService/Shutdown',
-            parlando__agent__v3__pb2.ShutdownRequest.SerializeToString,
-            parlando__agent__v3__pb2.ShutdownResponse.FromString,
+            '/parlando.agent.v5.AgentService/Shutdown',
+            parlando__agent__v5__pb2.ShutdownRequest.SerializeToString,
+            parlando__agent__v5__pb2.ShutdownResponse.FromString,
             options,
             channel_credentials,
             insecure,

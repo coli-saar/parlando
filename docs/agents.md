@@ -61,7 +61,7 @@ A `Response` is always non-empty: action, message, or action and message. `None`
 
 Once completion is known, the runtime requests no further responses. It delivers already-queued observations in order through the terminal `observe_transition`, then calls `finish` with the shared completion and finally calls `shutdown` for resource cleanup.
 
-`Factory::create(Context { role, seed, settings, factory_secrets, agent_instance_secrets }).await` constructs the agent before game state is delivered. Settings are server-validated, normalized non-secret JSON. The two secret sets contain only explicitly referenced values and redact their debug output. Factory secrets are for local construction or transport authentication; agent-instance secrets may cross the remote protocol in its separate field. After construction returns, the runtime creates the initial game state and calls `start(initial_observation)`.
+`Factory::create(Context { role, seed, settings, factory_secrets, agent_instance_secrets }).await` constructs the agent before game state is delivered. Settings are server-validated, normalized non-secret JSON. The two secret sets contain only explicitly referenced values and redact their debug output. They are available to in-process factories and agents; the standard remote adapter declares no secret references and does not transport either set. After construction returns, the runtime creates the initial game state and calls `start(initial_observation)`.
 
 A factory's `Definition` uses semantic `ConfigValue` types: strings (optionally URI-formatted), booleans, bounded integers and numbers, choices, nested objects, and purpose-tagged secret references. The server validates definitions at registration and settings at save and runtime; the dashboard derives controls from these semantics. Secret fields store a `game.<key>` reference, never its value. Every factory must implement `identity(settings)` and supply a non-empty semantic name and implementation version for the automated participant. Configuration choices such as model and prompt belong in normalized settings and their fingerprint, not in the implementation-version field. Register the factory with `Server::agent`.
 
@@ -95,9 +95,17 @@ class FirstActionAgent(Agent):
 serve(FirstActionAgent, host="127.0.0.1", port=50051)
 ```
 
-Register `parlando::agent::grpc::RemoteAgent::new()` on the Rust server and configure its endpoint and identity through the dashboard.
+Every `Server` includes the remote gRPC agent in the dashboard. Configure its endpoint and
+optional YAML settings there; game binaries only need `Server::agent` for additional in-process
+factories. An empty YAML document sends an empty settings mapping. Rust parses other YAML mappings
+and delivers them to Python as `Context.settings`.
 
-Remote protocol v4 delivers `agent_instance_secrets` separately from `config`. Selecting such a reference authorizes delivery to the configured endpoint. Non-loopback endpoints still require HTTPS, an allowed host, and a factory-purpose bearer credential.
+Keep model credentials and other agent secrets in the remote process's own configuration or
+environment. Protocol v5 has no secret-delivery field. Loopback HTTP needs no transport
+credential. For a non-loopback endpoint, use HTTPS, list the host in
+`PARLANDO_REMOTE_AGENT_ALLOWED_HOSTS`, and set the same `PARLANDO_REMOTE_AGENT_TOKEN` in the
+Parlando server and remote-agent processes. Both adapters read that transport token automatically;
+it is never stored in experiment configuration or shown in the dashboard.
 
 ## Construction readiness
 

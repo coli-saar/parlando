@@ -9,9 +9,7 @@ agents:
     checkpoint: initial
     settings:
       endpoint: http://127.0.0.1:50061
-      agent_name: CueChoiceQwenPPO
-      agent_version: "1"
-      config:
+      config_yaml: |
         model: Qwen/Qwen2.5-0.5B-Instruct
         device: auto
         temperature: 1.0

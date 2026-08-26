@@ -17,7 +17,7 @@ def main() -> int:
     init_file = generated_dir / "__init__.py"
     init_file.touch()
     proto_files = [
-        proto_dir / "parlando_agent_v3.proto",
+        proto_dir / "parlando_agent_v5.proto",
         proto_dir / "parlando_rl_v1.proto",
     ]
     bundled_proto_dir = Path(grpc_tools.__file__).resolve().parent / "_proto"

@@ -5,6 +5,7 @@ use crate::{
     app::{serve_game, ServeOptions},
     config::{AgentsMode, ExperimentConfig},
     game::{GameFactory, GameMetadata},
+    remote_agent::RemoteAgent,
 };
 use anyhow::{anyhow, Result};
 
@@ -75,7 +76,7 @@ impl<F: GameFactory> Server<F> {
     }
 
     /// Runs the frontend-neutral HTTP, JSON, and WebSocket server.
-    pub async fn serve(self, address: SocketAddr) -> Result<()> {
+    pub async fn serve(mut self, address: SocketAddr) -> Result<()> {
         let mut bootstrap = ExperimentConfig::default();
         bootstrap.database.url = self.database_url;
         bootstrap.server.client_dist_path = self
@@ -89,6 +90,7 @@ impl<F: GameFactory> Server<F> {
             };
             format!("http://{host}:{}", address.port())
         });
+        register_default_remote_agent(&mut self.agents);
         let registered = Arc::new(self.agents);
         serve_game(
             self.game_factory,
@@ -127,5 +129,74 @@ impl<F: GameFactory> Server<F> {
             },
         )
         .await
+    }
+}
+
+/// Adds Parlando's standard remote transport unless the server already registered it explicitly.
+fn register_default_remote_agent<A: crate::Game>(agents: &mut Vec<SharedAgentFactory<A>>) {
+    let remote_id = <RemoteAgent as AgentFactory<A>>::definition(&RemoteAgent::new()).id;
+    if agents
+        .iter()
+        .any(|registered| registered.definition().id == remote_id)
+    {
+        return;
+    }
+    agents.push(Arc::new(RemoteAgent::new()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ActionRejection, Game, GameInitializationContext, PlayerRole};
+    use serde_json::Value;
+
+    /// Minimal typed game used to inspect generic server-side agent registration.
+    struct TestGame;
+
+    impl Game for TestGame {
+        type Config = Value;
+        type State = Value;
+        type Action = Value;
+        type Observation = Value;
+        type Completion = Value;
+
+        /// Creates an empty state because registration does not execute game mechanics.
+        fn initial_state(
+            &self,
+            _context: GameInitializationContext<'_, Self::Config>,
+        ) -> Result<Self::State> {
+            Ok(Value::Null)
+        }
+
+        /// Preserves the state because registration does not execute game mechanics.
+        fn apply_action(
+            &self,
+            state: &Self::State,
+            _action: &Self::Action,
+            _actor: PlayerRole,
+        ) -> std::result::Result<Self::State, ActionRejection> {
+            Ok(state.clone())
+        }
+
+        /// Returns the state as the role-neutral test observation.
+        fn observation(&self, state: &Self::State, _role: PlayerRole) -> Self::Observation {
+            state.clone()
+        }
+
+        /// Keeps the test game nonterminal.
+        fn completion(&self, _state: &Self::State) -> Option<Self::Completion> {
+            None
+        }
+    }
+
+    /// The default registration makes the remote factory available exactly once.
+    #[test]
+    fn default_remote_agent_is_registered_once() {
+        let mut agents: Vec<SharedAgentFactory<TestGame>> = Vec::new();
+        register_default_remote_agent(&mut agents);
+        register_default_remote_agent(&mut agents);
+
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].definition().id, "remote_grpc");
     }
 }

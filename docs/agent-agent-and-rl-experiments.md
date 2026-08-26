@@ -235,6 +235,10 @@ according to the factory definition's declared purpose and are excluded from
 YAML normalization, fingerprints, plans, and results. Library callers may use
 `ExperimentRunner::secret("provider_token", value)` instead.
 
+This mechanism applies to factories that declare secret-reference fields. The standard
+`remote_grpc` factory declares none: keep provider credentials in the remote process and use
+`PARLANDO_REMOTE_AGENT_TOKEN` only for deployment-level transport authentication.
+
 ## Add reinforcement learning
 
 RL uses the same sessions and agent lifecycle. The runner owns experiment

@@ -16,8 +16,8 @@ from google.protobuf import json_format
 from google.protobuf.struct_pb2 import Struct
 
 from .generated import (
-    parlando_agent_v3_pb2,
-    parlando_agent_v3_pb2_grpc,
+    parlando_agent_v5_pb2,
+    parlando_agent_v5_pb2_grpc,
     parlando_rl_v1_pb2,
     parlando_rl_v1_pb2_grpc,
 )
@@ -25,7 +25,7 @@ from .generated import (
 
 def _generated_modules() -> tuple[Any, Any]:
     """Returns the package-relative generated agent protocol modules."""
-    return parlando_agent_v3_pb2, parlando_agent_v3_pb2_grpc
+    return parlando_agent_v5_pb2, parlando_agent_v5_pb2_grpc
 
 
 def _learner_modules() -> tuple[Any, Any]:
@@ -34,26 +34,6 @@ def _learner_modules() -> tuple[Any, Any]:
 
 
 PlayerRole = Literal["A", "B"]
-
-
-class SecretValues:
-    """Non-serializable values explicitly authorized for this agent instance."""
-
-    def __init__(self, values: dict[str, str]) -> None:
-        """Stores one isolated path-to-value mapping."""
-        self._values = dict(values)
-
-    def get(self, path: str) -> str | None:
-        """Returns one referenced value by its semantic configuration path."""
-        return self._values.get(path)
-
-    def __repr__(self) -> str:
-        """Redacts all secret material from diagnostics."""
-        return "SecretValues([REDACTED])"
-
-    def __eq__(self, other: object) -> bool:
-        """Compares isolated values without exposing them in assertion output."""
-        return isinstance(other, SecretValues) and self._values == other._values
 
 
 class SessionLogger:
@@ -97,7 +77,6 @@ class Context:
     seed: int
     settings: dict[str, Any]
     checkpoint_id: str | None = None
-    secrets: SecretValues = field(default_factory=lambda: SecretValues({}))
     logger: SessionLogger = field(default_factory=SessionLogger)
 
 
@@ -195,11 +174,6 @@ class _AgentService:
     async def CreateAgent(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote CreateAgent request from the Rust server."""
         await self._authenticate(context)
-        if request.protocol_version != "parlando-agent-v4":
-            await context.abort(
-                grpc.StatusCode.FAILED_PRECONDITION,
-                "unsupported protocol version",
-            )
         if request.role not in {"A", "B"}:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "unknown player role")
         async with self._agent_lock:
@@ -214,7 +188,6 @@ class _AgentService:
             seed=request.seed,
             settings=_struct_to_dict(request.config),
             checkpoint_id=_optional_checkpoint(request),
-            secrets=SecretValues(_struct_to_dict(request.agent_instance_secrets)),
             logger=logger,
         )
         try:
@@ -317,7 +290,6 @@ async def _serve_async(
     certificate_chain: bytes | None = None,
     private_key: bytes | None = None,
     client_ca: bytes | None = None,
-    auth_token: str | None = None,
     max_agents: int = 128,
 ) -> None:
     """Starts a bounded gRPC server, requiring TLS for every non-loopback binding."""
@@ -325,7 +297,7 @@ async def _serve_async(
         raise ValueError("max_agents must be greater than zero")
     if not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
-    auth_token = auth_token or os.environ.get("PARLANDO_REMOTE_AGENT_TOKEN")
+    auth_token = os.environ.get("PARLANDO_REMOTE_AGENT_TOKEN") or None
     server = grpc.aio.server(
         options=(
             ("grpc.max_receive_message_length", 1_048_576),
@@ -333,7 +305,7 @@ async def _serve_async(
             ("grpc.max_concurrent_streams", 128),
         )
     )
-    add_agent_service(server, factory, auth_token=auth_token, max_agents=max_agents)
+    add_agent_service(server, factory, max_agents=max_agents)
     if (certificate_chain is None) != (private_key is None):
         raise ValueError("certificate_chain and private_key must be configured together")
     if certificate_chain is not None and private_key is not None:
@@ -357,14 +329,14 @@ def add_agent_service(
     server: grpc.aio.Server,
     factory: type[Agent] | AgentFactory,
     *,
-    auth_token: str | None = None,
     max_agents: int = 128,
 ) -> None:
     """Registers Parlando's agent service on an existing asynchronous gRPC server.
 
     This is useful when one process must expose an ordinary Parlando agent and a
     related control service, such as an RL learner, on the same loopback port.
-    The caller owns server binding, startup, and shutdown.
+    The caller owns server binding, startup, and shutdown. Transport authentication
+    is read from `PARLANDO_REMOTE_AGENT_TOKEN`.
     """
     if max_agents <= 0:
         raise ValueError("max_agents must be greater than zero")
@@ -377,7 +349,12 @@ def add_agent_service(
         return factory(context)
 
     pb2_grpc.add_AgentServiceServicer_to_server(
-        _AgentService(normalized_factory, auth_token, max_agents), server
+        _AgentService(
+            normalized_factory,
+            os.environ.get("PARLANDO_REMOTE_AGENT_TOKEN") or None,
+            max_agents,
+        ),
+        server,
     )
 
 
@@ -431,7 +408,6 @@ def serve(
     certificate_chain: bytes | None = None,
     private_key: bytes | None = None,
     client_ca: bytes | None = None,
-    auth_token: str | None = None,
     max_agents: int = 128,
 ) -> None:
     """Runs a Python Parlando agent server with the selected TLS or loopback policy."""
@@ -443,7 +419,6 @@ def serve(
             certificate_chain=certificate_chain,
             private_key=private_key,
             client_ca=client_ca,
-            auth_token=auth_token,
             max_agents=max_agents,
         )
     )

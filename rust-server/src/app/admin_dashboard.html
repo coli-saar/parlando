@@ -1690,6 +1690,7 @@
         else if (field.type === 'integer' || field.type === 'number') control = `<input ${attributes} type="number" value="${escapeHtml(value)}" ${field.minimum != null ? `min="${field.minimum}"` : ''} ${field.maximum != null ? `max="${field.maximum}"` : ''} step="${field.type === 'integer' ? '1' : 'any'}">`;
         else if (field.type === 'choice') control = `<select ${attributes}>${(field.choices || []).map(choice => `<option value="${escapeHtml(choice.value)}" ${choice.value === value ? 'selected' : ''}>${escapeHtml(choice.label)}</option>`).join('')}</select>`;
         else if (field.type === 'secret_reference') return agentSecretFieldMarkup(field, path, value);
+        else if (field.type === 'string' && field.format === 'yaml') control = `<textarea ${attributes} rows="8" spellcheck="false" placeholder="Optional; empty means {}">${escapeHtml(value ?? '')}</textarea>`;
         else control = `<input ${attributes} type="${field.format === 'uri' ? 'url' : 'text'}" value="${escapeHtml(value ?? '')}">`;
         return `<label class="config-field"><span>${escapeHtml(field.label)}</span>${control}<span class="config-help">${escapeHtml(field.help || '')}</span></label>`;
       }).join('');

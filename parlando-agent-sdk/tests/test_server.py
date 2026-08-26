@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import inspect
 import sys
 import unittest
 from pathlib import Path
@@ -17,7 +18,7 @@ if str(PACKAGE_SRC) not in sys.path:
     sys.path.insert(0, str(PACKAGE_SRC))
 
 from parlando_agent_sdk import server  # noqa: E402
-from parlando_agent_sdk.generated import parlando_agent_v3_pb2, parlando_rl_v1_pb2  # noqa: E402
+from parlando_agent_sdk.generated import parlando_agent_v5_pb2, parlando_rl_v1_pb2  # noqa: E402
 
 
 class FakeMessage:
@@ -171,8 +172,8 @@ class ConversionTests(unittest.TestCase):
 
     def test_optional_checkpoint_distinguishes_absent_and_present_values(self) -> None:
         """Generated optional protobuf fields preserve checkpoint absence."""
-        absent = parlando_agent_v3_pb2.CreateAgentRequest()
-        present = parlando_agent_v3_pb2.CreateAgentRequest(checkpoint_id="checkpoint-7")
+        absent = parlando_agent_v5_pb2.CreateAgentRequest()
+        present = parlando_agent_v5_pb2.CreateAgentRequest(checkpoint_id="checkpoint-7")
         self.assertIsNone(server._optional_checkpoint(absent))
         self.assertEqual(server._optional_checkpoint(present), "checkpoint-7")
 
@@ -202,15 +203,11 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     def create_request(self) -> SimpleNamespace:
         """Builds a complete CreateAgent request with an absent optional seed."""
         return SimpleNamespace(
-            protocol_version="parlando-agent-v4",
-            agent_name="test-agent",
-            agent_version="1.0.0",
             role="B",
             seed=0,
             checkpoint_id="",
             HasField=lambda name: name != "checkpoint_id",
             config=server._dict_to_struct({"difficulty": 2}),
-            agent_instance_secrets=server._dict_to_struct({"config.token": "sentinel"}),
         )
 
     async def test_authentication_accepts_exact_bearer_and_rejects_others(self) -> None:
@@ -258,23 +255,19 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         created = await service.CreateAgent(self.create_request(), FakeContext())
         self.assertIn(created.agent_id, service._agents)
 
-    async def test_creation_rejects_protocol_and_role_before_factory_invocation(self) -> None:
-        """Protocol and role validation fail closed without reserving agent capacity."""
+    async def test_creation_rejects_unknown_role_before_factory_invocation(self) -> None:
+        """Role validation fails closed without reserving agent capacity."""
         factory = AsyncMock(return_value=RecordingAgent())
         service = self.service(factory)
         request = self.create_request()
-        request.protocol_version = "parlando-agent-v999"
-        with self.assertRaises(AbortedRpc):
-            await service.CreateAgent(request, FakeContext())
-        request.protocol_version = "parlando-agent-v4"
         request.role = "spectator"
         with self.assertRaises(AbortedRpc):
             await service.CreateAgent(request, FakeContext())
         factory.assert_not_awaited()
         self.assertEqual(service._creating_agents, 0)
 
-    async def test_factory_receives_separate_redacting_secrets(self) -> None:
-        """Agent-instance values stay separate from ordinary settings and diagnostics."""
+    async def test_factory_receives_structured_remote_settings(self) -> None:
+        """The factory receives only the structured settings supplied by Rust."""
         contexts: list[server.Context] = []
 
         def factory(context: server.Context) -> RecordingAgent:
@@ -283,8 +276,6 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
 
         await self.service(factory).CreateAgent(self.create_request(), FakeContext())
         self.assertEqual(contexts[0].settings, {"difficulty": 2})
-        self.assertEqual(contexts[0].secrets.get("config.token"), "sentinel")
-        self.assertNotIn("sentinel", repr(contexts[0].secrets))
 
     async def test_session_logger_drains_arbitrary_text_into_rpc_responses(self) -> None:
         """Constructor and callback logs leave the process on the next matching response."""
@@ -369,7 +360,6 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(contexts[0].role, "B")
         self.assertEqual(contexts[0].seed, 0)
         self.assertEqual(contexts[0].settings, {"difficulty": 2.0})
-        self.assertEqual(contexts[0].secrets.get("config.token"), "sentinel")
         self.assertIsInstance(contexts[0].logger, server.SessionLogger)
 
     async def test_unknown_agent_ids_abort(self) -> None:
@@ -418,6 +408,11 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
 class ServerValidationTests(unittest.IsolatedAsyncioTestCase):
     """Exercises public server bounds before network startup."""
 
+    def test_public_server_functions_do_not_accept_transport_credentials(self) -> None:
+        """Transport authentication is environment-owned rather than a caller argument."""
+        self.assertNotIn("auth_token", inspect.signature(server.serve).parameters)
+        self.assertNotIn("auth_token", inspect.signature(server.add_agent_service).parameters)
+
     async def test_serve_rejects_capacity_port_tls_and_remote_cleartext(self) -> None:
         """Invalid listener policies fail deterministically without starting gRPC."""
         with self.assertRaisesRegex(ValueError, "max_agents"):
@@ -441,13 +436,13 @@ class ProtocolSourceTests(unittest.TestCase):
 
     def test_shared_agent_proto_exists(self) -> None:
         """The repository-level agent protocol remains available to the generator."""
-        shared_proto = Path(__file__).resolve().parents[2] / "proto/parlando_agent_v3.proto"
+        shared_proto = Path(__file__).resolve().parents[2] / "proto/parlando_agent_v5.proto"
         self.assertTrue(shared_proto.is_file())
 
     def test_generated_agent_descriptor_matches_public_contract(self) -> None:
         """Generated agent bindings retain package, methods, fields, and optional presence."""
-        descriptor = parlando_agent_v3_pb2.DESCRIPTOR
-        self.assertEqual(descriptor.package, "parlando.agent.v4")
+        descriptor = parlando_agent_v5_pb2.DESCRIPTOR
+        self.assertEqual(descriptor.package, "parlando.agent.v5")
         self.assertEqual(
             list(descriptor.services_by_name["AgentService"].methods_by_name),
             ["CreateAgent", "Start", "ObserveTransition", "ObserveMessage", "Finish", "Respond", "Shutdown"],
@@ -456,8 +451,7 @@ class ProtocolSourceTests(unittest.TestCase):
         self.assertEqual(
             [(field.name, field.number) for field in request.fields],
             [
-                ("protocol_version", 1), ("agent_name", 2), ("agent_version", 3), ("role", 4),
-                ("seed", 5), ("config", 6), ("agent_instance_secrets", 7), ("checkpoint_id", 8),
+                ("role", 1), ("seed", 2), ("config", 3), ("checkpoint_id", 4),
             ],
         )
         self.assertTrue(request.fields_by_name["checkpoint_id"].has_presence)

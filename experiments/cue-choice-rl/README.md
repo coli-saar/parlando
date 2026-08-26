@@ -195,13 +195,13 @@ has the form `cue-qwen25/update-000003`; it is an opaque identifier to Rust.
 
 The Python process hosts two gRPC services on the same local endpoint:
 
-- the existing `parlando.agent.v4.AgentService` performs checkpoint-pinned
+- the existing `parlando.agent.v5.AgentService` performs checkpoint-pinned
   inference for each session-local agent;
 - Parlando's `parlando.rl.v1.LearnerService` applies training batches.
 
 Parlando's non-generic Rust `RemoteAgent` implements both the ordinary factory
 and learner traits for every serializable game. It sends the checkpoint in a
-dedicated request field and forwards only `settings.config` as opaque data.
+dedicated request field and parses `settings.config_yaml` into the opaque settings mapping.
 The Python SDK owns both gRPC adapters. Cue-choice therefore implements no Rust
 or protobuf transport code: its Python classes receive ordinary dictionaries,
 choose actions, and train the model. The Python server treats `update_id` as an

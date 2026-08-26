@@ -15,15 +15,12 @@ use tonic::{
 use crate::{
     agent_experiment::{CheckpointId, RLAgent, RLTrainingContext, TrainingBatch, TrajectoryStep},
     agents::{Agent, AgentContext, AgentFactory, AgentIdentity, AgentResponse},
-    game::{
-        AgentConfigField, AgentConfigValue, AgentDefinition, Game, PlayerRole, SecretPurpose,
-        StringFormat,
-    },
+    game::{AgentConfigField, AgentConfigValue, AgentDefinition, Game, PlayerRole, StringFormat},
 };
 
 /// Generated protobuf types and gRPC service clients for remote agents.
 pub mod pb {
-    tonic::include_proto!("parlando.agent.v4");
+    tonic::include_proto!("parlando.agent.v5");
 }
 
 /// Generated protobuf types and gRPC client for remote learners.
@@ -42,27 +39,14 @@ use pb::{
 struct RemoteGrpcAgentConfig {
     /// HTTP/2 endpoint for the remote agent service, such as `http://127.0.0.1:50051`.
     pub endpoint: String,
-    /// Stable human-readable agent name stored in initialization requests.
-    #[serde(default = "default_agent_name")]
-    pub agent_name: String,
-    /// Required stable implementation release identifier stored in initialization requests.
-    pub agent_version: String,
-    /// Remote-agent protocol version expected by this server.
-    #[serde(default = "default_protocol_version")]
-    pub protocol_version: String,
-    /// Agent-owned configuration forwarded without local interpretation.
-    #[serde(default = "empty_json_object")]
-    pub config: Value,
+    /// Optional YAML mapping forwarded to the remote process as structured settings.
+    #[serde(default)]
+    pub config_yaml: String,
     /// Per-request timeout for create and act calls.
     #[serde(skip, default = "default_request_timeout")]
     pub request_timeout: Duration,
     #[serde(skip)]
     auth_token: Option<String>,
-}
-
-/// Returns the default opaque agent configuration.
-fn empty_json_object() -> Value {
-    Value::Object(serde_json::Map::new())
 }
 
 impl fmt::Debug for RemoteGrpcAgentConfig {
@@ -71,10 +55,7 @@ impl fmt::Debug for RemoteGrpcAgentConfig {
         formatter
             .debug_struct("RemoteGrpcAgentConfig")
             .field("endpoint", &self.endpoint)
-            .field("agent_name", &self.agent_name)
-            .field("agent_version", &self.agent_version)
-            .field("protocol_version", &self.protocol_version)
-            .field("config", &self.config)
+            .field("config_yaml", &self.config_yaml)
             .field("request_timeout", &self.request_timeout)
             .field(
                 "auth_token",
@@ -87,16 +68,6 @@ impl fmt::Debug for RemoteGrpcAgentConfig {
 /// Returns the default timeout used for individual remote-agent requests.
 fn default_request_timeout() -> Duration {
     Duration::from_secs(5)
-}
-
-/// Returns the default semantic name for a dashboard-configured remote agent.
-fn default_agent_name() -> String {
-    "remote-agent".to_string()
-}
-
-/// Returns the current remote-agent protocol identifier.
-fn default_protocol_version() -> String {
-    "parlando-agent-v4".to_string()
 }
 
 #[derive(Clone)]
@@ -147,14 +118,6 @@ impl<A: Game> AgentFactory<A> for RemoteAgent {
                 .to_string(),
             config_fields: vec![
                 AgentConfigField {
-                    key: "config".to_string(),
-                    label: "Remote configuration".to_string(),
-                    help: "Opaque JSON delivered unchanged to the remote process.".to_string(),
-                    value: AgentConfigValue::Json,
-                    required: false,
-                    default_value: empty_json_object(),
-                },
-                AgentConfigField {
                     key: "endpoint".to_string(),
                     label: "Agent endpoint".to_string(),
                     help: "HTTP/2 endpoint of the external agent process.".to_string(),
@@ -165,52 +128,15 @@ impl<A: Game> AgentFactory<A> for RemoteAgent {
                     default_value: Value::String("http://127.0.0.1:50051".to_string()),
                 },
                 AgentConfigField {
-                    key: "agent_name".to_string(),
-                    label: "Agent name".to_string(),
-                    help: "Name recorded for the remote agent implementation.".to_string(),
+                    key: "config_yaml".to_string(),
+                    label: "Remote configuration".to_string(),
+                    help: "Optional YAML mapping delivered to the remote process. Keep credentials in the remote process itself."
+                        .to_string(),
                     value: AgentConfigValue::String {
-                        format: StringFormat::Plain,
-                    },
-                    required: true,
-                    default_value: Value::String("remote-agent".to_string()),
-                },
-                AgentConfigField {
-                    key: "agent_version".to_string(),
-                    label: "Agent version".to_string(),
-                    help: "Required stable implementation release identifier.".to_string(),
-                    value: AgentConfigValue::String {
-                        format: StringFormat::Plain,
-                    },
-                    required: true,
-                    default_value: Value::Null,
-                },
-                AgentConfigField {
-                    key: "protocol_version".to_string(),
-                    label: "Protocol version".to_string(),
-                    help: "Remote protocol identifier; normally left at its default.".to_string(),
-                    value: AgentConfigValue::String {
-                        format: StringFormat::Plain,
-                    },
-                    required: true,
-                    default_value: Value::String(default_protocol_version()),
-                },
-                AgentConfigField {
-                    key: "bearer_token".to_string(),
-                    label: "Bearer credential".to_string(),
-                    help: "Experiment secret used only to authenticate the transport.".to_string(),
-                    value: AgentConfigValue::SecretReference {
-                        purpose: SecretPurpose::Factory,
+                        format: StringFormat::Yaml,
                     },
                     required: false,
-                    default_value: Value::Null,
-                },
-                AgentConfigField {
-                    key: "agent_secret".to_string(),
-                    label: "Agent-instance secret".to_string(),
-                    help: "Optional experiment secret explicitly authorized for delivery to the remote agent.".to_string(),
-                    value: AgentConfigValue::SecretReference { purpose: SecretPurpose::AgentInstance },
-                    required: false,
-                    default_value: Value::Null,
+                    default_value: Value::String(String::new()),
                 },
             ],
         }
@@ -223,10 +149,10 @@ impl<A: Game> AgentFactory<A> for RemoteAgent {
 
     /// Returns durable identity metadata for remote gRPC agents.
     fn identity(&self, settings: &Value) -> Result<AgentIdentity> {
-        let config = remote_config_from_settings(settings)?;
+        remote_config_from_settings(settings)?;
         Ok(AgentIdentity {
-            name: config.agent_name,
-            version: config.agent_version,
+            name: "remote-agent".to_string(),
+            version: "parlando-agent-v5".to_string(),
         })
     }
 }
@@ -236,11 +162,7 @@ async fn create_remote_instance<A: Game>(
     context: AgentContext,
     checkpoint: Option<CheckpointId>,
 ) -> Result<Box<dyn Agent<A> + Send>> {
-    let mut config = remote_config_from_settings(&context.settings)?;
-    config.auth_token = context
-        .factory_secrets
-        .get("config.bearer_token")
-        .map(str::to_string);
+    let config = remote_config_from_settings(&context.settings)?;
     let mut agent = RemoteAgentInstance {
         config,
         init_context: context,
@@ -305,11 +227,7 @@ impl<G: Game> RLAgent<G> for RemoteAgent {
         base: &CheckpointId,
         batch: TrainingBatch,
     ) -> Result<CheckpointId> {
-        let mut config = remote_config_from_settings(&context.settings)?;
-        config.auth_token = context
-            .factory_secrets
-            .get("config.bearer_token")
-            .map(str::to_string);
+        let config = remote_config_from_settings(&context.settings)?;
         validate_remote_endpoint(&config.endpoint, config.auth_token.is_some())?;
         let channel = Channel::from_shared(config.endpoint.clone())?
             .connect()
@@ -333,7 +251,7 @@ impl<G: Game> RLAgent<G> for RemoteAgent {
                 .into_iter()
                 .map(trajectory_to_proto)
                 .collect::<Result<_>>()?,
-            settings: Some(json_to_struct(config.config)?),
+            settings: Some(json_to_struct(config.structured_settings()?)?),
         };
         let response = tokio::time::timeout(config.request_timeout, client.train(request))
             .await
@@ -346,12 +264,27 @@ impl<G: Game> RLAgent<G> for RemoteAgent {
 
 /// Parses validated dashboard-owned non-secret settings.
 fn remote_config_from_settings(settings: &Value) -> Result<RemoteGrpcAgentConfig> {
-    let mut settings = settings.clone();
-    settings.as_object_mut().map(|object| {
-        object.remove("bearer_token");
-        object.remove("agent_secret");
-    });
-    serde_json::from_value(settings).map_err(Into::into)
+    let mut config: RemoteGrpcAgentConfig = serde_json::from_value(settings.clone())?;
+    config.auth_token = env::var("PARLANDO_REMOTE_AGENT_TOKEN")
+        .ok()
+        .filter(|token| !token.trim().is_empty());
+    config.structured_settings()?;
+    Ok(config)
+}
+
+impl RemoteGrpcAgentConfig {
+    /// Parses the optional dashboard YAML into the mapping accepted by the remote protocol.
+    fn structured_settings(&self) -> Result<Value> {
+        if self.config_yaml.trim().is_empty() {
+            return Ok(Value::Object(serde_json::Map::new()));
+        }
+        let value: Value = serde_yaml::from_str(&self.config_yaml)
+            .context("remote agent configuration must be valid YAML")?;
+        if !value.is_object() {
+            bail!("remote agent configuration must be a YAML mapping");
+        }
+        Ok(value)
+    }
 }
 
 /// Per-session remote gRPC agent instance.
@@ -385,19 +318,9 @@ impl RemoteAgentInstance {
         let mut client =
             AgentServiceClient::with_interceptor(channel, RemoteAuthInterceptor { authorization });
         let request = CreateAgentRequest {
-            protocol_version: self.config.protocol_version.clone(),
-            agent_name: self.config.agent_name.clone(),
-            agent_version: self.config.agent_version.clone(),
             role: self.init_context.role.as_str().to_string(),
             seed: self.init_context.seed,
-            config: Some(json_to_struct(self.config.config.clone())?),
-            agent_instance_secrets: Some(json_to_struct(Value::Object(
-                self.init_context
-                    .agent_instance_secrets
-                    .iter()
-                    .map(|(key, value)| (key.clone(), Value::String(value.clone())))
-                    .collect(),
-            ))?),
+            config: Some(json_to_struct(self.config.structured_settings()?)?),
             checkpoint_id: self
                 .checkpoint
                 .as_ref()
@@ -427,7 +350,7 @@ fn validate_remote_endpoint(endpoint: &str, has_auth_token: bool) -> Result<()> 
     match uri.scheme_str() {
         Some("https") if has_auth_token => {}
         Some("https") => {
-            bail!("non-loopback remote-agent TLS requires a configured factory bearer credential")
+            bail!("non-loopback remote-agent TLS requires PARLANDO_REMOTE_AGENT_TOKEN")
         }
         Some("http") => {
             let host = uri
@@ -815,18 +738,66 @@ mod tests {
     }
 
     #[test]
-    fn remote_identity_requires_agent_version() {
+    fn remote_identity_is_transport_owned() {
         let factory = RemoteAgent::new();
-        let error = <RemoteAgent as AgentFactory<TestAdapter>>::identity(
+        let identity = <RemoteAgent as AgentFactory<TestAdapter>>::identity(
             &factory,
             &serde_json::json!({
                 "endpoint": "http://127.0.0.1:50051",
-                "agent_name": "python-agent"
+                "config_yaml": "model: local\ntemperature: 0.2\n"
             }),
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(error.to_string().contains("agent_version"));
+        assert_eq!(identity.name, "remote-agent");
+        assert_eq!(identity.version, "parlando-agent-v5");
+    }
+
+    /// The dashboard contract contains only endpoint and optional YAML settings.
+    #[test]
+    fn remote_dashboard_definition_has_two_non_secret_fields() {
+        let definition = <RemoteAgent as AgentFactory<TestAdapter>>::definition(&RemoteAgent);
+        assert_eq!(
+            definition
+                .config_fields
+                .iter()
+                .map(|field| field.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["endpoint", "config_yaml"]
+        );
+        let serialized = serde_json::to_value(definition).unwrap();
+        assert_eq!(serialized["config_fields"][1]["format"], "yaml");
+        assert_eq!(serialized["config_fields"][1]["default_value"], "");
+        assert_eq!(serialized["config_fields"][1]["required"], false);
+    }
+
+    /// Remote YAML is optional, must be a mapping, and reaches the protocol as structured data.
+    #[test]
+    fn remote_yaml_settings_are_parsed_as_a_mapping() {
+        let empty = remote_config_from_settings(&serde_json::json!({
+            "endpoint": "http://127.0.0.1:50051",
+            "config_yaml": ""
+        }))
+        .unwrap();
+        assert_eq!(empty.structured_settings().unwrap(), serde_json::json!({}));
+
+        let configured = remote_config_from_settings(&serde_json::json!({
+            "endpoint": "http://127.0.0.1:50051",
+            "config_yaml": "model: local\nnested:\n  enabled: true\n"
+        }))
+        .unwrap();
+        assert_eq!(
+            configured.structured_settings().unwrap(),
+            serde_json::json!({"model": "local", "nested": {"enabled": true}})
+        );
+
+        for invalid in ["- item\n", "key: [\n"] {
+            assert!(remote_config_from_settings(&serde_json::json!({
+                "endpoint": "http://127.0.0.1:50051",
+                "config_yaml": invalid
+            }))
+            .is_err());
+        }
     }
 
     /// Endpoint validation permits only literal loopback cleartext and authenticated TLS remotes.
@@ -841,7 +812,11 @@ mod tests {
         }
         for (endpoint, authenticated, expected) in [
             ("http://agent.example:50051", false, "cleartext"),
-            ("https://agent.example", false, "bearer credential"),
+            (
+                "https://agent.example",
+                false,
+                "PARLANDO_REMOTE_AGENT_TOKEN",
+            ),
             ("ftp://localhost/service", true, "must use https"),
             ("not a URI", false, "invalid remote agent endpoint"),
         ] {
