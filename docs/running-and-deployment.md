@@ -162,6 +162,80 @@ hosted client must either proxy the complete `/e/{experiment_id}/` route tree to
 Parlando or use an explicitly allowed browser origin. Do not construct participant
 WebSocket URLs from a configured public hostname.
 
+## Package a game for Linux without Docker
+
+The repository-level packaging script cross-compiles one game server and combines
+it with that game's browser assets in a directory suitable for `rsync`. For
+prerequisites, dependency modes, package verification, target selection, and
+failure diagnosis, read [Cross-compile and package a game for
+Linux](cross-compiling-for-linux.md).
+
+Run the script from the game root so it can use the conventional
+`server/Cargo.toml` and `client/package.json` paths:
+
+```sh
+cd space-game
+../scripts/package-linux.sh
+```
+
+The default target is static 64-bit x86 Linux. The resulting directory is:
+
+```text
+space-game/.local/package/parlando-space-game-x86_64-linux/
+```
+
+It contains `bin/parlando-space-game`, `client-dist`, a relocatable `run`
+launcher, build information, and SHA-256 checksums. By default the game uses the
+published Rust and JavaScript dependencies recorded by its manifests and lockfiles.
+Pass `--local` to build both dependencies from the sibling `rust-server` and
+`js-client` checkouts instead:
+
+```sh
+../scripts/package-linux.sh --local
+```
+
+The script runs the game server and browser tests before packaging; in local mode
+it also runs the sibling browser SDK tests. Use `--skip-tests` only when those
+checks have already passed for the same source and dependency mode.
+
+Install the build prerequisites once on macOS:
+
+```sh
+brew install zig
+cargo install cargo-zigbuild
+rustup target add x86_64-unknown-linux-musl
+```
+
+For an ARM64 Linux host, install that target and select it explicitly:
+
+```sh
+rustup target add aarch64-unknown-linux-musl
+../scripts/package-linux.sh --target aarch64-unknown-linux-musl
+```
+
+Copy the stable package directory while the remote service is stopped, then
+restart it so the server cannot observe a mixture of old and new browser assets:
+
+```sh
+rsync -a --delete \
+  .local/package/parlando-space-game-x86_64-linux/ \
+  server:/opt/parlando/parlando-space-game-x86_64-linux/
+```
+
+Keep SQLite data and provider credentials outside this directory. For example,
+the remote service can run:
+
+```sh
+PARLANDO_DATABASE_URL=sqlite:////var/lib/parlando/parlando.sqlite \
+  /opt/parlando/parlando-space-game-x86_64-linux/run \
+  --host 0.0.0.0 \
+  --port 8000
+```
+
+The target host needs its ordinary CA-certificate bundle for outbound TLS. It
+does not need Docker, Node.js, Rust, Zig, or a separately installed SQLite
+library.
+
 ## Deploy with Docker and Render
 
 For a complete first deployment, including a field-by-field Blueprint

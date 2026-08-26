@@ -1,5 +1,41 @@
 # Technical Decisions
 
+## 2026-08-26: Linux game packages use one convention-driven cross-build script
+
+Context: macOS development needs to produce a complete game deployment for a Linux host that has
+no Docker daemon. Each current game already places its Rust package at `server/Cargo.toml` and its
+browser application at `client/package.json`, while Cargo packages can contain auxiliary binaries
+that must not be deployed as the game server.
+
+Decision: add one repository-level `scripts/package-linux.sh` command and run it from a game root.
+Use `cargo metadata` rather than shell parsing to select `package.default-run`, a package-named
+binary, or the only binary in that order. Infer the browser project from the shared game layout.
+Use the published Rust and JavaScript dependencies from the game manifests by default; an explicit
+`--local` option applies both sibling overrides together, matching Great Tree's run command.
+Cross-compile a static MUSL binary with `cargo-zigbuild`, and publish a stable
+`.local/package/<binary>-<architecture>-linux` directory containing the binary, browser assets,
+relocatable launcher, build facts, and checksums. Default to x86-64 Linux and permit an explicit
+ARM64 target. Replace the stable local package only after every build and verification succeeds.
+Use the repository-local npm cache already established by the Makefiles so packaging is isolated
+from ownership or content problems in a developer's global npm cache.
+Keep cargo-zigbuild's generated linker wrappers and Zig's global and local artifacts in
+repository-local caches for the same reason.
+Build the game client in a temporary source copy. In local mode its SDK dependency points to the
+freshly packed sibling SDK. This keeps the local deployment's Rust and JavaScript runtime versions
+coordinated without rewriting the game's committed manifest or lockfile as a packaging side effect.
+In published mode, explicitly install the SDK requirement declared by the game after ordinary npm
+resolution. This recovers from a previous local run having recorded a sibling SDK in the lockfile
+without silently turning a nominally published package into a local one.
+
+Tradeoffs and risks: a convention-driven script rejects games with nonstandard server or client
+layouts rather than adding per-game configuration. A stable directory makes `rsync --delete`
+simple but is not an atomic remote deployment, so the service must be stopped during transfer.
+The static binary still reads the host CA-certificate bundle for outbound TLS. Package generation
+changes ignored build outputs such as `node_modules`, `dist`, Cargo targets, and `.local`; it does
+not include a database, provider credentials, or other mutable deployment state.
+The supported user workflow and package contract are documented separately in
+`docs/cross-compiling-for-linux.md`; the broader deployment guide links to that task-specific guide.
+
 ## 2026-08-26: Remote-agent configuration exposes only endpoint and YAML settings
 
 Context: the standard remote factory exposed opaque JSON, endpoint, agent name, agent version,
@@ -2032,3 +2068,71 @@ experiment-clone behavior, and the browser automation lane before implementation
 - Tradeoff: This replaces the existing lifecycle scheme across the participant protocol, storage model, server transition service, JavaScript controller, input guards, external clients, tests, skills, and public documentation. The core session model drops completed, abandoned, expired, and failed as lifecycle values in favor of `Ended` plus a structured cause. Protocol version 2 is a coordinated clean cut: no legacy lifecycle messages, WebSocket leave operation, coarse-status export, or compatibility adapter remains. The design makes terminal delivery recoverable without claiming running-game recovery after a server restart.
 
 - Implementation: Persist `SessionEnd` and every human role's `ParticipantResult` atomically, retain those results after live-room cleanup, and expose them through `GET /api/participant-state`. Use idempotent HTTP leave and keep the socket open until its terminal response arrives. WebSocket protocol 2 begins with and changes lifecycle through complete `participant_state` snapshots; compact game deltas remain non-lifecycle messages. The browser reducer validates the seven-edge graph and tracks connection synchronization separately. SQLite schema 13 is the clean baseline and intentionally rejects earlier populated schema versions rather than carrying old columns or conversion branches in production.
+
+## 2026-08-26: Prolific uses researcher-owned completion paths
+
+Context: The existing Prolific integration separates provider correlation, Parlando authentication,
+and provider-neutral participant outcomes. A fresh audit found that role B loses its Prolific runtime source,
+duplicate `SESSION_ID` values create split identities, required consent can be bypassed by a
+Prolific client, and participant deletion retains private provider identifiers. Current Prolific
+guidance also requires return handling for non-consenting participants and compensation for
+unmatched dyadic participants.
+
+Decision: Provide one first-class, API-connected Prolific mode. Connect a workspace once, bind one
+Prolific study to an immutable experiment revision, verify launch through Secure external URL when
+available or submission lookup otherwise, and atomically map one submission to one resumable
+Parlando admission. The researcher creates five completion paths in Prolific and copies exactly one
+code for each of `completed`, `partner_left`, `partner_unavailable`, `timed_out`, and
+`technical_failure` into the experiment. Parlando neither generates codes nor accepts a free-form
+game-code map. Enabling Prolific without five valid, distinct codes prevents activation. Both human
+roles retain Prolific identity, and consent is a server-enforced admission guard. A fixed
+server-owned waiting deadline is shown as a participant countdown. An unmatched participant uses
+the `partner_unavailable` path, implemented as a custom path labelled Unmatched in Prolific, whose
+action requests a return. This is not a Prolific Screened out path: unmatched pairing is not an
+eligibility screen-out, and the screen-out fixed-payment mechanism is not used.
+The researcher pays the calculated waiting reward manually through Prolific's bonus
+mechanism. Voluntary waiting-room departure and expiry of the fixed waiting deadline remain
+different Parlando facts but use the same Unmatched completion path and manual partial-payment
+workflow. Parlando rounds any positive observed wait up to whole billable minutes and multiplies it
+by the configured per-minute waiting rate. A submission already timed out by Prolific receives the
+bonus without a return requirement. Parlando never initiates a bonus payment. It persists the
+detailed outcome, selected code, observed wait, billable minutes, and expected amount before
+handoff, then uses read-only submission reconciliation to show whether Prolific reports the bonus as
+paid. The dashboard presents both waiting-room exit cases in one payment-due work queue, including
+waiting timestamps, absent role B, selected code, return state, configured rate, calculated amount,
+read-only bonus state, and current Prolific submission status.
+
+A session-wide inactivity safeguard applies only when neither participant produces meaningful
+activity during the full configured interval. After a participant-visible warning expires, both
+participants map to the `timed_out` return path and neither receives the full reward or a bonus. If
+game logic can identify one participant as blocking progress while the other acts in good faith,
+the blocking participant instead receives `participant_inactive` and the partner receives
+`partner_left` with the full reward. Explicit departure remains `left_game`; both non-completing
+outcomes use the same no-reward `timed_out` return path. The complete proposed protocol is in
+`notes/prolific-integration-design.md`.
+
+For an ordinary returned unmatched submission, the bonus is the participant's partial payment; it
+is not paid on top of the full study reward. This is Prolific's documented partial-payment workflow,
+not a Parlando-specific payment policy.
+
+Tradeoffs: Requiring a Prolific API connection makes workspace secret management and provider
+availability part of the installation, while five copied codes add a small deliberate setup step.
+The unmatched path follows Prolific's documented return-plus-bonus procedure. Manual payment avoids
+automated money movement and duplicate-payment risk, but leaves a deliberate researcher task;
+Parlando reduces omission risk with a persistent **Bonus due** work queue and read-only
+reconciliation.
+Prolific remains the source of truth for each code and its processing action; Parlando's preflight
+detects copying and action errors before activation.
+
+Superseded decisions: This proposal supersedes Parlando-generated code suggestions, automatic
+completion-path creation, fixed unmatched payments, exact-second waiting compensation, treating a
+voluntary waiting-room exit differently from waiting expiry, and full-reward approval for unmatched
+submissions.
+
+Follow-up risks: Prolific exposes Secure external URL only to certain workspaces, so the adapter
+must discover actual capabilities. Preflight must determine whether the API exposes enough
+completion-path action detail to prove that the Unmatched path requests a return. Manual bonuses
+require sufficient available workspace balance, which is distinct from funds reserved for an
+active study. The schema change requires identifying the live database, making a consistent adjacent backup, converting it
+transactionally, and verifying integrity, foreign keys, row counts, provider links, and completion
+handoff values before application restart.

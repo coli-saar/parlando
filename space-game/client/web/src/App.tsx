@@ -113,7 +113,6 @@ function ActiveSpaceGame({ session }: { session: SpaceGameSession }) {
           <strong>{session.sessionId}</strong>
           <span>
             {session.connected ? "Connected" : "Disconnected"} · You are Player {session.role}
-            {session.completed && " · Complete"}
           </span>
         </div>
         <button onClick={session.leave}>Leave game</button>

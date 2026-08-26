@@ -33,6 +33,9 @@ shape from a game description.
 1. Use [Running and Deployment](running-and-deployment.md) to start the compiled
    game process, choose its port and database, establish the first administrator,
    and deploy it with Docker or Render.
+   Use [Cross-compile and package a game for
+   Linux](cross-compiling-for-linux.md) to build an rsync-ready deployment on
+   macOS without Docker.
    For a complete worked Render deployment, follow [Deploy a Parlando Game on
    Render](deploying-on-render.md).
 2. Open `/admin/experiments` to create, clone, edit, activate, and monitor

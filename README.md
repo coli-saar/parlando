@@ -288,6 +288,7 @@ The repository is divided accordingly:
 - [Architecture](docs/architecture.md)
 - [Building a Game](docs/building-games.md)
 - [Running and Deployment](docs/running-and-deployment.md)
+- [Cross-compile and package a game for Linux](docs/cross-compiling-for-linux.md)
 - [Security Ground Rules and Threat Model](docs/security-ground-rules.md)
 - [Browser Client Protocol](docs/client-protocol.md)
 - [Data and Monitoring](docs/data-and-monitoring.md)
