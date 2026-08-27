@@ -227,6 +227,15 @@ fn apply_game_provider_secrets(
         .get("tts.api_key")
         .cloned()
         .unwrap_or_default();
+    config.recruitment.prolific.api_token = stored_secrets
+        .get("prolific.api_token")
+        .cloned()
+        .unwrap_or_default();
+}
+
+/// Applies the installation's non-secret provider binding to one experiment runtime.
+fn apply_game_provider_settings(config: &mut ExperimentConfig, settings: &StoredGameSettings) {
+    config.recruitment.prolific.workspace_id = settings.prolific_workspace_id.clone();
 }
 
 /// Materializes game endpoint defaults into a new experiment revision without overriding choices.
@@ -273,6 +282,7 @@ async fn hydrated_experiment_config<A: Game>(
     apply_experiment_secrets(&mut config, &experiment_secrets);
     let game_secrets = state.store.game_secrets().await?;
     apply_game_provider_secrets(&mut config, &game_secrets);
+    apply_game_provider_settings(&mut config, &*state.game_settings.read().await);
     Ok(config)
 }
 
@@ -354,7 +364,134 @@ async fn experiment_activation_issues<A: Game>(
     experiment_id: &str,
 ) -> Result<Vec<String>, AppError> {
     let mut config = hydrated_experiment_config(state, experiment_id).await?;
-    Ok(activation_issues_for_config(state, &mut config))
+    let mut issues = activation_issues_for_config(state, &mut config);
+    let prolific_api_base_url = state
+        .game_settings
+        .read()
+        .await
+        .prolific_api_base_url
+        .clone();
+    let (prolific_issues, verified_study) =
+        prolific_activation_preflight(&config, &prolific_api_base_url).await;
+    issues.extend(prolific_issues);
+    if issues.is_empty() {
+        *state.prolific_study.write().await = verified_study;
+        *state.prolific_client.write().await = if config.recruitment.prolific.enabled {
+            Some(crate::prolific::ProlificClient::with_base_url(
+                config.recruitment.prolific.api_token.clone(),
+                prolific_api_base_url,
+            )?)
+        } else {
+            None
+        };
+    }
+    Ok(issues)
+}
+
+/// Verifies the linked Prolific study without changing provider-owned configuration.
+async fn prolific_activation_preflight(
+    config: &ExperimentConfig,
+    prolific_api_base_url: &str,
+) -> (Vec<String>, Option<crate::prolific::Study>) {
+    if !config.recruitment.prolific.enabled {
+        return (Vec::new(), None);
+    }
+    if config.recruitment.prolific.api_token.is_empty() {
+        return (
+            vec!["Connect a Prolific workspace and API token before activation.".to_string()],
+            None,
+        );
+    }
+    if config.recruitment.prolific.workspace_id.is_empty() {
+        return (
+            vec!["Select the Prolific workspace used by this study.".to_string()],
+            None,
+        );
+    }
+    let client = match crate::prolific::ProlificClient::with_base_url(
+        config.recruitment.prolific.api_token.clone(),
+        prolific_api_base_url,
+    ) {
+        Ok(client) => client,
+        Err(error) => return (vec![error.to_string()], None),
+    };
+    let study = match client.study(&config.recruitment.prolific.study_id).await {
+        Ok(study) => study,
+        Err(error) => {
+            return (
+                vec![format!(
+                    "Could not verify the linked Prolific study: {error}"
+                )],
+                None,
+            )
+        }
+    };
+    let mut issues = Vec::new();
+    if study.id != config.recruitment.prolific.study_id {
+        issues.push("The Prolific API returned a different study id.".to_string());
+    }
+    match study.project.as_deref() {
+        Some(project_id) => match client.project(project_id).await {
+            Ok(project) if project.workspace == config.recruitment.prolific.workspace_id => {}
+            Ok(_) => {
+                issues.push("The Prolific study belongs to a different workspace.".to_string())
+            }
+            Err(error) => issues.push(format!(
+                "Could not verify the Prolific study's workspace: {error}"
+            )),
+        },
+        None => issues.push("The Prolific study has no project workspace.".to_string()),
+    }
+    if study.prolific_id_option != "url_parameters" {
+        issues.push(
+            "The Prolific study must record participant IDs through URL parameters.".to_string(),
+        );
+    }
+    let expected_path = format!(
+        "{}/participant",
+        config.server.public_base_url.trim_end_matches('/')
+    );
+    if study.external_study_url.split('?').next() != Some(expected_path.as_str()) {
+        issues.push(format!(
+            "The Prolific external study URL must begin with {expected_path}."
+        ));
+    }
+    let url_parameters = ["PROLIFIC_PID", "STUDY_ID", "SESSION_ID"];
+    for parameter in url_parameters {
+        if !study.external_study_url.contains(parameter) {
+            issues.push(format!(
+                "The Prolific external study URL must include {parameter}."
+            ));
+        }
+    }
+    let paths = &config.recruitment.prolific.completion_paths;
+    let configured = HashMap::from([
+        ("completed", paths.completed.as_str()),
+        ("partner_left", paths.partner_left.as_str()),
+        ("partner_unavailable", paths.partner_unavailable.as_str()),
+        ("timed_out", paths.timed_out.as_str()),
+        ("technical_failure", paths.technical_failure.as_str()),
+    ]);
+    issues.extend(crate::prolific::ProlificClient::completion_path_issues(
+        &study,
+        &configured,
+    ));
+    if study.estimated_completion_time.saturating_mul(60)
+        < config.session.waiting_session_timeout_seconds
+    {
+        issues.push(
+            "The Prolific estimated duration is shorter than the maximum partner wait.".to_string(),
+        );
+    }
+    if study.maximum_allowed_time.is_some_and(|minutes| {
+        (minutes * 60.0) < config.session.session_max_lifetime_seconds as f64
+    }) {
+        issues.push(
+            "The Prolific maximum allowed time is shorter than Parlando's maximum session lifetime."
+                .to_string(),
+        );
+    }
+    (issues, Some(study))
 }
 
 /// Computes every runtime-readiness blocker from one hydrated configuration.
@@ -668,78 +805,92 @@ async fn security_headers<A: Game>(
 /// Runs bounded periodic cleanup for transient credentials, sessions, and tickets.
 fn spawn_security_cleanup<A: Game>(state: Arc<AppState<A>>, clean_admin_sessions: bool) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        let mut lifecycle_interval = tokio::time::interval(Duration::from_secs(1));
+        lifecycle_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut security_interval = tokio::time::interval(Duration::from_secs(60));
+        security_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            interval.tick().await;
-            let expired_participants = state.participant_auth.cleanup().await;
-            state.upgrade_tickets.cleanup().await;
-            if clean_admin_sessions {
-                if let Err(error) = state.admin_auth.cleanup().await {
-                    tracing::warn!(%error, "failed to clean expired administrator sessions");
+            tokio::select! {
+                _ = lifecycle_interval.tick() => cleanup_transient_rooms(&state).await,
+                _ = security_interval.tick() => {
+                    let expired_participants = state.participant_auth.cleanup().await;
+                    state.upgrade_tickets.cleanup().await;
+                    if clean_admin_sessions {
+                        if let Err(error) = state.admin_auth.cleanup().await {
+                            tracing::warn!(%error, "failed to clean expired administrator sessions");
+                        }
+                    }
+                    cleanup_expired_participants(&state, expired_participants).await;
                 }
-            }
-            cleanup_transient_rooms(&state).await;
-            let participant_ids_in_rooms = state
-                .memory
-                .read()
-                .await
-                .sessions
-                .values()
-                .flat_map(|session| session.participants.keys().cloned())
-                .collect::<HashSet<_>>();
-            state
-                .memory
-                .write()
-                .await
-                .participants
-                .retain(|participant_id, _| {
-                    !expired_participants.contains(participant_id)
-                        || participant_ids_in_rooms.contains(participant_id)
-                });
-            let unattached_timeout = state.config.session.waiting_session_timeout_seconds.max(1);
-            let stale_unattached = {
-                let now = chrono::Utc::now();
-                let mut memory = state.memory.write().await;
-                let stale = memory
-                    .participants
-                    .iter()
-                    .filter(|(participant_id, participant)| {
-                        !participant_ids_in_rooms.contains(*participant_id)
-                            && chrono::DateTime::parse_from_rfc3339(&participant.updated_at)
-                                .ok()
-                                .is_some_and(|updated| {
-                                    updated.with_timezone(&chrono::Utc)
-                                        < now - chrono::Duration::seconds(unattached_timeout)
-                                })
-                    })
-                    .map(|(participant_id, _)| participant_id.clone())
-                    .collect::<Vec<_>>();
-                for participant_id in &stale {
-                    memory.participants.remove(participant_id);
-                }
-                stale
-            };
-            for participant_id in &stale_unattached {
-                state
-                    .participant_auth
-                    .revoke_participant_session(participant_id)
-                    .await;
-            }
-            if !stale_unattached.is_empty() {
-                let stale = stale_unattached.iter().collect::<HashSet<_>>();
-                state
-                    .chat_submission_budgets
-                    .write()
-                    .await
-                    .retain(|participant_id, _| !stale.contains(participant_id));
-                state.rejection_windows.write().await.retain(|key, _| {
-                    !stale_unattached
-                        .iter()
-                        .any(|participant_id| key.contains(participant_id))
-                });
             }
         }
     });
+}
+
+/// Removes expired unattached credentials without disturbing participants retained in rooms.
+async fn cleanup_expired_participants<A: Game>(
+    state: &Arc<AppState<A>>,
+    expired_participants: HashSet<String>,
+) {
+    let participant_ids_in_rooms = state
+        .memory
+        .read()
+        .await
+        .sessions
+        .values()
+        .flat_map(|session| session.participants.keys().cloned())
+        .collect::<HashSet<_>>();
+    state
+        .memory
+        .write()
+        .await
+        .participants
+        .retain(|participant_id, _| {
+            !expired_participants.contains(participant_id)
+                || participant_ids_in_rooms.contains(participant_id)
+        });
+    let unattached_timeout = state.config.session.waiting_session_timeout_seconds.max(1);
+    let stale_unattached = {
+        let now = chrono::Utc::now();
+        let mut memory = state.memory.write().await;
+        let stale = memory
+            .participants
+            .iter()
+            .filter(|(participant_id, participant)| {
+                !participant_ids_in_rooms.contains(*participant_id)
+                    && chrono::DateTime::parse_from_rfc3339(&participant.updated_at)
+                        .ok()
+                        .is_some_and(|updated| {
+                            updated.with_timezone(&chrono::Utc)
+                                < now - chrono::Duration::seconds(unattached_timeout)
+                        })
+            })
+            .map(|(participant_id, _)| participant_id.clone())
+            .collect::<Vec<_>>();
+        for participant_id in &stale {
+            memory.participants.remove(participant_id);
+        }
+        stale
+    };
+    for participant_id in &stale_unattached {
+        state
+            .participant_auth
+            .revoke_participant_session(participant_id)
+            .await;
+    }
+    if !stale_unattached.is_empty() {
+        let stale = stale_unattached.iter().collect::<HashSet<_>>();
+        state
+            .chat_submission_budgets
+            .write()
+            .await
+            .retain(|participant_id, _| !stale.contains(participant_id));
+        state.rejection_windows.write().await.retain(|key, _| {
+            !stale_unattached
+                .iter()
+                .any(|participant_id| key.contains(participant_id))
+        });
+    }
 }
 
 /// Returns whether a runtime session has reached a durable terminal lifecycle state.
@@ -784,12 +935,25 @@ where
             .values()
             .filter(|participant| participant.source != "agent")
             .map(|participant| {
-                let outcome = match cause {
+                let outcome = match &cause {
                     SessionEndCause::PartnerUnavailable => {
                         ParticipantOutcomeKind::PartnerUnavailable
                     }
+                    SessionEndCause::ReconnectTimedOut { .. } => {
+                        if participant.connected {
+                            ParticipantOutcomeKind::PartnerLeft
+                        } else {
+                            ParticipantOutcomeKind::ConnectionLost
+                        }
+                    }
+                    SessionEndCause::IdleTimedOut => ParticipantOutcomeKind::IdleLimitReached,
+                    SessionEndCause::LifetimeTimedOut => {
+                        ParticipantOutcomeKind::LifetimeLimitReached
+                    }
                     SessionEndCause::TechnicalFailure => ParticipantOutcomeKind::TechnicalFailure,
-                    _ => ParticipantOutcomeKind::TimedOut,
+                    SessionEndCause::GameCompleted | SessionEndCause::ParticipantLeft { .. } => {
+                        return Err(anyhow!("invalid expiry cause"));
+                    }
                 };
                 Ok((
                     participant.role.as_str().to_string(),
@@ -845,56 +1009,53 @@ where
 /// Removes or expires transient sessions after configured waiting, idle, and lifetime bounds.
 async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
     let now = chrono::Utc::now();
-    let waiting_timeout = state.config.session.waiting_session_timeout_seconds.max(1);
-    let reconnect_grace = state.config.session.reconnect_grace_seconds.max(1);
-    let idle_timeout = state.config.session.session_idle_timeout_seconds.max(1);
-    let max_lifetime = state.config.session.session_max_lifetime_seconds.max(1);
     let candidates = {
         let memory = state.memory.read().await;
         memory
             .sessions
             .iter()
             .filter_map(|(public_session_id, session)| {
-                let created = chrono::DateTime::parse_from_rfc3339(&session.created_at)
-                    .ok()?
-                    .with_timezone(&chrono::Utc);
-                let updated = chrono::DateTime::parse_from_rfc3339(&session.updated_at)
-                    .ok()?
-                    .with_timezone(&chrono::Utc);
+                let waiting_deadline =
+                    chrono::DateTime::parse_from_rfc3339(&session.waiting_deadline_at)
+                        .ok()?
+                        .with_timezone(&chrono::Utc);
+                let lifetime_deadline =
+                    chrono::DateTime::parse_from_rfc3339(&session.lifetime_deadline_at)
+                        .ok()?
+                        .with_timezone(&chrono::Utc);
+                let idle_deadline = session
+                    .idle_deadline_at
+                    .as_deref()
+                    .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                    .map(|value| value.with_timezone(&chrono::Utc));
                 let has_connection = session
                     .participants
                     .values()
                     .any(|participant| participant.connected);
-                let disconnected_since = session
+                let reconnect_deadline = session
                     .participants
                     .values()
-                    .filter_map(|participant| {
-                        chrono::DateTime::parse_from_rfc3339(&participant.updated_at)
-                            .ok()
-                            .map(|timestamp| timestamp.with_timezone(&chrono::Utc))
-                    })
-                    .max()
-                    .unwrap_or(updated);
-                let reason = if !session.lifecycle.is_ended()
-                    && created < now - chrono::Duration::seconds(max_lifetime)
-                {
+                    .filter(|participant| !participant.connected)
+                    .filter_map(|participant| participant.reconnect_deadline_at.as_deref())
+                    .filter_map(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                    .map(|value| value.with_timezone(&chrono::Utc))
+                    .min();
+                let reason = if !session.lifecycle.is_ended() && lifetime_deadline <= now {
                     Some("maximum_lifetime")
-                } else if session.lifecycle == SessionLifecycle::Forming
-                    && updated < now - chrono::Duration::seconds(waiting_timeout)
+                } else if session.lifecycle == SessionLifecycle::Forming && waiting_deadline <= now
                 {
                     Some("waiting_timeout")
-                } else if session.lifecycle == SessionLifecycle::Running
-                    && updated < now - chrono::Duration::seconds(idle_timeout)
-                {
-                    Some("idle_timeout")
                 } else if !session.lifecycle.is_ended()
-                    && !has_connection
-                    && disconnected_since < now - chrono::Duration::seconds(reconnect_grace)
+                    && reconnect_deadline.is_some_and(|deadline| deadline <= now)
                 {
                     Some("reconnect_timeout")
+                } else if session.lifecycle == SessionLifecycle::Running
+                    && idle_deadline.is_some_and(|deadline| deadline <= now)
+                {
+                    Some("idle_timeout")
                 } else if session.lifecycle.is_ended()
                     && !has_connection
-                    && disconnected_since < now - chrono::Duration::seconds(reconnect_grace)
+                    && reconnect_deadline.is_some_and(|deadline| deadline <= now)
                 {
                     Some("terminal_cleanup")
                 } else {
@@ -911,22 +1072,51 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
     };
     let mut removed = Vec::new();
     for (public_session_id, session_id, observed_updated_at, reason) in candidates {
+        let now = chrono::Utc::now();
         let room_is_current = state
             .memory
             .read()
             .await
             .sessions
             .get(&public_session_id)
-            .is_some_and(|session| session.updated_at == observed_updated_at);
+            .is_some_and(|session| {
+                if session.updated_at != observed_updated_at {
+                    return false;
+                }
+                match reason {
+                    "reconnect_timeout" => session.participants.values().any(|participant| {
+                        !participant.connected
+                            && participant
+                                .reconnect_deadline_at
+                                .as_deref()
+                                .is_some_and(|value| {
+                                    chrono::DateTime::parse_from_rfc3339(value)
+                                        .ok()
+                                        .is_some_and(|deadline| {
+                                            deadline.with_timezone(&chrono::Utc) <= now
+                                        })
+                                })
+                    }),
+                    "idle_timeout" => session.idle_deadline_at.as_deref().is_some_and(|value| {
+                        chrono::DateTime::parse_from_rfc3339(value)
+                            .ok()
+                            .is_some_and(|deadline| deadline.with_timezone(&chrono::Utc) <= now)
+                    }),
+                    _ => true,
+                }
+            });
         if !room_is_current {
             continue;
         }
         if reason != "terminal_cleanup" && session_id > 0 {
-            persist_event(
-                "session_expired",
-                expire_live_session(state, &public_session_id, reason),
-            )
-            .await;
+            match expire_live_session(state, &public_session_id, reason).await {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    tracing::error!(%error, %public_session_id, reason, "session expiry failed");
+                    continue;
+                }
+            }
             broadcast_participant_states(state, &public_session_id).await;
         }
         state
@@ -994,6 +1184,61 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
             .iter()
             .any(|public_session_id| key.starts_with(&format!("{public_session_id}\0")))
     });
+}
+
+/// Finalizes sessions left nonterminal by an earlier process before opening new intake.
+async fn finalize_interrupted_sessions<A: Game>(state: &Arc<AppState<A>>) -> Result<()>
+where
+    A::State: Serialize,
+{
+    let sessions = state
+        .store
+        .recent_sessions(&state.experiment_id, 10_000)
+        .await?;
+    for session in sessions
+        .into_iter()
+        .filter(|session| session.lifecycle != "ended")
+    {
+        let participants = state
+            .store
+            .session_participants(&state.experiment_id, session.session_id)
+            .await?;
+        let participant_results = participants
+            .into_iter()
+            .filter(|participant| participant.participant_kind.as_deref() != Some("agent"))
+            .map(|participant| {
+                let outcome = ParticipantOutcomeKind::TechnicalFailure;
+                (
+                    participant.role,
+                    ParticipantResult {
+                        handoff: (participant.identity_provider.as_deref() == Some("prolific"))
+                            .then(|| prolific_handoff(&state.config, &outcome))
+                            .flatten(),
+                        outcome,
+                        reason: "server_restart".to_string(),
+                        completion: None,
+                        final_observation: None,
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let session_end = SessionEnd {
+            cause: SessionEndCause::TechnicalFailure,
+            completion: None,
+            participant_results,
+        };
+        let event = SessionEventRecord {
+            experiment_id: state.experiment_id.clone(),
+            session_id: session.session_id,
+            event_type: "session_ended".to_string(),
+            actor_participant_id: None,
+            actor_role: None,
+            payload: serde_json::to_value(&session_end)?,
+            game_state: None,
+        };
+        state.store.end_session(event, session_end).await?;
+    }
+    Ok(())
 }
 
 /// Applies a process-wide safety ceiling to unauthenticated participant creation bursts.
@@ -1434,6 +1679,10 @@ pub struct AppState<A: Game> {
     pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
     pub audio_sessions: SharedAudioSessions,
     pub transcription_provider: Option<Arc<dyn TranscriptionProvider>>,
+    /// Server-only Prolific adapter sharing HTTP and signing-key caches across admissions.
+    prolific_client: RwLock<Option<crate::prolific::ProlificClient>>,
+    /// Provider-verified study contract cached by successful activation preflight.
+    prolific_study: RwLock<Option<crate::prolific::Study>>,
     committed_transcripts: RwLock<HashSet<String>>,
     participant_auth: ParticipantAuthenticator,
     upgrade_tickets: UpgradeTicketStore,
@@ -1728,14 +1977,32 @@ async fn session_transition_lock<A: Game>(
 
 /// Refreshes a session's meaningful-activity timestamp without treating heartbeats as activity.
 async fn touch_session_activity<A: Game>(state: &Arc<AppState<A>>, public_session_id: &str) {
-    if let Some(session) = state
-        .memory
-        .write()
-        .await
-        .sessions
-        .get_mut(public_session_id)
-    {
-        session.updated_at = now_iso();
+    let activity_at = chrono::Utc::now();
+    let idle_deadline_at =
+        activity_at + chrono::Duration::seconds(state.config.session.session_idle_timeout_seconds);
+    let durable = {
+        let mut memory = state.memory.write().await;
+        memory.sessions.get_mut(public_session_id).map(|session| {
+            session.updated_at = activity_at.to_rfc3339();
+            session.last_meaningful_activity_at = Some(activity_at.to_rfc3339());
+            session.idle_deadline_at = Some(idle_deadline_at.to_rfc3339());
+            (session.experiment_id.clone(), session.session_id)
+        })
+    };
+    if let Some((experiment_id, session_id)) = durable {
+        let activity_at = activity_at.to_rfc3339();
+        let idle_deadline_at = idle_deadline_at.to_rfc3339();
+        persist_event(
+            "session activity",
+            state.store.touch_session_activity(
+                &experiment_id,
+                session_id,
+                &activity_at,
+                &idle_deadline_at,
+            ),
+        )
+        .await;
+        broadcast_participant_states(state, public_session_id).await;
     }
 }
 
@@ -1916,22 +2183,18 @@ async fn build_load_sample<A: Game>(state: &Arc<AppState<A>>) -> LoadSample {
 }
 
 /// Adds one candidate timeout and keeps the earliest deadline affecting a session.
-fn retain_earliest_deadline(
+fn retain_absolute_deadline(
     current: &mut Option<(chrono::DateTime<chrono::Utc>, String)>,
     timestamp: &str,
-    seconds: i64,
     reason: &str,
 ) {
-    let Some(base) = chrono::DateTime::parse_from_rfc3339(timestamp)
+    let Some(deadline) = chrono::DateTime::parse_from_rfc3339(timestamp)
         .ok()
         .map(|value| value.with_timezone(&chrono::Utc))
     else {
         return;
     };
-    let candidate = (
-        base + chrono::Duration::seconds(seconds.max(1)),
-        reason.to_string(),
-    );
+    let candidate = (deadline, reason.to_string());
     if current
         .as_ref()
         .is_none_or(|(deadline, _)| candidate.0 < *deadline)
@@ -1946,7 +2209,7 @@ struct ParticipantOperationalSnapshot {
     source: String,
     connected: bool,
     audio_ready: bool,
-    updated_at: String,
+    reconnect_deadline_at: Option<String>,
 }
 
 /// Minimal session projection that intentionally excludes potentially large game state.
@@ -1955,8 +2218,10 @@ struct SessionOperationalSnapshot {
     public_session_id: String,
     lifecycle: String,
     paused: bool,
-    created_at: String,
     updated_at: String,
+    waiting_deadline_at: String,
+    lifetime_deadline_at: String,
+    idle_deadline_at: Option<String>,
     participants: Vec<ParticipantOperationalSnapshot>,
 }
 
@@ -1972,8 +2237,10 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
                 public_session_id: session.id.clone(),
                 lifecycle: session.lifecycle.as_str().to_string(),
                 paused: session.pause.is_some(),
-                created_at: session.created_at.clone(),
                 updated_at: session.updated_at.clone(),
+                waiting_deadline_at: session.waiting_deadline_at.clone(),
+                lifetime_deadline_at: session.lifetime_deadline_at.clone(),
+                idle_deadline_at: session.idle_deadline_at.clone(),
                 participants: session
                     .participants
                     .values()
@@ -1982,7 +2249,7 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
                         source: participant.source.clone(),
                         connected: participant.connected,
                         audio_ready: participant.audio_ready,
-                        updated_at: participant.updated_at.clone(),
+                        reconnect_deadline_at: participant.reconnect_deadline_at.clone(),
                     })
                     .collect(),
             })
@@ -2008,42 +2275,37 @@ async fn build_session_liveness<A: Game>(state: &Arc<AppState<A>>) -> Vec<Sessio
         .map(|session| {
             let mut deadline = None;
             if session.lifecycle == "forming" {
-                retain_earliest_deadline(
+                retain_absolute_deadline(
                     &mut deadline,
-                    &session.updated_at,
-                    state.config.session.waiting_session_timeout_seconds,
+                    &session.waiting_deadline_at,
                     "waiting timeout",
                 );
             } else if session.lifecycle == "running" {
-                retain_earliest_deadline(
-                    &mut deadline,
-                    &session.updated_at,
-                    state.config.session.session_idle_timeout_seconds,
-                    "idle timeout",
-                );
+                if let Some(value) = session.idle_deadline_at.as_deref() {
+                    retain_absolute_deadline(&mut deadline, value, "idle timeout");
+                }
             }
             if !session_lifecycle_is_ended(&session.lifecycle) {
-                retain_earliest_deadline(
+                retain_absolute_deadline(
                     &mut deadline,
-                    &session.created_at,
-                    state.config.session.session_max_lifetime_seconds,
+                    &session.lifetime_deadline_at,
                     "maximum lifetime",
                 );
             }
             if !session_lifecycle_is_ended(&session.lifecycle)
-                && session.participants.iter().all(|row| !row.connected)
+                && session.participants.iter().any(|row| !row.connected)
             {
                 if let Some(latest) = session
                     .participants
                     .iter()
-                    .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
+                    .filter(|row| !row.connected)
+                    .min_by(|left, right| {
+                        left.reconnect_deadline_at.cmp(&right.reconnect_deadline_at)
+                    })
                 {
-                    retain_earliest_deadline(
-                        &mut deadline,
-                        &latest.updated_at,
-                        state.config.session.reconnect_grace_seconds,
-                        "reconnect timeout",
-                    );
+                    if let Some(value) = latest.reconnect_deadline_at.as_deref() {
+                        retain_absolute_deadline(&mut deadline, value, "reconnect timeout");
+                    }
                 }
             }
             let participants = session
@@ -2405,70 +2667,137 @@ async fn create_participant_inner<A: Game>(
                 ));
             }
         }
-        Some(prolific)
+        let client = state.prolific_client.read().await.clone().ok_or_else(|| {
+            AppError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Prolific intake is not connected",
+            )
+        })?;
+        let study = state.prolific_study.read().await.clone().ok_or_else(|| {
+            AppError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Prolific study preflight has not completed",
+            )
+        })?;
+        let verification_method = if study.is_external_study_url_secure {
+            let token = prolific.prolific_token.as_deref().ok_or_else(|| {
+                AppError::bad_request("The secure Prolific launch token is missing.")
+            })?;
+            let workspace_id = state
+                .game_settings
+                .read()
+                .await
+                .prolific_workspace_id
+                .clone();
+            let verified = client
+                .verify_signed_launch(
+                    token,
+                    crate::prolific::SignedLaunchExpectation {
+                        audience: &study.external_study_url,
+                        study_id: &state.config.recruitment.prolific.study_id,
+                        workspace_id: &workspace_id,
+                    },
+                )
+                .await
+                .map_err(|error| {
+                    AppError::bad_request(format!("Invalid Prolific launch: {error}"))
+                })?;
+            if verified.participant_id != prolific.participant_id
+                || verified.study_id != prolific.study_id
+                || verified.session_id != prolific.session_id
+            {
+                return Err(AppError::bad_request(
+                    "The signed Prolific launch does not match its URL parameters.",
+                ));
+            }
+            "signed_url"
+        } else {
+            client
+                .verify_unsigned_launch(
+                    &prolific.participant_id,
+                    &prolific.study_id,
+                    &prolific.session_id,
+                )
+                .await
+                .map_err(|error| {
+                    AppError::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!("Could not verify the Prolific submission: {error}"),
+                    )
+                })?;
+            "submission_api"
+        };
+        Some((prolific, verification_method))
     } else {
         None
     };
-    let mut memory = state.memory.write().await;
-    let attached_participants = memory
-        .sessions
-        .values()
-        .flat_map(|session| session.participants.keys())
-        .collect::<HashSet<_>>();
-    let unattached_participants = memory
-        .participants
-        .keys()
-        .filter(|participant_id| !attached_participants.contains(participant_id))
-        .count();
-    if unattached_participants >= state.config.capacity.max_unattached_participants {
-        return Err(AppError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Participant intake is temporarily full",
-        ));
+    let _admission_guard = state.session_admission.clone().lock_owned().await;
+    {
+        let memory = state.memory.read().await;
+        let attached_participants = memory
+            .sessions
+            .values()
+            .flat_map(|session| session.participants.keys())
+            .collect::<HashSet<_>>();
+        let unattached_participants = memory
+            .participants
+            .keys()
+            .filter(|participant_id| !attached_participants.contains(participant_id))
+            .count();
+        if unattached_participants >= state.config.capacity.max_unattached_participants {
+            return Err(AppError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Participant intake is temporarily full",
+            ));
+        }
     }
-    let participant_id = state
-        .store
-        .upsert_participant(ParticipantRecord {
-            experiment_id: state.experiment_id.clone(),
-            participant_kind: "human".to_string(),
-            identity_provider: "direct".to_string(),
-            external_id: None,
-            metadata: Value::Null,
-        })
-        .await?;
-    let research_id = state
-        .store
-        .participant_research_id(participant_id)
-        .await?
-        .ok_or_else(|| {
-            AppError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Participant identifier is missing",
-            )
-        })?;
-    if let Some(prolific) = prolific {
-        state
+    let participant = if let Some((prolific, verification_method)) = prolific {
+        let admission = state
             .store
-            .record_prolific_submission(ProlificSubmissionRecord {
+            .admit_prolific_submission(ProlificSubmissionRecord {
                 experiment_id: state.experiment_id.clone(),
-                participant_id,
                 prolific_participant_id: prolific.participant_id,
                 prolific_study_id: prolific.study_id,
                 prolific_session_id: prolific.session_id,
+                verification_method: verification_method.to_string(),
             })
             .await?;
-    }
-    let participant = memory.create_participant(
-        participant_id,
-        research_id,
-        if state.config.recruitment.prolific.enabled {
-            "prolific"
-        } else {
-            "direct"
-        }
-        .to_string(),
-        _intake_guard.data_purpose().to_string(),
-    );
+        state.memory.write().await.create_participant_with_id(
+            admission.participant_session_id,
+            admission.participant_id,
+            admission.research_id,
+            "prolific".to_string(),
+            _intake_guard.data_purpose().to_string(),
+        )
+    } else {
+        let participant_id = state
+            .store
+            .upsert_participant(ParticipantRecord {
+                experiment_id: state.experiment_id.clone(),
+                participant_kind: "human".to_string(),
+                identity_provider: "direct".to_string(),
+                external_id: None,
+                metadata: Value::Null,
+            })
+            .await?;
+        let research_id = state
+            .store
+            .participant_research_id(participant_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Participant identifier is missing",
+                )
+            })?;
+        state.memory.write().await.create_participant(
+            participant_id,
+            research_id,
+            "direct".to_string(),
+            _intake_guard.data_purpose().to_string(),
+        )
+    };
+    drop(_admission_guard);
     let participant_credential = state.participant_auth.issue(participant.id.clone()).await;
     Ok(ParticipantCreateResponse {
         participant_credential,
@@ -2945,7 +3274,7 @@ fn open_human_session_for_pairing<G: Game>(
         .map(|(public_session_id, _)| public_session_id.clone())
 }
 
-/// Adds a direct human participant to an existing session and returns its assigned seat.
+/// Adds a human participant to an existing session without changing its recruitment source.
 fn add_human_participant_to_session_locked<A: Game>(
     state: &AppState<A>,
     memory: &mut MemoryState<A>,
@@ -2977,7 +3306,7 @@ fn add_human_participant_to_session_locked<A: Game>(
         SessionParticipant {
             participant_session_id: participant_session_id.to_string(),
             participant_id: participant.participant_id,
-            source: "direct".to_string(),
+            source: participant.source,
             role,
             connected: false,
             ready: false,
@@ -2985,6 +3314,8 @@ fn add_human_participant_to_session_locked<A: Game>(
             consent_decisions: participant.consent_decisions,
             joined_at: now_iso(),
             updated_at: now_iso(),
+            disconnected_at: None,
+            reconnect_deadline_at: None,
         },
     );
     Ok(role)
@@ -3026,6 +3357,8 @@ async fn create_live_session_locked<A: Game>(
             mode: mode.clone(),
             lifecycle: "forming".to_string(),
             purpose: participant.purpose.clone(),
+            waiting_timeout_seconds: state.config.session.waiting_session_timeout_seconds,
+            maximum_lifetime_seconds: state.config.session.session_max_lifetime_seconds,
         })
         .await?;
     if let Err(error) = state
@@ -3189,6 +3522,8 @@ async fn create_live_session_locked<A: Game>(
             consent_decisions: participant.consent_decisions,
             joined_at: now_iso(),
             updated_at: now_iso(),
+            disconnected_at: None,
+            reconnect_deadline_at: None,
         },
     );
     if let Some(agent_session_id) = constructed_agent
@@ -3213,9 +3548,16 @@ async fn create_live_session_locked<A: Game>(
                 consent_decisions: HashMap::new(),
                 joined_at: now_iso(),
                 updated_at: now_iso(),
+                disconnected_at: None,
+                reconnect_deadline_at: None,
             },
         );
     }
+    let timing = state
+        .store
+        .session_timing(&state.experiment_id, session_id)
+        .await?;
+    let waiting_started_at = timing.waiting_started_at;
     state.memory.write().await.sessions.insert(
         public_session_id.clone(),
         LiveSession {
@@ -3230,8 +3572,12 @@ async fn create_live_session_locked<A: Game>(
             lifecycle: SessionLifecycle::Forming,
             pause: None,
             participants,
-            created_at: now_iso(),
-            updated_at: now_iso(),
+            waiting_started_at: waiting_started_at.clone(),
+            waiting_deadline_at: timing.waiting_deadline_at,
+            lifetime_deadline_at: timing.lifetime_deadline_at,
+            last_meaningful_activity_at: None,
+            idle_deadline_at: None,
+            updated_at: waiting_started_at,
         },
     );
     match state
@@ -3356,6 +3702,8 @@ where
         SessionLifecycle::Forming => ParticipantState::Waiting {
             public_session_id: public_session_id.to_string(),
             role: role.as_str().to_string(),
+            waiting_started_at: session.waiting_started_at.clone(),
+            waiting_deadline_at: session.waiting_deadline_at.clone(),
             presence,
         },
         SessionLifecycle::Running => match &session.pause {
@@ -3366,6 +3714,12 @@ where
                 observation: view.observation.unwrap_or(Value::Null),
                 available_actions: view.available_actions,
                 presence,
+                idle_deadline_at: session.idle_deadline_at.clone().ok_or_else(|| {
+                    AppError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Running session has no idle deadline",
+                    )
+                })?,
             },
             None => ParticipantState::Active {
                 public_session_id: public_session_id.to_string(),
@@ -3373,6 +3727,12 @@ where
                 observation: view.observation.unwrap_or(Value::Null),
                 available_actions: view.available_actions,
                 presence,
+                idle_deadline_at: session.idle_deadline_at.clone().ok_or_else(|| {
+                    AppError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Running session has no idle deadline",
+                    )
+                })?,
             },
         },
         SessionLifecycle::Ended(session_end) => {
@@ -3787,6 +4147,9 @@ struct AdminGameSettingsRequest {
     admin_allowed_ip_ranges: Vec<String>,
     speechmatics_realtime_url: Option<String>,
     tts_base_url: Option<String>,
+    prolific_api_base_url: Option<String>,
+    #[serde(default)]
+    prolific_workspace_id: String,
     #[serde(default)]
     secret_updates: HashMap<String, String>,
     #[serde(default)]
@@ -5301,6 +5664,7 @@ async fn admin_save_experiment_config<A: Game>(
     apply_experiment_secrets(&mut config, &secrets);
     let game_secrets = state.store.game_secrets().await?;
     apply_game_provider_secrets(&mut config, &game_secrets);
+    apply_game_provider_settings(&mut config, &*state.game_settings.read().await);
     config.experiment.id = Some(experiment_id.clone());
     config
         .validate()
@@ -5418,12 +5782,59 @@ async fn admin_update_game_settings<A: Game>(
         .to_string();
     crate::config::validate_websocket_url("ElevenLabs base URL", &tts_base_url)
         .map_err(|error| AppError::bad_request(error.to_string()))?;
+    let current_prolific_api_base_url = state
+        .game_settings
+        .read()
+        .await
+        .prolific_api_base_url
+        .clone();
+    let prolific_api_base_url = request
+        .prolific_api_base_url
+        .unwrap_or(current_prolific_api_base_url)
+        .trim_end_matches('/')
+        .to_string();
+    crate::config::validate_provider_http_url("Prolific API base URL", &prolific_api_base_url)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
     for (key, value) in &request.secret_updates {
         validate_game_provider_secret(key, Some(value))?;
     }
     for key in &request.secret_deletions {
         validate_game_provider_secret(key, None)?;
     }
+    let prolific_workspace_id = request.prolific_workspace_id.trim().to_string();
+    if !prolific_workspace_id.is_empty()
+        && (prolific_workspace_id.len() > 128
+            || !prolific_workspace_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric()))
+    {
+        return Err(AppError::bad_request("Invalid Prolific workspace id"));
+    }
+    let pending_secrets = {
+        let mut secrets = state.store.game_secrets().await?;
+        for key in &request.secret_deletions {
+            secrets.remove(key);
+        }
+        secrets.extend(request.secret_updates.clone());
+        secrets
+    };
+    let prolific_workspace_title = if prolific_workspace_id.is_empty() {
+        String::new()
+    } else {
+        let token = pending_secrets.get("prolific.api_token").ok_or_else(|| {
+            AppError::bad_request("A Prolific API token is required to connect a workspace")
+        })?;
+        crate::prolific::ProlificClient::with_base_url(
+            token.clone(),
+            prolific_api_base_url.clone(),
+        )?
+        .workspace(&prolific_workspace_id)
+        .await
+        .map_err(|error| {
+            AppError::bad_request(format!("Could not verify Prolific workspace: {error}"))
+        })?
+        .title
+    };
     let revision = state
         .store
         .update_game_settings(
@@ -5432,6 +5843,9 @@ async fn admin_update_game_settings<A: Game>(
             admin_allowed_ip_ranges.clone(),
             speechmatics_realtime_url.clone(),
             tts_base_url.clone(),
+            prolific_api_base_url.clone(),
+            prolific_workspace_id.clone(),
+            prolific_workspace_title.clone(),
             request.secret_updates,
             request.secret_deletions,
         )
@@ -5442,6 +5856,9 @@ async fn admin_update_game_settings<A: Game>(
         admin_allowed_ip_ranges,
         speechmatics_realtime_url,
         tts_base_url,
+        prolific_api_base_url,
+        prolific_workspace_id,
+        prolific_workspace_title,
         revision,
     };
     Ok(Json(json!({ "revision": revision })))
@@ -5449,7 +5866,10 @@ async fn admin_update_game_settings<A: Game>(
 
 /// Validates one game-wide hosted-provider credential change.
 fn validate_game_provider_secret(key: &str, value: Option<&str>) -> Result<(), AppError> {
-    if !matches!(key, "speechmatics.api_key" | "tts.api_key") {
+    if !matches!(
+        key,
+        "speechmatics.api_key" | "tts.api_key" | "prolific.api_token"
+    ) {
         return Err(AppError::bad_request(
             "Unknown game-wide provider credential",
         ));
@@ -5641,10 +6061,44 @@ async fn admin_session_detail<A: Game>(
                 SessionLifecycle::Ended(_) => json!({"state": "ended"}),
             })
     };
-    let participants = state
+    let mut participants = state
         .store
         .session_participants(&experiment_id, session_id)
         .await?;
+    let mut reconciliation_issue = None;
+    if let Some(client) = state.prolific_client.read().await.clone() {
+        for participant in participants
+            .iter()
+            .filter(|row| row.prolific_session_id.is_some())
+        {
+            let prolific_session_id = participant
+                .prolific_session_id
+                .as_deref()
+                .expect("filtered Prolific participant has a submission id");
+            match client.submission(prolific_session_id).await {
+                Ok(submission) => {
+                    if let Err(error) = state
+                        .store
+                        .reconcile_prolific_submission(
+                            &experiment_id,
+                            prolific_session_id,
+                            &submission.status,
+                            submission.entered_code,
+                            submission.return_requested,
+                        )
+                        .await
+                    {
+                        reconciliation_issue = Some(error.to_string());
+                    }
+                }
+                Err(error) => reconciliation_issue = Some(error.to_string()),
+            }
+        }
+        participants = state
+            .store
+            .session_participants(&experiment_id, session_id)
+            .await?;
+    }
     let participants = participants
         .into_iter()
         .map(|participant| {
@@ -5677,6 +6131,7 @@ async fn admin_session_detail<A: Game>(
         "participants": participants,
         "events": events,
         "event_bundles": event_bundles,
+        "prolific_reconciliation_issue": reconciliation_issue,
     })))
 }
 
@@ -7361,6 +7816,8 @@ async fn websocket_loop<A: Game>(
             if let Some(participant) = session.participants.get_mut(&participant_session_id) {
                 participant.connected = true;
                 participant.updated_at = now_iso();
+                participant.disconnected_at = None;
+                participant.reconnect_deadline_at = None;
             }
             if session
                 .participants
@@ -7376,6 +7833,7 @@ async fn websocket_loop<A: Game>(
         state.store.update_session_participant_connection(
             &participant_session_id,
             "connected",
+            None,
             None,
         ),
     )
@@ -7498,12 +7956,18 @@ async fn websocket_loop<A: Game>(
         return;
     }
     flush_rejected_input_aggregates(&state, &public_session_id, &participant_session_id).await;
+    let disconnected_at = now_iso();
+    let grace_seconds = state.config.session.reconnect_grace_seconds.max(0) as u64;
+    let reconnect_deadline_at =
+        (chrono::Utc::now() + chrono::Duration::seconds(grace_seconds as i64)).to_rfc3339();
     {
         let mut memory = state.memory.write().await;
         if let Some(session) = memory.sessions.get_mut(&public_session_id) {
             if let Some(participant) = session.participants.get_mut(&participant_session_id) {
                 participant.connected = false;
-                participant.updated_at = now_iso();
+                participant.updated_at = disconnected_at.clone();
+                participant.disconnected_at = Some(disconnected_at.clone());
+                participant.reconnect_deadline_at = Some(reconnect_deadline_at.clone());
             }
         }
     }
@@ -7512,7 +7976,8 @@ async fn websocket_loop<A: Game>(
         state.store.update_session_participant_connection(
             &participant_session_id,
             "disconnected",
-            Some(now_iso()),
+            Some(disconnected_at),
+            Some(reconnect_deadline_at.clone()),
         ),
     )
     .await;
@@ -7535,7 +8000,6 @@ async fn websocket_loop<A: Game>(
                 })
             }),
     );
-    let grace_seconds = state.config.session.reconnect_grace_seconds.max(0) as u64;
     if grace_seconds == 0 {
         let _ = abandon_session(
             &state,
@@ -7546,13 +8010,12 @@ async fn websocket_loop<A: Game>(
         .await;
         return;
     }
-    let deadline = chrono::Utc::now() + chrono::Duration::seconds(grace_seconds as i64);
     {
         let mut memory = state.memory.write().await;
         if let Some(session) = memory.sessions.get_mut(&public_session_id) {
             if session.lifecycle == SessionLifecycle::Running {
                 session.pause = Some(ParticipantPauseReason::PartnerReconnecting {
-                    deadline_at: deadline.to_rfc3339(),
+                    deadline_at: reconnect_deadline_at,
                 });
             }
         }
@@ -7574,13 +8037,8 @@ async fn websocket_loop<A: Game>(
         if !still_disconnected {
             return;
         }
-        if let Ok(true) = abandon_session(
-            &reconnect_state,
-            &reconnect_session_id,
-            &reconnect_participant_id,
-            "reconnect_timeout",
-        )
-        .await
+        if let Ok(true) =
+            expire_live_session(&reconnect_state, &reconnect_session_id, "reconnect_timeout").await
         {
             broadcast_participant_states(&reconnect_state, &reconnect_session_id).await;
         }
@@ -7626,14 +8084,19 @@ fn prolific_handoff(
     outcome: &ParticipantOutcomeKind,
 ) -> Option<RecruitmentHandoff> {
     let paths = &config.recruitment.prolific.completion_paths;
-    let code = match outcome {
-        ParticipantOutcomeKind::Completed => &paths.completed,
-        ParticipantOutcomeKind::PartnerLeft => &paths.partner_left,
-        ParticipantOutcomeKind::PartnerUnavailable => &paths.partner_unavailable,
-        ParticipantOutcomeKind::TimedOut => &paths.timed_out,
-        ParticipantOutcomeKind::TechnicalFailure => &paths.technical_failure,
-        ParticipantOutcomeKind::Withdrew => return None,
-    };
+    let code =
+        match outcome {
+            ParticipantOutcomeKind::Completed => &paths.completed,
+            ParticipantOutcomeKind::PartnerLeft => &paths.partner_left,
+            ParticipantOutcomeKind::LeftWaitingRoom
+            | ParticipantOutcomeKind::PartnerUnavailable => &paths.partner_unavailable,
+            ParticipantOutcomeKind::LeftGame
+            | ParticipantOutcomeKind::ParticipantInactive
+            | ParticipantOutcomeKind::ConnectionLost
+            | ParticipantOutcomeKind::IdleLimitReached => &paths.timed_out,
+            ParticipantOutcomeKind::TechnicalFailure
+            | ParticipantOutcomeKind::LifetimeLimitReached => &paths.technical_failure,
+        };
     if code.is_empty() {
         return None;
     }
@@ -7667,13 +8130,20 @@ async fn abandon_session<A: Game>(
             .get(participant_session_id)
             .ok_or_else(|| anyhow!("Participant not in session."))?
             .role;
+        let actor_outcome = if reason == "reconnect_timeout" {
+            ParticipantOutcomeKind::ConnectionLost
+        } else if session.lifecycle == SessionLifecycle::Forming {
+            ParticipantOutcomeKind::LeftWaitingRoom
+        } else {
+            ParticipantOutcomeKind::LeftGame
+        };
         let participant_results = session
             .participants
             .values()
             .filter(|participant| participant.source != "agent")
             .map(|participant| {
                 let outcome = if participant.participant_session_id == participant_session_id {
-                    ParticipantOutcomeKind::Withdrew
+                    actor_outcome.clone()
                 } else {
                     ParticipantOutcomeKind::PartnerLeft
                 };
@@ -7696,8 +8166,14 @@ async fn abandon_session<A: Game>(
             })
             .collect::<Result<HashMap<_, _>>>()?;
         SessionEnd {
-            cause: SessionEndCause::ParticipantLeft {
-                actor: actor_role.as_str().to_string(),
+            cause: if reason == "reconnect_timeout" {
+                SessionEndCause::ReconnectTimedOut {
+                    disconnected_role: actor_role.as_str().to_string(),
+                }
+            } else {
+                SessionEndCause::ParticipantLeft {
+                    actor: actor_role.as_str().to_string(),
+                }
             },
             completion: None,
             participant_results,
@@ -8304,12 +8780,15 @@ where
             .get_mut(public_session_id)
             .ok_or_else(|| anyhow!("Session not found."))?;
         session.state = after;
-        session.updated_at = now_iso();
         if completed {
+            session.updated_at = now_iso();
             session.lifecycle = SessionLifecycle::Ended(
                 session_end.expect("completed transition has a terminal value"),
             );
         }
+    }
+    if !completed {
+        touch_session_activity(&state, public_session_id).await;
     }
     notify_agents_of_action(
         &state,
@@ -8805,6 +9284,8 @@ async fn maybe_start_agent<A: Game>(
                 if let Some(participant) = session.participants.get_mut(&participant_session_id) {
                     participant.connected = true;
                     participant.updated_at = now_iso();
+                    participant.disconnected_at = None;
+                    participant.reconnect_deadline_at = None;
                 }
             }
         }
@@ -8813,6 +9294,7 @@ async fn maybe_start_agent<A: Game>(
             state.store.update_session_participant_connection(
                 &participant_session_id,
                 "connected",
+                None,
                 None,
             ),
         )
@@ -9030,28 +9512,26 @@ async fn require_consent<A: Game>(
         .participants
         .get(participant_session_id)
         .ok_or_else(|| AppError::not_found("Participant session not found."))?;
-    if participant.source == "direct" {
-        let missing = state
-            .config
-            .direct
-            .consents
-            .iter()
-            .filter(|item| item.required)
-            .filter(|item| {
-                !participant
-                    .consent_decisions
-                    .get(&item.id)
-                    .copied()
-                    .unwrap_or(false)
-            })
-            .map(|item| item.title.clone())
-            .collect::<Vec<_>>();
-        if !missing.is_empty() {
-            return Err(AppError::forbidden(format!(
-                "Consent is required before entering the game: {}.",
-                missing.join(", ")
-            )));
-        }
+    let missing = state
+        .config
+        .direct
+        .consents
+        .iter()
+        .filter(|item| item.required)
+        .filter(|item| {
+            !participant
+                .consent_decisions
+                .get(&item.id)
+                .copied()
+                .unwrap_or(false)
+        })
+        .map(|item| item.title.clone())
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(AppError::forbidden(format!(
+            "Consent is required before entering the game: {}.",
+            missing.join(", ")
+        )));
     }
     Ok(())
 }
@@ -9175,7 +9655,19 @@ where
     let Some((experiment_id, session_id)) = durable_session else {
         return;
     };
-    match state.store.start_session(&experiment_id, session_id).await {
+    let started_at = chrono::Utc::now();
+    let idle_deadline_at =
+        started_at + chrono::Duration::seconds(state.config.session.session_idle_timeout_seconds);
+    match state
+        .store
+        .start_session(
+            &experiment_id,
+            session_id,
+            &started_at.to_rfc3339(),
+            &idle_deadline_at.to_rfc3339(),
+        )
+        .await
+    {
         Ok(true) => {}
         Ok(false) => {
             tracing::warn!(
@@ -9197,7 +9689,9 @@ where
         };
         session.lifecycle = SessionLifecycle::Running;
         session.pause = None;
-        session.updated_at = now_iso();
+        session.updated_at = started_at.to_rfc3339();
+        session.last_meaningful_activity_at = Some(started_at.to_rfc3339());
+        session.idle_deadline_at = Some(idle_deadline_at.to_rfc3339());
     }
 
     let participants = {

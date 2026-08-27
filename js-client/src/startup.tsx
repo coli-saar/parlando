@@ -610,6 +610,7 @@ function ParticipantAppRuntime<
     return (
       <>
         {renderGame(activeSession)}
+        <IdleDeadlineNotice deadlineAt={participantState.idle_deadline_at} />
         {participantState.state === "paused" && participantState.reason.type === "partner_reconnecting" && <PartnerReconnectNotice deadlineAt={participantState.reason.deadline_at} />}
         {error && <p className="online-error">{error}</p>}
       </>
@@ -624,10 +625,17 @@ function ParticipantAppRuntime<
       <StartupShell
         gameName={publicConfig.gameName}
         institution={publicConfig.institution}
-        heading="Starting session"
-        body="The game starts when all required participants and services are ready."
+        heading="Waiting for another participant"
+        body="The game starts automatically when your partner is ready."
         error={error}
       >
+        {session.participantState.state === "waiting" && (
+          <WaitingRoomNotice
+            deadlineAt={session.participantState.waiting_deadline_at}
+            prolific={publicConfig.recruitment?.provider === "prolific"}
+            startedAt={session.participantState.waiting_started_at}
+          />
+        )}
         <ReadinessBoard
           connected={session.synchronization === "connected"}
           enabled={enabled}
@@ -725,6 +733,42 @@ function ParticipantAppRuntime<
   );
 }
 
+/** Shared fixed-deadline guidance for an unmatched waiting session. */
+export function WaitingRoomNotice({
+  deadlineAt,
+  prolific,
+  startedAt
+}: {
+  deadlineAt: string;
+  prolific: boolean;
+  startedAt: string;
+}) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, []);
+  const deadline = Date.parse(deadlineAt);
+  const started = Date.parse(startedAt);
+  const remainingSeconds = Math.max(0, Math.ceil((deadline - now) / 1000));
+  const maximumMinutes = Math.max(1, Math.ceil((deadline - started) / 60_000));
+  const remainingMinutes = Math.floor(remainingSeconds / 60);
+  const seconds = remainingSeconds % 60;
+  const terminalGuidance = prolific
+    ? "If you leave now or the countdown expires, Parlando will end this waiting session and show your Unmatched completion path for returning to Prolific."
+    : "If you leave now or the countdown expires, Parlando will end this waiting session as unmatched.";
+  return (
+    <section aria-live="polite" className="parlando-waiting-room" role="status">
+      <strong>Waiting for your partner</strong>
+      <span className="parlando-waiting-countdown">
+        {remainingMinutes}:{String(seconds).padStart(2, "0")} remaining
+      </span>
+      <span>The maximum wait is {maximumMinutes} minute{maximumMinutes === 1 ? "" : "s"}. Keep this tab open.</span>
+      <span>{terminalGuidance}</span>
+    </section>
+  );
+}
+
 /** Stylable, self-updating notice shown while a required partner may reconnect. */
 export function PartnerReconnectNotice({ deadlineAt }: { deadlineAt: string }) {
   const [now, setNow] = useState(Date.now());
@@ -737,6 +781,23 @@ export function PartnerReconnectNotice({ deadlineAt }: { deadlineAt: string }) {
     <section aria-live="polite" className="parlando-partner-reconnect" role="status">
       <strong>Your partner lost their connection</strong>
       <span>The game is paused while they reconnect. It will end in {seconds} second{seconds === 1 ? "" : "s"}.</span>
+    </section>
+  );
+}
+
+/** Warns both participants when the shared meaningful-activity deadline is close. */
+export function IdleDeadlineNotice({ deadlineAt }: { deadlineAt: string }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const seconds = Math.max(0, Math.ceil((Date.parse(deadlineAt) - now) / 1_000));
+  if (seconds > 60) return null;
+  return (
+    <section aria-live="polite" className="parlando-idle-warning" role="status">
+      <strong>Inactivity limit approaching</strong>
+      <span>Send a message or make a game action within {seconds} second{seconds === 1 ? "" : "s"} to keep the session active.</span>
     </section>
   );
 }
@@ -769,21 +830,7 @@ function SessionOutcomePanel({
       {handoff && (
         <ProlificHandoff handoff={handoff} />
       )}
-      {!handoff && outcome === "withdrew" && recruitment?.provider === "prolific" && (
-        <ProlificWithdrawal returnUrl={recruitment.return_url ?? "https://app.prolific.com/submissions"} />
-      )}
     </section>
-  );
-}
-
-/** Premade Prolific instructions for a voluntary withdrawal, which has no completion code. */
-export function ProlificWithdrawal({ returnUrl }: { returnUrl: string }) {
-  return (
-    <div className="parlando-recruitment-handoff parlando-prolific-withdrawal">
-      <p>No completion code is issued for a voluntary withdrawal.</p>
-      <a href={returnUrl}>Return to Prolific</a>
-      <p>On Prolific, return this submission instead of entering a completion code.</p>
-    </div>
   );
 }
 
@@ -829,11 +876,15 @@ export function ProlificHandoff({ handoff }: { handoff: RecruitmentHandoff }) {
 function outcomeText(outcome: ParticipantOutcome | null, reason: string | null): string {
   switch (outcome) {
     case "completed": return "Thank you. Your responses have been recorded.";
-    case "withdrew": return "You left the session. Your responses up to that point have been recorded.";
+    case "left_waiting_room": return "You left before a partner became available. Use the Unmatched completion path below to return to Prolific.";
+    case "left_game": return "You left after the game started. Your responses up to that point have been recorded.";
+    case "participant_inactive": return "The game ended because a required response was not received from you.";
+    case "connection_lost": return "The session ended because your connection did not return before the reconnect deadline.";
     case "partner_left": return "Your partner left or could not reconnect, so the session cannot continue.";
     case "partner_unavailable": return "No partner became available before the waiting period ended.";
-    case "timed_out": return "The session ended after its time limit.";
+    case "idle_limit_reached": return "The session ended because neither participant produced meaningful activity before the inactivity deadline.";
     case "technical_failure": return "A technical problem prevented the session from continuing.";
+    case "lifetime_limit_reached": return "The session reached its absolute lifetime limit and could not continue.";
     default: return reason ? `The session ended (${reason}).` : "The session can no longer continue.";
   }
 }

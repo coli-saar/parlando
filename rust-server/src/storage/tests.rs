@@ -236,6 +236,8 @@ async fn sqlite_stamps_testing_and_research_session_purpose() {
             mode: "direct".to_string(),
             lifecycle: "forming".to_string(),
             purpose: "testing".to_string(),
+            waiting_timeout_seconds: 600,
+            maximum_lifetime_seconds: 14_400,
         })
         .await
         .unwrap();
@@ -252,6 +254,8 @@ async fn sqlite_stamps_testing_and_research_session_purpose() {
             mode: "direct".to_string(),
             lifecycle: "forming".to_string(),
             purpose: "research".to_string(),
+            waiting_timeout_seconds: 600,
+            maximum_lifetime_seconds: 14_400,
         })
         .await
         .unwrap();
@@ -455,6 +459,8 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
             mode: "direct".to_string(),
             lifecycle: "forming".to_string(),
             purpose: "research".to_string(),
+            waiting_timeout_seconds: 600,
+            maximum_lifetime_seconds: 14_400,
         })
         .await
         .unwrap();
@@ -467,6 +473,8 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
             mode: "direct".to_string(),
             lifecycle: "forming".to_string(),
             purpose: "research".to_string(),
+            waiting_timeout_seconds: 600,
+            maximum_lifetime_seconds: 14_400,
         })
         .await
         .unwrap();
@@ -561,7 +569,14 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
         .complete_session_initialization("exp_eval", session_one)
         .await
         .unwrap());
-    assert!(store.start_session("exp_eval", session_one).await.unwrap());
+    let started_at = now_iso();
+    let idle_deadline_at = (chrono::DateTime::parse_from_rfc3339(&started_at).unwrap()
+        + chrono::Duration::seconds(300))
+    .to_rfc3339();
+    assert!(store
+        .start_session("exp_eval", session_one, &started_at, &idle_deadline_at,)
+        .await
+        .unwrap());
     let rebased = store
         .session_events("exp_eval", session_one, None)
         .await
@@ -670,6 +685,8 @@ async fn sqlite_allows_returning_participant_in_multiple_sessions_with_different
             mode: "human_vs_human".to_string(),
             lifecycle: "running".to_string(),
             purpose: "research".to_string(),
+            waiting_timeout_seconds: 600,
+            maximum_lifetime_seconds: 14_400,
         })
         .await
         .unwrap();
@@ -682,6 +699,8 @@ async fn sqlite_allows_returning_participant_in_multiple_sessions_with_different
             mode: "role_swap_replay".to_string(),
             lifecycle: "running".to_string(),
             purpose: "research".to_string(),
+            waiting_timeout_seconds: 600,
+            maximum_lifetime_seconds: 14_400,
         })
         .await
         .unwrap();
@@ -749,38 +768,22 @@ async fn sqlite_session_participants_survive_prolific_correlation_purge() {
         .await
         .unwrap();
 
-    let participant_a = store
-        .upsert_participant(ParticipantRecord {
-            experiment_id: "exp_prolific_purge".to_string(),
-            participant_kind: "human".to_string(),
-            identity_provider: "prolific".to_string(),
-            external_id: None,
-            metadata: Value::Null,
-        })
-        .await
-        .unwrap();
-    let participant_b = store
-        .upsert_participant(ParticipantRecord {
-            experiment_id: "exp_prolific_purge".to_string(),
-            participant_kind: "human".to_string(),
-            identity_provider: "prolific".to_string(),
-            external_id: None,
-            metadata: Value::Null,
-        })
-        .await
-        .unwrap();
-    for (participant_id, suffix) in [(participant_a, "A"), (participant_b, "B")] {
-        store
-            .record_prolific_submission(ProlificSubmissionRecord {
+    let mut participant_ids = Vec::new();
+    for suffix in ["A", "B"] {
+        let admission = store
+            .admit_prolific_submission(ProlificSubmissionRecord {
                 experiment_id: "exp_prolific_purge".to_string(),
-                participant_id,
                 prolific_participant_id: format!("PROLIFIC-{suffix}"),
                 prolific_study_id: "STUDY-PRIVATE".to_string(),
                 prolific_session_id: format!("SUBMISSION-{suffix}"),
+                verification_method: "submission_api".to_string(),
             })
             .await
             .unwrap();
+        participant_ids.push(admission.participant_id);
     }
+    let participant_a = participant_ids[0];
+    let participant_b = participant_ids[1];
 
     let session_id = store
         .create_session(SessionRecord {
@@ -791,6 +794,8 @@ async fn sqlite_session_participants_survive_prolific_correlation_purge() {
             mode: "human_vs_human".to_string(),
             lifecycle: "ended".to_string(),
             purpose: "research".to_string(),
+            waiting_timeout_seconds: 600,
+            maximum_lifetime_seconds: 14_400,
         })
         .await
         .unwrap();
@@ -930,6 +935,8 @@ async fn sqlite_holds_mixed_participant_and_event_shapes_for_weird_experiments()
             mode: "human_agent_with_worker".to_string(),
             lifecycle: "running".to_string(),
             purpose: "research".to_string(),
+            waiting_timeout_seconds: 600,
+            maximum_lifetime_seconds: 14_400,
         })
         .await
         .unwrap();
@@ -1115,6 +1122,9 @@ async fn sqlite_game_settings_reject_stale_updates() {
             vec!["192.0.2.0/24".to_string()],
             "wss://eu.rt.speechmatics.com/v2".to_string(),
             "wss://api.elevenlabs.io".to_string(),
+            "https://api.prolific.com".to_string(),
+            String::new(),
+            String::new(),
             provider_updates,
             vec![],
         )
@@ -1145,6 +1155,9 @@ async fn sqlite_game_settings_reject_stale_updates() {
             vec![],
             "wss://eu.rt.speechmatics.com/v2".to_string(),
             "wss://api.elevenlabs.io".to_string(),
+            "https://api.prolific.com".to_string(),
+            String::new(),
+            String::new(),
             HashMap::new(),
             vec![],
         )
@@ -1179,6 +1192,8 @@ async fn sqlite_session_expiry_records_reason_and_status_atomically() {
             mode: "direct".to_string(),
             lifecycle: "running".to_string(),
             purpose: "research".to_string(),
+            waiting_timeout_seconds: 600,
+            maximum_lifetime_seconds: 14_400,
         })
         .await
         .unwrap();
@@ -1244,6 +1259,8 @@ async fn sqlite_retains_recipient_terminal_state_for_reconciliation() {
             mode: "direct".to_string(),
             lifecycle: "running".to_string(),
             purpose: "research".to_string(),
+            waiting_timeout_seconds: 600,
+            maximum_lifetime_seconds: 14_400,
         })
         .await
         .unwrap();
@@ -1259,7 +1276,7 @@ async fn sqlite_retains_recipient_terminal_state_for_reconciliation() {
         .await
         .unwrap();
     let result = ParticipantResult {
-        outcome: crate::protocol::ParticipantOutcomeKind::TimedOut,
+        outcome: crate::protocol::ParticipantOutcomeKind::IdleLimitReached,
         reason: "idle_timeout".to_string(),
         completion: None,
         final_observation: Some(json!({"turn": 4})),
@@ -1324,6 +1341,8 @@ async fn sqlite_session_abandonment_records_actor_and_status_atomically() {
             mode: "direct".to_string(),
             lifecycle: "running".to_string(),
             purpose: "research".to_string(),
+            waiting_timeout_seconds: 600,
+            maximum_lifetime_seconds: 14_400,
         })
         .await
         .unwrap();
@@ -1445,6 +1464,8 @@ async fn concurrent_event_appends_are_gap_free() {
             mode: "direct".to_string(),
             lifecycle: "running".to_string(),
             purpose: "research".to_string(),
+            waiting_timeout_seconds: 600,
+            maximum_lifetime_seconds: 14_400,
         })
         .await
         .unwrap();
@@ -1509,6 +1530,8 @@ async fn running_test_session(store: &SqliteExperimentStore, experiment_id: &str
             mode: "direct".to_string(),
             lifecycle: "running".to_string(),
             purpose: "research".to_string(),
+            waiting_timeout_seconds: 600,
+            maximum_lifetime_seconds: 14_400,
         })
         .await
         .unwrap()

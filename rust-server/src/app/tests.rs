@@ -298,10 +298,9 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(ADMIN_EXPERIMENT_HTML.contains("experimentWorkspaceTabs.hidden = !hasExperiment;"));
     assert!(!ADMIN_EXPERIMENT_HTML
         .contains("experimentWorkspaceTabs.hidden = !hasExperiment || state.configLoadFailed"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Generate two-word code"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("Generate two-word code"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Prolific recruitment and completion paths"));
-    assert!(ADMIN_EXPERIMENT_HTML
-        .contains("Parlando outcome: completed — Prolific custom completion code"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Completed code"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Data collection → Completion paths"));
     assert!(
         ADMIN_EXPERIMENT_HTML.find("Text to speech")
@@ -3133,26 +3132,6 @@ where
     }
 }
 
-// Reads the next JSON WebSocket server message without filtering by type.
-async fn read_next_ws_value<S>(socket: &mut S) -> Value
-where
-    S: futures_util::Stream<
-            Item = Result<TungsteniteMessage, tokio_tungstenite::tungstenite::Error>,
-        > + Unpin,
-{
-    loop {
-        let message = tokio::time::timeout(Duration::from_secs(2), socket.next())
-            .await
-            .expect("timed out waiting for WebSocket message")
-            .expect("WebSocket closed before next message")
-            .expect("WebSocket read failed");
-        let TungsteniteMessage::Text(text) = message else {
-            continue;
-        };
-        return serde_json::from_str(&text).unwrap();
-    }
-}
-
 // Asserts that no message of the given type arrives within a short interval.
 async fn assert_no_ws_type<S>(socket: &mut S, message_type: &str)
 where
@@ -3402,7 +3381,7 @@ async fn health_and_public_config_expose_client_bootstrap_shape() {
     config.tts.voice_id = "voice-1".to_string();
     config.tts.api_key = "tts-secret".to_string();
     config.tts.voice_name = "Agent Voice".to_string();
-    config.recruitment.prolific.enabled = true;
+    config.recruitment.prolific.enabled = false;
     config.recruitment.prolific.study_id = "TEST-STUDY".to_string();
     config.recruitment.prolific.completion_paths.completed = "CLEARWREN".to_string();
     config.recruitment.prolific.completion_paths.partner_left = "AMBERBADGER".to_string();
@@ -3435,11 +3414,7 @@ async fn health_and_public_config_expose_client_bootstrap_shape() {
     assert!(public_config["institution"].is_null());
     assert_eq!(public_config["consents"][0]["id"], "study");
     assert_eq!(public_config["voice"]["enabled"], true);
-    assert_eq!(public_config["recruitment"]["provider"], "prolific");
-    assert_eq!(
-        public_config["recruitment"]["return_url"],
-        "https://app.prolific.com/submissions"
-    );
+    assert_eq!(public_config["recruitment"]["provider"], "direct");
     assert!(public_config.get("transcription").is_none());
     assert!(public_config.get("tts").is_none());
     assert!(public_config.get("agents").is_none());
@@ -4513,7 +4488,7 @@ async fn explicit_leave_abandons_session_and_notifies_partner() {
     assert_eq!(leave_status, StatusCode::OK);
     let withdrew = leave_response["participant_state"].clone();
     assert_eq!(withdrew["public_session_id"], public_session_id);
-    assert_eq!(withdrew["result"]["outcome"], "withdrew");
+    assert_eq!(withdrew["result"]["outcome"], "left_game");
     let abandoned = read_participant_state(&mut socket_b, "ended").await;
     assert_eq!(abandoned["public_session_id"], public_session_id);
     assert_eq!(abandoned["result"]["outcome"], "partner_left");
@@ -4588,7 +4563,7 @@ async fn explicit_leave_shuts_down_the_session_agent() {
     .await;
     assert_eq!(leave_status, StatusCode::OK);
     let ended = &response["participant_state"];
-    assert_eq!(ended["result"]["outcome"], "withdrew");
+    assert_eq!(ended["result"]["outcome"], "left_game");
     let export = wait_for_export_event(router, "session_abandoned").await;
     assert_eq!(export["sessions"][0]["lifecycle"], "ended");
 
@@ -4738,7 +4713,7 @@ async fn disconnect_past_grace_gives_partner_a_terminal_outcome() {
     let ended = read_participant_state(&mut socket_b, "ended").await;
     assert_eq!(ended["result"]["outcome"], "partner_left");
     assert_eq!(ended["result"]["reason"], "reconnect_timeout");
-    let export = wait_for_export_event(router.clone(), "session_abandoned").await;
+    let export = wait_for_export_event(router.clone(), "session_ended").await;
     assert_eq!(export["sessions"][0]["lifecycle"], "ended");
     let session_id = export["sessions"][0]["session_id"].as_i64().unwrap();
     let (_, ended_detail) = json_request(
@@ -4749,11 +4724,65 @@ async fn disconnect_past_grace_gives_partner_a_terminal_outcome() {
     )
     .await;
     assert_eq!(ended_detail["session"]["lifecycle"], "ended");
+    assert_eq!(
+        ended_detail["session"]["session_end"]["cause"]["type"],
+        "reconnect_timed_out"
+    );
+    assert_eq!(
+        ended_detail["participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|participant| participant["role"] == "A")
+            .unwrap()["terminal_result"]["outcome"],
+        "connection_lost"
+    );
     assert!(ended_detail["participants"]
         .as_array()
         .unwrap()
         .iter()
         .all(|participant| participant["participant_state"]["state"] == "ended"));
+    server.abort();
+}
+
+/// Confirms room-wide reconnect expiry does not invent a connected good-faith partner.
+#[tokio::test]
+async fn two_disconnects_past_grace_give_both_connection_lost() {
+    let mut config = step_five_config();
+    config.session.reconnect_grace_seconds = 1;
+    let router = build_router(TinyAdapter, config, ServeOptions::default())
+        .await
+        .unwrap();
+    let (a, b, public_session_id) = create_joined_room(router.clone()).await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
+    let (mut socket_a, _) = connect_async(game_socket_url(&base_url, &public_session_id, &a).await)
+        .await
+        .unwrap();
+    let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &public_session_id, &b).await)
+        .await
+        .unwrap();
+    let _ = read_participant_state(&mut socket_a, "active").await;
+    let _ = read_participant_state(&mut socket_b, "active").await;
+
+    socket_a.close(None).await.unwrap();
+    socket_b.close(None).await.unwrap();
+    let export = wait_for_export_event(router.clone(), "session_ended").await;
+    let session_id = export["sessions"][0]["session_id"].as_i64().unwrap();
+    let (_, ended_detail) = json_request(
+        router,
+        http::Method::GET,
+        &format!("/api/admin/sessions/{session_id}"),
+        Value::Null,
+    )
+    .await;
+    let outcomes = ended_detail["participants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|participant| participant["terminal_result"]["outcome"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(outcomes.len(), 2);
+    assert!(outcomes.iter().all(|outcome| *outcome == "connection_lost"));
     server.abort();
 }
 
@@ -5619,7 +5648,7 @@ async fn agent_runtime_persists_messages_and_validated_actions() {
             .await
             .unwrap();
     let _ = read_participant_state(&mut socket, "active").await;
-    let first_update = read_next_ws_value(&mut socket).await;
+    let first_update = read_ws_type(&mut socket, "transition").await;
     assert_eq!(first_update["type"], "transition");
     let message = read_ws_type(&mut socket, "message").await;
     assert_eq!(message["message"]["sender"], "B");

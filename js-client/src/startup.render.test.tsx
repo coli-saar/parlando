@@ -20,10 +20,10 @@ class FakeWebSocket extends EventTarget {
 }
 
 const waiting: ParticipantState<{ view: string }, { type: string }, { score: number }> = {
-  state: "waiting", public_session_id: "ROOM1", role: "A", presence: {}
+  state: "waiting", public_session_id: "ROOM1", role: "A", presence: {}, waiting_started_at: "2099-01-01T00:00:00Z", waiting_deadline_at: "2099-01-01T00:10:00Z"
 };
 const active: ParticipantState<{ view: string }, { type: string }, { score: number }> = {
-  state: "active", public_session_id: "ROOM1", role: "A", observation: { view: "live" }, available_actions: null, presence: {}
+  state: "active", public_session_id: "ROOM1", role: "A", observation: { view: "live" }, available_actions: null, presence: {}, idle_deadline_at: "2099-01-01T00:00:00Z"
 };
 
 function config(): ExperimentInfo {
@@ -40,7 +40,7 @@ function api() {
     sendAction: vi.fn(), sendMessage: vi.fn(), postVoiceDiagnostic: vi.fn(), getAudioSession: vi.fn(),
     leaveSession: vi.fn(async () => ({
       state: "ended", public_session_id: "ROOM1", role: "A",
-      result: { outcome: "withdrew", reason: "participant_left", completion: null, final_observation: { view: "live" }, handoff: null }
+      result: { outcome: "left_game", reason: "participant_left", completion: null, final_observation: { view: "live" }, handoff: null }
     }))
   };
 }
@@ -94,6 +94,6 @@ describe("ParticipantApp participant state machine", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Leave" }));
     await waitFor(() => expect(client.leaveSession).toHaveBeenCalledWith("ROOM1"));
     await waitFor(() => expect(socket.close).toHaveBeenCalled());
-    expect(await screen.findByText(/left the session/i)).toBeInTheDocument();
+    expect(await screen.findByText(/left after the game started/i)).toBeInTheDocument();
   });
 });

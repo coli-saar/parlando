@@ -16,6 +16,8 @@ pub struct ProlificParticipantRequest {
     pub participant_id: String,
     pub study_id: String,
     pub session_id: String,
+    /// Short-lived Secure external URL token, when enabled for the linked study.
+    pub prolific_token: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -191,11 +193,15 @@ impl ConversationMessageResponse {
 #[serde(rename_all = "snake_case")]
 pub enum ParticipantOutcomeKind {
     Completed,
-    Withdrew,
+    LeftWaitingRoom,
+    LeftGame,
+    ParticipantInactive,
+    ConnectionLost,
     PartnerLeft,
     PartnerUnavailable,
-    TimedOut,
+    IdleLimitReached,
     TechnicalFailure,
+    LifetimeLimitReached,
 }
 
 /// Why one shared session reached its single terminal lifecycle state.
@@ -204,7 +210,7 @@ pub enum ParticipantOutcomeKind {
 pub enum SessionEndCause {
     /// The game produced its normal shared completion value.
     GameCompleted,
-    /// One role explicitly withdrew from a forming or running session.
+    /// One role explicitly left a forming or running session.
     ParticipantLeft { actor: String },
     /// Matchmaking ended before another required participant became available.
     PartnerUnavailable,
@@ -255,6 +261,8 @@ pub enum ParticipantState {
     Waiting {
         public_session_id: String,
         role: String,
+        waiting_started_at: String,
+        waiting_deadline_at: String,
         presence: Value,
     },
     /// The running session currently accepts meaningful participant input.
@@ -264,6 +272,7 @@ pub enum ParticipantState {
         observation: Value,
         available_actions: Option<Vec<Value>>,
         presence: Value,
+        idle_deadline_at: String,
     },
     /// The running session preserves its projection while interaction is unavailable.
     Paused {
@@ -273,6 +282,7 @@ pub enum ParticipantState {
         observation: Value,
         available_actions: Option<Vec<Value>>,
         presence: Value,
+        idle_deadline_at: String,
     },
     /// The participant has one immutable recipient-specific terminal result.
     Ended {

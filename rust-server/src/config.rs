@@ -107,8 +107,6 @@ pub struct ProlificCompletionPaths {
     pub timed_out: String,
     /// Code used when Parlando, rather than either participant, ended the session.
     pub technical_failure: String,
-    /// Optional game-declared outcome keys, such as `bonus`, mapped to completion codes.
-    pub game: HashMap<String, String>,
 }
 
 /// Dashboard-owned settings for one Prolific recruitment source.
@@ -121,6 +119,12 @@ pub struct ProlificConfig {
     pub study_id: String,
     /// Completion codes copied from the matching Prolific completion paths.
     pub completion_paths: ProlificCompletionPaths,
+    /// Installation-owned API token applied from protected game settings.
+    #[serde(skip)]
+    pub api_token: String,
+    /// Installation-owned workspace binding applied from protected game settings.
+    #[serde(skip)]
+    pub workspace_id: String,
 }
 
 /// Recruitment-provider behavior owned by the experiment dashboard.
@@ -390,17 +394,18 @@ impl ExperimentConfig {
         }
         if self.recruitment.prolific.enabled {
             let paths = &self.recruitment.prolific.completion_paths;
-            if [
+            let codes = [
                 &paths.completed,
                 &paths.partner_left,
                 &paths.partner_unavailable,
                 &paths.timed_out,
                 &paths.technical_failure,
-            ]
-            .iter()
-            .any(|code| code.is_empty())
-            {
+            ];
+            if codes.iter().any(|code| code.is_empty()) {
                 bail!("every standard Prolific completion path requires a code when Prolific is enabled");
+            }
+            if codes.iter().collect::<HashSet<_>>().len() != codes.len() {
+                bail!("Prolific completion path codes must be distinct");
             }
         }
         for (name, code) in [
@@ -430,17 +435,6 @@ impl ExperimentConfig {
             ),
         ] {
             validate_prolific_code(name, code)?;
-        }
-        for (key, code) in &self.recruitment.prolific.completion_paths.game {
-            if key.is_empty()
-                || key.chars().count() > 64
-                || !key
-                    .bytes()
-                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
-            {
-                bail!("Prolific game outcome keys must contain lowercase letters, digits, or underscores");
-            }
-            validate_prolific_code(key, code)?;
         }
         if self.session.session_idle_timeout_seconds <= 0 {
             bail!("session.session_idle_timeout_seconds must be positive");
@@ -614,7 +608,7 @@ pub(crate) fn validate_websocket_url(field: &str, value: &str) -> Result<()> {
 }
 
 /// Rejects malformed or non-HTTP URLs used in browser-visible configuration.
-fn validate_http_url(field: &str, value: &str) -> Result<()> {
+pub(crate) fn validate_http_url(field: &str, value: &str) -> Result<()> {
     let uri: http::Uri = value
         .parse()
         .with_context(|| format!("{field} must be a valid URL"))?;
@@ -630,9 +624,38 @@ fn validate_http_url(field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Requires TLS for remote provider endpoints while permitting deterministic loopback mocks.
+pub(crate) fn validate_provider_http_url(field: &str, value: &str) -> Result<()> {
+    validate_http_url(field, value)?;
+    let uri: http::Uri = value
+        .parse()
+        .with_context(|| format!("{field} must be a valid URL"))?;
+    if uri.scheme_str() != Some("http") {
+        return Ok(());
+    }
+    let host = uri.host().unwrap_or_default().trim_matches(['[', ']']);
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    if !loopback {
+        bail!("{field} must use https unless it points to a loopback host");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Confirms provider endpoints allow local emulators without permitting remote cleartext.
+    #[test]
+    fn provider_http_urls_require_tls_except_on_loopback() {
+        assert!(validate_provider_http_url("provider", "https://api.example.test").is_ok());
+        assert!(validate_provider_http_url("provider", "http://127.0.0.1:4101").is_ok());
+        assert!(validate_provider_http_url("provider", "http://[::1]:4101").is_ok());
+        assert!(validate_provider_http_url("provider", "http://api.example.test").is_err());
+    }
 
     /// Returns a minimal valid configuration for one-field boundary mutations.
     fn valid_config() -> ExperimentConfig {

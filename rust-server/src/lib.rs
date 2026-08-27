@@ -7,6 +7,7 @@ mod auth;
 mod config;
 mod game;
 mod identity;
+mod prolific;
 mod protocol;
 mod readable_id;
 mod remote_agent;

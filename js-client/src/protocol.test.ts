@@ -135,7 +135,7 @@ describe("ParticipantClient room helpers", () => {
       .mockResolvedValueOnce(participantResponse("one", "credential-1"))
       .mockResolvedValueOnce(new Response(JSON.stringify({ participant_state: {
         state: "ended", public_session_id: "ROOM1", role: "A",
-        result: { outcome: "withdrew", reason: "participant_left", completion: null, final_observation: {}, handoff: null }
+        result: { outcome: "left_game", reason: "participant_left", completion: null, final_observation: {}, handoff: null }
       } }), { status: 200 }));
     const client = new ParticipantClient({ baseUrl: "http://server.test" });
     await client.register();
@@ -240,7 +240,7 @@ describe("checkedJson", () => {
 describe("shared participant protocol fixtures", () => {
   it("enforces the simplified transition graph independently", () => {
     const waiting = { state: "waiting", public_session_id: "SESSION1", role: "A", presence: {} } as const;
-    const active = { state: "active", public_session_id: "SESSION1", role: "A", observation: {}, available_actions: null, presence: {} } as const;
+    const active = { state: "active", public_session_id: "SESSION1", role: "A", observation: {}, available_actions: null, presence: {}, idle_deadline_at: "2099-01-01T00:00:00Z" } as const;
     const paused = { ...active, state: "paused", reason: { type: "partner_reconnecting", deadline_at: "2030-01-01T00:00:00Z" } } as const;
     expect(reduceParticipantState(waiting, active)).toBe(active);
     expect(reduceParticipantState(active, paused)).toBe(paused);

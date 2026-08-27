@@ -30,3 +30,4 @@
 rust-server/config/*.private.yaml
 rust-server/config/*.private.yml
 space-game/.local/
+outputs

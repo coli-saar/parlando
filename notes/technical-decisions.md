@@ -2090,49 +2090,206 @@ server-owned waiting deadline is shown as a participant countdown. An unmatched 
 the `partner_unavailable` path, implemented as a custom path labelled Unmatched in Prolific, whose
 action requests a return. This is not a Prolific Screened out path: unmatched pairing is not an
 eligibility screen-out, and the screen-out fixed-payment mechanism is not used.
-The researcher pays the calculated waiting reward manually through Prolific's bonus
-mechanism. Voluntary waiting-room departure and expiry of the fixed waiting deadline remain
-different Parlando facts but use the same Unmatched completion path and manual partial-payment
-workflow. Parlando rounds any positive observed wait up to whole billable minutes and multiplies it
-by the configured per-minute waiting rate. A submission already timed out by Prolific receives the
-bonus without a return requirement. Parlando never initiates a bonus payment. It persists the
-detailed outcome, selected code, observed wait, billable minutes, and expected amount before
-handoff, then uses read-only submission reconciliation to show whether Prolific reports the bonus as
-paid. The dashboard presents both waiting-room exit cases in one payment-due work queue, including
-waiting timestamps, absent role B, selected code, return state, configured rate, calculated amount,
-read-only bonus state, and current Prolific submission status.
+Voluntary waiting-room departure and expiry of the fixed waiting deadline remain different Parlando
+facts but use the same Unmatched completion path. Parlando records only waiting start, terminal
+time, elapsed duration, factual cause, selected code, and handoff state. It has no compensation
+configuration, billable-time rule, monetary amount, payment queue, bonus reconciliation, or
+bonus-payment API use. The session list labels both outcomes **Unmatched**, while the detail
+distinguishes voluntary departure from deadline expiry and shows the unsuccessful waiting duration.
+
+For a running session that ends asymmetrically, the dashboard labels the session **Partner left**
+and shows both role assignments and participant outcomes. It identifies who left, became inactive,
+or failed to reconnect; who remained; the relevant timestamps; and both completion handoffs.
 
 A session-wide inactivity safeguard applies only when neither participant produces meaningful
 activity during the full configured interval. After a participant-visible warning expires, both
-participants map to the `timed_out` return path and neither receives the full reward or a bonus. If
-game logic can identify one participant as blocking progress while the other acts in good faith,
+participants map to the `timed_out` return path. If game logic can identify one participant as
+blocking progress while the other acts in good faith,
 the blocking participant instead receives `participant_inactive` and the partner receives
-`partner_left` with the full reward. Explicit departure remains `left_game`; both non-completing
-outcomes use the same no-reward `timed_out` return path. The complete proposed protocol is in
+the approving `partner_left` path. Explicit departure remains `left_game`; both non-completing
+outcomes use the same `timed_out` return path. The complete proposed protocol is in
 `notes/prolific-integration-design.md`.
-
-For an ordinary returned unmatched submission, the bonus is the participant's partial payment; it
-is not paid on top of the full study reward. This is Prolific's documented partial-payment workflow,
-not a Parlando-specific payment policy.
 
 Tradeoffs: Requiring a Prolific API connection makes workspace secret management and provider
 availability part of the installation, while five copied codes add a small deliberate setup step.
-The unmatched path follows Prolific's documented return-plus-bonus procedure. Manual payment avoids
-automated money movement and duplicate-payment risk, but leaves a deliberate researcher task;
-Parlando reduces omission risk with a persistent **Bonus due** work queue and read-only
-reconciliation.
+The researcher handles all compensation work in Prolific. This keeps Parlando configuration and UI
+small, at the cost of providing no Parlando-side payment reminders or payment-state tracking.
 Prolific remains the source of truth for each code and its processing action; Parlando's preflight
 detects copying and action errors before activation.
 
 Superseded decisions: This proposal supersedes Parlando-generated code suggestions, automatic
-completion-path creation, fixed unmatched payments, exact-second waiting compensation, treating a
-voluntary waiting-room exit differently from waiting expiry, and full-reward approval for unmatched
-submissions.
+completion-path creation, every Parlando-side compensation field or calculation, waiting-payment
+work queues, bonus reconciliation, treating a voluntary waiting-room exit differently from waiting
+expiry, and full-reward approval for unmatched submissions.
 
 Follow-up risks: Prolific exposes Secure external URL only to certain workspaces, so the adapter
 must discover actual capabilities. Preflight must determine whether the API exposes enough
-completion-path action detail to prove that the Unmatched path requests a return. Manual bonuses
-require sufficient available workspace balance, which is distinct from funds reserved for an
-active study. The schema change requires identifying the live database, making a consistent adjacent backup, converting it
+completion-path action detail to prove that the Unmatched path requests a return. The schema change
+requires identifying the live database, making a consistent adjacent backup, converting it
 transactionally, and verifying integrity, foreign keys, row counts, provider links, and completion
 handoff values before application restart.
+
+## 2026-08-27: Implement the Prolific protocol as one phase-oriented vertical change
+
+Context: The agreed Prolific design spans workspace connection, experiment preflight, authenticated
+launch, idempotent admission, matching, phase deadlines, recipient-specific outcomes, participant
+handoff, restart behavior, and dashboard inspection. The current code already has server-enforced
+consent, a shared participant lifecycle, and atomic terminal storage, but its durable Prolific
+identity is created indirectly, role B hardcodes a direct source, timeout outcomes are too coarse,
+waiting deadlines are not participant-visible, and the dashboard exposes insufficient factual
+detail. Implementing isolated completion-code or waiting-room changes would leave the overall
+protocol inconsistent.
+
+Decision: Implement the design in the dependency order recorded in
+`notes/prolific-integration-implementation-plan.md`. First prove the exact provider API, Secure
+external URL, completion-action, and webhook contracts. Then make one clean backup-first schema
+change; add a narrow server-only provider adapter; enforce workspace, study, and five-path
+preflight; map one verified Prolific submission atomically to one stable admission; centralize fixed
+phase clocks and exhaustive participant-outcome derivation; update the shared Rust/TypeScript
+protocol and widgets; restore nonterminal phases after restart; and expose server-derived factual
+session detail and limited provider-status reconciliation. Reuse the existing server consent gate
+instead of duplicating consent logic. Keep compensation, reward, bonus, approval, rejection, and
+return execution outside Parlando.
+
+Tradeoffs: The provider-contract gate and restart work make the change larger than a completion-code
+integration, but they prevent a simple researcher workflow from depending on silent duplicates,
+moving deadlines, or manual interpretation of asymmetric outcomes. A narrow reconciliation model
+adds operational provider state without importing compensation concepts. The clean schema change
+requires an adjacent backup and a rehearsed one-off conversion; it avoids permanent legacy readers,
+dual writes, and a runtime migration ladder.
+
+## 2026-08-27: Implemented Prolific as verified admission plus factual outcomes
+
+Context: The old runtime trusted launch identifiers, generated completion codes, used coarse
+recipient outcomes, and reused mutable activity timestamps as several different deadlines. It also
+classified role B as direct and retained too little phase data to review an unmatched wait or a
+partner disconnection.
+
+Decision: Prolific is now an installation-level provider connection. Its API token is a protected
+game secret and its workspace ID is a shared game setting. Experiment JSON contains only enablement,
+study ID, and exactly five distinct researcher-copied completion codes. Activation reads the study
+and checks its workspace, external URL, durations, codes, and exact actions. Secure external URL
+launches are verified as RS256 JWTs against Prolific's daily-cached JWKS and bound to issuer,
+audience, expiry, workspace, and study; the fallback retrieves and checks the claimed submission.
+The submission ID is the atomic resumable-admission key, and launch tokens are never stored.
+
+Both humans retain `identity_provider = prolific`. Recipient outcomes use ten factual values. A
+reconnect expiry gives the disconnected participant `connection_lost` and the participant who
+remained `partner_left`. Idle expiry means there was no accepted message or game action; heartbeats
+are transport liveness only. Waiting, lifetime, idle, disconnection, and reconnect timestamps are
+durable server facts. The dashboard displays unsuccessful waiting as a timestamp difference and
+shows who disconnected and who remained. Parlando contains no compensation rate, amount,
+automatic bonus call, or payment work queue.
+
+Administrator session inspection performs narrow read-only provider reconciliation and persists
+only submission status, entered code, return-request time, and reconciliation time. Reward and
+bonus representations are absent.
+
+Tradeoffs: Activation and admission fail closed when Prolific cannot be verified. The adapter is
+deliberately narrower than the provider API, so payment and submission mutations remain manual in
+Prolific. Historical event rows lack wall-clock event timestamps; converted last-meaningful-activity
+times were therefore reconstructed from `started_at` plus the greatest stored game-clock position
+among accepted conversation-message and game-action events.
+
+Process restarts use the simplest deterministic policy: before serving the experiment, every
+durable forming or running session left by the previous process is atomically finalized as
+`technical_failure`, retaining its participants and giving Prolific participants the approving
+Technical-failure handoff. Replaying arbitrary game implementations, voice state, and in-flight
+browser readiness would be less reliable than this explicit infrastructure outcome. Re-admission
+with the same Prolific submission reaches the stored terminal result through the existing resumable
+admission and terminal-state lookup.
+
+Populated workspace conversion: Converted
+`games/great-tree/server/parlando-great-tree.sqlite` from schema 13 to 14 after confirming with
+`lsof` that it was not open. The adjacent recovery copy is
+`games/great-tree/server/parlando-great-tree.schema13-backup-2026-08-27.sqlite`. The conversion
+preserved 41 sessions, 82 session participants, and 10 Prolific rows. Existing participant-session
+IDs were attached to all Prolific rows and marked `legacy_import`; historical `received_at` serves
+as `verified_at` because no stronger old fact exists. Every old `withdrew` result had a game start
+and became `left_game`; every old participant `timed_out` result came from an idle timeout and became
+`idle_limit_reached`. Historical deadlines use the then-uniform limits of 600 seconds waiting, 1800
+seconds idle, 14400 seconds lifetime, and 60 seconds reconnect grace. Post-conversion integrity was
+`ok`, the foreign-key check returned no rows, all source row counts matched, and no required phase
+timestamp or admission verification field was missing.
+
+## 2026-08-27: Test Prolific through independent programs and an ordinary game setting
+
+Context: Unit tests for completion-path validation did not exercise Parlando's process boundary,
+API authentication, JWKS retrieval, signed launch, dyadic matching, recipient-specific outcomes,
+or dashboard reconciliation. Embedding a fake provider inside Parlando or the runtime stress tool
+would increase production and stress-harness complexity while allowing test-only behavior to share
+the implementation under test.
+
+Decision: Store `prolific_api_base_url` in game settings with
+`https://api.prolific.com` as its default. Use it for workspace verification, activation preflight,
+JWKS retrieval, admission, and reconciliation. The participant completion application remains the
+fixed `https://app.prolific.com` destination because it is not the API origin. Provide three
+processes outside the production crate: `prolific-mock`, an independent provider/JWT emulator;
+`prolific-test-server`, a compiled deterministic game served by the production Parlando runtime;
+and `prolific-test-runner`, a scenario coordinator and reporter. The mock owns independent wire
+records and signing material rather than importing Parlando's Prolific types.
+
+The runner prints a stable scenario catalogue before execution, reports pass/fail/skip and elapsed
+time as work proceeds, writes a complete JSON report and separate child logs, preserves failed
+databases, and returns nonzero unless every scenario passed. The initial matrix covers provider
+configuration, activation, signed admission, real game-WebSocket pairing, waiting-room departure,
+active-game departure, normal dyadic completion, terminal submission re-entry, unsigned
+submission-API fallback, dashboard reconciliation, and the absence of provider mutations. The
+dashboard scenario checks workflow semantics rather than row presence alone: unsuccessful waiting
+duration, shared terminal cause, participant-specific outcomes, and the completed game result.
+
+Every runner invocation creates a new file-backed SQLite database in its temporary directory and
+passes that explicit path to `prolific-test-server`. No workspace game database is an input to the
+test. Successful runs remove the temporary database unless `--keep` is selected, while failed runs
+preserve it for diagnosis. The Great Tree schema conversion recorded below was application schema
+maintenance required by the new game setting, not test setup or a runner dependency.
+
+Lifecycle deadlines are inspected once per second, separately from the 60-second credential and
+ticket cleanup. This bounds waiting, idle, lifetime, and reconnect enforcement lag without running
+the heavier credential cleanup on every tick. WAIT-02 verifies that deadline expiry selects the
+same Unmatched handoff as an active waiting-room departure.
+
+Tradeoffs: A configurable provider origin means a game administrator can direct the protected API
+token to another compatible endpoint; this is within the same trust boundary as setting the token
+itself. Remote endpoints should use HTTPS, while loopback HTTP permits deterministic local tests.
+The emulator proves behavior against the represented contract, not Prolific production, so a real
+test-participant run or small pilot remains a release and study-operations check.
+
+Follow-up workflow expansion: Treat the standalone matrix as an executable specification, not only
+as a passing smoke test. The expanded catalogue names ordinary and adverse paths separately across
+consent, recruitment-source isolation, unmatched waiting, assigned-but-not-started sessions,
+waiting and running reconnects, explicit departure, normal completion, inactivity, lifetime,
+terminal replay, races, dashboard evidence, and provider safety. Consent distinguishes missing,
+explicitly declined, and accepted decisions so one failure cannot hide the other cases. Inactivity
+distinguishes heartbeats, accepted activity, rejected activity, and no activity. Race checks accept
+either valid winner but require one coherent recipient-result family.
+
+The runner intentionally exits nonzero for contractual gaps. The initial expanded run showed that
+missing and declined required consent did not block a Prolific participant from matchmaking, and
+simultaneous reconnect expiry could label one disconnected role `partner_left`. Neither behavior
+was encoded as a passing compatibility contract; the assertions remained red until the runtime
+corrections below.
+
+Resolution: Required consent now gates session creation for every human participant source. The
+browser remains the ordinary consent interface, while the server rejects missing or explicitly
+declined required decisions even when Prolific intake is called directly. Positive reconnect-grace
+expiry now invokes the room-wide expiry transition rather than treating one socket callback as an
+explicit actor departure. Recipient outcomes are derived from the connection state of every role
+at the terminal snapshot: a single disconnected role receives `connection_lost` while its connected
+partner receives `partner_left`; if both roles are disconnected, both receive `connection_lost`.
+The existing three failing workflow assertions became regression guards without being weakened.
+
+Implementation finding: The first process-boundary run exposed that activation appended the
+experiment path to a `public_base_url` which was already experiment-scoped, producing
+`/e/<id>/e/<id>/participant`. Preflight now appends only `/participant`; ACT-02 retains this as a
+regression check.
+
+Populated workspace conversion: After confirming with `lsof` that it was not open, converted
+`games/great-tree/server/parlando-great-tree.sqlite` from schema 14 to 15. The adjacent recovery
+copy is `games/great-tree/server/parlando-great-tree.schema14-backup-2026-08-27.sqlite`. The only
+new representation is the non-null `game_settings.prolific_api_base_url`, initialized to
+`https://api.prolific.com`. Before and after conversion there were 4 experiments, 49 participants,
+41 sessions, 82 session participants, and 10 Prolific submissions. Post-conversion integrity was
+`ok`, the foreign-key check returned no rows, the schema version was 15, and the singleton game
+setting contained the production default. `space-game/.local/parlando.sqlite` remains at its
+pre-existing unsupported schema 10 and was not folded into this unrelated schema-14-to-15 change.

@@ -55,8 +55,9 @@ experiment.
 
 When recruiting through Prolific, follow
 [Prolific Integration](prolific-integration.md) to
-configure participant URL parameters, completion paths, consent and withdrawal behavior, local
-testing, and the dashboard-only privacy boundary.
+configure participant URL parameters, completion paths, local testing, and the dashboard-only
+privacy boundary. Use [Test the Prolific integration](prolific-testing.md) to run the standalone
+provider emulator and binary-level scenario matrix before a live pilot.
 
 For voice studies, read [Audio Transport](audio-transport.md) before deployment.
 It defines the authentication, PCM format, transcription boundary, TTS path,

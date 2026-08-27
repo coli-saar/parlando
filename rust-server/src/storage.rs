@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
-    SqlitePool,
+    Row, SqlitePool,
 };
 
 /// Returns the current UTC timestamp in ISO-8601/RFC3339 form.
@@ -37,6 +37,14 @@ fn relative_game_time_ms(game_started_at: &str, timestamp: &str) -> Result<i64> 
     timestamp_millis(timestamp)?
         .checked_sub(timestamp_millis(game_started_at)?)
         .ok_or_else(|| anyhow!("game-clock subtraction overflowed"))
+}
+
+/// Adds seconds to one RFC3339 timestamp without using a client clock.
+fn deadline_after_seconds(timestamp: &str, seconds: i64) -> Result<String> {
+    Ok(
+        (DateTime::parse_from_rfc3339(timestamp)? + chrono::Duration::seconds(seconds))
+            .to_rfc3339(),
+    )
 }
 
 /// Generates a startup experiment id when neither CLI nor YAML provided one.
@@ -200,6 +208,12 @@ pub struct StoredGameSettings {
     pub speechmatics_realtime_url: String,
     /// Default ElevenLabs WebSocket service origin copied into new experiments.
     pub tts_base_url: String,
+    /// Prolific API and study-JWKS origin used by every experiment in this game process.
+    pub prolific_api_base_url: String,
+    /// Prolific workspace bound to this installation's protected API token.
+    pub prolific_workspace_id: String,
+    /// Last provider-verified workspace title, used only for administrator display.
+    pub prolific_workspace_title: String,
     /// Optimistic-concurrency revision for dashboard updates.
     pub revision: i64,
 }
@@ -212,6 +226,9 @@ impl Default for StoredGameSettings {
             admin_allowed_ip_ranges: Vec::new(),
             speechmatics_realtime_url: "wss://eu.rt.speechmatics.com/v2".to_string(),
             tts_base_url: "wss://api.elevenlabs.io".to_string(),
+            prolific_api_base_url: "https://api.prolific.com".to_string(),
+            prolific_workspace_id: String::new(),
+            prolific_workspace_title: String::new(),
             revision: 1,
         }
     }
@@ -228,14 +245,23 @@ pub struct ParticipantRecord {
     pub metadata: Value,
 }
 
-/// Dashboard-only Prolific correlation attached to one internal participant.
+/// Verified Prolific launch facts used to create or resume one durable admission.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ProlificSubmissionRecord {
     pub experiment_id: String,
-    pub participant_id: i64,
     pub prolific_participant_id: String,
     pub prolific_study_id: String,
     pub prolific_session_id: String,
+    /// `signed_url` or `submission_api`, recorded without retaining a launch token.
+    pub verification_method: String,
+}
+
+/// Stable provider-neutral admission returned for one verified Prolific submission.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ProlificAdmission {
+    pub participant_id: i64,
+    pub research_id: String,
+    pub participant_session_id: String,
 }
 
 /// Input for creating one game session.
@@ -251,6 +277,18 @@ pub struct SessionRecord {
     pub lifecycle: String,
     /// Immutable `testing` or `research` data-use purpose.
     pub purpose: String,
+    /// Fixed maximum duration of the unmatched waiting phase.
+    pub waiting_timeout_seconds: i64,
+    /// Fixed maximum wall-clock lifetime selected from this config revision.
+    pub maximum_lifetime_seconds: i64,
+}
+
+/// Fixed phase clocks assigned atomically with one durable session row.
+#[derive(Clone, Debug)]
+pub struct SessionTiming {
+    pub waiting_started_at: String,
+    pub waiting_deadline_at: String,
+    pub lifetime_deadline_at: String,
 }
 
 /// Input for placing a participant into a session with a session-local role.
@@ -324,6 +362,16 @@ pub struct StoredSessionSummary {
     /// Exact compiled game version which executed this session.
     pub game_version: String,
     pub created_at: String,
+    /// Fixed start of the unmatched waiting phase.
+    pub waiting_started_at: String,
+    /// Fixed deadline at which unmatched waiting ends.
+    pub waiting_deadline_at: String,
+    /// Absolute infrastructure lifetime deadline.
+    pub lifetime_deadline_at: String,
+    /// Last accepted message or game action, excluding heartbeats.
+    pub last_meaningful_activity_at: Option<String>,
+    /// Current idle deadline while the game is running.
+    pub idle_deadline_at: Option<String>,
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
     pub completion: Option<Value>,
@@ -348,6 +396,10 @@ pub struct StoredSessionParticipant {
     pub joined_at: String,
     pub left_at: Option<String>,
     pub connection_status: String,
+    /// Most recent transport-disconnection time, when applicable.
+    pub disconnected_at: Option<String>,
+    /// Fixed deadline for reconnecting after that disconnection.
+    pub reconnect_deadline_at: Option<String>,
     pub participant_kind: Option<String>,
     /// Durable recruitment-source classification without provider-specific identifiers.
     pub identity_provider: Option<String>,
@@ -360,6 +412,14 @@ pub struct StoredSessionParticipant {
     pub prolific_study_id: Option<String>,
     /// Private Prolific submission session id returned only by administrator session inspection.
     pub prolific_session_id: Option<String>,
+    /// Last status read from Prolific, if reconciled.
+    pub prolific_status: Option<String>,
+    /// Completion code currently recorded by Prolific.
+    pub prolific_entered_code: Option<String>,
+    /// Provider return-request timestamp, when present.
+    pub prolific_return_requested_at: Option<String>,
+    /// Time at which these provider facts were refreshed.
+    pub prolific_reconciled_at: Option<String>,
 }
 
 /// Durable terminal participant projection used after live-room cleanup.
@@ -511,6 +571,9 @@ pub trait ExperimentStore: Send + Sync {
         admin_allowed_ip_ranges: Vec<String>,
         speechmatics_realtime_url: String,
         tts_base_url: String,
+        prolific_api_base_url: String,
+        prolific_workspace_id: String,
+        prolific_workspace_title: String,
         secret_updates: HashMap<String, String>,
         secret_deletions: Vec<String>,
     ) -> Result<i64>;
@@ -531,12 +594,26 @@ pub trait ExperimentStore: Send + Sync {
     async fn deactivate_open_experiments(&self) -> Result<u64>;
     /// Creates or reuses a durable participant identity and returns `participant_id`.
     async fn upsert_participant(&self, participant: ParticipantRecord) -> Result<i64>;
-    /// Stores provider correlation outside all evaluation and export tables.
-    async fn record_prolific_submission(&self, submission: ProlificSubmissionRecord) -> Result<()>;
+    /// Atomically creates or resumes one admission for a verified Prolific submission.
+    async fn admit_prolific_submission(
+        &self,
+        submission: ProlificSubmissionRecord,
+    ) -> Result<ProlificAdmission>;
+    /// Stores the narrow, payment-free provider reconciliation projection.
+    async fn reconcile_prolific_submission(
+        &self,
+        experiment_id: &str,
+        prolific_session_id: &str,
+        status: &str,
+        entered_code: Option<String>,
+        return_requested_at: Option<String>,
+    ) -> Result<()>;
     /// Returns the human-readable experiment-specific identifier for a durable participant.
     async fn participant_research_id(&self, participant_id: i64) -> Result<Option<String>>;
     /// Creates a session for a client-facing session id and returns its per-experiment `session_id`.
     async fn create_session(&self, session: SessionRecord) -> Result<i64>;
+    /// Reads the immutable phase clocks created with a session.
+    async fn session_timing(&self, experiment_id: &str, session_id: i64) -> Result<SessionTiming>;
     /// Moves one successfully constructed session from `initializing` to `waiting`.
     async fn complete_session_initialization(
         &self,
@@ -551,7 +628,21 @@ pub trait ExperimentStore: Send + Sync {
         reason_code: &str,
     ) -> Result<()>;
     /// Atomically moves one waiting session to running and records its first start time.
-    async fn start_session(&self, experiment_id: &str, session_id: i64) -> Result<bool>;
+    async fn start_session(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+        started_at: &str,
+        idle_deadline_at: &str,
+    ) -> Result<bool>;
+    /// Persists accepted participant activity and advances the fixed idle deadline.
+    async fn touch_session_activity(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+        activity_at: &str,
+        idle_deadline_at: &str,
+    ) -> Result<()>;
     /// Maps an RFC3339 timestamp onto one running session's authoritative game clock.
     async fn session_game_time_ms(
         &self,
@@ -567,6 +658,7 @@ pub trait ExperimentStore: Send + Sync {
         participant_session_id: &str,
         connection_status: &str,
         left_at: Option<String>,
+        reconnect_deadline_at: Option<String>,
     ) -> Result<()>;
     /// Records one item-level consent declaration.
     async fn record_consent_declaration(&self, declaration: ConsentDeclarationRecord)
@@ -813,6 +905,9 @@ impl SqliteExperimentStore {
                 admin_allowed_ip_ranges_json text not null default '[]',
                 speechmatics_realtime_url text not null default 'wss://eu.rt.speechmatics.com/v2',
                 tts_base_url text not null default 'wss://api.elevenlabs.io',
+                prolific_api_base_url text not null default 'https://api.prolific.com',
+                prolific_workspace_id text not null default '',
+                prolific_workspace_title text not null default '',
                 revision integer not null default 1,
                 updated_at text not null
             )
@@ -847,7 +942,12 @@ impl SqliteExperimentStore {
                 initialization_complete integer not null default 0,
                 purpose text not null default 'research',
                 created_at text not null,
+                waiting_started_at text not null,
+                waiting_deadline_at text not null,
+                lifetime_deadline_at text not null,
                 started_at text,
+                last_meaningful_activity_at text,
+                idle_deadline_at text,
                 ended_at text,
                 completion_json text,
                 session_end_json text,
@@ -867,6 +967,8 @@ impl SqliteExperimentStore {
                 joined_at text not null,
                 left_at text,
                 connection_status text not null,
+                disconnected_at text,
+                reconnect_deadline_at text,
                 terminal_result_json text,
                 primary key (experiment_id, session_id, participant_id),
                 foreign key (experiment_id, session_id) references sessions(experiment_id, session_id),
@@ -881,10 +983,17 @@ impl SqliteExperimentStore {
                 prolific_participant_id text not null,
                 prolific_study_id text not null,
                 prolific_session_id text not null,
+                participant_session_id text not null unique,
                 received_at text not null,
+                verification_method text not null,
+                verified_at text not null,
                 completion_path_key text,
                 completion_code_presented_at text,
                 completion_link_opened_at text,
+                provider_status text,
+                entered_completion_code text,
+                return_requested_at text,
+                reconciled_at text,
                 unique (experiment_id, prolific_session_id),
                 foreign key (participant_id) references participants(participant_id)
             )
@@ -940,7 +1049,7 @@ impl SqliteExperimentStore {
 
     /// Accepts only the current schema baseline or stamps a genuinely empty database.
     async fn apply_pending_migrations(&self) -> Result<()> {
-        const CURRENT_SCHEMA_VERSION: i64 = 13;
+        const CURRENT_SCHEMA_VERSION: i64 = 15;
         let version =
             sqlx::query_scalar::<_, Option<i64>>("select max(version) from schema_migrations")
                 .fetch_one(&self.pool)
@@ -1384,8 +1493,8 @@ impl ExperimentStore for SqliteExperimentStore {
     }
 
     async fn game_settings(&self) -> Result<StoredGameSettings> {
-        let row = sqlx::query_as::<_, (String, String, String, String, i64)>(
-            "select institution, admin_allowed_ip_ranges_json, speechmatics_realtime_url, tts_base_url, revision from game_settings where singleton = 1",
+        let row = sqlx::query_as::<_, (String, String, String, String, String, String, String, i64)>(
+            "select institution, admin_allowed_ip_ranges_json, speechmatics_realtime_url, tts_base_url, prolific_api_base_url, prolific_workspace_id, prolific_workspace_title, revision from game_settings where singleton = 1",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -1394,8 +1503,33 @@ impl ExperimentStore for SqliteExperimentStore {
             admin_allowed_ip_ranges: serde_json::from_str(&row.1)?,
             speechmatics_realtime_url: row.2,
             tts_base_url: row.3,
-            revision: row.4,
+            prolific_api_base_url: row.4,
+            prolific_workspace_id: row.5,
+            prolific_workspace_title: row.6,
+            revision: row.7,
         })
+    }
+
+    async fn reconcile_prolific_submission(
+        &self,
+        experiment_id: &str,
+        prolific_session_id: &str,
+        status: &str,
+        entered_code: Option<String>,
+        return_requested_at: Option<String>,
+    ) -> Result<()> {
+        sqlx::query(
+            "update prolific_submissions set provider_status = ?, entered_completion_code = ?, return_requested_at = ?, reconciled_at = ? where experiment_id = ? and prolific_session_id = ?",
+        )
+        .bind(status)
+        .bind(entered_code)
+        .bind(return_requested_at)
+        .bind(now_iso())
+        .bind(experiment_id)
+        .bind(prolific_session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     async fn game_secrets(&self) -> Result<HashMap<String, String>> {
@@ -1415,6 +1549,9 @@ impl ExperimentStore for SqliteExperimentStore {
         admin_allowed_ip_ranges: Vec<String>,
         speechmatics_realtime_url: String,
         tts_base_url: String,
+        prolific_api_base_url: String,
+        prolific_workspace_id: String,
+        prolific_workspace_title: String,
         secret_updates: HashMap<String, String>,
         secret_deletions: Vec<String>,
     ) -> Result<i64> {
@@ -1422,7 +1559,7 @@ impl ExperimentStore for SqliteExperimentStore {
         let next_revision = expected_revision + 1;
         let result = sqlx::query(
             r#"
-            update game_settings set institution = ?, admin_allowed_ip_ranges_json = ?, speechmatics_realtime_url = ?, tts_base_url = ?, revision = ?, updated_at = ?
+            update game_settings set institution = ?, admin_allowed_ip_ranges_json = ?, speechmatics_realtime_url = ?, tts_base_url = ?, prolific_api_base_url = ?, prolific_workspace_id = ?, prolific_workspace_title = ?, revision = ?, updated_at = ?
             where singleton = 1 and revision = ?
             "#,
         )
@@ -1430,6 +1567,9 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(serde_json::to_string(&admin_allowed_ip_ranges)?)
         .bind(speechmatics_realtime_url.trim())
         .bind(tts_base_url.trim())
+        .bind(prolific_api_base_url.trim())
+        .bind(prolific_workspace_id.trim())
+        .bind(prolific_workspace_title.trim())
         .bind(next_revision)
         .bind(now_iso())
         .bind(expected_revision)
@@ -1462,21 +1602,8 @@ impl ExperimentStore for SqliteExperimentStore {
     ) -> Result<Option<StoredExperimentSummary>> {
         let row = sqlx::query_as::<
             _,
-            (
-                String,
-                String,
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-                String,
-                Option<String>,
-                bool,
-                i64,
-                i64,
-                i64,
-                Option<String>,
-            ),
+            (String, String, String, String, Option<String>, Option<String>, String,
+             Option<String>, bool, i64, i64, i64, Option<String>),
         >(
             r#"
             select e.experiment_id, e.game_version, e.created_at, e.config_json, e.server_version,
@@ -1603,34 +1730,104 @@ impl ExperimentStore for SqliteExperimentStore {
         }
     }
 
-    async fn record_prolific_submission(&self, submission: ProlificSubmissionRecord) -> Result<()> {
+    async fn admit_prolific_submission(
+        &self,
+        submission: ProlificSubmissionRecord,
+    ) -> Result<ProlificAdmission> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query(
+        let existing = sqlx::query_as::<_, (i64, String, String, String, String)>(
             r#"
-            insert into prolific_submissions
-                (experiment_id, participant_id, prolific_participant_id,
-                 prolific_study_id, prolific_session_id, received_at)
-            values (?, ?, ?, ?, ?, ?)
-            on conflict(experiment_id, prolific_session_id) do nothing
+            select ps.participant_id, p.research_id, ps.participant_session_id,
+                   ps.prolific_participant_id, ps.prolific_study_id
+            from prolific_submissions ps
+            join participants p on p.participant_id = ps.participant_id
+            where ps.experiment_id = ? and ps.prolific_session_id = ?
             "#,
         )
         .bind(&submission.experiment_id)
-        .bind(submission.participant_id)
+        .bind(&submission.prolific_session_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some((participant_id, research_id, participant_session_id, participant, study)) =
+            existing
+        {
+            if participant != submission.prolific_participant_id
+                || study != submission.prolific_study_id
+            {
+                bail!("Prolific submission identifiers conflict with an existing admission");
+            }
+            tx.commit().await?;
+            return Ok(ProlificAdmission {
+                participant_id,
+                research_id,
+                participant_session_id,
+            });
+        }
+
+        let participant_record = ParticipantRecord {
+            experiment_id: submission.experiment_id.clone(),
+            participant_kind: "human".to_string(),
+            identity_provider: "prolific".to_string(),
+            external_id: None,
+            metadata: Value::Null,
+        };
+        let (participant_id, research_id) = {
+            let mut identifier_attempt = 1;
+            loop {
+                let research_id =
+                    participant_identifier_candidate(&participant_record, identifier_attempt);
+                let result = sqlx::query(
+                    r#"
+                    insert into participants
+                    (research_id, experiment_id, participant_kind, identity_provider, external_id, metadata_json, created_at)
+                    values (?, ?, 'human', 'prolific', null, ?, ?)
+                    "#,
+                )
+                .bind(&research_id)
+                .bind(&submission.experiment_id)
+                .bind(serde_json::to_string(&Value::Null)?)
+                .bind(now_iso())
+                .execute(&mut *tx)
+                .await;
+                match result {
+                    Ok(result) => break (result.last_insert_rowid(), research_id),
+                    Err(error)
+                        if sqlite_unique_constraint_for(&error, "participants.research_id") =>
+                    {
+                        identifier_attempt += 1;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        };
+        let participant_session_id = new_id("ps");
+        let verified_at = now_iso();
+        sqlx::query(
+            r#"
+            insert into prolific_submissions
+                (experiment_id, participant_id, prolific_participant_id, prolific_study_id,
+                 prolific_session_id, participant_session_id, received_at,
+                 verification_method, verified_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&submission.experiment_id)
+        .bind(participant_id)
         .bind(&submission.prolific_participant_id)
         .bind(&submission.prolific_study_id)
         .bind(&submission.prolific_session_id)
-        .bind(now_iso())
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "update participants set identity_provider = 'prolific' where experiment_id = ? and participant_id = ?",
-        )
-        .bind(&submission.experiment_id)
-        .bind(submission.participant_id)
+        .bind(&participant_session_id)
+        .bind(&verified_at)
+        .bind(&submission.verification_method)
+        .bind(&verified_at)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(())
+        Ok(ProlificAdmission {
+            participant_id,
+            research_id,
+            participant_session_id,
+        })
     }
 
     async fn participant_research_id(&self, participant_id: i64) -> Result<Option<String>> {
@@ -1668,13 +1865,18 @@ impl ExperimentStore for SqliteExperimentStore {
             }
         };
         let created_at = now_iso();
+        let waiting_deadline_at =
+            deadline_after_seconds(&created_at, session.waiting_timeout_seconds)?;
+        let lifetime_deadline_at =
+            deadline_after_seconds(&created_at, session.maximum_lifetime_seconds)?;
         let started_at = (session.lifecycle == "running").then(|| created_at.clone());
         sqlx::query(
             r#"
             insert into sessions
-            (experiment_id, session_id, public_session_id, dialogue_id, mode, lifecycle, purpose, created_at,
+            (experiment_id, session_id, public_session_id, dialogue_id, mode, lifecycle, purpose,
+             created_at, waiting_started_at, waiting_deadline_at, lifetime_deadline_at,
              started_at, config_revision, game_version)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(session.experiment_id)
@@ -1684,7 +1886,10 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(session.mode)
         .bind(session.lifecycle)
         .bind(session.purpose)
-        .bind(created_at)
+        .bind(&created_at)
+        .bind(&created_at)
+        .bind(waiting_deadline_at)
+        .bind(lifetime_deadline_at)
         .bind(started_at)
         .bind(session.config_revision)
         .bind(session.game_version)
@@ -1692,6 +1897,22 @@ impl ExperimentStore for SqliteExperimentStore {
         .await?;
         tx.commit().await?;
         Ok(next_session_id)
+    }
+
+    async fn session_timing(&self, experiment_id: &str, session_id: i64) -> Result<SessionTiming> {
+        let (waiting_started_at, waiting_deadline_at, lifetime_deadline_at) =
+            sqlx::query_as::<_, (String, String, String)>(
+                "select waiting_started_at, waiting_deadline_at, lifetime_deadline_at from sessions where experiment_id = ? and session_id = ?",
+            )
+            .bind(experiment_id)
+            .bind(session_id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(SessionTiming {
+            waiting_started_at,
+            waiting_deadline_at,
+            lifetime_deadline_at,
+        })
     }
 
     async fn complete_session_initialization(
@@ -1756,14 +1977,21 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(())
     }
 
-    async fn start_session(&self, experiment_id: &str, session_id: i64) -> Result<bool> {
-        let started_at = now_iso();
-        let started_at_ms = timestamp_millis(&started_at)?;
+    async fn start_session(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+        started_at: &str,
+        idle_deadline_at: &str,
+    ) -> Result<bool> {
+        let started_at_ms = timestamp_millis(started_at)?;
         let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
-            "update sessions set lifecycle = 'running', started_at = ? where experiment_id = ? and session_id = ? and lifecycle = 'forming' and initialization_complete = 1",
+            "update sessions set lifecycle = 'running', started_at = ?, last_meaningful_activity_at = ?, idle_deadline_at = ? where experiment_id = ? and session_id = ? and lifecycle = 'forming' and initialization_complete = 1",
         )
-        .bind(&started_at)
+        .bind(started_at)
+        .bind(started_at)
+        .bind(idle_deadline_at)
         .bind(experiment_id)
         .bind(session_id)
         .execute(&mut *tx)
@@ -1782,6 +2010,25 @@ impl ExperimentStore for SqliteExperimentStore {
         }
         tx.commit().await?;
         Ok(result.rows_affected() == 1)
+    }
+
+    async fn touch_session_activity(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+        activity_at: &str,
+        idle_deadline_at: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "update sessions set last_meaningful_activity_at = ?, idle_deadline_at = ? where experiment_id = ? and session_id = ? and lifecycle = 'running'",
+        )
+        .bind(activity_at)
+        .bind(idle_deadline_at)
+        .bind(experiment_id)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     async fn session_game_time_ms(
@@ -1831,12 +2078,18 @@ impl ExperimentStore for SqliteExperimentStore {
         participant_session_id: &str,
         connection_status: &str,
         left_at: Option<String>,
+        reconnect_deadline_at: Option<String>,
     ) -> Result<()> {
+        let disconnected_at = (connection_status == "disconnected")
+            .then(|| left_at.clone())
+            .flatten();
         sqlx::query(
-            "update session_participants set connection_status = ?, left_at = ? where participant_session_id = ?",
+            "update session_participants set connection_status = ?, left_at = ?, disconnected_at = ?, reconnect_deadline_at = ? where participant_session_id = ?",
         )
         .bind(connection_status)
         .bind(left_at)
+        .bind(disconnected_at)
+        .bind(reconnect_deadline_at)
         .bind(participant_session_id)
         .execute(&self.pool)
         .await?;
@@ -2119,31 +2372,13 @@ impl ExperimentStore for SqliteExperimentStore {
         experiment_id: &str,
         limit: i64,
     ) -> Result<Vec<StoredSessionSummary>> {
-        let limit = limit.clamp(1, 500);
-        let sessions = sqlx::query_as::<
-            _,
-            (
-                i64,
-                String,
-                String,
-                String,
-                String,
-                String,
-                i64,
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                i64,
-                i64,
-                Option<i64>,
-            ),
-        >(
+        let limit = limit.clamp(1, 10_000);
+        let sessions = sqlx::query(
             r#"
             select s.session_id, s.public_session_id, s.dialogue_id, s.mode, s.lifecycle, s.purpose,
-                   s.config_revision, s.game_version, s.created_at, s.started_at,
+                   s.config_revision, s.game_version, s.created_at,
+                   s.waiting_started_at, s.waiting_deadline_at, s.lifetime_deadline_at,
+                   s.last_meaningful_activity_at, s.idle_deadline_at, s.started_at,
                    s.ended_at, s.completion_json, s.session_end_json,
                    count(distinct sp.participant_id) as participant_count,
                    count(distinct se.event_id) as event_count,
@@ -2167,28 +2402,33 @@ impl ExperimentStore for SqliteExperimentStore {
         .map(|row| {
             Ok(StoredSessionSummary {
                 experiment_id: experiment_id.to_string(),
-                session_id: row.0,
-                public_session_id: row.1,
-                dialogue_id: row.2,
-                mode: row.3,
-                lifecycle: row.4,
-                purpose: row.5,
-                config_revision: row.6,
-                game_version: row.7,
-                created_at: row.8,
-                started_at: row.9,
-                ended_at: row.10,
+                session_id: row.try_get("session_id")?,
+                public_session_id: row.try_get("public_session_id")?,
+                dialogue_id: row.try_get("dialogue_id")?,
+                mode: row.try_get("mode")?,
+                lifecycle: row.try_get("lifecycle")?,
+                purpose: row.try_get("purpose")?,
+                config_revision: row.try_get("config_revision")?,
+                game_version: row.try_get("game_version")?,
+                created_at: row.try_get("created_at")?,
+                waiting_started_at: row.try_get("waiting_started_at")?,
+                waiting_deadline_at: row.try_get("waiting_deadline_at")?,
+                lifetime_deadline_at: row.try_get("lifetime_deadline_at")?,
+                last_meaningful_activity_at: row.try_get("last_meaningful_activity_at")?,
+                idle_deadline_at: row.try_get("idle_deadline_at")?,
+                started_at: row.try_get("started_at")?,
+                ended_at: row.try_get("ended_at")?,
                 completion: row
-                    .11
+                    .try_get::<Option<String>, _>("completion_json")?
                     .map(|raw| serde_json::from_str::<Value>(&raw))
                     .transpose()?,
                 session_end: row
-                    .12
+                    .try_get::<Option<String>, _>("session_end_json")?
                     .map(|raw| serde_json::from_str::<SessionEnd>(&raw))
                     .transpose()?,
-                participant_count: row.13,
-                event_count: row.14,
-                last_event_game_time_ms: row.15,
+                participant_count: row.try_get("participant_count")?,
+                event_count: row.try_get("event_count")?,
+                last_event_game_time_ms: row.try_get("last_event_game_time_ms")?,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -2200,34 +2440,18 @@ impl ExperimentStore for SqliteExperimentStore {
         experiment_id: &str,
         session_id: i64,
     ) -> Result<Vec<StoredSessionParticipant>> {
-        let participants = sqlx::query_as::<
-            _,
-            (
-                String,
-                i64,
-                i64,
-                String,
-                String,
-                String,
-                Option<String>,
-                String,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-            ),
-        >(
+        let participants = sqlx::query(
             r#"
             select sp.experiment_id, sp.session_id, sp.participant_id,
                    sp.participant_session_id, sp.role, sp.joined_at, sp.left_at,
-                   sp.connection_status, p.research_id, p.participant_kind, p.identity_provider,
+                   sp.connection_status, sp.disconnected_at, sp.reconnect_deadline_at,
+                   p.research_id, p.participant_kind, p.identity_provider,
                    p.metadata_json,
                    sp.terminal_result_json, ps.prolific_participant_id, ps.prolific_study_id,
-                   ps.prolific_session_id
+                   ps.prolific_session_id, ps.provider_status as prolific_status,
+                   ps.entered_completion_code as prolific_entered_code,
+                   ps.return_requested_at as prolific_return_requested_at,
+                   ps.reconciled_at as prolific_reconciled_at
             from session_participants sp
             left join participants p on p.participant_id = sp.participant_id
             left join prolific_submissions ps
@@ -2243,28 +2467,34 @@ impl ExperimentStore for SqliteExperimentStore {
         .into_iter()
         .map(|row| {
             Ok(StoredSessionParticipant {
-                experiment_id: row.0,
-                session_id: row.1,
-                participant_id: row.2,
-                participant_session_id: row.3,
-                role: row.4,
-                joined_at: row.5,
-                left_at: row.6,
-                connection_status: row.7,
-                research_id: row.8,
-                participant_kind: row.9,
-                identity_provider: row.10,
+                experiment_id: row.try_get("experiment_id")?,
+                session_id: row.try_get("session_id")?,
+                participant_id: row.try_get("participant_id")?,
+                participant_session_id: row.try_get("participant_session_id")?,
+                role: row.try_get("role")?,
+                joined_at: row.try_get("joined_at")?,
+                left_at: row.try_get("left_at")?,
+                connection_status: row.try_get("connection_status")?,
+                disconnected_at: row.try_get("disconnected_at")?,
+                reconnect_deadline_at: row.try_get("reconnect_deadline_at")?,
+                research_id: row.try_get("research_id")?,
+                participant_kind: row.try_get("participant_kind")?,
+                identity_provider: row.try_get("identity_provider")?,
                 metadata: row
-                    .11
+                    .try_get::<Option<String>, _>("metadata_json")?
                     .map(|raw| serde_json::from_str::<Value>(&raw))
                     .transpose()?,
                 terminal_result: row
-                    .12
+                    .try_get::<Option<String>, _>("terminal_result_json")?
                     .map(|raw| serde_json::from_str::<ParticipantResult>(&raw))
                     .transpose()?,
-                prolific_participant_id: row.13,
-                prolific_study_id: row.14,
-                prolific_session_id: row.15,
+                prolific_participant_id: row.try_get("prolific_participant_id")?,
+                prolific_study_id: row.try_get("prolific_study_id")?,
+                prolific_session_id: row.try_get("prolific_session_id")?,
+                prolific_status: row.try_get("prolific_status")?,
+                prolific_entered_code: row.try_get("prolific_entered_code")?,
+                prolific_return_requested_at: row.try_get("prolific_return_requested_at")?,
+                prolific_reconciled_at: row.try_get("prolific_reconciled_at")?,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -2796,6 +3026,10 @@ pub struct SessionParticipant {
     pub consent_decisions: HashMap<String, bool>,
     pub joined_at: String,
     pub updated_at: String,
+    /// Most recent disconnection instant for restart-safe grace handling.
+    pub disconnected_at: Option<String>,
+    /// Fixed reconnect deadline derived when the connection was lost.
+    pub reconnect_deadline_at: Option<String>,
 }
 
 /// Runtime session record parameterized by a concrete game state type.
@@ -2817,7 +3051,16 @@ pub struct LiveSession<G: Game> {
     /// Temporary interaction pause while a required role may reconnect.
     pub pause: Option<crate::protocol::ParticipantPauseReason>,
     pub participants: HashMap<String, SessionParticipant>,
-    pub created_at: String,
+    /// Fixed beginning of the unmatched waiting phase.
+    pub waiting_started_at: String,
+    /// Fixed server-owned deadline for finding a partner.
+    pub waiting_deadline_at: String,
+    /// Fixed absolute infrastructure lifetime deadline.
+    pub lifetime_deadline_at: String,
+    /// Last accepted message or action; heartbeats never advance this value.
+    pub last_meaningful_activity_at: Option<String>,
+    /// Fixed idle deadline derived from the last meaningful activity.
+    pub idle_deadline_at: Option<String>,
     pub updated_at: String,
 }
 
@@ -2888,9 +3131,24 @@ impl<G: Game> MemoryState<G> {
         source: String,
         purpose: String,
     ) -> ParticipantSession {
+        self.create_participant_with_id(new_id("ps"), participant_id, research_id, source, purpose)
+    }
+
+    /// Restores or creates a participant session with a durable admission subject.
+    pub fn create_participant_with_id(
+        &mut self,
+        participant_session_id: String,
+        participant_id: i64,
+        research_id: String,
+        source: String,
+        purpose: String,
+    ) -> ParticipantSession {
+        if let Some(existing) = self.participants.get(&participant_session_id) {
+            return existing.clone();
+        }
         let now = now_iso();
         let participant = ParticipantSession {
-            id: new_id("ps"),
+            id: participant_session_id,
             participant_id,
             research_id,
             source,

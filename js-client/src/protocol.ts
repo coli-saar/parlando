@@ -80,9 +80,9 @@ export interface ParticipantResult<TObservation = unknown, TCompletion = Record<
 /** Canonical participant lifecycle shared with the server. */
 export type ParticipantState<TObservation = unknown, TAction = unknown, TCompletion = Record<string, unknown>> =
   | { state: "registered" }
-  | { state: "waiting"; public_session_id: string; role: PlayerRole; presence: Record<string, unknown> }
-  | { state: "active"; public_session_id: string; role: PlayerRole; observation: TObservation; available_actions: TAction[] | null; presence: Record<string, unknown> }
-  | { state: "paused"; public_session_id: string; role: PlayerRole; reason: ParticipantPauseReason; observation: TObservation; available_actions: TAction[] | null; presence: Record<string, unknown> }
+  | { state: "waiting"; public_session_id: string; role: PlayerRole; waiting_started_at: string; waiting_deadline_at: string; presence: Record<string, unknown> }
+  | { state: "active"; public_session_id: string; role: PlayerRole; observation: TObservation; available_actions: TAction[] | null; presence: Record<string, unknown>; idle_deadline_at: string }
+  | { state: "paused"; public_session_id: string; role: PlayerRole; reason: ParticipantPauseReason; observation: TObservation; available_actions: TAction[] | null; presence: Record<string, unknown>; idle_deadline_at: string }
   | { state: "ended"; public_session_id: string; role: PlayerRole; result: ParticipantResult<TObservation, TCompletion> };
 
 /** Applies a complete snapshot while rejecting impossible lifecycle jumps. */
@@ -112,11 +112,15 @@ export interface ParticipantClientOptions {
 /** Provider-neutral consequence shown to one participant after a terminal session event. */
 export type ParticipantOutcome =
   | "completed"
-  | "withdrew"
+  | "left_waiting_room"
+  | "left_game"
+  | "participant_inactive"
+  | "connection_lost"
   | "partner_left"
   | "partner_unavailable"
-  | "timed_out"
-  | "technical_failure";
+  | "idle_limit_reached"
+  | "technical_failure"
+  | "lifetime_limit_reached";
 
 /** Optional external recruitment handoff selected by the server. */
 export interface RecruitmentHandoff {
@@ -258,6 +262,8 @@ function requireParticipantState(value: unknown): void {
   requireString(value, "public_session_id");
   requireRole(value, "role");
   if (value.state === "waiting") {
+    requireString(value, "waiting_started_at");
+    requireString(value, "waiting_deadline_at");
     if (!isRecord(value.presence)) throw new Error("invalid participant presence");
     return;
   }
@@ -268,6 +274,7 @@ function requireParticipantState(value: unknown): void {
     return;
   }
   requireField(value, "observation");
+  requireString(value, "idle_deadline_at");
   requireActions(value);
   if (!isRecord(value.presence)) throw new Error("invalid participant presence");
   if (value.state === "paused" && !isRecord(value.reason)) throw new Error("invalid pause reason");
@@ -297,7 +304,7 @@ function requireRole(value: Record<string, unknown>, key: string): void {
 
 /** Requires one participant outcome from the stable provider-neutral vocabulary. */
 function requireOutcome(value: Record<string, unknown>, key: string): void {
-  if (!["completed", "withdrew", "partner_left", "partner_unavailable", "timed_out", "technical_failure"].includes(String(value[key]))) {
+  if (!["completed", "left_waiting_room", "left_game", "participant_inactive", "connection_lost", "partner_left", "partner_unavailable", "idle_limit_reached", "technical_failure", "lifetime_limit_reached"].includes(String(value[key]))) {
     throw new Error(`invalid ${key}`);
   }
 }
@@ -507,12 +514,13 @@ function prolificIntakeParameters(): Record<string, unknown> {
   const participantId = query.get("PROLIFIC_PID");
   const studyId = query.get("STUDY_ID");
   const sessionId = query.get("SESSION_ID");
+  const prolificToken = query.get("prolific_token");
   if (!participantId && !studyId && !sessionId) return {};
   if (!participantId || !studyId || !sessionId) throw new Error("The Prolific link is missing required parameters.");
-  for (const key of ["PROLIFIC_PID", "STUDY_ID", "SESSION_ID"]) query.delete(key);
+  for (const key of ["PROLIFIC_PID", "STUDY_ID", "SESSION_ID", "prolific_token"]) query.delete(key);
   const suffix = query.toString();
   window.history.replaceState(null, "", `${window.location.pathname}${suffix ? `?${suffix}` : ""}${window.location.hash}`);
-  return { prolific: { participant_id: participantId, study_id: studyId, session_id: sessionId } };
+  return { prolific: { participant_id: participantId, study_id: studyId, session_id: sessionId, prolific_token: prolificToken } };
 }
 
 /** Loads one tab-scoped participant credential while tolerating disabled browser storage. */

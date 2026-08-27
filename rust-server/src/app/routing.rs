@@ -605,16 +605,25 @@ where
     } else {
         None
     };
+    let game_settings = if let Some(shared) = shared.as_ref() {
+        shared.game_settings.clone()
+    } else {
+        Arc::new(RwLock::new(store.game_settings().await?))
+    };
+    let prolific_api_base_url = game_settings.read().await.prolific_api_base_url.clone();
+    let prolific_client = (!config.recruitment.prolific.api_token.is_empty())
+        .then(|| {
+            crate::prolific::ProlificClient::with_base_url(
+                config.recruitment.prolific.api_token.clone(),
+                prolific_api_base_url,
+            )
+        })
+        .transpose()?;
     let cors = configured_cors(&config)?;
     let admin_auth = if let Some(shared) = shared.as_ref() {
         shared.admin_auth.clone()
     } else {
         Arc::new(AdminAuthenticator::load(store.clone()).await?)
-    };
-    let game_settings = if let Some(shared) = shared.as_ref() {
-        shared.game_settings.clone()
-    } else {
-        Arc::new(RwLock::new(store.game_settings().await?))
     };
     let telemetry = shared
         .as_ref()
@@ -667,6 +676,8 @@ where
         audio_publisher,
         audio_sessions,
         transcription_provider,
+        prolific_client: RwLock::new(prolific_client),
+        prolific_study: RwLock::new(None),
         committed_transcripts: RwLock::new(HashSet::new()),
         participant_auth: ParticipantAuthenticator::default(),
         upgrade_tickets: UpgradeTicketStore::default(),
@@ -681,6 +692,7 @@ where
         audio_connections: RwLock::new(HashMap::new()),
         version_manifest,
     });
+    finalize_interrupted_sessions(&state).await?;
     if persist_experiment {
         runtime_registry
             .write()

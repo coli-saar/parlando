@@ -552,7 +552,8 @@
       <header class="page-header"><span><h1>Game settings</h1><p class="muted">Settings and build identity shared by every experiment in this process.</p></span></header>
       <div class="settings-content">
         <section class="settings-section" id="gameSettingsPanel"><header class="section-intro"><h2>Shared settings</h2><p class="muted">These values belong to the game process, not to an individual experiment.</p></header><div class="settings-form"><label>Institution<input id="institutionInput" placeholder="Optional institution"></label><label>Administrator IP ranges<textarea id="adminAllowedIpRangesInput" rows="4" placeholder="One CIDR range per line; empty allows every direct peer"></textarea></label><p class="muted small">This list uses the direct network peer. If a reverse proxy hides it, enforce the equivalent range at that trusted proxy.</p></div></section>
-        <section class="settings-section"><header class="section-intro"><h2>Voice services</h2><p class="muted">Endpoint defaults copied into newly created experiments, plus credentials shared by every experiment.</p></header><div class="settings-form"><label>Speechmatics realtime URL default<input id="speechmaticsRealtimeUrlInput" type="url" placeholder="wss://eu.rt.speechmatics.com/v2"><span class="config-help">Initial regional or private WebSocket endpoint for new experiments.</span></label><label>ElevenLabs base URL default<input id="ttsBaseUrlInput" type="url" placeholder="wss://api.elevenlabs.io"><span class="config-help">Initial WebSocket service origin for new experiments.</span></label><div id="gameProviderSecrets"></div><p class="muted small">Changing these defaults never changes an existing experiment revision.</p><div class="settings-save-row"><button class="primary" id="saveGameSettings" type="button">Save game settings</button><span class="save-confirmation" id="gameSettingsSaved" role="status" hidden>Settings saved</span></div></div></section>
+        <section class="settings-section"><header class="section-intro"><h2>Prolific workspace</h2><p class="muted">Connect this Parlando installation to one Prolific workspace. The API token stays server-side.</p></header><div class="settings-form"><label>Workspace ID<input id="prolificWorkspaceIdInput" autocomplete="off" placeholder="Prolific workspace ID"><span class="config-help" id="prolificWorkspaceStatus">Not connected</span></label><label>API base URL<input id="prolificApiBaseUrlInput" type="url" placeholder="https://api.prolific.com"><span class="config-help">Prolific API and study-signing-key origin. Keep the default except for a compatible private endpoint or local integration testing.</span></label></div></section>
+        <section class="settings-section"><header class="section-intro"><h2>Hosted services</h2><p class="muted">Endpoint defaults and credentials shared by every experiment.</p></header><div class="settings-form"><label>Speechmatics realtime URL default<input id="speechmaticsRealtimeUrlInput" type="url" placeholder="wss://eu.rt.speechmatics.com/v2"><span class="config-help">Initial regional or private WebSocket endpoint for new experiments.</span></label><label>ElevenLabs base URL default<input id="ttsBaseUrlInput" type="url" placeholder="wss://api.elevenlabs.io"><span class="config-help">Initial WebSocket service origin for new experiments.</span></label><div id="gameProviderSecrets"></div><p class="muted small">Changing these defaults never changes an existing experiment revision.</p><div class="settings-save-row"><button class="primary" id="saveGameSettings" type="button">Save game settings</button><span class="save-confirmation" id="gameSettingsSaved" role="status" hidden>Settings saved</span></div></div></section>
         <section class="settings-section"><header class="section-intro"><h2>Build information</h2><p class="muted">The compiled game and Parlando versions used by all experiments.</p></header><div id="reproducibility"><div class="empty">Loading build information…</div></div></section>
       </div>
     </section>
@@ -598,6 +599,9 @@
     const adminAllowedIpRangesInput = document.getElementById('adminAllowedIpRangesInput');
     const speechmaticsRealtimeUrlInput = document.getElementById('speechmaticsRealtimeUrlInput');
     const ttsBaseUrlInput = document.getElementById('ttsBaseUrlInput');
+    const prolificApiBaseUrlInput = document.getElementById('prolificApiBaseUrlInput');
+    const prolificWorkspaceIdInput = document.getElementById('prolificWorkspaceIdInput');
+    const prolificWorkspaceStatus = document.getElementById('prolificWorkspaceStatus');
     const loadOverview = document.getElementById('loadOverview');
     const capacityList = document.getElementById('capacityList');
     const trafficMetrics = document.getElementById('trafficMetrics');
@@ -919,6 +923,14 @@
       if (seconds < 60) return `${seconds}s ago`;
       if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
       return `${Math.floor(seconds / 3600)}h ago`;
+    }
+
+    // Formats an elapsed millisecond count without implying a configured reward.
+    function formatDuration(milliseconds) {
+      const totalSeconds = Math.floor(milliseconds / 1000);
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      return minutes ? `${minutes}m ${seconds}s` : `${seconds}s`;
     }
 
     // Formats byte quantities for storage and throughput labels.
@@ -1273,6 +1285,24 @@
       return String(name).replace(/^parlando-/, '').replace(/-/g, ' ');
     }
 
+    // Derives the factual session label used for unmatched and interrupted Prolific work.
+    function factualSessionStatus(session) {
+      const outcomes = Object.values(session.session_end?.participant_results || {}).map(result => result?.outcome);
+      if (outcomes.includes('partner_unavailable')) return 'Unmatched';
+      if (outcomes.includes('partner_left') || outcomes.includes('left_game') || outcomes.includes('connection_lost')) return 'Partner left';
+      return statusText(session.lifecycle);
+    }
+
+    // Formats exact unsuccessful waiting time from durable server timestamps.
+    function unsuccessfulWait(session) {
+      const unmatched = Object.values(session.session_end?.participant_results || {}).some(result => result?.outcome === 'partner_unavailable');
+      if (!unmatched || !session.waiting_started_at) return '';
+      const end = new Date(session.ended_at || session.waiting_deadline_at).getTime();
+      const start = new Date(session.waiting_started_at).getTime();
+      if (!Number.isFinite(end - start)) return '';
+      return ` · waited ${formatDuration(Math.max(0, end - start))}`;
+    }
+
     // Renders the selected experiment's durable sessions with lifecycle dots and compact event counts.
     function renderSessions() {
       if (!state.sessions.length) {
@@ -1283,7 +1313,7 @@
         <button class="session ${state.selected === session.session_id ? 'active' : ''}" data-session="${session.session_id}">
           <span class="session-main">
             <span class="session-name">${statusLabel(session.lifecycle, true)}<strong>${escapeHtml(session.dialogue_id || `Session #${session.session_id}`)}</strong></span>
-            <span class="muted small">#${session.session_id} · ${escapeHtml(fmtTime(session.created_at))}${session.purpose === 'testing' ? ` · <span class="purpose-marker"><span class="status-dot testing" aria-hidden="true"></span>Testing</span>` : ''}</span>
+            <span class="muted small">${escapeHtml(factualSessionStatus(session))} · #${session.session_id} · ${escapeHtml(fmtTime(session.created_at))}${escapeHtml(unsuccessfulWait(session))}${session.purpose === 'testing' ? ` · <span class="purpose-marker"><span class="status-dot testing" aria-hidden="true"></span>Testing</span>` : ''}</span>
           </span>
           <span class="session-count small" title="${session.event_count} events">${icon('list-tree', 'count-icon')}${session.event_count}</span>
         </button>
@@ -1355,6 +1385,11 @@
       adminAllowedIpRangesInput.value = (state.gameSettings?.admin_allowed_ip_ranges || []).join('\n');
       speechmaticsRealtimeUrlInput.value = state.gameSettings?.speechmatics_realtime_url || 'wss://eu.rt.speechmatics.com/v2';
       ttsBaseUrlInput.value = state.gameSettings?.tts_base_url || 'wss://api.elevenlabs.io';
+      prolificApiBaseUrlInput.value = state.gameSettings?.prolific_api_base_url || 'https://api.prolific.com';
+      prolificWorkspaceIdInput.value = state.gameSettings?.prolific_workspace_id || '';
+      prolificWorkspaceStatus.textContent = state.gameSettings?.prolific_workspace_title
+        ? `Connected to ${state.gameSettings.prolific_workspace_title}`
+        : 'Not connected';
       renderGameProviderSecrets();
       const configKey = state.experiment ? `${state.experiment.experiment_id}:${state.experiment.config_revision}` : null;
       if (configKey && configKey !== state.loadedConfigKey) await loadConfigurationSafely();
@@ -1558,14 +1593,14 @@
         { path: 'tts.voice_name', label: 'Voice display name', help: 'Human-readable voice label exposed to the participant client.' },
         { path: 'tts.base_url', label: 'ElevenLabs base URL', help: 'Exact WebSocket service origin that receives agent message text.' }
       ]},
-      { title: 'Prolific recruitment and completion paths', description: 'The five rows below are Parlando session outcomes, not built-in Prolific path names. Create a custom path for each under Prolific → Data collection → Completion paths, choose an appropriate Prolific label and submission-processing action, then enter that path’s custom completion code here. Parlando uses the code to build the completion URL. Private intake identifiers never enter exports.', fields: [
+      { title: 'Prolific recruitment and completion paths', description: 'Create five completion paths under Prolific → Data collection → Completion paths, then copy each Prolific-generated code into its matching field. Parlando never generates completion codes. Private intake identifiers never enter exports.', fields: [
         { path: 'recruitment.prolific.enabled', label: 'Enable Prolific intake', help: 'Require and privately retain the PROLIFIC_PID, STUDY_ID, and SESSION_ID URL parameters.', type: 'boolean' },
         { path: 'recruitment.prolific.study_id', label: 'Accepted study id', help: 'Must exactly match the STUDY_ID supplied by Prolific.' },
-        { path: 'recruitment.prolific.completion_paths.completed', label: 'Parlando outcome: completed — Prolific custom completion code', help: 'Used when this participant finishes the game normally. Map it to the custom completion path and processing action you choose in Prolific.', type: 'completion-code' },
-        { path: 'recruitment.prolific.completion_paths.partner_left', label: 'Parlando outcome: partner left — Prolific custom completion code', help: 'Used when this participant’s partner leaves or cannot reconnect. This is a Parlando outcome, not a predefined Prolific label.', type: 'completion-code' },
-        { path: 'recruitment.prolific.completion_paths.partner_unavailable', label: 'Parlando outcome: partner unavailable — Prolific custom completion code', help: 'Used when matchmaking times out before a partner becomes available. This is a Parlando outcome, not a predefined Prolific label.', type: 'completion-code' },
-        { path: 'recruitment.prolific.completion_paths.timed_out', label: 'Parlando outcome: timed out — Prolific custom completion code', help: 'Used when this participant reaches a session time limit. This is a Parlando outcome, not a predefined Prolific label.', type: 'completion-code' },
-        { path: 'recruitment.prolific.completion_paths.technical_failure', label: 'Parlando outcome: technical failure — Prolific custom completion code', help: 'Used when infrastructure prevents the session from continuing. This is a Parlando outcome, not a predefined Prolific label.', type: 'completion-code' }
+        { path: 'recruitment.prolific.completion_paths.completed', label: 'Completed code', help: 'Copy the code for the Prolific path whose action approves the submission.', type: 'completion-code' },
+        { path: 'recruitment.prolific.completion_paths.partner_left', label: 'Partner left code', help: 'Copy the code for the Prolific path whose action approves the good-faith participant’s submission.', type: 'completion-code' },
+        { path: 'recruitment.prolific.completion_paths.partner_unavailable', label: 'Unmatched code', help: 'Copy the code for a custom Unmatched path whose action requests a return. Do not use Screened out.', type: 'completion-code' },
+        { path: 'recruitment.prolific.completion_paths.timed_out', label: 'Participant timed out code', help: 'Copy the code for the Prolific path whose action requests a return.', type: 'completion-code' },
+        { path: 'recruitment.prolific.completion_paths.technical_failure', label: 'Technical failure code', help: 'Copy the code for the Prolific path whose action approves the submission.', type: 'completion-code' }
       ]},
       { title: 'Players and agents', description: 'Select human pairing or one server-side agent and configure its runtime limits.', fields: [
         { path: 'agents', label: 'Participants', help: 'Pair two people, or pair one person with an agent compiled into this game server.', type: 'agents' }
@@ -1620,12 +1655,6 @@
       configForm.querySelectorAll('[data-secret-placeholder="true"]').forEach(installSecretReplacementInput);
       configForm.querySelectorAll('[data-consent-editor]').forEach(initializeConsentEditor);
       configForm.querySelectorAll('[data-agent-editor]').forEach(initializeAgentEditor);
-      configForm.querySelectorAll('[data-generate-completion-code]').forEach(button => button.addEventListener('click', () => {
-        const input = configForm.querySelector(`[data-config-path="${CSS.escape(button.dataset.generateCompletionCode)}"]`);
-        if (!input) return;
-        input.value = randomCompletionWord();
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-      }));
       configForm.querySelectorAll('[data-config-path], [data-secret-update]').forEach(control => {
         control.addEventListener('input', refreshDraftActivationWarning);
         control.addEventListener('change', refreshDraftActivationWarning);
@@ -1646,28 +1675,9 @@
       else if (field.type === 'decimal') control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="number" type="text" inputmode="decimal" pattern="-?[0-9]+(?:\\.[0-9]+)?" value="${escapeHtml(value)}" placeholder="1.2" title="Use a decimal point, for example 1.2">`;
       else if (field.type === 'select') control = `<select data-config-path="${escapeHtml(field.path)}" data-config-type="string">${field.options.map(([option, label]) => `<option value="${escapeHtml(option)}" ${value === option ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select>`;
       else if (field.type === 'json') control = `<textarea data-config-path="${escapeHtml(field.path)}" data-config-type="json" rows="${field.rows || 5}" spellcheck="false">${escapeHtml(JSON.stringify(value, null, 2))}</textarea>`;
-      else if (field.type === 'completion-code') control = `<span class="secret-control"><input data-config-path="${escapeHtml(field.path)}" data-config-type="string" type="text" maxlength="64" pattern="[A-Za-z0-9]*" value="${escapeHtml(value ?? '')}"><button class="secondary" data-generate-completion-code="${escapeHtml(field.path)}" type="button">Generate two-word code</button></span>`;
+      else if (field.type === 'completion-code') control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="string" type="text" maxlength="64" pattern="[A-Za-z0-9]*" value="${escapeHtml(value ?? '')}" autocomplete="off">`;
       else control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="string" type="${field.type === 'url' ? 'url' : 'text'}" value="${escapeHtml(value ?? '')}">`;
       return `<label class="config-field"><span>${escapeHtml(field.label)}</span>${control}${help}</label>`;
-    }
-
-    // Generates a memorable adjective-noun code without sending configuration anywhere.
-    function randomCompletionWord() {
-      const adjectives = [
-        'AMBER', 'AUTUMN', 'BRAVE', 'BRIGHT', 'BRISK', 'CALM', 'CEDAR', 'CLEAR',
-        'CORAL', 'COSMIC', 'DAWN', 'EMBER', 'FAIR', 'FROST', 'GENTLE', 'GOLDEN',
-        'GREEN', 'HAPPY', 'IVORY', 'LUNAR', 'MINT', 'NOBLE', 'OCEAN', 'QUIET',
-        'RAPID', 'ROYAL', 'SILVER', 'SOLAR', 'STILL', 'SUNNY', 'SWIFT', 'VIOLET'
-      ];
-      const nouns = [
-        'BADGER', 'BIRCH', 'CEDAR', 'COMET', 'CRANE', 'DOLPHIN', 'FALCON', 'FERN',
-        'FINCH', 'FOREST', 'HARBOR', 'HAWK', 'HERON', 'ISLAND', 'JUNIPER', 'LAKE',
-        'MAPLE', 'MEADOW', 'ORCHID', 'OTTER', 'PANDA', 'RAVEN', 'RIVER', 'ROBIN',
-        'SPRUCE', 'STAR', 'SWAN', 'THRUSH', 'TIGER', 'VALLEY', 'WILLOW', 'WREN'
-      ];
-      const values = new Uint32Array(2);
-      crypto.getRandomValues(values);
-      return `${adjectives[values[0] % adjectives.length]}${nouns[values[1] % nouns.length]}`;
     }
 
     // Renders fields owned by one compiled agent factory without exposing raw JSON.
@@ -2164,12 +2174,13 @@
       await loadExperiment();
     }
 
-    // Renders the two installation-wide provider credentials without returning their values.
+    // Renders installation-wide provider credentials without returning their values.
     function renderGameProviderSecrets() {
       const container = document.getElementById('gameProviderSecrets');
       const definitions = [
         ['speechmatics.api_key', 'Speechmatics API key', 'Used to open live transcription streams.'],
-        ['tts.api_key', 'ElevenLabs API key', 'Used to synthesize agent speech.']
+        ['tts.api_key', 'ElevenLabs API key', 'Used to synthesize agent speech.'],
+        ['prolific.api_token', 'Prolific API token', 'Used only by the server to verify studies, launches, completion paths, and submission status.']
       ];
       container.innerHTML = definitions.map(([key, label, help]) => {
         const status = state.gameProviderSecrets.find(item => item.key === key) || {};
@@ -2264,6 +2275,8 @@
             admin_allowed_ip_ranges: adminAllowedIpRanges,
             speechmatics_realtime_url: speechmaticsRealtimeUrlInput.value,
             tts_base_url: ttsBaseUrlInput.value,
+            prolific_api_base_url: prolificApiBaseUrlInput.value,
+            prolific_workspace_id: prolificWorkspaceIdInput.value,
             secret_updates: Object.fromEntries(state.gameProviderSecretUpdates),
             secret_deletions: [...state.gameProviderSecretDeletions]
           })
@@ -2426,6 +2439,10 @@
           <div><dt>Purpose</dt><dd><span class="status-chip">${statusLabel(session.purpose || 'research')}</span></dd></div>
           <div><dt>Recruitment</dt><dd>${recruitmentProvider}</dd></div>
           <div><dt>End cause</dt><dd>${escapeHtml(statusText(session.session_end?.cause?.type || 'pending'))}</dd></div>
+          <div><dt>Waiting began</dt><dd>${escapeHtml(fmtTime(session.waiting_started_at || session.created_at))}</dd></div>
+          <div><dt>Waiting deadline</dt><dd>${escapeHtml(fmtTime(session.waiting_deadline_at))}</dd></div>
+          <div><dt>Unsuccessful wait</dt><dd>${escapeHtml(unsuccessfulWait(session).replace(/^ · /, '') || '—')}</dd></div>
+          <div><dt>Last meaningful activity</dt><dd>${escapeHtml(fmtTime(session.last_meaningful_activity_at))}</dd></div>
         </dl>
         ${participantAssignments(participantRows)}
       `;
@@ -2495,7 +2512,7 @@
         <div class="participant-assignment participant-role-${row.role === 'B' ? 'b' : 'a'}">
           ${roleBadge(row.role)}
           ${participantIcon(row.participant_kind)}
-          <span class="participant-copy"><span class="participant-name-line"><strong>${escapeHtml(participantDisplayName(row))}</strong>${participantStateMarkup(row)}${livenessBadge(participantTransportHealth(row))}${row.participant_kind !== 'agent' && row.research_id ? `<button class="danger delete-participant" data-research-id="${escapeHtml(row.research_id)}" type="button" title="Delete participant data" aria-label="Delete participant data">${icon('trash')}</button>` : ''}${configurationIdentityMarkup(row)}</span>${row.prolific_participant_id ? `<span class="muted small">Prolific ${escapeHtml(row.prolific_participant_id)} · study ${escapeHtml(row.prolific_study_id)} · session ${escapeHtml(row.prolific_session_id)}</span>` : ''}</span>
+          <span class="participant-copy"><span class="participant-name-line"><strong>${escapeHtml(participantDisplayName(row))}</strong>${participantStateMarkup(row)}${livenessBadge(participantTransportHealth(row))}${row.participant_kind !== 'agent' && row.research_id ? `<button class="danger delete-participant" data-research-id="${escapeHtml(row.research_id)}" type="button" title="Delete participant data" aria-label="Delete participant data">${icon('trash')}</button>` : ''}${configurationIdentityMarkup(row)}</span>${row.prolific_participant_id ? `<span class="muted small">Prolific ${escapeHtml(row.prolific_participant_id)} · study ${escapeHtml(row.prolific_study_id)} · session ${escapeHtml(row.prolific_session_id)}</span><span class="muted small">Provider status ${escapeHtml(row.prolific_status || 'not reconciled')}${row.prolific_entered_code ? ` · entered code ${escapeHtml(row.prolific_entered_code)}` : ''}${row.prolific_return_requested_at ? ` · return requested ${escapeHtml(fmtTime(row.prolific_return_requested_at))}` : ''}${row.prolific_reconciled_at ? ` · checked ${escapeHtml(fmtTime(row.prolific_reconciled_at))}` : ''}</span>` : ''}${row.disconnected_at ? `<span class="muted small">Disconnected ${escapeHtml(fmtTime(row.disconnected_at))}${row.reconnect_deadline_at ? ` · reconnect deadline ${escapeHtml(fmtTime(row.reconnect_deadline_at))}` : ''}</span>` : ''}</span>
         </div>`).join('')}</div>`;
     }
 
