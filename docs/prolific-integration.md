@@ -59,8 +59,10 @@ screen-out action. A returned unmatched submission is visible in Prolific, where
 review the participant and make any manual payment that the study requires. Parlando does not create
 a payment queue, calculate a waiting amount, or call a bonus endpoint.
 
-Use the selected Parlando experiment page as the external study URL. Enable Prolific's **Secure
-external URL** for the study. Prolific then adds a short-lived signed `prolific_token` query
+Activate the Parlando experiment, then copy its **Participant page** link into Prolific as the
+external study URL. The active link contains Prolific's literal `{{%PROLIFIC_PID%}}`,
+`{{%STUDY_ID%}}`, and `{{%SESSION_ID%}}` placeholders; Prolific replaces them for each launch.
+Enable Prolific's **Secure external URL** for the study. Prolific then adds a short-lived signed `prolific_token` query
 parameter. Parlando verifies its signature, issuer, audience, expiry, study, workspace, participant,
 and submission before admitting the participant. The browser removes this token and the provider
 identifiers from the visible URL after intake.

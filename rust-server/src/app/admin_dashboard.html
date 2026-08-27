@@ -79,10 +79,11 @@
     .status-dot { background: var(--archived); border-radius: 50%; display: inline-block; flex: 0 0 auto; height: 7px; width: 7px; }
     .status-dot.inactive, .status-dot.forming, .status-dot.waiting, .status-dot.delayed, .status-dot.paused { background: var(--draft); }
     .status-dot.testing { background: var(--testing); }
-    .status-dot.active, .status-dot.running, .status-dot.live, .status-dot.research { background: var(--active); }
+    .status-dot.active, .status-dot.running, .status-dot.live, .status-dot.research, .status-dot.checked, .status-dot.approved { background: var(--active); }
     .status-dot.completed, .status-dot.ended { background: var(--completed); }
-    .status-dot.archived, .status-dot.unavailable { background: var(--archived); }
-    .status-dot.disconnected, .status-dot.stale, .status-dot.expired, .status-dot.abandoned { background: var(--danger); }
+    .status-dot.archived, .status-dot.unavailable, .status-dot.not-checked { background: var(--archived); }
+    .status-dot.disconnected, .status-dot.stale, .status-dot.expired, .status-dot.abandoned, .status-dot.connection-lost, .status-dot.technical-failure { background: var(--danger); }
+    .status-dot.partner-left, .status-dot.partner-unavailable, .status-dot.explicit-left, .status-dot.no-partner, .status-dot.participant-inactive, .status-dot.inactivity-timeout, .status-dot.duration-limit { background: var(--draft); }
     .status-dot.server { background: #7057a3; }
     .column-resizer { align-items: stretch; align-self: stretch; background: transparent; border: 0; cursor: col-resize; display: flex; justify-content: center; padding: 0; touch-action: none; }
     .column-resizer span { background: var(--strong-line); height: 100%; width: 1px; }
@@ -114,6 +115,8 @@
     .session-detail { display: flex; flex-direction: column; min-height: 0; min-width: 0; padding-left: 24px; }
     .session-summary { background: #fff; border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 18px; min-width: 0; padding: 18px; }
     .session-summary h2 { margin: 0; }
+    .session-summary-heading { align-items: baseline; display: flex; flex-wrap: wrap; gap: 8px 14px; }
+    .session-dialogue-name { color: var(--subtle); font-size: 16px; overflow-wrap: anywhere; }
     .session-facts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; }
     .session-facts > div { border-left: 1px solid var(--strong-line); display: grid; gap: 5px; min-width: 0; padding: 0 18px; }
     .session-facts > div:first-child { border-left: 0; padding-left: 0; }
@@ -134,12 +137,19 @@
     .participant-copy strong { color: var(--text); font-size: 15px; overflow-wrap: anywhere; }
     .participant-copy > .muted { overflow-wrap: anywhere; }
     .participant-name-line { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; min-width: 0; }
+    .participant-status-line { align-items: center; display: flex; flex-wrap: wrap; gap: 7px 14px; min-height: 18px; }
+    .participant-status-line:empty { display: none; }
     .delete-participant { height: 26px; justify-content: center; padding: 0; width: 26px; }
     .delete-participant .icon { height: 14px; width: 14px; }
     .configuration-identity { justify-self: start; position: relative; }
     .configuration-identity summary { align-items: center; background: #eef4f8; border: 1px solid #c9dce8; border-radius: 999px; color: #245f7d; cursor: pointer; display: inline-flex; font-size: 11px; font-weight: 700; gap: 5px; list-style: none; padding: 3px 8px; white-space: nowrap; }
     .configuration-identity summary::-webkit-details-marker { display: none; }
     .configuration-identity[open] summary { background: #dcecf5; }
+    .participant-name-line > .provider-details { align-items: center; align-self: center; display: inline-flex; line-height: 1; }
+    .provider-details summary { align-items: center; background: transparent; border: 0; border-radius: 50%; color: var(--archived); display: inline-flex; font-size: 12px; font-weight: 400; height: 20px; justify-content: center; padding: 0; }
+    .provider-details[open] summary { background: transparent; }
+    .provider-details.checked summary { color: #247849; }
+    .provider-details summary .icon { height: 17px; width: 17px; }
     .configuration-identity-card { background: #fff; border: 1px solid var(--strong-line); border-radius: 7px; box-shadow: 0 10px 28px rgba(32, 38, 44, .16); display: grid; gap: 10px; left: 0; max-width: calc(100vw - 48px); min-width: min(330px, calc(100vw - 48px)); padding: 13px; position: absolute; top: calc(100% + 6px); z-index: 10; }
     .configuration-identity-card dl { display: grid; gap: 6px; grid-template-columns: auto minmax(0, 1fr); margin: 0; }
     .configuration-identity-card dt { color: var(--subtle); }
@@ -295,9 +305,11 @@
     .settings-section + .settings-section { border-top: 1px solid var(--line); }
     .settings-form { display: grid; gap: 16px; }
     .settings-form .primary { justify-self: start; }
-    #gameProviderSecrets { display: grid; gap: 20px; }
+    .provider-secret { display: grid; gap: 20px; }
     .settings-save-row { align-items: center; display: flex; gap: 12px; }
     .save-confirmation { color: #257748; font-size: 12px; font-weight: 700; opacity: 1; transition: opacity 180ms ease; }
+    .save-confirmation.unsaved { color: var(--subtle); }
+    .save-confirmation.error { color: var(--danger); }
     .save-confirmation[hidden] { display: none; }
     .save-confirmation.fading { opacity: 0; }
     .build-facts { display: grid; gap: 0; margin: 0; }
@@ -403,6 +415,7 @@
     <symbol id="icon-restore" viewBox="0 0 24 24"><path d="M4 7h16v13H4zM3 4h18v3H3zM8 13a4 4 0 1 0 1.2-2.8L7 12"/><path d="M7 9v3h3"/></symbol>
     <symbol id="icon-power" viewBox="0 0 24 24"><path d="M12 2v10M6.3 5.8a9 9 0 1 0 11.4 0"/></symbol>
     <symbol id="icon-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="icon-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.8 9a2.4 2.4 0 1 1 3.3 2.2c-.8.4-1.1.9-1.1 1.8M12 17h.01"/></symbol>
     <symbol id="icon-alert" viewBox="0 0 24 24"><path d="M12 3 22 21H2L12 3Z"/><path d="M12 9v5M12 18h.01"/></symbol>
     <symbol id="icon-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7V5Z"/></symbol>
     <symbol id="icon-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 20h16"/></symbol>
@@ -552,8 +565,10 @@
       <header class="page-header"><span><h1>Game settings</h1><p class="muted">Settings and build identity shared by every experiment in this process.</p></span></header>
       <div class="settings-content">
         <section class="settings-section" id="gameSettingsPanel"><header class="section-intro"><h2>Shared settings</h2><p class="muted">These values belong to the game process, not to an individual experiment.</p></header><div class="settings-form"><label>Institution<input id="institutionInput" placeholder="Optional institution"></label><label>Administrator IP ranges<textarea id="adminAllowedIpRangesInput" rows="4" placeholder="One CIDR range per line; empty allows every direct peer"></textarea></label><p class="muted small">This list uses the direct network peer. If a reverse proxy hides it, enforce the equivalent range at that trusted proxy.</p></div></section>
-        <section class="settings-section"><header class="section-intro"><h2>Prolific workspace</h2><p class="muted">Connect this Parlando installation to one Prolific workspace. The API token stays server-side.</p></header><div class="settings-form"><label>Workspace ID<input id="prolificWorkspaceIdInput" autocomplete="off" placeholder="Prolific workspace ID"><span class="config-help" id="prolificWorkspaceStatus">Not connected</span></label><label>API base URL<input id="prolificApiBaseUrlInput" type="url" placeholder="https://api.prolific.com"><span class="config-help">Prolific API and study-signing-key origin. Keep the default except for a compatible private endpoint or local integration testing.</span></label></div></section>
-        <section class="settings-section"><header class="section-intro"><h2>Hosted services</h2><p class="muted">Endpoint defaults and credentials shared by every experiment.</p></header><div class="settings-form"><label>Speechmatics realtime URL default<input id="speechmaticsRealtimeUrlInput" type="url" placeholder="wss://eu.rt.speechmatics.com/v2"><span class="config-help">Initial regional or private WebSocket endpoint for new experiments.</span></label><label>ElevenLabs base URL default<input id="ttsBaseUrlInput" type="url" placeholder="wss://api.elevenlabs.io"><span class="config-help">Initial WebSocket service origin for new experiments.</span></label><div id="gameProviderSecrets"></div><p class="muted small">Changing these defaults never changes an existing experiment revision.</p><div class="settings-save-row"><button class="primary" id="saveGameSettings" type="button">Save game settings</button><span class="save-confirmation" id="gameSettingsSaved" role="status" hidden>Settings saved</span></div></div></section>
+        <section class="settings-section"><header class="section-intro"><h2>Speechmatics</h2><p class="muted">Connection defaults and credentials for live transcription.</p></header><div class="settings-form"><label>Realtime URL default<input id="speechmaticsRealtimeUrlInput" type="url" placeholder="wss://eu.rt.speechmatics.com/v2"><span class="config-help">Initial regional or private WebSocket endpoint for new experiments.</span></label><div class="provider-secret" id="speechmaticsProviderSecret"></div><p class="muted small">Changing the endpoint default never changes an existing experiment revision.</p></div></section>
+        <section class="settings-section"><header class="section-intro"><h2>ElevenLabs</h2><p class="muted">Connection defaults and credentials for synthesized speech.</p></header><div class="settings-form"><label>Base URL default<input id="ttsBaseUrlInput" type="url" placeholder="wss://api.elevenlabs.io"><span class="config-help">Initial WebSocket service origin for new experiments.</span></label><div class="provider-secret" id="ttsProviderSecret"></div><p class="muted small">Changing the endpoint default never changes an existing experiment revision.</p></div></section>
+        <section class="settings-section"><header class="section-intro"><h2>Prolific</h2><p class="muted">Workspace, endpoint, and credential used by every Prolific experiment.</p></header><div class="settings-form"><label>Workspace ID<input id="prolificWorkspaceIdInput" autocomplete="off" placeholder="Prolific workspace ID"><span class="config-help" id="prolificWorkspaceStatus">Not connected</span><span class="config-help">Required for Prolific experiments. Saving verifies the real workspace ID with the API token below.</span></label><label>API base URL<input id="prolificApiBaseUrlInput" type="url" placeholder="https://api.prolific.com"><span class="config-help">Keep the default except for a compatible private endpoint or local integration testing.</span></label><div class="provider-secret" id="prolificProviderSecret"></div></div></section>
+        <section class="settings-section"><header class="section-intro"><h2>Save changes</h2><p class="muted">This saves every shared and provider setting above in one transaction.</p></header><div class="settings-form"><div class="settings-save-row"><button class="primary" id="saveGameSettings" type="button">Save all game settings</button><span class="save-confirmation" id="gameSettingsSaved" role="status" hidden>All game settings saved</span></div></div></section>
         <section class="settings-section"><header class="section-intro"><h2>Build information</h2><p class="muted">The compiled game and Parlando versions used by all experiments.</p></header><div id="reproducibility"><div class="empty">Loading build information…</div></div></section>
       </div>
     </section>
@@ -568,7 +583,7 @@
     </form>
   </dialog>
   <script>
-    const state = { experiment: null, experiments: [], game: null, gameSettings: null, load: null, privacy: null, activationIssues: [], sessions: [], selected: null, selectedSession: null, selectedParticipants: [], events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, csrfToken: null, activeScope: 'experiments', activeTab: 'sessions', loadedConfigKey: null, configLoadFailed: false, configValue: null, configuredSecrets: [], gameSecretKeys: [], secretDeletions: new Set(), agentFactories: [], gameProviderSecrets: [], gameProviderSecretDeletions: new Set(), gameProviderSecretUpdates: new Map(), prolificTestIdentities: new Map(), gameSettingsConfirmationTimer: null, notesMode: 'write', notesSource: '', notesDirty: false };
+    const state = { experiment: null, experiments: [], game: null, gameSettings: null, gameSettingsDirty: false, gameSettingsDraftRevision: null, load: null, privacy: null, activationIssues: [], sessions: [], selected: null, selectedSession: null, selectedParticipants: [], events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, csrfToken: null, activeScope: 'experiments', activeTab: 'sessions', loadedConfigKey: null, configLoadFailed: false, configValue: null, configuredSecrets: [], gameSecretKeys: [], secretDeletions: new Set(), agentFactories: [], gameProviderSecrets: [], gameProviderSecretDeletions: new Set(), gameProviderSecretUpdates: new Map(), prolificTestIdentities: new Map(), gameSettingsConfirmationTimer: null, notesMode: 'write', notesSource: '', notesDirty: false };
     const experimentList = document.getElementById('experimentList');
     const menuButton = document.getElementById('menuButton');
     const experimentHeader = document.getElementById('experimentHeader');
@@ -886,11 +901,17 @@
       return value.charAt(0).toUpperCase() + value.slice(1);
     }
 
-    // Renders a colored status mark together with its accessible text label.
+    // Renders a colored status mark with caller-supplied plain-language text.
+    function namedStatusLabel(status, text, compact = false) {
+      const normalized = String(status || 'unknown').toLowerCase();
+      const style = normalized.replaceAll('_', '-');
+      return `<span class="status-label"><span class="status-dot ${escapeHtml(style)}" aria-hidden="true"></span>${compact ? `<span class="visually-hidden">${escapeHtml(text)}</span>` : escapeHtml(text)}</span>`;
+    }
+
+    // Renders a colored status mark together with its machine-status label.
     function statusLabel(status, compact = false) {
       const normalized = String(status || 'unknown').toLowerCase();
-      const text = statusText(normalized);
-      return `<span class="status-label"><span class="status-dot ${escapeHtml(normalized)}" aria-hidden="true"></span>${compact ? `<span class="visually-hidden">${escapeHtml(text)}</span>` : escapeHtml(text)}</span>`;
+      return namedStatusLabel(normalized, statusText(normalized), compact);
     }
 
     // Formats a date without adding the time when catalogue density matters.
@@ -909,11 +930,12 @@
       return (state.load?.sessions || []).find(row => row.experiment_id === state.experiment?.experiment_id && row.session_id === sessionId) || null;
     }
 
-    // Renders a consistent status marker for session and participant health.
+    // Renders health in the same dot-and-label style as experiment lifecycle status.
     function livenessBadge(health, detail = '') {
       const normalized = ['live', 'delayed', 'stale', 'disconnected', 'waiting', 'ended', 'server', 'unavailable'].includes(health) ? health : 'unavailable';
       const title = detail ? ` title="${escapeHtml(detail)}"` : '';
-      return `<span class="status-chip"${title}>${statusLabel(normalized)}</span>`;
+      const label = normalized === 'disconnected' ? 'Connection lost' : normalized === 'stale' ? 'Connection unresponsive' : statusText(normalized);
+      return `<span${title}>${namedStatusLabel(normalized, label)}</span>`;
     }
 
     // Formats an operational timestamp as an age without pretending it is research activity.
@@ -1103,15 +1125,17 @@
       if (state.selectedSession) renderSummary(state.selectedSession, state.selectedParticipants);
     }
 
-    // Renders compact structural-validity and runtime-readiness indicators with diagnostics.
+    // Renders one compact experiment-readiness indicator covering configuration and dependencies.
     function experimentCapabilityBadges(experiment) {
       const valid = experiment.configuration_valid === true;
       const runnable = experiment.runnable === true;
-      const validityTitle = valid ? 'Valid experiment configuration' : `Invalid experiment configuration: ${experiment.configuration_error || 'unknown error'}`;
-      const readinessTitle = runnable ? 'Runnable experiment' : `Not runnable: ${(experiment.runnable_issues || []).join(' ') || (valid ? 'runtime requirements are not met' : 'configuration is invalid')}`;
+      const ready = valid && runnable;
+      const issues = valid
+        ? (experiment.runnable_issues || []).join(' ') || 'A required game or provider setting is missing.'
+        : experiment.configuration_error || 'The experiment configuration is invalid.';
+      const title = ready ? 'Experiment is ready to start' : `Experiment setup incomplete: ${issues}`;
       return `<span class="experiment-badges">
-        <span class="capability-badge ${valid ? 'valid' : 'invalid'}" title="${escapeHtml(validityTitle)}" aria-label="${escapeHtml(validityTitle)}">${icon(valid ? 'check' : 'alert')}</span>
-        ${valid ? `<span class="capability-badge ${runnable ? 'ready' : 'blocked'}" title="${escapeHtml(readinessTitle)}" aria-label="${escapeHtml(readinessTitle)}">${icon(runnable ? 'play' : 'alert')}</span>` : ''}
+        <span class="capability-badge ${ready ? 'ready' : 'blocked'}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">${icon(ready ? 'check' : 'alert')}</span>
       </span>`;
     }
 
@@ -1182,12 +1206,15 @@
       document.getElementById('archiveButton').addEventListener('click', experiment.status === 'archived' ? () => updateExperimentStatus('inactive') : archiveSelectedExperiment);
     }
 
-    // Builds a directly usable participant URL, including synthetic Prolific intake identity in tests.
+    // Builds a participant URL with synthetic test identity or copyable production placeholders.
     function participantPageHref(experiment) {
       const url = new URL(`/e/${encodeURIComponent(experiment.experiment_id)}/`, window.location.origin);
       const selectedConfig = state.experiment?.experiment_id === experiment.experiment_id ? state.configValue : null;
       const prolific = selectedConfig?.recruitment?.prolific || experiment.config?.recruitment?.prolific;
       if (!prolific?.enabled) return `${url.pathname}${url.search}`;
+      if (experiment.status === 'active') {
+        return `${url.pathname}?PROLIFIC_PID={{%PROLIFIC_PID%}}&STUDY_ID={{%STUDY_ID%}}&SESSION_ID={{%SESSION_ID%}}`;
+      }
       let identity = state.prolificTestIdentities.get(experiment.experiment_id);
       if (!identity) {
         const participantToken = crypto.randomUUID().replaceAll('-', '').toUpperCase();
@@ -1204,13 +1231,14 @@
       return `${url.pathname}${url.search}`;
     }
 
-    // Explains whether the dashboard link carries local synthetic recruitment identity.
+    // Explains whether the Prolific link is configured for testing or provider setup.
     function participantPageTitle(experiment) {
       const selectedConfig = state.experiment?.experiment_id === experiment.experiment_id ? state.configValue : null;
       const prolific = selectedConfig?.recruitment?.prolific || experiment.config?.recruitment?.prolific;
-      return prolific?.enabled
-        ? 'Open with synthetic Prolific participant and session IDs for testing'
-        : 'Open participant page';
+      if (!prolific?.enabled) return 'Open participant page';
+      return experiment.status === 'active'
+        ? 'Copy this URL into the Prolific study configuration'
+        : 'Open with synthetic Prolific participant and session IDs for testing';
     }
 
     // Shows a dedicated creation prompt instead of experiment controls when the catalogue is empty.
@@ -1285,18 +1313,47 @@
       return String(name).replace(/^parlando-/, '').replace(/-/g, ' ');
     }
 
-    // Derives the factual session label used for unmatched and interrupted Prolific work.
+    // Describes one terminal cause without claiming more than Parlando observed.
+    function sessionEndPresentation(session) {
+      const cause = session.session_end?.cause || {};
+      const actor = cause.actor || cause.disconnected_role;
+      const subject = actor || 'Participant';
+      if (cause.type === 'game_completed') return { status: 'completed', label: 'Completed', detail: '' };
+      if (cause.type === 'participant_left') return { status: 'explicit-left', label: `${subject} chose to leave`, detail: 'The participant used Parlando’s leave action.' };
+      if (cause.type === 'reconnect_timed_out') return { status: 'connection-lost', label: `${subject} connection lost`, detail: 'The browser connection ended and the participant did not reconnect. Parlando cannot distinguish a closed tab from a network interruption.' };
+      if (cause.type === 'partner_unavailable') return { status: 'no-partner', label: 'No partner found', detail: '' };
+      if (cause.type === 'idle_timed_out') return { status: 'inactivity-timeout', label: 'Inactivity timeout', detail: '' };
+      if (cause.type === 'lifetime_timed_out') return { status: 'duration-limit', label: 'Maximum duration reached', detail: '' };
+      if (cause.type === 'technical_failure') return { status: 'technical-failure', label: 'Technical failure', detail: '' };
+      return { status: 'unavailable', label: 'End reason unavailable', detail: '' };
+    }
+
+    // Renders a terminal-cause badge with precise evidence boundaries in its tooltip.
+    function sessionEndBadge(session) {
+      const presentation = sessionEndPresentation(session);
+      const title = presentation.detail ? ` title="${escapeHtml(presentation.detail)}"` : '';
+      return `<span${title}>${namedStatusLabel(presentation.status, presentation.label)}</span>`;
+    }
+
+    // Derives the factual session label used in the compact session catalogue.
     function factualSessionStatus(session) {
-      const outcomes = Object.values(session.session_end?.participant_results || {}).map(result => result?.outcome);
-      if (outcomes.includes('partner_unavailable')) return 'Unmatched';
-      if (outcomes.includes('partner_left') || outcomes.includes('left_game') || outcomes.includes('connection_lost')) return 'Partner left';
+      if (session.lifecycle === 'ended') return sessionEndPresentation(session).label;
       return statusText(session.lifecycle);
+    }
+
+    // Returns the terminal participant outcomes attached to one durable session.
+    function sessionOutcomes(session) {
+      return Object.values(session.session_end?.participant_results || {}).map(result => result?.outcome).filter(Boolean);
+    }
+
+    // Returns whether a terminal session ended without finding a partner.
+    function sessionWasUnmatched(session) {
+      return sessionOutcomes(session).includes('partner_unavailable');
     }
 
     // Formats exact unsuccessful waiting time from durable server timestamps.
     function unsuccessfulWait(session) {
-      const unmatched = Object.values(session.session_end?.participant_results || {}).some(result => result?.outcome === 'partner_unavailable');
-      if (!unmatched || !session.waiting_started_at) return '';
+      if (!sessionWasUnmatched(session) || !session.waiting_started_at) return '';
       const end = new Date(session.ended_at || session.waiting_deadline_at).getTime();
       const start = new Date(session.waiting_started_at).getTime();
       if (!Number.isFinite(end - start)) return '';
@@ -1381,16 +1438,7 @@
       renderExperimentWorkspaceState();
       renderExperimentDetails();
       renderNotes();
-      institutionInput.value = state.gameSettings?.institution || '';
-      adminAllowedIpRangesInput.value = (state.gameSettings?.admin_allowed_ip_ranges || []).join('\n');
-      speechmaticsRealtimeUrlInput.value = state.gameSettings?.speechmatics_realtime_url || 'wss://eu.rt.speechmatics.com/v2';
-      ttsBaseUrlInput.value = state.gameSettings?.tts_base_url || 'wss://api.elevenlabs.io';
-      prolificApiBaseUrlInput.value = state.gameSettings?.prolific_api_base_url || 'https://api.prolific.com';
-      prolificWorkspaceIdInput.value = state.gameSettings?.prolific_workspace_id || '';
-      prolificWorkspaceStatus.textContent = state.gameSettings?.prolific_workspace_title
-        ? `Connected to ${state.gameSettings.prolific_workspace_title}`
-        : 'Not connected';
-      renderGameProviderSecrets();
+      if (!state.gameSettingsDirty) synchronizeGameSettingsForm();
       const configKey = state.experiment ? `${state.experiment.experiment_id}:${state.experiment.config_revision}` : null;
       if (configKey && configKey !== state.loadedConfigKey) await loadConfigurationSafely();
       updateConfigurationEditability();
@@ -2174,22 +2222,62 @@
       await loadExperiment();
     }
 
-    // Renders installation-wide provider credentials without returning their values.
+    // Copies the latest committed shared settings into controls when no local draft exists.
+    function synchronizeGameSettingsForm() {
+      institutionInput.value = state.gameSettings?.institution || '';
+      adminAllowedIpRangesInput.value = (state.gameSettings?.admin_allowed_ip_ranges || []).join('\n');
+      speechmaticsRealtimeUrlInput.value = state.gameSettings?.speechmatics_realtime_url || 'wss://eu.rt.speechmatics.com/v2';
+      ttsBaseUrlInput.value = state.gameSettings?.tts_base_url || 'wss://api.elevenlabs.io';
+      prolificApiBaseUrlInput.value = state.gameSettings?.prolific_api_base_url || 'https://api.prolific.com';
+      prolificWorkspaceIdInput.value = state.gameSettings?.prolific_workspace_id || '';
+      prolificWorkspaceStatus.textContent = state.gameSettings?.prolific_workspace_title
+        ? `Connected to ${state.gameSettings.prolific_workspace_title}`
+        : 'Not connected';
+      renderGameProviderSecrets();
+    }
+
+    // Preserves a revisioned local draft across periodic dashboard refreshes.
+    function markGameSettingsDirty() {
+      if (!state.gameSettingsDirty) state.gameSettingsDraftRevision = state.gameSettings?.revision ?? null;
+      state.gameSettingsDirty = true;
+      showGameSettingsSaveState('Unsaved changes', 'unsaved');
+    }
+
+    // Displays persistent save progress or validation feedback beside the shared save action.
+    function showGameSettingsSaveState(message, tone = '') {
+      const confirmation = document.getElementById('gameSettingsSaved');
+      clearTimeout(state.gameSettingsConfirmationTimer);
+      confirmation.classList.remove('fading', 'unsaved', 'error');
+      if (tone) confirmation.classList.add(tone);
+      confirmation.textContent = message;
+      confirmation.hidden = false;
+    }
+
+    // Renders installation-wide provider credentials beside their matching provider settings.
     function renderGameProviderSecrets() {
-      const container = document.getElementById('gameProviderSecrets');
       const definitions = [
-        ['speechmatics.api_key', 'Speechmatics API key', 'Used to open live transcription streams.'],
-        ['tts.api_key', 'ElevenLabs API key', 'Used to synthesize agent speech.'],
-        ['prolific.api_token', 'Prolific API token', 'Used only by the server to verify studies, launches, completion paths, and submission status.']
+        ['speechmaticsProviderSecret', 'speechmatics.api_key', 'API key', 'Used to open live transcription streams.'],
+        ['ttsProviderSecret', 'tts.api_key', 'API key', 'Used to synthesize agent speech.'],
+        ['prolificProviderSecret', 'prolific.api_token', 'API token', 'Used only by the server to verify the workspace, studies, launches, completion paths, and submission status.']
       ];
-      container.innerHTML = definitions.map(([key, label, help]) => {
+      definitions.forEach(([containerId, key, label, help]) => {
+        const container = document.getElementById(containerId);
         const status = state.gameProviderSecrets.find(item => item.key === key) || {};
-        const configured = status.configured && !state.gameProviderSecretDeletions.has(key);
-        return `<label class="config-field ${configured ? 'secret-configured' : 'secret-missing'}"><span>${escapeHtml(label)}</span><span class="secret-control"><input type="password" autocomplete="new-password" data-game-provider-secret="${escapeHtml(key)}" value="${configured ? '••••••••••••' : ''}" ${configured ? 'data-game-secret-placeholder="true"' : ''} placeholder="${configured ? 'Enter a replacement key' : 'Paste API key'}"><button class="secondary" type="button" data-reveal-game-secret="${escapeHtml(key)}" ${configured ? '' : 'disabled'}>Reveal</button><button class="secondary" type="button" data-delete-game-secret="${escapeHtml(key)}" ${status.source === 'game' ? '' : 'disabled'}>Remove</button></span><span class="secret-state">${configured ? `Configured (${escapeHtml(status.source)}), hidden` : 'Not configured'}</span><span class="config-help">${escapeHtml(help)}</span></label>`;
-      }).join('');
-      container.querySelectorAll('[data-game-provider-secret]').forEach(input => {
-        const key = input.dataset.gameProviderSecret;
-        const status = state.gameProviderSecrets.find(item => item.key === key) || {};
+        const pendingValue = state.gameProviderSecretUpdates.get(key);
+        const removalPending = state.gameProviderSecretDeletions.has(key);
+        const stored = Boolean(status.configured);
+        const configured = Boolean(pendingValue) || (stored && !removalPending);
+        const placeholder = stored && pendingValue === undefined && !removalPending;
+        const value = pendingValue ?? (placeholder ? '••••••••••••' : '');
+        const secretState = pendingValue !== undefined
+          ? 'Replacement pending save'
+          : removalPending
+            ? 'Removal pending save'
+            : configured
+              ? `Configured (${escapeHtml(status.source)}), hidden`
+              : 'Not configured';
+        container.innerHTML = `<label class="config-field ${configured ? 'secret-configured' : 'secret-missing'}"><span>${escapeHtml(label)}</span><span class="secret-control"><input type="password" autocomplete="new-password" data-game-provider-secret="${escapeHtml(key)}" value="${escapeHtml(value)}" ${placeholder ? 'data-game-secret-placeholder="true"' : ''} placeholder="${stored ? 'Enter a replacement key' : 'Paste API key'}"><button class="secondary" type="button" data-reveal-game-secret="${escapeHtml(key)}" ${stored && !removalPending ? '' : 'disabled'}>Reveal</button><button class="secondary" type="button" data-delete-game-secret="${escapeHtml(key)}" ${status.source === 'game' && !removalPending ? '' : 'disabled'}>Remove</button></span><span class="secret-state">${secretState}</span><span class="config-help">${escapeHtml(help)}</span></label>`;
+        const input = container.querySelector('[data-game-provider-secret]');
         input.addEventListener('beforeinput', event => {
           if (input.dataset.gameSecretPlaceholder === 'true' && (event.inputType.startsWith('insert') || event.inputType.startsWith('delete'))) {
             input.value = '';
@@ -2205,15 +2293,16 @@
             state.gameProviderSecretUpdates.delete(key);
             if (status.source === 'game') state.gameProviderSecretDeletions.add(key);
           }
+          markGameSettingsDirty();
         });
+        container.querySelector('[data-delete-game-secret]').addEventListener('click', () => {
+          state.gameProviderSecretUpdates.delete(key);
+          state.gameProviderSecretDeletions.add(key);
+          markGameSettingsDirty();
+          renderGameProviderSecrets();
+        });
+        container.querySelector('[data-reveal-game-secret]').addEventListener('click', event => revealGameProviderSecret(event.currentTarget));
       });
-      container.querySelectorAll('[data-delete-game-secret]').forEach(button => button.addEventListener('click', () => {
-        const key = button.dataset.deleteGameSecret;
-        state.gameProviderSecretUpdates.delete(key);
-        state.gameProviderSecretDeletions.add(key);
-        renderGameProviderSecrets();
-      }));
-      container.querySelectorAll('[data-reveal-game-secret]').forEach(button => button.addEventListener('click', () => revealGameProviderSecret(button)));
     }
 
     // Reveals or re-hides one game-wide provider credential for deliberate copying.
@@ -2248,7 +2337,8 @@
     function flashGameSettingsSaved() {
       const confirmation = document.getElementById('gameSettingsSaved');
       clearTimeout(state.gameSettingsConfirmationTimer);
-      confirmation.classList.remove('fading');
+      confirmation.classList.remove('fading', 'unsaved', 'error');
+      confirmation.textContent = 'All game settings saved';
       confirmation.hidden = false;
       state.gameSettingsConfirmationTimer = setTimeout(() => {
         confirmation.classList.add('fading');
@@ -2270,7 +2360,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
           body: JSON.stringify({
-            expected_revision: state.gameSettings.revision,
+            expected_revision: state.gameSettingsDraftRevision ?? state.gameSettings.revision,
             institution: institutionInput.value,
             admin_allowed_ip_ranges: adminAllowedIpRanges,
             speechmatics_realtime_url: speechmaticsRealtimeUrlInput.value,
@@ -2283,13 +2373,18 @@
         });
       } catch (error) {
         saveButton.disabled = false;
-        window.alert(`Could not save game settings: ${error.message}`);
+        showGameSettingsSaveState(`Could not save: ${error.message}`, 'error');
         return;
       }
       saveButton.disabled = false;
-      if (!response.ok) { window.alert(await response.text()); return; }
+      if (!response.ok) {
+        showGameSettingsSaveState(`Not saved: ${await response.text()}`, 'error');
+        return;
+      }
       state.gameProviderSecretDeletions = new Set();
       state.gameProviderSecretUpdates = new Map();
+      state.gameSettingsDirty = false;
+      state.gameSettingsDraftRevision = null;
       state.loadedConfigKey = null;
       flashGameSettingsSaved();
       await loadExperiment();
@@ -2426,25 +2521,35 @@
       menuButton.setAttribute('aria-expanded', String(open));
     }
 
-    // Renders a compact session header that separates durable lifecycle from runtime health.
+    // Renders labeled session state, health, purpose, recruitment, and contextual timing facts.
     function renderSummary(session, participantRows) {
       const live = sessionLiveness(session.session_id);
       const health = live?.health || (session.lifecycle === 'ended' ? 'ended' : 'unavailable');
-      const recruitmentProvider = participantRows.some(row => row.identity_provider === 'prolific') ? 'Prolific' : 'Direct';
+      const expectedHealth = session.lifecycle === 'forming' ? 'waiting' : session.lifecycle === 'ended' ? 'ended' : 'live';
+      const isProlific = participantRows.some(row => row.identity_provider === 'prolific');
+      const healthDetail = live ? `Meaningful activity ${formatAge(new Date(live.meaningful_activity_at).getTime())}` : session.lifecycle === 'ended' ? '' : 'Session is not present in this process runtime';
+      const facts = [
+        `<div><dt>Session state</dt><dd>${statusLabel(session.lifecycle)}</dd></div>`,
+        `<div><dt>Health</dt><dd>${livenessBadge(health, healthDetail)}</dd></div>`,
+        `<div><dt>Purpose</dt><dd>${statusLabel(session.purpose || 'research')}</dd></div>`,
+        `<div><dt>Recruitment</dt><dd>${isProlific ? 'Prolific' : 'Direct'}</dd></div>`
+      ];
+      if (session.lifecycle === 'forming') {
+        facts.push(`<div><dt>Waiting since</dt><dd>${escapeHtml(fmtTime(session.waiting_started_at || session.created_at))}</dd></div>`);
+        facts.push(`<div><dt>Waiting deadline</dt><dd>${escapeHtml(fmtTime(session.waiting_deadline_at))}</dd></div>`);
+      }
+      if (session.lifecycle === 'ended') {
+        facts.push(`<div><dt>End reason</dt><dd>${sessionEndBadge(session)}</dd></div>`);
+        const waited = unsuccessfulWait(session).replace(/^ · /, '');
+        if (waited) facts.push(`<div><dt>Unsuccessful wait</dt><dd>${escapeHtml(waited)}</dd></div>`);
+      }
+      if (session.lifecycle === 'running' && health !== expectedHealth) {
+        facts.push(`<div><dt>Last meaningful activity</dt><dd>${escapeHtml(fmtTime(session.last_meaningful_activity_at))}</dd></div>`);
+      }
       summary.innerHTML = `
-        <h2>Session #${escapeHtml(session.session_id)}</h2>
-        <dl class="session-facts">
-          <div><dt>Lifecycle</dt><dd><span class="status-chip">${statusLabel(session.lifecycle)}</span></dd></div>
-          <div><dt>Health</dt><dd>${livenessBadge(health, live ? `Meaningful activity ${formatAge(new Date(live.meaningful_activity_at).getTime())}` : 'Session is not present in this process runtime')}</dd></div>
-          <div><dt>Purpose</dt><dd><span class="status-chip">${statusLabel(session.purpose || 'research')}</span></dd></div>
-          <div><dt>Recruitment</dt><dd>${recruitmentProvider}</dd></div>
-          <div><dt>End cause</dt><dd>${escapeHtml(statusText(session.session_end?.cause?.type || 'pending'))}</dd></div>
-          <div><dt>Waiting began</dt><dd>${escapeHtml(fmtTime(session.waiting_started_at || session.created_at))}</dd></div>
-          <div><dt>Waiting deadline</dt><dd>${escapeHtml(fmtTime(session.waiting_deadline_at))}</dd></div>
-          <div><dt>Unsuccessful wait</dt><dd>${escapeHtml(unsuccessfulWait(session).replace(/^ · /, '') || '—')}</dd></div>
-          <div><dt>Last meaningful activity</dt><dd>${escapeHtml(fmtTime(session.last_meaningful_activity_at))}</dd></div>
-        </dl>
-        ${participantAssignments(participantRows)}
+        <div class="session-summary-heading"><h2>Session ${escapeHtml(session.session_id)}</h2>${session.dialogue_id ? `<strong class="session-dialogue-name">${escapeHtml(session.dialogue_id)}</strong>` : ''}</div>
+        <dl class="session-facts">${facts.join('')}</dl>
+        ${participantAssignments(participantRows, session)}
       `;
     }
 
@@ -2496,23 +2601,96 @@
       return participant?.game_health || row.connection_status || 'unavailable';
     }
 
-    // Renders the authoritative participant phase and its recipient-specific terminal outcome.
-    function participantStateMarkup(row) {
+    // Describes a participant result in terms of the shared cause and this recipient's consequence.
+    function participantOutcomePresentation(outcome, session) {
+      const cause = session.session_end?.cause?.type;
+      if (outcome === 'completed') return { status: 'completed', label: 'Completed', detail: '' };
+      if (outcome === 'left_waiting_room') return { status: 'explicit-left', label: 'Chose to leave while waiting', detail: 'The participant used Parlando’s leave action.' };
+      if (outcome === 'left_game') return { status: 'explicit-left', label: 'Chose to leave', detail: 'The participant used Parlando’s leave action.' };
+      if (outcome === 'connection_lost') return { status: 'connection-lost', label: 'Connection lost', detail: 'The browser connection ended and the participant did not reconnect. Parlando cannot distinguish a closed tab from a network interruption.' };
+      if (outcome === 'partner_left' && cause === 'participant_left') return { status: 'explicit-left', label: 'Partner chose to leave', detail: 'The partner used Parlando’s leave action.' };
+      if (outcome === 'partner_left' && cause === 'reconnect_timed_out') return { status: 'connection-lost', label: 'Partner connection lost', detail: 'The partner’s browser connection ended and they did not reconnect. Parlando cannot distinguish a closed tab from a network interruption.' };
+      if (outcome === 'partner_left') return { status: 'partner-left', label: 'Partner left', detail: '' };
+      if (outcome === 'partner_unavailable') return { status: 'no-partner', label: 'No partner found', detail: '' };
+      if (outcome === 'participant_inactive') return { status: 'participant-inactive', label: 'Removed for inactivity', detail: '' };
+      if (outcome === 'idle_limit_reached') return { status: 'inactivity-timeout', label: 'Inactivity timeout', detail: '' };
+      if (outcome === 'lifetime_limit_reached') return { status: 'duration-limit', label: 'Maximum duration reached', detail: '' };
+      if (outcome === 'technical_failure') return { status: 'technical-failure', label: 'Technical failure', detail: '' };
+      return { status: 'unavailable', label: statusText(outcome), detail: '' };
+    }
+
+    // Renders participant state only when it is not the ordinary active state or has an outcome.
+    function participantStateMarkup(row, session) {
       const live = sessionLiveness(row.session_id);
       const liveParticipant = live?.participants?.find(item => item.role === row.role);
       const phase = liveParticipant?.participant_state || row.participant_state?.state || 'unavailable';
       const outcome = row.participant_state?.result?.outcome || row.terminal_result?.outcome;
-      return `<span class="status-chip">${statusLabel(phase)}</span>${outcome ? `<span class="status-chip">${escapeHtml(statusText(outcome))}</span>` : ''}`;
+      const phaseMarkup = phase === 'active' || (phase === 'ended' && outcome) ? '' : statusLabel(phase);
+      if (!outcome) return phaseMarkup;
+      const presentation = participantOutcomePresentation(outcome, session);
+      const title = presentation.detail ? ` title="${escapeHtml(presentation.detail)}"` : '';
+      return `${phaseMarkup}<span${title}>${namedStatusLabel(presentation.status, presentation.label)}</span>`;
+    }
+
+    // Renders transport health only when it differs from the participant state's normal health.
+    function participantTransportMarkup(row) {
+      const live = sessionLiveness(row.session_id);
+      const liveParticipant = live?.participants?.find(item => item.role === row.role);
+      const phase = liveParticipant?.participant_state || row.participant_state?.state || 'unavailable';
+      if (phase === 'ended') return '';
+      const health = participantTransportHealth(row);
+      const expected = row.participant_kind === 'agent' ? 'server' : phase === 'waiting' ? 'waiting' : 'live';
+      return health === expected ? '' : livenessBadge(health);
+    }
+
+    // Shows Prolific check state as one compact icon and keeps provider identifiers in its disclosure.
+    function prolificDetailsMarkup(row) {
+      if (row.identity_provider !== 'prolific' || !row.prolific_participant_id) return '';
+      const checked = Boolean(row.prolific_reconciled_at);
+      const providerDetail = row.prolific_status ? ` Provider status: ${row.prolific_status}.` : '';
+      const tooltip = checked
+        ? `Prolific submission status checked.${providerDetail} Open details.`
+        : 'Prolific submission status has not been checked. Open details.';
+      return `<details class="configuration-identity provider-details ${checked ? 'checked' : 'unchecked'}">
+        <summary title="${escapeHtml(tooltip)}" aria-label="${escapeHtml(tooltip)}">${icon(checked ? 'check' : 'help')}</summary>
+        <div class="configuration-identity-card">
+          <strong>Prolific recruitment</strong>
+          <dl>
+            <dt>Status check</dt><dd>${checked ? 'Has been checked' : 'Has not been checked'}</dd>
+            <dt>Participant</dt><dd>${escapeHtml(row.prolific_participant_id)}</dd>
+            <dt>Study</dt><dd>${escapeHtml(row.prolific_study_id)}</dd>
+            <dt>Submission</dt><dd>${escapeHtml(row.prolific_session_id)}</dd>
+            ${row.prolific_status ? `<dt>Provider status</dt><dd>${escapeHtml(row.prolific_status)}</dd>` : ''}
+            ${row.prolific_entered_code ? `<dt>Entered code</dt><dd>${escapeHtml(row.prolific_entered_code)}</dd>` : ''}
+            ${row.prolific_return_requested_at ? `<dt>Return requested</dt><dd>${escapeHtml(fmtTime(row.prolific_return_requested_at))}</dd>` : ''}
+          </dl>
+        </div>
+      </details>`;
+    }
+
+    // Places participant phase, terminal outcome, and exceptional transport status below the name.
+    function participantStatusMarkup(row, session) {
+      return `<span class="participant-status-line">${participantStateMarkup(row, session)}${participantTransportMarkup(row)}</span>`;
+    }
+
+    // Shows disconnect timing only while a future reconnect deadline remains actionable.
+    function participantDisconnectMarkup(row) {
+      if (!row.disconnected_at) return '';
+      if (row.participant_state?.state === 'ended' || row.terminal_result) return '';
+      const health = participantTransportHealth(row);
+      const reconnectDeadline = new Date(row.reconnect_deadline_at).getTime();
+      if (health !== 'disconnected' || !Number.isFinite(reconnectDeadline) || reconnectDeadline <= Date.now()) return '';
+      return `<span class="muted small">Connection lost ${escapeHtml(fmtTime(row.disconnected_at))} · reconnect by ${escapeHtml(fmtTime(row.reconnect_deadline_at))}</span>`;
     }
 
     // Renders the two session roles as crisp peer assignments.
-    function participantAssignments(rows) {
+    function participantAssignments(rows, session = state.selectedSession) {
       if (!rows.length) return '';
       return `<div class="participant-assignments" aria-label="Session participants">${rows.map(row => `
         <div class="participant-assignment participant-role-${row.role === 'B' ? 'b' : 'a'}">
           ${roleBadge(row.role)}
           ${participantIcon(row.participant_kind)}
-          <span class="participant-copy"><span class="participant-name-line"><strong>${escapeHtml(participantDisplayName(row))}</strong>${participantStateMarkup(row)}${livenessBadge(participantTransportHealth(row))}${row.participant_kind !== 'agent' && row.research_id ? `<button class="danger delete-participant" data-research-id="${escapeHtml(row.research_id)}" type="button" title="Delete participant data" aria-label="Delete participant data">${icon('trash')}</button>` : ''}${configurationIdentityMarkup(row)}</span>${row.prolific_participant_id ? `<span class="muted small">Prolific ${escapeHtml(row.prolific_participant_id)} · study ${escapeHtml(row.prolific_study_id)} · session ${escapeHtml(row.prolific_session_id)}</span><span class="muted small">Provider status ${escapeHtml(row.prolific_status || 'not reconciled')}${row.prolific_entered_code ? ` · entered code ${escapeHtml(row.prolific_entered_code)}` : ''}${row.prolific_return_requested_at ? ` · return requested ${escapeHtml(fmtTime(row.prolific_return_requested_at))}` : ''}${row.prolific_reconciled_at ? ` · checked ${escapeHtml(fmtTime(row.prolific_reconciled_at))}` : ''}</span>` : ''}${row.disconnected_at ? `<span class="muted small">Disconnected ${escapeHtml(fmtTime(row.disconnected_at))}${row.reconnect_deadline_at ? ` · reconnect deadline ${escapeHtml(fmtTime(row.reconnect_deadline_at))}` : ''}</span>` : ''}</span>
+          <span class="participant-copy"><span class="participant-name-line"><strong>${escapeHtml(participantDisplayName(row))}</strong>${prolificDetailsMarkup(row)}${row.participant_kind !== 'agent' && row.research_id ? `<button class="danger delete-participant" data-research-id="${escapeHtml(row.research_id)}" type="button" title="Delete participant data" aria-label="Delete participant data">${icon('trash')}</button>` : ''}${configurationIdentityMarkup(row)}</span>${participantStatusMarkup(row, session)}${participantDisconnectMarkup(row)}</span>
         </div>`).join('')}</div>`;
     }
 
@@ -2645,6 +2823,8 @@
     document.getElementById('notesPreviewMode').addEventListener('click', () => setNotesMode('preview'));
     document.getElementById('saveNotes').addEventListener('click', () => saveNotes().catch(error => window.alert(error.message)));
     saveConfiguration.addEventListener('click', saveConfigRevision);
+    [institutionInput, adminAllowedIpRangesInput, speechmaticsRealtimeUrlInput, ttsBaseUrlInput, prolificApiBaseUrlInput, prolificWorkspaceIdInput]
+      .forEach(control => control.addEventListener('input', markGameSettingsDirty));
     document.getElementById('saveGameSettings').addEventListener('click', saveSharedGameSettings);
     menuButton.addEventListener('click', toggleExperimentMenu);
     document.addEventListener('keydown', event => {

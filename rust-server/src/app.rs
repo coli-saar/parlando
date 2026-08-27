@@ -371,8 +371,11 @@ async fn experiment_activation_issues<A: Game>(
         .await
         .prolific_api_base_url
         .clone();
-    let (prolific_issues, verified_study) =
-        prolific_activation_preflight(&config, &prolific_api_base_url).await;
+    let (prolific_issues, verified_study) = if issues.is_empty() {
+        prolific_activation_preflight(&config, &prolific_api_base_url).await
+    } else {
+        (Vec::new(), None)
+    };
     issues.extend(prolific_issues);
     if issues.is_empty() {
         *state.prolific_study.write().await = verified_study;
@@ -396,17 +399,9 @@ async fn prolific_activation_preflight(
     if !config.recruitment.prolific.enabled {
         return (Vec::new(), None);
     }
-    if config.recruitment.prolific.api_token.is_empty() {
-        return (
-            vec!["Connect a Prolific workspace and API token before activation.".to_string()],
-            None,
-        );
-    }
-    if config.recruitment.prolific.workspace_id.is_empty() {
-        return (
-            vec!["Select the Prolific workspace used by this study.".to_string()],
-            None,
-        );
+    let local_issues = prolific_local_activation_issues(config);
+    if !local_issues.is_empty() {
+        return (local_issues, None);
     }
     let client = match crate::prolific::ProlificClient::with_base_url(
         config.recruitment.prolific.api_token.clone(),
@@ -507,8 +502,30 @@ fn activation_issues_for_config<A: Game>(
         config.tts.voice_id = "provided-by-runtime".to_string();
     }
     let mut issues = config.activation_issues();
+    issues.extend(prolific_local_activation_issues(config));
     if let Err(error) = validate_agent_configuration(&state.agent_definitions, &config, true) {
         issues.push(error.to_string());
+    }
+    issues
+}
+
+/// Lists missing installation-owned Prolific prerequisites without contacting Prolific.
+fn prolific_local_activation_issues(config: &ExperimentConfig) -> Vec<String> {
+    if !config.recruitment.prolific.enabled {
+        return Vec::new();
+    }
+    let mut issues = Vec::new();
+    if config.recruitment.prolific.api_token.trim().is_empty() {
+        issues.push(
+            "Connect a Prolific API token in Game Settings before starting this experiment."
+                .to_string(),
+        );
+    }
+    if config.recruitment.prolific.workspace_id.trim().is_empty() {
+        issues.push(
+            "Connect a Prolific workspace in Game Settings before starting this experiment."
+                .to_string(),
+        );
     }
     issues
 }
@@ -5497,7 +5514,16 @@ async fn admin_experiment_config<A: Game>(
                     AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
                 })?;
                 match normalized.validate() {
-                    Ok(()) => activation_issues_for_config(&state, &mut normalized),
+                    Ok(()) => {
+                        apply_experiment_secrets(&mut normalized, &stored_secrets);
+                        let game_secrets = state.store.game_secrets().await?;
+                        apply_game_provider_secrets(&mut normalized, &game_secrets);
+                        apply_game_provider_settings(
+                            &mut normalized,
+                            &*state.game_settings.read().await,
+                        );
+                        activation_issues_for_config(&state, &mut normalized)
+                    }
                     Err(error) => vec![error.to_string()],
                 }
             }

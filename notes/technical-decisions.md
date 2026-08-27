@@ -1,5 +1,104 @@
 # Technical Decisions
 
+## 2026-08-27: Game Settings retain drafts and organize provider bindings together
+
+Context: the five-second dashboard refresh replaced Game Settings controls with the last committed
+server values. An unsaved Prolific workspace ID therefore disappeared without feedback, and the
+Prolific token was separated from its workspace and endpoint under a generic hosted-services
+section. Experiment readiness also checked Speechmatics, ElevenLabs, and agent dependencies but
+omitted the installation-owned Prolific token and workspace.
+
+Decision: treat edits to any shared setting or provider credential as one revisioned local draft.
+Periodic catalogue refreshes may update server state but do not overwrite that draft. Save errors
+remain inline beside the single save action, and the draft remains available for correction. Split
+provider settings into Speechmatics, ElevenLabs, and Prolific sections so each endpoint and secret
+are colocated; label the action “Save all game settings” and state that it commits every section in
+one transaction. A Prolific workspace is verified with the configured API token when saved, so a
+syntactic placeholder such as `test` is not accepted as a real workspace unless the selected API
+endpoint recognizes it.
+
+Add missing global Prolific token and workspace requirements to the same readiness calculation used
+by the experiment header badge, activation controls, and configuration warning. Present one overall
+experiment-ready badge rather than a structurally-valid badge beside a contradictory blocked badge.
+Structural configuration errors and missing runtime or provider prerequisites remain distinct in
+the badge tooltip.
+
+Tradeoffs and risks: a draft begun against an older Game Settings revision deliberately receives a
+revision conflict if another administrator saves first. Provider study details are still checked by
+the activation preflight rather than by every five-second catalogue poll, avoiding repeated external
+API traffic. The local readiness badge covers all prerequisites already known to Parlando and the
+activation attempt supplies authoritative remote-study diagnostics.
+
+## 2026-08-27: Repair rootbot-agent revision 8 with a clean revision 9
+
+Context: `rootbot-agent` revision 8 contained both the valid top-level `game: {}` value and a stray
+`recruitment.prolific.completion_paths.game: {}` value. The completion-path type denies unknown
+fields, so the experiment configuration could no longer be parsed or repaired through the curated
+dashboard form. The bad property was already present in the schema-12 backup from 24 August and
+first appeared in revision 8; available revision records do not identify the submitting client.
+
+Decision: after confirming that no process held the database open, create the consistent backup
+`games/great-tree/server/parlando-great-tree.pre-rootbot-config-repair-2026-08-27.sqlite`. Preserve
+revision 8 unchanged and transactionally create revision 9 by removing only the nested
+`completion_paths.game` property. Keep the valid top-level game configuration and the five Prolific
+completion codes unchanged. Record the correction as `Removed stray game property from Prolific
+completion paths` in the immutable revision history.
+
+Validation: the live database remains at schema 15; `pragma integrity_check` returned `ok`, the
+foreign-key check returned no rows, and revision 9 is valid JSON with a top-level game object and no
+nested completion-path game property. Removing that one path from revision 8 produces byte-for-byte
+the revision-9 JSON. Experiment, session, participant, and event counts remained 4, 41, 49, and
+1230; the revision count increased from 16 to 17. The backup passed its own integrity check and
+retains rootbot-agent revision 8 as the recovery point.
+
+## 2026-08-27: Session summaries show facts only when they explain state or exceptions
+
+Context: every selected session displayed its waiting start and deadline, an empty unsuccessful-wait
+field, routine health, research purpose, direct recruitment, pending end cause, and last-activity
+time. Participant cards likewise repeated ordinary transport health and expanded Prolific metadata.
+The resulting summary gave normal sessions more operational metadata than useful state.
+
+Decision: keep a stable labeled fact grid for session state, health, research/testing purpose, and
+Direct/Prolific recruitment so categorical dots never lose their meaning. Put the dialogue name
+beside the numeric session identifier. Show waiting timestamps only while a session is forming and
+elapsed wait only for a terminal unmatched session; add end reason only after termination and
+diagnostic activity time only for abnormal running health. Place participant phase or terminal
+outcome on a separate line below the participant name. For Prolific participants only, put a green
+check or gray question icon immediately after the name to indicate whether provider status was
+checked; its tooltip explains the state, the icon opens the collapsed provider details, and that
+detail explicitly says “Has been checked” or “Has not been checked.” Omit the
+reconciliation timestamp because the icon communicates the useful checked/not-checked distinction.
+
+Termination labels use the shared session cause to disambiguate recipient outcomes. An explicit
+leave action is labeled as explicit; reconnect expiry is labeled as connection loss, with a tooltip
+stating that the server cannot distinguish a closed browser tab from a network interruption. The
+partner's badge inherits that same distinction instead of calling both cases "partner left."
+Reconnect timing is displayed only while the participant is disconnected and the deadline is still
+in the future. After termination, the durable cause and participant outcome replace obsolete
+deadline metadata.
+
+Tradeoffs and risks: the summary is no longer a complete inventory of stored timestamps. Four
+stable session facts take more room than an unlabeled badge row, but remain interpretable without
+hovering or memorizing dot colors. Detailed provider identity remains one click away and is never
+rendered for Direct participants; full event history and exported data are unchanged. Conditional
+timing still depends on canonical lifecycle, participant state, health, and terminal outcomes rather
+than inferring urgency from timestamps alone.
+
+## 2026-08-27: Active Prolific participant links expose provider placeholders
+
+Context: the dashboard's participant link added locally generated participant and session IDs for
+every Prolific-enabled experiment. Those values are useful while testing intake, but an active
+experiment needs an external study URL that Prolific can specialize for each real submission.
+
+Decision: retain stable synthetic IDs for test links and render Prolific's literal
+`{{%PROLIFIC_PID%}}`, `{{%STUDY_ID%}}`, and `{{%SESSION_ID%}}` placeholders when the experiment is
+active. Construct that query text literally so browser URL serialization does not percent-encode
+the placeholder syntax. Leave all non-Prolific participant links unchanged.
+
+Tradeoffs and risks: opening an active link directly does not represent a valid participant launch;
+the link is a configuration value to copy into Prolific. The dashboard title communicates that
+distinction. Production admission remains subject to the existing Prolific verification path.
+
 ## 2026-08-26: Linux game packages use one convention-driven cross-build script
 
 Context: macOS development needs to produce a complete game deployment for a Linux host that has

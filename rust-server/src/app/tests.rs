@@ -217,17 +217,21 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-tab=\"privacy\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("/privacy.md"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("checkbox-line"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Speechmatics API key"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("ElevenLabs API key"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Speechmatics realtime URL default"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("ElevenLabs base URL default"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("speechmaticsProviderSecret"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("ttsProviderSecret"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("prolificProviderSecret"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("<h2>Speechmatics</h2>"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("<h2>ElevenLabs</h2>"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("<h2>Prolific</h2>"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("speechmatics.realtime_url"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("tts.base_url"));
     assert!(ADMIN_EXPERIMENT_HTML
-        .contains("Changing these defaults never changes an existing experiment revision"));
+        .contains("Changing the endpoint default never changes an existing experiment revision"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("gameProviderSecretUpdates"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("gameSettingsSaved"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Settings saved"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("All game settings saved"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Save all game settings"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Has not been checked"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Configured ("));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-secret-placeholder"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-agent-secret-field"));
@@ -310,15 +314,28 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(ADMIN_EXPERIMENT_HTML.contains("participantPageHref(experiment)"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("state.configValue : null"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("renderConfigurationForm(data.experiment.config"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("experiment.status === 'active'"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains(
+        "PROLIFIC_PID={{%PROLIFIC_PID%}}&STUDY_ID={{%STUDY_ID%}}&SESSION_ID={{%SESSION_ID%}}"
+    ));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Copy this URL into the Prolific study configuration"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("url.searchParams.set('PROLIFIC_PID'"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("url.searchParams.set('STUDY_ID', prolific.study_id)"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("url.searchParams.set('SESSION_ID'"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("new-experiment"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("experimentStatusFilter"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("<dt>Session state</dt>"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("<dt>Health</dt>"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("<dt>Purpose</dt>"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("<dt>Recruitment</dt>"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("row.identity_provider === 'prolific'"));
-    assert!(ADMIN_EXPERIMENT_HTML
-        .contains("row.prolific_participant_id ? `<span class=\"muted small\">Prolific"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("isProlific ? 'Prolific' : 'Direct'"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("<strong>Prolific recruitment</strong>"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Prolific submission status checked"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Prolific submission status has not been checked"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("icon(checked ? 'check' : 'help')"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("row.identity_provider !== 'prolific'"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("Prolific not checked"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("<dt>Checked</dt>"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("<dt>Mode</dt>"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("data-status-filter"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("initializeStatusFilter"));
@@ -330,7 +347,26 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(!ADMIN_EXPERIMENT_HTML.contains("data-value=\"abandoned\""));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("session.status"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("session.lifecycle"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("participantStateMarkup(row)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("participantStateMarkup(row, session)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("normalized.replaceAll('_', '-')"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("participantTransportMarkup(row)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("participantStatusMarkup(row, session)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("prolificDetailsMarkup(row)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("participantDisconnectMarkup(row)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("const subject = actor || 'Participant'"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("Role ${actor}"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("chose to leave"));
+    assert!(ADMIN_EXPERIMENT_HTML
+        .contains("cannot distinguish a closed tab from a network interruption"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("reconnectDeadline <= Date.now()"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("row.participant_state?.state === 'ended'"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains(" · reconnect deadline ${escapeHtml"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("session.lifecycle === 'forming'"));
+    assert!(ADMIN_EXPERIMENT_HTML
+        .contains("session.lifecycle === 'running' && health !== expectedHealth"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("if (waited) facts.push"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("session-summary-statuses"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("session.dialogue_id"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("row.participant_state?.state"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("participantTransportHealth(row)"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("data-value=\"playing\""));
@@ -1512,6 +1548,61 @@ async fn catalogue_readiness_includes_missing_agent_secret_references() {
     assert_eq!(
         experiment["runnable_issues"], dashboard_config["activation_issues"],
         "catalogue badges and lifecycle controls must share readiness diagnostics"
+    );
+}
+
+/// Confirms Prolific experiments are not shown as ready without global workspace credentials.
+#[tokio::test]
+async fn catalogue_readiness_includes_global_prolific_prerequisites() {
+    let (mut config, _tmp) = sqlite_config();
+    config.recruitment.prolific.enabled = true;
+    config.recruitment.prolific.study_id = "prolific-study".to_string();
+    config.recruitment.prolific.completion_paths.completed = "COMPLETE".to_string();
+    config.recruitment.prolific.completion_paths.partner_left = "PARTNERLEFT".to_string();
+    config
+        .recruitment
+        .prolific
+        .completion_paths
+        .partner_unavailable = "NOPARTNER".to_string();
+    config.recruitment.prolific.completion_paths.timed_out = "TIMEDOUT".to_string();
+    config
+        .recruitment
+        .prolific
+        .completion_paths
+        .technical_failure = "TECHFAIL".to_string();
+    let router = super::build_router(TinyAdapter, config, ServeOptions::default())
+        .await
+        .expect("an incomplete inactive Prolific draft still builds");
+    authenticate_test_admin(router.clone()).await.unwrap();
+
+    let (_, catalogue) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments",
+        Value::Null,
+    )
+    .await;
+    let experiment = &catalogue["experiments"][0];
+    assert_eq!(experiment["configuration_valid"], true);
+    assert_eq!(experiment["runnable"], false);
+    let issues = experiment["runnable_issues"].as_array().unwrap();
+    assert!(issues
+        .iter()
+        .any(|issue| issue.as_str().unwrap().contains("Prolific API token")));
+    assert!(issues
+        .iter()
+        .any(|issue| issue.as_str().unwrap().contains("Prolific workspace")));
+
+    let (_, dashboard_config) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/experiments/step5/config",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        experiment["runnable_issues"], dashboard_config["activation_issues"],
+        "header badges and lifecycle controls must share global Prolific diagnostics"
     );
 }
 
