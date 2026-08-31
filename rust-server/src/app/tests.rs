@@ -12,7 +12,7 @@ use std::{
     fs,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        LazyLock, Mutex,
+        Arc, LazyLock, Mutex,
     },
 };
 use tokio::net::TcpListener;
@@ -21,7 +21,8 @@ use tower::ServiceExt;
 
 use crate::agents::{Agent, AgentContext, AgentIdentity, AgentResponse};
 use crate::config::{
-    AgentsConfig, AgentsMode, DatabaseConfig, DirectConfig, ExperimentIdentityConfig,
+    AgentsConfig, AgentsMode, ConsentItemConfig, DatabaseConfig, DirectConfig,
+    ExperimentIdentityConfig,
 };
 use crate::game::{
     ActionRejection, AgentConfigField, AgentConfigValue, AgentDefinition, PlayerRole, SecretPurpose,
@@ -36,6 +37,120 @@ static TEST_PARTICIPANT_CREDENTIALS: LazyLock<Mutex<HashMap<String, String>>> =
 /// Real administrator sessions issued by test routers.
 static TEST_ADMIN_SESSIONS: LazyLock<Mutex<Vec<AdminTestSession>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Confirms completion routing uses session-start context for otherwise identical connection loss.
+#[test]
+fn prolific_handoff_distinguishes_prestart_and_running_connection_loss() {
+    let mut config = ExperimentConfig::default();
+    let paths = &mut config.recruitment.prolific.completion_paths;
+    paths.completed = "COMPLETE".to_string();
+    paths.partner_left = "PARTNER".to_string();
+    paths.game_did_not_start = "NOSTART".to_string();
+    paths.participation_ended_early = "EARLY".to_string();
+    paths.technical_failure = "TECHNICAL".to_string();
+    paths.no_consent = "NOCONSENT".to_string();
+
+    let before_start = prolific_handoff(&config, &ParticipantOutcomeKind::ConnectionLost, false)
+        .expect("pre-start connection loss has a configured handoff");
+    let after_start = prolific_handoff(&config, &ParticipantOutcomeKind::ConnectionLost, true)
+        .expect("running connection loss has a configured handoff");
+
+    assert_eq!(before_start.code, "NOSTART");
+    assert_eq!(after_start.code, "EARLY");
+}
+
+/// Confirms every durable participant result resolves to its designated configured code.
+#[test]
+fn prolific_handoff_uses_the_designated_six_path_codes() {
+    let mut config = ExperimentConfig::default();
+    let paths = &mut config.recruitment.prolific.completion_paths;
+    paths.completed = "COMPLETE".to_string();
+    paths.partner_left = "PARTNER".to_string();
+    paths.game_did_not_start = "NOSTART".to_string();
+    paths.participation_ended_early = "EARLY".to_string();
+    paths.technical_failure = "TECHNICAL".to_string();
+    paths.no_consent = "NOCONSENT".to_string();
+
+    for (outcome, game_started, expected) in [
+        (ParticipantOutcomeKind::Completed, true, "COMPLETE"),
+        (ParticipantOutcomeKind::PartnerLeft, false, "PARTNER"),
+        (ParticipantOutcomeKind::LeftWaitingRoom, false, "NOSTART"),
+        (ParticipantOutcomeKind::PartnerUnavailable, false, "NOSTART"),
+        (ParticipantOutcomeKind::ConnectionLost, false, "NOSTART"),
+        (ParticipantOutcomeKind::LeftGame, true, "EARLY"),
+        (ParticipantOutcomeKind::ConnectionLost, true, "EARLY"),
+        (ParticipantOutcomeKind::IdleLimitReached, true, "EARLY"),
+        (ParticipantOutcomeKind::TechnicalFailure, false, "TECHNICAL"),
+        (
+            ParticipantOutcomeKind::LifetimeLimitReached,
+            true,
+            "TECHNICAL",
+        ),
+    ] {
+        let handoff = prolific_handoff(&config, &outcome, game_started)
+            .expect("configured outcome has a handoff");
+        assert_eq!(handoff.code, expected, "unexpected code for {outcome:?}");
+        assert_eq!(
+            handoff.url,
+            format!("https://app.prolific.com/submissions/complete?cc={expected}")
+        );
+    }
+}
+
+/// Confirms provider readiness, rather than draft parsing, requires the six completion codes.
+#[test]
+fn prolific_readiness_rejects_an_incomplete_six_path_draft() {
+    let mut config = ExperimentConfig::default();
+    config.database.url = "sqlite:///:memory:".to_string();
+    config.recruitment.prolific.enabled = true;
+    config.recruitment.prolific.study_id = "study".to_string();
+    config.recruitment.prolific.api_token = "token".to_string();
+
+    assert!(config.validate().is_ok());
+    assert!(prolific_local_activation_issues(&config)
+        .iter()
+        .any(|issue| issue.contains("all six")));
+}
+
+/// Confirms Local Preview uses the configured no-consent code but never emits an empty code.
+#[test]
+fn prolific_no_consent_url_uses_the_configured_code_in_every_active_run() {
+    let mut config = ExperimentConfig::default();
+    config.direct.consents.push(ConsentItemConfig {
+        id: "study".to_string(),
+        title: "Study consent".to_string(),
+        body: "I agree.".to_string(),
+        required: true,
+    });
+    config.recruitment.prolific.completion_paths.no_consent = "NOCONSENT".to_string();
+    let local = RunningParticipantUrl {
+        kind: "local".to_string(),
+        participant_id: Some("TESTPARTICIPANT".to_string()),
+        session_id: Some("TESTSUBMISSION".to_string()),
+    };
+    let prolific = RunningParticipantUrl {
+        kind: "prolific".to_string(),
+        participant_id: None,
+        session_id: None,
+    };
+
+    assert_eq!(
+        prolific_no_consent_url(&config, Some(&local)).as_deref(),
+        Some("https://app.prolific.com/submissions/complete?cc=NOCONSENT")
+    );
+    assert_eq!(
+        prolific_no_consent_url(&config, Some(&prolific)).as_deref(),
+        Some("https://app.prolific.com/submissions/complete?cc=NOCONSENT")
+    );
+    config
+        .recruitment
+        .prolific
+        .completion_paths
+        .no_consent
+        .clear();
+    assert_eq!(prolific_no_consent_url(&config, Some(&local)), None);
+    assert_eq!(prolific_no_consent_url(&config, Some(&prolific)), None);
+}
 
 /// Authentication material for one real administrator test session.
 #[derive(Clone)]
@@ -223,6 +338,8 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(ADMIN_EXPERIMENT_HTML.contains("<h2>Speechmatics</h2>"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("<h2>ElevenLabs</h2>"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("<h2>Prolific</h2>"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("prolificWorkspaceIdInput"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("prolificWorkspaceStatus"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("speechmatics.realtime_url"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("tts.base_url"));
     assert!(ADMIN_EXPERIMENT_HTML
@@ -267,9 +384,18 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(!ADMIN_EXPERIMENT_HTML.contains("{{SPEECHMATICS_ENTITY_AND_SERVICE}}"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("JSON list of consent statements"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("eleven_flash_v2_5"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Activate intake"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Official intake"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Pause intake"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Start testing"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Start experiment</summary>"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("${icon('power')}Stop</button>"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("const restoreLaunchMenu"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("data-experiment-status"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("data-participant-url-kind"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("experiment.participant_url"));
+    assert!(ADMIN_EXPERIMENT_HTML
+        .contains("The workspace is derived from each linked study's Prolific project."));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"quickTooltip\""));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("}, 90);"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Complete"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("/api/admin/runtime/"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("fetch('/api/admin/load')"));
@@ -284,7 +410,8 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(ADMIN_EXPERIMENT_HTML.contains("source-editor-lines"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("document.title"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("state.game?.name"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("experimentCapabilityBadges"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("launchReadinessBadge"));
+    assert!(!ADMIN_EXPERIMENT_HTML.contains("experimentCapabilityBadges"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("align-content: start"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("html { height: 100%; overflow: hidden; }"));
     assert!(ADMIN_EXPERIMENT_HTML.contains(".simple-panel { flex: 1;"));
@@ -296,29 +423,38 @@ fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
     assert!(
         ADMIN_EXPERIMENT_HTML.contains(".participant-copy > .muted { overflow-wrap: anywhere; }")
     );
-    assert!(ADMIN_EXPERIMENT_HTML.contains("'Unarchive'"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Unarchive</button>"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("/archive"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Experiment unavailable"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("experimentWorkspaceTabs.hidden = !hasExperiment;"));
     assert!(!ADMIN_EXPERIMENT_HTML
         .contains("experimentWorkspaceTabs.hidden = !hasExperiment || state.configLoadFailed"));
     assert!(!ADMIN_EXPERIMENT_HTML.contains("Generate two-word code"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Prolific recruitment and completion paths"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Prolific study and completion paths"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Linked Prolific study ID"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("enter only the value after /studies/"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("URL for Prolific study setup"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Copy setup URL"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("function prolificSetupUrl"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Completed code"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("Data collection → Completion paths"));
     assert!(
         ADMIN_EXPERIMENT_HTML.find("Text to speech")
-            < ADMIN_EXPERIMENT_HTML.find("Prolific recruitment and completion paths")
+            < ADMIN_EXPERIMENT_HTML.find("Prolific study and completion paths")
     );
     assert!(!ADMIN_EXPERIMENT_HTML.contains("padStart(4, '0')"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("participantPageHref(experiment)"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("state.configValue : null"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("renderConfigurationForm(data.experiment.config"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("experiment.status === 'active'"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Local preview"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Test through Prolific"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("Official intake"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("prolificIsEnabled(experiment)"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("data-fix-readiness"));
     assert!(ADMIN_EXPERIMENT_HTML.contains(
         "PROLIFIC_PID={{%PROLIFIC_PID%}}&STUDY_ID={{%STUDY_ID%}}&SESSION_ID={{%SESSION_ID%}}"
     ));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Copy this URL into the Prolific study configuration"));
+    assert!(ADMIN_EXPERIMENT_HTML.contains("data-copy-participant-url=\"running\""));
     assert!(ADMIN_EXPERIMENT_HTML.contains("url.searchParams.set('PROLIFIC_PID'"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("url.searchParams.set('STUDY_ID', prolific.study_id)"));
     assert!(ADMIN_EXPERIMENT_HTML.contains("url.searchParams.set('SESSION_ID'"));
@@ -500,7 +636,7 @@ fn administrator_cookie_matches_transport_security() {
 #[test]
 fn experiment_lifecycle_rejects_ambiguous_shortcuts() {
     assert!(ExperimentLifecycle::Inactive.can_transition_to(ExperimentLifecycle::Testing));
-    assert!(ExperimentLifecycle::Testing.can_transition_to(ExperimentLifecycle::Active));
+    assert!(!ExperimentLifecycle::Testing.can_transition_to(ExperimentLifecycle::Active));
     assert!(ExperimentLifecycle::Active.can_transition_to(ExperimentLifecycle::Completed));
     assert!(ExperimentLifecycle::Completed.can_transition_to(ExperimentLifecycle::Archived));
     assert!(ExperimentLifecycle::Archived.can_transition_to(ExperimentLifecycle::Inactive));
@@ -605,7 +741,8 @@ async fn administrator_can_store_and_explicitly_reveal_experiment_secrets() {
             "tts_base_url": "wss://api.elevenlabs.io",
             "secret_updates": {
                 "speechmatics.api_key": "stored-speechmatics-secret",
-                "tts.api_key": "stored-elevenlabs-secret"
+                "tts.api_key": "stored-elevenlabs-secret",
+                "prolific.api_token": "stored-prolific-token"
             },
             "secret_deletions": []
         }),
@@ -623,6 +760,7 @@ async fn administrator_can_store_and_explicitly_reveal_experiment_secrets() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(catalogue["game_provider_secrets"][0]["source"], "game");
     assert_eq!(catalogue["game_provider_secrets"][1]["source"], "game");
+    assert_eq!(catalogue["game_provider_secrets"][2]["source"], "game");
     let (status, revealed) = json_request(
         router.clone(),
         http::Method::POST,
@@ -1379,6 +1517,14 @@ async fn experiment_starts_inactive_and_admin_controls_intake() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    let (status, _) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiment/status",
+        json!({"status": "inactive"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
     let (status, activation) = json_request(
         router.clone(),
         http::Method::POST,
@@ -1528,6 +1674,7 @@ async fn catalogue_readiness_includes_missing_agent_secret_references() {
     .await;
     let experiment = &catalogue["experiments"][0];
     assert_eq!(experiment["configuration_valid"], true);
+    assert_eq!(experiment["local_testing_runnable"], false);
     assert_eq!(experiment["runnable"], false);
     assert!(
         experiment["runnable_issues"]
@@ -1539,7 +1686,7 @@ async fn catalogue_readiness_includes_missing_agent_secret_references() {
     );
 
     let (_, dashboard_config) = json_request(
-        router,
+        router.clone(),
         http::Method::GET,
         "/api/admin/experiments/step5/config",
         Value::Null,
@@ -1551,7 +1698,7 @@ async fn catalogue_readiness_includes_missing_agent_secret_references() {
     );
 }
 
-/// Confirms Prolific experiments are not shown as ready without global workspace credentials.
+/// Confirms Prolific experiments are not shown as ready without the global API credential.
 #[tokio::test]
 async fn catalogue_readiness_includes_global_prolific_prerequisites() {
     let (mut config, _tmp) = sqlite_config();
@@ -1563,13 +1710,18 @@ async fn catalogue_readiness_includes_global_prolific_prerequisites() {
         .recruitment
         .prolific
         .completion_paths
-        .partner_unavailable = "NOPARTNER".to_string();
-    config.recruitment.prolific.completion_paths.timed_out = "TIMEDOUT".to_string();
+        .game_did_not_start = "NOPARTNER".to_string();
+    config
+        .recruitment
+        .prolific
+        .completion_paths
+        .participation_ended_early = "TIMEDOUT".to_string();
     config
         .recruitment
         .prolific
         .completion_paths
         .technical_failure = "TECHFAIL".to_string();
+    config.recruitment.prolific.completion_paths.no_consent = "NOCONSENT".to_string();
     let router = super::build_router(TinyAdapter, config, ServeOptions::default())
         .await
         .expect("an incomplete inactive Prolific draft still builds");
@@ -1584,26 +1736,266 @@ async fn catalogue_readiness_includes_global_prolific_prerequisites() {
     .await;
     let experiment = &catalogue["experiments"][0];
     assert_eq!(experiment["configuration_valid"], true);
+    assert_eq!(experiment["local_testing_runnable"], true);
     assert_eq!(experiment["runnable"], false);
     let issues = experiment["runnable_issues"].as_array().unwrap();
     assert!(issues
         .iter()
         .any(|issue| issue.as_str().unwrap().contains("Prolific API token")));
-    assert!(issues
-        .iter()
-        .any(|issue| issue.as_str().unwrap().contains("Prolific workspace")));
 
     let (_, dashboard_config) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments/step5/config",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(dashboard_config["activation_issues"], json!([]));
+
+    let (testing_status, testing) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiment/status",
+        json!({"status": "testing", "participant_url_kind": "local"}),
+    )
+    .await;
+    assert_eq!(testing_status, StatusCode::OK);
+    let running_url = testing["participant_url"].clone();
+    assert_eq!(running_url["kind"], "local");
+    assert!(running_url["participant_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("TEST"));
+    assert!(running_url["session_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("TEST"));
+    let (_, refreshed_catalogue) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        refreshed_catalogue["experiments"][0]["participant_url"],
+        running_url
+    );
+    let (synthetic_status, synthetic) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/participants",
+        json!({"prolific": {
+            "participant_id": running_url["participant_id"],
+            "study_id": "prolific-study",
+            "session_id": running_url["session_id"]
+        }}),
+    )
+    .await;
+    assert_eq!(synthetic_status, StatusCode::OK, "{synthetic:#}");
+    let (real_status, _) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/participants",
+        json!({"prolific": {
+            "participant_id": "REALPARTICIPANT",
+            "study_id": "prolific-study",
+            "session_id": "REALSESSION"
+        }}),
+    )
+    .await;
+    assert_eq!(real_status, StatusCode::SERVICE_UNAVAILABLE);
+    let (stopped_status, stopped) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiment/status",
+        json!({"status": "inactive"}),
+    )
+    .await;
+    assert_eq!(stopped_status, StatusCode::OK);
+    assert_eq!(stopped["participant_url"], Value::Null);
+    let (_, stopped_catalogue) = json_request(
         router,
+        http::Method::GET,
+        "/api/admin/experiments",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        stopped_catalogue["experiments"][0]["participant_url"],
+        Value::Null
+    );
+}
+
+/// Confirms a green provider-backed badge and Start share one verified study contract.
+#[tokio::test]
+async fn prolific_run_readiness_verifies_the_linked_study_before_start() {
+    let study_requests = Arc::new(AtomicUsize::new(0));
+    let project_requests = Arc::new(AtomicUsize::new(0));
+    let (mut config, _tmp) = sqlite_config();
+    let expected_url = format!(
+        "{}/participant?PROLIFIC_PID={{{{%PROLIFIC_PID%}}}}&STUDY_ID={{{{%STUDY_ID%}}}}&SESSION_ID={{{{%SESSION_ID%}}}}",
+        config.server.public_base_url.trim_end_matches('/')
+    );
+    config.recruitment.prolific.enabled = true;
+    config.recruitment.prolific.study_id = "linkedstudy".to_string();
+    config.recruitment.prolific.completion_paths.completed = "COMPLETE".to_string();
+    config.recruitment.prolific.completion_paths.partner_left = "PARTNERLEFT".to_string();
+    config
+        .recruitment
+        .prolific
+        .completion_paths
+        .game_did_not_start = "NOPARTNER".to_string();
+    config
+        .recruitment
+        .prolific
+        .completion_paths
+        .participation_ended_early = "TIMEDOUT".to_string();
+    config
+        .recruitment
+        .prolific
+        .completion_paths
+        .technical_failure = "TECHFAIL".to_string();
+    config.recruitment.prolific.completion_paths.no_consent = "NOCONSENT".to_string();
+    let study_counter = study_requests.clone();
+    let project_counter = project_requests.clone();
+    let provider = Router::new()
+        .route(
+            "/api/v1/studies/linkedstudy/",
+            axum::routing::get(move || {
+                let expected_url = expected_url.clone();
+                let study_counter = study_counter.clone();
+                async move {
+                    study_counter.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({
+                        "id": "linkedstudy",
+                        "external_study_url": expected_url,
+                        "prolific_id_option": "url_parameters",
+                        "completion_codes": [
+                            {"code": "COMPLETE", "code_type": "CUSTOM", "actions": [{"action": "AUTOMATICALLY_APPROVE"}]},
+                            {"code": "PARTNERLEFT", "code_type": "CUSTOM", "actions": [{"action": "AUTOMATICALLY_APPROVE"}]},
+                            {"code": "NOPARTNER", "code_type": "CUSTOM", "actions": [{"action": "REQUEST_RETURN"}]},
+                            {"code": "TIMEDOUT", "code_type": "CUSTOM", "actions": [{"action": "REQUEST_RETURN"}]},
+                            {"code": "TECHFAIL", "code_type": "CUSTOM", "actions": [{"action": "AUTOMATICALLY_APPROVE"}]},
+                            {"code": "NOCONSENT", "code_type": "NO_CONSENT", "actions": [{"action": "REQUEST_RETURN"}]}
+                        ],
+                        "estimated_completion_time": 120,
+                        "maximum_allowed_time": null,
+                        "project": "project1"
+                    }))
+                }
+            }),
+        )
+        .route(
+            "/api/v1/projects/project1/",
+            axum::routing::get(move || {
+                let project_counter = project_counter.clone();
+                async move {
+                    project_counter.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({"id": "project1", "workspace": "workspace1"}))
+                }
+            }),
+        )
+        .fallback(|| async { StatusCode::NOT_FOUND });
+    let (provider_url, provider_task) = spawn_test_server(provider).await;
+    let router = super::build_router(TinyAdapter, config, ServeOptions::default())
+        .await
+        .unwrap();
+    authenticate_test_admin(router.clone()).await.unwrap();
+    let (settings_status, settings) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/game/settings",
+        json!({
+            "expected_revision": 1,
+            "institution": "",
+            "admin_allowed_ip_ranges": [],
+            "prolific_api_base_url": provider_url,
+            "secret_updates": {"prolific.api_token": "provider-token"}
+        }),
+    )
+    .await;
+    assert_eq!(settings_status, StatusCode::OK, "{settings}");
+    let (_, current) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments/step5/config",
+        Value::Null,
+    )
+    .await;
+    let mut missing_study = current["experiment"]["config"].clone();
+    missing_study["recruitment"]["prolific"]["study_id"] = json!("missingstudy");
+    missing_study["recruitment"]["prolific"]["completion_paths"]["no_consent"] =
+        json!("NEWNOCONSENT");
+    let (unready_status, unready) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiments/step5/config",
+        json!({
+            "expected_revision": 1,
+            "config": missing_study,
+            "game_yaml": current["game_yaml"],
+            "secret_updates": {},
+            "secret_deletions": []
+        }),
+    )
+    .await;
+    assert_eq!(unready_status, StatusCode::OK, "{unready}");
+    assert_eq!(unready["revision"], 2);
+    assert!(unready["prolific_issues"]
+        .to_string()
+        .contains("Prolific API resource was not found (404 Not Found)"));
+    let (_, persisted_unready) = json_request(
+        router.clone(),
         http::Method::GET,
         "/api/admin/experiments/step5/config",
         Value::Null,
     )
     .await;
     assert_eq!(
-        experiment["runnable_issues"], dashboard_config["activation_issues"],
-        "header badges and lifecycle controls must share global Prolific diagnostics"
+        persisted_unready["experiment"]["config"]["recruitment"]["prolific"]["completion_paths"]
+            ["no_consent"],
+        "NEWNOCONSENT"
     );
+    let (save_status, saved) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiments/step5/config",
+        json!({
+            "expected_revision": 2,
+            "config": current["experiment"]["config"],
+            "game_yaml": current["game_yaml"],
+            "secret_updates": {},
+            "secret_deletions": []
+        }),
+    )
+    .await;
+    assert_eq!(save_status, StatusCode::OK, "{saved}");
+    let (_, catalogue) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(catalogue["experiments"][0]["runnable"], true);
+    assert_eq!(study_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(project_requests.load(Ordering::SeqCst), 1);
+    let (start_status, started) = json_request(
+        router,
+        http::Method::POST,
+        "/api/admin/experiment/status",
+        json!({
+            "status": "testing",
+            "verify_prolific": true,
+            "participant_url_kind": "prolific"
+        }),
+    )
+    .await;
+    assert_eq!(start_status, StatusCode::OK, "{started}");
+    assert_eq!(study_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(project_requests.load(Ordering::SeqCst), 1);
+    provider_task.abort();
 }
 
 /// Confirms test sessions and their dependent rows are absent from every export variant input.
@@ -3480,13 +3872,18 @@ async fn health_and_public_config_expose_client_bootstrap_shape() {
         .recruitment
         .prolific
         .completion_paths
-        .partner_unavailable = "MINTFALCON".to_string();
-    config.recruitment.prolific.completion_paths.timed_out = "CEDAROTTER".to_string();
+        .game_did_not_start = "MINTFALCON".to_string();
+    config
+        .recruitment
+        .prolific
+        .completion_paths
+        .participation_ended_early = "CEDAROTTER".to_string();
     config
         .recruitment
         .prolific
         .completion_paths
         .technical_failure = "SILVERHERON".to_string();
+    config.recruitment.prolific.completion_paths.no_consent = "NOCONSENT".to_string();
     let router = build_router(TinyAdapter, config, ServeOptions::default())
         .await
         .unwrap();

@@ -224,13 +224,14 @@ fn study_value(external_url: &str, secure: bool, overrides: &HashMap<String, Str
     let paths = [
         ("completed", "DONECODE", "AUTOMATICALLY_APPROVE"),
         ("partner_left", "PARTNERCODE", "AUTOMATICALLY_APPROVE"),
-        ("partner_unavailable", "UNMATCHEDCODE", "REQUEST_RETURN"),
-        ("timed_out", "TIMEOUTCODE", "REQUEST_RETURN"),
+        ("game_did_not_start", "UNMATCHEDCODE", "REQUEST_RETURN"),
+        ("participation_ended_early", "TIMEOUTCODE", "REQUEST_RETURN"),
         (
             "technical_failure",
             "TECHNICALCODE",
             "AUTOMATICALLY_APPROVE",
         ),
+        ("no_consent", "NOCONSENTCODE", "REQUEST_RETURN"),
     ];
     let completion_codes = paths
         .into_iter()

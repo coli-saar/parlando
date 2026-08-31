@@ -33,14 +33,14 @@ the output.
 
 The default matrix covers:
 
-- game-level API origin, token, and workspace verification;
+- game-level API origin and token verification without a global workspace binding;
 - rejection of an incorrect completion-path action;
 - complete study, project, URL, timing, and completion-path activation preflight;
 - valid, tampered, and identity-mismatched Secure external URL tokens;
 - two verified Prolific participants forming one dyadic game through real game WebSockets;
 - missing, explicitly declined, and accepted required consent as separate workflows;
 - rejection of direct intake in a Prolific experiment and Prolific identity on both assigned roles;
-- both an active waiting-room departure and a waiting deadline producing the same Unmatched
+- both an active waiting-room departure and a waiting deadline producing the same Game did not start
   handoff;
 - brief and expired waiting-room disconnects;
 - assigned-but-not-started dyads which either lose one participant or reach their shared deadline;
@@ -107,5 +107,5 @@ participant-facing Prolific application processes each completion action as expe
 
 Before opening a paid study, use Prolific's end-to-end test-participant facility when it is available
 to the workspace. A dyadic test requires two test participants. Otherwise run a small pilot and
-verify the same normal-completion, unmatched, and partner-left paths in both the Parlando dashboard
+verify the same normal-completion, game-did-not-start, and partner-left paths in both the Parlando dashboard
 and the Prolific submission table.

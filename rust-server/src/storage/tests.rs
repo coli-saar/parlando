@@ -132,6 +132,20 @@ async fn sqlite_schema_has_evaluation_and_administrator_tables() {
     .await
     .unwrap();
     assert!(session_columns.iter().any(|column| column == "purpose"));
+    let game_setting_columns = sqlx::query_scalar::<_, String>(
+        "select name from pragma_table_info('game_settings') order by cid",
+    )
+    .fetch_all(&store.pool)
+    .await
+    .unwrap();
+    assert!(!game_setting_columns
+        .iter()
+        .any(|column| column.contains("workspace")));
+    let schema_version = sqlx::query_scalar::<_, i64>("select max(version) from schema_migrations")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(schema_version, 16);
 }
 
 /// Confirms secret changes are atomic with revisions and never enter revision JSON.
@@ -1123,8 +1137,6 @@ async fn sqlite_game_settings_reject_stale_updates() {
             "wss://eu.rt.speechmatics.com/v2".to_string(),
             "wss://api.elevenlabs.io".to_string(),
             "https://api.prolific.com".to_string(),
-            String::new(),
-            String::new(),
             provider_updates,
             vec![],
         )
@@ -1156,8 +1168,6 @@ async fn sqlite_game_settings_reject_stale_updates() {
             "wss://eu.rt.speechmatics.com/v2".to_string(),
             "wss://api.elevenlabs.io".to_string(),
             "https://api.prolific.com".to_string(),
-            String::new(),
-            String::new(),
             HashMap::new(),
             vec![],
         )

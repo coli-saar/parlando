@@ -755,8 +755,8 @@ export function WaitingRoomNotice({
   const remainingMinutes = Math.floor(remainingSeconds / 60);
   const seconds = remainingSeconds % 60;
   const terminalGuidance = prolific
-    ? "If you leave now or the countdown expires, Parlando will end this waiting session and show your Unmatched completion path for returning to Prolific."
-    : "If you leave now or the countdown expires, Parlando will end this waiting session as unmatched.";
+    ? "If you leave now or the countdown expires, Parlando will end this waiting session and show your Game did not start completion path for returning to Prolific."
+    : "If you leave now or the countdown expires, Parlando will record that the game did not start.";
   return (
     <section aria-live="polite" className="parlando-waiting-room" role="status">
       <strong>Waiting for your partner</strong>
@@ -876,9 +876,8 @@ export function ProlificHandoff({ handoff }: { handoff: RecruitmentHandoff }) {
 function outcomeText(outcome: ParticipantOutcome | null, reason: string | null): string {
   switch (outcome) {
     case "completed": return "Thank you. Your responses have been recorded.";
-    case "left_waiting_room": return "You left before a partner became available. Use the Unmatched completion path below to return to Prolific.";
+    case "left_waiting_room": return "You left before a playable game began. Use the Game did not start completion path below to return to Prolific.";
     case "left_game": return "You left after the game started. Your responses up to that point have been recorded.";
-    case "participant_inactive": return "The game ended because a required response was not received from you.";
     case "connection_lost": return "The session ended because your connection did not return before the reconnect deadline.";
     case "partner_left": return "Your partner left or could not reconnect, so the session cannot continue.";
     case "partner_unavailable": return "No partner became available before the waiting period ended.";

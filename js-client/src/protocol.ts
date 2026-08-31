@@ -114,7 +114,6 @@ export type ParticipantOutcome =
   | "completed"
   | "left_waiting_room"
   | "left_game"
-  | "participant_inactive"
   | "connection_lost"
   | "partner_left"
   | "partner_unavailable"
@@ -304,7 +303,7 @@ function requireRole(value: Record<string, unknown>, key: string): void {
 
 /** Requires one participant outcome from the stable provider-neutral vocabulary. */
 function requireOutcome(value: Record<string, unknown>, key: string): void {
-  if (!["completed", "left_waiting_room", "left_game", "participant_inactive", "connection_lost", "partner_left", "partner_unavailable", "idle_limit_reached", "technical_failure", "lifetime_limit_reached"].includes(String(value[key]))) {
+  if (!["completed", "left_waiting_room", "left_game", "connection_lost", "partner_left", "partner_unavailable", "idle_limit_reached", "technical_failure", "lifetime_limit_reached"].includes(String(value[key]))) {
     throw new Error(`invalid ${key}`);
   }
 }

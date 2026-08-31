@@ -195,7 +195,6 @@ pub enum ParticipantOutcomeKind {
     Completed,
     LeftWaitingRoom,
     LeftGame,
-    ParticipantInactive,
     ConnectionLost,
     PartnerLeft,
     PartnerUnavailable,

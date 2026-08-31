@@ -22,7 +22,6 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 const EXPERIMENT_ID: &str = "prolific-test";
 const API_TOKEN: &str = "prolific-test-token";
-const WORKSPACE_ID: &str = "workspace1";
 const STUDY_ID: &str = "study1";
 
 /// Public runner options intended for both local use and CI.
@@ -65,7 +64,7 @@ const SCENARIOS: &[ScenarioDefinition] = &[
     ScenarioDefinition {
         id: "CFG-01",
         phase: "Game setup",
-        name: "Configured API base and token verify the Prolific workspace",
+        name: "Configured API base and token require no global workspace binding",
     },
     ScenarioDefinition {
         id: "ACT-01",
@@ -100,12 +99,12 @@ const SCENARIOS: &[ScenarioDefinition] = &[
     ScenarioDefinition {
         id: "WAIT-01",
         phase: "Waiting room",
-        name: "Active waiting-room leave records unmatched handoff",
+        name: "Active waiting-room leave records Game did not start handoff",
     },
     ScenarioDefinition {
         id: "WAIT-02",
         phase: "Waiting room",
-        name: "Waiting deadline records the same unmatched handoff",
+        name: "Waiting deadline records the same Game did not start handoff",
     },
     ScenarioDefinition {
         id: "GAME-01",
@@ -434,9 +433,12 @@ async fn main() -> Result<()> {
 
     let settings_ok = run_scenario(&mut results, &SCENARIOS[1], async {
         configure_game_settings(&client, &server_base, &mock_base, &admin).await?;
-        let journal = mock_requests(&client, &mock_base).await?;
-        assert_journal_call(&journal, "/api/v1/workspaces/workspace1/")?;
-        Ok("workspace title verified through the configured loopback origin".to_string())
+        let settings =
+            admin_json(&client, &server_base, &admin, "/api/admin/game/settings").await?;
+        if settings["prolific_api_base_url"] != mock_base {
+            bail!("Prolific API base URL was not retained");
+        }
+        Ok("API endpoint and protected token were stored without a workspace id".to_string())
     })
     .await;
 
@@ -462,7 +464,7 @@ async fn main() -> Result<()> {
             &mock_base,
             &server_base,
             "invalid-action",
-            Some(("timed_out", "AUTOMATICALLY_APPROVE")),
+            Some(("participation_ended_early", "AUTOMATICALLY_APPROVE")),
         )
         .await?;
         create_experiment(&client, &server_base, &admin, "invalid-action").await?;
@@ -484,7 +486,7 @@ async fn main() -> Result<()> {
         let journal = mock_requests(&client, &mock_base).await?;
         assert_journal_call(&journal, "/api/v1/studies/study1/")?;
         assert_journal_call(&journal, "/api/v1/projects/project1/")?;
-        Ok("study ownership, URL, timing, and five completion paths passed preflight".to_string())
+        Ok("study ownership, URL, timing, and six completion paths passed preflight".to_string())
     })
     .await;
 
@@ -650,7 +652,7 @@ async fn main() -> Result<()> {
         assert_outcome(&ended, "left_waiting_room", "UNMATCHEDCODE")?;
         context.unmatched_session = Some(session.clone());
         Ok(format!(
-            "{session} ended with the unmatched REQUEST_RETURN code"
+            "{session} ended with the Game did not start REQUEST_RETURN code"
         ))
     })
     .await;
@@ -674,7 +676,7 @@ async fn main() -> Result<()> {
         assert_outcome(&ended, "partner_unavailable", "UNMATCHEDCODE")?;
         context.timed_out_waiting_session = Some(session.clone());
         Ok(format!(
-            "{session} expired with the same unmatched REQUEST_RETURN code"
+            "{session} expired with the same Game did not start REQUEST_RETURN code"
         ))
     })
     .await;
@@ -1476,9 +1478,9 @@ async fn main() -> Result<()> {
         socket.close(None).await?;
         let terminal =
             wait_for_outcome(&client, &server_base, &participant, Duration::from_secs(6)).await?;
-        assert_outcome(&terminal, "connection_lost", "TIMEOUTCODE")?;
+        assert_outcome(&terminal, "connection_lost", "UNMATCHEDCODE")?;
         Ok(format!(
-            "{session} distinguished a dropped waiter from an unmatched waiter"
+            "{session} classified a dropped waiter as Game did not start"
         ))
     })
     .await;
@@ -1942,7 +1944,6 @@ async fn configure_game_settings(
             "speechmatics_realtime_url": settings["speechmatics_realtime_url"],
             "tts_base_url": settings["tts_base_url"],
             "prolific_api_base_url": mock_base,
-            "prolific_workspace_id": WORKSPACE_ID,
             "secret_updates": {"prolific.api_token": API_TOKEN},
             "secret_deletions": []
         }))
@@ -2001,9 +2002,10 @@ fn fixture_config(
             "completion_paths": {
                 "completed": "DONECODE",
                 "partner_left": "PARTNERCODE",
-                "partner_unavailable": "UNMATCHEDCODE",
-                "timed_out": "TIMEOUTCODE",
-                "technical_failure": "TECHNICALCODE"
+                "game_did_not_start": "UNMATCHEDCODE",
+                "participation_ended_early": "TIMEOUTCODE",
+                "technical_failure": "TECHNICALCODE",
+                "no_consent": "NOCONSENTCODE"
             }
         }},
         "session": {

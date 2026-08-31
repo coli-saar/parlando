@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Parlando"
+  short_description: "Prepare and publish coordinated Parlando releases"
+  default_prompt: "Use $release-parlando to prepare, verify, and publish the next coordinated Parlando package release."

@@ -24,6 +24,8 @@
     .muted { color: var(--subtle); }
     .small { font-size: 12px; }
     .visually-hidden { height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; width: 1px; clip: rect(0 0 0 0); }
+    .quick-tooltip { background: #20262c; border-radius: 5px; color: #fff; font-size: 12px; line-height: 1.35; max-width: min(360px, calc(100vw - 24px)); padding: 6px 8px; pointer-events: none; position: fixed; z-index: 100; }
+    .quick-tooltip[hidden] { display: none; }
     .menu-button { align-items: center; background: #fff; border: 1px solid #c9d2da; border-radius: 6px; cursor: pointer; display: none; font-weight: 800; height: 36px; justify-content: center; width: 40px; }
     .primary, .secondary { align-items: center; border-radius: 6px; cursor: pointer; display: inline-flex; font-weight: 600; gap: 7px; justify-content: center; padding: 8px 11px; text-decoration: none; }
     .primary { background: #202428; border: 1px solid #202428; color: #fff; }
@@ -96,6 +98,20 @@
     .workspace-title code { background: #f0f1f2; border-radius: 4px; font-size: 12px; justify-self: start; padding: 2px 6px; }
     .workspace-facts { align-items: center; display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 4px; }
     .workspace-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+    .launch-menu { position: relative; }
+    .launch-menu > summary { list-style: none; }
+    .launch-menu > summary::-webkit-details-marker { display: none; }
+    .launch-menu > summary::after { border-bottom: 1.5px solid currentColor; border-right: 1.5px solid currentColor; content: ""; height: 6px; margin: -3px 1px 0 3px; transform: rotate(45deg); width: 6px; }
+    .launch-menu[open] > summary::after { margin-top: 3px; transform: rotate(225deg); }
+    .launch-menu-panel { background: #fff; border: 1px solid var(--strong-line); border-radius: 7px; box-shadow: 0 10px 28px rgba(32, 38, 44, .16); min-width: 330px; padding: 7px; position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; }
+    .launch-actions { align-items: stretch; display: grid; gap: 2px; }
+    .launch-mode { align-items: center; border-radius: 5px; display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) 20px auto; padding: 6px; }
+    .launch-mode:hover { background: var(--surface); }
+    .launch-mode strong { font-size: 13px; font-weight: 650; }
+    .launch-mode .capability-badge { padding: 0; }
+    .launch-mode .capability-badge.blocked { cursor: pointer; }
+    .launch-mode > :last-child { min-width: 86px; }
+    .running-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
     .workspace-navigation { border-bottom: 1px solid var(--strong-line); display: flex; gap: 3px; margin: 20px 0 0; max-width: 100%; overflow-x: auto; scrollbar-width: thin; }
     .workspace-navigation .tab { flex: 0 0 auto; white-space: nowrap; }
     .empty-experiment-workspace { align-items: center; align-self: center; display: grid; gap: 14px; justify-items: center; margin: auto; max-width: 520px; padding: 56px 24px; text-align: center; }
@@ -211,6 +227,8 @@
     .consent-empty { border-block: 1px solid var(--line); padding: 16px 0; }
     .secret-control { align-items: center; display: grid; gap: 7px; grid-template-columns: minmax(0, 1fr) auto auto; }
     .secret-control input { min-width: 0; width: 100%; }
+    .setup-url-control { align-items: center; display: grid; gap: 7px; grid-template-columns: minmax(0, 1fr) auto; }
+    .setup-url-control input { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-width: 0; width: 100%; }
     .secret-state { color: var(--subtle); font-size: 12px; }
     .secret-missing input { border-color: #d7a34b; }
     .secret-configured .secret-state { color: #257748; font-weight: 600; }
@@ -382,6 +400,7 @@
       .experiment-workspace, .page-scope { padding: 20px 16px; }
       .workspace-header { display: grid; }
       .workspace-actions { justify-content: flex-start; }
+      .launch-menu-panel { left: 0; min-width: min(330px, calc(100vw - 32px)); right: auto; }
       .load-overview, .settings-section, .export-controls { grid-template-columns: 1fr; }
       .session-summary { gap: 14px; padding: 14px; }
       .events-header { justify-content: flex-start; }
@@ -567,13 +586,14 @@
         <section class="settings-section" id="gameSettingsPanel"><header class="section-intro"><h2>Shared settings</h2><p class="muted">These values belong to the game process, not to an individual experiment.</p></header><div class="settings-form"><label>Institution<input id="institutionInput" placeholder="Optional institution"></label><label>Administrator IP ranges<textarea id="adminAllowedIpRangesInput" rows="4" placeholder="One CIDR range per line; empty allows every direct peer"></textarea></label><p class="muted small">This list uses the direct network peer. If a reverse proxy hides it, enforce the equivalent range at that trusted proxy.</p></div></section>
         <section class="settings-section"><header class="section-intro"><h2>Speechmatics</h2><p class="muted">Connection defaults and credentials for live transcription.</p></header><div class="settings-form"><label>Realtime URL default<input id="speechmaticsRealtimeUrlInput" type="url" placeholder="wss://eu.rt.speechmatics.com/v2"><span class="config-help">Initial regional or private WebSocket endpoint for new experiments.</span></label><div class="provider-secret" id="speechmaticsProviderSecret"></div><p class="muted small">Changing the endpoint default never changes an existing experiment revision.</p></div></section>
         <section class="settings-section"><header class="section-intro"><h2>ElevenLabs</h2><p class="muted">Connection defaults and credentials for synthesized speech.</p></header><div class="settings-form"><label>Base URL default<input id="ttsBaseUrlInput" type="url" placeholder="wss://api.elevenlabs.io"><span class="config-help">Initial WebSocket service origin for new experiments.</span></label><div class="provider-secret" id="ttsProviderSecret"></div><p class="muted small">Changing the endpoint default never changes an existing experiment revision.</p></div></section>
-        <section class="settings-section"><header class="section-intro"><h2>Prolific</h2><p class="muted">Workspace, endpoint, and credential used by every Prolific experiment.</p></header><div class="settings-form"><label>Workspace ID<input id="prolificWorkspaceIdInput" autocomplete="off" placeholder="Prolific workspace ID"><span class="config-help" id="prolificWorkspaceStatus">Not connected</span><span class="config-help">Required for Prolific experiments. Saving verifies the real workspace ID with the API token below.</span></label><label>API base URL<input id="prolificApiBaseUrlInput" type="url" placeholder="https://api.prolific.com"><span class="config-help">Keep the default except for a compatible private endpoint or local integration testing.</span></label><div class="provider-secret" id="prolificProviderSecret"></div></div></section>
+        <section class="settings-section"><header class="section-intro"><h2>Prolific</h2><p class="muted">Endpoint and credential used to verify each experiment's linked Prolific study.</p></header><div class="settings-form"><label>API base URL<input id="prolificApiBaseUrlInput" type="url" placeholder="https://api.prolific.com"><span class="config-help">Keep the default except for a compatible private endpoint or local integration testing.</span></label><div class="provider-secret" id="prolificProviderSecret"></div><p class="muted small">The workspace is derived from each linked study's Prolific project.</p></div></section>
         <section class="settings-section"><header class="section-intro"><h2>Save changes</h2><p class="muted">This saves every shared and provider setting above in one transaction.</p></header><div class="settings-form"><div class="settings-save-row"><button class="primary" id="saveGameSettings" type="button">Save all game settings</button><span class="save-confirmation" id="gameSettingsSaved" role="status" hidden>All game settings saved</span></div></div></section>
         <section class="settings-section"><header class="section-intro"><h2>Build information</h2><p class="muted">The compiled game and Parlando versions used by all experiments.</p></header><div id="reproducibility"><div class="empty">Loading build information…</div></div></section>
       </div>
     </section>
 
   </main>
+  <div class="quick-tooltip" id="quickTooltip" role="tooltip" hidden></div>
   <dialog id="createExperimentDialog" aria-labelledby="createExperimentTitle">
     <form id="createExperimentForm" class="dialog-form" method="dialog">
       <header><h2 id="createExperimentTitle">New experiment</h2><p class="muted">Choose its immutable identifier and optional private Markdown notes.</p></header>
@@ -583,7 +603,7 @@
     </form>
   </dialog>
   <script>
-    const state = { experiment: null, experiments: [], game: null, gameSettings: null, gameSettingsDirty: false, gameSettingsDraftRevision: null, load: null, privacy: null, activationIssues: [], sessions: [], selected: null, selectedSession: null, selectedParticipants: [], events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, csrfToken: null, activeScope: 'experiments', activeTab: 'sessions', loadedConfigKey: null, configLoadFailed: false, configValue: null, configuredSecrets: [], gameSecretKeys: [], secretDeletions: new Set(), agentFactories: [], gameProviderSecrets: [], gameProviderSecretDeletions: new Set(), gameProviderSecretUpdates: new Map(), prolificTestIdentities: new Map(), gameSettingsConfirmationTimer: null, notesMode: 'write', notesSource: '', notesDirty: false };
+    const state = { experiment: null, experiments: [], game: null, gameSettings: null, gameSettingsDirty: false, gameSettingsDraftRevision: null, load: null, privacy: null, activationIssues: [], sessions: [], selected: null, selectedSession: null, selectedParticipants: [], events: [], eventBundles: [], lastEventIndex: 0, timer: null, versionManifest: null, csrfToken: null, activeScope: 'experiments', activeTab: 'sessions', loadedConfigKey: null, configLoadFailed: false, configValue: null, configuredSecrets: [], gameSecretKeys: [], secretDeletions: new Set(), agentFactories: [], gameProviderSecrets: [], gameProviderSecretDeletions: new Set(), gameProviderSecretUpdates: new Map(), gameSettingsConfirmationTimer: null, quickTooltipTimer: null, quickTooltipTarget: null, notesMode: 'write', notesSource: '', notesDirty: false };
     const experimentList = document.getElementById('experimentList');
     const menuButton = document.getElementById('menuButton');
     const experimentHeader = document.getElementById('experimentHeader');
@@ -615,8 +635,6 @@
     const speechmaticsRealtimeUrlInput = document.getElementById('speechmaticsRealtimeUrlInput');
     const ttsBaseUrlInput = document.getElementById('ttsBaseUrlInput');
     const prolificApiBaseUrlInput = document.getElementById('prolificApiBaseUrlInput');
-    const prolificWorkspaceIdInput = document.getElementById('prolificWorkspaceIdInput');
-    const prolificWorkspaceStatus = document.getElementById('prolificWorkspaceStatus');
     const loadOverview = document.getElementById('loadOverview');
     const capacityList = document.getElementById('capacityList');
     const trafficMetrics = document.getElementById('trafficMetrics');
@@ -628,6 +646,7 @@
     const notesPreview = document.getElementById('notesPreview');
     const notesSaveState = document.getElementById('notesSaveState');
     const createExperimentDialog = document.getElementById('createExperimentDialog');
+    const quickTooltip = document.getElementById('quickTooltip');
     const scopeButtons = Array.from(document.querySelectorAll('[data-scope]'));
     const scopePanels = Array.from(document.querySelectorAll('[data-scope-panel]'));
     const tabButtons = Array.from(document.querySelectorAll('.tab'));
@@ -668,6 +687,53 @@
     // Escapes arbitrary server data before inserting it into HTML templates.
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+
+    // Converts a native title into dashboard tooltip content before the browser's delayed popup.
+    function quickTooltipTarget(element) {
+      const target = element?.closest?.('[title], [data-quick-tooltip]');
+      if (!target) return null;
+      if (target.hasAttribute('title')) {
+        target.dataset.quickTooltip = target.getAttribute('title');
+        target.removeAttribute('title');
+      }
+      return target.dataset.quickTooltip ? target : null;
+    }
+
+    // Positions the shared tooltip next to its trigger without leaving the viewport.
+    function positionQuickTooltip(target) {
+      const margin = 8;
+      const gap = 6;
+      const trigger = target.getBoundingClientRect();
+      const tooltip = quickTooltip.getBoundingClientRect();
+      const left = Math.min(
+        window.innerWidth - tooltip.width - margin,
+        Math.max(margin, trigger.left + (trigger.width - tooltip.width) / 2)
+      );
+      let top = trigger.bottom + gap;
+      if (top + tooltip.height > window.innerHeight - margin) top = trigger.top - tooltip.height - gap;
+      quickTooltip.style.left = `${Math.round(left)}px`;
+      quickTooltip.style.top = `${Math.max(margin, Math.round(top))}px`;
+    }
+
+    // Shows one delegated tooltip after a short, consistent hover or focus delay.
+    function showQuickTooltip(target) {
+      clearTimeout(state.quickTooltipTimer);
+      state.quickTooltipTarget = target;
+      state.quickTooltipTimer = setTimeout(() => {
+        if (!target.isConnected || state.quickTooltipTarget !== target) return;
+        quickTooltip.textContent = target.dataset.quickTooltip;
+        quickTooltip.hidden = false;
+        positionQuickTooltip(target);
+      }, 90);
+    }
+
+    // Hides the delegated tooltip and cancels any pending appearance.
+    function hideQuickTooltip() {
+      clearTimeout(state.quickTooltipTimer);
+      state.quickTooltipTimer = null;
+      state.quickTooltipTarget = null;
+      quickTooltip.hidden = true;
     }
 
     // Highlights common GitHub-flavored Markdown source tokens without interpreting raw HTML.
@@ -1125,18 +1191,21 @@
       if (state.selectedSession) renderSummary(state.selectedSession, state.selectedParticipants);
     }
 
-    // Renders one compact experiment-readiness indicator covering configuration and dependencies.
-    function experimentCapabilityBadges(experiment) {
-      const valid = experiment.configuration_valid === true;
-      const runnable = experiment.runnable === true;
-      const ready = valid && runnable;
-      const issues = valid
-        ? (experiment.runnable_issues || []).join(' ') || 'A required game or provider setting is missing.'
-        : experiment.configuration_error || 'The experiment configuration is invalid.';
-      const title = ready ? 'Experiment is ready to start' : `Experiment setup incomplete: ${issues}`;
-      return `<span class="experiment-badges">
-        <span class="capability-badge ${ready ? 'ready' : 'blocked'}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">${icon(ready ? 'check' : 'alert')}</span>
-      </span>`;
+    // Returns mode-specific readiness without treating optional Prolific setup as globally required.
+    function launchReadiness(experiment, needsProlific) {
+      if (experiment.configuration_valid !== true) {
+        return { ready: false, issues: [experiment.configuration_error || 'The experiment configuration is invalid.'], destination: 'configuration' };
+      }
+      const issues = needsProlific ? (experiment.runnable_issues || []) : (experiment.local_testing_issues || []);
+      const gameSettingIssue = issues.some(issue => /Game Settings|API key is required/i.test(issue));
+      return { ready: issues.length === 0, issues, destination: gameSettingIssue ? 'game' : 'configuration' };
+    }
+
+    // Renders one icon-only readiness badge whose tooltip carries the mode diagnostics.
+    function launchReadinessBadge(readiness, modeLabel) {
+      const title = readiness.ready ? `${modeLabel} is ready` : `${modeLabel} is not ready: ${readiness.issues.join(' ')}`;
+      if (readiness.ready) return `<span class="capability-badge ready" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">${icon('check')}</span>`;
+      return `<button class="capability-badge blocked" type="button" data-fix-readiness="${escapeHtml(readiness.destination)}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">${icon('alert')}</button>`;
     }
 
     // Renders the filtered experiment catalogue using only durable server metadata.
@@ -1178,67 +1247,86 @@
         experimentStats.innerHTML = '';
         return;
       }
+      const openLaunchMenu = experimentStats.querySelector('.launch-menu[open]');
+      const restoreLaunchMenu = openLaunchMenu?.dataset.experimentId === experiment.experiment_id
+        && openLaunchMenu?.dataset.experimentStatus === experiment.status;
       const status = experimentDisplayStatus(experiment);
-      if (state.configLoadFailed) {
-        experimentHeader.innerHTML = `<h1>${escapeHtml(experiment.experiment_id)}${experimentCapabilityBadges(experiment)}</h1><span class="workspace-facts small">${statusLabel(status)}<span>Configuration revision ${escapeHtml(experiment.config_revision)}</span><span>Created ${escapeHtml(fmtDate(experiment.created_at))}</span></span>`;
-        experimentStats.innerHTML = experiment.status === 'archived' ? '' : `<button class="secondary" id="archiveButton" type="button" ${['active', 'testing'].includes(experiment.status) ? 'disabled title="Stop intake before archiving this experiment"' : ''}>${icon('archive')}Archive</button>`;
-        document.getElementById('archiveButton')?.addEventListener('click', archiveSelectedExperiment);
-        return;
-      }
       experimentHeader.innerHTML = `
-        <h1>${escapeHtml(experiment.experiment_id)}${experimentCapabilityBadges(experiment)}</h1>
+        <h1>${escapeHtml(experiment.experiment_id)}</h1>
         <span class="workspace-facts small">
           ${statusLabel(status)}
           <span>Configuration revision ${escapeHtml(experiment.config_revision)}</span>
           <span>Created ${escapeHtml(fmtDate(experiment.created_at))}</span>
         </span>
       `;
-      experimentStats.innerHTML = `
-        <a class="secondary" href="${escapeHtml(participantPageHref(experiment))}" target="_blank" rel="noopener" title="${escapeHtml(participantPageTitle(experiment))}">${icon('external')}Participant page</a>
-        <button class="secondary" id="cloneButton" type="button">${icon('copy')}Clone</button>
-        <button class="secondary" id="archiveButton" type="button" ${['active', 'testing'].includes(experiment.status) ? 'disabled title="Stop intake before archiving this experiment"' : ''}>${icon(experiment.status === 'archived' ? 'restore' : 'archive')}${experiment.status === 'archived' ? 'Unarchive' : 'Archive'}</button>
-        ${lifecycleActions(experiment)}
-      `;
+      experimentStats.innerHTML = experimentActionsMarkup(experiment);
+      if (restoreLaunchMenu) experimentStats.querySelector('.launch-menu')?.setAttribute('open', '');
       experimentStats.querySelectorAll('[data-lifecycle]').forEach(button => {
-        button.addEventListener('click', () => updateExperimentStatus(button.dataset.lifecycle));
+        button.addEventListener('click', () => updateExperimentStatus(button.dataset.lifecycle, button.dataset.verifyProlific === 'true', button.dataset.participantUrlKind));
       });
-      document.getElementById('cloneButton').addEventListener('click', cloneSelectedExperiment);
-      document.getElementById('archiveButton').addEventListener('click', experiment.status === 'archived' ? () => updateExperimentStatus('inactive') : archiveSelectedExperiment);
+      experimentStats.querySelectorAll('[data-copy-participant-url]').forEach(button => {
+        button.addEventListener('click', async () => {
+          await copyParticipantUrl(experiment, button.dataset.copyParticipantUrl, button);
+        });
+      });
+      experimentStats.querySelectorAll('[data-fix-readiness]').forEach(button => {
+        button.addEventListener('click', () => openReadinessDestination(button.dataset.fixReadiness));
+      });
+      document.getElementById('cloneButton')?.addEventListener('click', cloneSelectedExperiment);
+      document.getElementById('archiveButton')?.addEventListener('click', experiment.status === 'archived' ? () => updateExperimentStatus('inactive') : archiveSelectedExperiment);
     }
 
-    // Builds a participant URL with synthetic test identity or copyable production placeholders.
+    // Returns whether the selected experiment recruits participants through Prolific.
+    function prolificIsEnabled(experiment) {
+      const selectedConfig = state.experiment?.experiment_id === experiment.experiment_id ? state.configValue : null;
+      return Boolean((selectedConfig?.recruitment?.prolific || experiment.config?.recruitment?.prolific)?.enabled);
+    }
+
+    // Builds the literal URL template copied into a Prolific study before intake starts.
+    function prolificSetupUrl(experiment) {
+      const url = new URL(`/e/${encodeURIComponent(experiment.experiment_id)}/`, window.location.origin);
+      return `${url.origin}${url.pathname}?PROLIFIC_PID={{%PROLIFIC_PID%}}&STUDY_ID={{%STUDY_ID%}}&SESSION_ID={{%SESSION_ID%}}`;
+    }
+
+    // Builds the exact participant URL fixed when the current intake run started.
     function participantPageHref(experiment) {
       const url = new URL(`/e/${encodeURIComponent(experiment.experiment_id)}/`, window.location.origin);
       const selectedConfig = state.experiment?.experiment_id === experiment.experiment_id ? state.configValue : null;
       const prolific = selectedConfig?.recruitment?.prolific || experiment.config?.recruitment?.prolific;
-      if (!prolific?.enabled) return `${url.pathname}${url.search}`;
-      if (experiment.status === 'active') {
+      const runningUrl = experiment.participant_url;
+      if (!runningUrl || runningUrl.kind === 'direct' || !prolific?.enabled) return `${url.pathname}${url.search}`;
+      if (runningUrl.kind === 'prolific') {
         return `${url.pathname}?PROLIFIC_PID={{%PROLIFIC_PID%}}&STUDY_ID={{%STUDY_ID%}}&SESSION_ID={{%SESSION_ID%}}`;
       }
-      let identity = state.prolificTestIdentities.get(experiment.experiment_id);
-      if (!identity) {
-        const participantToken = crypto.randomUUID().replaceAll('-', '').toUpperCase();
-        const sessionToken = crypto.randomUUID().replaceAll('-', '').toUpperCase();
-        identity = {
-          participantId: `TEST${participantToken}`,
-          sessionId: `TEST${sessionToken}`
-        };
-        state.prolificTestIdentities.set(experiment.experiment_id, identity);
-      }
-      url.searchParams.set('PROLIFIC_PID', identity.participantId);
+      url.searchParams.set('PROLIFIC_PID', runningUrl.participant_id);
       url.searchParams.set('STUDY_ID', prolific.study_id);
-      url.searchParams.set('SESSION_ID', identity.sessionId);
+      url.searchParams.set('SESSION_ID', runningUrl.session_id);
       return `${url.pathname}${url.search}`;
     }
 
-    // Explains whether the Prolific link is configured for testing or provider setup.
-    function participantPageTitle(experiment) {
-      const selectedConfig = state.experiment?.experiment_id === experiment.experiment_id ? state.configValue : null;
-      const prolific = selectedConfig?.recruitment?.prolific || experiment.config?.recruitment?.prolific;
-      if (!prolific?.enabled) return 'Open participant page';
-      return experiment.status === 'active'
-        ? 'Copy this URL into the Prolific study configuration'
-        : 'Open with synthetic Prolific participant and session IDs for testing';
+    // Copies an absolute participant URL while preserving Prolific's literal placeholder syntax.
+    async function copyParticipantUrl(experiment, _launch, button) {
+      const value = `${window.location.origin}${participantPageHref(experiment)}`;
+      try {
+        await navigator.clipboard.writeText(value);
+      } catch (_error) {
+        window.prompt('Copy participant URL', value);
+        return;
+      }
+      const original = button.innerHTML;
+      button.textContent = 'Copied';
+      setTimeout(() => { button.innerHTML = original; }, 1400);
+    }
+
+    // Opens the settings surface most likely to resolve a blocked launch mode.
+    function openReadinessDestination(destination) {
+      if (destination === 'game') {
+        showScope('game');
+        return;
+      }
+      state.activeTab = 'details';
+      showScope('experiments');
+      renderTabs();
     }
 
     // Shows a dedicated creation prompt instead of experiment controls when the catalogue is empty.
@@ -1254,25 +1342,39 @@
       Object.values(tabPanels).forEach(panel => { panel.hidden = true; });
     }
 
-    // Returns state-appropriate intake and completion controls for one experiment.
-    function lifecycleActions(experiment) {
-      const incompatible = experiment.game_version !== state.game?.version;
-      const incomplete = experiment.runnable !== true;
-      const readinessIssues = experiment.runnable_issues || state.activationIssues;
-      const disabled = incompatible
-        ? 'disabled title="Clone this experiment to use the current game version"'
-        : incomplete
-          ? `disabled title="${escapeHtml(readinessIssues.join(' ') || 'This experiment is not runnable')}"`
-          : '';
+    // Renders one launch mode with an icon-only readiness badge and a mode-specific action.
+    function launchModeMarkup(experiment, label, lifecycle, needsProlific) {
+      const readiness = launchReadiness(experiment, needsProlific);
+      const verify = needsProlific && lifecycle === 'testing' ? ' data-verify-prolific="true"' : '';
+      const urlKind = needsProlific ? 'prolific' : lifecycle === 'testing' ? 'local' : 'direct';
+      return `<span class="launch-mode"><strong>${escapeHtml(label)}</strong>${launchReadinessBadge(readiness, label)}<button class="${lifecycle === 'active' ? 'primary' : 'secondary'}" data-lifecycle="${lifecycle}" data-participant-url-kind="${urlKind}"${verify} type="button" ${readiness.ready ? '' : 'disabled'}>${icon(lifecycle === 'active' ? 'power' : 'flask')}Start</button></span>`;
+    }
+
+    // Returns actions for inactive, testing, active, completed, and archived experiments.
+    function experimentActionsMarkup(experiment) {
+      const prolific = prolificIsEnabled(experiment);
       if (experiment.status === 'inactive') return `
-        <button class="secondary" data-lifecycle="testing" type="button" ${disabled}>${icon('flask')}Start testing</button>
-        <button class="primary" data-lifecycle="active" type="button" ${disabled}>${icon('power')}Activate intake</button>`;
-      if (experiment.status === 'testing') return `
-        <button class="secondary" data-lifecycle="inactive" type="button">${icon('power')}Stop testing</button>
-        <button class="primary" data-lifecycle="active" type="button">${icon('flask')}Start research</button>`;
-      if (experiment.status === 'active') return `
+        <span class="running-actions"><button class="secondary" id="cloneButton" type="button">${icon('copy')}Clone</button><button class="secondary" id="archiveButton" type="button">${icon('archive')}Archive</button></span>
+        <details class="launch-menu" data-experiment-id="${escapeHtml(experiment.experiment_id)}" data-experiment-status="${escapeHtml(experiment.status)}"><summary class="primary">${icon('play')}Start experiment</summary><div class="launch-menu-panel"><div class="launch-actions" aria-label="Experiment launch modes">
+          ${launchModeMarkup(experiment, 'Local preview', 'testing', false)}
+          ${prolific ? launchModeMarkup(experiment, 'Test through Prolific', 'testing', true) : ''}
+          ${launchModeMarkup(experiment, 'Official intake', 'active', prolific)}
+        </div></div></details>`;
+      if (experiment.status === 'testing') {
+        return `<span class="running-actions">
+          <a class="secondary" href="${escapeHtml(participantPageHref(experiment))}" target="_blank" rel="noopener">${icon('external')}Open</a>
+          <button class="secondary" data-copy-participant-url="running" type="button">${icon('copy')}Copy URL</button>
+          <button class="secondary" data-lifecycle="inactive" type="button">${icon('power')}Stop</button>
+        </span>`;
+      }
+      if (experiment.status === 'active') return `<span class="running-actions">
+        <a class="secondary" href="${escapeHtml(participantPageHref(experiment))}" target="_blank" rel="noopener">${icon('external')}Open</a>
+        <button class="secondary" data-copy-participant-url="running" type="button">${icon('copy')}Copy URL</button>
         <button class="secondary" data-lifecycle="inactive" type="button">${icon('power')}Pause intake</button>
-        <button class="primary" data-lifecycle="completed" type="button">${icon('check')}Complete</button>`;
+        <button class="primary" data-lifecycle="completed" type="button">${icon('check')}Complete</button>
+      </span>`;
+      if (experiment.status === 'archived') return `<button class="secondary" id="archiveButton" type="button">${icon('restore')}Unarchive</button>`;
+      if (experiment.status === 'completed') return `<button class="secondary" id="archiveButton" type="button">${icon('archive')}Archive</button>`;
       return '';
     }
 
@@ -1346,14 +1448,14 @@
       return Object.values(session.session_end?.participant_results || {}).map(result => result?.outcome).filter(Boolean);
     }
 
-    // Returns whether a terminal session ended without finding a partner.
-    function sessionWasUnmatched(session) {
+    // Returns whether a terminal session ended because no playable game formed.
+    function sessionGameDidNotStart(session) {
       return sessionOutcomes(session).includes('partner_unavailable');
     }
 
     // Formats exact unsuccessful waiting time from durable server timestamps.
     function unsuccessfulWait(session) {
-      if (!sessionWasUnmatched(session) || !session.waiting_started_at) return '';
+      if (!sessionGameDidNotStart(session) || !session.waiting_started_at) return '';
       const end = new Date(session.ended_at || session.waiting_deadline_at).getTime();
       const start = new Date(session.waiting_started_at).getTime();
       if (!Number.isFinite(end - start)) return '';
@@ -1445,20 +1547,23 @@
     }
 
     // Changes the selected experiment's durable lifecycle.
-    async function updateExperimentStatus(status) {
+    async function updateExperimentStatus(status, verifyProlific = false, participantUrlKind = null) {
+      const statusChanged = state.experiment?.status !== status;
       const buttons = [...experimentStats.querySelectorAll('button')];
       buttons.forEach(button => { button.disabled = true; });
       const response = await fetch(runtimeApi('experiment/status'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
-        body: JSON.stringify({ status })
+        body: JSON.stringify({ status, verify_prolific: verifyProlific, participant_url_kind: participantUrlKind })
       });
       if (!response.ok) {
         buttons.forEach(button => { button.disabled = false; });
         window.alert(await response.text());
-        return;
+        return false;
       }
-      await loadExperiment();
+      if (statusChanged) await loadExperiment();
+      else buttons.forEach(button => { button.disabled = false; });
+      return true;
     }
 
     // Uses the installation-level one-way archival route without constructing a runtime.
@@ -1641,14 +1746,16 @@
         { path: 'tts.voice_name', label: 'Voice display name', help: 'Human-readable voice label exposed to the participant client.' },
         { path: 'tts.base_url', label: 'ElevenLabs base URL', help: 'Exact WebSocket service origin that receives agent message text.' }
       ]},
-      { title: 'Prolific recruitment and completion paths', description: 'Create five completion paths under Prolific → Data collection → Completion paths, then copy each Prolific-generated code into its matching field. Parlando never generates completion codes. Private intake identifiers never enter exports.', fields: [
+      { title: 'Prolific study and completion paths', description: 'Link this experiment to exactly one Prolific study. Create six completion paths under Prolific → Data collection → Completion paths, then copy each Prolific-generated code into its matching field. Parlando never generates completion codes. Private intake identifiers never enter exports.', fields: [
+        { type: 'prolific-setup-url', label: 'URL for Prolific study setup', help: 'Copy this URL into Prolific before linking the study here. It contains Prolific placeholders and accepts participants only while this experiment is running through Prolific.' },
         { path: 'recruitment.prolific.enabled', label: 'Enable Prolific intake', help: 'Require and privately retain the PROLIFIC_PID, STUDY_ID, and SESSION_ID URL parameters.', type: 'boolean' },
-        { path: 'recruitment.prolific.study_id', label: 'Accepted study id', help: 'Must exactly match the STUDY_ID supplied by Prolific.' },
+        { path: 'recruitment.prolific.study_id', label: 'Linked Prolific study ID', help: 'In app.prolific.com/researcher/studies/<study-id>, enter only the value after /studies/. Parlando derives its workspace from the study project.' },
         { path: 'recruitment.prolific.completion_paths.completed', label: 'Completed code', help: 'Copy the code for the Prolific path whose action approves the submission.', type: 'completion-code' },
         { path: 'recruitment.prolific.completion_paths.partner_left', label: 'Partner left code', help: 'Copy the code for the Prolific path whose action approves the good-faith participant’s submission.', type: 'completion-code' },
-        { path: 'recruitment.prolific.completion_paths.partner_unavailable', label: 'Unmatched code', help: 'Copy the code for a custom Unmatched path whose action requests a return. Do not use Screened out.', type: 'completion-code' },
-        { path: 'recruitment.prolific.completion_paths.timed_out', label: 'Participant timed out code', help: 'Copy the code for the Prolific path whose action requests a return.', type: 'completion-code' },
-        { path: 'recruitment.prolific.completion_paths.technical_failure', label: 'Technical failure code', help: 'Copy the code for the Prolific path whose action approves the submission.', type: 'completion-code' }
+        { path: 'recruitment.prolific.completion_paths.game_did_not_start', label: 'Game did not start code', help: 'Copy the code for a custom Game did not start path whose action requests a return. Do not use Screened out.', type: 'completion-code' },
+        { path: 'recruitment.prolific.completion_paths.participation_ended_early', label: 'Participation ended before completion code', help: 'Copy the code for the Prolific path whose action requests a return.', type: 'completion-code' },
+        { path: 'recruitment.prolific.completion_paths.technical_failure', label: 'Technical failure code', help: 'Copy the code for the Prolific path whose action approves the submission.', type: 'completion-code' },
+        { path: 'recruitment.prolific.completion_paths.no_consent', label: 'No consent code', help: 'Copy the code for Prolific’s built-in No consent path whose action requests a return.', type: 'completion-code' }
       ]},
       { title: 'Players and agents', description: 'Select human pairing or one server-side agent and configure its runtime limits.', fields: [
         { path: 'agents', label: 'Participants', help: 'Pair two people, or pair one person with an agent compiled into this game server.', type: 'agents' }
@@ -1703,6 +1810,7 @@
       configForm.querySelectorAll('[data-secret-placeholder="true"]').forEach(installSecretReplacementInput);
       configForm.querySelectorAll('[data-consent-editor]').forEach(initializeConsentEditor);
       configForm.querySelectorAll('[data-agent-editor]').forEach(initializeAgentEditor);
+      configForm.querySelector('[data-copy-prolific-setup-url]')?.addEventListener('click', event => copyProlificSetupUrl(event.currentTarget));
       configForm.querySelectorAll('[data-config-path], [data-secret-update]').forEach(control => {
         control.addEventListener('input', refreshDraftActivationWarning);
         control.addEventListener('change', refreshDraftActivationWarning);
@@ -1713,6 +1821,10 @@
 
     // Renders one curated typed Parlando setting.
     function renderConfigField(field, config) {
+      if (field.type === 'prolific-setup-url') {
+        const value = prolificSetupUrl(state.experiment);
+        return `<div class="config-field"><span>${escapeHtml(field.label)}</span><div class="setup-url-control"><input type="text" readonly value="${escapeHtml(value)}" aria-label="${escapeHtml(field.label)}"><button class="secondary" data-copy-prolific-setup-url type="button">${icon('copy')}Copy setup URL</button></div><span class="config-help">${escapeHtml(field.help)}</span></div>`;
+      }
       const value = configAt(config, field.path);
       const help = field.help ? `<span class="config-help">${escapeHtml(field.help)}</span>` : '';
       let control;
@@ -1726,6 +1838,20 @@
       else if (field.type === 'completion-code') control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="string" type="text" maxlength="64" pattern="[A-Za-z0-9]*" value="${escapeHtml(value ?? '')}" autocomplete="off">`;
       else control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="string" type="${field.type === 'url' ? 'url' : 'text'}" value="${escapeHtml(value ?? '')}">`;
       return `<label class="config-field"><span>${escapeHtml(field.label)}</span>${control}${help}</label>`;
+    }
+
+    // Copies the inactive-safe URL template used to configure one linked Prolific study.
+    async function copyProlificSetupUrl(button) {
+      const value = prolificSetupUrl(state.experiment);
+      try {
+        await navigator.clipboard.writeText(value);
+      } catch (_error) {
+        window.prompt('Copy Prolific setup URL', value);
+        return;
+      }
+      const original = button.innerHTML;
+      button.textContent = 'Copied';
+      setTimeout(() => { button.innerHTML = original; }, 1400);
     }
 
     // Renders fields owned by one compiled agent factory without exposing raw JSON.
@@ -2229,10 +2355,6 @@
       speechmaticsRealtimeUrlInput.value = state.gameSettings?.speechmatics_realtime_url || 'wss://eu.rt.speechmatics.com/v2';
       ttsBaseUrlInput.value = state.gameSettings?.tts_base_url || 'wss://api.elevenlabs.io';
       prolificApiBaseUrlInput.value = state.gameSettings?.prolific_api_base_url || 'https://api.prolific.com';
-      prolificWorkspaceIdInput.value = state.gameSettings?.prolific_workspace_id || '';
-      prolificWorkspaceStatus.textContent = state.gameSettings?.prolific_workspace_title
-        ? `Connected to ${state.gameSettings.prolific_workspace_title}`
-        : 'Not connected';
       renderGameProviderSecrets();
     }
 
@@ -2366,7 +2488,6 @@
             speechmatics_realtime_url: speechmaticsRealtimeUrlInput.value,
             tts_base_url: ttsBaseUrlInput.value,
             prolific_api_base_url: prolificApiBaseUrlInput.value,
-            prolific_workspace_id: prolificWorkspaceIdInput.value,
             secret_updates: Object.fromEntries(state.gameProviderSecretUpdates),
             secret_deletions: [...state.gameProviderSecretDeletions]
           })
@@ -2612,7 +2733,6 @@
       if (outcome === 'partner_left' && cause === 'reconnect_timed_out') return { status: 'connection-lost', label: 'Partner connection lost', detail: 'The partner’s browser connection ended and they did not reconnect. Parlando cannot distinguish a closed tab from a network interruption.' };
       if (outcome === 'partner_left') return { status: 'partner-left', label: 'Partner left', detail: '' };
       if (outcome === 'partner_unavailable') return { status: 'no-partner', label: 'No partner found', detail: '' };
-      if (outcome === 'participant_inactive') return { status: 'participant-inactive', label: 'Removed for inactivity', detail: '' };
       if (outcome === 'idle_limit_reached') return { status: 'inactivity-timeout', label: 'Inactivity timeout', detail: '' };
       if (outcome === 'lifetime_limit_reached') return { status: 'duration-limit', label: 'Maximum duration reached', detail: '' };
       if (outcome === 'technical_failure') return { status: 'technical-failure', label: 'Technical failure', detail: '' };
@@ -2823,7 +2943,7 @@
     document.getElementById('notesPreviewMode').addEventListener('click', () => setNotesMode('preview'));
     document.getElementById('saveNotes').addEventListener('click', () => saveNotes().catch(error => window.alert(error.message)));
     saveConfiguration.addEventListener('click', saveConfigRevision);
-    [institutionInput, adminAllowedIpRangesInput, speechmaticsRealtimeUrlInput, ttsBaseUrlInput, prolificApiBaseUrlInput, prolificWorkspaceIdInput]
+    [institutionInput, adminAllowedIpRangesInput, speechmaticsRealtimeUrlInput, ttsBaseUrlInput, prolificApiBaseUrlInput]
       .forEach(control => control.addEventListener('input', markGameSettingsDirty));
     document.getElementById('saveGameSettings').addEventListener('click', saveSharedGameSettings);
     menuButton.addEventListener('click', toggleExperimentMenu);
@@ -2833,11 +2953,32 @@
       closeStatusFilters();
     });
     document.addEventListener('click', event => {
+      hideQuickTooltip();
       if (!event.target.closest('[data-status-filter]')) closeStatusFilters();
       if (!document.body.classList.contains('sidebar-open')) return;
       if (event.target.closest('#experimentSidebar') || event.target.closest('#menuButton')) return;
       closeExperimentMenu();
     });
+    document.addEventListener('pointerover', event => {
+      const target = quickTooltipTarget(event.target);
+      if (target && target !== state.quickTooltipTarget) showQuickTooltip(target);
+    });
+    document.addEventListener('pointerout', event => {
+      const target = state.quickTooltipTarget;
+      if (!target || (event.relatedTarget && target.contains(event.relatedTarget))) return;
+      hideQuickTooltip();
+    });
+    document.addEventListener('focusin', event => {
+      const target = quickTooltipTarget(event.target);
+      if (target) showQuickTooltip(target);
+    });
+    document.addEventListener('focusout', event => {
+      const target = state.quickTooltipTarget;
+      if (!target || (event.relatedTarget && target.contains(event.relatedTarget))) return;
+      hideQuickTooltip();
+    });
+    window.addEventListener('resize', hideQuickTooltip);
+    document.addEventListener('scroll', hideQuickTooltip, true);
     tabButtons.forEach(button => {
       button.addEventListener('click', () => {
         state.activeTab = button.dataset.tab;

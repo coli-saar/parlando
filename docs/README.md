@@ -54,10 +54,10 @@ configuration, validation protocol, and results of a checkpointed agent–agent
 experiment.
 
 When recruiting through Prolific, follow
-[Prolific Integration](prolific-integration.md) to
-configure participant URL parameters, completion paths, local testing, and the dashboard-only
-privacy boundary. Use [Test the Prolific integration](prolific-testing.md) to run the standalone
-provider emulator and binary-level scenario matrix before a live pilot.
+[Run a Parlando experiment through Prolific](using-prolific.md) for the experimenter workflow.
+[Prolific integration reference](prolific-integration.md) documents outcome mappings, provider
+verification, and operational boundaries. Use [Test the Prolific integration](prolific-testing.md)
+to run the standalone provider emulator and binary-level scenario matrix before a live pilot.
 
 For voice studies, read [Audio Transport](audio-transport.md) before deployment.
 It defines the authentication, PCM format, transcription boundary, TTS path,

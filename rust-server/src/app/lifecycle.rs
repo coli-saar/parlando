@@ -63,7 +63,7 @@ impl ExperimentLifecycle {
                 (
                     Self::Inactive,
                     Self::Testing | Self::Active | Self::Archived
-                ) | (Self::Testing, Self::Inactive | Self::Active)
+                ) | (Self::Testing, Self::Inactive)
                     | (Self::Active, Self::Inactive | Self::Completed)
                     | (Self::Completed, Self::Archived)
                     | (Self::Archived, Self::Inactive)
@@ -119,7 +119,6 @@ mod tests {
             (Inactive, Active),
             (Inactive, Archived),
             (Testing, Inactive),
-            (Testing, Active),
             (Active, Inactive),
             (Active, Completed),
             (Completed, Archived),

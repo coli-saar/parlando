@@ -233,11 +233,6 @@ fn apply_game_provider_secrets(
         .unwrap_or_default();
 }
 
-/// Applies the installation's non-secret provider binding to one experiment runtime.
-fn apply_game_provider_settings(config: &mut ExperimentConfig, settings: &StoredGameSettings) {
-    config.recruitment.prolific.workspace_id = settings.prolific_workspace_id.clone();
-}
-
 /// Materializes game endpoint defaults into a new experiment revision without overriding choices.
 fn apply_provider_endpoint_defaults(
     value: &mut Value,
@@ -282,7 +277,6 @@ async fn hydrated_experiment_config<A: Game>(
     apply_experiment_secrets(&mut config, &experiment_secrets);
     let game_secrets = state.store.game_secrets().await?;
     apply_game_provider_secrets(&mut config, &game_secrets);
-    apply_game_provider_settings(&mut config, &*state.game_settings.read().await);
     Ok(config)
 }
 
@@ -372,7 +366,8 @@ async fn experiment_activation_issues<A: Game>(
         .prolific_api_base_url
         .clone();
     let (prolific_issues, verified_study) = if issues.is_empty() {
-        prolific_activation_preflight(&config, &prolific_api_base_url).await
+        cached_prolific_activation_preflight(state, experiment_id, &config, &prolific_api_base_url)
+            .await
     } else {
         (Vec::new(), None)
     };
@@ -391,11 +386,87 @@ async fn experiment_activation_issues<A: Game>(
     Ok(issues)
 }
 
+/// Reuses a recent provider check when its complete local input contract is unchanged.
+async fn cached_prolific_activation_preflight<A: Game>(
+    state: &AppState<A>,
+    experiment_id: &str,
+    config: &ExperimentConfig,
+    prolific_api_base_url: &str,
+) -> (Vec<String>, Option<VerifiedProlificStudy>) {
+    let fingerprint = prolific_preflight_fingerprint(config, prolific_api_base_url);
+    if let Some(cached) = state
+        .prolific_preflight_cache
+        .read()
+        .await
+        .get(experiment_id)
+        .filter(|cached| {
+            cached.fingerprint == fingerprint
+                && cached.checked_at.elapsed() < Duration::from_secs(30)
+        })
+        .cloned()
+    {
+        return (cached.issues, cached.study);
+    }
+    run_and_cache_prolific_activation_preflight(state, experiment_id, config, prolific_api_base_url)
+        .await
+}
+
+/// Performs a fresh provider check and publishes its result for badges and Start.
+async fn run_and_cache_prolific_activation_preflight<A: Game>(
+    state: &AppState<A>,
+    experiment_id: &str,
+    config: &ExperimentConfig,
+    prolific_api_base_url: &str,
+) -> (Vec<String>, Option<VerifiedProlificStudy>) {
+    let fingerprint = prolific_preflight_fingerprint(config, prolific_api_base_url);
+    let (issues, study) = prolific_activation_preflight(config, prolific_api_base_url).await;
+    state.prolific_preflight_cache.write().await.insert(
+        experiment_id.to_string(),
+        ProlificPreflightCacheEntry {
+            fingerprint,
+            checked_at: Instant::now(),
+            issues: issues.clone(),
+            study: study.clone(),
+        },
+    );
+    (issues, study)
+}
+
+/// Hashes every local value that can change the result of a Prolific study preflight.
+fn prolific_preflight_fingerprint(
+    config: &ExperimentConfig,
+    prolific_api_base_url: &str,
+) -> String {
+    let prolific = &config.recruitment.prolific;
+    let paths = &prolific.completion_paths;
+    let values = [
+        prolific_api_base_url,
+        prolific.api_token.as_str(),
+        prolific.study_id.as_str(),
+        config.server.public_base_url.as_str(),
+        paths.completed.as_str(),
+        paths.partner_left.as_str(),
+        paths.game_did_not_start.as_str(),
+        paths.participation_ended_early.as_str(),
+        paths.technical_failure.as_str(),
+        paths.no_consent.as_str(),
+    ];
+    let mut digest = Sha256::new();
+    digest.update([u8::from(prolific.enabled)]);
+    for value in values {
+        digest.update((value.len() as u64).to_be_bytes());
+        digest.update(value.as_bytes());
+    }
+    digest.update(config.session.waiting_session_timeout_seconds.to_be_bytes());
+    digest.update(config.session.session_max_lifetime_seconds.to_be_bytes());
+    format!("{:x}", digest.finalize())
+}
+
 /// Verifies the linked Prolific study without changing provider-owned configuration.
 async fn prolific_activation_preflight(
     config: &ExperimentConfig,
     prolific_api_base_url: &str,
-) -> (Vec<String>, Option<crate::prolific::Study>) {
+) -> (Vec<String>, Option<VerifiedProlificStudy>) {
     if !config.recruitment.prolific.enabled {
         return (Vec::new(), None);
     }
@@ -425,18 +496,21 @@ async fn prolific_activation_preflight(
     if study.id != config.recruitment.prolific.study_id {
         issues.push("The Prolific API returned a different study id.".to_string());
     }
-    match study.project.as_deref() {
+    let workspace_id = match study.project.as_deref() {
         Some(project_id) => match client.project(project_id).await {
-            Ok(project) if project.workspace == config.recruitment.prolific.workspace_id => {}
-            Ok(_) => {
-                issues.push("The Prolific study belongs to a different workspace.".to_string())
+            Ok(project) => Some(project.workspace),
+            Err(error) => {
+                issues.push(format!(
+                    "Could not derive the Prolific study's workspace: {error}"
+                ));
+                None
             }
-            Err(error) => issues.push(format!(
-                "Could not verify the Prolific study's workspace: {error}"
-            )),
         },
-        None => issues.push("The Prolific study has no project workspace.".to_string()),
-    }
+        None => {
+            issues.push("The Prolific study has no project workspace.".to_string());
+            None
+        }
+    };
     if study.prolific_id_option != "url_parameters" {
         issues.push(
             "The Prolific study must record participant IDs through URL parameters.".to_string(),
@@ -463,9 +537,13 @@ async fn prolific_activation_preflight(
     let configured = HashMap::from([
         ("completed", paths.completed.as_str()),
         ("partner_left", paths.partner_left.as_str()),
-        ("partner_unavailable", paths.partner_unavailable.as_str()),
-        ("timed_out", paths.timed_out.as_str()),
+        ("game_did_not_start", paths.game_did_not_start.as_str()),
+        (
+            "participation_ended_early",
+            paths.participation_ended_early.as_str(),
+        ),
         ("technical_failure", paths.technical_failure.as_str()),
+        ("no_consent", paths.no_consent.as_str()),
     ]);
     issues.extend(crate::prolific::ProlificClient::completion_path_issues(
         &study,
@@ -486,11 +564,27 @@ async fn prolific_activation_preflight(
                 .to_string(),
         );
     }
-    (issues, Some(study))
+    (
+        issues,
+        workspace_id.map(|workspace_id| VerifiedProlificStudy {
+            study,
+            workspace_id,
+        }),
+    )
 }
 
 /// Computes every runtime-readiness blocker from one hydrated configuration.
 fn activation_issues_for_config<A: Game>(
+    state: &AppState<A>,
+    config: &mut ExperimentConfig,
+) -> Vec<String> {
+    let mut issues = local_testing_issues_for_config(state, config);
+    issues.extend(prolific_local_activation_issues(config));
+    issues
+}
+
+/// Computes readiness blockers shared by direct intake and synthetic local previews.
+fn local_testing_issues_for_config<A: Game>(
     state: &AppState<A>,
     config: &mut ExperimentConfig,
 ) -> Vec<String> {
@@ -502,7 +596,6 @@ fn activation_issues_for_config<A: Game>(
         config.tts.voice_id = "provided-by-runtime".to_string();
     }
     let mut issues = config.activation_issues();
-    issues.extend(prolific_local_activation_issues(config));
     if let Err(error) = validate_agent_configuration(&state.agent_definitions, &config, true) {
         issues.push(error.to_string());
     }
@@ -515,19 +608,56 @@ fn prolific_local_activation_issues(config: &ExperimentConfig) -> Vec<String> {
         return Vec::new();
     }
     let mut issues = Vec::new();
+    if config.recruitment.prolific.study_id.trim().is_empty() {
+        issues.push(
+            "Enter the linked Prolific study ID before starting this experiment.".to_string(),
+        );
+    }
+    let paths = &config.recruitment.prolific.completion_paths;
+    let codes = [
+        paths.completed.as_str(),
+        paths.partner_left.as_str(),
+        paths.game_did_not_start.as_str(),
+        paths.participation_ended_early.as_str(),
+        paths.technical_failure.as_str(),
+        paths.no_consent.as_str(),
+    ];
+    if codes.iter().any(|code| code.trim().is_empty()) {
+        issues.push(
+            "Configure all six Prolific completion paths before starting this experiment."
+                .to_string(),
+        );
+    } else if codes.iter().collect::<HashSet<_>>().len() != codes.len() {
+        issues.push("Prolific completion path codes must be distinct.".to_string());
+    }
     if config.recruitment.prolific.api_token.trim().is_empty() {
         issues.push(
             "Connect a Prolific API token in Game Settings before starting this experiment."
                 .to_string(),
         );
     }
-    if config.recruitment.prolific.workspace_id.trim().is_empty() {
-        issues.push(
-            "Connect a Prolific workspace in Game Settings before starting this experiment."
-                .to_string(),
-        );
-    }
     issues
+}
+
+/// Reports whether Save has enough provider input to attempt remote study validation.
+fn prolific_configuration_complete(config: &ExperimentConfig) -> bool {
+    if !config.recruitment.prolific.enabled
+        || config.recruitment.prolific.study_id.trim().is_empty()
+        || config.recruitment.prolific.api_token.trim().is_empty()
+    {
+        return false;
+    }
+    let paths = &config.recruitment.prolific.completion_paths;
+    [
+        paths.completed.as_str(),
+        paths.partner_left.as_str(),
+        paths.game_did_not_start.as_str(),
+        paths.participation_ended_early.as_str(),
+        paths.technical_failure.as_str(),
+        paths.no_consent.as_str(),
+    ]
+    .iter()
+    .all(|code| !code.trim().is_empty())
 }
 
 /// Validates the selected factory settings and, when requested, referenced secret availability.
@@ -976,7 +1106,13 @@ where
                     participant.role.as_str().to_string(),
                     ParticipantResult {
                         handoff: (participant.source == "prolific")
-                            .then(|| prolific_handoff(&state.config, &outcome))
+                            .then(|| {
+                                prolific_handoff(
+                                    &state.config,
+                                    &outcome,
+                                    session.lifecycle == SessionLifecycle::Running,
+                                )
+                            })
                             .flatten(),
                         outcome,
                         reason: reason.to_string(),
@@ -1229,7 +1365,13 @@ where
                     participant.role,
                     ParticipantResult {
                         handoff: (participant.identity_provider.as_deref() == Some("prolific"))
-                            .then(|| prolific_handoff(&state.config, &outcome))
+                            .then(|| {
+                                prolific_handoff(
+                                    &state.config,
+                                    &outcome,
+                                    session.started_at.is_some(),
+                                )
+                            })
                             .flatten(),
                         outcome,
                         reason: "server_restart".to_string(),
@@ -1681,6 +1823,8 @@ pub struct AppState<A: Game> {
     /// Immutable configuration revision used for newly created sessions.
     pub config_revision: i64,
     experiment_lifecycle: RwLock<ExperimentLifecycle>,
+    /// Participant URL selected when the current intake run started.
+    participant_url: RwLock<Option<RunningParticipantUrl>>,
     pub memory: RwLock<MemoryState<A>>,
     /// Serializes matchmaking reservations without blocking live-session state access.
     session_admission: Arc<Mutex<()>>,
@@ -1699,7 +1843,9 @@ pub struct AppState<A: Game> {
     /// Server-only Prolific adapter sharing HTTP and signing-key caches across admissions.
     prolific_client: RwLock<Option<crate::prolific::ProlificClient>>,
     /// Provider-verified study contract cached by successful activation preflight.
-    prolific_study: RwLock<Option<crate::prolific::Study>>,
+    prolific_study: RwLock<Option<VerifiedProlificStudy>>,
+    /// Short-lived study preflight results shared by catalogue badges and Start actions.
+    prolific_preflight_cache: Arc<RwLock<HashMap<String, ProlificPreflightCacheEntry>>>,
     committed_transcripts: RwLock<HashSet<String>>,
     participant_auth: ParticipantAuthenticator,
     upgrade_tickets: UpgradeTicketStore,
@@ -1714,6 +1860,30 @@ pub struct AppState<A: Game> {
     game_connections: RwLock<HashMap<String, ConnectionControl>>,
     audio_connections: RwLock<HashMap<String, ConnectionControl>>,
     pub version_manifest: Value,
+}
+
+/// Stable participant URL ingredients retained for one open intake run.
+#[derive(Clone, Debug, Serialize)]
+struct RunningParticipantUrl {
+    kind: String,
+    participant_id: Option<String>,
+    session_id: Option<String>,
+}
+
+/// Provider-verified study together with the workspace derived from its project.
+#[derive(Clone)]
+struct VerifiedProlificStudy {
+    study: crate::prolific::Study,
+    workspace_id: String,
+}
+
+/// One provider readiness result keyed by every local input to the study contract.
+#[derive(Clone)]
+struct ProlificPreflightCacheEntry {
+    fingerprint: String,
+    checked_at: Instant,
+    issues: Vec<String>,
+    study: Option<VerifiedProlificStudy>,
 }
 
 /// Selects a historical experiment for storage-only administrator handlers.
@@ -2617,6 +2787,7 @@ async fn public_config<A: Game>(
 ) -> Json<PublicConfigResponse> {
     let config = &state.config;
     let game_settings = state.game_settings.read().await.clone();
+    let participant_url = state.participant_url.read().await.clone();
     Json(PublicConfigResponse {
         game_name: state.game_descriptor.name.clone(),
         experiment_status: state.experiment_lifecycle.read().await.as_str().to_string(),
@@ -2642,14 +2813,30 @@ async fn public_config<A: Game>(
         recruitment: if config.recruitment.prolific.enabled {
             json!({
                 "provider": "prolific",
-                "decline_url": (!config.direct.consents.is_empty())
-                    .then_some("https://app.prolific.com/submissions"),
+                "decline_url": prolific_no_consent_url(config, participant_url.as_ref()),
                 "return_url": "https://app.prolific.com/submissions",
             })
         } else {
             json!({ "provider": "direct" })
         },
     })
+}
+
+/// Builds the no-consent handoff for an active run without ever emitting an empty code.
+fn prolific_no_consent_url(
+    config: &ExperimentConfig,
+    participant_url: Option<&RunningParticipantUrl>,
+) -> Option<String> {
+    if config.direct.consents.is_empty() || participant_url.is_none() {
+        return None;
+    }
+    let code = config
+        .recruitment
+        .prolific
+        .completion_paths
+        .no_consent
+        .trim();
+    (!code.is_empty()).then(|| format!("https://app.prolific.com/submissions/complete?cc={code}"))
 }
 
 async fn create_participant<A: Game>(
@@ -2659,11 +2846,30 @@ async fn create_participant<A: Game>(
     create_participant_inner(state, request).await.map(Json)
 }
 
+/// Recognizes dashboard-generated Prolific identities which are safe only during testing intake.
+fn is_synthetic_prolific_testing_launch(
+    lifecycle: ExperimentLifecycle,
+    prolific: &ProlificParticipantRequest,
+) -> bool {
+    lifecycle == ExperimentLifecycle::Testing
+        && prolific.prolific_token.is_none()
+        && prolific.participant_id.starts_with("TEST")
+        && prolific.session_id.starts_with("TEST")
+        && prolific
+            .participant_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric())
+        && prolific
+            .session_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric())
+}
+
 async fn create_participant_inner<A: Game>(
     state: Arc<AppState<A>>,
     request: ParticipantCreateRequest,
 ) -> Result<ParticipantCreateResponse, AppError> {
-    let _intake_guard = require_open_experiment(&state).await?;
+    let intake_guard = require_open_experiment(&state).await?;
     enforce_creation_rate(&state).await?;
     if !state.config.direct.enabled && !state.config.recruitment.prolific.enabled {
         return Err(AppError::not_found("Direct mode is disabled."));
@@ -2684,65 +2890,64 @@ async fn create_participant_inner<A: Game>(
                 ));
             }
         }
-        let client = state.prolific_client.read().await.clone().ok_or_else(|| {
-            AppError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Prolific intake is not connected",
-            )
-        })?;
-        let study = state.prolific_study.read().await.clone().ok_or_else(|| {
-            AppError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Prolific study preflight has not completed",
-            )
-        })?;
-        let verification_method = if study.is_external_study_url_secure {
-            let token = prolific.prolific_token.as_deref().ok_or_else(|| {
-                AppError::bad_request("The secure Prolific launch token is missing.")
-            })?;
-            let workspace_id = state
-                .game_settings
-                .read()
-                .await
-                .prolific_workspace_id
-                .clone();
-            let verified = client
-                .verify_signed_launch(
-                    token,
-                    crate::prolific::SignedLaunchExpectation {
-                        audience: &study.external_study_url,
-                        study_id: &state.config.recruitment.prolific.study_id,
-                        workspace_id: &workspace_id,
-                    },
-                )
-                .await
-                .map_err(|error| {
-                    AppError::bad_request(format!("Invalid Prolific launch: {error}"))
-                })?;
-            if verified.participant_id != prolific.participant_id
-                || verified.study_id != prolific.study_id
-                || verified.session_id != prolific.session_id
-            {
-                return Err(AppError::bad_request(
-                    "The signed Prolific launch does not match its URL parameters.",
-                ));
-            }
-            "signed_url"
+        let verification_method = if is_synthetic_prolific_testing_launch(*intake_guard, &prolific)
+        {
+            "synthetic_testing"
         } else {
-            client
-                .verify_unsigned_launch(
-                    &prolific.participant_id,
-                    &prolific.study_id,
-                    &prolific.session_id,
+            let client = state.prolific_client.read().await.clone().ok_or_else(|| {
+                AppError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Prolific intake is not connected",
                 )
-                .await
-                .map_err(|error| {
-                    AppError::new(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        format!("Could not verify the Prolific submission: {error}"),
-                    )
+            })?;
+            let verified_study = state.prolific_study.read().await.clone().ok_or_else(|| {
+                AppError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Prolific study preflight has not completed",
+                )
+            })?;
+            if verified_study.study.is_external_study_url_secure {
+                let token = prolific.prolific_token.as_deref().ok_or_else(|| {
+                    AppError::bad_request("The secure Prolific launch token is missing.")
                 })?;
-            "submission_api"
+                let verified = client
+                    .verify_signed_launch(
+                        token,
+                        crate::prolific::SignedLaunchExpectation {
+                            audience: &verified_study.study.external_study_url,
+                            study_id: &state.config.recruitment.prolific.study_id,
+                            workspace_id: &verified_study.workspace_id,
+                        },
+                    )
+                    .await
+                    .map_err(|error| {
+                        AppError::bad_request(format!("Invalid Prolific launch: {error}"))
+                    })?;
+                if verified.participant_id != prolific.participant_id
+                    || verified.study_id != prolific.study_id
+                    || verified.session_id != prolific.session_id
+                {
+                    return Err(AppError::bad_request(
+                        "The signed Prolific launch does not match its URL parameters.",
+                    ));
+                }
+                "signed_url"
+            } else {
+                client
+                    .verify_unsigned_launch(
+                        &prolific.participant_id,
+                        &prolific.study_id,
+                        &prolific.session_id,
+                    )
+                    .await
+                    .map_err(|error| {
+                        AppError::new(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            format!("Could not verify the Prolific submission: {error}"),
+                        )
+                    })?;
+                "submission_api"
+            }
         };
         Some((prolific, verification_method))
     } else {
@@ -2784,7 +2989,7 @@ async fn create_participant_inner<A: Game>(
             admission.participant_id,
             admission.research_id,
             "prolific".to_string(),
-            _intake_guard.data_purpose().to_string(),
+            intake_guard.data_purpose().to_string(),
         )
     } else {
         let participant_id = state
@@ -2811,7 +3016,7 @@ async fn create_participant_inner<A: Game>(
             participant_id,
             research_id,
             "direct".to_string(),
-            _intake_guard.data_purpose().to_string(),
+            intake_guard.data_purpose().to_string(),
         )
     };
     drop(_admission_guard);
@@ -4107,6 +4312,9 @@ struct AdminEventsQuery {
 #[derive(Clone, Debug, Deserialize)]
 struct AdminUpdateExperimentStatusRequest {
     status: String,
+    #[serde(default)]
+    verify_prolific: bool,
+    participant_url_kind: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -4165,8 +4373,6 @@ struct AdminGameSettingsRequest {
     speechmatics_realtime_url: Option<String>,
     tts_base_url: Option<String>,
     prolific_api_base_url: Option<String>,
-    #[serde(default)]
-    prolific_workspace_id: String,
     #[serde(default)]
     secret_updates: HashMap<String, String>,
     #[serde(default)]
@@ -5328,13 +5534,23 @@ async fn admin_experiments<A: Game>(
     let experiments = state.store.list_experiments(1_000).await?;
     let mut catalogue = Vec::with_capacity(experiments.len());
     for experiment in experiments {
-        let (configuration_valid, configuration_error, runnable, runnable_issues) =
-            experiment_catalogue_readiness(
-                &state,
-                &experiment.experiment_id,
-                &experiment.game_version,
-            )
-            .await;
+        let readiness = experiment_catalogue_readiness(
+            &state,
+            &experiment.experiment_id,
+            &experiment.game_version,
+        )
+        .await;
+        let runtime = state
+            .runtime_registry
+            .read()
+            .await
+            .get(&experiment.experiment_id)
+            .and_then(Weak::upgrade);
+        let participant_url = if let Some(runtime) = runtime {
+            runtime.participant_url.read().await.clone()
+        } else {
+            None
+        };
         let mut value = serde_json::to_value(experiment)
             .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
         let object = value
@@ -5342,14 +5558,29 @@ async fn admin_experiments<A: Game>(
             .expect("serialized experiment summaries are JSON objects");
         object.insert(
             "configuration_valid".to_string(),
-            json!(configuration_valid),
+            json!(readiness.configuration_valid),
         );
         object.insert(
             "configuration_error".to_string(),
-            json!(configuration_error),
+            json!(readiness.configuration_error),
         );
-        object.insert("runnable".to_string(), json!(runnable));
-        object.insert("runnable_issues".to_string(), json!(runnable_issues));
+        object.insert(
+            "local_testing_runnable".to_string(),
+            json!(readiness.local_testing_issues.is_empty() && readiness.configuration_valid),
+        );
+        object.insert(
+            "local_testing_issues".to_string(),
+            json!(readiness.local_testing_issues),
+        );
+        object.insert(
+            "runnable".to_string(),
+            json!(readiness.prolific_issues.is_empty() && readiness.configuration_valid),
+        );
+        object.insert(
+            "runnable_issues".to_string(),
+            json!(readiness.prolific_issues),
+        );
+        object.insert("participant_url".to_string(), json!(participant_url));
         catalogue.push(value);
     }
     let game_settings = state.game_settings.read().await.clone();
@@ -5364,31 +5595,79 @@ async fn admin_experiments<A: Game>(
     })))
 }
 
+/// Mode-specific readiness facts displayed beside experiment launch actions.
+struct ExperimentCatalogueReadiness {
+    configuration_valid: bool,
+    configuration_error: Option<String>,
+    local_testing_issues: Vec<String>,
+    prolific_issues: Vec<String>,
+}
+
 /// Assesses structural validity and intake readiness without constructing a runtime router.
 async fn experiment_catalogue_readiness<A: Game>(
     state: &Arc<AppState<A>>,
     experiment_id: &str,
     game_version: &str,
-) -> (bool, Option<String>, bool, Vec<String>) {
+) -> ExperimentCatalogueReadiness {
     let mut config = match hydrated_experiment_config(state, experiment_id).await {
         Ok(config) => config,
-        Err(error) => return (false, Some(error.message), false, Vec::new()),
+        Err(error) => {
+            return ExperimentCatalogueReadiness {
+                configuration_valid: false,
+                configuration_error: Some(error.message),
+                local_testing_issues: Vec::new(),
+                prolific_issues: Vec::new(),
+            }
+        }
     };
     if let Err(error) = config.validate() {
-        return (false, Some(error.to_string()), false, Vec::new());
+        return ExperimentCatalogueReadiness {
+            configuration_valid: false,
+            configuration_error: Some(error.to_string()),
+            local_testing_issues: Vec::new(),
+            prolific_issues: Vec::new(),
+        };
     }
     if let Err(error) = parse_game_config(state.game_factory.as_ref(), &config.game) {
-        return (false, Some(error.to_string()), false, Vec::new());
+        return ExperimentCatalogueReadiness {
+            configuration_valid: false,
+            configuration_error: Some(error.to_string()),
+            local_testing_issues: Vec::new(),
+            prolific_issues: Vec::new(),
+        };
     }
-    let mut issues = Vec::new();
+    let mut local_testing_issues = Vec::new();
     if game_version != state.game_descriptor.version.to_string() {
-        issues.push(
+        local_testing_issues.push(
             "This experiment belongs to another game version; clone it before activation."
                 .to_string(),
         );
     }
-    issues.extend(activation_issues_for_config(state, &mut config));
-    (true, None, issues.is_empty(), issues)
+    local_testing_issues.extend(local_testing_issues_for_config(state, &mut config));
+    let mut prolific_issues = local_testing_issues.clone();
+    prolific_issues.extend(prolific_local_activation_issues(&config));
+    if prolific_issues.is_empty() {
+        let prolific_api_base_url = state
+            .game_settings
+            .read()
+            .await
+            .prolific_api_base_url
+            .clone();
+        let (provider_issues, _) = cached_prolific_activation_preflight(
+            state,
+            experiment_id,
+            &config,
+            &prolific_api_base_url,
+        )
+        .await;
+        prolific_issues.extend(provider_issues);
+    }
+    ExperimentCatalogueReadiness {
+        configuration_valid: true,
+        configuration_error: None,
+        local_testing_issues,
+        prolific_issues,
+    }
 }
 
 /// Creates one inactive experiment for the exact game version compiled into this process.
@@ -5518,11 +5797,7 @@ async fn admin_experiment_config<A: Game>(
                         apply_experiment_secrets(&mut normalized, &stored_secrets);
                         let game_secrets = state.store.game_secrets().await?;
                         apply_game_provider_secrets(&mut normalized, &game_secrets);
-                        apply_game_provider_settings(
-                            &mut normalized,
-                            &*state.game_settings.read().await,
-                        );
-                        activation_issues_for_config(&state, &mut normalized)
+                        local_testing_issues_for_config(&state, &mut normalized)
                     }
                     Err(error) => vec![error.to_string()],
                 }
@@ -5554,6 +5829,11 @@ fn configured_provider_secret_statuses(stored: &HashMap<String, String>) -> Vec<
             "key": "tts.api_key",
             "configured": stored.contains_key("tts.api_key"),
             "source": if stored.contains_key("tts.api_key") { "game" } else { "missing" },
+        }),
+        json!({
+            "key": "prolific.api_token",
+            "configured": stored.contains_key("prolific.api_token"),
+            "source": if stored.contains_key("prolific.api_token") { "game" } else { "missing" },
         }),
     ]
 }
@@ -5643,7 +5923,7 @@ async fn admin_validate_game_config<A: Game>(
     Ok(Json(json!({"valid": true})))
 }
 
-/// Validates and saves a new immutable configuration revision for an inactive experiment.
+/// Saves a structurally valid configuration revision before checking provider readiness.
 async fn admin_save_experiment_config<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(experiment_id): Path<String>,
@@ -5690,7 +5970,6 @@ async fn admin_save_experiment_config<A: Game>(
     apply_experiment_secrets(&mut config, &secrets);
     let game_secrets = state.store.game_secrets().await?;
     apply_game_provider_secrets(&mut config, &game_secrets);
-    apply_game_provider_settings(&mut config, &*state.game_settings.read().await);
     config.experiment.id = Some(experiment_id.clone());
     config
         .validate()
@@ -5711,9 +5990,23 @@ async fn admin_save_experiment_config<A: Game>(
         )
         .await
         .map_err(|error| AppError::new(StatusCode::CONFLICT, error.to_string()))?;
-    Ok(Json(
-        json!({ "experiment_id": experiment_id, "revision": revision }),
-    ))
+    let prolific_issues = if prolific_configuration_complete(&config) {
+        run_and_cache_prolific_activation_preflight(
+            &state,
+            &experiment_id,
+            &config,
+            &game_settings.prolific_api_base_url,
+        )
+        .await
+        .0
+    } else {
+        Vec::new()
+    };
+    Ok(Json(json!({
+        "experiment_id": experiment_id,
+        "revision": revision,
+        "prolific_issues": prolific_issues,
+    })))
 }
 
 /// Lists immutable configuration revisions for one experiment.
@@ -5827,40 +6120,6 @@ async fn admin_update_game_settings<A: Game>(
     for key in &request.secret_deletions {
         validate_game_provider_secret(key, None)?;
     }
-    let prolific_workspace_id = request.prolific_workspace_id.trim().to_string();
-    if !prolific_workspace_id.is_empty()
-        && (prolific_workspace_id.len() > 128
-            || !prolific_workspace_id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric()))
-    {
-        return Err(AppError::bad_request("Invalid Prolific workspace id"));
-    }
-    let pending_secrets = {
-        let mut secrets = state.store.game_secrets().await?;
-        for key in &request.secret_deletions {
-            secrets.remove(key);
-        }
-        secrets.extend(request.secret_updates.clone());
-        secrets
-    };
-    let prolific_workspace_title = if prolific_workspace_id.is_empty() {
-        String::new()
-    } else {
-        let token = pending_secrets.get("prolific.api_token").ok_or_else(|| {
-            AppError::bad_request("A Prolific API token is required to connect a workspace")
-        })?;
-        crate::prolific::ProlificClient::with_base_url(
-            token.clone(),
-            prolific_api_base_url.clone(),
-        )?
-        .workspace(&prolific_workspace_id)
-        .await
-        .map_err(|error| {
-            AppError::bad_request(format!("Could not verify Prolific workspace: {error}"))
-        })?
-        .title
-    };
     let revision = state
         .store
         .update_game_settings(
@@ -5870,8 +6129,6 @@ async fn admin_update_game_settings<A: Game>(
             speechmatics_realtime_url.clone(),
             tts_base_url.clone(),
             prolific_api_base_url.clone(),
-            prolific_workspace_id.clone(),
-            prolific_workspace_title.clone(),
             request.secret_updates,
             request.secret_deletions,
         )
@@ -5883,8 +6140,6 @@ async fn admin_update_game_settings<A: Game>(
         speechmatics_realtime_url,
         tts_base_url,
         prolific_api_base_url,
-        prolific_workspace_id,
-        prolific_workspace_title,
         revision,
     };
     Ok(Json(json!({ "revision": revision })))
@@ -5946,6 +6201,49 @@ fn validate_new_experiment_id(experiment_id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Chooses and materializes the participant URL that remains fixed for one intake run.
+fn running_participant_url(
+    config: &ExperimentConfig,
+    lifecycle: ExperimentLifecycle,
+    requested_kind: Option<&str>,
+) -> Result<RunningParticipantUrl, AppError> {
+    if !config.recruitment.prolific.enabled {
+        if requested_kind.is_some_and(|kind| kind == "prolific") {
+            return Err(AppError::bad_request(
+                "A Direct experiment cannot use a Prolific participant URL",
+            ));
+        }
+        return Ok(RunningParticipantUrl {
+            kind: "direct".to_string(),
+            participant_id: None,
+            session_id: None,
+        });
+    }
+    let kind = requested_kind.unwrap_or(if lifecycle == ExperimentLifecycle::Testing {
+        "local"
+    } else {
+        "prolific"
+    });
+    match kind {
+        "local" if lifecycle == ExperimentLifecycle::Testing => Ok(RunningParticipantUrl {
+            kind: "local".to_string(),
+            participant_id: Some(new_id("TEST").replace('_', "").to_uppercase()),
+            session_id: Some(new_id("TEST").replace('_', "").to_uppercase()),
+        }),
+        "prolific" => Ok(RunningParticipantUrl {
+            kind: "prolific".to_string(),
+            participant_id: None,
+            session_id: None,
+        }),
+        "local" => Err(AppError::bad_request(
+            "Local Preview is available only while testing",
+        )),
+        _ => Err(AppError::bad_request(
+            "participant_url_kind must be local or prolific",
+        )),
+    }
+}
+
 /// Returns the process-owned experiment with dashboard aggregates.
 async fn admin_experiment<A: Game>(
     State(state): State<Arc<AppState<A>>>,
@@ -5983,8 +6281,25 @@ async fn admin_update_experiment_status<A: Game>(
             "This experiment belongs to another game version; clone it before activation",
         ));
     }
+    let next_participant_url = lifecycle
+        .allows_intake()
+        .then(|| {
+            running_participant_url(
+                &state.config,
+                lifecycle,
+                request.participant_url_kind.as_deref(),
+            )
+        })
+        .transpose()?;
     if lifecycle.allows_intake() {
-        let issues = experiment_activation_issues(&state, &state.experiment_id).await?;
+        let verify_prolific =
+            request.verify_prolific || request.participant_url_kind.as_deref() == Some("prolific");
+        let issues = if lifecycle == ExperimentLifecycle::Testing && !verify_prolific {
+            let mut config = hydrated_experiment_config(&state, &state.experiment_id).await?;
+            local_testing_issues_for_config(&state, &mut config)
+        } else {
+            experiment_activation_issues(&state, &state.experiment_id).await?
+        };
         if !issues.is_empty() {
             return Err(AppError::new(
                 StatusCode::CONFLICT,
@@ -6008,10 +6323,13 @@ async fn admin_update_experiment_status<A: Game>(
         .update_experiment_status(&state.experiment_id, lifecycle.as_str())
         .await?;
     *current_lifecycle = lifecycle;
+    *state.participant_url.write().await = next_participant_url;
     tracing::info!(experiment_id = %state.experiment_id, status = lifecycle.as_str(), "administrator updated experiment status");
+    let participant_url = state.participant_url.read().await.clone();
     Ok(Json(json!({
         "experiment_id": state.experiment_id,
         "status": lifecycle.as_str(),
+        "participant_url": participant_url,
     })))
 }
 
@@ -8108,6 +8426,7 @@ where
 fn prolific_handoff(
     config: &ExperimentConfig,
     outcome: &ParticipantOutcomeKind,
+    game_started: bool,
 ) -> Option<RecruitmentHandoff> {
     let paths = &config.recruitment.prolific.completion_paths;
     let code =
@@ -8115,11 +8434,11 @@ fn prolific_handoff(
             ParticipantOutcomeKind::Completed => &paths.completed,
             ParticipantOutcomeKind::PartnerLeft => &paths.partner_left,
             ParticipantOutcomeKind::LeftWaitingRoom
-            | ParticipantOutcomeKind::PartnerUnavailable => &paths.partner_unavailable,
+            | ParticipantOutcomeKind::PartnerUnavailable => &paths.game_did_not_start,
+            ParticipantOutcomeKind::ConnectionLost if !game_started => &paths.game_did_not_start,
             ParticipantOutcomeKind::LeftGame
-            | ParticipantOutcomeKind::ParticipantInactive
             | ParticipantOutcomeKind::ConnectionLost
-            | ParticipantOutcomeKind::IdleLimitReached => &paths.timed_out,
+            | ParticipantOutcomeKind::IdleLimitReached => &paths.participation_ended_early,
             ParticipantOutcomeKind::TechnicalFailure
             | ParticipantOutcomeKind::LifetimeLimitReached => &paths.technical_failure,
         };
@@ -8177,7 +8496,13 @@ async fn abandon_session<A: Game>(
                     participant.role.as_str().to_string(),
                     ParticipantResult {
                         handoff: (participant.source == "prolific")
-                            .then(|| prolific_handoff(&state.config, &outcome))
+                            .then(|| {
+                                prolific_handoff(
+                                    &state.config,
+                                    &outcome,
+                                    session.lifecycle == SessionLifecycle::Running,
+                                )
+                            })
                             .flatten(),
                         outcome,
                         reason: reason.to_string(),
@@ -8680,7 +9005,7 @@ where
                 participant.role.as_str().to_string(),
                 ParticipantResult {
                     handoff: (participant.source == "prolific")
-                        .then(|| prolific_handoff(config, &outcome))
+                        .then(|| prolific_handoff(config, &outcome, true))
                         .flatten(),
                     outcome,
                     reason: "game_completed".to_string(),

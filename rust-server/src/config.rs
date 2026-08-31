@@ -101,12 +101,14 @@ pub struct ProlificCompletionPaths {
     pub completed: String,
     /// Code used for the participant whose partner deliberately or implicitly left.
     pub partner_left: String,
-    /// Code used when matchmaking never supplied the second participant.
-    pub partner_unavailable: String,
-    /// Code used for a participant whose own session timed out.
-    pub timed_out: String,
+    /// Code used when no playable game began for this participant.
+    pub game_did_not_start: String,
+    /// Code used when this participant's own participation ended after play began.
+    pub participation_ended_early: String,
     /// Code used when Parlando, rather than either participant, ended the session.
     pub technical_failure: String,
+    /// Code used when a Prolific visitor declines consent before registration.
+    pub no_consent: String,
 }
 
 /// Dashboard-owned settings for one Prolific recruitment source.
@@ -122,9 +124,6 @@ pub struct ProlificConfig {
     /// Installation-owned API token applied from protected game settings.
     #[serde(skip)]
     pub api_token: String,
-    /// Installation-owned workspace binding applied from protected game settings.
-    #[serde(skip)]
-    pub workspace_id: String,
 }
 
 /// Recruitment-provider behavior owned by the experiment dashboard.
@@ -388,26 +387,6 @@ impl ExperimentConfig {
         if self.session.reconnect_grace_seconds > 60 {
             bail!("session.reconnect_grace_seconds must not exceed 60");
         }
-        if self.recruitment.prolific.enabled && self.recruitment.prolific.study_id.trim().is_empty()
-        {
-            bail!("recruitment.prolific.study_id is required when Prolific is enabled");
-        }
-        if self.recruitment.prolific.enabled {
-            let paths = &self.recruitment.prolific.completion_paths;
-            let codes = [
-                &paths.completed,
-                &paths.partner_left,
-                &paths.partner_unavailable,
-                &paths.timed_out,
-                &paths.technical_failure,
-            ];
-            if codes.iter().any(|code| code.is_empty()) {
-                bail!("every standard Prolific completion path requires a code when Prolific is enabled");
-            }
-            if codes.iter().collect::<HashSet<_>>().len() != codes.len() {
-                bail!("Prolific completion path codes must be distinct");
-            }
-        }
         for (name, code) in [
             (
                 "completed",
@@ -418,20 +397,28 @@ impl ExperimentConfig {
                 &self.recruitment.prolific.completion_paths.partner_left,
             ),
             (
-                "partner_unavailable",
+                "game_did_not_start",
                 &self
                     .recruitment
                     .prolific
                     .completion_paths
-                    .partner_unavailable,
+                    .game_did_not_start,
             ),
             (
-                "timed_out",
-                &self.recruitment.prolific.completion_paths.timed_out,
+                "participation_ended_early",
+                &self
+                    .recruitment
+                    .prolific
+                    .completion_paths
+                    .participation_ended_early,
             ),
             (
                 "technical_failure",
                 &self.recruitment.prolific.completion_paths.technical_failure,
+            ),
+            (
+                "no_consent",
+                &self.recruitment.prolific.completion_paths.no_consent,
             ),
         ] {
             validate_prolific_code(name, code)?;
@@ -1004,20 +991,21 @@ mod tests {
         assert!(synthesis.validate().is_err());
     }
 
-    /// Confirms Prolific intake cannot be enabled with partial or unsafe completion paths.
+    /// Confirms incomplete Prolific drafts remain editable while entered codes stay constrained.
     #[test]
-    fn validation_requires_complete_prolific_handoff_configuration() {
+    fn validation_allows_incomplete_prolific_handoff_configuration() {
         let mut config = valid_config();
         config.recruitment.prolific.enabled = true;
         config.recruitment.prolific.study_id = "study-1".to_string();
-        assert!(config.validate().is_err());
+        assert!(config.validate().is_ok());
 
         let paths = &mut config.recruitment.prolific.completion_paths;
         paths.completed = "AMBEROTTER".to_string();
         paths.partner_left = "CORALRIVER".to_string();
-        paths.partner_unavailable = "FROSTCEDAR".to_string();
-        paths.timed_out = "LUNARCOMET".to_string();
+        paths.game_did_not_start = "FROSTCEDAR".to_string();
+        paths.participation_ended_early = "LUNARCOMET".to_string();
         paths.technical_failure = "MINTFALCON".to_string();
+        paths.no_consent = "SILVERPINE".to_string();
         assert!(config.validate().is_ok());
 
         config.recruitment.prolific.completion_paths.completed = "not-safe".to_string();

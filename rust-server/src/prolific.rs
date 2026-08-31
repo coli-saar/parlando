@@ -58,14 +58,7 @@ pub struct Submission {
     pub return_requested: Option<String>,
 }
 
-/// Workspace description shown after a protected connection is verified.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Workspace {
-    pub id: String,
-    pub title: String,
-}
-
-/// Project ownership needed to bind a study to the configured workspace.
+/// Project ownership used to derive the workspace of one linked study.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Project {
     pub id: String,
@@ -154,12 +147,6 @@ impl ProlificClient {
             .await
     }
 
-    /// Retrieves one workspace after its identifier has been established by study setup.
-    pub async fn workspace(&self, workspace_id: &str) -> Result<Workspace> {
-        self.authenticated_get(&format!("/api/v1/workspaces/{workspace_id}/"))
-            .await
-    }
-
     /// Retrieves the project that owns a configured study.
     pub async fn project(&self, project_id: &str) -> Result<Project> {
         self.authenticated_get(&format!("/api/v1/projects/{project_id}/"))
@@ -234,14 +221,15 @@ impl ProlificClient {
         Ok(submission)
     }
 
-    /// Returns activation issues for the five fixed Parlando completion paths.
+    /// Returns activation issues for the six fixed Parlando completion paths.
     pub fn completion_path_issues(study: &Study, configured: &HashMap<&str, &str>) -> Vec<String> {
         let expected_actions = [
             ("completed", "AUTOMATICALLY_APPROVE"),
             ("partner_left", "AUTOMATICALLY_APPROVE"),
-            ("partner_unavailable", "REQUEST_RETURN"),
-            ("timed_out", "REQUEST_RETURN"),
+            ("game_did_not_start", "REQUEST_RETURN"),
+            ("participation_ended_early", "REQUEST_RETURN"),
             ("technical_failure", "AUTOMATICALLY_APPROVE"),
+            ("no_consent", "REQUEST_RETURN"),
         ];
         let mut issues = Vec::new();
         for (field, expected_action) in expected_actions {
@@ -269,9 +257,10 @@ impl ProlificClient {
                     "Prolific completion code for {field} must have exactly the {expected_action} action."
                 ));
             }
-            if field == "partner_unavailable" && path.code_type == "FIXED_SCREENOUT" {
+            if field == "game_did_not_start" && path.code_type == "FIXED_SCREENOUT" {
                 issues.push(
-                    "The Unmatched completion path must not use Prolific Screened out.".to_string(),
+                    "The Game did not start completion path must not use Prolific Screened out."
+                        .to_string(),
                 );
             }
         }
@@ -341,15 +330,16 @@ impl ProlificClient {
 mod tests {
     use super::*;
 
-    /// Confirms preflight accepts only the exact five agreed provider actions.
+    /// Confirms preflight accepts only the exact six agreed provider actions.
     #[test]
     fn completion_path_preflight_is_exact() {
         let codes = [
             ("completed", "DONE", "AUTOMATICALLY_APPROVE"),
             ("partner_left", "PEER", "AUTOMATICALLY_APPROVE"),
-            ("partner_unavailable", "NONE", "REQUEST_RETURN"),
-            ("timed_out", "LATE", "REQUEST_RETURN"),
+            ("game_did_not_start", "NONE", "REQUEST_RETURN"),
+            ("participation_ended_early", "LATE", "REQUEST_RETURN"),
             ("technical_failure", "FAULT", "AUTOMATICALLY_APPROVE"),
+            ("no_consent", "DECLINE", "REQUEST_RETURN"),
         ];
         let study = Study {
             id: "study".to_string(),
@@ -380,7 +370,7 @@ mod tests {
         assert!(ProlificClient::completion_path_issues(&study, &configured).is_empty());
     }
 
-    /// Confirms Unmatched cannot be implemented through Prolific's screen-out mechanism.
+    /// Confirms Game did not start cannot use Prolific's screen-out mechanism.
     #[test]
     fn unmatched_screenout_is_rejected() {
         let study = Study {
@@ -402,7 +392,7 @@ mod tests {
             project: None,
             status: None,
         };
-        let configured = HashMap::from([("partner_unavailable", "NONE")]);
+        let configured = HashMap::from([("game_did_not_start", "NONE")]);
         assert!(ProlificClient::completion_path_issues(&study, &configured)
             .iter()
             .any(|issue| issue.contains("must not use Prolific Screened out")));

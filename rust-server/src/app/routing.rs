@@ -14,6 +14,7 @@ struct RuntimeShared<A: Game> {
     game_settings: Arc<RwLock<StoredGameSettings>>,
     telemetry: Arc<RuntimeTelemetry>,
     runtime_registry: Arc<RwLock<HashMap<String, Weak<AppState<A>>>>>,
+    prolific_preflight_cache: Arc<RwLock<HashMap<String, ProlificPreflightCacheEntry>>>,
 }
 
 /// One compiled game's installation-level dispatcher and lazily built experiment routers.
@@ -28,6 +29,7 @@ struct GameHost<A: Game> {
     routers: RwLock<HashMap<String, Router>>,
     telemetry: Arc<RuntimeTelemetry>,
     runtime_registry: Arc<RwLock<HashMap<String, Weak<AppState<A>>>>>,
+    prolific_preflight_cache: Arc<RwLock<HashMap<String, ProlificPreflightCacheEntry>>>,
     admin_router: Router,
     health_slots: Semaphore,
 }
@@ -103,6 +105,7 @@ where
                 game_settings: self.game_settings.clone(),
                 telemetry: self.telemetry.clone(),
                 runtime_registry: self.runtime_registry.clone(),
+                prolific_preflight_cache: self.prolific_preflight_cache.clone(),
             }),
             true,
         )
@@ -364,6 +367,7 @@ where
     let game_settings = Arc::new(RwLock::new(store.game_settings().await?));
     let telemetry = Arc::new(RuntimeTelemetry::default());
     let runtime_registry = Arc::new(RwLock::new(HashMap::new()));
+    let prolific_preflight_cache = Arc::new(RwLock::new(HashMap::new()));
     let cleanup_auth = admin_auth.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
@@ -389,6 +393,7 @@ where
         game_settings: game_settings.clone(),
         telemetry: telemetry.clone(),
         runtime_registry: runtime_registry.clone(),
+        prolific_preflight_cache: prolific_preflight_cache.clone(),
     };
     let mut admin_config = bootstrap.clone();
     admin_config.experiment.id = Some("__dashboard__".to_string());
@@ -413,6 +418,7 @@ where
         routers: RwLock::new(HashMap::new()),
         telemetry,
         runtime_registry,
+        prolific_preflight_cache,
         admin_router,
         health_slots: Semaphore::new(1),
     });
@@ -633,6 +639,10 @@ where
         .as_ref()
         .map(|shared| shared.runtime_registry.clone())
         .unwrap_or_else(|| Arc::new(RwLock::new(HashMap::new())));
+    let prolific_preflight_cache = shared
+        .as_ref()
+        .map(|shared| shared.prolific_preflight_cache.clone())
+        .unwrap_or_else(|| Arc::new(RwLock::new(HashMap::new())));
     let agent_definitions = if options.agent_definitions.is_empty() {
         options
             .agent_factory
@@ -663,6 +673,7 @@ where
         experiment_lifecycle: RwLock::new(
             ExperimentLifecycle::parse(&lifecycle).map_err(|error| anyhow!(error.message))?,
         ),
+        participant_url: RwLock::new(None),
         memory: RwLock::new(MemoryState::default()),
         session_admission: Arc::new(Mutex::new(())),
         store,
@@ -678,6 +689,7 @@ where
         transcription_provider,
         prolific_client: RwLock::new(prolific_client),
         prolific_study: RwLock::new(None),
+        prolific_preflight_cache,
         committed_transcripts: RwLock::new(HashSet::new()),
         participant_auth: ParticipantAuthenticator::default(),
         upgrade_tickets: UpgradeTicketStore::default(),

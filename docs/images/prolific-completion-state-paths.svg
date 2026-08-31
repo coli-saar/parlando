@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title description">
+  <title id="title">Parlando participant states and Prolific completion paths</title>
+  <desc id="description">A Prolific launch either declines consent without creating a Parlando participant, or proceeds through Registered, Waiting, Active, and optionally Paused. Durable terminal results project to one of five post-registration Prolific completion paths.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+    <style>
+      .background { fill: #ffffff; }
+      .state { fill: #eff6ff; stroke: #2563eb; stroke-width: 2; }
+      .terminal { fill: #f8fafc; stroke: #64748b; stroke-width: 2; }
+      .provider { fill: #f5f3ff; stroke: #7c3aed; stroke-width: 2; }
+      .technical { fill: #fff7ed; stroke: #ea580c; stroke-width: 2; }
+      .edge { fill: none; stroke: #475569; stroke-width: 2; marker-end: url(#arrow); }
+      .edge-soft { fill: none; stroke: #94a3b8; stroke-width: 2; marker-end: url(#arrow); }
+      .label { fill: #0f172a; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 17px; font-weight: 600; text-anchor: middle; }
+      .detail { fill: #334155; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 14px; font-weight: 400; text-anchor: middle; }
+      .edge-label { fill: #334155; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 13px; font-weight: 400; text-anchor: middle; }
+      .heading { fill: #0f172a; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 22px; font-weight: 600; }
+    </style>
+  </defs>
+  <rect class="background" width="1200" height="760"/>
+
+  <text class="heading" x="45" y="42">Participant lifecycle</text>
+  <text class="heading" x="800" y="42">Prolific path after Ended(result)</text>
+
+  <rect class="provider" x="45" y="80" width="210" height="76" rx="12"/>
+  <text class="label" x="150" y="110">Prolific launch</text>
+  <text class="detail" x="150" y="134">No Parlando participant yet</text>
+
+  <rect class="provider" x="350" y="80" width="210" height="76" rx="12"/>
+  <text class="label" x="455" y="110">No consent</text>
+  <text class="detail" x="455" y="134">Request return</text>
+
+  <rect class="state" x="45" y="225" width="180" height="76" rx="12"/>
+  <text class="label" x="135" y="255">Registered</text>
+  <text class="detail" x="135" y="279">No session membership</text>
+
+  <rect class="state" x="295" y="225" width="180" height="76" rx="12"/>
+  <text class="label" x="385" y="255">Waiting</text>
+  <text class="detail" x="385" y="279">Session: Forming</text>
+
+  <rect class="state" x="545" y="225" width="180" height="76" rx="12"/>
+  <text class="label" x="635" y="255">Active</text>
+  <text class="detail" x="635" y="279">Session: Running</text>
+
+  <rect class="state" x="545" y="365" width="180" height="76" rx="12"/>
+  <text class="label" x="635" y="395">Paused</text>
+  <text class="detail" x="635" y="419">Partner reconnecting</text>
+
+  <path class="edge" d="M 150 156 L 150 225"/>
+  <text class="edge-label" x="212" y="194">Accept and register</text>
+  <path class="edge" d="M 255 118 L 350 118"/>
+  <text class="edge-label" x="302" y="103">Decline</text>
+  <path class="edge" d="M 225 263 L 295 263"/>
+  <text class="edge-label" x="260" y="247">Admit</text>
+  <path class="edge" d="M 475 263 L 545 263"/>
+  <text class="edge-label" x="510" y="247">Start</text>
+  <path class="edge" d="M 635 301 L 635 365"/>
+  <text class="edge-label" x="724" y="338">Required role disconnects</text>
+  <path class="edge-soft" d="M 600 365 C 500 342 500 307 600 301"/>
+  <text class="edge-label" x="498" y="329">Reconnect</text>
+
+  <rect class="terminal" x="800" y="90" width="330" height="74" rx="12"/>
+  <text class="label" x="965" y="119">completed</text>
+  <text class="detail" x="965" y="143">Normal completion · Automatically approve</text>
+
+  <rect class="terminal" x="800" y="205" width="330" height="74" rx="12"/>
+  <text class="label" x="965" y="234">partner_left</text>
+  <text class="detail" x="965" y="258">Peer left or was lost · Automatically approve</text>
+
+  <rect class="terminal" x="800" y="320" width="330" height="88" rx="12"/>
+  <text class="label" x="965" y="349">game_did_not_start</text>
+  <text class="detail" x="965" y="373">Own pre-start leave, wait expiry,</text>
+  <text class="detail" x="965" y="393">or reconnect expiry · Request return</text>
+
+  <rect class="terminal" x="800" y="450" width="330" height="88" rx="12"/>
+  <text class="label" x="965" y="479">participation_ended_early</text>
+  <text class="detail" x="965" y="503">Own post-start leave, reconnect expiry,</text>
+  <text class="detail" x="965" y="523">or idle limit · Request return</text>
+
+  <rect class="technical" x="800" y="580" width="330" height="88" rx="12"/>
+  <text class="label" x="965" y="609">technical_failure</text>
+  <text class="detail" x="965" y="633">Technical or absolute lifetime limit</text>
+  <text class="detail" x="965" y="653">Automatically approve</text>
+
+  <path class="edge" d="M 725 250 C 760 220 765 133 800 127"/>
+  <path class="edge" d="M 475 250 C 610 170 680 220 800 242"/>
+  <path class="edge" d="M 725 267 L 800 242"/>
+  <path class="edge" d="M 725 403 C 755 355 770 275 800 250"/>
+  <path class="edge" d="M 475 278 C 600 300 680 350 800 364"/>
+  <path class="edge" d="M 725 282 C 770 330 770 456 800 485"/>
+  <path class="edge" d="M 725 418 C 760 438 770 470 800 487"/>
+  <path class="edge-soft" d="M 385 301 C 385 650 650 624 800 624"/>
+  <path class="edge-soft" d="M 635 441 C 635 610 710 624 800 624"/>
+
+  <text class="detail" x="385" y="720">Waiting/Forming reconnect expiry means the game did not start.</text>
+  <text class="detail" x="850" y="720">Paused/Running reconnect expiry means participation ended early.</text>
+</svg>

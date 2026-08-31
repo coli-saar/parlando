@@ -210,10 +210,6 @@ pub struct StoredGameSettings {
     pub tts_base_url: String,
     /// Prolific API and study-JWKS origin used by every experiment in this game process.
     pub prolific_api_base_url: String,
-    /// Prolific workspace bound to this installation's protected API token.
-    pub prolific_workspace_id: String,
-    /// Last provider-verified workspace title, used only for administrator display.
-    pub prolific_workspace_title: String,
     /// Optimistic-concurrency revision for dashboard updates.
     pub revision: i64,
 }
@@ -227,8 +223,6 @@ impl Default for StoredGameSettings {
             speechmatics_realtime_url: "wss://eu.rt.speechmatics.com/v2".to_string(),
             tts_base_url: "wss://api.elevenlabs.io".to_string(),
             prolific_api_base_url: "https://api.prolific.com".to_string(),
-            prolific_workspace_id: String::new(),
-            prolific_workspace_title: String::new(),
             revision: 1,
         }
     }
@@ -572,8 +566,6 @@ pub trait ExperimentStore: Send + Sync {
         speechmatics_realtime_url: String,
         tts_base_url: String,
         prolific_api_base_url: String,
-        prolific_workspace_id: String,
-        prolific_workspace_title: String,
         secret_updates: HashMap<String, String>,
         secret_deletions: Vec<String>,
     ) -> Result<i64>;
@@ -906,8 +898,6 @@ impl SqliteExperimentStore {
                 speechmatics_realtime_url text not null default 'wss://eu.rt.speechmatics.com/v2',
                 tts_base_url text not null default 'wss://api.elevenlabs.io',
                 prolific_api_base_url text not null default 'https://api.prolific.com',
-                prolific_workspace_id text not null default '',
-                prolific_workspace_title text not null default '',
                 revision integer not null default 1,
                 updated_at text not null
             )
@@ -1049,7 +1039,7 @@ impl SqliteExperimentStore {
 
     /// Accepts only the current schema baseline or stamps a genuinely empty database.
     async fn apply_pending_migrations(&self) -> Result<()> {
-        const CURRENT_SCHEMA_VERSION: i64 = 15;
+        const CURRENT_SCHEMA_VERSION: i64 = 16;
         let version =
             sqlx::query_scalar::<_, Option<i64>>("select max(version) from schema_migrations")
                 .fetch_one(&self.pool)
@@ -1493,8 +1483,8 @@ impl ExperimentStore for SqliteExperimentStore {
     }
 
     async fn game_settings(&self) -> Result<StoredGameSettings> {
-        let row = sqlx::query_as::<_, (String, String, String, String, String, String, String, i64)>(
-            "select institution, admin_allowed_ip_ranges_json, speechmatics_realtime_url, tts_base_url, prolific_api_base_url, prolific_workspace_id, prolific_workspace_title, revision from game_settings where singleton = 1",
+        let row = sqlx::query_as::<_, (String, String, String, String, String, i64)>(
+            "select institution, admin_allowed_ip_ranges_json, speechmatics_realtime_url, tts_base_url, prolific_api_base_url, revision from game_settings where singleton = 1",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -1504,9 +1494,7 @@ impl ExperimentStore for SqliteExperimentStore {
             speechmatics_realtime_url: row.2,
             tts_base_url: row.3,
             prolific_api_base_url: row.4,
-            prolific_workspace_id: row.5,
-            prolific_workspace_title: row.6,
-            revision: row.7,
+            revision: row.5,
         })
     }
 
@@ -1550,8 +1538,6 @@ impl ExperimentStore for SqliteExperimentStore {
         speechmatics_realtime_url: String,
         tts_base_url: String,
         prolific_api_base_url: String,
-        prolific_workspace_id: String,
-        prolific_workspace_title: String,
         secret_updates: HashMap<String, String>,
         secret_deletions: Vec<String>,
     ) -> Result<i64> {
@@ -1559,7 +1545,7 @@ impl ExperimentStore for SqliteExperimentStore {
         let next_revision = expected_revision + 1;
         let result = sqlx::query(
             r#"
-            update game_settings set institution = ?, admin_allowed_ip_ranges_json = ?, speechmatics_realtime_url = ?, tts_base_url = ?, prolific_api_base_url = ?, prolific_workspace_id = ?, prolific_workspace_title = ?, revision = ?, updated_at = ?
+            update game_settings set institution = ?, admin_allowed_ip_ranges_json = ?, speechmatics_realtime_url = ?, tts_base_url = ?, prolific_api_base_url = ?, revision = ?, updated_at = ?
             where singleton = 1 and revision = ?
             "#,
         )
@@ -1568,8 +1554,6 @@ impl ExperimentStore for SqliteExperimentStore {
         .bind(speechmatics_realtime_url.trim())
         .bind(tts_base_url.trim())
         .bind(prolific_api_base_url.trim())
-        .bind(prolific_workspace_id.trim())
-        .bind(prolific_workspace_title.trim())
         .bind(next_revision)
         .bind(now_iso())
         .bind(expected_revision)

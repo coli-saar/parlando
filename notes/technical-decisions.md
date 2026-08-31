@@ -1,5 +1,184 @@
 # Technical Decisions
 
+## 2026-08-31: Parlando releases use a resumable project-local skill
+
+Context: A coordinated Parlando release must keep the Rust crate, JavaScript package, example
+consumers, migration guidance, publishing documentation, and game-generation skill on one version.
+The registry uploads are immutable, while this repository forbids agents from running Git commands
+without separate explicit authorization. Preparing the release also makes the checkout dirty, which
+must not be bypassed with Cargo's `--allow-dirty` option for a real publication.
+
+Decision: Add `skills/release-parlando` as the reusable release workflow. It separates preparation,
+verification, and publication into resumable phases; performs a deterministic, read-only metadata
+audit; runs the full tests, release builds, package inspections, and registry dry runs; and publishes
+only when actual publication was explicitly requested. The workflow stops after preparation so the
+user can review and commit the candidate, then resumes by rechecking the committed candidate before
+publishing Rust followed by JavaScript. Git tagging and GitHub pushes remain an explicit user handoff.
+
+Tradeoffs: The mandatory commit boundary means a release normally spans at least two skill
+invocations. This prevents an immutable artifact from being built from uncommitted state and makes
+the tag correspond to the reviewed candidate. The metadata script intentionally checks first-party
+release contracts rather than replacing every old version string, so historical migration material,
+test fixtures, and transitive dependency versions remain intact.
+
+## 2026-08-31: Saving Prolific drafts is independent of provider readiness
+
+Context: The dashboard stored the installation-wide Prolific API token correctly but omitted it
+from the configured-provider status response, so a refresh falsely showed the credential as
+missing. Once that token existed, saving a complete-looking experiment draft also ran the remote
+Prolific preflight before writing the new revision. Any provider readiness issue rejected the whole
+request, so edits such as the new `no_consent` code disappeared even though they were structurally
+valid and needed to be retained for correction.
+
+Decision: Report `prolific.api_token` alongside the other write-only provider credentials. For an
+inactive experiment, commit a structurally valid configuration revision atomically before running
+the Prolific preflight. Return and cache the provider issues as readiness information; they may
+block provider-backed launch, but they do not roll back or conceal the saved draft. Local schema,
+game-configuration, secret, and optimistic-concurrency failures still reject the save because those
+would not produce a coherent revision.
+
+Tradeoff: A saved revision can be provider-unready, which is already supported for incomplete
+Prolific drafts and Local Preview. Researchers can now inspect and repair the exact saved inputs,
+while Test through Prolific and Official intake remain guarded by the same remote validation.
+
+## 2026-08-31: Prolific routing projects the terminal state machine
+
+Context: The six-path Prolific design described completion selection as a pure mapping from
+`ParticipantOutcomeKind`. That is insufficient for `connection_lost`: the same factual participant
+outcome can result from reconnect expiry while the shared session is still `Forming` or after it is
+`Running`. Mapping both cases to `participation_ended_early` contradicts the promise that this path
+is used only after a playable game began.
+
+Decision: Treat Prolific completion selection as an output of the canonical participant and session
+state machines, not as another lifecycle. The projector receives the immutable participant result
+and the durable fact that the session did or did not start. Technical and lifetime outcomes map to
+`technical_failure`; normal completion maps to `completed`; a peer departure or peer reconnect
+expiry maps to `partner_left`; another own-participation outcome maps to `game_did_not_start` before
+session start and `participation_ended_early` after session start. `no_consent` remains a direct
+pre-registration route and creates no Parlando participant state. The corrected correspondence and
+diagram are recorded in `notes/prolific-completion-paths-design.md` and reuse the state machine in
+`notes/participant-state-machine-design.md`.
+
+Tradeoff: The projector needs one durable session-phase fact in addition to the participant outcome.
+This avoids adding phase-specific outcome variants, preserves the exact `connection_lost` fact, and
+keeps the provider categories aligned with whether play actually began. Tests must cover reconnect
+expiry from both `Waiting`/`Forming` and `Paused`/`Running`.
+
+Populated workspace conversion: After confirming that no process held the database open, backed up
+`games/great-tree/server/parlando-great-tree.sqlite` as
+`games/great-tree/server/parlando-great-tree.schema16-pre-prolific-six-path-backup-2026-08-31.sqlite`.
+In one immediate transaction, renamed stored `partner_unavailable` configuration values to
+`game_did_not_start`, renamed `timed_out` to `participation_ended_early`, and added an empty
+`no_consent` value to the affected current configuration and historical revisions. The existing
+codes `GREENTIGER` and `RAPIDPANDA` were preserved; no historical No consent code could be derived.
+The `rootbot-agent` experiment therefore remains locally previewable but is not provider-ready until
+its researcher supplies and verifies that sixth code. Schema version 16 was unchanged because only
+versioned JSON values changed. Validation retained 4 experiments, 17 configuration revisions, 50
+participants, and 42 sessions; integrity was `ok`, the foreign-key check returned no rows, and no
+old completion-field key remained in current or historical configuration.
+
+No-consent redirects use the configured `no_consent` completion code in every active intake mode,
+including Local Preview. Parlando emits the normal participant completion URL only when that code
+is nonempty; an incomplete draft suppresses the link instead of constructing an empty `cc=` query.
+This preserves realistic local testing without accidentally handing Prolific an unspecified
+completion path.
+
+## 2026-08-28: Prolific uses six coarse completion paths while Parlando retains precise outcomes
+
+Context: Prolific completion paths trigger provider processing, whereas Parlando records the
+specific session cause and participant consequence. Treating the Prolific label as the complete
+factual account either multiplied paths that had identical actions or made umbrella labels such as
+`timed_out` appear more precise than the evidence. The existing five-path configuration also had no
+dedicated route for a participant who declined consent.
+
+Decision: require six Prolific completion fields for provider-backed testing and official intake:
+`completed`, `partner_left`,
+`game_did_not_start`, `participation_ended_early`, `technical_failure`, and `no_consent`.
+`partner_left` is the Prolific path and label both when the partner deliberately leaves and when the
+partner's connection does not return; Parlando retains and presents **Partner chose to leave** or
+**Partner connection lost** as the precise outcome. Use automatic approval for `completed`,
+`partner_left`, and `technical_failure`; request a return for `game_did_not_start`,
+`participation_ended_early`, and `no_consent`. Missing or invalid paths have no fallback. Declining
+consent redirects through Prolific before Parlando registration and creates no participant or
+session data.
+
+Local Preview is a provider-independent dry run of the experiment. An incomplete Prolific setup is
+therefore saveable and previewable, but it keeps **Test through Prolific** and **Official intake**
+unready. Researchers make partial payments for `game_did_not_start` by hand through Prolific bonus
+payments; Parlando supplies the relevant unsuccessful waiting time but does not track completion of
+the return or bonus-payment workflow.
+
+Keep the dashboard's existing disclosure hierarchy. The stable session-fact grid remains visible,
+exceptional or terminal participant outcomes remain below the participant name, and provider facts
+remain behind the Prolific-only badge aligned with that name. Do not add an always-visible
+completion-path or reconciliation block. The same Parlando client opened from the Prolific study
+shows the precise terminal result and then the provider handoff.
+
+Validate the linked Prolific study remotely only when saving a Prolific-enabled experiment or when
+an administrator explicitly selects **Recheck**. Persist the successful result against the exact
+experiment revision and a fingerprint of all relevant local configuration, provider-endpoint, and
+credential inputs. Dashboard polling reads that durable result and never contacts Prolific. Start
+requires the same matching result that made its mode green and does not perform another remote
+preflight. Any relevant local change invalidates the result immediately; a study changed only in
+Prolific remains verified until explicit Recheck or the next Save. Per-participant submission
+verification remains an admission operation and does not repeat study-configuration validation.
+
+Do not hold a database transaction open during provider validation. Save reads the expected
+experiment and Game Settings revisions, performs any provider request outside the transaction, and
+then uses a short transaction that rechecks both revisions before storing the new immutable
+experiment revision and its verification result. A concurrent edit yields a revision conflict.
+Canonical study URLs come from the existing `Server::public_url`; Parlando checks only that the
+retrieved study uses URL parameters and points to that experiment's canonical `/e/{experiment_id}/`
+landing URL. Prolific remains responsible for general URL validation.
+
+Non-goals: Parlando does not add completion paths for unobserved pre-game exits, implement
+post-game consent withdrawal, automate or track partial bonuses, use participant groups as a
+payment queue, track whether requested returns were completed, continuously revalidate studies,
+add another public-URL setting, retain a runtime compatibility schema, or automatically replace
+Prolific places consumed by approved incomplete sessions. These boundaries are part of the accepted
+design, not missing fallbacks. The full negative contract is recorded in
+`notes/prolific-completion-paths-design.md`.
+
+Tradeoffs: Prolific deliberately receives a coarser category than Parlando stores, so its
+**Partner left** label does not distinguish intent from connection failure. This avoids separate
+codes with identical compensation behavior while preserving the distinction in Parlando's durable
+data, participant terminal explanation, dashboard, and exports. The sixth code adds one setup step
+but implements Prolific's prescribed no-consent return path without storing data for someone who
+did not consent. Persisted validation does not detect provider-only edits automatically, but avoids
+slow provider calls during dashboard refresh and ensures that a green Start mode uses exactly the
+contract already shown as ready. The full design and implementation plan are recorded in
+`notes/prolific-completion-paths-design.md`.
+
+## 2026-08-28: Derive each Prolific workspace from its linked study
+
+Context: Parlando already links one Prolific study at the experiment level. Requiring a second,
+installation-level workspace ID duplicated information available through the study's project and
+incorrectly suggested that connecting a workspace also linked a study. An API token may also grant
+access to studies in more than one workspace.
+
+Decision: Keep only the Prolific API token and API endpoint in global Game Settings. When a
+Prolific-enabled experiment configuration is saved, retrieve its exact study and project and derive
+the workspace ID from that project. Retain the derived ID with the provider-verified study for the
+open process and compare it with the workspace claim in a Secure external URL token. A missing
+project or an unreadable project makes the experiment configuration invalid. The dashboard no
+longer asks for or displays a global workspace binding.
+
+Tradeoffs: Rotating a token no longer requires repeating a workspace ID, and one game process can
+host experiments from different workspaces accessible to that token. Study validation now supplies
+the workspace trust boundary, so Prolific-backed intake cannot start without a successful study and
+project preflight. The workspace title is no longer retained because it has no operational role.
+
+Populated workspace conversion: After verifying that no process listened on port 8080 or held the
+database open, backed up `games/great-tree/server/parlando-great-tree.sqlite` as
+`games/great-tree/server/parlando-great-tree.schema15-backup-2026-08-28.sqlite`. Transactionally
+removed `prolific_workspace_id` and `prolific_workspace_title` from `game_settings` and advanced the
+schema from 15 to 16. The global ID and verified title have no correspondence in the derived model;
+all remaining settings and all experiment, participant, session, assignment, and Prolific
+submission rows were preserved. Before and after conversion there were 4 experiments, 50
+participants, 42 sessions, 84 session assignments, 11 Prolific submissions, and one Game Settings
+row. Post-conversion integrity was `ok`, the foreign-key check returned no rows, no workspace
+columns remained, and all required provider endpoint settings were populated.
+
 ## 2026-08-27: Game Settings retain drafts and organize provider bindings together
 
 Context: the five-second dashboard refresh replaced Game Settings controls with the last committed
@@ -13,21 +192,64 @@ Periodic catalogue refreshes may update server state but do not overwrite that d
 remain inline beside the single save action, and the draft remains available for correction. Split
 provider settings into Speechmatics, ElevenLabs, and Prolific sections so each endpoint and secret
 are colocated; label the action “Save all game settings” and state that it commits every section in
-one transaction. A Prolific workspace is verified with the configured API token when saved, so a
-syntactic placeholder such as `test` is not accepted as a real workspace unless the selected API
-endpoint recognizes it.
+one transaction. The initial implementation also verified a global Prolific workspace ID; the
+2026-08-28 decision above removed that redundant binding and derives the workspace from each linked
+study instead.
 
-Add missing global Prolific token and workspace requirements to the same readiness calculation used
-by the experiment header badge, activation controls, and configuration warning. Present one overall
-experiment-ready badge rather than a structurally-valid badge beside a contradictory blocked badge.
-Structural configuration errors and missing runtime or provider prerequisites remain distinct in
-the badge tooltip.
+Calculate two readiness sets: local preview checks structural configuration and required game
+services, while Prolific testing and official Prolific intake additionally check the global token
+plus the exact experiment-owned Prolific study contract. Each Prolific-enabled
+experiment links to one study; connecting a workspace does not link a study. Present icon-only
+readiness badges beside each launch mode instead of assigning one readiness judgment to the whole
+experiment. Direct experiments show only Local preview and Official intake, with no Prolific
+terminology. Structural configuration errors and missing runtime or provider prerequisites remain
+distinct in each badge tooltip.
+
+Expose the literal Prolific-placeholder URL as setup information in every inactive experiment's
+Prolific configuration, before the experiment is runnable. The researcher uses it to create the
+one corresponding Prolific study, then enters the resulting study ID and completion codes in
+Parlando. Saving a Prolific-enabled configuration performs a fresh provider preflight and rejects
+the revision if the study cannot be retrieved or does not satisfy the full contract. This removes
+the circular dependency between obtaining the external URL and linking the study while making the
+verified study part of experiment validity.
+
+Collapse inactive launch modes into one “Start experiment” dropdown so readiness choices do not
+compete with Clone and Archive in the header. Clone is available only while inactive. Keep exactly
+the actions needed during an open testing run directly visible: Open, Copy URL, and Stop. Direct
+testing uses the ordinary participant URL. Treat the participant URL as state of the open intake
+run: choose it when testing or official intake starts, return the same value to every dashboard
+catalogue refresh, and clear it when intake ends. Open and Copy URL both use this one retained value.
+A Prolific Local Preview retains generated `TEST…` participant and session IDs; testing through
+Prolific and official Prolific intake retain the literal provider-placeholder form; Direct intake
+retains the query-free URL. The URL state is process-owned rather than database-backed because
+startup already deactivates every intake run left open by an earlier process, so there is no running
+URL to restore across a server restart. This preserves frequent actions as one-click controls while
+containing the less frequent mode choice. Periodic dashboard refreshes preserve an open launch menu
+when the experiment identifier and lifecycle are unchanged; an experiment switch or lifecycle
+transition closes it.
+
+Use one delegated dashboard tooltip for elements carrying a `title`, converting the native title on
+first hover or keyboard focus and displaying it after 90 milliseconds. Delegation covers controls
+created by periodic rendering without per-control setup, while hiding on pointer exit, focus exit,
+click, scrolling, or resizing. This avoids the browser-controlled native tooltip delay without
+changing the concise icon-first layouts.
+
+Keep both local and provider-backed testing under the durable `testing` lifecycle and immutable
+testing data purpose. Dashboard-generated alphanumeric participant and session IDs beginning with
+`TEST` may bypass external Prolific verification only in that lifecycle and are recorded with the
+`synthetic_testing` verification method. A real Prolific test performs the ordinary provider
+preflight as a transient action without creating another lifecycle state. Testing must stop before
+official intake starts; the testing-to-active transition is rejected by the server as well as omitted
+from the dashboard.
 
 Tradeoffs and risks: a draft begun against an older Game Settings revision deliberately receives a
-revision conflict if another administrator saves first. Provider study details are still checked by
-the activation preflight rather than by every five-second catalogue poll, avoiding repeated external
-API traffic. The local readiness badge covers all prerequisites already known to Parlando and the
-activation attempt supplies authoritative remote-study diagnostics.
+revision conflict if another administrator saves first. Provider-backed badges and Start use the
+same full remote-study preflight. Cache its result for 30 seconds by a fingerprint of every local
+preflight input, including the protected token, so five-second catalogue polling does not repeatedly
+contact Prolific and any configuration or credential change invalidates the result immediately.
+External provider changes may take at most 30 seconds to appear in a badge. The conspicuous `TEST`
+prefix is both the visual distinction in session details and the server-side boundary for the
+testing-only verification bypass.
 
 ## 2026-08-27: Repair rootbot-agent revision 8 with a clean revision 9
 
@@ -2076,11 +2298,11 @@ experiment-clone behavior, and the browser automation lane before implementation
 - Decision: The dashboard generator concatenates one uppercase adjective and one uppercase noun, without digits or punctuation. Manual Prolific codes remain accepted as alphanumeric strings because externally created codes may not follow this presentation convention.
 - Tradeoff: The bundled 32-by-32 vocabulary has 1,024 combinations, so experimenters should still check that codes are distinct within an experiment.
 
-## 2026-08-23: Dashboard participant links simulate Prolific intake
+## 2026-08-23: Dashboard participant links simulate Prolific intake (superseded)
 
 - Context: Prolific-enabled intake correctly rejects participant pages without all three provider query parameters, which made the dashboard's plain participant link unusable for local testing.
-- Decision: For a Prolific-enabled experiment, the dashboard link includes a synthetic `PROLIFIC_PID`, the experiment's exact configured `STUDY_ID`, and a synthetic `SESSION_ID`. Synthetic participant and session identifiers are unique per dashboard page load and stable across its periodic rerenders. Direct experiments retain their clean participant URL.
-- Tradeoff: Opening the same generated link more than once represents the same synthetic Prolific visit. Reloading the dashboard generates a fresh test identity.
+- Historical decision: For a Prolific-enabled experiment, the dashboard link included a synthetic `PROLIFIC_PID`, the experiment's exact configured `STUDY_ID`, and a synthetic `SESSION_ID`. Synthetic participant and session identifiers were unique per dashboard page load and stable across its periodic rerenders. Direct experiments retained their clean participant URL.
+- Superseded on 2026-08-27: The participant URL is now selected when an intake run starts and retained until that run ends. Reloading the dashboard therefore keeps the same synthetic identity for Local Preview, while provider-backed runs keep their literal Prolific placeholders.
 
 ## 2026-08-23: Use Prolific completion-path terminology in configuration
 
@@ -2093,6 +2315,7 @@ experiment-clone behavior, and the browser automation lane before implementation
 - Context: Prolific participants must be able to decline configured consent items, while direct participants do not need a provider-return action.
 - Decision: When consent items exist, the shared participant landing page places a succinct “Do not consent” secondary action beside “Enter waiting room” only for Prolific intake. It returns to the participant's Prolific submissions page before participant registration, consent recording, or matchmaking; Parlando does not require or emit a no-consent completion code.
 - Tradeoff: Generated games must style the shared `.parlando-decline-consent` lifecycle class. The participant completes Prolific's own “Stop Without Completing” flow rather than following an outcome-specific completion-code redirect.
+- Superseded on 2026-08-31: Prolific experiments now require a dedicated `no_consent` completion path for provider-backed activation. Active Local Preview and provider intake both redirect through that configured completion code; incomplete local drafts omit the decline link rather than emitting an empty code.
 
 ## 2026-08-23: Dashboard configuration reads tolerate invalid revisions
 
@@ -2392,3 +2615,37 @@ new representation is the non-null `game_settings.prolific_api_base_url`, initia
 `ok`, the foreign-key check returned no rows, the schema version was 15, and the singleton game
 setting contained the production default. `space-game/.local/parlando.sqlite` remains at its
 pre-existing unsupported schema 10 and was not folded into this unrelated schema-14-to-15 change.
+# 2026-08-28: Remove obsolete dashboard bindings with their settings controls
+
+## Context
+
+Removing the global Prolific workspace controls left two startup-time DOM bindings in the embedded dashboard script. One obsolete input was included in the list that registers dirty-state listeners, so its `null` value aborted all dashboard initialization.
+
+## Decision
+
+Remove the obsolete workspace bindings and listener target together with the controls. Keep a dashboard HTML regression assertion that rejects either removed JavaScript identifier.
+
+## Tradeoffs and risks
+
+The assertion directly protects this removal but is not a general browser-DOM consistency checker. Dashboard changes still require a JavaScript syntax check and a loaded-page smoke test.
+# 2026-08-28: Separate the Prolific experimenter guide from the integration reference
+
+## Context
+
+`docs/prolific-integration.md` explains provider contracts, outcome mappings, signed admission,
+restart behavior, and privacy boundaries. That information is useful to maintainers but obscures the
+ordered task an experimenter must complete across the Parlando and Prolific dashboards.
+
+## Decision
+
+Keep the existing document as the technical reference and add `docs/using-prolific.md` as the
+experimenter-facing procedure. The new guide follows the setup dependency order: shared API token,
+inactive-safe participant URL, Prolific study and completion paths, experiment link and validation,
+testing, official intake, and review. Link both documents from the documentation index and link the
+reference back to the guide.
+
+## Tradeoffs and risks
+
+Some Prolific labels may change independently of Parlando. The guide therefore names the current
+controls needed for the task and links to Prolific's maintained API documentation. Maintainers must
+update the guide when either dashboard changes its setup workflow.
