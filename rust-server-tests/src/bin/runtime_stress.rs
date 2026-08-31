@@ -1267,6 +1267,7 @@ async fn drive_session(
     let mut reconnected = false;
     let mut next_message = Instant::now() + Duration::from_secs(2);
     let mut next_action = Instant::now() + Duration::from_secs(3);
+    let mut next_heartbeat = Instant::now() + Duration::from_secs(1);
     let mut next_frame = Instant::now();
     while Instant::now() < deadline && !cancelled.load(Ordering::Relaxed) {
         let phase = phase_name(
@@ -1327,6 +1328,13 @@ async fn drive_session(
             send_json(&mut game_a, json!({"type":"action","action":{"type":"mark","sequence":sequence,"finish":false}})).await?;
             counters.actions.fetch_add(1, Ordering::Relaxed);
             next_action += Duration::from_secs(5);
+        }
+        if Instant::now() >= next_heartbeat {
+            send_json(&mut game_a, json!({"type":"heartbeat"})).await?;
+            if let Some(game) = &mut game_b {
+                send_json(game, json!({"type":"heartbeat"})).await?;
+            }
+            next_heartbeat += Duration::from_secs(1);
         }
         sequence = sequence.wrapping_add(1);
         next_frame += FRAME_INTERVAL;

@@ -6,11 +6,34 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## Unreleased
 
+## [0.4.0] - 2026-08-31
+
+### Added
+
+- Added a process-owned `GameFactory` that constructs one session-owned `Game` with a
+  `GameSessionContext`, and added session-scoped logging for games and agents.
+- Added repeated remote-agent `session_logs` responses and injected logging through the Python SDK
+  context.
+- Added headless session execution and experiment support for repeatable agent-agent and learning
+  workflows.
+
 ### Changed
 
+- Renamed participant-facing room concepts to sessions across HTTP, WebSocket, TypeScript, Rust,
+  and SQLite interfaces, including `public_session_id`, `JoinedSession`, and `sessionId`.
+- Renamed `session.waiting_room_timeout_seconds` to
+  `session.waiting_session_timeout_seconds` and normalized arbitrary session text under the `log`
+  event type.
 - Simplified the dashboard-configured remote agent to an endpoint and optional YAML mapping. Remote
   protocol v5 removes editable name/version/protocol fields and agent-secret delivery; transport
   authentication is read from `PARLANDO_REMOTE_AGENT_TOKEN` by both processes.
+
+### Removed
+
+- Removed `Game::create_session` and `Game::validate_config`; construction and configuration
+  validation now belong to `GameFactory` without compatibility aliases.
+- Removed the `/api/rooms` participant surface and the `room_id`, `JoinedRoom`, and `roomId` public
+  names without compatibility aliases.
 
 ## [0.3.0] - 2026-08-16
 

@@ -15,7 +15,7 @@ The intended backends are:
 
 ## Protocol Shape
 
-The protobuf contract lives at `proto/parlando_agent_v5.proto` and defines the `parlando.agent.v5` package for:
+The protobuf contract lives at `rust-server/proto/parlando_agent_v5.proto` and defines the `parlando.agent.v5` package for:
 
 - agent initialization, including role, seed, structured settings, and an optional learner checkpoint.
 - observation requests for role-specific state snapshots, accepted actions, and messages.

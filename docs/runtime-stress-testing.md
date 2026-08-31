@@ -31,8 +31,8 @@ Run a short non-interactive smoke test:
 ```sh
 cd rust-server-tests
 cargo run --features stress-tui --bin runtime-stress -- \
-  --preset smoke --pairing human-agent --sessions 2 --seconds 20 --no-tui \
-  --report /tmp/parlando-runtime-stress.json
+  --pairing human-agent --sessions 2 --seconds 20 --headless \
+  --output /tmp/parlando-runtime-stress
 ```
 
 Run the interactive dashboard with more sessions:
@@ -40,16 +40,17 @@ Run the interactive dashboard with more sessions:
 ```sh
 cd rust-server-tests
 cargo run --release --features stress-tui --bin runtime-stress -- \
-  --preset acceptance --pairing human-agent
+  --pairing human-agent --sessions 100 --seconds 600
 ```
 
 Use `q` or `Esc` to request a clean stop. `Tab` cycles dashboard time-series
-views. Use `--keep-database` to preserve the temporary directory for SQLite
-inspection; failed runs preserve it automatically. Each run also writes a JSON
-report containing the resolved workload, correctness counters, reconnects,
-ASR/TTS counts, admission latency, audio scheduler misses, SQLite row counts,
-pre-checkpoint main/WAL/SHM bytes, checkpointed bytes per game, and the healthy
-concurrency lower bound established by that run.
+views. Use `--keep` to preserve the temporary directory for SQLite inspection;
+failed runs preserve it automatically. Use `--output PATH` to select the stable
+artifact root. Each run creates a timestamped directory under that root and
+writes a JSON report containing the resolved workload, correctness counters,
+reconnects, ASR/TTS counts, admission latency, audio scheduler misses, SQLite row
+counts, pre-checkpoint main/WAL/SHM bytes, checkpointed bytes per game, and the
+healthy concurrency lower bound established by that run.
 
 Run human-human and human-agent profiles separately on the intended host. A
 successful target is an evidence-backed lower bound for that exact fixture,

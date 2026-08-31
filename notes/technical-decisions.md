@@ -1,5 +1,83 @@
 # Technical Decisions
 
+## 2026-08-31: Runtime stress keeps every game transport live explicitly
+
+Context: The release-mode human-human stress profile consistently lost one relayed frame at five
+seconds. The preserved database showed that role B's game connection had already been closed by the
+production liveness policy at game time 5.002 seconds. The harness sent role A's messages and
+actions but left role B completely silent, so the later audio deadline was a secondary symptom of a
+correct participant-disconnect transition rather than relay corruption.
+
+Decision: Send the ordinary participant-protocol heartbeat once per second on both game WebSockets
+during the measured workload. Heartbeats preserve transport liveness but do not count as meaningful
+research activity, matching the browser client's production behavior and the Prolific idle tests.
+
+Tradeoff: The stress fixture now generates a small amount of additional game-channel traffic. This
+is representative browser overhead and keeps audio-relay measurements from being invalidated by an
+unrelated silent-transport timeout.
+
+## 2026-08-31: The crate ships one public voice configuration example
+
+Context: Package inspection found both the maintained full voice configuration example and an
+unreferenced `experiment.voice.private.example.yaml` overlay. The latter contained placeholders,
+not credentials, but duplicated the public example and put a private-overlay filename in the
+published artifact.
+
+Decision: Remove the unused private-overlay template and publish only
+`experiment.voice.full.example.yaml`. Actual private configuration remains excluded by the Cargo
+manifest and credentials continue to be supplied through protected game settings.
+
+Tradeoff: Anyone relying on the unreferenced template must use the fuller documented example, which
+describes the same voice, transcription, and TTS fields without implying that a private file belongs
+in the crate.
+
+## 2026-08-31: Published Rust crates own their protobuf build inputs
+
+Context: Cargo could create the 0.4.0 crate archive but could not verify it because `build.rs`
+compiled remote-agent and learner schemas from the repository-level `proto/` directory. Files above
+the Rust package root are not present when crates.io consumers build the extracted archive.
+
+Decision: Make `rust-server/proto/` the single source for the agent v5 and learner v1 schemas. The
+Rust build reads package-local paths, and the Python binding generator and protocol-source tests
+read those same files. Keep browser-only wire fixtures in the repository-level `proto/` directory.
+
+Tradeoff: Python SDK development now reaches into the Rust package directory for the shared RPC
+contract. This coupling is intentional: the published Rust crate owns the wire protocols it embeds,
+and every generated client must follow that exact source. The package tarball is now independently
+buildable without duplicating schemas.
+
+## 2026-08-31: The browser release gate exercises participant-visible terminal contracts
+
+Context: The 0.4.0 release candidate passed the Rust and browser behavior suites but missed the
+browser package's 80% statement and branch coverage gate. The uncovered code was concentrated in
+the standard participant application's server-message projection, consent surface, terminal
+outcome explanations, and Prolific completion handoff.
+
+Decision: Cover those public behaviors through the injected `ParticipantAppTestHarness`. Tests now
+drive authoritative WebSocket messages through the real decoder and reducer, exercise required
+consent and participant-information links, render every terminal outcome, and verify the Prolific
+completion-code copy path. Keep the 80% thresholds unchanged.
+
+Tradeoff: The render suite is larger and repeats the normal join sequence for each terminal outcome,
+but it validates the participant-visible contract at the component boundary and catches omissions
+that isolated helper tests would miss.
+
+## 2026-08-31: Defer first-party npm consumer lockfiles until 0.4.0 exists
+
+Context: Space Game and Great Tree consume the public browser SDK from npm. Their manifests must
+declare the coordinated 0.4.0 release, but npm cannot produce truthful registry resolutions,
+tarball URLs, or integrity hashes before that immutable version is published.
+
+Decision: Update both consumer manifests to `^0.4.0` during release preparation and leave their
+existing 0.3.0 resolved lockfile entries untouched. Refresh those lockfiles with npm after the
+0.4.0 package is visible in the registry, then verify each resolved package manifest reports
+0.4.0. Do not hand-edit resolved URLs or integrity metadata.
+
+Tradeoff: The consumer manifests and lockfiles intentionally disagree during the short interval
+between candidate preparation and registry publication. Local release verification uses the
+repository packages, while published-dependency verification and lockfile refresh are deferred
+until npm can supply authoritative metadata.
+
 ## 2026-08-31: Parlando releases use a resumable project-local skill
 
 Context: A coordinated Parlando release must keep the Rust crate, JavaScript package, example

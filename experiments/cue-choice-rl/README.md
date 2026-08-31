@@ -268,7 +268,7 @@ which registers an agent service on an existing gRPC server:
 experiments/cue-choice-rl/
   README.md
   experiment.yaml
-  proto/parlando_rl_v1.proto
+  ../../rust-server/proto/parlando_rl_v1.proto  # shared runtime and SDK contract
   server/                       # Rust game, dealer, reward, RL adapter, CLI
   python/                       # TorchRL/Qwen learner service
   tests/                        # end-to-end smoke and resume tests

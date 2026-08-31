@@ -4,6 +4,24 @@ Parlando 0.4.0 intentionally breaks the game-construction, participant-session,
 and SQLite interfaces. Upgrade source code and a copy of the database before
 starting a 0.4.0 server against production data.
 
+## Update both package dependencies
+
+Treat the runtime and browser SDK as one coordinated upgrade. Update the Rust
+game server to:
+
+```toml
+parlando = "0.4.0"
+```
+
+Update the participant client to:
+
+```json
+"@coli-saar/parlando-client": "^0.4.0"
+```
+
+Refresh both lockfiles after the packages are published, then verify that Cargo
+and npm resolve 0.4.0 rather than retaining 0.3.0.
+
 ## Back up and update SQLite
 
 Stop every process using the database. Create a SQLite-consistent backup:
@@ -98,8 +116,13 @@ destructure the context must accept the new field. An agent may retain
 the session, participant, and role; agent code supplies only text.
 
 Remote-agent protocol responses now contain repeated `session_logs` strings.
-Regenerate clients from `parlando_agent_v5.proto`, or upgrade the Python SDK and
-use its injected `Context.logger`.
+Regenerate clients from `rust-server/proto/parlando_agent_v5.proto`, or upgrade
+the Python SDK and use its injected `Context.logger`.
+
+Dashboard-configured remote agents now consist of an endpoint and an optional
+YAML settings mapping. Remove stored editable agent name, version, protocol, and
+secret fields. Configure transport authentication with
+`PARLANDO_REMOTE_AGENT_TOKEN` in both the Parlando and remote-agent processes.
 
 ## Update participant HTTP and WebSocket clients
 

@@ -436,7 +436,7 @@ class ProtocolSourceTests(unittest.TestCase):
 
     def test_shared_agent_proto_exists(self) -> None:
         """The repository-level agent protocol remains available to the generator."""
-        shared_proto = Path(__file__).resolve().parents[2] / "proto/parlando_agent_v5.proto"
+        shared_proto = Path(__file__).resolve().parents[2] / "rust-server/proto/parlando_agent_v5.proto"
         self.assertTrue(shared_proto.is_file())
 
     def test_generated_agent_descriptor_matches_public_contract(self) -> None:

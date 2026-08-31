@@ -5,6 +5,8 @@ description: Generate Parlando dialogue games using the published parlando runti
 
 # Generate Parlando Game
 
+Current coordinated release: `0.4.0`.
+
 Generate a complete two-player game using published registry packages. Read `references/server-adapter.md` and `references/browser-client.md`; read `references/config-deployment.md` for deployment or dashboard work and `references/agents.md` when agents are requested. These references are authoritative for generation; do not search for a different Parlando API.
 
 ## Discover versions
@@ -62,6 +64,6 @@ Keep provider secrets in server or remote-agent environment variables. Never pla
 
 ## Validate
 
-Run formatting, Rust checks/tests, JS build/tests, and Python tests when used. Test deterministic initialization, every legal/illegal action, A/B observation privacy, success and failure completion, transition metadata shape, messages not changing state, agent lifecycle, disabled controls while `interactionEnabled` is false, and compatibility with the SDK terminal/reconnect UI. Inspect generated code for old names listed in `docs/migrating-to-clean-api.md`; none may remain.
+Run formatting, Rust checks/tests, JS build/tests, and Python tests when used. Test deterministic initialization, every legal/illegal action, A/B observation privacy, success and failure completion, transition metadata shape, messages not changing state, agent lifecycle, disabled controls while `interactionEnabled` is false, and compatibility with the SDK terminal/reconnect UI. Inspect generated code for old names listed in `docs/migrating-0.3.0-to-0.4.0.md`; none may remain.
 
 End with changed files, commands and results, exact run command, dashboard URL, agent commands, deployment notes, and assumptions.

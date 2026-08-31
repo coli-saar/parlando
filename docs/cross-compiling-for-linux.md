@@ -56,11 +56,10 @@ declared by the game:
 ```
 
 Published mode is appropriate only when the game's source and declared package
-versions agree. For example, a client that uses the Parlando 0.4 API but declares
-`@coli-saar/parlando-client` 0.3 will fail its TypeScript build. The current
-Great Tree and Space Game client manifests still declare the 0.3 browser package,
-so use `--local` for those checkouts until their published dependency declarations
-are updated.
+versions agree. Great Tree and Space Game declare the coordinated Parlando 0.4
+packages. Published mode for those checkouts therefore requires both 0.4 packages
+to be available from their registries; use `--local` while testing an unpublished
+Parlando checkout.
 
 ## Understand what the script builds
 
@@ -191,4 +190,3 @@ failure. In particular, the local browser SDK's test tooling currently reaches
 `glob@10.5.0` through the coverage dependency chain; this development dependency
 is not copied into `client-dist`. An `npm ERR!` message or a nonzero script exit
 indicates an actual packaging failure.
-
