@@ -108,6 +108,56 @@ def check_consumers(root: Path, version: str, errors: list[str]) -> None:
             )
 
 
+def check_published_consumer_lockfiles(root: Path, version: str, errors: list[str]) -> None:
+    """Check registry-derived npm lock entries after the coordinated package is published."""
+    package_name = "@coli-saar/parlando-client"
+    lock_key = f"node_modules/{package_name}"
+    expected_tarball = (
+        "https://registry.npmjs.org/@coli-saar/parlando-client/-/"
+        f"parlando-client-{version}.tgz"
+    )
+    for package_path in sorted(root.rglob("package.json")):
+        if any(part in {"target", "node_modules"} for part in package_path.parts):
+            continue
+        package = read_json(package_path)
+        dependencies = package.get("dependencies")
+        if not isinstance(dependencies, dict) or package_name not in dependencies:
+            continue
+        lock_path = package_path.with_name("package-lock.json")
+        if not lock_path.exists():
+            errors.append(f"{package_path}: published consumer has no package-lock.json")
+            continue
+        lock = read_json(lock_path)
+        packages = lock.get("packages")
+        entry = packages.get(lock_key) if isinstance(packages, dict) else None
+        if not isinstance(entry, dict):
+            errors.append(f"{lock_path}: missing {lock_key!r} registry entry")
+            continue
+        record_equal(errors, f"{lock_path} {lock_key} version", entry.get("version"), version)
+        record_equal(
+            errors,
+            f"{lock_path} {lock_key} resolved",
+            entry.get("resolved"),
+            expected_tarball,
+        )
+        integrity = entry.get("integrity")
+        if not isinstance(integrity, str) or not integrity.startswith("sha512-"):
+            errors.append(f"{lock_path} {lock_key}: missing registry sha512 integrity")
+
+
+def check_runtime_stress_documentation(root: Path, errors: list[str]) -> None:
+    """Reject obsolete stress-runner flags and require the current headless CLI surface."""
+    path = root / "docs/runtime-stress-testing.md"
+    text = path.read_text(encoding="utf-8")
+    obsolete_flags = ("--preset", "--no-tui", "--report", "--keep-database")
+    for flag in obsolete_flags:
+        if flag in text:
+            errors.append(f"{path}: contains obsolete runtime-stress flag {flag!r}")
+    for flag in ("--pairing", "--sessions", "--seconds", "--headless", "--output"):
+        if flag not in text:
+            errors.append(f"{path}: missing current runtime-stress flag {flag!r}")
+
+
 def check_release_documents(root: Path, version: str, errors: list[str]) -> None:
     """Check current release guidance, changelog metadata, and the generator skill baseline."""
     publishing_path = root / "docs/publishing-packages.md"
@@ -163,6 +213,11 @@ def parse_args() -> argparse.Namespace:
     """Parse and validate the target stable semantic version from the command line."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("version", help="target stable SemVer, for example 0.4.0")
+    parser.add_argument(
+        "--published",
+        action="store_true",
+        help="also require registry-derived first-party npm consumer lock entries",
+    )
     args = parser.parse_args()
     if not re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", args.version):
         parser.error("version must be stable SemVer in MAJOR.MINOR.PATCH form")
@@ -177,8 +232,11 @@ def main() -> int:
     try:
         check_primary_packages(root, args.version, errors)
         check_consumers(root, args.version, errors)
+        if args.published:
+            check_published_consumer_lockfiles(root, args.version, errors)
         check_release_documents(root, args.version, errors)
         check_migration_guide(root, args.version, errors)
+        check_runtime_stress_documentation(root, errors)
     except (OSError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
         errors.append(str(error))
 
@@ -187,7 +245,8 @@ def main() -> int:
         for error in errors:
             print(f"- {error}", file=sys.stderr)
         return 1
-    print(f"release metadata check passed for {args.version}")
+    suffix = " with published consumer locks" if args.published else ""
+    print(f"release metadata check passed for {args.version}{suffix}")
     return 0
 
 

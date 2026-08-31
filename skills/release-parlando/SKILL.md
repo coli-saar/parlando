@@ -1,6 +1,6 @@
 ---
 name: release-parlando
-description: Prepare, validate, and publish a coordinated Parlando release of the Rust `parlando` crate and `@coli-saar/parlando-client` npm package. Use when bumping Parlando versions, auditing release references and migration guidance, running the full release test and packaging matrix, performing registry dry runs or real publishes, verifying published artifacts, or handing off Git tag and GitHub push commands.
+description: Prepare, validate, and publish a coordinated Parlando release of the Rust `parlando` crate and `@coli-saar/parlando-client` npm package. Use when bumping Parlando versions, auditing release references and migration guidance, running unit, Prolific, runtime-stress, packaging, or consumer-resolution gates, performing registry dry runs or real publishes, recovering a partial release, or handing off Git tag and GitHub push commands.
 ---
 
 # Release Parlando
@@ -38,6 +38,9 @@ python3 skills/release-parlando/scripts/check_release.py <version>
 
 Resolve every failure. Also inspect broad searches for the previous version and old API names, classifying each match as current, historical, test fixture, or transitive dependency. Never mechanically replace historical or third-party versions.
 
+Compare the documented stress commands in `docs/runtime-stress-testing.md` with the current
+`runtime-stress --help`. Treat stale flags or examples that cannot run as release blockers.
+
 ## Verify the release candidate
 
 Run in this order and report the exact failing command if a gate stops:
@@ -50,9 +53,30 @@ make package-local
 make publish-dry-run
 ```
 
+Then run the operational integration gates from `rust-server-tests`:
+
+```bash
+cargo run --bin prolific-test-runner
+cargo run --release --features stress-tui --bin runtime-stress -- \
+  --pairing human-human --sessions 2 --seconds 20 --seed 1 --headless \
+  --output <temporary-human-human-report-directory>
+cargo run --release --features stress-tui --bin runtime-stress -- \
+  --pairing human-agent --sessions 2 --seconds 20 --seed 1 --headless \
+  --output <temporary-human-agent-report-directory>
+```
+
+Require the Prolific report to show every scenario passing. Require both stress reports to show
+`success: true`, all staged sessions finished, zero failures, terminal events for every session,
+and the expected audio evidence: full-duplex PCM verification for human-human and transcript/TTS
+publication for human-agent. A test-harness failure is still a release blocker: diagnose and fix
+the harness or product, then rerun both the affected gate and its own test target.
+
 Inspect the Cargo package and npm dry-run file lists for secrets, private configuration, internal notes, missing declarations, and unexpected generated files. Confirm registry identities before publication with `cargo owner --list parlando` and `npm owner ls @coli-saar/parlando-client` or equivalent read-only identity checks.
 
-If credentials are absent or expired, ask the user to authenticate with `cargo login` or `npm login`; never request, print, or store a registry token.
+Treat yanked packages and other package-manager warnings as explicit review items. Resolve them
+before publication or record a concrete, accepted reason they do not invalidate the artifact.
+
+If credentials are absent or expired, ask the user to authenticate with `cargo login` or `npm login`; never request, print, or store a registry token. Check `npm whoami` immediately before the npm publish. npm may still require interactive browser approval for a publish: run the publish in a TTY, keep the process alive, give the user the generated approval URL immediately, and resume the same process after approval. Generate a new URL rather than retrying an expired authorization.
 
 Preparation usually leaves tracked changes. Because Cargo's real publish must use a committed, clean source tree, stop after successful dry runs and give the user the exact files to review plus suggested `git status`, `git diff`, `git add`, and `git commit` commands. Do not execute them. Resume at the publish phase after the user commits the candidate.
 
@@ -63,16 +87,23 @@ Proceed only when actual publication was explicitly requested and both packages 
 1. Recheck that the target is absent from both registries.
 2. Publish Rust with `make publish-rust-server`.
 3. Poll crates.io until the exact target is visible; do not mistake index propagation delay for failure.
-4. Publish JavaScript with `make publish-js-client`.
-5. Poll npm until the exact target is visible and its `latest` tag resolves to it.
+4. Confirm `npm whoami` names an owner of the package, then publish JavaScript with `make publish-js-client` in a TTY so browser approval can complete without restarting the upload.
+5. Poll npm every 10–30 seconds for up to five minutes until the exact target is visible and its `latest` tag resolves to it. npm's successful-upload message can precede registry visibility; do not report success or failure from that message alone.
 6. Run clean consumer-resolution checks for both packages in a temporary directory. Confirm the installed manifests report the target and build a minimal Rust and TypeScript consumer when practical.
-7. Re-run the release audit. If the first publication succeeds and the second fails, report the partial release prominently and retry only the unpublished package; never republish or overwrite the successful one.
+7. Refresh deferred first-party npm consumer lockfiles from the registry. Reject local links and require the target version, registry tarball URL, and registry-provided integrity digest. Run `python3 skills/release-parlando/scripts/check_release.py <version> --published`.
+8. If the first publication succeeds and the second fails, report the partial release prominently, verify the successful package again, and retry only the unpublished package; never republish or overwrite the successful one.
 
 Do not publish the Git tag before both registries and consumer checks succeed.
 
 ## Hand off Git and GitHub steps
 
-After both packages are verified, provide commands for the user to run, substituting the actual release branch:
+Use two commits when registry-derived consumer lockfiles cannot exist before publication:
+
+1. Publish both packages from the committed, clean release-candidate commit.
+2. After registry verification, refresh only the deferred consumer lockfiles and record a release-completion commit. Do not change either publishable package tree between these commits.
+3. Tag the release-completion commit. Report the candidate commit as artifact provenance and the tagged completion commit as the coordinated repository state.
+
+After both packages and deferred lockfiles are verified, provide commands for the user to run, substituting the actual release branch:
 
 ```bash
 git status --short
@@ -81,8 +112,8 @@ git push origin <release-branch>
 git push origin v<version>
 ```
 
-Explain that the tag must point at the exact committed candidate that produced the packages. If GitHub Releases are used, suggest creating the release from `v<version>` and copying the matching changelog section. Do not run these Git commands unless the user explicitly authorizes them.
+Explain the two-commit boundary when it applies and require that the publishable Rust and npm trees are identical in the candidate and completion commits. If no post-publication files changed, the candidate itself is the completion commit. If GitHub Releases are used, suggest creating the release from `v<version>` and copying the matching changelog section. Do not run these Git commands unless the user explicitly authorizes them.
 
 ## Report
 
-End with the target version, registry precheck, changed release files, each test/build/dry-run result, package contents reviewed, publication URLs and verification, any deferred consumer lockfile refresh, and the exact Git/tag commands still owned by the user.
+End with the target version, registry precheck, changed release files, each unit, Prolific, stress, build, and dry-run result, reviewed package contents, warnings and their disposition, publication URLs, registry and clean-consumer verification, post-publication lockfile status, the artifact-provenance/tag boundary, and the exact Git/tag commands still owned by the user.

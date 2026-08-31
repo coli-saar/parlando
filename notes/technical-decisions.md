@@ -2731,3 +2731,24 @@ reference back to the guide.
 Some Prolific labels may change independently of Parlando. The guide therefore names the current
 controls needed for the task and links to Prolific's maintained API documentation. Maintainers must
 update the guide when either dashboard changes its setup workflow.
+## 2026-08-31: Coordinated releases require operational integration and post-publication gates
+
+Context: The 0.4.0 release's package and unit-test gates passed before the dedicated Prolific and
+runtime-stress suites were run. The stress suite then exposed a missing-heartbeat defect in its
+human-human harness. npm publication also required interactive browser approval, registry visibility
+lagged the successful upload, and first-party registry lockfiles could only be truthfully refreshed
+after the immutable npm version existed.
+
+Decision: Make the Prolific matrix and short deterministic human-human and human-agent stress runs
+mandatory release gates. Audit the stress documentation for obsolete CLI flags. Check npm identity
+immediately before publishing, keep browser approval attached to the live TTY process, poll registry
+state independently, and verify both packages through clean external consumers. Model releases with
+deferred registry lockfiles as two commits: a clean artifact candidate followed by a completion
+commit containing only registry-derived consumer metadata, with publishable package trees unchanged.
+Tag the completion commit and retain the candidate commit as artifact provenance.
+
+Tradeoffs and risks: The release takes roughly an additional minute plus compilation time and may
+require a second commit after publication. In return, the gate now covers recruitment behavior,
+runtime liveness and audio transport, real registry resolution, and the final first-party lock state.
+Short stress runs detect contract and transport regressions but do not replace longer capacity tests;
+run longer presets when changes affect concurrency, resource limits, or provider throughput.
