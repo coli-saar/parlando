@@ -78,6 +78,10 @@ between candidate preparation and registry publication. Local release verificati
 repository packages, while published-dependency verification and lockfile refresh are deferred
 until npm can supply authoritative metadata.
 
+Completion: After npm published 0.4.0, both consumer lockfiles were refreshed from the registry.
+They now record the 0.4.0 tarball and its registry-provided integrity digest rather than the
+temporary 0.3.0 resolution or a local workspace link.
+
 ## 2026-08-31: Parlando releases use a resumable project-local skill
 
 Context: A coordinated Parlando release must keep the Rust crate, JavaScript package, example
