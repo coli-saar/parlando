@@ -1,6 +1,6 @@
 ---
 title: Parlando manual
-description: A self-contained guide to designing, conducting, and operating dialogue-game experiments with Parlando.
+description: A guide to designing, conducting, and operating dialogue-game experiments with Parlando.
 ---
 
 # Parlando manual
