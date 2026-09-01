@@ -1,0 +1,16 @@
+<nav class="manual-nav" aria-label="Manual navigation">
+  <a class="manual-home{{ if eq .RelPermalink ("manual/" | relURL) }} is-current{{ end }}" href="{{ "manual/" | relURL }}">Manual home</a>
+  {{ range site.Data.manual_nav }}
+    <section>
+      <h2>{{ .title }}</h2>
+      <ul>
+        {{ range .items }}
+          {{ $page := site.GetPage .path }}
+          {{ if $page }}
+            <li><a{{ if eq $.RelPermalink $page.RelPermalink }} class="is-current" aria-current="page"{{ end }} href="{{ $page.RelPermalink }}">{{ .title }}</a></li>
+          {{ end }}
+        {{ end }}
+      </ul>
+    </section>
+  {{ end }}
+</nav>

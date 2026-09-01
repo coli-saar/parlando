@@ -322,7 +322,11 @@ async def _serve_async(
     if host not in {"127.0.0.1", "::1", "localhost"} and client_ca is None and auth_token is None:
         raise ValueError("non-loopback remote-agent bindings require mTLS or a bearer token")
     await server.start()
-    await server.wait_for_termination()
+    try:
+        await server.wait_for_termination()
+    finally:
+        # Stop inside the live event loop so Ctrl-C does not leave gRPC cleanup pending.
+        await server.stop(grace=1.0)
 
 
 def add_agent_service(

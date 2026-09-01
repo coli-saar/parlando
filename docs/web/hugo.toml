@@ -1,0 +1,37 @@
+baseURL = "https://coli-saar.github.io/parlando/"
+languageCode = "en"
+title = "Parlando"
+enableRobotsTXT = true
+disableKinds = ["taxonomy", "term", "rss"]
+
+[params]
+description = "Design and conduct reproducible dialogue-game experiments with humans and software agents."
+repositoryURL = "https://github.com/coli-saar/parlando"
+
+[markup]
+  [markup.goldmark]
+    [markup.goldmark.renderer]
+    unsafe = true
+    [markup.goldmark.renderHooks]
+      [markup.goldmark.renderHooks.link]
+      useEmbedded = "always"
+  [markup.highlight]
+  style = "github"
+  lineNos = false
+
+[outputs]
+home = ["HTML", "JSON"]
+
+[outputFormats.JSON]
+mediaType = "application/json"
+baseName = "index"
+isPlainText = true
+notAlternative = true
+
+[module]
+  [[module.mounts]]
+  source = "static"
+  target = "static"
+  [[module.mounts]]
+  source = "examples"
+  target = "static/manual/examples"

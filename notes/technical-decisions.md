@@ -2752,3 +2752,238 @@ require a second commit after publication. In return, the gate now covers recrui
 runtime liveness and audio transport, real registry resolution, and the final first-party lock state.
 Short stress runs detect contract and transport regressions but do not replace longer capacity tests;
 run longer presets when changes affect concurrency, resource limits, or provider throughput.
+## 2026-09-01: Great Tree names its interactive server as the default binary
+
+Context: Great Tree contains both the participant-facing server and a headless agent-experiment
+binary. Its convenience runner used an unqualified `cargo run`, which became ambiguous once both
+binaries existed and prevented the documented example from starting.
+
+Decision: Set `package.default-run` to `parlando-great-tree`. Ordinary `cargo run` and `run.sh`
+therefore start the interactive game, while the headless workflow continues to select
+`agent_experiment` explicitly.
+
+Tradeoff: New binaries do not change the default command. A future replacement for the interactive
+server must update the manifest deliberately rather than relying on Cargo's single-binary inference.
+
+## 2026-09-01: Publish one task-oriented manual from repository-owned Markdown
+
+Context: Public guidance was split across the root README and many topical Markdown files. Several
+entry points used different example games or described maintainer and test concerns before users had
+a game–experiment–session model. The manual should remain in this repository, publish cleanly on
+GitHub Pages, and remain reusable inside a later product website.
+
+Decision: Make `manual/index.md` the canonical user entry point and organize a Material for MkDocs
+site by conceptual dependency: model, first Great Tree run, game creation, experiment operation,
+privacy and Prolific, data operations, then deployment and public API reference. Keep the complete
+site source under the top-level `manual/` directory so the earlier `docs/` collection remains a
+separate technical-document archive. Use checked-in Great Tree screenshots and a repository-native
+SVG concept diagram. Pin the documentation toolchain and build it strictly in a GitHub Pages
+artifact workflow; keep all source content and styling under version control in this repository.
+
+Tradeoffs and risks: MkDocs adds a small Python build dependency, but leaves the source as portable
+Markdown and produces only static files. A few public reference documents are intentionally copied
+into `manual/` so the manual builds without reaching into `docs/`; their supported content must be
+kept aligned when either copy changes. The
+configured `site_url` assumes the repository is published as `coli-saar/parlando`; a rename or
+custom domain requires one configuration edit. GitHub Pages must be set to GitHub Actions once in
+repository settings before the workflow can deploy.
+
+## 2026-09-01: Use one Python agent example across live and headless modes
+
+Context: The manual named human–agent and agent–agent operation but did not show how a user attaches
+a Python policy. The live server already registers the standard `remote_grpc` factory automatically,
+while Great Tree's headless runner registered only its compiled Rust policies.
+
+Decision: Add a small role-polymorphic Great Tree Python policy under `manual/examples/` and use it
+in both workflows. Document live human–agent seat assignment explicitly: the human is seat `A`, the
+agent is seat `B`, and `crownSeat` maps those seats onto Great Tree roles. Register `RemoteAgent` in
+Great Tree's headless runner and provide a checked-in Python-versus-Root-Bot YAML run. Keep provider
+credentials in the Python process; dashboard/YAML `config_yaml` remains non-secret policy settings.
+
+Tradeoffs and risks: Registering the remote factory adds no external connection unless a run selects
+it. The example policy is intentionally deterministic and game-specific; it demonstrates attachment
+and lifecycle semantics rather than a general dialogue model. Local loopback HTTP is suitable for
+development only. Remote attachment requires TLS, an allowed hostname, and matching transport
+tokens, and production concurrency must be load-tested against the Python service. The Python SDK
+now stops its gRPC server inside the live event loop during cancellation, which makes the documented
+`Ctrl-C` shutdown path clean while retaining the same serving and authentication behavior.
+
+## 2026-09-01: Organize the manual around contracts and research decisions
+
+Context: The first manual draft used Great Tree as the organizing subject well beyond the opening
+tutorial. Although concrete, this made general Parlando concepts read like properties of one game
+and turned later chapters into sequences of example-specific controls. Communication and agents
+were also combined even though they change different parts of a study.
+
+Decision: Keep the opening encounter and first study run example-led, then organize the guide by
+stable contracts: task semantics and information, automated-controller boundaries, headless run
+specifications, communication data paths, immutable experimental conditions, temporal obligations,
+privacy data flows, recruitment trust, research evidence, and stateful deployment. Mark Great Tree,
+Python, Linux, and Render material as illustrations or realizations of those contracts. Split
+communication and speech into its own chapter, lead agent-only studies with a generic normalized run
+specification, and make the navigation follow conceptual dependency rather than repository layout.
+Describe privacy as the fixed versioned storage contract implemented by Parlando: minimize core
+records through task design, and treat typed-message controls, transcription, and other modalities
+as data-path choices rather than inventing per-category storage switches.
+
+Tradeoffs and risks: Principle-led chapters require readers to map the abstractions onto their own
+study, but avoid implying that an example's domain choices are platform requirements. Concrete
+commands remain where they test an attachment or packaging path. Maintainers should update the
+general contract first when behavior changes, then verify that each illustration still exhibits it.
+
+## 2026-09-01: Make the manual a section of a repository-owned Hugo website
+
+Context: The manual was prepared as a standalone Material for MkDocs site, but it is intended to
+become part of a larger Parlando website. Keeping MkDocs would make the eventual product pages and
+manual separate builds with separate navigation, search, templates, and styling. The repository's
+top level is already crowded, and `docs/` is the preferred parent for both public web material and
+future internal subdirectories.
+
+Decision: Supersede the standalone MkDocs site with one Hugo project rooted at `docs/web`. Store the
+manual as the `/manual/` content section under `docs/web/content/manual`, publish examples through a
+dedicated static mount, and leave the older technical documents elsewhere in `docs/` unpublished.
+Use one repository-owned light theme with a shared header and footer, manual-specific navigation,
+per-page contents, responsive layout, figures, callouts, and a generated local search index. Keep
+the visual layer small enough that future product sections can add their own layouts without
+changing the manual's content model. Publish the whole Hugo output through the existing GitHub
+Pages artifact workflow and pin the extended Hugo version used for local verification.
+
+Tradeoffs and risks: Owning the layouts and CSS requires more maintenance than adopting a packaged
+documentation theme, but avoids coupling the future product site to a documentation-first visual
+system. Hugo front matter, shortcodes, and navigation data make the content less generator-neutral
+than plain Markdown. The manual had not yet been published, so its final `/manual/` URLs are
+established directly without redirect files. The earlier MkDocs decision remains above as history;
+this decision supersedes its generator, source location, dependency, and deployment details.
+
+## 2026-09-01: Explain the execution architecture before the runnable example
+
+Context: The manual opened with Great Tree before establishing what Parlando itself contributes.
+A new reader could therefore encounter installation commands without knowing that one game combines
+a reusable Rust server runtime, a game-specific Rust module, a reusable JavaScript client, and a
+game-specific React interface across server and browser boundaries. The relationship between two
+human browsers and optional external agents was also distributed across later chapters.
+
+Decision: Add **What Parlando is** as the first manual chapter and make it the primary landing-page
+path. Use one checked-in, accessible SVG to show the Rust server, two browser seats, reusable and
+game-specific layers, the authoritative state boundary, SQLite, an optional compiled Rust agent,
+and an optional external agent service. Keep the prose organized by execution boundary and state
+authority, then connect that architecture to the later game/experiment/session model. On narrow
+screens, preserve diagram legibility with horizontal scrolling instead of shrinking labels below a
+readable size.
+
+Tradeoffs and risks: The illustration intentionally summarizes several protocols rather than
+enumerating endpoints or deployment processes. It represents one live two-seat session; headless
+agent batches reuse the game and agent contracts but do not instantiate the browser or live-study
+path shown. Future changes to seat count, state authority, remote-agent transport, or client/server
+ownership must update the chapter and SVG together.
+
+## 2026-09-01: Present speech as composable study paths
+
+Context: The manual's communication chapter named typed messages, voice relay, transcription, and
+text-to-speech, but treated them mostly as provider and deployment concerns. It did not give users a
+complete model of the interaction modes, the participant interface, or the path by which human
+speech becomes an agent message and an agent message becomes audible speech.
+
+Decision: Recast the chapter around four independent paths: durable typed messages, ephemeral live
+audio, final transcripts that enter the ordinary conversation, and synthesized presentations of
+already-stored agent messages. Begin with a fully spoken human–agent turn, provide a study-mode
+matrix, and then connect the model to game-interface responsibilities, dashboard configuration,
+provider trust boundaries, durable evidence, readiness, failure, and deployment. Add an accessible
+SVG whose visual grammar distinguishes stored text, ephemeral audio, and external providers. State
+the Parlando 0.4 limitation that Speechmatics partial hypotheses can be requested but are neither
+displayed nor stored.
+
+Tradeoffs and risks: The chapter is longer because communication affects study design, user
+experience, privacy, data interpretation, and operations at once. The mode matrix keeps those
+consequences comparable without making one example the organizing subject. Provider names and the
+partial-transcript limitation describe the current implementation and must change when additional
+providers or provisional-caption delivery become supported.
+
+## 2026-09-01: Foreground the concrete game-author deliverable
+
+Context: The manual explained the authority and information boundaries of a game before showing the
+artifact an experimenter must produce. Readers could learn what `State` and `Observation` mean
+without yet knowing that an ordinary game consists of a Rust crate and a compiled React application,
+how those components connect, or where Parlando removes implementation work.
+
+Decision: Introduce the experimenter-owned deliverable in the first architecture chapter and at the
+start of the game-building chapter. Describe a conceptual project tree and two build products: one
+Rust executable containing the authoritative game and one set of static participant assets. Define
+their common boundary as corresponding serialized actions, observations, and completion rather than
+implying that Rust and TypeScript literally share source types. Organize the implementation path
+into six passes from task specification through a configured pilot, and present the game-creation
+skill as the normal scaffolding route. State explicitly which live-study facilities remain owned by
+Parlando.
+
+Tradeoffs and risks: The conceptual tree uses the Great Tree repository layout to make the artifact
+tangible but does not prescribe exact file names. The two language implementations must continue to
+agree on their JSON shapes; Parlando 0.4 does not generate TypeScript types from Rust definitions.
+If a future release adds schema or client generation, the described authoring workflow should be
+simplified rather than preserving the current duplication as a permanent contract.
+
+## 2026-09-01: Write the manual for sequential reading and actual operation
+
+Context: The manual established Parlando's concepts and capabilities but often stopped before the
+reader could perform the corresponding work. An attempted task-chooser landing page treated the
+manual as a lookup portal for already knowledgeable users, which conflicted with its intended role
+as a coherent, self-contained introduction.
+
+Decision: Treat the manual as a book read in navigation order. Establish architecture, install the
+example, define games/experiments/sessions, and run one complete pilot before introducing game
+authoring. Build the authoring chapter as an end-to-end Rust and React construction walkthrough,
+then extend that same boundary with agents, headless runs, and speech. Only afterward configure a
+real condition, consent, Prolific, data operations, and deployment. Put commands, dashboard actions,
+expected outcomes, and failure interpretation inside the explanatory sequence rather than in a
+separate quick-start layer. Add actual Parlando 0.4 dashboard screenshots for configuration,
+declarations, privacy review, agent selection, speech, Prolific, provider settings, and export.
+
+Tradeoffs and risks: Sequential exposition repeats a small amount of context at chapter boundaries
+and is longer than a lookup-oriented guide, but it does not assume prior Parlando expertise. The API
+and migration reference remain suitable for selective lookup. Screenshots improve procedural
+orientation but must be regenerated when dashboard labels or layout change; captions and prose must
+still carry the essential instruction for accessibility and future UI changes.
+
+## 2026-09-01: Document supported communication configurations, not switch combinations
+
+Context: The communication chapter inferred a catalogue of study conditions from independently
+represented voice, transcription, and synthesis fields. In particular, it advertised live
+human–human voice without transcription and several partial human–agent variants. The runtime can
+represent low-level combinations that are not thereby defined, tested, or supported as product
+conditions. The JavaScript client also exposes conversation data and `sendMessage`, but version
+0.4.0 supplies no generic React chat widget.
+
+Decision: Document three complete user-facing interfaces only: game-authored typed dialogue,
+human–human speech with transcription, and human–agent speech with transcription and synthesized
+agent replies. Describe typed dialogue as React work performed by the game author over the client
+API. Remove the inferred condition matrix and the voice-without-transcription presentation from the
+speech diagram, privacy table, pilot procedure, and surrounding manual chapters. Treat individual
+dashboard fields as implementation controls within the documented configurations, not as evidence
+that every combination is a supported condition.
+
+Tradeoffs and risks: The server's transport documentation and tests may exercise component behavior
+outside these complete configurations; that remains useful implementation evidence but is not a
+user-facing product promise. If another communication configuration becomes supported, it should be
+added to the manual only after its participant interface, validation, end-to-end tests, data
+contract, and operating procedure are all defined.
+
+## 2026-09-01: Encapsulate Parlando internals in the experimenter manual
+
+Context: The manual exposed implementation mechanisms such as audio encoding, network protocols,
+connection tickets, queue behavior, database event representations, hashes, and internal agent
+identity machinery. These details explained how Parlando implements its guarantees but did not help
+an experimenter design a task, configure a condition, recruit participants, interpret data, or
+respond to a failure. They increased cognitive load and made internal choices look like public
+configuration surfaces.
+
+Decision: Organize the manual around four experimenter roles: study designer, game or agent author,
+data-collection operator, and deployment operator. Keep public Rust, React, Python, command-line, and
+dashboard interfaces when the reader must use them. Keep an implementation constraint only when it
+changes a supported deployment, privacy statement, data interpretation, or recovery procedure.
+Describe all other mechanisms through the user-visible guarantee they provide. Mark the German
+privacy-review documents as specialist appendices rather than part of the ordinary reading path.
+
+Tradeoffs and risks: Public API reference and the 0.3-to-0.4 database conversion remain technical
+because they are themselves user tasks. Deployment chapters still name SQLite, HTTPS, environment
+variables, and one-instance operation where the operator must configure them. Lower-level protocol
+and storage details continue to belong in maintainer documentation and tests; if an internal choice
+later becomes a supported extension point, it should return to the manual with a concrete user task.

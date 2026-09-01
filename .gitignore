@@ -14,8 +14,12 @@
 **/.pytest_cache/
 **/runtime-stress-report.json
 
-# Generated documentation artifacts
+# Generated documentation and website artifacts
 /docs/**/*.pdf
+/docs/web/public/
+/docs/web/resources/
+/docs/web/.hugo_build.lock
+/.venv-agent/
 
 # Local Parlando databases, journals, and manual backups
 **/*.sqlite

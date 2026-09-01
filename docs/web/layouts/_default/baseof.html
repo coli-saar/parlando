@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="{{ site.Language.LanguageCode }}">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="{{ .Description | default site.Params.description }}">
+    <title>{{ if not .IsHome }}{{ .Title }} · {{ end }}{{ site.Title }}</title>
+    <link rel="canonical" href="{{ .Permalink }}">
+    {{ $styles := resources.Get "css/main.css" | minify | fingerprint }}
+    <link rel="stylesheet" href="{{ $styles.RelPermalink }}" integrity="{{ $styles.Data.Integrity }}">
+    {{ $script := resources.Get "js/site.js" | minify | fingerprint }}
+    <script defer src="{{ $script.RelPermalink }}" integrity="{{ $script.Data.Integrity }}"></script>
+  </head>
+  <body class="{{ if eq .Section "manual" }}manual-view{{ else }}site-view{{ end }}">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header">
+      <a class="wordmark" href="{{ site.Home.RelPermalink }}" aria-label="Parlando home">
+        <span class="wordmark-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>Parlando</span>
+      </a>
+      <nav class="site-links" aria-label="Primary navigation">
+        <a{{ if eq .Section "manual" }} aria-current="page"{{ end }} href="{{ "manual/" | relURL }}">Manual</a>
+        <button class="search-open" type="button" aria-haspopup="dialog" aria-controls="site-search">Search <kbd>/</kbd></button>
+        <a href="{{ site.Params.repositoryURL }}">GitHub</a>
+      </nav>
+    </header>
+
+    {{ block "main" . }}{{ end }}
+
+    <footer class="site-footer">
+      <p>Parlando is an open-source framework for dialogue-game experiments.</p>
+      <a href="{{ site.Params.repositoryURL }}">Source on GitHub</a>
+    </footer>
+
+    <dialog class="search-dialog" id="site-search" data-index-url="{{ "index.json" | relURL }}">
+      <form method="dialog" class="search-header">
+        <label for="search-input">Search the manual</label>
+        <button class="search-close" value="close" aria-label="Close search">Close</button>
+      </form>
+      <input id="search-input" class="search-input" type="search" autocomplete="off" placeholder="Try “Python agent” or “consent”">
+      <p class="search-hint" id="search-hint">Enter at least two characters.</p>
+      <ol class="search-results" id="search-results" aria-live="polite"></ol>
+    </dialog>
+  </body>
+</html>

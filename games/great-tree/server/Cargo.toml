@@ -3,6 +3,7 @@ name = "parlando-great-tree"
 edition = "2021"
 license = "MIT"
 version = "0.1.0"
+default-run = "parlando-great-tree"
 
 [dependencies]
 anyhow = "1"

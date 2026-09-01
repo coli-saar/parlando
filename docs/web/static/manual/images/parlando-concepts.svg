@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="520" viewBox="0 0 1080 520" role="img" aria-labelledby="title description">
+  <title id="title">The relationship between a game, experiments, and sessions in Parlando</title>
+  <desc id="description">One compiled game contains several configured experiments. Each experiment contains many recorded two-player sessions.</desc>
+  <defs>
+    <style>
+      .title { font: 700 30px system-ui, sans-serif; fill: #133433; }
+      .label { font: 700 23px system-ui, sans-serif; fill: #133433; }
+      .body { font: 18px system-ui, sans-serif; fill: #315150; }
+      .small { font: 16px system-ui, sans-serif; fill: #315150; }
+      .line { stroke: #2e7d78; stroke-width: 4; fill: none; }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#2e7d78"/>
+    </marker>
+  </defs>
+  <rect width="1080" height="520" rx="26" fill="#f4faf9"/>
+  <text x="540" y="55" text-anchor="middle" class="title">One implementation, many study conditions, many play-throughs</text>
+  <rect x="65" y="105" width="260" height="305" rx="24" fill="#d7eeeb" stroke="#2e7d78" stroke-width="3"/>
+  <text x="195" y="155" text-anchor="middle" class="label">Game</text>
+  <text x="195" y="195" text-anchor="middle" class="body">Browser interface</text>
+  <text x="195" y="226" text-anchor="middle" class="body">Task rules</text>
+  <text x="195" y="257" text-anchor="middle" class="body">Version 0.4.0</text>
+  <path d="M355 257 H435" class="line" marker-end="url(#arrow)"/>
+  <rect x="460" y="95" width="270" height="150" rx="22" fill="#fff" stroke="#5a9793" stroke-width="3"/>
+  <text x="595" y="140" text-anchor="middle" class="label">Experiment A</text>
+  <text x="595" y="178" text-anchor="middle" class="small">Human–human · text</text>
+  <text x="595" y="208" text-anchor="middle" class="small">Consent and limits</text>
+  <rect x="460" y="275" width="270" height="150" rx="22" fill="#fff" stroke="#5a9793" stroke-width="3"/>
+  <text x="595" y="320" text-anchor="middle" class="label">Experiment B</text>
+  <text x="595" y="358" text-anchor="middle" class="small">Human–agent · voice</text>
+  <text x="595" y="388" text-anchor="middle" class="small">Different configuration</text>
+  <path d="M760 170 H835" class="line" marker-end="url(#arrow)"/>
+  <path d="M760 350 H835" class="line" marker-end="url(#arrow)"/>
+  <rect x="855" y="80" width="165" height="120" rx="20" fill="#f7e9c7" stroke="#b88b29" stroke-width="3"/>
+  <text x="937" y="127" text-anchor="middle" class="label">Sessions</text>
+  <text x="937" y="163" text-anchor="middle" class="small">A1 · A2 · A3 …</text>
+  <rect x="855" y="320" width="165" height="120" rx="20" fill="#f7e9c7" stroke="#b88b29" stroke-width="3"/>
+  <text x="937" y="367" text-anchor="middle" class="label">Sessions</text>
+  <text x="937" y="403" text-anchor="middle" class="small">B1 · B2 · B3 …</text>
+  <text x="540" y="480" text-anchor="middle" class="body">Each session records the game version and experiment revision that produced it.</text>
+</svg>

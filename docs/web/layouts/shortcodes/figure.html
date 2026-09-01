@@ -1,0 +1,5 @@
+{{ $source := strings.TrimPrefix "/" (.Get "src") }}
+<figure class="manual-figure{{ with .Get "class" }} {{ . }}{{ end }}">
+  <img src="{{ $source | relURL }}" alt="{{ .Get "alt" }}" loading="lazy">
+  {{ with .Get "caption" }}<figcaption>{{ . }}</figcaption>{{ end }}
+</figure>

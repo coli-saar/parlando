@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="820" viewBox="0 0 1200 820" role="img" aria-labelledby="architecture-title architecture-description">
+  <title id="architecture-title">Parlando system architecture</title>
+  <desc id="architecture-description">A central Rust server contains Parlando and a game-specific Rust module. Two participant browsers each contain the Parlando JavaScript client and the game-specific React interface. An optional external agent can occupy either participant seat through a Parlando-managed connection.</desc>
+  <defs>
+    <style>
+      .heading { font: 700 28px system-ui, sans-serif; fill: #142c2a; }
+      .subheading { font: 500 17px system-ui, sans-serif; fill: #526461; }
+      .boundary { font: 750 20px system-ui, sans-serif; fill: #142c2a; letter-spacing: .04em; }
+      .box-title { font: 700 19px system-ui, sans-serif; fill: #142c2a; }
+      .body { font: 16px system-ui, sans-serif; fill: #344c49; }
+      .small { font: 14px system-ui, sans-serif; fill: #536662; }
+      .arrow-label { font: 700 13px system-ui, sans-serif; fill: #356d68; letter-spacing: .02em; }
+      .external-label { font: 700 13px system-ui, sans-serif; fill: #755a8d; }
+      .flow { fill: none; stroke: #397f79; stroke-width: 2.5; }
+      .internal { fill: none; stroke: #849894; stroke-width: 2; }
+      .external { fill: none; stroke: #84639e; stroke-width: 2.5; stroke-dasharray: 8 6; }
+    </style>
+    <marker id="teal-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto">
+      <path d="M0 0 L9 4 L0 8 Z" fill="#397f79"/>
+    </marker>
+    <marker id="gray-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto">
+      <path d="M0 0 L9 4 L0 8 Z" fill="#849894"/>
+    </marker>
+    <marker id="purple-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto">
+      <path d="M0 0 L9 4 L0 8 Z" fill="#84639e"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="820" rx="24" fill="#fbfaf7"/>
+  <text x="600" y="42" text-anchor="middle" class="heading">One live session connects a Rust server to two player seats</text>
+  <text x="600" y="70" text-anchor="middle" class="subheading">Parlando supplies the reusable infrastructure; each game supplies its own rules and interface.</text>
+
+  <!-- Participant A browser boundary -->
+  <rect x="20" y="135" width="300" height="300" rx="20" fill="#f5f7f5" stroke="#9baaa6" stroke-width="2"/>
+  <text x="170" y="171" text-anchor="middle" class="boundary">BROWSER · SEAT A</text>
+  <rect x="45" y="195" width="250" height="92" rx="13" fill="#e4f1ef" stroke="#4d8f89" stroke-width="2"/>
+  <text x="65" y="225" class="box-title">Parlando JS client</text>
+  <text x="65" y="251" class="body">Entry, waiting, connection</text>
+  <text x="65" y="274" class="body">and reconnect</text>
+  <path d="M170 294 V316" class="internal" marker-end="url(#gray-arrow)"/>
+  <rect x="45" y="320" width="250" height="86" rx="13" fill="#fbefcf" stroke="#bd8b32" stroke-width="2"/>
+  <text x="65" y="350" class="box-title">Game UI · React</text>
+  <text x="65" y="376" class="body">Renders A's observation</text>
+  <text x="65" y="399" class="body">Collects A's game actions</text>
+
+  <!-- Rust server boundary -->
+  <rect x="420" y="95" width="360" height="630" rx="22" fill="#eef5f3" stroke="#315f5b" stroke-width="3"/>
+  <text x="600" y="130" text-anchor="middle" class="boundary">SERVER · RUST PROCESS</text>
+  <rect x="445" y="155" width="310" height="260" rx="15" fill="#dcefeb" stroke="#397f79" stroke-width="2.5"/>
+  <text x="470" y="188" class="box-title">Parlando server</text>
+  <text x="470" y="221" class="body">• participant entry and consent</text>
+  <text x="470" y="249" class="body">• pairing, seats, and readiness</text>
+  <text x="470" y="277" class="body">• experiments and session limits</text>
+  <text x="470" y="305" class="body">• communication and study records</text>
+  <text x="470" y="333" class="body">• monitoring, export, privacy controls</text>
+  <rect x="470" y="354" width="260" height="40" rx="9" fill="#ffffff" stroke="#83aaa6" stroke-width="1.5"/>
+  <text x="600" y="380" text-anchor="middle" class="body">persistent study records and exports</text>
+
+  <path d="M600 424 V451" class="internal" marker-end="url(#gray-arrow)"/>
+  <text x="615" y="443" class="small">game interface</text>
+
+  <rect x="445" y="460" width="310" height="190" rx="15" fill="#faedca" stroke="#b68128" stroke-width="2.5"/>
+  <text x="470" y="493" class="box-title">Game server module</text>
+  <text x="470" y="526" class="body">• owns authoritative task state</text>
+  <text x="470" y="554" class="body">• validates and applies actions</text>
+  <text x="470" y="582" class="body">• derives observation A and B</text>
+  <text x="470" y="610" class="body">• reports structured completion</text>
+  <text x="470" y="636" class="small">Game-specific Rust code</text>
+
+  <rect x="470" y="670" width="260" height="34" rx="9" fill="#ffffff" stroke="#83aaa6" stroke-width="1.5"/>
+  <text x="600" y="693" text-anchor="middle" class="small">Optional compiled Rust agent</text>
+
+  <!-- Participant B browser boundary -->
+  <rect x="880" y="135" width="300" height="300" rx="20" fill="#f5f7f5" stroke="#9baaa6" stroke-width="2"/>
+  <text x="1030" y="171" text-anchor="middle" class="boundary">BROWSER · SEAT B</text>
+  <rect x="905" y="195" width="250" height="92" rx="13" fill="#e4f1ef" stroke="#4d8f89" stroke-width="2"/>
+  <text x="925" y="225" class="box-title">Parlando JS client</text>
+  <text x="925" y="251" class="body">Entry, waiting, connection</text>
+  <text x="925" y="274" class="body">and reconnect</text>
+  <path d="M1030 294 V316" class="internal" marker-end="url(#gray-arrow)"/>
+  <rect x="905" y="320" width="250" height="86" rx="13" fill="#fbefcf" stroke="#bd8b32" stroke-width="2"/>
+  <text x="925" y="350" class="box-title">Game UI · React</text>
+  <text x="925" y="376" class="body">Renders B's observation</text>
+  <text x="925" y="399" class="body">Collects B's game actions</text>
+
+  <!-- Browser/server flows -->
+  <path d="M320 228 H420" class="flow" marker-end="url(#teal-arrow)"/>
+  <text x="370" y="216" text-anchor="middle" class="arrow-label">ACTIONS</text>
+  <path d="M420 273 H320" class="flow" marker-end="url(#teal-arrow)"/>
+  <text x="370" y="294" text-anchor="middle" class="arrow-label">OBSERVATION</text>
+  <path d="M880 228 H780" class="flow" marker-end="url(#teal-arrow)"/>
+  <text x="830" y="216" text-anchor="middle" class="arrow-label">ACTIONS</text>
+  <path d="M780 273 H880" class="flow" marker-end="url(#teal-arrow)"/>
+  <text x="830" y="294" text-anchor="middle" class="arrow-label">OBSERVATION</text>
+
+  <!-- Optional external agent -->
+  <rect x="865" y="510" width="315" height="190" rx="18" fill="#f3edf7" stroke="#84639e" stroke-width="2.5" stroke-dasharray="8 5"/>
+  <text x="1022" y="544" text-anchor="middle" class="boundary">OPTIONAL EXTERNAL AGENT</text>
+  <text x="890" y="578" class="box-title">Python or another service</text>
+  <text x="890" y="608" class="body">Receives one seat's observation</text>
+  <text x="890" y="636" class="body">Returns the same game actions</text>
+  <text x="890" y="674" class="external-label">Occupies a player seat</text>
+  <path d="M865 585 H790 Q780 585 780 575 V545" class="external" marker-end="url(#purple-arrow)"/>
+  <path d="M780 615 Q780 625 790 625 H865" class="external" marker-end="url(#purple-arrow)"/>
+
+  <!-- Legend and invariant -->
+  <rect x="20" y="755" width="1160" height="45" rx="12" fill="#ffffff" stroke="#d5dcd8" stroke-width="1.5"/>
+  <rect x="48" y="770" width="18" height="18" rx="4" fill="#dcefeb" stroke="#397f79"/>
+  <text x="76" y="785" class="small">Reusable Parlando</text>
+  <rect x="235" y="770" width="18" height="18" rx="4" fill="#faedca" stroke="#b68128"/>
+  <text x="263" y="785" class="small">Game-specific code</text>
+  <path d="M438 779 H474" class="external"/>
+  <text x="484" y="785" class="small">Optional external process</text>
+  <text x="1150" y="785" text-anchor="end" class="box-title">One live session has exactly two active seats: A and B.</text>
+</svg>

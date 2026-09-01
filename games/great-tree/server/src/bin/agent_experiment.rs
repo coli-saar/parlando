@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-use parlando::{ExperimentRunner, GameMetadata};
+use parlando::{agent::grpc::RemoteAgent, ExperimentRunner, GameMetadata};
 use parlando_great_tree::{
     GreatTreeFactory, IdleAgentFactory, LlmAgentFactory, RootBotAgentFactory,
 };
@@ -35,6 +35,7 @@ async fn main() -> Result<()> {
         .agent(IdleAgentFactory)?
         .agent(LlmAgentFactory)?
         .agent(RootBotAgentFactory)?
+        .agent(RemoteAgent::new())?
         .run_yaml(cli.experiment)
         .await?;
     println!("{}", serde_json::to_string_pretty(&summary)?);

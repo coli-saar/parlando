@@ -1,0 +1,11 @@
+{{ $source := strings.TrimPrefix "/" (.Get "image") }}
+<section class="manual-hero">
+  <div class="manual-hero-copy">
+    {{ .Page.RenderString (dict "display" "block") .Inner }}
+    <div class="manual-hero-actions">
+      <a class="button button--primary" href="{{ strings.TrimPrefix "/" (.Get "primaryHref") | relURL }}">{{ .Get "primaryLabel" }}</a>
+      <a class="button" href="{{ strings.TrimPrefix "/" (.Get "secondaryHref") | relURL }}">{{ .Get "secondaryLabel" }}</a>
+    </div>
+  </div>
+  <img src="{{ $source | relURL }}" alt="{{ .Get "alt" }}">
+</section>

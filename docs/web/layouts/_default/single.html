@@ -1,0 +1,7 @@
+{{ define "main" }}
+  {{ if eq .Section "manual" }}
+    {{ partial "manual-page.html" . }}
+  {{ else }}
+    <main id="main-content" class="standalone-content">{{ .Content }}</main>
+  {{ end }}
+{{ end }}

@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="560" viewBox="0 0 1120 560" role="img" aria-labelledby="title description">
+  <title id="title">Human-agent and agent-agent modes share one game</title>
+  <desc id="description">A game supplies actions and role-specific observations to a live human-agent experiment recorded in the dashboard and to a headless agent-agent run recorded as result files.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#176b66"/>
+    </marker>
+    <style>
+      .box { fill: #ffffff; stroke: #176b66; stroke-width: 3; rx: 18; }
+      .mode { fill: #e8f5f3; stroke: #176b66; stroke-width: 3; rx: 18; }
+      .store { fill: #fff8e1; stroke: #a36b00; stroke-width: 2.5; rx: 16; }
+      .line { fill: none; stroke: #176b66; stroke-width: 3; marker-end: url(#arrow); }
+      .title { font: 700 25px system-ui, sans-serif; fill: #163b39; }
+      .label { font: 600 20px system-ui, sans-serif; fill: #163b39; }
+      .small { font: 17px system-ui, sans-serif; fill: #355957; }
+    </style>
+  </defs>
+
+  <rect x="390" y="36" width="340" height="118" class="box"/>
+  <text x="560" y="82" text-anchor="middle" class="title">Game</text>
+  <text x="560" y="116" text-anchor="middle" class="small">rules · actions · observations · completion</text>
+
+  <path d="M500 154 C430 198, 340 210, 285 247" class="line"/>
+  <path d="M620 154 C690 198, 780 210, 835 247" class="line"/>
+
+  <rect x="80" y="250" width="410" height="176" class="mode"/>
+  <text x="285" y="292" text-anchor="middle" class="title">Live human–agent experiment</text>
+  <text x="285" y="332" text-anchor="middle" class="label">Seat A: human</text>
+  <text x="285" y="365" text-anchor="middle" class="label">Seat B: selected agent</text>
+  <text x="285" y="402" text-anchor="middle" class="small">configured and monitored in /admin</text>
+
+  <rect x="630" y="250" width="410" height="176" class="mode"/>
+  <text x="835" y="292" text-anchor="middle" class="title">Headless agent–agent run</text>
+  <text x="835" y="332" text-anchor="middle" class="label">Seat A: selected agent</text>
+  <text x="835" y="365" text-anchor="middle" class="label">Seat B: selected agent</text>
+  <text x="835" y="402" text-anchor="middle" class="small">scenarios and schedule defined in YAML</text>
+
+  <path d="M285 426 L285 466" class="line"/>
+  <path d="M835 426 L835 466" class="line"/>
+
+  <rect x="130" y="472" width="310" height="66" class="store"/>
+  <text x="285" y="514" text-anchor="middle" class="label">Dashboard sessions and export</text>
+  <rect x="680" y="472" width="310" height="66" class="store"/>
+  <text x="835" y="514" text-anchor="middle" class="label">Run record and result files</text>
+</svg>

@@ -1,0 +1,17 @@
+{{- $destination := .Destination -}}
+{{- $parsed := urls.Parse .Destination -}}
+{{- if and (not $parsed.IsAbs) (not (strings.HasPrefix .Destination "#")) -}}
+  {{- $joined := path.Join .Page.File.Dir $parsed.Path -}}
+  {{- with site.GetPage $joined -}}
+    {{- $destination = .RelPermalink -}}
+  {{- else -}}
+    {{- $destination = $joined | relURL -}}
+  {{- end -}}
+  {{- with $parsed.RawQuery -}}
+    {{- $destination = printf "%s?%s" $destination . -}}
+  {{- end -}}
+  {{- with $parsed.Fragment -}}
+    {{- $destination = printf "%s#%s" $destination . -}}
+  {{- end -}}
+{{- end -}}
+<a href="{{ $destination | safeURL }}"{{ with .Title }} title="{{ . }}"{{ end }}>{{ .Text | safeHTML }}</a>

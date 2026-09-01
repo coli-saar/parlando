@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="speech-title speech-description">
+  <title id="speech-title">Documented Parlando communication interfaces</title>
+  <desc id="speech-description">Three lanes show a game-authored typed interface, transcribed speech between two humans, and transcribed human speech followed by a synthesized agent reply.</desc>
+  <defs>
+    <style>
+      .heading { font: 700 28px system-ui, sans-serif; fill: #142c2a; }
+      .subheading { font: 500 17px system-ui, sans-serif; fill: #526461; }
+      .lane-title { font: 750 19px system-ui, sans-serif; fill: #142c2a; }
+      .box-title { font: 700 16px system-ui, sans-serif; fill: #142c2a; }
+      .small { font: 14px system-ui, sans-serif; fill: #536662; }
+      .text-flow { fill: none; stroke: #397f79; stroke-width: 3; }
+      .audio-flow { fill: none; stroke: #3179a5; stroke-width: 3; }
+      .provider-flow { fill: none; stroke: #84639e; stroke-width: 3; stroke-dasharray: 8 6; }
+    </style>
+    <marker id="text-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0 L9 4 L0 8 Z" fill="#397f79"/></marker>
+    <marker id="audio-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0 L9 4 L0 8 Z" fill="#3179a5"/></marker>
+    <marker id="provider-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0 L9 4 L0 8 Z" fill="#84639e"/></marker>
+  </defs>
+
+  <rect width="1200" height="700" rx="24" fill="#fbfaf7"/>
+  <text x="600" y="42" text-anchor="middle" class="heading">Documented communication interfaces in Parlando 0.4.0</text>
+  <text x="600" y="70" text-anchor="middle" class="subheading">Typed dialogue is game-authored; both speech configurations include transcription.</text>
+
+  <!-- Typed dialogue -->
+  <rect x="22" y="100" width="1156" height="135" rx="18" fill="#f2f7f5" stroke="#c4d2ce" stroke-width="1.5"/>
+  <text x="48" y="132" class="lane-title">Typed dialogue</text>
+  <rect x="55" y="154" width="225" height="54" rx="11" fill="#ffffff" stroke="#7faaa5" stroke-width="2"/>
+  <text x="168" y="177" text-anchor="middle" class="box-title">Game's React interface</text>
+  <text x="168" y="197" text-anchor="middle" class="small">supplies display and input</text>
+  <path d="M280 181 H440" class="text-flow" marker-end="url(#text-arrow)"/>
+  <rect x="440" y="147" width="320" height="68" rx="12" fill="#dcefeb" stroke="#397f79" stroke-width="2"/>
+  <text x="600" y="176" text-anchor="middle" class="box-title">Parlando conversation</text>
+  <text x="600" y="199" text-anchor="middle" class="small">stores and delivers message text</text>
+  <path d="M760 181 H920" class="text-flow" marker-end="url(#text-arrow)"/>
+  <rect x="920" y="154" width="225" height="54" rx="11" fill="#ffffff" stroke="#7faaa5" stroke-width="2"/>
+  <text x="1033" y="177" text-anchor="middle" class="box-title">Other human or agent</text>
+  <text x="1033" y="197" text-anchor="middle" class="small">receives the message</text>
+
+  <!-- Human-human speech -->
+  <rect x="22" y="250" width="1156" height="165" rx="18" fill="#f3f7fa" stroke="#c5d4de" stroke-width="1.5"/>
+  <text x="48" y="282" class="lane-title">Human–human speech</text>
+  <rect x="55" y="316" width="190" height="58" rx="11" fill="#ffffff" stroke="#6b9bb8" stroke-width="2"/>
+  <text x="150" y="341" text-anchor="middle" class="box-title">Human A browser</text>
+  <text x="150" y="362" text-anchor="middle" class="small">microphone audio</text>
+  <path d="M245 345 H380" class="audio-flow" marker-end="url(#audio-arrow)"/>
+  <rect x="380" y="308" width="235" height="74" rx="12" fill="#deedf5" stroke="#3179a5" stroke-width="2"/>
+  <text x="498" y="338" text-anchor="middle" class="box-title">Parlando</text>
+  <text x="498" y="361" text-anchor="middle" class="small">relays; does not store audio</text>
+  <path d="M615 332 H760" class="audio-flow" marker-end="url(#audio-arrow)"/>
+  <rect x="760" y="300" width="190" height="58" rx="11" fill="#ffffff" stroke="#6b9bb8" stroke-width="2"/>
+  <text x="855" y="325" text-anchor="middle" class="box-title">Human B browser</text>
+  <text x="855" y="346" text-anchor="middle" class="small">plays live audio</text>
+  <path d="M615 363 H760" class="provider-flow" marker-end="url(#provider-arrow)"/>
+  <rect x="760" y="365" width="190" height="40" rx="10" fill="#eee5f3" stroke="#84639e" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="855" y="391" text-anchor="middle" class="box-title">Speechmatics</text>
+  <path d="M950 385 H1030" class="text-flow" marker-end="url(#text-arrow)"/>
+  <rect x="1030" y="365" width="115" height="40" rx="10" fill="#dcefeb" stroke="#397f79" stroke-width="2"/>
+  <text x="1088" y="382" text-anchor="middle" class="box-title">Final text</text>
+  <text x="1088" y="399" text-anchor="middle" class="small">is stored</text>
+  <text x="150" y="397" text-anchor="middle" class="small">The same path runs from B to A.</text>
+
+  <!-- Human-agent speech -->
+  <rect x="22" y="430" width="1156" height="185" rx="18" fill="#f7f3f9" stroke="#d5c8dd" stroke-width="1.5"/>
+  <text x="48" y="462" class="lane-title">Human–agent speech</text>
+  <rect x="45" y="500" width="155" height="58" rx="11" fill="#ffffff" stroke="#6b9bb8" stroke-width="2"/>
+  <text x="123" y="525" text-anchor="middle" class="box-title">Human browser</text>
+  <text x="123" y="546" text-anchor="middle" class="small">microphone</text>
+  <path d="M200 529 H285" class="provider-flow" marker-end="url(#provider-arrow)"/>
+  <rect x="285" y="500" width="170" height="58" rx="11" fill="#eee5f3" stroke="#84639e" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="370" y="525" text-anchor="middle" class="box-title">Speechmatics</text>
+  <text x="370" y="546" text-anchor="middle" class="small">final transcript</text>
+  <path d="M455 529 H540" class="text-flow" marker-end="url(#text-arrow)"/>
+  <rect x="540" y="492" width="190" height="74" rx="12" fill="#dcefeb" stroke="#397f79" stroke-width="2"/>
+  <text x="635" y="522" text-anchor="middle" class="box-title">Parlando stores text</text>
+  <text x="635" y="545" text-anchor="middle" class="small">and delivers it to the agent</text>
+  <path d="M730 529 H805" class="text-flow" marker-end="url(#text-arrow)"/>
+  <rect x="805" y="500" width="130" height="58" rx="11" fill="#ffffff" stroke="#7faaa5" stroke-width="2"/>
+  <text x="870" y="525" text-anchor="middle" class="box-title">Agent</text>
+  <text x="870" y="546" text-anchor="middle" class="small">writes reply</text>
+  <path d="M870 558 V584 H635 V566" class="text-flow" marker-end="url(#text-arrow)"/>
+  <path d="M730 585 H805" class="provider-flow" marker-end="url(#provider-arrow)"/>
+  <rect x="805" y="568" width="130" height="40" rx="10" fill="#eee5f3" stroke="#84639e" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="870" y="594" text-anchor="middle" class="box-title">ElevenLabs</text>
+  <path d="M805 588 H200" class="audio-flow" marker-end="url(#audio-arrow)"/>
+
+  <!-- Legend -->
+  <rect x="22" y="635" width="1156" height="45" rx="11" fill="#ffffff" stroke="#d5dcd8" stroke-width="1.5"/>
+  <path d="M55 658 H95" class="text-flow"/><text x="106" y="663" class="small">stored text path</text>
+  <path d="M285 658 H325" class="audio-flow"/><text x="336" y="663" class="small">ephemeral audio path</text>
+  <path d="M555 658 H595" class="provider-flow"/><text x="606" y="663" class="small">external provider boundary</text>
+  <text x="1145" y="663" text-anchor="end" class="small">Game actions remain a separate authoritative path.</text>
+</svg>

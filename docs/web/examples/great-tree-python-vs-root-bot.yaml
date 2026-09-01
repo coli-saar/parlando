@@ -1,0 +1,46 @@
+schema: parlando-agent-experiment/v1
+
+game:
+  id: great-tree
+
+agents:
+  python_crown:
+    factory: remote_grpc
+    settings:
+      endpoint: http://127.0.0.1:50051
+      config_yaml: |
+        policy: great-tree-demo
+  root_bot:
+    factory: great_tree.root_bot
+
+sessions:
+  scenarios:
+    - name: python-crown-vs-root-bot
+      config:
+        crownSeat: a
+      seeds: [1, 2, 3]
+  seats:
+    player_a: python_crown
+    player_b: root_bot
+  mirror_roles: false
+
+schedule:
+  kind: alternate_after_action
+  first: player_a
+
+limits:
+  callback_timeout_seconds: 30
+  shutdown_timeout_seconds: 10
+  session_timeout_seconds: 120
+  decisions: 30
+  accepted_actions: 20
+  messages: 20
+  rejected_actions: 3
+
+execution:
+  concurrency: 1
+  fail_fast: false
+
+output:
+  directory: results/great-tree-python-vs-root-bot
+  trace: decisions

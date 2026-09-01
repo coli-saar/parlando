@@ -1,0 +1,50 @@
+- title: Start here
+  items:
+    - title: What Parlando is
+      path: manual/start/architecture
+    - title: Install and run Great Tree
+      path: manual/start/getting-started
+    - title: Understand games, experiments, and sessions
+      path: manual/start/concepts
+    - title: Run a local pilot
+      path: manual/start/first-experiment
+- title: Design the task
+  items:
+    - title: Build a dialogue game
+      path: manual/build/create-game
+    - title: Attach an automated player
+      path: manual/build/agents-and-voice
+    - title: Run agent-only studies
+      path: manual/build/agent-agent
+    - title: Enable typed or spoken dialogue
+      path: manual/build/voice
+- title: Conduct a study
+  items:
+    - title: Configure an experiment
+      path: manual/run/configuration
+    - title: Prepare consent and privacy
+      path: manual/run/consent-privacy
+    - title: Recruit through Prolific
+      path: manual/run/prolific
+    - title: Monitor, export, and back up data
+      path: manual/run/data-operations
+- title: Operate Parlando
+  items:
+    - title: Deploy a game
+      path: manual/deploy
+    - title: Cross-compile for Linux
+      path: manual/deploy/cross-compiling-for-linux
+    - title: Deploy on Render
+      path: manual/deploy/render
+- title: Reference
+  items:
+    - title: Upgrade from 0.3 to 0.4
+      path: manual/reference/migrating-0.3.0-to-0.4.0
+    - title: Rust and React game APIs
+      path: manual/reference/game-api
+    - title: Agents API
+      path: manual/reference/agents
+    - title: Participant information template
+      path: manual/privacy/participant-information-v1.0
+    - title: German privacy-review material
+      path: manual/privacy

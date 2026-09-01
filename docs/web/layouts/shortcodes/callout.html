@@ -1,0 +1,5 @@
+{{ $kind := .Get "type" | default "note" }}
+<aside class="callout callout--{{ $kind }}">
+  {{ with .Get "title" }}<p class="callout-title">{{ . }}</p>{{ end }}
+  <div class="callout-body">{{ .Page.RenderString .Inner }}</div>
+</aside>

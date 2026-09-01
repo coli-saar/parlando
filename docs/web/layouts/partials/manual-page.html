@@ -1,0 +1,20 @@
+<div class="manual-shell">
+  <aside class="manual-sidebar">
+    {{ partial "manual-nav.html" . }}
+  </aside>
+
+  <main id="main-content" class="manual-main">
+    <details class="manual-nav-mobile">
+      <summary>Manual navigation</summary>
+      {{ partial "manual-nav.html" . }}
+    </details>
+    <article class="manual-content">
+      {{ .Content }}
+    </article>
+  </main>
+
+  <aside class="page-toc" aria-label="On this page">
+    <p>On this page</p>
+    {{ .TableOfContents }}
+  </aside>
+</div>
