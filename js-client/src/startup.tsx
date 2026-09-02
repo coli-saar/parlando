@@ -69,7 +69,7 @@ interface ParticipantAppRuntimeProps<TObservation, TAction, TCompletion = Record
 interface LiveSession<TObservation, TAction, TCompletion = Record<string, unknown>> {
   participantState: ParticipantState<TObservation, TAction, TCompletion>;
   transition: GameTransition<TAction> | null;
-  socket: WebSocket;
+  socket: WebSocket | null;
   synchronization: "connecting" | "connected" | "reconnecting";
   conversation: PlayerMessage[];
 }
@@ -156,6 +156,7 @@ function ParticipantAppRuntime<
   const [publicConfig, setPublicConfig] = useState<ExperimentInfo | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
   const [consentDecisions, setConsentDecisions] = useState<Record<string, boolean>>({});
+  const [consentDeclined, setConsentDeclined] = useState(false);
   const [session, setSession] = useState<LiveSession<TObservation, TAction, TCompletion> | null>(null);
   const [error, setError] = useState("");
   const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
@@ -164,6 +165,7 @@ function ParticipantAppRuntime<
   const [voicePreflight, setVoicePreflight] = useState<VoicePreflight>(initialVoicePreflight);
   const [voiceReconnectGeneration, setVoiceReconnectGeneration] = useState(0);
   const [entering, setEntering] = useState(false);
+  const enteringRef = useRef(false);
   const sessionRef = useRef<LiveSession<TObservation, TAction, TCompletion> | null>(null);
   const connectSessionRef = useRef<(state: ParticipantState<TObservation, TAction, TCompletion>) => Promise<void>>(async () => {});
   const scheduleGameReconnectRef = useRef<(state: ParticipantState<TObservation, TAction, TCompletion>) => void>(() => {});
@@ -245,11 +247,37 @@ function ParticipantAppRuntime<
     async (participantState: ParticipantState<TObservation, TAction, TCompletion>) => {
       if (participantState.state === "registered" || participantState.state === "ended") {
         if (participantState.state === "ended") {
-          setSession((current) => current ? { ...current, participantState } : current);
+          setSession((current) => {
+            const next = current
+              ? { ...current, participantState }
+              : {
+                participantState,
+                transition: null,
+                socket: null,
+                synchronization: "connected" as const,
+                conversation: []
+              };
+            sessionRef.current = next;
+            return next;
+          });
         }
         return;
       }
       const sessionId = participantState.public_session_id;
+      setSession((current) => {
+        const currentId = current?.participantState.state === "registered" ? null : current?.participantState.public_session_id;
+        const next = currentId === sessionId
+          ? { ...current!, participantState, synchronization: "connecting" as const }
+          : {
+            participantState,
+            transition: null,
+            socket: null,
+            synchronization: "connecting" as const,
+            conversation: []
+            };
+        sessionRef.current = next;
+        return next;
+      });
       const gameSession = await apiClient.getGameSession(sessionId);
       const socket = new WebSocket(apiClient.socketUrl(gameSession));
       setSession((current) => {
@@ -381,27 +409,43 @@ function ParticipantAppRuntime<
     if (!requiredConsentsAccepted(publicConfig, consentDecisions)) {
       throw new Error("Please accept all required consents before entering the waiting room.");
     }
-    await apiClient.register();
+    if (!apiClient.hasCredential()) await apiClient.register();
     if (publicConfig.consents.length > 0) {
       await apiClient.acceptConsents(consentDecisions);
     }
   }, [apiClient, consentDecisions, publicConfig]);
 
   const createDirectRoom = useCallback(async () => {
-    if (entering) return;
+    if (enteringRef.current) return;
+    enteringRef.current = true;
     setEntering(true);
     try {
       setError("");
       await ensureParticipant();
       reconnectEnabledRef.current = true;
-      await connectSession(await apiClient.join<TObservation, TAction, TCompletion>());
+      const participantState = await apiClient.join<TObservation, TAction, TCompletion>();
+      await connectSession(participantState);
     } catch (caught) {
       reconnectEnabledRef.current = false;
       setError(errorMessage(caught, "Could not create the waiting room."));
     } finally {
+      enteringRef.current = false;
       setEntering(false);
     }
-  }, [apiClient, connectSession, ensureParticipant, entering]);
+  }, [apiClient, connectSession, ensureParticipant]);
+
+  /** Retries only the game channel after the server has already admitted this participant. */
+  const retryGameConnection = useCallback(async () => {
+    const current = sessionRef.current;
+    if (!current || current.socket || current.participantState.state === "registered" || current.participantState.state === "ended") return;
+    setError("");
+    reconnectEnabledRef.current = true;
+    try {
+      await connectSession(current.participantState);
+    } catch (caught) {
+      setError(errorMessage(caught, "Could not connect to the game channel."));
+    }
+  }, [connectSession]);
 
   const prepareVoice = useCallback(async (deviceId = ""): Promise<boolean> => {
     if (!enabled) return false;
@@ -531,6 +575,7 @@ function ParticipantAppRuntime<
   useEffect(() => {
     if (!session || session.participantState.state === "ended") return;
     const socket = session.socket;
+    if (!socket) return;
     const timer = window.setInterval(() => {
       if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "heartbeat" }));
     }, CLIENT_HEARTBEAT_INTERVAL_MS);
@@ -587,6 +632,18 @@ function ParticipantAppRuntime<
     );
   }
 
+  if (consentDeclined) {
+    return (
+      <StartupShell
+        gameName={publicConfig.gameName}
+        institution={publicConfig.institution}
+        heading="Consent declined"
+        body="You have not entered the experiment, and no participant record was created. You may close this page."
+        error=""
+      />
+    );
+  }
+
   if (session?.participantState.state === "active" || session?.participantState.state === "paused") {
     const participantState = session.participantState;
     const activeSession: GameSession<TObservation, TAction, TCompletion> = {
@@ -602,8 +659,12 @@ function ParticipantAppRuntime<
       voiceEnabled: enabled,
       connected: session.synchronization === "connected",
       interactionEnabled: participantState.state === "active" && session.synchronization === "connected",
-      sendAction: (action) => sendActionIfGameActive(apiClient, session, action),
-      sendMessage: (text) => sendMessageIfGameActive(apiClient, session, text),
+      sendAction: (action) => {
+        if (session.socket) sendActionIfGameActive(apiClient, { ...session, socket: session.socket }, action);
+      },
+      sendMessage: (text) => {
+        if (session.socket) sendMessageIfGameActive(apiClient, { ...session, socket: session.socket }, text);
+      },
       setMicrophoneMuted,
       leave
     };
@@ -650,6 +711,7 @@ function ParticipantAppRuntime<
           </div>
         </div>
         <div className="lobby-actions">
+          {!session.socket && <button onClick={() => void retryGameConnection()}>Retry connection</button>}
           <button onClick={leave}>Leave waiting room</button>
         </div>
       </StartupShell>
@@ -723,11 +785,17 @@ function ParticipantAppRuntime<
         <button disabled={!canEnter} onClick={createDirectRoom} type="button">
           Enter waiting room
         </button>
-        {publicConfig.recruitment?.provider === "prolific" && publicConfig.recruitment.decline_url && (
-          <a className="parlando-decline-consent" href={publicConfig.recruitment.decline_url}>
+        {publicConfig.recruitment?.provider === "prolific" ? (
+          publicConfig.recruitment.decline_url ? (
+            <a className="parlando-decline-consent" href={publicConfig.recruitment.decline_url}>
+              Do not consent
+            </a>
+          ) : null
+        ) : publicConfig.consents.length > 0 ? (
+          <button className="parlando-decline-consent" onClick={() => setConsentDeclined(true)} type="button">
             Do not consent
-          </a>
-        )}
+          </button>
+        ) : null}
       </div>
     </StartupShell>
   );
@@ -1086,8 +1154,8 @@ function errorText(code: string): string {
 }
 
 // Closes the game WebSocket so the server records the same participant_disconnected event as the Leave action.
-function closeSessionSocket(session: { socket: WebSocket } | null): void {
-  if (session?.socket.readyState === WebSocket.OPEN || session?.socket.readyState === WebSocket.CONNECTING) {
+function closeSessionSocket(session: { socket: WebSocket | null } | null): void {
+  if (session?.socket && (session.socket.readyState === WebSocket.OPEN || session.socket.readyState === WebSocket.CONNECTING)) {
     session.socket.close();
   }
 }

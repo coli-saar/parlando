@@ -6,7 +6,10 @@ fn main() {
         .build_client(true)
         .build_server(true)
         .compile_protos(
-            &["proto/parlando_agent_v5.proto", "proto/parlando_rl_v1.proto"],
+            &[
+                "proto/parlando_agent_v5.proto",
+                "proto/parlando_rl_v1.proto",
+            ],
             &["proto"],
         )
         .expect("Parlando remote protocols compile");

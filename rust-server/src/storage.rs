@@ -10,7 +10,7 @@ use crate::{
     identity::new_id,
     protocol::{ParticipantResult, SessionEnd},
     readable_id::{dialogue_id, participant_id as readable_participant_id},
-    session_log::SessionLogWriter,
+    session_log::{SessionLogWriter, SessionLogger},
 };
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
@@ -3029,6 +3029,8 @@ pub struct LiveSession<G: Game> {
     /// Authoritative serializable mechanics state.
     pub state: G::State,
     /// Base game-scoped handle for this session's log.
+    pub logger: SessionLogger,
+    /// Owned writer task drained when the session log is closed.
     pub log_writer: Option<SessionLogWriter>,
     /// Authoritative shared lifecycle for this forming, running, or ended session.
     pub lifecycle: SessionLifecycle,

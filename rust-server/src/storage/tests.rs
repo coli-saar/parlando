@@ -203,6 +203,59 @@ async fn sqlite_stores_experiment_secrets_outside_configuration_revisions() {
         .contains_key("game.service_token"));
 }
 
+/// Confirms active experiment configuration and secrets cannot change at the storage boundary.
+#[tokio::test]
+async fn sqlite_rejects_configuration_changes_for_active_experiments() {
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+    store
+        .create_experiment(ExperimentRecord {
+            experiment_id: "active-config".to_string(),
+            game_version: "0.4.0".to_string(),
+            config: json!({"game": {"difficulty": 2}}),
+            server_version: None,
+            version_manifest: None,
+            status: "inactive".to_string(),
+            notes: None,
+        })
+        .await
+        .unwrap();
+    store
+        .update_experiment_status("active-config", "active")
+        .await
+        .unwrap();
+
+    let error = store
+        .save_experiment_configuration(
+            "active-config",
+            1,
+            json!({"game": {"difficulty": 3}}),
+            Some("Must not persist".to_string()),
+            HashMap::from([(
+                "game.service_token".to_string(),
+                "must-not-persist".to_string(),
+            )]),
+            vec![],
+        )
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("not inactive"));
+    let definition = store
+        .experiment_definition("active-config")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(definition.config_revision, 1);
+    assert_eq!(definition.config["game"]["difficulty"], 2);
+    assert!(store
+        .experiment_secrets("active-config")
+        .await
+        .unwrap()
+        .is_empty());
+}
+
 /// Confirms a newly initialized game exposes ready-to-use provider endpoint defaults.
 #[tokio::test]
 async fn sqlite_initializes_provider_endpoint_defaults() {

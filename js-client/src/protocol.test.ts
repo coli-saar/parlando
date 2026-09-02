@@ -156,25 +156,22 @@ describe("ParticipantClient room helpers", () => {
     expect(throwingSend).toHaveBeenCalledOnce();
   });
 
-  it("keeps the newest participant credential when create requests resolve out of order", async () => {
-    const old = deferredResponse();
-    const current = deferredResponse();
+  it("coalesces concurrent registration calls into one participant lifecycle", async () => {
+    const registration = deferredResponse();
     vi.spyOn(globalThis, "fetch")
-      .mockImplementationOnce(() => old.promise)
-      .mockImplementationOnce(() => current.promise)
+      .mockImplementationOnce(() => registration.promise)
       .mockResolvedValueOnce(new Response(JSON.stringify({ participant_state: { state: "waiting", public_session_id: "room", role: "A", presence: {} } }), { status: 200 }));
     const client = new ParticipantClient({ baseUrl: "http://server.test" });
 
-    const oldRequest = client.register();
-    const currentRequest = client.register();
-    current.resolve(participantResponse("new", "new-credential"));
-    await currentRequest;
-    old.resolve(participantResponse("old", "old-credential"));
-    await oldRequest;
+    const firstRequest = client.register();
+    const concurrentRequest = client.register();
+    registration.resolve(participantResponse("one", "one-credential"));
+    await Promise.all([firstRequest, concurrentRequest]);
     await client.join();
 
+    expect(fetch).toHaveBeenCalledTimes(2);
     expect(fetch).toHaveBeenLastCalledWith("http://server.test/api/sessions", expect.objectContaining({
-      headers: expect.objectContaining({ Authorization: "Bearer new-credential" })
+      headers: expect.objectContaining({ Authorization: "Bearer one-credential" })
     }));
   });
 
@@ -197,6 +194,74 @@ describe("ParticipantClient room helpers", () => {
     expect(fetch).toHaveBeenLastCalledWith("http://server.test/api/sessions", expect.objectContaining({
       headers: expect.objectContaining({ Authorization: "Bearer stable-credential" })
     }));
+  });
+
+  it("keeps Prolific parameters until registration is safely recoverable", async () => {
+    const replaceState = vi.fn();
+    const stored = new Map<string, string>();
+    vi.stubGlobal("window", {
+      history: { replaceState },
+      location: {
+        hash: "",
+        origin: "http://server.test",
+        pathname: "/e/pilot/",
+        search: "?PROLIFIC_PID=TESTPERSON&STUDY_ID=pilot-study&SESSION_ID=TESTSUBMISSION"
+      },
+      sessionStorage: {
+        getItem: vi.fn((key: string) => stored.get(key) ?? null),
+        setItem: vi.fn((key: string, value: string) => stored.set(key, value))
+      }
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new TypeError("network unavailable"))
+      .mockResolvedValueOnce(participantResponse("retry", "retry-credential"));
+    const client = new ParticipantClient({ baseUrl: "http://server.test/e/pilot" });
+
+    await expect(client.register()).rejects.toThrow("network unavailable");
+    expect(replaceState).not.toHaveBeenCalled();
+    await client.register();
+
+    const expectedBody = JSON.stringify({ prolific: {
+      participant_id: "TESTPERSON",
+      study_id: "pilot-study",
+      session_id: "TESTSUBMISSION",
+      prolific_token: null
+    } });
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "http://server.test/e/pilot/api/participants", expect.objectContaining({ body: expectedBody }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "http://server.test/e/pilot/api/participants", expect.objectContaining({ body: expectedBody }));
+    expect(replaceState).toHaveBeenCalledOnce();
+    expect(stored.get("parlando.participant.http://server.test/e/pilot")).toBe("retry-credential");
+  });
+
+  it("lets a remounted client recover a launch interrupted before registration completed", async () => {
+    const replaceState = vi.fn();
+    const stored = new Map<string, string>();
+    vi.stubGlobal("window", {
+      history: { replaceState },
+      location: {
+        hash: "",
+        origin: "http://server.test",
+        pathname: "/e/pilot/",
+        search: "?PROLIFIC_PID=TESTPERSON&STUDY_ID=pilot-study&SESSION_ID=TESTSUBMISSION"
+      },
+      sessionStorage: {
+        getItem: vi.fn((key: string) => stored.get(key) ?? null),
+        setItem: vi.fn((key: string, value: string) => stored.set(key, value))
+      }
+    });
+    vi.spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new TypeError("document was interrupted"))
+      .mockResolvedValueOnce(participantResponse("reloaded", "reloaded-credential"));
+
+    const interrupted = new ParticipantClient({ baseUrl: "http://server.test/e/pilot" });
+    await expect(interrupted.register()).rejects.toThrow("document was interrupted");
+    expect(replaceState).not.toHaveBeenCalled();
+
+    const remounted = new ParticipantClient({ baseUrl: "http://server.test/e/pilot" });
+    await remounted.register();
+
+    expect(remounted.hasCredential()).toBe(true);
+    expect(replaceState).toHaveBeenCalledOnce();
   });
 
   it("swallows synchronous and asynchronous voice-diagnostic failures", async () => {

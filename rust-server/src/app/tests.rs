@@ -16,6 +16,7 @@ use std::{
     },
 };
 use tokio::net::TcpListener;
+use tokio::sync::Notify;
 use tokio_tungstenite::{connect_async, tungstenite::Message as TungsteniteMessage};
 use tower::ServiceExt;
 
@@ -37,6 +38,27 @@ static TEST_PARTICIPANT_CREDENTIALS: LazyLock<Mutex<HashMap<String, String>>> =
 /// Real administrator sessions issued by test routers.
 static TEST_ADMIN_SESSIONS: LazyLock<Mutex<Vec<AdminTestSession>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Confirms Local Preview cannot replace a missing Prolific refusal redirect with local UI.
+#[test]
+fn prolific_local_preview_requires_all_completion_paths() {
+    let mut config = ExperimentConfig::default();
+    config.recruitment.prolific.enabled = true;
+    config.recruitment.prolific.completion_paths.completed = "COMPLETE".to_string();
+
+    assert_eq!(
+        prolific_completion_path_issues(&config),
+        vec!["Configure all six Prolific completion paths before starting this experiment."]
+    );
+
+    let paths = &mut config.recruitment.prolific.completion_paths;
+    paths.partner_left = "PARTNER".to_string();
+    paths.game_did_not_start = "NOSTART".to_string();
+    paths.participation_ended_early = "EARLY".to_string();
+    paths.technical_failure = "TECHNICAL".to_string();
+    paths.no_consent = "NOCONSENT".to_string();
+    assert!(prolific_completion_path_issues(&config).is_empty());
+}
 
 /// Confirms completion routing uses session-start context for otherwise identical connection loss.
 #[test]
@@ -97,7 +119,7 @@ fn prolific_handoff_uses_the_designated_six_path_codes() {
     }
 }
 
-/// Confirms provider readiness, rather than draft parsing, requires the six completion codes.
+/// Confirms participant readiness, rather than draft parsing, requires the six completion codes.
 #[test]
 fn prolific_readiness_rejects_an_incomplete_six_path_draft() {
     let mut config = ExperimentConfig::default();
@@ -107,7 +129,7 @@ fn prolific_readiness_rejects_an_incomplete_six_path_draft() {
     config.recruitment.prolific.api_token = "token".to_string();
 
     assert!(config.validate().is_ok());
-    assert!(prolific_local_activation_issues(&config)
+    assert!(prolific_completion_path_issues(&config)
         .iter()
         .any(|issue| issue.contains("all six")));
 }
@@ -297,295 +319,59 @@ fn admin_test_event(index: i64, event_type: &str, role: Option<&str>, payload: V
     admin_event_summary(stored)
 }
 
-#[test]
-fn admin_dashboard_html_reflects_game_scoped_experiment_layout() {
-    assert!(ADMIN_EXPERIMENT_HTML.contains("product-header"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("font-family: Inter, ui-sans-serif, system-ui"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("icon-sprite"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("#icon-flask"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("#icon-activity"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("#icon-settings"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("#icon-shield"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("gameName"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("gameVersion"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("gameGit"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("gameBuild"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Experiment ID (unique and immutable after creation)"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("class=\"immutable-value\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains(".simple-panel > * { width: 100%; }"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("Experiment name"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("escapeHtml(factory.name)"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("escapeHtml(factory.display_name)"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("field.format === 'yaml'"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Optional; empty means {}"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"emptyExperimentWorkspace\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"showLogs\" type=\"checkbox\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("<span>Show game/agent logs</span>"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("bundle.kind === 'log' && !showLogs.checked"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("showLogs.addEventListener('change'"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("<h1>No experiments yet</h1>"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("createFirstExperimentButton"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-scope=\"experiments\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-scope=\"operations\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-scope=\"game\""));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("data-scope=\"privacy\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-tab=\"privacy\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("/privacy.md"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("checkbox-line"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("speechmaticsProviderSecret"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("ttsProviderSecret"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("prolificProviderSecret"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("<h2>Speechmatics</h2>"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("<h2>ElevenLabs</h2>"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("<h2>Prolific</h2>"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("prolificWorkspaceIdInput"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("prolificWorkspaceStatus"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("speechmatics.realtime_url"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("tts.base_url"));
-    assert!(ADMIN_EXPERIMENT_HTML
-        .contains("Changing the endpoint default never changes an existing experiment revision"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("gameProviderSecretUpdates"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("gameSettingsSaved"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("All game settings saved"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Save all game settings"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Has not been checked"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Configured ("));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-secret-placeholder"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-agent-secret-field"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-reveal-agent-secret"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("Select a game secret"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains(".session-list { align-content: start;"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("grid-auto-rows: max-content"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Agent configuration identity"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("${escapeHtml(digest.slice(0, 8))}</summary>"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("refreshDraftActivationWarning"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("End-of-utterance silence (seconds)"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("inputmode=\"decimal\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Use a decimal point, for example 1.2"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Voice transport"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Speech recognition"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("path: 'voice.sample_rate_hz'"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("path: 'voice.frame_duration_ms'"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("path: 'transcription.provider'"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("path: 'tts.output_format'"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Data retained in Parlando's SQLite database"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("privacy.exports?.selection_rule"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-consent-editor"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-consent-field=\"id\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-consent-field=\"title\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-consent-field=\"body\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Add template"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("Core research set (3 items)"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("eligibility_and_information_v1_0"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("voice_and_transcription_v1_0"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Blank item"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("{{LOCAL_INFORMATION_VERSION}}"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("{{INSTITUTION_NAME}}"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("{{SPEECHMATICS_ENTITY_AND_SERVICE}}"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("JSON list of consent statements"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("eleven_flash_v2_5"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Official intake"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Pause intake"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Start experiment</summary>"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("${icon('power')}Stop</button>"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("const restoreLaunchMenu"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-experiment-status"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-participant-url-kind"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("experiment.participant_url"));
-    assert!(ADMIN_EXPERIMENT_HTML
-        .contains("The workspace is derived from each linked study's Prolific project."));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"quickTooltip\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("}, 90);"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Complete"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("/api/admin/runtime/"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("fetch('/api/admin/load')"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("runtimeApi('load')"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("runningExperimentId"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("New experiment"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("createExperimentDialog"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("newExperimentNotes"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-tab=\"notes\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("experimentNotesSource"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("safeMarkdown"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("source-editor-lines"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("document.title"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("state.game?.name"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("launchReadinessBadge"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("experimentCapabilityBadges"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("align-content: start"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("html { height: 100%; overflow: hidden; }"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains(".simple-panel { flex: 1;"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("overflow-y: auto; overscroll-behavior: contain"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("@media (max-width: 1240px)"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("@media (max-width: 760px)"));
-    assert!(ADMIN_EXPERIMENT_HTML
-        .contains(".workspace-navigation .tab { flex: 0 0 auto; white-space: nowrap; }"));
-    assert!(
-        ADMIN_EXPERIMENT_HTML.contains(".participant-copy > .muted { overflow-wrap: anywhere; }")
-    );
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Unarchive</button>"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("/archive"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Experiment unavailable"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("experimentWorkspaceTabs.hidden = !hasExperiment;"));
-    assert!(!ADMIN_EXPERIMENT_HTML
-        .contains("experimentWorkspaceTabs.hidden = !hasExperiment || state.configLoadFailed"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("Generate two-word code"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Prolific study and completion paths"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Linked Prolific study ID"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("enter only the value after /studies/"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("URL for Prolific study setup"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Copy setup URL"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("function prolificSetupUrl"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Completed code"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Data collection → Completion paths"));
-    assert!(
-        ADMIN_EXPERIMENT_HTML.find("Text to speech")
-            < ADMIN_EXPERIMENT_HTML.find("Prolific study and completion paths")
-    );
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("padStart(4, '0')"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("participantPageHref(experiment)"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("state.configValue : null"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("renderConfigurationForm(data.experiment.config"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Local preview"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Test through Prolific"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Official intake"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("prolificIsEnabled(experiment)"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-fix-readiness"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains(
-        "PROLIFIC_PID={{%PROLIFIC_PID%}}&STUDY_ID={{%STUDY_ID%}}&SESSION_ID={{%SESSION_ID%}}"
-    ));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-copy-participant-url=\"running\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("url.searchParams.set('PROLIFIC_PID'"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("url.searchParams.set('STUDY_ID', prolific.study_id)"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("url.searchParams.set('SESSION_ID'"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("new-experiment"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("experimentStatusFilter"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("<dt>Session state</dt>"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("<dt>Health</dt>"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("<dt>Purpose</dt>"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("<dt>Recruitment</dt>"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("isProlific ? 'Prolific' : 'Direct'"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("<strong>Prolific recruitment</strong>"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Prolific submission status checked"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Prolific submission status has not been checked"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("icon(checked ? 'check' : 'help')"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("row.identity_provider !== 'prolific'"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("Prolific not checked"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("<dt>Checked</dt>"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("<dt>Mode</dt>"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-status-filter"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("initializeStatusFilter"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("All statuses"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-value=\"running\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-value=\"forming\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-value=\"ended\""));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("data-value=\"waiting\""));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("data-value=\"abandoned\""));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("session.status"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("session.lifecycle"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("participantStateMarkup(row, session)"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("normalized.replaceAll('_', '-')"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("participantTransportMarkup(row)"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("participantStatusMarkup(row, session)"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("prolificDetailsMarkup(row)"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("participantDisconnectMarkup(row)"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("const subject = actor || 'Participant'"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("Role ${actor}"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("chose to leave"));
-    assert!(ADMIN_EXPERIMENT_HTML
-        .contains("cannot distinguish a closed tab from a network interruption"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("reconnectDeadline <= Date.now()"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("row.participant_state?.state === 'ended'"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains(" · reconnect deadline ${escapeHtml"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("session.lifecycle === 'forming'"));
-    assert!(ADMIN_EXPERIMENT_HTML
-        .contains("session.lifecycle === 'running' && health !== expectedHealth"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("if (waited) facts.push"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("session-summary-statuses"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("session.dialogue_id"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("row.participant_state?.state"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("participantTransportHealth(row)"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("data-value=\"playing\""));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("🟠"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("🟢"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("🔵"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("🔴"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("experimentRuntimeState"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("statusLabel('not-running')"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("experiment.status === 'archived'"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("<time>${escapeHtml(fmtDate(item.created_at))}</time>"));
-    assert!(!ADMIN_EXPERIMENT_HTML
-        .contains("<time>Created ${escapeHtml(fmtDate(item.created_at))}</time>"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("item.participant_title"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("experiment.participant_title"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("catalogueResizer"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("sessionResizer"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Object.assign(state.selectedSession, refreshed)"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("function fmtGameTime(value)"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("title=\"Game time\""));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("fmtTime(bundle.created_at)"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("class=\"expand\""));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("event-json"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("border-left: 1px solid var(--strong-line)"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("title=\"Delete participant data\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("aria-label=\"Delete participant data\""));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains(">Delete data</button>"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("participant-role-a"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("participant-role-b"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("participant-assignments::after"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("`${type} v ${version}`"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("experimentForm"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"configForm\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("configurationFromForm"));
-    assert!(
-        ADMIN_EXPERIMENT_HTML.contains("Object.assign(state.experiment, authoritativeExperiment)")
-    );
-    assert!(ADMIN_EXPERIMENT_HTML.contains("function updateConfigurationEditability"));
-    assert!(
-        ADMIN_EXPERIMENT_HTML.contains("updateConfigurationEditability(authoritativeExperiment)")
-    );
-    assert!(ADMIN_EXPERIMENT_HTML.contains("experiment.status !== 'inactive'"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"institutionInput\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Build information"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-tab=\"sessions\""));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("data-tab=\"load\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-tab=\"export\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("data-tab=\"details\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"sessionsPanel\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"loadPanel\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Runtime session liveness"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("renderLoadChart"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"exportPanel\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"exportVariant\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("Session log"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("participant-assignments"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"icon-bot\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"icon-user\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("delete-participant"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"detailsPanel\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"sessionDetail\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("session-workspace"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("session-picker"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("id=\"menuButton\""));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("sidebar-open"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("session-facts"));
-    assert!(ADMIN_EXPERIMENT_HTML.contains("events-header"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("▣"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("≡"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains("refreshSessions"));
-    assert!(!ADMIN_EXPERIMENT_HTML.contains(">Reproducibility<"));
-    let sidebar = ADMIN_EXPERIMENT_HTML
-        .split("id=\"experimentSidebar\"")
-        .nth(1)
-        .and_then(|html| html.split("</aside>").next())
+/// Confirms the protected dashboard shell and its separately embedded assets are servable.
+#[tokio::test]
+async fn admin_dashboard_serves_html_css_and_javascript_assets() {
+    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+        .await
         .unwrap();
-    assert!(!sidebar.contains("<h2>Sessions</h2>"));
-    let sessions_panel = ADMIN_EXPERIMENT_HTML
-        .split("id=\"sessionsPanel\"")
-        .nth(1)
-        .and_then(|html| html.split("id=\"exportPanel\"").next())
-        .unwrap();
-    assert!(!sessions_panel.contains("<h2>Players</h2>"));
+    authenticate_test_admin(router.clone()).await.unwrap();
+
+    let page = admin_raw_request(router.clone(), http::Method::GET, "/admin/experiments").await;
+    assert_eq!(page.status(), StatusCode::OK);
+    assert_eq!(
+        page.headers().get(http::header::CONTENT_TYPE).unwrap(),
+        "text/html; charset=utf-8"
+    );
+    assert!(page.headers().contains_key("content-security-policy"));
+    let page_body = to_bytes(page.into_body(), usize::MAX).await.unwrap();
+    let page_html = String::from_utf8(page_body.to_vec()).unwrap();
+    assert!(page_html.contains("href=\"/admin/assets/admin-dashboard.css\""));
+    assert!(page_html.contains("src=\"/admin/assets/admin-dashboard.js\""));
+
+    for (path, expected_content_type) in [
+        (
+            "/admin/assets/admin-dashboard.css",
+            "text/css; charset=utf-8",
+        ),
+        (
+            "/admin/assets/admin-dashboard.js",
+            "text/javascript; charset=utf-8",
+        ),
+        (
+            "/admin/assets/admin-dashboard-state.js",
+            "text/javascript; charset=utf-8",
+        ),
+        (
+            "/admin/assets/admin-dashboard-format.js",
+            "text/javascript; charset=utf-8",
+        ),
+        (
+            "/admin/assets/admin-dashboard-api.js",
+            "text/javascript; charset=utf-8",
+        ),
+    ] {
+        let asset = admin_raw_request(router.clone(), http::Method::GET, path).await;
+        assert_eq!(asset.status(), StatusCode::OK);
+        assert_eq!(
+            asset.headers().get(http::header::CONTENT_TYPE).unwrap(),
+            expected_content_type
+        );
+        assert!(!to_bytes(asset.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .is_empty());
+    }
 }
 
 /// Confirms reviewed consent prose enters evidence hashes without runtime rewriting.
@@ -1895,8 +1681,7 @@ async fn prolific_run_readiness_verifies_the_linked_study_before_start() {
                     Json(json!({"id": "project1", "workspace": "workspace1"}))
                 }
             }),
-        )
-        .fallback(|| async { StatusCode::NOT_FOUND });
+        );
     let (provider_url, provider_task) = spawn_test_server(provider).await;
     let router = super::build_router(TinyAdapter, config, ServeOptions::default())
         .await
@@ -2047,6 +1832,19 @@ fn export_filter_removes_testing_session_graph() {
 async fn compiled_game_router_hosts_multiple_experiments() {
     let mut config = step_five_config();
     config.experiment.id = Some("primary".to_string());
+    let client_dist = tempfile::tempdir().unwrap();
+    fs::create_dir(client_dist.path().join("assets")).unwrap();
+    fs::write(
+        client_dist.path().join("index.html"),
+        "<html><body>participant client</body></html>",
+    )
+    .unwrap();
+    fs::write(
+        client_dist.path().join("assets/app.js"),
+        "console.log('participant asset');",
+    )
+    .unwrap();
+    config.server.client_dist_path = Some(client_dist.path().display().to_string());
     let descriptor = GameMetadata {
         id: "tiny-game".to_string(),
         name: "Tiny Game".to_string(),
@@ -2070,6 +1868,24 @@ async fn compiled_game_router_hosts_multiple_experiments() {
             .get(http::header::LOCATION)
             .and_then(|value| value.to_str().ok()),
         Some("/admin/experiments")
+    );
+    let participant_root = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/e/primary")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(participant_root.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(
+        participant_root
+            .headers()
+            .get(http::header::LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("/e/primary/")
     );
     let unauthenticated_dashboard = router
         .clone()
@@ -2123,6 +1939,35 @@ async fn compiled_game_router_hosts_multiple_experiments() {
     .await;
     assert_eq!(create_status, StatusCode::OK);
     assert_eq!(created["experiment_id"], "primary");
+    let (shell_status, shell_body, _) = raw_request(
+        router.clone(),
+        http::Method::GET,
+        "/e/primary/",
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(shell_status, StatusCode::OK);
+    assert!(shell_body.contains("participant client"));
+    let (asset_status, asset_body, _) = raw_request(
+        router.clone(),
+        http::Method::GET,
+        "/e/primary/assets/app.js",
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(asset_status, StatusCode::OK);
+    assert_eq!(asset_body, "console.log('participant asset');");
+    let unknown_participant_path = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/e/primary/not-a-supported-route")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unknown_participant_path.status(), StatusCode::NOT_FOUND);
 
     let (catalogue_status, catalogue) = json_request(
         router.clone(),
@@ -2210,6 +2055,30 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         .await;
         assert_eq!(status, StatusCode::OK, "activation failed: {body}");
     }
+    let (active_config_status, active_config) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments/primary/config",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(active_config_status, StatusCode::OK);
+    let (active_save_status, active_save) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiments/primary/config",
+        json!({
+            "expected_revision": active_config["experiment"]["config_revision"],
+            "config": active_config["experiment"]["config"],
+            "change_summary": "Must be rejected while active"
+        }),
+    )
+    .await;
+    assert_eq!(active_save_status, StatusCode::CONFLICT);
+    assert!(active_save["raw"]
+        .as_str()
+        .unwrap()
+        .contains("only be edited while the experiment is inactive"));
 
     let (_, primary_participant) = json_request(
         router.clone(),
@@ -2799,6 +2668,13 @@ impl Agent<TinyAdapter> for NoopAgent {
 
 struct NoopAgentFactory;
 
+struct GatedAgentFactory {
+    started: Arc<AtomicUsize>,
+    release: Arc<Notify>,
+}
+
+struct FailingAgentFactory;
+
 struct SecretAgentFactory;
 
 struct ShutdownRecordingAgent {
@@ -2905,6 +2781,44 @@ impl AgentFactory<TinyAdapter> for NoopAgentFactory {
         Ok(Box::new(NoopAgent))
     }
 
+    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+        test_agent_identity()
+    }
+}
+
+#[async_trait]
+impl AgentFactory<TinyAdapter> for GatedAgentFactory {
+    /// Describes the agent used to hold construction open during admission tests.
+    fn definition(&self) -> AgentDefinition {
+        test_agent_definition()
+    }
+
+    /// Waits for the test to prove the human has already entered the waiting room.
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
+        self.started.fetch_add(1, Ordering::SeqCst);
+        self.release.notified().await;
+        Ok(Box::new(NoopAgent))
+    }
+
+    /// Returns stable non-secret identity metadata for the gated agent.
+    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+        test_agent_identity()
+    }
+}
+
+#[async_trait]
+impl AgentFactory<TinyAdapter> for FailingAgentFactory {
+    /// Describes the agent used to exercise asynchronous construction failure.
+    fn definition(&self) -> AgentDefinition {
+        test_agent_definition()
+    }
+
+    /// Fails construction after the human has already received a waiting session.
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
+        anyhow::bail!("intentional agent construction failure")
+    }
+
+    /// Returns stable non-secret identity metadata before construction fails.
     fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
         test_agent_identity()
     }
@@ -3516,7 +3430,7 @@ async fn admin_raw_request(router: Router, method: http::Method, path: &str) -> 
             )
             .await
             .unwrap();
-        if response.status() != StatusCode::UNAUTHORIZED {
+        if response.status() != StatusCode::UNAUTHORIZED && !response.status().is_redirection() {
             return response;
         }
     }
@@ -3910,7 +3824,7 @@ async fn health_and_public_config_expose_client_bootstrap_shape() {
 }
 
 #[tokio::test]
-async fn static_serving_returns_assets_spa_fallback_and_preserves_api_prefixes() {
+async fn static_serving_exposes_only_the_shell_assets_and_named_api_routes() {
     let temp = tempfile::tempdir().unwrap();
     let dist = temp.path().join("dist");
     fs::create_dir_all(dist.join("assets")).unwrap();
@@ -3945,15 +3859,15 @@ async fn static_serving_returns_assets_spa_fallback_and_preserves_api_prefixes()
         .as_deref()
         .is_some_and(|value| value.contains("javascript")));
 
-    let (fallback_status, fallback_body, _) = raw_request(
+    let (unknown_status, unknown_body, _) = raw_request(
         router.clone(),
         http::Method::GET,
         "/room/abc",
         Body::empty(),
     )
     .await;
-    assert_eq!(fallback_status, StatusCode::OK);
-    assert!(fallback_body.contains("Parlando client"));
+    assert_eq!(unknown_status, StatusCode::NOT_FOUND);
+    assert!(!unknown_body.contains("Parlando client"));
 
     let (api_status, api_body, _) = raw_request(
         router.clone(),
@@ -5845,7 +5759,7 @@ async fn admin_sessions_api_reads_actions_from_database() {
 }
 
 #[tokio::test]
-async fn human_vs_agent_direct_room_supplies_agent_role_b_immediately() {
+async fn human_vs_agent_direct_room_eventually_supplies_agent_role_b() {
     let router = build_router(
         TinyAdapter,
         human_vs_agent_config(),
@@ -5868,23 +5782,25 @@ async fn human_vs_agent_direct_room_supplies_agent_role_b_immediately() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(created["participant_state"]["role"], "A");
-    assert_eq!(
-        created["participant_state"]["presence"]["B"]["connected"],
-        true
-    );
-    assert_eq!(
-        created["participant_state"]["presence"]["B"]["audioReady"],
-        true
-    );
-
-    let (export_status, export) = json_request(
-        router,
-        http::Method::GET,
-        "/api/admin/export?variant=full",
-        Value::Null,
-    )
-    .await;
-    assert_eq!(export_status, StatusCode::OK);
+    let mut export = Value::Null;
+    for _ in 0..20 {
+        let (export_status, current_export) = json_request(
+            router.clone(),
+            http::Method::GET,
+            "/api/admin/export?variant=full",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(export_status, StatusCode::OK);
+        export = current_export;
+        if export["session_participants"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["role"] == "B"))
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let roles = export["session_participants"]
         .as_array()
         .unwrap()
@@ -5898,6 +5814,106 @@ async fn human_vs_agent_direct_room_supplies_agent_role_b_immediately() {
         .unwrap()
         .iter()
         .any(|row| row["participant_kind"] == "agent"));
+}
+
+#[tokio::test]
+async fn human_enters_waiting_room_before_agent_construction_finishes() {
+    let started = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new(Notify::new());
+    let router = build_router(
+        TinyAdapter,
+        human_vs_agent_config(),
+        ServeOptions {
+            agent_factory: Some(Arc::new(GatedAgentFactory {
+                started: started.clone(),
+                release: release.clone(),
+            })),
+            ..ServeOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    let human = create_direct_participant(router.clone(), "Human").await;
+    consent_participant(router.clone(), &human).await;
+
+    let (status, created) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/sessions",
+        json!({"participant_session_id": human}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    for _ in 0..20 {
+        if started.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+    assert!(created["participant_state"]["presence"]["B"].is_null());
+    release.notify_one();
+    for _ in 0..20 {
+        let (state_status, participant_state) = json_request(
+            router.clone(),
+            http::Method::GET,
+            "/api/participant-state",
+            json!({"participant_session_id": human.clone()}),
+        )
+        .await;
+        assert_eq!(state_status, StatusCode::OK);
+        if participant_state["participant_state"]["presence"]["B"]["connected"] == true {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("agent did not join the reserved seat after construction completed");
+}
+
+#[tokio::test]
+async fn failed_agent_construction_ends_the_waiting_session_as_technical_failure() {
+    let router = build_router(
+        TinyAdapter,
+        human_vs_agent_config(),
+        ServeOptions {
+            agent_factory: Some(Arc::new(FailingAgentFactory)),
+            ..ServeOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    let human = create_direct_participant(router.clone(), "Human").await;
+    consent_participant(router.clone(), &human).await;
+    let (status, created) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/sessions",
+        json!({"participant_session_id": human.clone()}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(created["participant_state"]["state"], "waiting");
+
+    for _ in 0..20 {
+        let (state_status, participant_state) = json_request(
+            router.clone(),
+            http::Method::GET,
+            "/api/participant-state",
+            json!({"participant_session_id": human.clone()}),
+        )
+        .await;
+        assert_eq!(state_status, StatusCode::OK);
+        if participant_state["participant_state"]["state"] == "ended" {
+            assert_eq!(
+                participant_state["participant_state"]["result"]["outcome"],
+                "technical_failure"
+            );
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("failed agent construction did not terminate the waiting session");
 }
 
 #[tokio::test]
@@ -6495,7 +6511,7 @@ impl Game for LifecycleOrderGame {
 }
 
 #[tokio::test]
-async fn agent_construction_precedes_initial_state_construction() {
+async fn agent_construction_runs_after_the_human_waiting_session_exists() {
     let events = Arc::new(Mutex::new(Vec::new()));
     let router = build_router(
         LifecycleOrderGameFactory {
@@ -6523,11 +6539,6 @@ async fn agent_construction_precedes_initial_state_construction() {
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        events.lock().unwrap().as_slice(),
-        &["agent_created", "initial_state"]
-    );
-
     let mut logs = Vec::new();
     for _ in 0..20 {
         let (export_status, export) = json_request(
@@ -6566,4 +6577,8 @@ async fn agent_construction_precedes_initial_state_construction() {
     assert_eq!(agent_log["actor_role"], "B");
     assert!(agent_log["actor_participant_id"].as_i64().is_some());
     assert_eq!(agent_log["payload"]["text"], "agent constructor log");
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        &["initial_state", "agent_created"]
+    );
 }

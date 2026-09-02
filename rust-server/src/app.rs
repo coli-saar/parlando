@@ -22,7 +22,7 @@ use axum::{
     },
     middleware::{self, Next},
     response::{Html, IntoResponse, Redirect, Response},
-    routing::{any, get, post},
+    routing::{get, post},
     Json, Router,
 };
 use futures_util::{SinkExt, StreamExt as FuturesStreamExt};
@@ -84,13 +84,6 @@ struct PreparedAgentConstruction<A: Game> {
     agent_instance_secrets: SecretValues,
     factory: SharedAgentFactory<A>,
     timeout: f64,
-}
-
-/// Agent constructed during session initialization.
-struct ConstructedAgent<A: Game> {
-    agent: Box<dyn Agent<A> + Send>,
-    participant_session_id: String,
-    event_metadata: Value,
 }
 
 /// Optional runtime components supplied by the game-specific binary.
@@ -596,10 +589,37 @@ fn local_testing_issues_for_config<A: Game>(
         config.tts.voice_id = "provided-by-runtime".to_string();
     }
     let mut issues = config.activation_issues();
+    issues.extend(prolific_completion_path_issues(config));
     if let Err(error) = validate_agent_configuration(&state.agent_definitions, &config, true) {
         issues.push(error.to_string());
     }
     issues
+}
+
+/// Validates the completion redirects exercised by every Prolific participant URL, including Local Preview.
+fn prolific_completion_path_issues(config: &ExperimentConfig) -> Vec<String> {
+    if !config.recruitment.prolific.enabled {
+        return Vec::new();
+    }
+    let paths = &config.recruitment.prolific.completion_paths;
+    let codes = [
+        paths.completed.as_str(),
+        paths.partner_left.as_str(),
+        paths.game_did_not_start.as_str(),
+        paths.participation_ended_early.as_str(),
+        paths.technical_failure.as_str(),
+        paths.no_consent.as_str(),
+    ];
+    if codes.iter().any(|code| code.trim().is_empty()) {
+        return vec![
+            "Configure all six Prolific completion paths before starting this experiment."
+                .to_string(),
+        ];
+    }
+    if codes.iter().collect::<HashSet<_>>().len() != codes.len() {
+        return vec!["Prolific completion path codes must be distinct.".to_string()];
+    }
+    Vec::new()
 }
 
 /// Lists missing installation-owned Prolific prerequisites without contacting Prolific.
@@ -612,23 +632,6 @@ fn prolific_local_activation_issues(config: &ExperimentConfig) -> Vec<String> {
         issues.push(
             "Enter the linked Prolific study ID before starting this experiment.".to_string(),
         );
-    }
-    let paths = &config.recruitment.prolific.completion_paths;
-    let codes = [
-        paths.completed.as_str(),
-        paths.partner_left.as_str(),
-        paths.game_did_not_start.as_str(),
-        paths.participation_ended_early.as_str(),
-        paths.technical_failure.as_str(),
-        paths.no_consent.as_str(),
-    ];
-    if codes.iter().any(|code| code.trim().is_empty()) {
-        issues.push(
-            "Configure all six Prolific completion paths before starting this experiment."
-                .to_string(),
-        );
-    } else if codes.iter().collect::<HashSet<_>>().len() != codes.len() {
-        issues.push("Prolific completion path codes must be distinct.".to_string());
     }
     if config.recruitment.prolific.api_token.trim().is_empty() {
         issues.push(
@@ -1809,6 +1812,15 @@ fn administrator_cookie(token: &str, max_age: i64, config: &ExperimentConfig) ->
     )
 }
 
+/// Two route surfaces owned by one lazily constructed experiment runtime.
+#[derive(Clone)]
+struct MountedExperimentRouters {
+    /// Participant HTTP, WebSocket, and static-file routes mounted below `/e`.
+    participant: Router,
+    /// Experiment-scoped administrator routes mounted below `/api/admin/runtime`.
+    admin: Router,
+}
+
 /// Shared server state used by HTTP handlers, WebSocket tasks, and background agents.
 pub struct AppState<A: Game> {
     pub game_factory: Arc<dyn GameFactory<Game = A>>,
@@ -1856,6 +1868,10 @@ pub struct AppState<A: Game> {
     telemetry: Arc<RuntimeTelemetry>,
     /// Weak references to every experiment runtime hosted by this game process.
     runtime_registry: Arc<RwLock<HashMap<String, Weak<AppState<A>>>>>,
+    /// Mounted runtime routers invalidated after inactive configuration or catalogue changes.
+    runtime_router_cache: Option<Arc<RwLock<HashMap<String, MountedExperimentRouters>>>>,
+    /// Per-experiment construction locks shared with configuration invalidation.
+    runtime_router_build_locks: Option<Arc<RwLock<HashMap<String, Arc<Mutex<()>>>>>>,
     session_transition_locks: RwLock<HashMap<String, Arc<Mutex<()>>>>,
     game_connections: RwLock<HashMap<String, ConnectionControl>>,
     audio_connections: RwLock<HashMap<String, ConnectionControl>>,
@@ -3153,7 +3169,7 @@ where
     require_consent(&state, &participant_session_id).await?;
     require_session_storage_reserve(&state).await?;
     let requested_mode = "direct".to_string();
-    let mut prepared_agent = if state.config.agents.mode == AgentsMode::HumanVsAgent {
+    let prepared_agent = if state.config.agents.mode == AgentsMode::HumanVsAgent {
         let session_seed = rand::random::<u64>();
         let agent_seed = state
             .config
@@ -3207,7 +3223,7 @@ where
         None
     };
     let admission = state.session_admission.clone().lock_owned().await;
-    let paired_or_created: Result<(String, Seat, Option<ConstructedAgent<A>>), AppError> = {
+    let paired_or_created: Result<(String, Seat), AppError> = {
         if state.config.agents.mode == AgentsMode::HumanVsHuman {
             let existing = {
                 let memory = state.memory.read().await;
@@ -3230,22 +3246,21 @@ where
                     &public_session_id,
                     &participant_session_id,
                 )?;
-                Ok((public_session_id, role, None))
+                Ok((public_session_id, role))
             } else {
                 {
                     let memory = state.memory.read().await;
                     ensure_session_capacity(&state.config, &memory, SessionAdmission::Waiting, 1)?;
                 }
-                let (public_session_id, role, agent) = create_live_session_locked(
+                let (public_session_id, role) = create_live_session_locked(
                     &state,
                     participant_session_id.clone(),
                     requested_mode.clone(),
                     Seat::A,
                     rand::random::<u64>(),
-                    None,
                 )
                 .await?;
-                Ok((public_session_id, role, agent))
+                Ok((public_session_id, role))
             }
         } else {
             {
@@ -3256,20 +3271,19 @@ where
                 .as_ref()
                 .expect("agent was prepared")
                 .session_seed;
-            let (public_session_id, role, agent) = create_live_session_locked(
+            let (public_session_id, role) = create_live_session_locked(
                 &state,
                 participant_session_id.clone(),
                 requested_mode.clone(),
                 Seat::A,
                 session_seed,
-                prepared_agent.take(),
             )
             .await?;
-            Ok((public_session_id, role, agent))
+            Ok((public_session_id, role))
         }
     };
     drop(admission);
-    let (public_session_id, role, constructed_agent) = paired_or_created?;
+    let (public_session_id, role) = paired_or_created?;
     persist_session_participant(&state, &public_session_id, &participant_session_id).await?;
     persist_session_event(
         &state,
@@ -3280,24 +3294,12 @@ where
         None,
     )
     .await;
-    if state.config.agents.mode == AgentsMode::HumanVsAgent {
-        let constructed = constructed_agent.expect("agent session constructed an agent");
-        let agent_id = constructed.participant_session_id.clone();
-        persist_session_participant(&state, &public_session_id, &agent_id).await?;
-        persist_session_event(
-            &state,
-            &public_session_id,
-            Some(&agent_id),
-            "participant_joined",
-            json!({"role": "B", "kind": "agent", "agent": constructed.event_metadata}),
-            None,
-        )
-        .await;
-        state
-            .pending_agents
-            .lock()
-            .await
-            .insert(agent_key(&public_session_id, &agent_id), constructed.agent);
+    if let Some(prepared_agent) = prepared_agent {
+        tokio::spawn(construct_and_join_agent(
+            state.clone(),
+            public_session_id.clone(),
+            prepared_agent,
+        ));
     }
     let response = participant_state_response(&state, &public_session_id, role).await?;
     Ok(Json(response))
@@ -3549,8 +3551,7 @@ async fn create_live_session_locked<A: Game>(
     mode: String,
     role: Seat,
     seed: u64,
-    prepared_agent: Option<PreparedAgentConstruction<A>>,
-) -> Result<(String, Seat, Option<ConstructedAgent<A>>), AppError> {
+) -> Result<(String, Seat), AppError> {
     let participant = state
         .memory
         .read()
@@ -3625,89 +3626,6 @@ async fn create_live_session_locked<A: Game>(
             return Err(AppError::bad_request(error.to_string()));
         }
     };
-    let mut constructed_agent = if let Some(prepared) = prepared_agent {
-        let definition = prepared.factory.definition();
-        let identity = prepared.factory.identity(&prepared.settings)?;
-        identity.validate()?;
-        let fingerprint = configuration_fingerprint(&definition.id, &prepared.settings)?;
-        let event_metadata = json!({
-            "agent_name": identity.name,
-            "agent_version": identity.version,
-            "factory": definition.id,
-            "configuration_fingerprint": fingerprint.clone(),
-        });
-        let participant_id = state
-            .store
-            .upsert_participant(ParticipantRecord {
-                experiment_id: state.experiment_id.clone(),
-                participant_kind: "agent".to_string(),
-                identity_provider: "agent".to_string(),
-                external_id: Some(format!(
-                    "{}@{}#{}",
-                    event_metadata["agent_name"].as_str().unwrap_or("agent"),
-                    event_metadata["agent_version"]
-                        .as_str()
-                        .unwrap_or("unknown"),
-                    fingerprint
-                )),
-                metadata: event_metadata.clone(),
-            })
-            .await?;
-        let research_id = state
-            .store
-            .participant_research_id(participant_id)
-            .await?
-            .ok_or_else(|| {
-                AppError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Agent identifier is missing",
-                )
-            })?;
-        let runtime_participant = state.memory.write().await.create_participant(
-            participant_id,
-            research_id,
-            "agent".to_string(),
-            participant.purpose.clone(),
-        );
-        let participant_session_id = runtime_participant.id.clone();
-        let context = AgentContext {
-            role: PlayerRole::B,
-            seed: prepared.agent_seed,
-            settings: prepared.settings,
-            factory_secrets: prepared.factory_secrets,
-            agent_instance_secrets: prepared.agent_instance_secrets,
-            logger: logger.for_agent(participant_id, PlayerRole::B),
-        };
-        match tokio::time::timeout(
-            Duration::from_secs_f64(prepared.timeout),
-            prepared.factory.create(context),
-        )
-        .await
-        {
-            Ok(Ok(agent)) => Some(ConstructedAgent {
-                agent,
-                participant_session_id,
-                event_metadata: agent_event_metadata(&event_metadata),
-            }),
-            Ok(Err(_)) | Err(_) => {
-                let _ = state
-                    .store
-                    .fail_session_initialization(
-                        &state.experiment_id,
-                        session_id,
-                        "agent_construction_failed",
-                    )
-                    .await;
-                log_writer.shutdown().await;
-                return Err(AppError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "The configured agent could not be initialized",
-                ));
-            }
-        }
-    } else {
-        None
-    };
     let game_state = match game.initial_state(GameInitializationContext {
         config: &state.game_config,
         seed,
@@ -3715,9 +3633,6 @@ async fn create_live_session_locked<A: Game>(
     }) {
         Ok(game_state) => game_state,
         Err(error) => {
-            if let Some(mut constructed) = constructed_agent {
-                let _ = constructed.agent.shutdown().await;
-            }
             let _ = state
                 .store
                 .fail_session_initialization(
@@ -3748,33 +3663,6 @@ async fn create_live_session_locked<A: Game>(
             reconnect_deadline_at: None,
         },
     );
-    if let Some(agent_session_id) = constructed_agent
-        .as_ref()
-        .map(|constructed| constructed.participant_session_id.clone())
-    {
-        let memory = state.memory.read().await;
-        let runtime_agent = memory
-            .participants
-            .get(&agent_session_id)
-            .expect("constructed agent participant is retained");
-        participants.insert(
-            agent_session_id.clone(),
-            SessionParticipant {
-                participant_session_id: agent_session_id,
-                participant_id: runtime_agent.participant_id,
-                source: "agent".to_string(),
-                role: Seat::B,
-                connected: true,
-                ready: true,
-                audio_ready: true,
-                consent_decisions: HashMap::new(),
-                joined_at: now_iso(),
-                updated_at: now_iso(),
-                disconnected_at: None,
-                reconnect_deadline_at: None,
-            },
-        );
-    }
     let timing = state
         .store
         .session_timing(&state.experiment_id, session_id)
@@ -3790,6 +3678,7 @@ async fn create_live_session_locked<A: Game>(
             purpose: participant.purpose,
             game,
             state: game_state,
+            logger,
             log_writer: Some(log_writer),
             lifecycle: SessionLifecycle::Forming,
             pause: None,
@@ -3820,9 +3709,6 @@ async fn create_live_session_locked<A: Game>(
                     writer.shutdown().await;
                 }
             }
-            if let Some(constructed) = constructed_agent.as_mut() {
-                let _ = constructed.agent.shutdown().await;
-            }
             return Err(AppError::new(
                 StatusCode::CONFLICT,
                 "Session initialization no longer has an active durable record",
@@ -3840,13 +3726,198 @@ async fn create_live_session_locked<A: Game>(
                     writer.shutdown().await;
                 }
             }
-            if let Some(constructed) = constructed_agent.as_mut() {
-                let _ = constructed.agent.shutdown().await;
-            }
             return Err(AppError::from(error));
         }
     }
-    Ok((public_session_id, role, constructed_agent))
+    Ok((public_session_id, role))
+}
+
+/// Constructs the reserved software participant and admits it through the normal session boundary.
+async fn construct_and_join_agent<A: Game>(
+    state: Arc<AppState<A>>,
+    public_session_id: String,
+    prepared: PreparedAgentConstruction<A>,
+) where
+    A::State: Serialize,
+{
+    if let Err(error) = try_construct_and_join_agent(&state, &public_session_id, prepared).await {
+        tracing::error!(message = %error.message, %public_session_id, "software agent could not join its reserved session");
+        let _ = expire_live_session(&state, &public_session_id, "agent_construction_failed").await;
+        broadcast_participant_states(&state, &public_session_id).await;
+        shutdown_session_log(&state, &public_session_id).await;
+    }
+}
+
+/// Performs fallible agent construction before atomically attaching the resulting participant.
+async fn try_construct_and_join_agent<A: Game>(
+    state: &Arc<AppState<A>>,
+    public_session_id: &str,
+    prepared: PreparedAgentConstruction<A>,
+) -> Result<(), AppError>
+where
+    A::State: Serialize,
+{
+    let (purpose, logger) = {
+        let memory = state.memory.read().await;
+        let session = memory
+            .sessions
+            .get(public_session_id)
+            .filter(|session| session.lifecycle == SessionLifecycle::Forming)
+            .ok_or_else(|| AppError::new(StatusCode::CONFLICT, "Session is no longer waiting"))?;
+        (session.purpose.clone(), session.logger.clone())
+    };
+    let definition = prepared.factory.definition();
+    let identity = prepared.factory.identity(&prepared.settings)?;
+    identity.validate()?;
+    let fingerprint = configuration_fingerprint(&definition.id, &prepared.settings)?;
+    let event_metadata = json!({
+        "agent_name": identity.name,
+        "agent_version": identity.version,
+        "factory": definition.id,
+        "configuration_fingerprint": fingerprint.clone(),
+    });
+    let participant_id = state
+        .store
+        .upsert_participant(ParticipantRecord {
+            experiment_id: state.experiment_id.clone(),
+            participant_kind: "agent".to_string(),
+            identity_provider: "agent".to_string(),
+            external_id: Some(format!(
+                "{}@{}#{}",
+                event_metadata["agent_name"].as_str().unwrap_or("agent"),
+                event_metadata["agent_version"]
+                    .as_str()
+                    .unwrap_or("unknown"),
+                fingerprint
+            )),
+            metadata: event_metadata.clone(),
+        })
+        .await?;
+    let research_id = state
+        .store
+        .participant_research_id(participant_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Agent identifier is missing",
+            )
+        })?;
+    let agent_session_id = state
+        .memory
+        .write()
+        .await
+        .create_participant(participant_id, research_id, "agent".to_string(), purpose)
+        .id
+        .clone();
+    let context = AgentContext {
+        role: PlayerRole::B,
+        seed: prepared.agent_seed,
+        settings: prepared.settings,
+        factory_secrets: prepared.factory_secrets,
+        agent_instance_secrets: prepared.agent_instance_secrets,
+        logger: logger.for_agent(participant_id, PlayerRole::B),
+    };
+    let agent = match tokio::time::timeout(
+        Duration::from_secs_f64(prepared.timeout),
+        prepared.factory.create(context),
+    )
+    .await
+    {
+        Ok(Ok(agent)) => agent,
+        Ok(Err(error)) => {
+            return Err(AppError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                error.to_string(),
+            ))
+        }
+        Err(_) => {
+            return Err(AppError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "The configured agent could not be initialized",
+            ))
+        }
+    };
+    let event_metadata = agent_event_metadata(&event_metadata);
+    let transition_lock = session_transition_lock(state, public_session_id).await;
+    let transition_guard = transition_lock.lock().await;
+    let pending_key = agent_key(public_session_id, &agent_session_id);
+    state
+        .pending_agents
+        .lock()
+        .await
+        .insert(pending_key.clone(), agent);
+    let attach_result = {
+        let mut memory = state.memory.write().await;
+        let runtime_agent = memory.participants.get(&agent_session_id).cloned();
+        let session = memory
+            .sessions
+            .get_mut(public_session_id)
+            .filter(|session| session.lifecycle == SessionLifecycle::Forming);
+        match (runtime_agent, session) {
+            (None, _) => Err(AppError::not_found("Agent participant not found.")),
+            (_, None) => Err(AppError::new(
+                StatusCode::CONFLICT,
+                "Session is no longer waiting",
+            )),
+            (Some(runtime_agent), Some(session)) => {
+                session.participants.insert(
+                    agent_session_id.clone(),
+                    SessionParticipant {
+                        participant_session_id: agent_session_id.clone(),
+                        participant_id: runtime_agent.participant_id,
+                        source: "agent".to_string(),
+                        role: Seat::B,
+                        connected: true,
+                        ready: true,
+                        audio_ready: true,
+                        consent_decisions: HashMap::new(),
+                        joined_at: now_iso(),
+                        updated_at: now_iso(),
+                        disconnected_at: None,
+                        reconnect_deadline_at: None,
+                    },
+                );
+                Ok(())
+            }
+        }
+    };
+    if let Err(error) = attach_result {
+        if let Some(mut agent) = state.pending_agents.lock().await.remove(&pending_key) {
+            let _ = agent.shutdown().await;
+        }
+        return Err(error);
+    }
+    if let Err(error) =
+        persist_session_participant(state, public_session_id, &agent_session_id).await
+    {
+        if let Some(session) = state
+            .memory
+            .write()
+            .await
+            .sessions
+            .get_mut(public_session_id)
+        {
+            session.participants.remove(&agent_session_id);
+        }
+        if let Some(mut agent) = state.pending_agents.lock().await.remove(&pending_key) {
+            let _ = agent.shutdown().await;
+        }
+        return Err(AppError::from(error));
+    }
+    persist_session_event(
+        state,
+        public_session_id,
+        Some(&agent_session_id),
+        "participant_joined",
+        json!({"role": "B", "kind": "agent", "agent": event_metadata}),
+        None,
+    )
+    .await;
+    drop(transition_guard);
+    broadcast_participant_states(state, public_session_id).await;
+    maybe_start_game(state.clone(), public_session_id).await;
+    Ok(())
 }
 
 /// Role-specific game view used to assemble snapshots and transition deltas.
@@ -4479,8 +4550,58 @@ struct PrivacyFeatureStatus {
 }
 
 /// Serves the database-backed experiment/session dashboard.
-async fn admin_experiments_page(Extension(nonce): Extension<CspNonce>) -> Html<String> {
-    Html(ADMIN_EXPERIMENT_HTML.replacen("<script>", &format!("<script nonce=\"{}\">", nonce.0), 1))
+async fn admin_experiments_page() -> Html<&'static str> {
+    Html(ADMIN_EXPERIMENT_HTML)
+}
+
+/// Serves the embedded dashboard stylesheet as a same-origin protected asset.
+async fn admin_dashboard_css() -> Response {
+    let mut response = ADMIN_EXPERIMENT_CSS.into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/css; charset=utf-8"),
+    );
+    response
+}
+
+/// Serves the embedded dashboard module as a same-origin protected asset.
+async fn admin_dashboard_javascript() -> Response {
+    let mut response = ADMIN_EXPERIMENT_JAVASCRIPT.into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/javascript; charset=utf-8"),
+    );
+    response
+}
+
+/// Serves the dashboard's mutable state module as a same-origin protected asset.
+async fn admin_dashboard_state_javascript() -> Response {
+    let mut response = ADMIN_EXPERIMENT_STATE_JAVASCRIPT.into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/javascript; charset=utf-8"),
+    );
+    response
+}
+
+/// Serves pure dashboard formatting helpers as a same-origin protected asset.
+async fn admin_dashboard_format_javascript() -> Response {
+    let mut response = ADMIN_EXPERIMENT_FORMAT_JAVASCRIPT.into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/javascript; charset=utf-8"),
+    );
+    response
+}
+
+/// Serves administrator request helpers as a same-origin protected asset.
+async fn admin_dashboard_api_javascript() -> Response {
+    let mut response = ADMIN_EXPERIMENT_API_JAVASCRIPT.into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/javascript; charset=utf-8"),
+    );
+    response
 }
 
 /// Serves the installation-wide privacy status inside the protected administrator area.
@@ -5929,11 +6050,18 @@ async fn admin_save_experiment_config<A: Game>(
     Path(experiment_id): Path<String>,
     Json(request): Json<AdminSaveExperimentConfigRequest>,
 ) -> Result<Json<Value>, AppError> {
+    let runtime_guard = lock_runtime_router_build(&state, &experiment_id).await;
     let experiment = state
         .store
         .experiment_definition(&experiment_id)
         .await?
         .ok_or_else(|| AppError::not_found("Experiment not found."))?;
+    if experiment.status != "inactive" {
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            "Experiment configuration can only be edited while the experiment is inactive",
+        ));
+    }
     if experiment.game_version != state.game_descriptor.version.to_string() {
         return Err(AppError::new(
             StatusCode::CONFLICT,
@@ -5990,6 +6118,8 @@ async fn admin_save_experiment_config<A: Game>(
         )
         .await
         .map_err(|error| AppError::new(StatusCode::CONFLICT, error.to_string()))?;
+    invalidate_runtime_router(&state, &experiment_id).await;
+    drop(runtime_guard);
     let prolific_issues = if prolific_configuration_complete(&config) {
         run_and_cache_prolific_activation_preflight(
             &state,
@@ -6039,6 +6169,7 @@ async fn admin_archive_experiment<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     Path(experiment_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    let runtime_guard = lock_runtime_router_build(&state, &experiment_id).await;
     state
         .store
         .archive_experiment(&experiment_id)
@@ -6051,6 +6182,8 @@ async fn admin_archive_experiment<A: Game>(
                 AppError::new(StatusCode::CONFLICT, message)
             }
         })?;
+    invalidate_runtime_router(&state, &experiment_id).await;
+    drop(runtime_guard);
     Ok(Json(
         json!({ "experiment_id": experiment_id, "status": "archived" }),
     ))
@@ -6061,6 +6194,51 @@ async fn admin_game_settings<A: Game>(
     State(state): State<Arc<AppState<A>>>,
 ) -> Json<StoredGameSettings> {
     Json(state.game_settings.read().await.clone())
+}
+
+/// Acquires the construction lock shared by one cached experiment runtime, when hosted.
+async fn lock_runtime_router_build<A: Game>(
+    state: &AppState<A>,
+    experiment_id: &str,
+) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    let locks = state.runtime_router_build_locks.as_ref()?;
+    let lock = {
+        let mut locks = locks.write().await;
+        locks
+            .entry(experiment_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    };
+    Some(lock.lock_owned().await)
+}
+
+/// Removes one mounted runtime after a durable change makes its captured state stale.
+async fn invalidate_runtime_router<A: Game>(state: &AppState<A>, experiment_id: &str) {
+    if let Some(cache) = &state.runtime_router_cache {
+        cache.write().await.remove(experiment_id);
+    }
+}
+
+/// Evicts cached inactive runtimes after installation-wide provider settings change.
+async fn invalidate_inactive_runtime_routers<A: Game>(state: &AppState<A>) {
+    let Some(cache) = &state.runtime_router_cache else {
+        return;
+    };
+    let experiment_ids = cache.read().await.keys().cloned().collect::<Vec<_>>();
+    for experiment_id in experiment_ids {
+        let guard = lock_runtime_router_build(state, &experiment_id).await;
+        let inactive = state
+            .store
+            .experiment_definition(&experiment_id)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|experiment| experiment.status == "inactive");
+        if inactive {
+            cache.write().await.remove(&experiment_id);
+        }
+        drop(guard);
+    }
 }
 
 /// Updates the shared institution with optimistic concurrency.
@@ -6142,6 +6320,7 @@ async fn admin_update_game_settings<A: Game>(
         prolific_api_base_url,
         revision,
     };
+    invalidate_inactive_runtime_routers(&state).await;
     Ok(Json(json!({ "revision": revision })))
 }
 
@@ -6323,6 +6502,9 @@ async fn admin_update_experiment_status<A: Game>(
         .update_experiment_status(&state.experiment_id, lifecycle.as_str())
         .await?;
     *current_lifecycle = lifecycle;
+    if lifecycle == ExperimentLifecycle::Inactive {
+        invalidate_runtime_router(&state, &state.experiment_id).await;
+    }
     *state.participant_url.write().await = next_participant_url;
     tracing::info!(experiment_id = %state.experiment_id, status = lifecycle.as_str(), "administrator updated experiment status");
     let participant_url = state.participant_url.read().await.clone();
@@ -7798,6 +7980,11 @@ fn csv_escape(value: &str) -> String {
 }
 
 const ADMIN_EXPERIMENT_HTML: &str = include_str!("app/admin_dashboard.html");
+const ADMIN_EXPERIMENT_CSS: &str = include_str!("app/admin_dashboard.css");
+const ADMIN_EXPERIMENT_JAVASCRIPT: &str = include_str!("app/admin_dashboard.js");
+const ADMIN_EXPERIMENT_STATE_JAVASCRIPT: &str = include_str!("app/admin_dashboard_state.js");
+const ADMIN_EXPERIMENT_FORMAT_JAVASCRIPT: &str = include_str!("app/admin_dashboard_format.mjs");
+const ADMIN_EXPERIMENT_API_JAVASCRIPT: &str = include_str!("app/admin_dashboard_api.mjs");
 const CORPUS_EXPORT_SCHEMA_V1: &str = include_str!("app/corpus-export-schema-v1.json");
 
 async fn game_socket<A: Game>(

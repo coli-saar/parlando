@@ -32,7 +32,7 @@ function config(): ExperimentInfo {
 
 function api() {
   return {
-    getExperiment: vi.fn(async () => config()), register: vi.fn(async () => undefined),
+    getExperiment: vi.fn(async () => config()), hasCredential: vi.fn(() => false), register: vi.fn(async () => undefined),
     acceptConsents: vi.fn(async () => undefined), join: vi.fn(async () => waiting),
     getParticipantState: vi.fn(async () => active),
     getGameSession: vi.fn(async () => ({ websocketUrl: "/ws/game/ROOM1", token: "ticket" })),
@@ -67,6 +67,30 @@ beforeEach(() => { FakeWebSocket.instances = []; vi.stubGlobal("WebSocket", Fake
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("ParticipantApp participant state machine", () => {
+  it("restores a completed participant directly to the terminal outcome", async () => {
+    const client = api();
+    client.hasCredential = vi.fn(() => true);
+    client.join.mockResolvedValue({
+      state: "ended",
+      public_session_id: "ROOM1",
+      role: "A",
+      result: {
+        outcome: "completed",
+        reason: "game_completed",
+        completion: null,
+        final_observation: { view: "final" },
+        handoff: null
+      }
+    });
+
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+
+    expect(await screen.findByText(/responses have been recorded/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Enter waiting room" })).not.toBeInTheDocument();
+    expect(client.register).not.toHaveBeenCalled();
+    expect(client.getGameSession).not.toHaveBeenCalled();
+  });
+
   it("moves Waiting to Active only from an authoritative snapshot", async () => {
     const client = api();
     render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
@@ -163,6 +187,44 @@ describe("ParticipantApp participant state machine", () => {
     expect(enter).toBeEnabled();
     fireEvent.click(enter);
     await waitFor(() => expect(client.acceptConsents).toHaveBeenCalledWith({ research: true }));
+  });
+
+  it("does not fabricate a local refusal for an invalid Prolific configuration", async () => {
+    const client = api();
+    client.getExperiment.mockResolvedValue({
+      ...config(),
+      consents: [{ id: "research", title: "Research use", body: "Use my responses.", required: true }],
+      recruitment: { provider: "prolific", decline_url: null }
+    });
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+
+    await screen.findByRole("button", { name: "Enter waiting room" });
+    expect(screen.queryByRole("button", { name: "Do not consent" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Do not consent" })).not.toBeInTheDocument();
+    expect(client.register).not.toHaveBeenCalled();
+  });
+
+  it("shows the admitted waiting room while its game channel is retried", async () => {
+    const client = api();
+    let credentialAvailable = false;
+    client.hasCredential = vi.fn(() => credentialAvailable);
+    client.register.mockImplementation(async () => { credentialAvailable = true; });
+    client.getGameSession
+      .mockRejectedValueOnce(new TypeError("temporary channel failure"))
+      .mockResolvedValueOnce({ websocketUrl: "/ws/game/ROOM1", token: "ticket" });
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+
+    const enter = await screen.findByRole("button", { name: "Enter waiting room" });
+    fireEvent.click(enter);
+    expect(await screen.findByRole("heading", { name: "Waiting for another participant" })).toBeInTheDocument();
+    expect(screen.getByText("temporary channel failure")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Enter waiting room" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry connection" }));
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    expect(client.register).toHaveBeenCalledOnce();
+    expect(client.join).toHaveBeenCalledOnce();
+    expect(client.getGameSession).toHaveBeenCalledTimes(2);
   });
 
   it.each<[ParticipantOutcome, RegExp]>([

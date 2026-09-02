@@ -337,7 +337,8 @@ export function socketUrl(websocketUrl: string, token: string): string {
 export class ParticipantClient {
   private readonly baseUrl: string;
   private participantCredential: string | null = null;
-  private participantGeneration = 0;
+  private participantRegistration: Record<string, unknown> | null = null;
+  private registrationRequest: Promise<void> | null = null;
 
   /** Creates a managed client for one experiment-scoped API root. */
   constructor(options: ParticipantClientOptions = {}) {
@@ -367,14 +368,22 @@ export class ParticipantClient {
 
   /** Registers a participant and retains the returned credential inside this client. */
   async register(): Promise<void> {
-    const generation = ++this.participantGeneration;
-    const participant = await this.post<ParticipantCreateResponse>(
-      "/api/participants",
-      prolificIntakeParameters()
-    );
-    if (generation === this.participantGeneration) {
+    if (this.registrationRequest) return this.registrationRequest;
+    this.participantRegistration ??= captureProlificIntakeParameters();
+    this.registrationRequest = (async () => {
+      const participant = await this.post<ParticipantCreateResponse>(
+        "/api/participants",
+        this.participantRegistration
+      );
       this.participantCredential = participant.participant_credential;
-      writeSessionCredential(this.baseUrl, participant.participant_credential);
+      if (writeSessionCredential(this.baseUrl, participant.participant_credential)) {
+        scrubProlificIntakeParameters();
+      }
+    })();
+    try {
+      await this.registrationRequest;
+    } finally {
+      this.registrationRequest = null;
     }
   }
 
@@ -506,8 +515,8 @@ export class ParticipantClient {
   }
 }
 
-/** Reads the current Prolific query parameters and removes them from the visible URL. */
-function prolificIntakeParameters(): Record<string, unknown> {
+/** Captures the current Prolific launch identity without making the launch URL unrecoverable. */
+function captureProlificIntakeParameters(): Record<string, unknown> {
   if (typeof window === "undefined") return {};
   const query = new URLSearchParams(window.location.search);
   const participantId = query.get("PROLIFIC_PID");
@@ -516,10 +525,16 @@ function prolificIntakeParameters(): Record<string, unknown> {
   const prolificToken = query.get("prolific_token");
   if (!participantId && !studyId && !sessionId) return {};
   if (!participantId || !studyId || !sessionId) throw new Error("The Prolific link is missing required parameters.");
+  return { prolific: { participant_id: participantId, study_id: studyId, session_id: sessionId, prolific_token: prolificToken } };
+}
+
+/** Removes recruitment identifiers only after the participant credential is recoverable on reload. */
+function scrubProlificIntakeParameters(): void {
+  if (typeof window === "undefined") return;
+  const query = new URLSearchParams(window.location.search);
   for (const key of ["PROLIFIC_PID", "STUDY_ID", "SESSION_ID", "prolific_token"]) query.delete(key);
   const suffix = query.toString();
   window.history.replaceState(null, "", `${window.location.pathname}${suffix ? `?${suffix}` : ""}${window.location.hash}`);
-  return { prolific: { participant_id: participantId, study_id: studyId, session_id: sessionId, prolific_token: prolificToken } };
 }
 
 /** Loads one tab-scoped participant credential while tolerating disabled browser storage. */
@@ -532,13 +547,15 @@ function readSessionCredential(baseUrl: string): string | null {
   }
 }
 
-/** Persists one credential only for this browser tab and experiment route. */
-function writeSessionCredential(baseUrl: string, credential: string): void {
-  if (typeof window === "undefined") return;
+/** Persists one credential for this tab and confirms that a remounted client can recover it. */
+function writeSessionCredential(baseUrl: string, credential: string): boolean {
+  if (typeof window === "undefined") return false;
   try {
-    window.sessionStorage.setItem(`parlando.participant.${baseUrl}`, credential);
+    const key = `parlando.participant.${baseUrl}`;
+    window.sessionStorage.setItem(key, credential);
+    return window.sessionStorage.getItem(key) === credential;
   } catch {
-    // Reload recovery is best-effort when storage is disabled.
+    return false;
   }
 }
 

@@ -2,6 +2,19 @@ use super::*;
 use tokio::sync::Semaphore;
 use tower::ServiceExt;
 
+/// Route trees built around one experiment state before installation-level mounting.
+struct BuiltRouters {
+    primary: Router,
+    runtime_admin: Option<Router>,
+}
+
+/// Public namespace selecting one of an experiment runtime's two route surfaces.
+#[derive(Clone, Copy)]
+enum RuntimeSurface {
+    Participant,
+    Admin,
+}
+
 /// Shared factory for runtime components which may vary with experiment configuration.
 type ServeOptionsFactory<A> =
     Arc<dyn Fn(&ExperimentConfig) -> Result<ServeOptions<A>> + Send + Sync>;
@@ -15,6 +28,8 @@ struct RuntimeShared<A: Game> {
     telemetry: Arc<RuntimeTelemetry>,
     runtime_registry: Arc<RwLock<HashMap<String, Weak<AppState<A>>>>>,
     prolific_preflight_cache: Arc<RwLock<HashMap<String, ProlificPreflightCacheEntry>>>,
+    router_cache: Arc<RwLock<HashMap<String, MountedExperimentRouters>>>,
+    router_build_locks: Arc<RwLock<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 /// One compiled game's installation-level dispatcher and lazily built experiment routers.
@@ -26,7 +41,8 @@ struct GameHost<A: Game> {
     admin_auth: Arc<AdminAuthenticator>,
     game_settings: Arc<RwLock<StoredGameSettings>>,
     options_factory: ServeOptionsFactory<A>,
-    routers: RwLock<HashMap<String, Router>>,
+    routers: Arc<RwLock<HashMap<String, MountedExperimentRouters>>>,
+    router_build_locks: Arc<RwLock<HashMap<String, Arc<Mutex<()>>>>>,
     telemetry: Arc<RuntimeTelemetry>,
     runtime_registry: Arc<RwLock<HashMap<String, Weak<AppState<A>>>>>,
     prolific_preflight_cache: Arc<RwLock<HashMap<String, ProlificPreflightCacheEntry>>>,
@@ -71,7 +87,18 @@ where
     A::State: Serialize,
 {
     /// Returns an existing router or constructs one from the experiment's stored revision.
-    async fn experiment_router(&self, experiment_id: &str) -> Result<Router> {
+    async fn experiment_router(&self, experiment_id: &str) -> Result<MountedExperimentRouters> {
+        if let Some(router) = self.routers.read().await.get(experiment_id).cloned() {
+            return Ok(router);
+        }
+        let build_lock = {
+            let mut locks = self.router_build_locks.write().await;
+            locks
+                .entry(experiment_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let _build_guard = build_lock.lock().await;
         if let Some(router) = self.routers.read().await.get(experiment_id).cloned() {
             return Ok(router);
         }
@@ -95,7 +122,7 @@ where
         })?;
         let mut options = (self.options_factory)(&config)?;
         options.game_descriptor = Some(self.descriptor.clone());
-        let router = build_router_with_resources(
+        let built = build_router_with_resources(
             self.game_factory.clone(),
             config,
             options,
@@ -106,10 +133,19 @@ where
                 telemetry: self.telemetry.clone(),
                 runtime_registry: self.runtime_registry.clone(),
                 prolific_preflight_cache: self.prolific_preflight_cache.clone(),
+                router_cache: self.routers.clone(),
+                router_build_locks: self.router_build_locks.clone(),
             }),
             true,
         )
         .await?;
+        let router = MountedExperimentRouters {
+            participant: built.primary,
+            admin: built
+                .runtime_admin
+                .expect("persisted runtimes expose administrator routes")
+                .layer(Extension(AdminExperimentScope(experiment_id.to_string()))),
+        };
         let mut routers = self.routers.write().await;
         Ok(routers
             .entry(experiment_id.to_string())
@@ -135,153 +171,26 @@ fn apply_bootstrap_settings(
     );
 }
 
-/// Proxies a participant request to the isolated runtime selected by its path.
-async fn dispatch_experiment_request<A: Game>(
-    State(host): State<Arc<GameHost<A>>>,
-    Path((experiment_id, path)): Path<(String, String)>,
-    request: Request,
-) -> Response
+/// Resolves one experiment namespace from an unmatched host URI without rewriting it.
+async fn dispatch_experiment_service<A: Game>(host: Arc<GameHost<A>>, request: Request) -> Response
 where
     A::State: Serialize,
 {
-    dispatch_to_experiment(&host, &experiment_id, &path, request).await
-}
-
-/// Proxies an experiment-root request to the selected participant client.
-async fn dispatch_experiment_root<A: Game>(
-    State(_host): State<Arc<GameHost<A>>>,
-    Path(experiment_id): Path<String>,
-    _request: Request,
-) -> Response
-where
-    A::State: Serialize,
-{
-    Redirect::temporary(&format!("/e/{experiment_id}/")).into_response()
-}
-
-/// Serves the participant client at the canonical trailing-slash experiment URL.
-async fn dispatch_experiment_index<A: Game>(
-    State(host): State<Arc<GameHost<A>>>,
-    Path(experiment_id): Path<String>,
-    request: Request,
-) -> Response
-where
-    A::State: Serialize,
-{
-    dispatch_to_experiment(&host, &experiment_id, "", request).await
-}
-
-/// Proxies an experiment-scoped administrator request to runtime or shared storage.
-async fn dispatch_admin_runtime_request<A: Game>(
-    State(host): State<Arc<GameHost<A>>>,
-    Path((experiment_id, path)): Path<(String, String)>,
-    request: Request,
-) -> Response
-where
-    A::State: Serialize,
-{
-    let child_path = format!("api/admin/{path}");
-    let storage_only = path == "sessions"
-        || path.starts_with("sessions/")
-        || path == "export"
-        || path.starts_with("participants/");
-    if storage_only {
-        dispatch_to_router(
-            host.admin_router.clone(),
-            &child_path,
-            request,
-            Some(AdminExperimentScope(experiment_id)),
-        )
-        .await
+    let path = request.uri().path();
+    let (surface, relative_path) = if let Some(path) = path.strip_prefix("/e/") {
+        (RuntimeSurface::Participant, path)
+    } else if let Some(path) = path.strip_prefix("/api/admin/runtime/") {
+        (RuntimeSurface::Admin, path)
     } else {
-        dispatch_to_experiment(&host, &experiment_id, &child_path, request).await
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let experiment_id = relative_path.split('/').next().filter(|id| !id.is_empty());
+    let Some(experiment_id) = experiment_id else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if matches!(surface, RuntimeSurface::Participant) && relative_path == experiment_id {
+        return Redirect::temporary(&format!("/e/{experiment_id}/")).into_response();
     }
-}
-
-/// Proxies configuration reads and invalidates an inactive runtime after a successful save.
-async fn dispatch_experiment_config_request<A: Game>(
-    State(host): State<Arc<GameHost<A>>>,
-    Path(experiment_id): Path<String>,
-    request: Request,
-) -> Response
-where
-    A::State: Serialize,
-{
-    let mutation = request.method() != Method::GET;
-    let child_path = format!("api/admin/experiments/{experiment_id}/config");
-    let response = dispatch_to_router(host.admin_router.clone(), &child_path, request, None).await;
-    if mutation && response.status().is_success() {
-        host.routers.write().await.remove(&experiment_id);
-    }
-    response
-}
-
-/// Proxies storage-only archival and evicts a stale cached runtime after success.
-async fn dispatch_experiment_archive_request<A: Game>(
-    State(host): State<Arc<GameHost<A>>>,
-    Path(experiment_id): Path<String>,
-    request: Request,
-) -> Response
-where
-    A::State: Serialize,
-{
-    let child_path = format!("api/admin/experiments/{experiment_id}/archive");
-    let response = dispatch_to_router(host.admin_router.clone(), &child_path, request, None).await;
-    if response.status().is_success() {
-        host.routers.write().await.remove(&experiment_id);
-    }
-    response
-}
-
-/// Proxies game-server-wide administration through the primary runtime's shared auth surface.
-async fn dispatch_primary_request<A: Game>(
-    State(host): State<Arc<GameHost<A>>>,
-    Path(path): Path<String>,
-    request: Request,
-) -> Response
-where
-    A::State: Serialize,
-{
-    let child_path = format!("api/admin/{path}");
-    dispatch_to_router(host.admin_router.clone(), &child_path, request, None).await
-}
-
-/// Proxies a fixed administrator root path through the primary experiment router.
-async fn dispatch_primary_root<A: Game>(
-    State(host): State<Arc<GameHost<A>>>,
-    request: Request,
-) -> Response
-where
-    A::State: Serialize,
-{
-    let path = request.uri().path().trim_start_matches('/').to_string();
-    dispatch_to_router(host.admin_router.clone(), &path, request, None).await
-}
-
-/// Rewrites one outer path and invokes a fully layered child Axum router.
-async fn dispatch_to_experiment<A: Game>(
-    host: &Arc<GameHost<A>>,
-    experiment_id: &str,
-    path: &str,
-    request: Request,
-) -> Response
-where
-    A::State: Serialize,
-{
-    dispatch_to_experiment_scoped(host, experiment_id, path, request, None).await
-}
-
-/// Rewrites one outer path and optionally attaches a storage experiment scope.
-async fn dispatch_to_experiment_scoped<A: Game>(
-    host: &Arc<GameHost<A>>,
-    experiment_id: &str,
-    path: &str,
-    request: Request,
-    admin_scope: Option<AdminExperimentScope>,
-) -> Response
-where
-    A::State: Serialize,
-{
     let router = match host.experiment_router(experiment_id).await {
         Ok(router) => router,
         Err(error) => {
@@ -292,53 +201,10 @@ where
                 .into_response()
         }
     };
-    dispatch_to_router(router, path, request, admin_scope).await
-}
-
-/// Rewrites one outer request and invokes an already constructed child router.
-async fn dispatch_to_router(
-    router: Router,
-    path: &str,
-    mut request: Request,
-    admin_scope: Option<AdminExperimentScope>,
-) -> Response {
-    let query = request
-        .uri()
-        .query()
-        .map(|query| format!("?{query}"))
-        .unwrap_or_default();
-    let rewritten = format!("/{}{}", path.trim_start_matches('/'), query);
-    match rewritten.parse() {
-        Ok(uri) => *request.uri_mut() = uri,
-        Err(error) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!("invalid routed request: {error}")})),
-            )
-                .into_response()
-        }
-    }
-    // Axum accumulates path captures in a private request extension. A dispatch is a
-    // fresh routing boundary, so retaining the outer wildcard would make child
-    // `Path<T>` extractors observe both outer and inner parameters.
-    let connect_info = request
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .cloned();
-    let on_upgrade = request
-        .extensions()
-        .get::<hyper::upgrade::OnUpgrade>()
-        .cloned();
-    *request.extensions_mut() = http::Extensions::new();
-    if let Some(connect_info) = connect_info {
-        request.extensions_mut().insert(connect_info);
-    }
-    if let Some(on_upgrade) = on_upgrade {
-        request.extensions_mut().insert(on_upgrade);
-    }
-    if let Some(admin_scope) = admin_scope {
-        request.extensions_mut().insert(admin_scope);
-    }
+    let router = match surface {
+        RuntimeSurface::Participant => router.participant,
+        RuntimeSurface::Admin => router.admin,
+    };
     router
         .oneshot(request)
         .await
@@ -368,6 +234,8 @@ where
     let telemetry = Arc::new(RuntimeTelemetry::default());
     let runtime_registry = Arc::new(RwLock::new(HashMap::new()));
     let prolific_preflight_cache = Arc::new(RwLock::new(HashMap::new()));
+    let router_cache = Arc::new(RwLock::new(HashMap::new()));
+    let router_build_locks = Arc::new(RwLock::new(HashMap::new()));
     let cleanup_auth = admin_auth.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
@@ -394,6 +262,8 @@ where
         telemetry: telemetry.clone(),
         runtime_registry: runtime_registry.clone(),
         prolific_preflight_cache: prolific_preflight_cache.clone(),
+        router_cache: router_cache.clone(),
+        router_build_locks: router_build_locks.clone(),
     };
     let mut admin_config = bootstrap.clone();
     admin_config.experiment.id = Some("__dashboard__".to_string());
@@ -406,7 +276,8 @@ where
         Some(shared),
         false,
     )
-    .await?;
+    .await?
+    .primary;
     let host = Arc::new(GameHost {
         game_factory,
         bootstrap,
@@ -415,46 +286,34 @@ where
         admin_auth,
         game_settings,
         options_factory,
-        routers: RwLock::new(HashMap::new()),
+        routers: router_cache,
+        router_build_locks,
         telemetry,
         runtime_registry,
         prolific_preflight_cache,
         admin_router,
         health_slots: Semaphore::new(1),
     });
-    Ok(Router::new()
+    let admin_router = host.admin_router.clone();
+    let runtime_host = host.clone();
+    let runtime_service = tower::service_fn(move |request| {
+        let host = runtime_host.clone();
+        async move {
+            Ok::<_, std::convert::Infallible>(dispatch_experiment_service(host, request).await)
+        }
+    });
+    let host_router = Router::new()
         .route("/", get(game_root))
-        .route("/e/:experiment_id", any(dispatch_experiment_root::<A>))
-        .route("/e/:experiment_id/", any(dispatch_experiment_index::<A>))
-        .route(
-            "/e/:experiment_id/*path",
-            any(dispatch_experiment_request::<A>),
-        )
-        .route(
-            "/api/admin/runtime/:experiment_id/*path",
-            any(dispatch_admin_runtime_request::<A>),
-        )
-        .route(
-            "/api/admin/experiments/:experiment_id/config",
-            any(dispatch_experiment_config_request::<A>),
-        )
-        .route(
-            "/api/admin/experiments/:experiment_id/archive",
-            any(dispatch_experiment_archive_request::<A>),
-        )
-        .route("/admin", any(dispatch_primary_root::<A>))
-        .route("/admin/", any(dispatch_primary_root::<A>))
-        .route("/admin/login", any(dispatch_primary_root::<A>))
-        .route("/admin/experiments", any(dispatch_primary_root::<A>))
-        .route("/admin/privacy", any(dispatch_primary_root::<A>))
-        .route("/api/admin/*path", any(dispatch_primary_request::<A>))
         .layer(ConcurrencyLimitLayer::new(256))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(30),
         ))
         .route("/health", get(game_health::<A>))
-        .with_state(host))
+        .with_state(host);
+    Ok(admin_router
+        .merge(host_router)
+        .fallback_service(runtime_service))
 }
 
 /// Builds and runs one compiled game's multi-experiment HTTP/WebSocket server.
@@ -510,7 +369,11 @@ pub async fn build_router<A: Game, GF: GameFactory<Game = A>>(
 where
     A::State: Serialize,
 {
-    build_router_with_resources(Arc::new(game_factory), config, options, None, true).await
+    Ok(
+        build_router_with_resources(Arc::new(game_factory), config, options, None, true)
+            .await?
+            .primary,
+    )
 }
 
 /// Builds one experiment router with optional installation-owned storage and authentication.
@@ -520,7 +383,7 @@ async fn build_router_with_resources<A: Game>(
     options: ServeOptions<A>,
     shared: Option<RuntimeShared<A>>,
     persist_experiment: bool,
-) -> Result<Router>
+) -> Result<BuiltRouters>
 where
     A::State: Serialize,
 {
@@ -551,6 +414,15 @@ where
         .id
         .clone()
         .unwrap_or_else(generated_experiment_id);
+    let mounted_runtime = shared.is_some() && persist_experiment;
+    let participant_prefix = mounted_runtime
+        .then(|| format!("/e/{experiment_id}"))
+        .unwrap_or_default();
+    let runtime_admin_prefix = mounted_runtime
+        .then(|| format!("/api/admin/runtime/{experiment_id}"))
+        .unwrap_or_default();
+    let participant_path = |path: &str| format!("{participant_prefix}{path}");
+    let runtime_admin_path = |path: &str| format!("{runtime_admin_prefix}{path}");
     let version_manifest = version_manifest(options.game_version_manifest.clone());
     let (lifecycle, config_revision) = if persist_experiment {
         let lifecycle = store
@@ -699,6 +571,10 @@ where
         rejection_windows: RwLock::new(HashMap::new()),
         telemetry,
         runtime_registry: runtime_registry.clone(),
+        runtime_router_cache: shared.as_ref().map(|shared| shared.router_cache.clone()),
+        runtime_router_build_locks: shared
+            .as_ref()
+            .map(|shared| shared.router_build_locks.clone()),
         session_transition_locks: RwLock::new(HashMap::new()),
         game_connections: RwLock::new(HashMap::new()),
         audio_connections: RwLock::new(HashMap::new()),
@@ -715,37 +591,55 @@ where
     }
 
     let public_routes = Router::new()
-        .route("/health", get(health::<A>))
-        .route("/api/config", get(public_config::<A>))
-        .route("/api/participants", post(create_participant::<A>));
+        .route(&participant_path("/health"), get(health::<A>))
+        .route(&participant_path("/api/config"), get(public_config::<A>))
+        .route(
+            &participant_path("/api/participants"),
+            post(create_participant::<A>),
+        );
     let public_admin_routes = Router::new()
-        .route("/admin", get(admin_entry))
-        .route("/admin/", get(admin_entry))
-        .route("/admin/login", get(admin_login_page::<A>))
-        .route("/api/admin/setup", post(admin_setup::<A>))
-        .route("/api/admin/login", post(admin_login::<A>))
+        .route(&participant_path("/admin"), get(admin_entry))
+        .route(&participant_path("/admin/"), get(admin_entry))
+        .route(
+            &participant_path("/admin/login"),
+            get(admin_login_page::<A>),
+        )
+        .route(
+            &participant_path("/api/admin/setup"),
+            post(admin_setup::<A>),
+        )
+        .route(
+            &participant_path("/api/admin/login"),
+            post(admin_login::<A>),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_admin_network::<A>,
         ));
     let participant_routes = Router::new()
-        .route("/api/consent", post(consent::<A>))
-        .route("/api/participant-state", get(get_participant_state::<A>))
-        .route("/api/sessions", post(create_session::<A>))
+        .route(&participant_path("/api/consent"), post(consent::<A>))
         .route(
-            "/api/sessions/:public_session_id/leave",
+            &participant_path("/api/participant-state"),
+            get(get_participant_state::<A>),
+        )
+        .route(
+            &participant_path("/api/sessions"),
+            post(create_session::<A>),
+        )
+        .route(
+            &participant_path("/api/sessions/:public_session_id/leave"),
             post(leave_session::<A>),
         )
         .route(
-            "/api/sessions/:public_session_id/game-session",
+            &participant_path("/api/sessions/:public_session_id/game-session"),
             post(game_session::<A>),
         )
         .route(
-            "/api/sessions/:public_session_id/audio-session",
+            &participant_path("/api/sessions/:public_session_id/audio-session"),
             post(audio_session::<A>),
         )
         .route(
-            "/api/sessions/:public_session_id/voice-diagnostics",
+            &participant_path("/api/sessions/:public_session_id/voice-diagnostics"),
             post(add_voice_diagnostic::<A>),
         )
         .route_layer(middleware::from_fn_with_state(
@@ -753,91 +647,135 @@ where
             require_participant_auth::<A>,
         ));
     let admin_routes = Router::new()
-        .route("/admin/experiments", get(admin_experiments_page))
-        .route("/admin/privacy", get(admin_privacy_page::<A>))
-        .route("/api/admin/privacy", get(admin_privacy_json::<A>))
         .route(
-            "/api/admin/privacy.json",
+            &participant_path("/admin/experiments"),
+            get(admin_experiments_page),
+        )
+        .route(
+            &participant_path("/admin/assets/admin-dashboard.css"),
+            get(admin_dashboard_css),
+        )
+        .route(
+            &participant_path("/admin/assets/admin-dashboard.js"),
+            get(admin_dashboard_javascript),
+        )
+        .route(
+            &participant_path("/admin/assets/admin-dashboard-state.js"),
+            get(admin_dashboard_state_javascript),
+        )
+        .route(
+            &participant_path("/admin/assets/admin-dashboard-format.js"),
+            get(admin_dashboard_format_javascript),
+        )
+        .route(
+            &participant_path("/admin/assets/admin-dashboard-api.js"),
+            get(admin_dashboard_api_javascript),
+        )
+        .route(
+            &participant_path("/admin/privacy"),
+            get(admin_privacy_page::<A>),
+        )
+        .route(
+            &participant_path("/api/admin/privacy"),
+            get(admin_privacy_json::<A>),
+        )
+        .route(
+            &participant_path("/api/admin/privacy.json"),
             get(admin_privacy_json_download::<A>),
         )
         .route(
-            "/api/admin/privacy.md",
+            &participant_path("/api/admin/privacy.md"),
             get(admin_privacy_markdown_download::<A>),
         )
-        .route("/api/admin/experiment", get(admin_experiment::<A>))
         .route(
-            "/api/admin/experiments",
+            &participant_path("/api/admin/experiment"),
+            get(admin_experiment::<A>),
+        )
+        .route(
+            &participant_path("/api/admin/experiments"),
             get(admin_experiments::<A>).post(admin_create_experiment::<A>),
         )
         .route(
-            "/api/admin/experiments/:experiment_id/clone",
+            &participant_path("/api/admin/experiments/:experiment_id/clone"),
             post(admin_clone_experiment::<A>),
         )
         .route(
-            "/api/admin/experiments/:experiment_id/config",
+            &participant_path("/api/admin/experiments/:experiment_id/config"),
             get(admin_experiment_config::<A>).post(admin_save_experiment_config::<A>),
         )
         .route(
-            "/api/admin/experiments/:experiment_id/privacy",
+            &participant_path("/api/admin/experiments/:experiment_id/privacy"),
             get(admin_experiment_privacy_json::<A>),
         )
         .route(
-            "/api/admin/experiments/:experiment_id/privacy.json",
+            &participant_path("/api/admin/experiments/:experiment_id/privacy.json"),
             get(admin_experiment_privacy_json_download::<A>),
         )
         .route(
-            "/api/admin/experiments/:experiment_id/privacy.md",
+            &participant_path("/api/admin/experiments/:experiment_id/privacy.md"),
             get(admin_experiment_privacy_markdown_download::<A>),
         )
         .route(
-            "/api/admin/experiments/:experiment_id/secrets/reveal",
+            &participant_path("/api/admin/experiments/:experiment_id/secrets/reveal"),
             post(admin_reveal_experiment_secret::<A>),
         )
         .route(
-            "/api/admin/experiments/:experiment_id/config/validate",
+            &participant_path("/api/admin/experiments/:experiment_id/config/validate"),
             post(admin_validate_game_config::<A>),
         )
         .route(
-            "/api/admin/experiments/:experiment_id/revisions",
+            &participant_path("/api/admin/experiments/:experiment_id/revisions"),
             get(admin_experiment_revisions::<A>),
         )
         .route(
-            "/api/admin/experiments/:experiment_id/catalogue",
+            &participant_path("/api/admin/experiments/:experiment_id/catalogue"),
             post(admin_update_experiment_catalogue::<A>),
         )
         .route(
-            "/api/admin/experiments/:experiment_id/archive",
+            &participant_path("/api/admin/experiments/:experiment_id/archive"),
             post(admin_archive_experiment::<A>),
         )
         .route(
-            "/api/admin/game/settings",
+            &participant_path("/api/admin/game/settings"),
             get(admin_game_settings::<A>).post(admin_update_game_settings::<A>),
         )
         .route(
-            "/api/admin/game/secrets/reveal",
+            &participant_path("/api/admin/game/secrets/reveal"),
             post(admin_reveal_game_secret::<A>),
         )
         .route(
-            "/api/admin/experiment/status",
+            &participant_path("/api/admin/experiment/status"),
             post(admin_update_experiment_status::<A>),
         )
-        .route("/api/admin/sessions", get(admin_sessions::<A>))
-        .route("/api/admin/load", get(admin_load::<A>))
         .route(
-            "/api/admin/sessions/:session_id",
+            &participant_path("/api/admin/sessions"),
+            get(admin_sessions::<A>),
+        )
+        .route(&participant_path("/api/admin/load"), get(admin_load::<A>))
+        .route(
+            &participant_path("/api/admin/sessions/:session_id"),
             get(admin_session_detail::<A>),
         )
         .route(
-            "/api/admin/sessions/:session_id/events",
+            &participant_path("/api/admin/sessions/:session_id/events"),
             get(admin_session_events::<A>),
         )
-        .route("/api/admin/export", get(admin_export::<A>))
-        .route("/api/admin/export-schema", get(admin_corpus_export_schema))
         .route(
-            "/api/admin/participants/:research_id/deletion",
+            &participant_path("/api/admin/export"),
+            get(admin_export::<A>),
+        )
+        .route(
+            &participant_path("/api/admin/export-schema"),
+            get(admin_corpus_export_schema),
+        )
+        .route(
+            &participant_path("/api/admin/participants/:research_id/deletion"),
             get(admin_participant_deletion_preview::<A>).post(admin_delete_participant_data::<A>),
         )
-        .route("/api/admin/logout", post(admin_logout::<A>))
+        .route(
+            &participant_path("/api/admin/logout"),
+            post(admin_logout::<A>),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_admin_auth::<A>,
@@ -847,42 +785,101 @@ where
             require_admin_network::<A>,
         ));
     let websocket_routes = Router::new()
-        .route("/ws/game/:public_session_id", get(game_socket::<A>))
-        .route("/ws/audio/:public_session_id", get(audio_socket::<A>));
-    let api = Router::new()
-        .merge(public_routes)
-        .merge(public_admin_routes)
-        .merge(participant_routes)
-        .merge(admin_routes)
-        .merge(websocket_routes)
-        .layer(RequestBodyLimitLayer::new(64 * 1024))
-        .layer(ConcurrencyLimitLayer::new(256))
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(30),
-        ))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            security_headers::<A>,
-        ))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            track_request_load::<A>,
-        ))
-        .layer(cors)
-        .with_state(state.clone());
+        .route(
+            &participant_path("/ws/game/:public_session_id"),
+            get(game_socket::<A>),
+        )
+        .route(
+            &participant_path("/ws/audio/:public_session_id"),
+            get(audio_socket::<A>),
+        );
+    let api = if persist_experiment {
+        Router::new()
+            .merge(public_routes)
+            .merge(public_admin_routes)
+            .merge(participant_routes)
+            .merge(admin_routes)
+            .merge(websocket_routes)
+    } else {
+        Router::new().merge(public_admin_routes).merge(admin_routes)
+    }
+    .layer(RequestBodyLimitLayer::new(64 * 1024))
+    .layer(ConcurrencyLimitLayer::new(256))
+    .layer(TimeoutLayer::with_status_code(
+        StatusCode::REQUEST_TIMEOUT,
+        Duration::from_secs(30),
+    ))
+    .layer(middleware::from_fn_with_state(
+        state.clone(),
+        security_headers::<A>,
+    ))
+    .layer(middleware::from_fn_with_state(
+        state.clone(),
+        track_request_load::<A>,
+    ))
+    .layer(cors)
+    .with_state(state.clone());
 
     spawn_security_cleanup(state.clone(), clean_admin_sessions);
     if clean_admin_sessions {
-        spawn_load_sampler(state);
+        spawn_load_sampler(state.clone());
     }
 
-    if let Some(dist) = client_dist.filter(|path| path.join("index.html").is_file()) {
+    let api = if let Some(dist) = client_dist
+        .filter(|_| persist_experiment)
+        .filter(|path| path.join("index.html").is_file())
+    {
         let index = dist.join("index.html");
-        Ok(api
-            .nest_service("/assets", ServeDir::new(dist.join("assets")))
-            .fallback_service(ServeDir::new(dist).fallback(ServeFile::new(index))))
+        api.route_service(&participant_path("/"), ServeFile::new(index))
+            .nest_service(
+                &participant_path("/assets"),
+                ServeDir::new(dist.join("assets")),
+            )
     } else {
-        Ok(api)
-    }
+        api
+    };
+    let runtime_admin = persist_experiment.then(|| {
+        Router::new()
+            .route(
+                &runtime_admin_path("/experiment/status"),
+                post(admin_update_experiment_status::<A>),
+            )
+            .route(&runtime_admin_path("/sessions"), get(admin_sessions::<A>))
+            .route(
+                &runtime_admin_path("/sessions/:session_id"),
+                get(admin_session_detail::<A>),
+            )
+            .route(
+                &runtime_admin_path("/sessions/:session_id/events"),
+                get(admin_session_events::<A>),
+            )
+            .route(&runtime_admin_path("/export"), get(admin_export::<A>))
+            .route(
+                &runtime_admin_path("/participants/:research_id/deletion"),
+                get(admin_participant_deletion_preview::<A>)
+                    .post(admin_delete_participant_data::<A>),
+            )
+            .route_layer(middleware::from_fn_with_state(
+                state.clone(),
+                require_admin_auth::<A>,
+            ))
+            .route_layer(middleware::from_fn_with_state(
+                state.clone(),
+                require_admin_network::<A>,
+            ))
+            .layer(RequestBodyLimitLayer::new(64 * 1024))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                security_headers::<A>,
+            ))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                track_request_load::<A>,
+            ))
+            .with_state(state)
+    });
+    Ok(BuiltRouters {
+        primary: api,
+        runtime_admin,
+    })
 }

@@ -1,5 +1,162 @@
 # Technical Decisions
 
+## 2026-09-02: Participant admission retries reuse captured launch identity
+
+Context: The browser deliberately removes Prolific identifiers from the visible URL before sending
+the participant-registration request. If registration or a later room-startup request failed, the
+join screen remained available, but a second click reread the now-clean URL and attempted a new
+registration without the required identity. This replaced the original failure with a misleading
+“Prolific participant parameters are required” error.
+
+Decision: Capture the registration payload once per participant client and reuse it across
+registration retries. Keep the Prolific parameters in the URL until registration succeeds and the
+returned participant credential has been written and read back from tab-scoped storage. Only then
+remove the recruitment identifiers from the visible URL. This ordering means a reload or component
+remount before registration completes can repeat the idempotent Prolific admission instead of
+losing both the launch identity and the credential. Coalesce concurrent registration calls and use
+a synchronous entry guard so one click sequence cannot start two participant lifecycles. Once the
+client holds a participant credential, entering the waiting room replays consent and resumes room
+creation with that credential instead of registering again.
+
+Treat room admission and game-channel connection as separate client states. As soon as the server
+returns a waiting-room snapshot, render that authoritative room even if obtaining or opening the
+game channel fails. Retry only channel setup from that screen; do not register the participant or
+create the room again.
+
+On reload, restore every authoritative participant state, including a terminal `ended` state, even
+when no live session object exists yet. A terminal snapshot needs no WebSocket; materialize the
+minimal client session container so the outcome and recruitment handoff render instead of falling
+through to the join page.
+
+Tradeoff: Recruitment identifiers remain visible during the registration request, and remain in
+the URL for the page lifetime if tab storage is unavailable. This is preferable to erasing the only
+recoverable launch identity before the browser possesses a reload-safe credential. Pending launch
+identity also remains in the participant client's memory for the lifetime of the page.
+
+## 2026-09-02: Each Local Preview action creates one participant invitation
+
+Context: The dashboard retained one synthetic Prolific participant/session identity for the entire
+testing run. After one preview completed, opening Local Preview again reused that identity. The
+idempotent participant endpoint correctly resolved it to the earlier terminal session, so the new
+browser attempt could not enter a new waiting room.
+
+Decision: Mint fresh cryptographically random `TEST…` participant and session identifiers for every
+dashboard **Open** or **Copy URL** action during a Prolific Local Preview. Treat the resulting URL as
+one participant invitation: retries and reloads of that same URL remain idempotent, while a new
+dashboard action represents a new preview participant. Provider-backed testing, official intake,
+and Direct participant URLs are unchanged.
+
+Tradeoff: **Open** and **Copy URL** intentionally produce different invitations when invoked
+separately. A researcher who wants another browser to use a particular preview invitation must use
+the URL produced by that specific Copy action.
+
+## 2026-09-02: Prolific consent refusal has no local fallback
+
+Context: The participant client rendered consent refusal only as a Prolific completion link. The
+Great Tree `rootbot-agent` draft has an empty `no_consent` code because the earlier six-path data
+conversion could not derive a researcher-created Prolific code. Local Preview intentionally allows
+that incomplete provider configuration, so its refusal action disappeared even though consent was
+still required.
+
+Decision: A Prolific-enabled participant page exposes **Do not consent** only as the configured
+Prolific completion link. Require all six completion codes before Local Preview can start. Do not
+replace a missing provider handoff with a Parlando outcome page. Direct experiments retain their
+local refusal page because they have no recruitment provider to return to.
+
+Tradeoff: The existing `rootbot-agent` testing run must be stopped before its inactive configuration
+can be repaired with the researcher-created No consent code. The server cannot infer or generate a
+Prolific completion code.
+
+## 2026-09-02: Active experiment configuration is a server-side invariant
+
+Context: The dashboard disabled configuration controls outside the inactive lifecycle, but that UI
+rule is not an authority boundary. Runtime construction also captures an immutable configuration
+revision, so permitting a configuration write during intake could make one experiment span two
+in-memory revisions.
+
+Decision: Reject configuration writes unless the stored experiment is inactive. Check this in the
+HTTP handler for a precise conflict response and retain the transactional SQLite condition on both
+the expected revision and `status = 'inactive'` as the authoritative race-safe invariant. Serialize
+configuration saves and runtime construction for the same experiment, then evict its cached runtime
+after a successful save. Apply the same cache discipline to archival, transition to inactive, and
+shared provider-setting changes affecting inactive runtimes.
+
+Tradeoff: An administrator must stop intake before changing configuration, even when a proposed
+field appears operationally harmless. This is deliberate: Parlando has one immutable configuration
+revision per intake run and no field-level live-reconfiguration contract.
+
+## 2026-09-02: Experiment dispatch uses explicit namespaces and routes
+
+Context: Multi-experiment hosting reused a single-experiment router by rewriting each incoming URI,
+clearing all Axum request extensions, selectively restoring known extensions, and invoking the
+child router. This coupled dispatch to Axum's private path-capture representation and could silently
+discard future request context. This decision supersedes the 2026-08-15 transport-state workaround
+described later in this file.
+
+Decision: Build each cached participant and administrator router with its complete literal
+`/e/{experiment_id}` or `/api/admin/runtime/{experiment_id}` prefix. A single installation-router
+fallback accepts only those two namespaces, resolves the experiment ID, and forwards the original
+request without changing its URI or extensions. Every other unmatched path immediately returns
+404. Use a per-experiment construction lock so concurrent first requests create one runtime.
+
+The fallback is an Axum integration boundary, not route behavior. Experiment IDs are created at
+runtime, while `build_game_router` must continue returning Axum's public `Router` type. Registering
+outer wildcard routes and then forwarding into a cached Axum router leaves outer `MatchedPath` and
+URL-parameter metadata on the request: the second router either rejects that request or exposes
+duplicate path parameters to handlers. Clearing extensions or rewriting the URI would recreate the
+request-mutation hack this change removes. Axum invokes a fallback without route-local match
+metadata, so it is the only request-preserving dynamic-router adapter available under that public
+interface. Replacing it cleanly would require changing the public server type or refactoring every
+runtime handler to resolve dynamic state directly from an installation-level router.
+
+The participant HTTP surface is deliberately closed: `/e/{experiment_id}` redirects to its
+canonical trailing-slash URL, `/e/{experiment_id}/` serves the participant shell,
+`/e/{experiment_id}/assets/...` serves built assets, and named HTTP and WebSocket endpoints serve
+the runtime protocol. Unknown participant, administrator, and top-level paths return 404. There is
+no static-file or SPA fallback because the participant client does not use browser-side path
+routing.
+
+Tradeoff: Experiment routers still provide an internal Axum service boundary, which keeps existing
+handler state extraction, the public Axum router type, and all public routes unchanged. The narrowly
+validated host fallback is unavoidable under those constraints, but it cannot turn an unknown path
+into successful content. A mistyped participant URL receives 404 instead of the participant shell;
+this is intentional fail-closed behavior.
+
+## 2026-09-02: Software agents join an already-forming human session
+
+Context: Human-agent admission previously awaited agent factory construction while holding the
+experiment-wide admission lock. A slow external agent constructor delayed the human response and
+blocked unrelated admissions, while the participant never observed the real waiting phase.
+
+Decision: Create and persist the forming session with the human under the short admission lock,
+then release the lock and return its waiting state. Construct the reserved role-B agent in a task.
+On success, persist and attach the agent participant, broadcast the updated presence, and invoke the
+same readiness transition used by ordinary participant connections. On construction failure, end
+the forming session with a technical-failure result. A human departure causes a late agent result
+to be rejected and shut down rather than attached.
+
+Tradeoff: Game construction and initial-state creation occur when the forming session is created,
+before the asynchronous agent factory completes. The agent receives no observation and cannot act
+until it has joined and common readiness starts the game. Agent-participant identity may be created
+before a failing external constructor returns; normal unattached-participant cleanup removes its
+ephemeral runtime session.
+
+## 2026-09-02: The administrator dashboard uses embedded static modules
+
+Context: One HTML source combined markup, CSS, and roughly 2,400 lines of JavaScript. A large Rust
+test asserted hundreds of source substrings, coupling harmless presentation refactors to the server
+test suite without exercising browser behavior.
+
+Decision: Keep semantic markup in `admin_dashboard.html`, move presentation to an embedded CSS
+asset, and serve JavaScript as same-origin ES modules with separate state, administrator-request,
+and pure-formatting boundaries. Preserve single-binary deployment through `include_str!` and protected Axum asset
+routes. Replace the source-spelling test with route, content-type, CSP, and non-empty asset checks,
+plus executable unit tests for pure formatting and escaping behavior.
+
+Tradeoff: The main feature controller remains sizable and should be split further by dashboard
+area as those areas change. Native ES modules add a few same-origin requests, but avoid a Node build
+dependency and make independent behavior tests possible.
+
 ## 2026-08-31: Runtime stress keeps every game transport live explicitly
 
 Context: The release-mode human-human stress profile consistently lost one relayed frame at five
