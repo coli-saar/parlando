@@ -3144,3 +3144,54 @@ because they are themselves user tasks. Deployment chapters still name SQLite, H
 variables, and one-instance operation where the operator must configure them. Lower-level protocol
 and storage details continue to belong in maintainer documentation and tests; if an internal choice
 later becomes a supported extension point, it should return to the manual with a concrete user task.
+
+## 2026-09-02: Isolate live client/server contract tests from language-local suites
+
+Context: The runtime had broad Rust HTTP and WebSocket coverage and the JavaScript package had
+component-level lifecycle coverage, but no explicit suite owned the complete live boundary. One
+valuable audio mute contract spawned Node from an ignored test inside the publishable Rust crate.
+It ran through the repository Make target but disappeared from ordinary Rust test results, and its
+location coupled the Rust crate's tests to a sibling JavaScript build.
+
+Decision: Add a non-publishable `client-server-tests` crate as the owner of live cross-language
+contracts. Give it a deterministic, semantically narrow dummy game with accepted, rejected, and
+completing actions, while allowing the scenario matrix to be as broad as the participant lifecycle
+requires. Exercise configuration discovery, consent, waiting, pairing, role-specific observations,
+messages, actions, completion, reconnect behavior, and deadlines with ordinary Rust HTTP and
+WebSocket clients. Move the production JavaScript audio-sink contract into a separate audio module
+in this suite and run its lightweight Node driver without a browser automation dependency. Keep
+server-only protocol tests in `rust-server` and JavaScript-only rendering tests in `js-client`.
+
+Tradeoffs and risks: The lifecycle scenarios validate the public wire contract rather than React
+rendering or browser-engine behavior; existing JavaScript rendering tests retain that responsibility.
+The audio scenario still requires Node and a built `js-client`, but the dependency is now explicit
+in `make test-client-server` and never represented as an ignored Rust unit. Short real server
+deadlines keep timeout behavior realistic but can be more timing-sensitive than an injected clock;
+condition-based polling and generous outer deadlines bound that risk. If timing cases become flaky,
+the next step is a runtime clock abstraction rather than longer fixed sleeps.
+
+## 2026-09-03: Make the production JavaScript client own contract-test participation
+
+Context: The first version of the live contract suite used Rust HTTP and WebSocket helpers for the
+participant lifecycle. This proved that the production server honored its wire contract, but did
+not prove that the published JavaScript client's request mapping, credential handling, session-plan
+mapping, WebSocket URL construction, message decoding, or send methods agreed with that contract.
+Only the audio-sink scenario crossed the JavaScript–Rust boundary.
+
+Decision: Remove the Rust participant client from `client-server-tests`. Keep Rust responsible for
+constructing an isolated real server, activating it through the administrator API, and selecting
+scenario-specific server configuration. Run all participant operations inside Node with the built
+production `ParticipantClient`; use its HTTP methods, one-use game and audio plans, WebSocket URL
+construction, protocol decoder, and action and message send methods. Pass only the loopback origin
+and scenario name into Node over standard input. Participant credentials are created and retained
+inside JavaScript and never cross the process boundary. Use Node's `ws` implementation for the
+browser WebSocket primitive and simulated Web Audio primitives only for hardware-facing audio code.
+
+Tradeoffs and risks: This suite now detects drift between the JavaScript package and Rust server,
+but it intentionally does not render React or reproduce browser enforcement of CORS, mixed-content,
+cookie, and origin policies. React rendering remains covered by JavaScript component tests, while
+deployment browser-policy checks remain operational tests. Reconnection is driven with the same
+fresh-ticket and reconciliation methods used by the participant application, but the React hook's
+backoff timer itself remains a source-level JavaScript concern. Node processes are killed when the
+Rust owner times out, and fixture input is closed explicitly so a stalled driver cannot leak into
+later tests.

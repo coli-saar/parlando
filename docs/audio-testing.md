@@ -23,13 +23,20 @@ npm test
 
 They cover binary framing, playback resampling and underruns, microphone/transport lifecycle, startup behavior, and WebSocket establishment failures.
 
-The repository-level client/server mute contract additionally builds the JavaScript package, connects its real `ParlandoAudioSink` to a live production Rust router, and verifies that live and resumed frames reach both partner relay and transcription while a muted capture reaches neither. It also proves that partner playback continues while the local microphone is muted:
+The repository-level client/server contract suite additionally builds the JavaScript package, connects its real `ParlandoAudioSink` to a live production Rust router, and verifies that live and resumed frames reach both partner relay and transcription while a muted capture reaches neither. It also proves that partner playback continues while the local microphone is muted:
 
 ```sh
 make test-client-server
 ```
 
-The underlying Rust test is ignored during standalone crate testing because it requires Node and the built JavaScript package; the Make target owns those cross-language prerequisites.
+The cross-language tests live in the separate `client-server-tests` crate. Ordinary `cargo test` for
+the publishable Rust runtime therefore remains Node-free, while `make test-client-server` treats a
+missing Node installation or stale JavaScript build as a visible failure rather than an ignored
+test. The same suite runs a deterministic dummy game and drives it with the built production
+`ParticipantClient`. Two independently authenticated JavaScript clients exercise configuration,
+consent, waiting, pairing, game-channel tickets, decoded server messages, chat, actions, completion,
+reconnection, and lifecycle deadlines through the real HTTP and WebSocket routes. Rust constructs
+the server and selects timeout configuration, but it does not impersonate a participant client.
 
 ## Interactive Stress Dashboard
 

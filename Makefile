@@ -4,6 +4,7 @@ PARLANDO_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
 RUST_SERVER_DIR := $(PARLANDO_DIR)/rust-server
 RUST_SERVER_TESTS_DIR := $(PARLANDO_DIR)/rust-server-tests
+CLIENT_SERVER_TESTS_DIR := $(PARLANDO_DIR)/client-server-tests
 JS_CLIENT_DIR := $(PARLANDO_DIR)/js-client
 PYTHON_AGENT_SDK_DIR := $(PARLANDO_DIR)/parlando-agent-sdk
 NPM_CACHE ?= $(PARLANDO_DIR)/.local/npm-cache
@@ -29,9 +30,9 @@ test-js-client:
 	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" run test:coverage
 	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" run test:package
 
-# Runs the built JavaScript audio sink against the production Rust audio WebSocket.
+# Runs the explicit live client/server contract suite, including its Node audio driver.
 test-client-server: test-js-client
-	cd "$(RUST_SERVER_DIR)" && cargo test app::tests::javascript_sink_mute_contract_blocks_relay_and_transcription --lib -- --ignored --exact
+	cd "$(CLIENT_SERVER_TESTS_DIR)" && cargo test
 
 # Runs the Python SDK suite in an environment where its package dependencies are installed.
 test-python:
