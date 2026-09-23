@@ -1981,7 +1981,7 @@ async fn configure_mock_study(
 /// Returns the exact provider URL used for activation and JWT audience validation.
 fn external_study_url(server_base: &str, experiment_id: &str) -> String {
     format!(
-        "{server_base}/e/{experiment_id}/participant?PROLIFIC_PID={{{{%PROLIFIC_PID%}}}}&STUDY_ID={{{{%STUDY_ID%}}}}&SESSION_ID={{{{%SESSION_ID%}}}}"
+        "{server_base}/e/{experiment_id}/?PROLIFIC_PID={{{{%PROLIFIC_PID%}}}}&STUDY_ID={{{{%STUDY_ID%}}}}&SESSION_ID={{{{%SESSION_ID%}}}}"
     )
 }
 

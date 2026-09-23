@@ -3195,3 +3195,20 @@ fresh-ticket and reconciliation methods used by the participant application, but
 backoff timer itself remains a source-level JavaScript concern. Node processes are killed when the
 Rust owner times out, and fixture input is closed explicitly so a stalled driver cannot leak into
 later tests.
+
+## 2026-09-23: Validate Prolific launches against the experiment entry route
+
+Context: The dashboard and user documentation supply Prolific with
+`/e/<experiment-id>/` plus the three provider identity placeholders. The activation preflight
+instead required `<public-base-url>/participant`, which is not a participant route and caused a
+study configured with Parlando's own displayed URL to fail provider readiness.
+
+Decision: Build the expected Prolific external-study path from the installation's public base URL,
+the experiment ID being checked, and the canonical trailing slash: `/e/<experiment-id>/`. Continue
+to require URL-parameter identity recording and all three Prolific parameter names. Use this same
+URL in the provider integration fixture so secure-token audience checks cover the real participant
+entry URL.
+
+Tradeoffs and risks: Validation remains deliberately exact before the query string; alternate
+paths, missing trailing slashes, and URLs for another experiment are rejected. Experiment IDs are
+already restricted to URL-path-safe ASCII characters, so no additional path encoding is needed.
