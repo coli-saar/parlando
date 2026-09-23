@@ -63,7 +63,7 @@ implementing a specific step.
 
 ## Current boundaries
 
-Parlando 0.4.0 implements two active seats, `A` and `B`. Live studies may be human–human or
+Parlando 0.4.1 implements two active seats, `A` and `B`. Live studies may be human–human or
 human–agent. Headless studies may place agents in both seats. One live server hosts one compiled game
 and a catalogue of experiments for that game; different games use separate processes and databases.
 

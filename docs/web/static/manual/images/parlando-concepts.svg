@@ -19,7 +19,7 @@
   <text x="195" y="155" text-anchor="middle" class="label">Game</text>
   <text x="195" y="195" text-anchor="middle" class="body">Browser interface</text>
   <text x="195" y="226" text-anchor="middle" class="body">Task rules</text>
-  <text x="195" y="257" text-anchor="middle" class="body">Version 0.4.0</text>
+  <text x="195" y="257" text-anchor="middle" class="body">Version 0.4.1</text>
   <path d="M355 257 H435" class="line" marker-end="url(#arrow)"/>
   <rect x="460" y="95" width="270" height="150" rx="22" fill="#fff" stroke="#5a9793" stroke-width="3"/>
   <text x="595" y="140" text-anchor="middle" class="label">Experiment A</text>

@@ -1620,7 +1620,7 @@ async fn prolific_run_readiness_verifies_the_linked_study_before_start() {
     let project_requests = Arc::new(AtomicUsize::new(0));
     let (mut config, _tmp) = sqlite_config();
     let expected_url = format!(
-        "{}/e/step5/?PROLIFIC_PID={{{{%PROLIFIC_PID%}}}}&STUDY_ID={{{{%STUDY_ID%}}}}&SESSION_ID={{{{%SESSION_ID%}}}}",
+        "{}/?PROLIFIC_PID={{{{%PROLIFIC_PID%}}}}&STUDY_ID={{{{%STUDY_ID%}}}}&SESSION_ID={{{{%SESSION_ID%}}}}",
         config.server.public_base_url.trim_end_matches('/')
     );
     config.recruitment.prolific.enabled = true;

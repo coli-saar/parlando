@@ -3203,12 +3203,30 @@ Context: The dashboard and user documentation supply Prolific with
 instead required `<public-base-url>/participant`, which is not a participant route and caused a
 study configured with Parlando's own displayed URL to fail provider readiness.
 
-Decision: Build the expected Prolific external-study path from the installation's public base URL,
-the experiment ID being checked, and the canonical trailing slash: `/e/<experiment-id>/`. Continue
-to require URL-parameter identity recording and all three Prolific parameter names. Use this same
-URL in the provider integration fixture so secure-token audience checks cover the real participant
-entry URL.
+Decision: Build the expected Prolific external-study path from the effective runtime public base
+URL plus its canonical trailing slash. A hosted experiment runtime has already scoped that base to
+`/e/<experiment-id>`; a directly built single-experiment router retains its configured mount base.
+Continue to require URL-parameter identity recording and all three Prolific parameter names. Use
+the hosted `/e/<experiment-id>/` URL in the provider integration fixture so secure-token audience
+checks cover the real participant entry URL.
 
 Tradeoffs and risks: Validation remains deliberately exact before the query string; alternate
 paths, missing trailing slashes, and URLs for another experiment are rejected. Experiment IDs are
 already restricted to URL-path-safe ASCII characters, so no additional path encoding is needed.
+
+## 2026-09-23: Release the Prolific URL correction as 0.4.1
+
+Context: The coordinated Rust and JavaScript packages were both published at 0.4.0. The Prolific
+URL correction changes server validation without changing public APIs, configuration, protocol, or
+the database schema.
+
+Decision: Publish the correction as coordinated patch release 0.4.1. Update every first-party
+dependency manifest and current-version document together. Refresh Cargo lockfiles against the
+repository patch during preparation; defer consumer npm lockfiles until the immutable 0.4.1 npm
+artifact exists, then resolve them from the registry and verify their tarball URLs and integrity
+digests.
+
+Tradeoffs and risks: Until publication, the first-party client manifests require 0.4.1 while their
+lockfiles still record 0.4.0. This is an intentional release boundary, not a supported finished
+state; publication is complete only after those lockfiles resolve the registry artifact and the
+published release audit passes.

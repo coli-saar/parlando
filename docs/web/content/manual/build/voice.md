@@ -11,7 +11,7 @@ to Speechmatics for transcription. In a human–agent session, the final transcr
 message that the agent receives. When the agent replies, Parlando stores the reply as text and uses
 ElevenLabs to make it audible to the participant.
 
-This chapter documents the communication interfaces that Parlando 0.4.0 supports as complete study
+This chapter documents the communication interfaces that Parlando 0.4.1 supports as complete study
 paths. It does not treat every combination of low-level configuration switches as a separate
 condition.
 
@@ -19,7 +19,7 @@ condition.
 
 ## Choose one documented communication interface
 
-Parlando 0.4.0 supports the following interfaces:
+Parlando 0.4.1 supports the following interfaces:
 
 | Interface | What you provide or enable | What Parlando records |
 | --- | --- | --- |
@@ -27,7 +27,7 @@ Parlando 0.4.0 supports the following interfaces:
 | Human–human speech | Voice transport and Speechmatics transcription | Final transcript text and utterance timing; no raw audio |
 | Human–agent speech | Voice transport, Speechmatics transcription, a human–agent experiment, and ElevenLabs text-to-speech | Final human transcripts and agent message text; no raw or synthesized audio |
 
-There is no generic chat widget in the Parlando 0.4.0 React package. The client package supports
+There is no generic chat widget in the Parlando 0.4.1 React package. The client package supports
 typed messages, but the game author must decide how to display the conversation and must provide the
 text-entry control. Likewise, this manual does not define a voice-without-transcription condition or
 text-only variants of the spoken human–agent path. The fact that the configuration model exposes
@@ -139,7 +139,7 @@ audible but absent from the record, or present in the record but not audible, re
 failures.
 
 The Speechmatics setting **Show partial transcripts** asks the provider to produce provisional
-results. Parlando 0.4.0 neither displays nor stores those partial hypotheses. Only final utterances
+results. Parlando 0.4.1 neither displays nor stores those partial hypotheses. Only final utterances
 enter the conversation, so do not design participant feedback around word-by-word captions.
 
 ## Provide the in-game speech controls
@@ -207,7 +207,7 @@ The stress tests exercise Parlando under sustained speech traffic without paid p
 do not test a participant browser, public deployment, actual provider account, or participant
 network. Run both the stress test and a complete public-origin pilot before recruitment.
 
-Parlando 0.4.0 includes Speechmatics transcription and ElevenLabs synthesis, stores neither raw
+Parlando 0.4.1 includes Speechmatics transcription and ElevenLabs synthesis, stores neither raw
 microphone nor synthesized audio, provides no built-in local recognizer, and has no speech path in a
 headless agent–agent run. These are current product boundaries, not a catalogue of hypothetical
 conditions.

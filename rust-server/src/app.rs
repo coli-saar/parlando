@@ -412,8 +412,7 @@ async fn run_and_cache_prolific_activation_preflight<A: Game>(
     prolific_api_base_url: &str,
 ) -> (Vec<String>, Option<VerifiedProlificStudy>) {
     let fingerprint = prolific_preflight_fingerprint(config, prolific_api_base_url);
-    let (issues, study) =
-        prolific_activation_preflight(experiment_id, config, prolific_api_base_url).await;
+    let (issues, study) = prolific_activation_preflight(config, prolific_api_base_url).await;
     state.prolific_preflight_cache.write().await.insert(
         experiment_id.to_string(),
         ProlificPreflightCacheEntry {
@@ -458,7 +457,6 @@ fn prolific_preflight_fingerprint(
 
 /// Verifies the linked Prolific study without changing provider-owned configuration.
 async fn prolific_activation_preflight(
-    experiment_id: &str,
     config: &ExperimentConfig,
     prolific_api_base_url: &str,
 ) -> (Vec<String>, Option<VerifiedProlificStudy>) {
@@ -511,10 +509,7 @@ async fn prolific_activation_preflight(
             "The Prolific study must record participant IDs through URL parameters.".to_string(),
         );
     }
-    let expected_path = format!(
-        "{}/e/{experiment_id}/",
-        config.server.public_base_url.trim_end_matches('/'),
-    );
+    let expected_path = format!("{}/", config.server.public_base_url.trim_end_matches('/'));
     if study.external_study_url.split('?').next() != Some(expected_path.as_str()) {
         issues.push(format!(
             "The Prolific external study URL must begin with {expected_path}."

@@ -5,7 +5,7 @@ description: Generate Parlando dialogue games using the published parlando runti
 
 # Generate Parlando Game
 
-Current coordinated release: `0.4.0`.
+Current coordinated release: `0.4.1`.
 
 Generate a complete two-player game using published registry packages. Read `references/server-adapter.md` and `references/browser-client.md`; read `references/config-deployment.md` for deployment or dashboard work and `references/agents.md` when agents are requested. These references are authoritative for generation; do not search for a different Parlando API.
 
