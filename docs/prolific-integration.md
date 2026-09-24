@@ -102,7 +102,7 @@ its participant and study match. The fallback is not an unchecked query-paramete
 When the researcher saves the experiment, Parlando retrieves the linked study from Prolific and checks:
 
 - the study has a project from which its workspace can be derived;
-- its external URL targets this Parlando experiment;
+- its external URL exactly equals the server-generated setup template for this Parlando experiment;
 - the six configured codes exist with exactly the required actions;
 - the Game did not start code is not a screen-out path;
 - the Prolific estimated completion time is compatible with the Parlando game limit; and
@@ -111,6 +111,12 @@ When the researcher saves the experiment, Parlando retrieves the linked study fr
 The saved draft and the provider-readiness result are separate: a failed check does not discard the
 revision. The provider-backed run badges show the specific issues and become green only when Start
 can use a verified result. Local Preview does not contact Prolific.
+
+The setup template is generated on the server from the configured public installation origin and
+the experiment ID. The dashboard displays that authoritative value even when an administrator uses
+an internal hostname or a different allowed origin. Public installation URLs are origin-only;
+remote Prolific intake requires HTTPS, while loopback HTTP remains available to the integration
+fixture.
 
 ## What participants see
 

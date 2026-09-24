@@ -6,6 +6,13 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## Unreleased
 
+### Fixed
+
+- Made the server the authority for each experiment's Prolific setup URL and require the provider
+  study to retain that exact route and placeholder template.
+- Prevented administrator aliases, malformed public origins, remote HTTP deployments, and literal
+  placeholder launch links from producing unusable Prolific participant URLs.
+
 ## [0.4.1] - 2026-09-23
 
 ### Fixed

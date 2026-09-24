@@ -60,6 +60,89 @@ fn prolific_local_preview_requires_all_completion_paths() {
     assert!(prolific_completion_path_issues(&config).is_empty());
 }
 
+/// Confirms Prolific accepts only the exact setup template generated for one experiment.
+#[test]
+fn prolific_external_study_url_contract_is_exact() {
+    let participant_base = experiment_public_base_url("https://games.example.test", "study");
+    let expected = prolific_setup_url(&participant_base);
+
+    assert_eq!(
+        expected,
+        "https://games.example.test/e/study/?PROLIFIC_PID={{%PROLIFIC_PID%}}&STUDY_ID={{%STUDY_ID%}}&SESSION_ID={{%SESSION_ID%}}"
+    );
+    for rejected in [
+        "https://games.example.test/e/other/?PROLIFIC_PID={{%PROLIFIC_PID%}}&STUDY_ID={{%STUDY_ID%}}&SESSION_ID={{%SESSION_ID%}}",
+        "https://games.example.test/e/study/child?PROLIFIC_PID={{%PROLIFIC_PID%}}&STUDY_ID={{%STUDY_ID%}}&SESSION_ID={{%SESSION_ID%}}",
+        "https://games.example.test/e/study/#PROLIFIC_PID={{%PROLIFIC_PID%}}&STUDY_ID={{%STUDY_ID%}}&SESSION_ID={{%SESSION_ID%}}",
+        "https://games.example.test/e/study/?note=PROLIFIC_PID-STUDY_ID-SESSION_ID",
+        "https://games.example.test/e/study/?PROLIFIC_PID=constant&STUDY_ID={{%STUDY_ID%}}&SESSION_ID=constant",
+        "https://games.example.test/e/study/?STUDY_ID={{%STUDY_ID%}}&PROLIFIC_PID={{%PROLIFIC_PID%}}&SESSION_ID={{%SESSION_ID%}}",
+        "https://games.example.test/e/study/?PROLIFIC_PID={{%PROLIFIC_PID%}}&STUDY_ID={{%STUDY_ID%}}&SESSION_ID={{%SESSION_ID%}}&extra=value",
+    ] {
+        assert_ne!(rejected, expected);
+    }
+}
+
+/// Confirms every stored experiment receives the same public route before readiness checks.
+#[test]
+fn stored_experiment_hydration_scopes_the_public_base() {
+    let bootstrap = ExperimentConfig::default();
+    let stored = serde_json::to_value(ExperimentConfig::default()).unwrap();
+
+    let hydrated = experiment_config_from_json_unvalidated(stored, &bootstrap, "pilot").unwrap();
+
+    assert_eq!(
+        hydrated.server.public_base_url,
+        "http://localhost:8000/e/pilot"
+    );
+    assert_eq!(
+        prolific_setup_url(&hydrated.server.public_base_url),
+        "http://localhost:8000/e/pilot/?PROLIFIC_PID={{%PROLIFIC_PID%}}&STUDY_ID={{%STUDY_ID%}}&SESSION_ID={{%SESSION_ID%}}"
+    );
+    assert_eq!(
+        experiment_public_base_url(&hydrated.server.public_base_url, "pilot"),
+        hydrated.server.public_base_url
+    );
+}
+
+/// Confirms paid Prolific intake cannot use remote cleartext participant URLs.
+#[test]
+fn prolific_readiness_requires_https_outside_loopback() {
+    let mut config = ExperimentConfig::default();
+    config.recruitment.prolific.enabled = true;
+    config.recruitment.prolific.study_id = "study".to_string();
+    config.recruitment.prolific.api_token = "token".to_string();
+    config.server.public_base_url = "http://games.example.test/e/study".to_string();
+
+    assert!(prolific_local_activation_issues(&config)
+        .iter()
+        .any(|issue| issue.contains("must use https")));
+}
+
+/// Confirms the hosted server rejects route state in its configured public origin.
+#[tokio::test]
+async fn game_host_requires_an_origin_only_public_url() {
+    let (mut config, _tmp) = sqlite_config();
+    config.server.public_base_url = "https://games.example.test/deployment".to_string();
+    let descriptor = GameMetadata {
+        id: "tiny-game".to_string(),
+        name: "Tiny Game".to_string(),
+        version: semver::Version::parse("0.4.0").unwrap(),
+        build_manifest: json!({}),
+    };
+
+    let result = super::build_game_router(TinyAdapter, config, descriptor, |_| {
+        Ok(ServeOptions::default())
+    })
+    .await;
+
+    let error = match result {
+        Ok(_) => panic!("a public URL path must be rejected"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("origin without a path or query"));
+}
+
 /// Confirms completion routing uses session-start context for otherwise identical connection loss.
 #[test]
 fn prolific_handoff_distinguishes_prestart_and_running_connection_loss() {
@@ -1619,10 +1702,11 @@ async fn prolific_run_readiness_verifies_the_linked_study_before_start() {
     let study_requests = Arc::new(AtomicUsize::new(0));
     let project_requests = Arc::new(AtomicUsize::new(0));
     let (mut config, _tmp) = sqlite_config();
-    let expected_url = format!(
-        "{}/?PROLIFIC_PID={{{{%PROLIFIC_PID%}}}}&STUDY_ID={{{{%STUDY_ID%}}}}&SESSION_ID={{{{%SESSION_ID%}}}}",
-        config.server.public_base_url.trim_end_matches('/')
-    );
+    let expected_url = prolific_setup_url(&experiment_public_base_url(
+        &config.server.public_base_url,
+        "step5",
+    ));
+    let catalogue_expected_url = expected_url.clone();
     config.recruitment.prolific.enabled = true;
     config.recruitment.prolific.study_id = "linkedstudy".to_string();
     config.recruitment.prolific.completion_paths.completed = "COMPLETE".to_string();
@@ -1764,6 +1848,10 @@ async fn prolific_run_readiness_verifies_the_linked_study_before_start() {
     )
     .await;
     assert_eq!(catalogue["experiments"][0]["runnable"], true);
+    assert_eq!(
+        catalogue["experiments"][0]["prolific_setup_url"],
+        catalogue_expected_url
+    );
     assert_eq!(study_requests.load(Ordering::SeqCst), 1);
     assert_eq!(project_requests.load(Ordering::SeqCst), 1);
     let (start_status, started) = json_request(

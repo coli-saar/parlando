@@ -113,7 +113,6 @@ where
                     format!("experiment {experiment_id:?} has invalid configuration")
                 })?;
         let stored_secrets = self.store.experiment_secrets(experiment_id).await?;
-        apply_bootstrap_settings(&mut config, &self.bootstrap, experiment_id);
         apply_experiment_secrets(&mut config, &stored_secrets);
         let game_secrets = self.store.game_secrets().await?;
         apply_game_provider_secrets(&mut config, &game_secrets);
@@ -152,23 +151,6 @@ where
             .or_insert_with(|| router.clone())
             .clone())
     }
-}
-
-/// Applies process bootstrap and secret values without persisting them into an experiment revision.
-fn apply_bootstrap_settings(
-    config: &mut ExperimentConfig,
-    bootstrap: &ExperimentConfig,
-    experiment_id: &str,
-) {
-    config.experiment.id = Some(experiment_id.to_string());
-    config.server = bootstrap.server.clone();
-    config.database = bootstrap.database.clone();
-    let experiment_path = format!("/e/{experiment_id}");
-    config.server.public_base_url = format!(
-        "{}{}",
-        bootstrap.server.public_base_url.trim_end_matches('/'),
-        experiment_path
-    );
 }
 
 /// Resolves one experiment namespace from an unmatched host URI without rewriting it.
@@ -224,6 +206,10 @@ where
     A::State: Serialize,
     F: Fn(&ExperimentConfig) -> Result<ServeOptions<A>> + Send + Sync + 'static,
 {
+    crate::config::validate_public_origin(
+        "server.public_base_url",
+        &bootstrap.server.public_base_url,
+    )?;
     bootstrap.validate()?;
     validate_game_config_contains_no_secrets(&bootstrap.game)?;
     parse_game_config(&game_factory, &bootstrap.game)?;

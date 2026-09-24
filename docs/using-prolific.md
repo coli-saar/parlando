@@ -16,8 +16,9 @@ You need:
 - a Prolific API token for the researcher account.
 
 Do not use a URL beginning with `http://localhost` in a Prolific study. `localhost` refers to the
-participant's own computer, so Prolific participants cannot reach your Parlando server. Open the
-dashboard through its public address before copying a Prolific setup URL.
+participant's own computer, so Prolific participants cannot reach your Parlando server. Configure
+the server's public origin before copying a Prolific setup URL; the dashboard may itself be opened
+through a separate authorized administrator address.
 
 The API token is shared by the Parlando game installation. The linked study and its completion codes
 belong to one experiment. You do not enter a Prolific workspace ID in Parlando: Parlando obtains the
@@ -129,7 +130,8 @@ Saving performs a live check against Prolific. Parlando verifies that:
 - the API token can retrieve the study and its project;
 - the study belongs to a project with a workspace;
 - the study records participant identities through URL parameters;
-- its external URL points to this Parlando experiment and includes all three placeholders;
+- its external URL exactly matches the setup URL displayed for this Parlando experiment, including
+  the route, parameter order, and all three literal placeholders;
 - all six codes exist and have the actions shown above;
 - the estimated duration is not shorter than the maximum partner wait; and
 - the maximum allowed time is not shorter than Parlando's maximum session lifetime.
@@ -163,8 +165,11 @@ normal completion and at least one non-complete outcome, such as a game that did
 partner disconnect. Select **Stop** when the test is finished. If the workspace does not provide test
 participants, use a small pilot with two real submissions instead.
 
-While a run is in progress, **Open** and **Copy URL** always refer to that particular run. Its URL
-does not change until the run stops. An experiment cannot be cloned while it is running.
+During Local Preview, each **Open** or **Copy URL** action creates a fresh synthetic participant
+invitation. Reopening or sharing the same copied URL retries that invitation, while requesting a new
+URL creates another preview participant. During Test through Prolific or Official intake, launch
+participants from Prolific; Parlando exposes the provider setup URL for copying but does not open a
+literal placeholder URL as a participant. An experiment cannot be cloned while it is running.
 
 ## 7. Open official intake
 
@@ -200,8 +205,8 @@ but it does not approve, reject, return, or pay submissions through the API.
 ### Prolific says the study URL is invalid
 
 Use a public HTTPS deployment. A URL beginning with `http://localhost` is suitable only for Local
-Preview and cannot be used as a Prolific external study URL. Keep the three `{{%...%}}` placeholders
-literal.
+Preview and cannot be used as a Prolific external study URL. Copy the server-generated setup URL
+without editing its experiment path, parameter order, or three literal `{{%...%}}` placeholders.
 
 ### Parlando cannot retrieve the linked study
 
@@ -223,8 +228,8 @@ the corresponding Parlando limit, then save the experiment configuration again.
 ### A participant cannot enter the experiment
 
 Confirm that Parlando intake is currently running, the participant used the linked study, and all
-three Prolific identifiers reached the participant URL. For a running study, **Open** and **Copy URL**
-in Parlando show the stable URL associated with that run.
+three Prolific identifiers reached the participant URL. Provider-backed participants must launch
+from Prolific; Parlando's copied value is the study setup template, not a participant launch link.
 
 For provider-contract details, outcome mappings, signed-launch verification, privacy boundaries,
 and restart behavior, see [Prolific integration reference](prolific-integration.md).

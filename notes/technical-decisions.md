@@ -3214,6 +3214,47 @@ Tradeoffs and risks: Validation remains deliberately exact before the query stri
 paths, missing trailing slashes, and URLs for another experiment are rejected. Experiment IDs are
 already restricted to URL-path-safe ASCII characters, so no additional path encoding is needed.
 
+## 2026-09-24: Treat the Prolific public base as a URL prefix
+
+Context: The 0.4.1 Prolific URL correction compared the external study URL's complete path with the
+configured public base plus its trailing slash. In installations where the effective public base
+is the host root, the documented participant route `/e/<experiment-id>/` is beneath that base but
+is not equal to it, so a correctly configured study still failed activation.
+
+Decision: Require the Prolific external study URL to start with the normalized public base and its
+trailing slash. The trailing slash remains part of the boundary, so a lookalike host or a sibling
+path that merely shares the base's final path segment is not accepted. Query-parameter validation
+continues to require all three Prolific identity names independently.
+
+Tradeoffs and risks: Deployments may intentionally place an entry route below the configured
+public base. URL ownership is therefore enforced at the configured base boundary rather than by
+one exact participant path; administrators remain responsible for configuring that base narrowly
+enough to describe the routes owned by this Parlando installation.
+
+## 2026-09-24: Make the server own one exact Prolific setup URL
+
+Context: Prefix validation repaired the immediate mismatch between an installation origin and its
+experiment route, but it left three authorities for the same contract. The dashboard built a URL
+from its current browser origin, catalogue readiness validated against the installation root, and
+runtime activation validated against an experiment-scoped base. Raw substring checks also accepted
+wrong paths, constant identities, fragments, and parameter names outside the query.
+
+Decision: Derive every stored experiment's effective public base from the configured installation
+origin and `/e/<experiment-id>`. Generate the complete Prolific setup template on the server, expose
+it in the experiment catalogue, and require the provider's `external_study_url` to equal that
+template exactly. The exact contract includes the canonical trailing slash, parameter order, names,
+and literal placeholder values. Use the same effective base for catalogue checks and runtime Start,
+which also gives both paths the same provider-preflight cache key. Treat the installation public
+URL as an origin without path or query state, and require HTTPS for remote Prolific intake while
+retaining loopback HTTP for deterministic integration tests. Do not render an Open action for a
+provider template because a literal template is not a valid participant launch.
+
+Tradeoffs and risks: Semantically similar URLs with reordered parameters or additional custom
+parameters are rejected. This is intentional because Parlando publishes one copyable contract and
+does not consume custom launch parameters. Deployments that previously placed path or query state in
+`Server::public_url` must configure their reverse proxy around an origin-only public URL. Local
+Preview remains action-scoped: each Open or Copy operation creates a fresh synthetic invitation.
+
 ## 2026-09-23: Release the Prolific URL correction as 0.4.1
 
 Context: The coordinated Rust and JavaScript packages were both published at 0.4.0. The Prolific

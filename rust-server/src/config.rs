@@ -611,6 +611,18 @@ pub(crate) fn validate_http_url(field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Requires the installation's externally visible URL to be an origin without path state.
+pub(crate) fn validate_public_origin(field: &str, value: &str) -> Result<()> {
+    validate_http_url(field, value)?;
+    let uri: http::Uri = value
+        .parse()
+        .with_context(|| format!("{field} must be a valid URL"))?;
+    if uri.path() != "/" || uri.query().is_some() {
+        bail!("{field} must be an origin without a path or query");
+    }
+    Ok(())
+}
+
 /// Requires TLS for remote provider endpoints while permitting deterministic loopback mocks.
 pub(crate) fn validate_provider_http_url(field: &str, value: &str) -> Result<()> {
     validate_http_url(field, value)?;
@@ -642,6 +654,21 @@ mod tests {
         assert!(validate_provider_http_url("provider", "http://127.0.0.1:4101").is_ok());
         assert!(validate_provider_http_url("provider", "http://[::1]:4101").is_ok());
         assert!(validate_provider_http_url("provider", "http://api.example.test").is_err());
+    }
+
+    /// Confirms a public installation origin cannot carry route or query state.
+    #[test]
+    fn public_origins_reject_paths_and_queries() {
+        for accepted in ["https://games.example.test", "https://games.example.test/"] {
+            validate_public_origin("public URL", accepted).unwrap();
+        }
+        for rejected in [
+            "https://games.example.test/parlando",
+            "https://games.example.test/?deployment=one",
+            "https://user@games.example.test",
+        ] {
+            assert!(validate_public_origin("public URL", rejected).is_err());
+        }
     }
 
     /// Returns a minimal valid configuration for one-field boundary mutations.

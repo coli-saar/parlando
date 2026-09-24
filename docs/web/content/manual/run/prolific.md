@@ -64,8 +64,9 @@ privacy, partner-wait limit, and maximum lifetime before linking the study. Prol
 must describe the same participant procedure.
 
 {{< callout type="warning" title="Use the public origin" >}}
-A Prolific participant cannot reach a `localhost` URL on the researcher's computer. Open the
-dashboard through the public HTTPS deployment before copying the study URL.
+A Prolific participant cannot reach a `localhost` URL on the researcher's computer. Configure the
+server's public HTTPS origin before copying the study URL. The dashboard may itself use a separate
+authorized administrator address because the server supplies the setup URL.
 {{< /callout >}}
 
 ## 2. Link the external study
@@ -95,10 +96,10 @@ Parlando:
 3. enter each code under its matching outcome; and
 4. save the experiment configuration.
 
-Saving checks API access, project and workspace, external URL and placeholders, completion actions,
-and timing compatibility. A locally valid revision remains saved when a provider-readiness check
-fails, so the exact draft can be corrected. Provider-backed intake remains unavailable until the
-check succeeds.
+Saving checks API access, project and workspace, exact equality with the server-generated external
+URL template, completion actions, and timing compatibility. A locally valid revision remains saved
+when a provider-readiness check fails, so the exact draft can be corrected. Provider-backed intake
+remains unavailable until the check succeeds.
 
 The link is ready when the revision saves without a provider-readiness error and the launch menu
 offers **Test through Prolific**. Do not publish the provider study yet.
@@ -118,6 +119,10 @@ completion handoff work. Test through Prolific with two participants because a d
 cannot exercise pairing with one. Verify normal completion and at least one non-complete path. If
 the workspace has no test-participant facility, use a deliberately small pilot.
 
+Each Local Preview **Open** or **Copy URL** action creates a fresh synthetic invitation. During Test
+through Prolific and Official intake, launch participants from Prolific; Parlando does not open its
+literal provider template as though it were a participant link.
+
 For production, start **Official intake** in Parlando before publishing or scheduling the Prolific
 study. Otherwise a valid provider launch may reach an experiment that is not admitting participants.
 Monitor the first pair in both systems.
@@ -135,7 +140,8 @@ or a provider action; they are not interchangeable fields.
 
 Common failures follow the same boundary:
 
-- an invalid external URL usually has the wrong public origin or altered placeholders;
+- an invalid external URL differs from the server-generated template in its public origin,
+  experiment path, parameter order, or literal placeholders;
 - an inaccessible study usually has the wrong final study ID or an API token without project access;
 - a completion conflict concerns the generated code or action, not merely its display name;
 - a timing failure means the two systems describe incompatible participant durations; and

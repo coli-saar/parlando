@@ -1,6 +1,6 @@
 import { state } from './admin-dashboard-state.js';
 import { escapeHtml, experimentDisplayStatus, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
-import { adminFetch, experimentRuntimeApi } from './admin-dashboard-api.js';
+import { absoluteParticipantUrl, adminFetch, experimentRuntimeApi, participantUrlCanOpen } from './admin-dashboard-api.js';
 const experimentList = document.getElementById('experimentList');
 const menuButton = document.getElementById('menuButton');
 const experimentHeader = document.getElementById('experimentHeader');
@@ -591,8 +591,8 @@ function prolificIsEnabled(experiment) {
 
 // Builds the literal URL template copied into a Prolific study before intake starts.
 function prolificSetupUrl(experiment) {
-  const url = new URL(`/e/${encodeURIComponent(experiment.experiment_id)}/`, window.location.origin);
-  return `${url.origin}${url.pathname}?PROLIFIC_PID={{%PROLIFIC_PID%}}&STUDY_ID={{%STUDY_ID%}}&SESSION_ID={{%SESSION_ID%}}`;
+  if (typeof experiment?.prolific_setup_url !== 'string') throw new Error('The server did not provide a Prolific setup URL.');
+  return experiment.prolific_setup_url;
 }
 
 // Creates one opaque synthetic identifier for a single Local Preview invitation.
@@ -608,7 +608,7 @@ function participantPageHref(experiment) {
   const runningUrl = experiment.participant_url;
   if (!runningUrl || runningUrl.kind === 'direct' || !prolific?.enabled) return `${url.pathname}${url.search}`;
   if (runningUrl.kind === 'prolific') {
-    return `${url.pathname}?PROLIFIC_PID={{%PROLIFIC_PID%}}&STUDY_ID={{%STUDY_ID%}}&SESSION_ID={{%SESSION_ID%}}`;
+    return prolificSetupUrl(experiment);
   }
   url.searchParams.set('PROLIFIC_PID', localPreviewId());
   url.searchParams.set('STUDY_ID', prolific.study_id);
@@ -623,7 +623,7 @@ function openParticipantUrl(experiment) {
 
 // Copies an absolute participant URL while preserving Prolific's literal placeholder syntax.
 async function copyParticipantUrl(experiment, _launch, button) {
-  const value = `${window.location.origin}${participantPageHref(experiment)}`;
+  const value = absoluteParticipantUrl(window.location.origin, participantPageHref(experiment));
   try {
     await navigator.clipboard.writeText(value);
   } catch (_error) {
@@ -680,7 +680,9 @@ function experimentActionsMarkup(experiment) {
   if (experiment.status === 'testing') {
     const openControl = experiment.participant_url?.kind === 'local'
       ? `<button class="secondary" data-open-participant-url type="button">${icon('external')}Open</button>`
-      : `<a class="secondary" href="${escapeHtml(participantPageHref(experiment))}" target="_blank" rel="noopener">${icon('external')}Open</a>`;
+      : participantUrlCanOpen(experiment)
+        ? `<a class="secondary" href="${escapeHtml(participantPageHref(experiment))}" target="_blank" rel="noopener">${icon('external')}Open</a>`
+        : '';
     return `<span class="running-actions">
       ${openControl}
       <button class="secondary" data-copy-participant-url="running" type="button">${icon('copy')}Copy URL</button>
@@ -688,7 +690,7 @@ function experimentActionsMarkup(experiment) {
     </span>`;
   }
   if (experiment.status === 'active') return `<span class="running-actions">
-    <a class="secondary" href="${escapeHtml(participantPageHref(experiment))}" target="_blank" rel="noopener">${icon('external')}Open</a>
+    ${participantUrlCanOpen(experiment) ? `<a class="secondary" href="${escapeHtml(participantPageHref(experiment))}" target="_blank" rel="noopener">${icon('external')}Open</a>` : ''}
     <button class="secondary" data-copy-participant-url="running" type="button">${icon('copy')}Copy URL</button>
     <button class="secondary" data-lifecycle="inactive" type="button">${icon('power')}Pause intake</button>
     <button class="primary" data-lifecycle="completed" type="button">${icon('check')}Complete</button>

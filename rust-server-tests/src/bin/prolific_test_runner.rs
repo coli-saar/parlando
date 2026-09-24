@@ -69,7 +69,7 @@ const SCENARIOS: &[ScenarioDefinition] = &[
     ScenarioDefinition {
         id: "ACT-01",
         phase: "Activation",
-        name: "Incorrect Prolific completion action blocks activation",
+        name: "Incorrect completion action and external URL block activation",
     },
     ScenarioDefinition {
         id: "ACT-02",
@@ -474,7 +474,23 @@ async fn main() -> Result<()> {
         if status != StatusCode::CONFLICT || !body.contains("REQUEST_RETURN") {
             bail!("expected completion-action conflict, received {status}: {body}");
         }
-        Ok("activation named the required REQUEST_RETURN action".to_string())
+        configure_mock_study(
+            &client,
+            &mock_base,
+            &server_base,
+            "another-experiment",
+            None,
+        )
+        .await?;
+        create_experiment(&client, &server_base, &admin, "invalid-url").await?;
+        let response = activate_experiment(&client, &server_base, &admin, "invalid-url").await?;
+        let status = response.status();
+        let body = response.text().await?;
+        if status != StatusCode::CONFLICT || !body.contains("must exactly match") {
+            bail!("expected external-URL conflict, received {status}: {body}");
+        }
+        Ok("activation rejected both a wrong completion action and another experiment's URL"
+            .to_string())
     })
     .await;
 

@@ -190,10 +190,40 @@ fn experiment_config_from_json_unvalidated(
         bail!("experiment configuration must be a JSON object");
     }
     let mut config: ExperimentConfig = serde_json::from_value(value)?;
+    apply_experiment_bootstrap_settings(&mut config, bootstrap, experiment_id);
+    Ok(config)
+}
+
+/// Applies process-owned settings and the canonical public route for one experiment.
+fn apply_experiment_bootstrap_settings(
+    config: &mut ExperimentConfig,
+    bootstrap: &ExperimentConfig,
+    experiment_id: &str,
+) {
     config.experiment.id = Some(experiment_id.to_string());
     config.server = bootstrap.server.clone();
     config.database = bootstrap.database.clone();
-    Ok(config)
+    config.server.public_base_url =
+        experiment_public_base_url(&bootstrap.server.public_base_url, experiment_id);
+}
+
+/// Builds the canonical externally visible participant base for one experiment.
+fn experiment_public_base_url(public_origin: &str, experiment_id: &str) -> String {
+    let base = public_origin.trim_end_matches('/');
+    let experiment_suffix = format!("/e/{experiment_id}");
+    if base.ends_with(&experiment_suffix) {
+        base.to_string()
+    } else {
+        format!("{base}{experiment_suffix}")
+    }
+}
+
+/// Builds the exact external-study URL template shown to and verified against Prolific.
+fn prolific_setup_url(experiment_public_base_url: &str) -> String {
+    format!(
+        "{}/?PROLIFIC_PID={{{{%PROLIFIC_PID%}}}}&STUDY_ID={{{{%STUDY_ID%}}}}&SESSION_ID={{{{%SESSION_ID%}}}}",
+        experiment_public_base_url.trim_end_matches('/')
+    )
 }
 
 /// Applies write-only experiment credentials after loading revisioned non-secret settings.
@@ -509,19 +539,11 @@ async fn prolific_activation_preflight(
             "The Prolific study must record participant IDs through URL parameters.".to_string(),
         );
     }
-    let expected_path = format!("{}/", config.server.public_base_url.trim_end_matches('/'));
-    if study.external_study_url.split('?').next() != Some(expected_path.as_str()) {
+    let expected_url = prolific_setup_url(&config.server.public_base_url);
+    if study.external_study_url != expected_url {
         issues.push(format!(
-            "The Prolific external study URL must begin with {expected_path}."
+            "The Prolific external study URL must exactly match {expected_url}."
         ));
-    }
-    let url_parameters = ["PROLIFIC_PID", "STUDY_ID", "SESSION_ID"];
-    for parameter in url_parameters {
-        if !study.external_study_url.contains(parameter) {
-            issues.push(format!(
-                "The Prolific external study URL must include {parameter}."
-            ));
-        }
     }
     let paths = &config.recruitment.prolific.completion_paths;
     let configured = HashMap::from([
@@ -635,6 +657,12 @@ fn prolific_local_activation_issues(config: &ExperimentConfig) -> Vec<String> {
             "Connect a Prolific API token in Game Settings before starting this experiment."
                 .to_string(),
         );
+    }
+    if let Err(error) = crate::config::validate_provider_http_url(
+        "The Prolific participant URL",
+        &config.server.public_base_url,
+    ) {
+        issues.push(error.to_string());
     }
     issues
 }
@@ -2849,7 +2877,12 @@ fn prolific_no_consent_url(
         .completion_paths
         .no_consent
         .trim();
-    (!code.is_empty()).then(|| format!("https://app.prolific.com/submissions/complete?cc={code}"))
+    (!code.is_empty()).then(|| prolific_completion_url(code))
+}
+
+/// Builds Prolific's documented participant completion redirect for one validated code.
+fn prolific_completion_url(code: &str) -> String {
+    format!("https://app.prolific.com/submissions/complete?cc={code}")
 }
 
 async fn create_participant<A: Game>(
@@ -5669,7 +5702,7 @@ async fn admin_experiments<A: Game>(
         } else {
             None
         };
-        let mut value = serde_json::to_value(experiment)
+        let mut value = serde_json::to_value(&experiment)
             .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
         let object = value
             .as_object_mut()
@@ -5697,6 +5730,13 @@ async fn admin_experiments<A: Game>(
         object.insert(
             "runnable_issues".to_string(),
             json!(readiness.prolific_issues),
+        );
+        object.insert(
+            "prolific_setup_url".to_string(),
+            json!(prolific_setup_url(&experiment_public_base_url(
+                &state.config.server.public_base_url,
+                &experiment.experiment_id,
+            ))),
         );
         object.insert("participant_url".to_string(), json!(participant_url));
         catalogue.push(value);
@@ -8632,7 +8672,7 @@ fn prolific_handoff(
     Some(RecruitmentHandoff {
         provider: "prolific".to_string(),
         code: code.clone(),
-        url: format!("https://app.prolific.com/submissions/complete?cc={code}"),
+        url: prolific_completion_url(code),
     })
 }
 
