@@ -42,7 +42,7 @@ cd parlando
 
 ## Start The Great Tree
 
-Run The Great Tree against the published Parlando 0.4.1 packages:
+Run The Great Tree against the published Parlando 0.4.2 packages:
 
 ```sh
 games/great-tree/run.sh

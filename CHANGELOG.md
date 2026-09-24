@@ -6,6 +6,8 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## Unreleased
 
+## [0.4.2] - 2026-09-24
+
 ### Fixed
 
 - Made the server the authority for each experiment's Prolific setup URL and require the provider

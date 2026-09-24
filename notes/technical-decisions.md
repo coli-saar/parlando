@@ -3271,3 +3271,22 @@ Tradeoffs and risks: Until publication, the first-party client manifests require
 lockfiles still record 0.4.0. This is an intentional release boundary, not a supported finished
 state; publication is complete only after those lockfiles resolve the registry artifact and the
 published release audit passes.
+
+## 2026-09-24: Release the exact Prolific URL contract as 0.4.2
+
+Context: The follow-up Prolific correction makes one server-generated setup URL authoritative,
+requires exact provider equality, rejects invalid public origins and insecure remote intake, and
+removes the dashboard action that opened a literal provider template. These are compatible fixes
+to the 0.4 public API, protocol, configuration schema, and database schema.
+
+Decision: Publish the correction as coordinated patch release 0.4.2 of the Rust runtime and
+JavaScript client. Update every first-party dependency manifest and current-version document in the
+same release. Validate all ordinary test and package gates, but omit the opt-in runtime and audio
+stress suites for this release as explicitly requested. Publish the Rust crate before the npm
+package, refresh consumer lockfiles from the immutable registry artifacts, audit the published
+versions, and tag the resulting release commit as `v0.4.2`.
+
+Tradeoffs and risks: The Git history contains a published 0.4.1 package release without a matching
+Git tag or GitHub release. This release does not rewrite that history or create a retroactive tag;
+`v0.4.2` is the next source tag. Consumer npm lockfiles temporarily remain on 0.4.1 until 0.4.2 is
+published, after which their registry URLs and integrity digests must be refreshed before tagging.

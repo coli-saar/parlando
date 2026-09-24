@@ -67,7 +67,7 @@ my-game/
 ```
 
 The exact file names may differ. The division of responsibility must not: Rust owns task truth;
-React owns presentation. The Rust crate depends on `parlando = "0.4.1"`, and the participant
+React owns presentation. The Rust crate depends on `parlando = "0.4.2"`, and the participant
 application depends on `@coli-saar/parlando-client` 0.4 and React 19. Keep the Parlando minor
 versions aligned.
 
