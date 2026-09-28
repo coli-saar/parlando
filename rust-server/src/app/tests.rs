@@ -421,6 +421,10 @@ async fn admin_dashboard_serves_html_css_and_javascript_assets() {
     let page_html = String::from_utf8(page_body.to_vec()).unwrap();
     assert!(page_html.contains("href=\"/admin/assets/admin-dashboard.css\""));
     assert!(page_html.contains("src=\"/admin/assets/admin-dashboard.js\""));
+    assert!(page_html.contains("data-tab=\"progress\""));
+    assert!(page_html.contains("id=\"progressPanel\""));
+    assert!(page_html.contains("id=\"sessionEndChart\""));
+    assert!(page_html.contains("id=\"icon-prolific\""));
 
     for (path, expected_content_type) in [
         (
@@ -843,9 +847,10 @@ async fn new_experiment_populates_default_provider_endpoints() {
 #[tokio::test]
 async fn admin_load_exposes_capacity_counters_and_liveness_policy() {
     let (config, _tmp) = sqlite_config();
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = super::build_router(TinyAdapter, config, ServeOptions::default())
         .await
         .unwrap();
+    authenticate_test_admin(router.clone()).await.unwrap();
     let response = admin_raw_request(router, http::Method::GET, "/api/admin/load").await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
@@ -1099,13 +1104,18 @@ fn corpus_export_is_nested_informative_and_structurally_minimized() {
     let full = json!({
         "participants": [
             {"participant_id": 7, "research_id": "calm-blue-otter", "participant_kind": "human", "external_id": "recruitment-id"},
-            {"participant_id": 8, "research_id": "agent:tiny@1", "participant_kind": "agent", "metadata": {"agent_name": "tiny", "agent_version": "1"}}
+            {"participant_id": 8, "research_id": "agent:tiny@1", "participant_kind": "agent", "metadata": {"agent_name": "tiny", "agent_version": "1"}},
+            {"participant_id": 9, "research_id": "waiting-only", "participant_kind": "human"}
         ],
         "experiment": {"experiment_id": "study", "game_version": "0.4.0", "config_revision": 2, "config": {"game": {"condition": "example"}, "direct": {"participant_information_url": "secret"}}},
-        "sessions": [{"session_id": 3, "dialogue_id": "softly-amber-harbor", "config_revision": 2, "game_version": "0.4.0", "mode": "direct", "status": "completed", "created_at": "2026-01-01T00:00:00Z", "started_at": "2026-01-01T00:00:01Z", "completed_at": "2026-01-01T00:00:05Z", "completion": {"outcome": "success"}}],
+        "sessions": [
+            {"session_id": 3, "dialogue_id": "softly-amber-harbor", "config_revision": 2, "game_version": "0.4.0", "mode": "direct", "status": "completed", "created_at": "2026-01-01T00:00:00Z", "started_at": "2026-01-01T00:00:01Z", "completed_at": "2026-01-01T00:00:05Z", "completion": {"outcome": "success"}},
+            {"session_id": 4, "dialogue_id": "quiet-waiting-session", "config_revision": 2, "game_version": "0.4.0", "mode": "direct", "status": "abandoned", "created_at": "2026-01-01T00:01:00Z", "started_at": null, "completed_at": "2026-01-01T00:02:00Z", "completion": null}
+        ],
         "session_participants": [
             {"session_id": 3, "participant_id": 7, "participant_session_id": "ps_secret", "role": "A"},
-            {"session_id": 3, "participant_id": 8, "participant_session_id": "ps_agent", "role": "B"}
+            {"session_id": 3, "participant_id": 8, "participant_session_id": "ps_agent", "role": "B"},
+            {"session_id": 4, "participant_id": 9, "participant_session_id": "ps_waiting", "role": "A"}
         ],
         "session_events": [
             {
@@ -1149,6 +1159,8 @@ fn corpus_export_is_nested_informative_and_structurally_minimized() {
     let corpus = corpus_experiment_export(full.clone(), "2").unwrap();
     let encoded = serde_json::to_string(&corpus).unwrap();
     assert_eq!(corpus["release_status"], "corpus_candidate");
+    assert_eq!(corpus["data_inventory"]["participants"], 2);
+    assert_eq!(corpus["data_inventory"]["sessions"], 1);
     assert!(encoded.contains("calm-blue-otter"));
     assert!(encoded.contains("softly-amber-harbor"));
     assert!(!encoded.contains("2026-01-01"));
@@ -1225,6 +1237,16 @@ fn corpus_export_is_nested_informative_and_structurally_minimized() {
             .count(),
         1
     );
+
+    let mut invalid_assignments = full.clone();
+    invalid_assignments["session_participants"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|row| row["participant_id"] != 8);
+    assert!(corpus_experiment_export(invalid_assignments, "2")
+        .unwrap_err()
+        .message
+        .contains("expected exactly two"));
 
     let mut invalid = full;
     invalid["session_events"][0]["game_time_ms"] = json!(-1);
@@ -3541,6 +3563,82 @@ async fn create_direct_participant(router: Router, _name: &str) -> String {
     participant_session_id
 }
 
+/// Builds a local-testing router that exercises Prolific admission without an external provider.
+async fn build_prolific_testing_router() -> Router {
+    let mut config = step_five_config();
+    config.session.reconnect_grace_seconds = 1;
+    config.recruitment.prolific.enabled = true;
+    config.recruitment.prolific.study_id = "prolific-study".to_string();
+    let paths = &mut config.recruitment.prolific.completion_paths;
+    paths.completed = "COMPLETE".to_string();
+    paths.partner_left = "PARTNERLEFT".to_string();
+    paths.game_did_not_start = "NOSTART".to_string();
+    paths.participation_ended_early = "EARLY".to_string();
+    paths.technical_failure = "TECHNICAL".to_string();
+    paths.no_consent = "NOCONSENT".to_string();
+    let router = super::build_router(TinyAdapter, config, ServeOptions::default())
+        .await
+        .unwrap();
+    authenticate_test_admin(router.clone()).await.unwrap();
+    let (status, _) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiment/status",
+        json!({"status": "testing", "participant_url_kind": "local"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    router
+}
+
+/// Admits one synthetic Prolific submission and retains its issued test credential.
+async fn create_prolific_testing_participant(
+    router: Router,
+    prolific_participant_id: &str,
+    prolific_session_id: &str,
+) -> String {
+    let (status, response) = json_request(
+        router,
+        http::Method::POST,
+        "/api/participants",
+        json!({"prolific": {
+            "participant_id": prolific_participant_id,
+            "study_id": "prolific-study",
+            "session_id": prolific_session_id
+        }}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response:#}");
+    let participant_id = response["participant_id"].as_str().unwrap().to_string();
+    let credential = response["participant_credential"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    TEST_PARTICIPANT_CREDENTIALS
+        .lock()
+        .unwrap()
+        .insert(participant_id.clone(), credential);
+    participant_id
+}
+
+/// Waits until a completed session has left runtime memory while remaining durable.
+async fn wait_for_completed_runtime_cleanup(router: Router) {
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (_, load) = json_request(
+            router.clone(),
+            http::Method::GET,
+            "/api/admin/load",
+            Value::Null,
+        )
+        .await;
+        if load["current"]["capacity"]["completed_retained_sessions"] == 0 {
+            return;
+        }
+    }
+    panic!("completed session remained in runtime memory");
+}
+
 /// Mints a real one-use game ticket and returns a URL for the local test server.
 async fn game_socket_url(
     base_url: &str,
@@ -5399,6 +5497,306 @@ async fn completed_rooms_reject_late_game_channel_input() {
     server.abort();
 }
 
+/// Confirms a durable terminal admission cannot enter a second session after runtime cleanup.
+#[tokio::test]
+async fn completed_admission_rejoins_recorded_terminal_session() {
+    let mut config = step_five_config();
+    config.session.reconnect_grace_seconds = 1;
+    let router = build_router(TinyAdapter, config, ServeOptions::default())
+        .await
+        .unwrap();
+    let (a, b, public_session_id) = create_joined_room(router.clone()).await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
+    let (mut socket_a, _) = connect_async(game_socket_url(&base_url, &public_session_id, &a).await)
+        .await
+        .unwrap();
+    let (mut socket_b, _) = connect_async(game_socket_url(&base_url, &public_session_id, &b).await)
+        .await
+        .unwrap();
+    let _ = read_participant_state(&mut socket_a, "active").await;
+    let _ = read_participant_state(&mut socket_b, "active").await;
+
+    send_ws_json(
+        &mut socket_a,
+        json!({"type": "action", "action": {"finish": true}}),
+    )
+    .await;
+    let _ = read_participant_state(&mut socket_a, "ended").await;
+    let _ = read_participant_state(&mut socket_b, "ended").await;
+    socket_a.close(None).await.unwrap();
+    socket_b.close(None).await.unwrap();
+
+    wait_for_completed_runtime_cleanup(router.clone()).await;
+
+    let (status, replay) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/sessions",
+        json!({"participant_session_id": a}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(replay["participant_state"]["state"], "ended");
+    assert_eq!(
+        replay["participant_state"]["public_session_id"],
+        public_session_id
+    );
+
+    let (_, export) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/export?variant=full",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(export["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(export["session_participants"].as_array().unwrap().len(), 2);
+    server.abort();
+}
+
+/// Confirms one Prolific user may enter again when Prolific issues a new submission id.
+#[tokio::test]
+async fn prolific_participant_with_new_session_id_enters_new_session() {
+    let router = build_prolific_testing_router().await;
+    let first =
+        create_prolific_testing_participant(router.clone(), "TESTRETURNING", "TESTSUBMISSIONONE")
+            .await;
+    let partner = create_prolific_testing_participant(
+        router.clone(),
+        "TESTPARTNERONE",
+        "TESTPARTNERSUBMISSIONONE",
+    )
+    .await;
+    consent_participant(router.clone(), &first).await;
+    consent_participant(router.clone(), &partner).await;
+    let (_, first_entry) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/sessions",
+        json!({"participant_session_id": first}),
+    )
+    .await;
+    let first_session_id = first_entry["participant_state"]["public_session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, _) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/sessions",
+        json!({"participant_session_id": partner}),
+    )
+    .await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
+    let (mut first_socket, _) =
+        connect_async(game_socket_url(&base_url, &first_session_id, &first).await)
+            .await
+            .unwrap();
+    let (mut partner_socket, _) =
+        connect_async(game_socket_url(&base_url, &first_session_id, &partner).await)
+            .await
+            .unwrap();
+    let _ = read_participant_state(&mut first_socket, "active").await;
+    let _ = read_participant_state(&mut partner_socket, "active").await;
+    send_ws_json(
+        &mut first_socket,
+        json!({"type": "action", "action": {"finish": true}}),
+    )
+    .await;
+    let _ = read_participant_state(&mut first_socket, "ended").await;
+    let _ = read_participant_state(&mut partner_socket, "ended").await;
+
+    let returning =
+        create_prolific_testing_participant(router.clone(), "TESTRETURNING", "TESTSUBMISSIONTWO")
+            .await;
+    assert_ne!(returning, first);
+    consent_participant(router.clone(), &returning).await;
+    let (status, second_entry) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/sessions",
+        json!({"participant_session_id": returning}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(second_entry["participant_state"]["state"], "waiting");
+    assert_ne!(
+        second_entry["participant_state"]["public_session_id"],
+        first_session_id
+    );
+
+    let (_, sessions) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/sessions?limit=80",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(sessions["sessions"].as_array().unwrap().len(), 2);
+    server.abort();
+}
+
+/// Confirms an ended Prolific submission always returns its original recorded outcome.
+#[tokio::test]
+async fn prolific_participant_with_ended_session_id_rejoins_recorded_outcome() {
+    let router = build_prolific_testing_router().await;
+    let participant =
+        create_prolific_testing_participant(router.clone(), "TESTENDED", "TESTENDEDSUBMISSION")
+            .await;
+    let partner = create_prolific_testing_participant(
+        router.clone(),
+        "TESTENDEDPARTNER",
+        "TESTENDEDPARTNERSUBMISSION",
+    )
+    .await;
+    consent_participant(router.clone(), &participant).await;
+    consent_participant(router.clone(), &partner).await;
+    let (_, entry) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/sessions",
+        json!({"participant_session_id": participant}),
+    )
+    .await;
+    let public_session_id = entry["participant_state"]["public_session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, _) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/sessions",
+        json!({"participant_session_id": partner}),
+    )
+    .await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
+    let (mut participant_socket, _) =
+        connect_async(game_socket_url(&base_url, &public_session_id, &participant).await)
+            .await
+            .unwrap();
+    let (mut partner_socket, _) =
+        connect_async(game_socket_url(&base_url, &public_session_id, &partner).await)
+            .await
+            .unwrap();
+    let _ = read_participant_state(&mut participant_socket, "active").await;
+    let _ = read_participant_state(&mut partner_socket, "active").await;
+    send_ws_json(
+        &mut participant_socket,
+        json!({"type": "action", "action": {"finish": true}}),
+    )
+    .await;
+    let _ = read_participant_state(&mut participant_socket, "ended").await;
+    let _ = read_participant_state(&mut partner_socket, "ended").await;
+    participant_socket.close(None).await.unwrap();
+    partner_socket.close(None).await.unwrap();
+    wait_for_completed_runtime_cleanup(router.clone()).await;
+
+    let returning =
+        create_prolific_testing_participant(router.clone(), "TESTENDED", "TESTENDEDSUBMISSION")
+            .await;
+    assert_eq!(returning, participant);
+    let (status, replay) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/sessions",
+        json!({"participant_session_id": returning}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(replay["participant_state"]["state"], "ended");
+    assert_eq!(
+        replay["participant_state"]["public_session_id"],
+        public_session_id
+    );
+
+    let (_, sessions) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/sessions?limit=80",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(sessions["sessions"].as_array().unwrap().len(), 1);
+    server.abort();
+}
+
+/// Confirms a running Prolific submission reconnects to its existing active session.
+#[tokio::test]
+async fn prolific_participant_with_running_session_id_rejoins_active_session() {
+    let router = build_prolific_testing_router().await;
+    let participant =
+        create_prolific_testing_participant(router.clone(), "TESTRUNNING", "TESTRUNNINGSUBMISSION")
+            .await;
+    let partner = create_prolific_testing_participant(
+        router.clone(),
+        "TESTRUNNINGPARTNER",
+        "TESTRUNNINGPARTNERSUBMISSION",
+    )
+    .await;
+    consent_participant(router.clone(), &participant).await;
+    consent_participant(router.clone(), &partner).await;
+    let (_, entry) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/sessions",
+        json!({"participant_session_id": participant}),
+    )
+    .await;
+    let public_session_id = entry["participant_state"]["public_session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, _) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/sessions",
+        json!({"participant_session_id": partner}),
+    )
+    .await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
+    let (mut participant_socket, _) =
+        connect_async(game_socket_url(&base_url, &public_session_id, &participant).await)
+            .await
+            .unwrap();
+    let (mut partner_socket, _) =
+        connect_async(game_socket_url(&base_url, &public_session_id, &partner).await)
+            .await
+            .unwrap();
+    let _ = read_participant_state(&mut participant_socket, "active").await;
+    let _ = read_participant_state(&mut partner_socket, "active").await;
+
+    let returning =
+        create_prolific_testing_participant(router.clone(), "TESTRUNNING", "TESTRUNNINGSUBMISSION")
+            .await;
+    assert_eq!(returning, participant);
+    let (status, replay) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/sessions",
+        json!({"participant_session_id": returning}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(replay["participant_state"]["state"], "active");
+    assert_eq!(replay["participant_state"]["role"], "A");
+    assert_eq!(
+        replay["participant_state"]["public_session_id"],
+        public_session_id
+    );
+
+    let (_, sessions) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/sessions?limit=80",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(sessions["sessions"].as_array().unwrap().len(), 1);
+    participant_socket.close(None).await.unwrap();
+    partner_socket.close(None).await.unwrap();
+    server.abort();
+}
+
 #[tokio::test]
 async fn transcript_endpoints_are_private_and_diagnostics_are_not_persisted() {
     let (config, _temp) = sqlite_config();
@@ -5478,13 +5876,19 @@ async fn transcript_endpoints_are_private_and_diagnostics_are_not_persisted() {
     assert_eq!(diagnostic_status, StatusCode::OK);
     assert_eq!(diagnostic["stored"], false);
 
-    let (export_status, export) =
-        json_request(router, http::Method::GET, "/api/admin/export", Value::Null).await;
+    let (export_status, export) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/export?variant=full",
+        Value::Null,
+    )
+    .await;
     assert_eq!(export_status, StatusCode::OK);
-    let events = export["experiment"]["sessions"][0]["events"]
-        .as_array()
-        .unwrap();
-    assert!(events.is_empty());
+    let events = export["session_events"].as_array().unwrap();
+    assert!(events.iter().all(|event| !matches!(
+        event["event_type"].as_str(),
+        Some("transcript_segment" | "voice_diagnostic")
+    )));
 }
 
 #[tokio::test]
@@ -5582,6 +5986,16 @@ async fn admin_sessions_api_reads_actions_from_database() {
         .find(|event| event["event_type"] == "game_action_accepted")
         .and_then(|event| event["event_index"].as_i64())
         .unwrap();
+    let (progress_status, progress) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/progress",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(progress_status, StatusCode::OK);
+    assert_eq!(progress["progress"]["total_sessions"], 1);
+    assert_eq!(progress["progress"]["ended_sessions"], 0);
     let (poll_status, poll) = json_request(
         router,
         http::Method::GET,

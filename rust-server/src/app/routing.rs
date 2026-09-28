@@ -737,6 +737,10 @@ where
             &participant_path("/api/admin/sessions"),
             get(admin_sessions::<A>),
         )
+        .route(
+            &participant_path("/api/admin/progress"),
+            get(admin_progress::<A>),
+        )
         .route(&participant_path("/api/admin/load"), get(admin_load::<A>))
         .route(
             &participant_path("/api/admin/sessions/:session_id"),
@@ -831,6 +835,7 @@ where
                 post(admin_update_experiment_status::<A>),
             )
             .route(&runtime_admin_path("/sessions"), get(admin_sessions::<A>))
+            .route(&runtime_admin_path("/progress"), get(admin_progress::<A>))
             .route(
                 &runtime_admin_path("/sessions/:session_id"),
                 get(admin_session_detail::<A>),

@@ -1,5 +1,5 @@
 import { state } from './admin-dashboard-state.js';
-import { escapeHtml, experimentDisplayStatus, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
+import { escapeHtml, experimentDisplayStatus, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, sessionEndCauseRows, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
 import { absoluteParticipantUrl, adminFetch, experimentRuntimeApi, participantUrlCanOpen } from './admin-dashboard-api.js';
 const experimentList = document.getElementById('experimentList');
 const menuButton = document.getElementById('menuButton');
@@ -9,6 +9,7 @@ const experimentWorkspaceHeader = document.getElementById('experimentWorkspaceHe
 const emptyExperimentWorkspace = document.getElementById('emptyExperimentWorkspace');
 const experimentWorkspaceTabs = document.getElementById('experimentWorkspaceTabs');
 const sessionList = document.getElementById('sessionList');
+const sessionEndChart = document.getElementById('sessionEndChart');
 const sessionDetail = document.getElementById('sessionDetail');
 const summary = document.getElementById('summary');
 const timeline = document.getElementById('timeline');
@@ -49,6 +50,7 @@ const scopePanels = Array.from(document.querySelectorAll('[data-scope-panel]'));
 const tabButtons = Array.from(document.querySelectorAll('.tab'));
 const tabPanels = {
   sessions: document.getElementById('sessionsPanel'),
+  progress: document.getElementById('progressPanel'),
   notes: document.getElementById('notesPanel'),
   export: document.getElementById('exportPanel'),
   details: document.getElementById('detailsPanel'),
@@ -778,6 +780,39 @@ function unsuccessfulWait(session) {
   return ` · waited ${formatDuration(Math.max(0, end - start))}`;
 }
 
+// Renders one proportional bar and legend from complete experiment-wide session counts.
+function renderSessionEndChart() {
+  const progress = state.sessionProgress || { total_sessions: 0, ended_sessions: 0, end_causes: {} };
+  const rows = sessionEndCauseRows(progress.end_causes);
+  const total = Number(progress.ended_sessions) || 0;
+  if (!progress.total_sessions) {
+    sessionEndChart.innerHTML = '<div class="empty">No sessions in this experiment yet.</div>';
+    return;
+  }
+  if (!total) {
+    sessionEndChart.innerHTML = `<div class="empty">None of the ${progress.total_sessions} sessions has ended yet.</div>`;
+    return;
+  }
+  sessionEndChart.innerHTML = `
+    <div class="session-end-chart-heading"><strong>Session results</strong><span class="muted small">${total} ended</span></div>
+    <div class="session-end-stack" role="img" aria-label="Distribution of ${total} ended sessions">${rows.map(row => {
+      const presentation = sessionEndPresentation({ session_end: { cause: { type: row.type } } });
+      const percentage = Math.round((row.count / total) * 100);
+      const tooltip = `${presentation.label}: ${row.count} of ${total} ended sessions (${percentage}%).`;
+      return `<span class="session-end-segment ${escapeHtml(presentation.status)}" style="--segment-weight:${row.count}" data-quick-tooltip="${escapeHtml(tooltip)}" tabindex="0" aria-label="${escapeHtml(tooltip)}"></span>`;
+    }).join('')}</div>
+    <div class="session-end-legend">${rows.map(row => {
+      const presentation = sessionEndPresentation({ session_end: { cause: { type: row.type } } });
+      const percentage = Math.round((row.count / total) * 100);
+      const tooltip = `${presentation.label}: ${row.count} of ${total} ended sessions (${percentage}%).`;
+      return `<span class="session-end-legend-item" data-quick-tooltip="${escapeHtml(tooltip)}" tabindex="0">
+        <i class="session-end-swatch ${escapeHtml(presentation.status)}" aria-hidden="true"></i>
+        <span>${escapeHtml(presentation.label)}</span><strong>${row.count}</strong>
+      </span>`;
+    }).join('')}</div>
+    <p class="muted small">All ${progress.total_sessions} sessions in this experiment are included. The bar shows the ${total} ended sessions by outcome.</p>`;
+}
+
 // Renders the selected experiment's durable sessions with lifecycle dots and compact event counts.
 function renderSessions() {
   if (!state.sessions.length) {
@@ -819,6 +854,16 @@ async function loadSessions() {
   renderSessions();
   if (state.selectedSession) renderSummary(state.selectedSession, state.selectedParticipants);
   if (!state.selected && state.sessions[0]) selectSession(state.sessions[0].session_id);
+}
+
+// Loads complete experiment-wide counts for the Progress tab.
+async function loadProgress() {
+  if (!state.experiment) return;
+  const response = await adminFetch(state, runtimeApi('progress'));
+  if (!response.ok) throw new Error(await response.text());
+  const data = await response.json();
+  state.sessionProgress = data.progress || null;
+  renderSessionEndChart();
 }
 
 // Refreshes game identity, catalogue metadata, shared settings, and the selected configuration.
@@ -902,6 +947,7 @@ async function selectExperiment(experimentId) {
   state.load = null;
   state.privacy = null;
   state.activationIssues = [];
+  state.sessionProgress = null;
   state.configLoadFailed = false;
   state.configLoadError = null;
   sessionDetail.hidden = true;
@@ -910,7 +956,7 @@ async function selectExperiment(experimentId) {
   renderExperimentHeader();
   renderExperimentDetails();
   renderNotes();
-  await Promise.all([loadConfigurationSafely(), loadSessions(), loadLoad()]);
+  await Promise.all([loadConfigurationSafely(), loadSessions(), loadProgress(), loadLoad()]);
   if (state.activeTab === 'privacy') await loadPrivacy();
 }
 
@@ -1065,12 +1111,12 @@ const PARLANDO_CONFIG_SECTIONS = [
     { type: 'prolific-setup-url', label: 'URL for Prolific study setup', help: 'Copy this URL into Prolific before linking the study here. It contains Prolific placeholders and accepts participants only while this experiment is running through Prolific.' },
     { path: 'recruitment.prolific.enabled', label: 'Enable Prolific intake', help: 'Require and privately retain the PROLIFIC_PID, STUDY_ID, and SESSION_ID URL parameters.', type: 'boolean' },
     { path: 'recruitment.prolific.study_id', label: 'Linked Prolific study ID', help: 'In app.prolific.com/researcher/studies/<study-id>, enter only the value after /studies/. Parlando derives its workspace from the study project.' },
-    { path: 'recruitment.prolific.completion_paths.completed', label: 'Completed code', help: 'Copy the code for the Prolific path whose action approves the submission.', type: 'completion-code' },
-    { path: 'recruitment.prolific.completion_paths.partner_left', label: 'Partner left code', help: 'Copy the code for the Prolific path whose action approves the good-faith participant’s submission.', type: 'completion-code' },
-    { path: 'recruitment.prolific.completion_paths.game_did_not_start', label: 'Game did not start code', help: 'Copy the code for a custom Game did not start path whose action requests a return. Do not use Screened out.', type: 'completion-code' },
-    { path: 'recruitment.prolific.completion_paths.participation_ended_early', label: 'Participation ended before completion code', help: 'Copy the code for the Prolific path whose action requests a return.', type: 'completion-code' },
-    { path: 'recruitment.prolific.completion_paths.technical_failure', label: 'Technical failure code', help: 'Copy the code for the Prolific path whose action approves the submission.', type: 'completion-code' },
-    { path: 'recruitment.prolific.completion_paths.no_consent', label: 'No consent code', help: 'Copy the code for Prolific’s built-in No consent path whose action requests a return.', type: 'completion-code' }
+    { path: 'recruitment.prolific.completion_paths.completed', label: 'Completed code', help: 'Game condition: The game completed normally. Prolific outcome: Automatically approve the submission. Suggested Prolific label: Completed.', type: 'completion-code' },
+    { path: 'recruitment.prolific.completion_paths.partner_left', label: 'Partner left code', help: 'Game condition: The participant remained after their partner left or failed to reconnect. Prolific outcome: Automatically approve the submission. Suggested Prolific label: Partner left.', type: 'completion-code' },
+    { path: 'recruitment.prolific.completion_paths.game_did_not_start', label: 'Game did not start code', help: 'Game condition: The participant’s session ended before a playable game began. Prolific outcome: Request return; do not use Screened out. Suggested Prolific label: Game did not start.', type: 'completion-code' },
+    { path: 'recruitment.prolific.completion_paths.participation_ended_early', label: 'Participation ended before completion code', help: 'Game condition: The participant left, failed to reconnect, or timed out after the game began. Prolific outcome: Request return. Suggested Prolific label: Participation ended before completion.', type: 'completion-code' },
+    { path: 'recruitment.prolific.completion_paths.technical_failure', label: 'Technical failure code', help: 'Game condition: Parlando or a required service prevented the participant from completing the game. Prolific outcome: Automatically approve the submission. Suggested Prolific label: Technical failure.', type: 'completion-code' },
+    { path: 'recruitment.prolific.completion_paths.no_consent', label: 'No consent code', help: 'Game condition: The participant declined required consent before registration. Prolific outcome: Request return. Suggested Prolific label: No consent.', type: 'completion-code' }
   ]},
   { title: 'Players and agents', description: 'Select human pairing or one server-side agent and configure its runtime limits.', fields: [
     { path: 'agents', label: 'Participants', help: 'Pair two people, or pair one person with an agent compiled into this game server.', type: 'agents' }
@@ -1846,7 +1892,7 @@ async function selectSession(sessionId) {
   liveStatus.textContent = 'Live';
 }
 
-// Switches among the selected experiment's sessions, export, and configuration views.
+// Switches among the selected experiment's sessions, progress, notes, export, and configuration views.
 function renderTabs() {
   if (!state.experiment) {
     Object.values(tabPanels).forEach(panel => { panel.hidden = true; });
@@ -2082,12 +2128,12 @@ function participantTransportMarkup(row) {
 function prolificDetailsMarkup(row) {
   if (row.identity_provider !== 'prolific' || !row.prolific_participant_id) return '';
   const checked = Boolean(row.prolific_reconciled_at);
-  const providerDetail = row.prolific_status ? ` Provider status: ${row.prolific_status}.` : '';
-  const tooltip = checked
-    ? `Prolific submission status checked.${providerDetail} Open details.`
-    : 'Prolific submission status has not been checked. Open details.';
+  const checkDetail = checked
+    ? `Checked${row.prolific_status ? ` · ${row.prolific_status}` : ''}`
+    : 'Not checked';
+  const tooltip = `Participant: ${row.prolific_participant_id}\nProlific check: ${checkDetail}\nClick: Show study and submission details`;
   return `<details class="configuration-identity provider-details ${checked ? 'checked' : 'unchecked'}">
-    <summary title="${escapeHtml(tooltip)}" aria-label="${escapeHtml(tooltip)}">${icon(checked ? 'check' : 'help')}</summary>
+    <summary data-quick-tooltip="${escapeHtml(tooltip)}" aria-label="${escapeHtml(tooltip)}">${icon('prolific')}</summary>
     <div class="configuration-identity-card">
       <strong>Prolific recruitment</strong>
       <dl>

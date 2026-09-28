@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -377,6 +377,17 @@ pub struct StoredSessionSummary {
     pub last_event_game_time_ms: Option<i64>,
 }
 
+/// Complete experiment-wide counts used by the administrator progress view.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct StoredSessionProgress {
+    /// Number of durable sessions in the experiment, regardless of lifecycle.
+    pub total_sessions: i64,
+    /// Number of durable sessions whose lifecycle is terminal.
+    pub ended_sessions: i64,
+    /// Terminal session counts keyed by the serialized session-end cause.
+    pub end_causes: BTreeMap<String, i64>,
+}
+
 /// Durable participant metadata for one session-local game appearance.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StoredSessionParticipant {
@@ -685,6 +696,8 @@ pub trait ExperimentStore: Send + Sync {
         experiment_id: &str,
         limit: i64,
     ) -> Result<Vec<StoredSessionSummary>>;
+    /// Counts every session and terminal cause in one experiment without a sampling limit.
+    async fn session_progress(&self, experiment_id: &str) -> Result<StoredSessionProgress>;
     /// Returns session-local participant metadata joined to durable participant records.
     async fn session_participants(
         &self,
@@ -2417,6 +2430,40 @@ impl ExperimentStore for SqliteExperimentStore {
         })
         .collect::<Result<Vec<_>>>()?;
         Ok(sessions)
+    }
+
+    async fn session_progress(&self, experiment_id: &str) -> Result<StoredSessionProgress> {
+        let total_sessions =
+            sqlx::query_scalar::<_, i64>("select count(*) from sessions where experiment_id = ?")
+                .bind(experiment_id)
+                .fetch_one(&self.pool)
+                .await?;
+        let rows = sqlx::query(
+            r#"
+            select coalesce(json_extract(session_end_json, '$.cause.type'), 'unavailable') as cause,
+                   count(*) as session_count
+            from sessions
+            where experiment_id = ? and lifecycle = 'ended'
+            group by cause
+            order by cause
+            "#,
+        )
+        .bind(experiment_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut end_causes = BTreeMap::new();
+        let mut ended_sessions = 0;
+        for row in rows {
+            let cause = row.try_get::<String, _>("cause")?;
+            let count = row.try_get::<i64, _>("session_count")?;
+            ended_sessions += count;
+            end_causes.insert(cause, count);
+        }
+        Ok(StoredSessionProgress {
+            total_sessions,
+            ended_sessions,
+            end_causes,
+        })
     }
 
     async fn session_participants(

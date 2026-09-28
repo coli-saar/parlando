@@ -3290,3 +3290,75 @@ Tradeoffs and risks: The Git history contains a published 0.4.1 package release 
 Git tag or GitHub release. This release does not rewrite that history or create a retroactive tag;
 `v0.4.2` is the next source tag. Consumer npm lockfiles temporarily remain on 0.4.1 until 0.4.2 is
 published, after which their registry URLs and integrity digests must be refreshed before tagging.
+
+## 2026-09-28: Keep the pilot-data corrections provider-neutral
+
+Context: The pilot database exposed two concrete failures. A durable participant admission could
+enter a new session after its completed session had been removed from runtime memory because the
+join path consulted only the in-memory sessions. Separately, corpus export treated an unstarted
+one-participant session as a malformed completed game and rejected the entire export. The standard
+client completion message could also disappear when an application supplied additional completion
+content.
+
+Decision: Before pairing a participant, consult the durable participant-session record and return
+its recorded terminal outcome when one exists. Keep this behavior independent of Prolific: the
+provider's session identifier selects the same durable admission, but the server rule applies to
+all admission sources. Exclude sessions without `started_at` from corpus export before validating
+that each exported session has exactly two participants. Preserve the exact-two check for sessions
+that actually started, without repairing or tolerating malformed historical data. Make the
+JavaScript client always render its standard recorded-outcome message, with application-provided
+completion content remaining optional supplementary content. Summarize existing session-end causes
+in the dashboard using the sessions already loaded there. Do not change the `Game` interface, the
+session state machine, the database schema, or public protocol shapes.
+
+Tradeoffs and risks: A malformed session that did start still blocks corpus export, making durable
+inconsistency visible instead of silently omitting it. The dashboard visualization describes only
+the currently shown sessions and reports Parlando's session-end causes, not game-specific wins or
+losses. Re-entering with a new admission remains valid; only reuse of the same durable admission
+returns its recorded result.
+
+## 2026-09-28: Separate experiment progress from session inspection
+
+Context: The session-end visualization was initially placed above the session catalogue. That made
+the catalogue denser and coupled the visualization to the session list's lifecycle filter, even
+though the chart is an experiment-level summary rather than a session-selection control.
+
+Decision: Give experiment progress its own tab next to Sessions and render one horizontal stacked
+bar whose segments represent Parlando's durable session-end causes. Load an independent,
+lifecycle-neutral aggregate directly from every durable session in the experiment so changing the
+Sessions filter does not change the Progress chart. Keep the Sessions endpoint bounded for session
+inspection, but do not use that bounded list as progress data. Keep counts in a legend and expose
+the count, total, and percentage through keyboard-accessible tooltips on both bar segments and
+legend items.
+
+Tradeoffs and risks: The dedicated progress query returns only aggregate counts, avoiding both an
+arbitrary sample and the cost of sending every session record to the browser. The colors distinguish
+Parlando lifecycle outcomes; they do not introduce or infer game-specific win/loss semantics.
+
+## 2026-09-28: Test Prolific returns at the admission boundary
+
+Context: Provider-neutral tests covered rejoining an in-memory session and recovering an ended
+session from durable storage, while storage tests covered repeat participation. They did not prove
+that a repeated Prolific launch traversed `/api/participants` and preserved the same semantics.
+
+Decision: Add end-to-end admission tests for one Prolific participant returning with (1) a new
+`SESSION_ID`, (2) the `SESSION_ID` of an ended session after runtime cleanup, and (3) the
+`SESSION_ID` of a running session. A new `SESSION_ID` remains a new admission and may create a new
+session. Reusing a `SESSION_ID` returns the original running or ended session. Keep this behavior
+provider-neutral below the Prolific admission boundary and make no schema or state-machine change.
+Use Prolific's sunrise mark for the participant disclosure control, and explain in the tooltip that
+clicking reveals the study, submission, and provider-check details. Completion-code help text names
+the game condition first, the resulting Prolific action second, and a suggested researcher-facing
+Prolific label third. Labels are suggestions only: Parlando selects paths by configured completion
+code and never reads or matches their Prolific display names.
+
+Tradeoffs and risks: The end-to-end tests use Parlando's synthetic local-testing launch contract,
+so they exercise admission identity and session routing without making live Prolific API calls.
+Provider signature and submission verification remain covered separately. The dashboard icon is a
+compact monochrome rendering because the 17-pixel disclosure control cannot accommodate Prolific's
+full wordmark. Each protected-endpoint test authenticates its own administrator; it must not depend
+on credentials placed in shared test state by another concurrently running test.
+
+The Prolific disclosure tooltip uses three short labeled lines—participant, check status, and click
+action—rather than prose. The shared dashboard tooltip preserves explicit line breaks, while its
+plain-text content and `aria-label` remain equivalent for keyboard and assistive-technology use.

@@ -887,13 +887,10 @@ function SessionOutcomePanel({
   const heading = outcome === "completed" ? "Session complete" : "Session ended";
   return (
     <section className={`parlando-session-outcome outcome-${outcome ?? "unknown"}`}>
-      {completionContent ? (
+      <h1>{heading}</h1>
+      <p>{outcomeText(outcome, reason)}</p>
+      {completionContent && (
         <div className="parlando-game-completion">{completionContent}</div>
-      ) : (
-        <>
-          <h1>{heading}</h1>
-          <p>{outcomeText(outcome, reason)}</p>
-        </>
       )}
       {handoff && (
         <ProlificHandoff handoff={handoff} />

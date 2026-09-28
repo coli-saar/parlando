@@ -9,6 +9,7 @@ import {
   namedStatusLabel,
   shortSha,
   statusText,
+  sessionEndCauseRows,
 } from '../src/app/admin_dashboard_format.mjs';
 
 test('dashboard formatters preserve stable presentation contracts', () => {
@@ -24,5 +25,15 @@ test('dashboard HTML helpers escape server-owned content', () => {
   assert.equal(
     namedStatusLabel('active', '<unsafe>'),
     '<span class="status-label"><span class="status-dot active" aria-hidden="true"></span>&lt;unsafe&gt;</span>',
+  );
+});
+
+test('session end cause rows order complete server-provided counts', () => {
+  assert.deepEqual(
+    sessionEndCauseRows({ partner_unavailable: 1, game_completed: 2, ignored: 0 }),
+    [
+      { type: 'game_completed', count: 2 },
+      { type: 'partner_unavailable', count: 1 },
+    ],
   );
 });

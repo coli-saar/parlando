@@ -292,6 +292,7 @@ describe("ParticipantApp participant state machine", () => {
     });
 
     expect(await screen.findByRole("heading", { name: "Score: 7" })).toBeInTheDocument();
+    expect(screen.getByText(/responses have been recorded/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Copy Prolific completion code" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("GREENOWL"));
     expect(await screen.findByText("Copied to clipboard.")).toBeInTheDocument();

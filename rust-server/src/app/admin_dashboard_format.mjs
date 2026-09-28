@@ -89,3 +89,11 @@ export function shortSha(value) {
   if (!value) return '-';
   return String(value).slice(0, 12);
 }
+
+// Orders complete server-provided terminal-cause counts for chart rendering.
+export function sessionEndCauseRows(endCauses) {
+  return Object.entries(endCauses || {})
+    .map(([type, count]) => ({ type, count: Number(count) }))
+    .filter(row => Number.isFinite(row.count) && row.count > 0)
+    .sort((left, right) => right.count - left.count || left.type.localeCompare(right.type));
+}

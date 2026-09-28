@@ -341,6 +341,66 @@ async fn sqlite_stamps_testing_and_research_session_purpose() {
     );
 }
 
+/// Confirms progress counts include every session rather than the recent-session display limit.
+#[tokio::test]
+async fn sqlite_session_progress_counts_the_complete_experiment() {
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+    store
+        .create_experiment(ExperimentRecord {
+            experiment_id: "progress".to_string(),
+            game_version: "0.4.0".to_string(),
+            config: json!({}),
+            server_version: None,
+            version_manifest: None,
+            status: "inactive".to_string(),
+            notes: None,
+        })
+        .await
+        .unwrap();
+
+    for index in 0..82 {
+        let session_id = store
+            .create_session(SessionRecord {
+                experiment_id: "progress".to_string(),
+                config_revision: 1,
+                game_version: "0.4.0".to_string(),
+                public_session_id: format!("PROGRESS-{index}"),
+                mode: "direct".to_string(),
+                lifecycle: "forming".to_string(),
+                purpose: "research".to_string(),
+                waiting_timeout_seconds: 600,
+                maximum_lifetime_seconds: 14_400,
+            })
+            .await
+            .unwrap();
+        if index < 81 {
+            let cause = if index % 2 == 0 {
+                SessionEndCause::GameCompleted
+            } else {
+                SessionEndCause::TechnicalFailure
+            };
+            sqlx::query(
+                "update sessions set lifecycle = 'ended', ended_at = ?, session_end_json = ? where experiment_id = ? and session_id = ?",
+            )
+            .bind(now_iso())
+            .bind(serde_json::to_string(&test_session_end(cause, None)).unwrap())
+            .bind("progress")
+            .bind(session_id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    let progress = store.session_progress("progress").await.unwrap();
+    assert_eq!(progress.total_sessions, 82);
+    assert_eq!(progress.ended_sessions, 81);
+    assert_eq!(progress.end_causes["game_completed"], 41);
+    assert_eq!(progress.end_causes["technical_failure"], 40);
+}
+
 /// Confirms process startup closes only lifecycle states that permit intake.
 #[tokio::test]
 async fn sqlite_deactivates_every_open_experiment_without_changing_terminal_states() {

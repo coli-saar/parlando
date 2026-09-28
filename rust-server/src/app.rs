@@ -3195,6 +3195,19 @@ where
             participant_state_response(&state, &public_session_id, role).await?,
         ));
     }
+    if let Some(stored) = state
+        .store
+        .terminal_participant_state(&state.experiment_id, &participant_session_id)
+        .await?
+    {
+        return Ok(Json(ParticipantStateResponse {
+            participant_state: ParticipantState::Ended {
+                public_session_id: stored.public_session_id,
+                role: stored.role,
+                result: stored.result,
+            },
+        }));
+    }
     let _intake_guard = require_open_experiment(&state).await?;
     require_consent(&state, &participant_session_id).await?;
     require_session_storage_reserve(&state).await?;
@@ -6587,6 +6600,19 @@ async fn admin_sessions<A: Game>(
     })))
 }
 
+/// Returns complete experiment-wide session counts for the Progress tab.
+async fn admin_progress<A: Game>(
+    State(state): State<Arc<AppState<A>>>,
+    scope: Option<Extension<AdminExperimentScope>>,
+) -> Result<Json<Value>, AppError> {
+    let experiment_id = admin_experiment_id(&state, scope.as_ref());
+    let progress = state.store.session_progress(&experiment_id).await?;
+    Ok(Json(json!({
+        "experiment_id": experiment_id,
+        "progress": progress,
+    })))
+}
+
 /// Returns one database session's metadata and important event timeline.
 async fn admin_session_detail<A: Game>(
     State(state): State<Arc<AppState<A>>>,
@@ -7580,6 +7606,20 @@ fn exclude_testing_sessions(exported: &mut Value) {
     filter_array_by_string_not_equal(exported, "sessions", "purpose", "testing");
     filter_array_by_string_not_equal(exported, "consent_declarations", "purpose", "testing");
     filter_scoped_tables_to_sessions(exported);
+    filter_participants_to_sessions(exported);
+}
+
+/// Removes sessions that never entered gameplay from the publication corpus graph.
+fn exclude_unstarted_sessions(exported: &mut Value) {
+    if let Some(rows) = exported.get_mut("sessions").and_then(Value::as_array_mut) {
+        rows.retain(|row| row.get("started_at").is_some_and(Value::is_string));
+    }
+    filter_scoped_tables_to_sessions(exported);
+    filter_participants_to_sessions(exported);
+}
+
+/// Retains only participants referenced by the sessions left in an export graph.
+fn filter_participants_to_sessions(exported: &mut Value) {
     let participant_ids = exported
         .get("session_participants")
         .and_then(Value::as_array)
@@ -7656,9 +7696,10 @@ fn filter_scoped_tables_to_sessions(exported: &mut Value) {
 
 /// Derives a publication-oriented dialogue corpus with consistent readable identifiers.
 fn corpus_experiment_export(
-    exported: Value,
+    mut exported: Value,
     privacy_contract_version: &str,
 ) -> Result<Value, AppError> {
+    exclude_unstarted_sessions(&mut exported);
     let experiment = exported
         .get("experiment")
         .and_then(Value::as_object)
