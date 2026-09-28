@@ -393,12 +393,33 @@ async fn sqlite_session_progress_counts_the_complete_experiment() {
             .unwrap();
         }
     }
+    let testing_session_id = store
+        .create_session(SessionRecord {
+            experiment_id: "progress".to_string(),
+            config_revision: 1,
+            game_version: "test".to_string(),
+            public_session_id: "testing-progress-session".to_string(),
+            mode: "direct".to_string(),
+            lifecycle: "forming".to_string(),
+            purpose: "testing".to_string(),
+            waiting_timeout_seconds: 600,
+            maximum_lifetime_seconds: 14_400,
+        })
+        .await
+        .unwrap();
 
     let progress = store.session_progress("progress").await.unwrap();
     assert_eq!(progress.total_sessions, 82);
     assert_eq!(progress.ended_sessions, 81);
     assert_eq!(progress.end_causes["game_completed"], 41);
     assert_eq!(progress.end_causes["technical_failure"], 40);
+    assert_eq!(progress.sessions.len(), 83);
+    assert_eq!(progress.sessions[0].session_id, testing_session_id);
+    assert_eq!(progress.sessions[0].purpose, "testing");
+    assert!(progress
+        .sessions
+        .windows(2)
+        .all(|pair| pair[0].session_id > pair[1].session_id));
 }
 
 /// Confirms process startup closes only lifecycle states that permit intake.

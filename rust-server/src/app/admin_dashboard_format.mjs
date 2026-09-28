@@ -57,6 +57,15 @@ export function fmtDate(value) {
   });
 }
 
+// Formats only the clock portion of a timestamp for aligned tabular displays.
+export function fmtClockTime(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleTimeString(undefined, {
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+}
+
 // Formats an operational timestamp as an age without treating it as research activity.
 export function formatAge(timestampMs) {
   if (!timestampMs) return 'never';
@@ -96,4 +105,37 @@ export function sessionEndCauseRows(endCauses) {
     .map(([type, count]) => ({ type, count: Number(count) }))
     .filter(row => Number.isFinite(row.count) && row.count > 0)
     .sort((left, right) => right.count - left.count || left.type.localeCompare(right.type));
+}
+
+// Allocates research-session counts between the planned target and visible overflow.
+export function plannedProgressLayout(progress) {
+  const planned = Number(progress?.planned_sessions);
+  if (!Number.isInteger(planned) || planned <= 0) return null;
+  const total = Math.max(0, Number(progress?.total_sessions) || 0);
+  const ended = Math.max(0, Number(progress?.ended_sessions) || 0);
+  const completed = Math.max(0, Number(progress?.end_causes?.game_completed) || 0);
+  const active = Math.max(0, total - ended);
+  const failures = sessionEndCauseRows(progress?.end_causes)
+    .filter(row => row.type !== 'game_completed');
+  const insideCompleted = Math.min(completed, planned);
+  const insideActive = Math.min(active, Math.max(0, planned - insideCompleted));
+  const remaining = Math.max(0, planned - insideCompleted - insideActive);
+  const overflow = [
+    ...(completed > insideCompleted ? [{ type: 'game_completed', count: completed - insideCompleted }] : []),
+    ...(active > insideActive ? [{ type: 'active', count: active - insideActive }] : []),
+    ...failures,
+  ];
+  return {
+    planned,
+    total,
+    ended,
+    completed,
+    active,
+    failures,
+    insideCompleted,
+    insideActive,
+    remaining,
+    overflow,
+    overflowTotal: overflow.reduce((sum, row) => sum + row.count, 0),
+  };
 }

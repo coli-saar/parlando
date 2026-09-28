@@ -581,6 +581,7 @@ async fn prolific_activation_preflight(
         workspace_id.map(|workspace_id| VerifiedProlificStudy {
             study,
             workspace_id,
+            refreshed_at: now_iso(),
         }),
     )
 }
@@ -1916,6 +1917,7 @@ struct RunningParticipantUrl {
 struct VerifiedProlificStudy {
     study: crate::prolific::Study,
     workspace_id: String,
+    refreshed_at: String,
 }
 
 /// One provider readiness result keyed by every local input to the study contract.
@@ -3266,7 +3268,7 @@ where
         None
     };
     let admission = state.session_admission.clone().lock_owned().await;
-    let paired_or_created: Result<(String, Seat), AppError> = {
+    let paired_or_created: Result<(String, Seat, bool), AppError> = {
         if state.config.agents.mode == AgentsMode::HumanVsHuman {
             let existing = {
                 let memory = state.memory.read().await;
@@ -3289,7 +3291,7 @@ where
                     &public_session_id,
                     &participant_session_id,
                 )?;
-                Ok((public_session_id, role))
+                Ok((public_session_id, role, false))
             } else {
                 {
                     let memory = state.memory.read().await;
@@ -3303,7 +3305,7 @@ where
                     rand::random::<u64>(),
                 )
                 .await?;
-                Ok((public_session_id, role))
+                Ok((public_session_id, role, true))
             }
         } else {
             {
@@ -3322,11 +3324,11 @@ where
                 session_seed,
             )
             .await?;
-            Ok((public_session_id, role))
+            Ok((public_session_id, role, true))
         }
     };
     drop(admission);
-    let (public_session_id, role) = paired_or_created?;
+    let (public_session_id, role, created) = paired_or_created?;
     persist_session_participant(&state, &public_session_id, &participant_session_id).await?;
     persist_session_event(
         &state,
@@ -3337,6 +3339,24 @@ where
         None,
     )
     .await;
+    if created
+        && state.config.recruitment.prolific.enabled
+        && state
+            .memory
+            .read()
+            .await
+            .sessions
+            .get(&public_session_id)
+            .is_some_and(|session| session.purpose == "research")
+    {
+        let refresh_state = state.clone();
+        tokio::spawn(async move {
+            let experiment_id = refresh_state.experiment_id.clone();
+            if let Err(error) = refresh_prolific_progress(&refresh_state, &experiment_id).await {
+                tracing::warn!(?error, %experiment_id, "could not refresh Prolific progress target");
+            }
+        });
+    }
     if let Some(prepared_agent) = prepared_agent {
         tokio::spawn(construct_and_join_agent(
             state.clone(),
@@ -4599,51 +4619,50 @@ async fn admin_experiments_page() -> Html<&'static str> {
 
 /// Serves the embedded dashboard stylesheet as a same-origin protected asset.
 async fn admin_dashboard_css() -> Response {
-    let mut response = ADMIN_EXPERIMENT_CSS.into_response();
-    response.headers_mut().insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("text/css; charset=utf-8"),
-    );
-    response
+    admin_dashboard_asset(ADMIN_EXPERIMENT_CSS, "text/css; charset=utf-8")
 }
 
 /// Serves the embedded dashboard module as a same-origin protected asset.
 async fn admin_dashboard_javascript() -> Response {
-    let mut response = ADMIN_EXPERIMENT_JAVASCRIPT.into_response();
-    response.headers_mut().insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("text/javascript; charset=utf-8"),
-    );
-    response
+    admin_dashboard_asset(
+        ADMIN_EXPERIMENT_JAVASCRIPT,
+        "text/javascript; charset=utf-8",
+    )
 }
 
 /// Serves the dashboard's mutable state module as a same-origin protected asset.
 async fn admin_dashboard_state_javascript() -> Response {
-    let mut response = ADMIN_EXPERIMENT_STATE_JAVASCRIPT.into_response();
-    response.headers_mut().insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("text/javascript; charset=utf-8"),
-    );
-    response
+    admin_dashboard_asset(
+        ADMIN_EXPERIMENT_STATE_JAVASCRIPT,
+        "text/javascript; charset=utf-8",
+    )
 }
 
 /// Serves pure dashboard formatting helpers as a same-origin protected asset.
 async fn admin_dashboard_format_javascript() -> Response {
-    let mut response = ADMIN_EXPERIMENT_FORMAT_JAVASCRIPT.into_response();
-    response.headers_mut().insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("text/javascript; charset=utf-8"),
-    );
-    response
+    admin_dashboard_asset(
+        ADMIN_EXPERIMENT_FORMAT_JAVASCRIPT,
+        "text/javascript; charset=utf-8",
+    )
 }
 
 /// Serves administrator request helpers as a same-origin protected asset.
 async fn admin_dashboard_api_javascript() -> Response {
-    let mut response = ADMIN_EXPERIMENT_API_JAVASCRIPT.into_response();
-    response.headers_mut().insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("text/javascript; charset=utf-8"),
-    );
+    admin_dashboard_asset(
+        ADMIN_EXPERIMENT_API_JAVASCRIPT,
+        "text/javascript; charset=utf-8",
+    )
+}
+
+/// Prevents a restarted dashboard from combining newly embedded markup with stale assets.
+fn admin_dashboard_asset(body: &'static str, content_type: &'static str) -> Response {
+    let mut response = body.into_response();
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }
 
@@ -6600,13 +6619,134 @@ async fn admin_sessions<A: Game>(
     })))
 }
 
-/// Returns complete experiment-wide session counts for the Progress tab.
+/// Derives a whole-session target from Prolific's participant-place count.
+fn prolific_planned_sessions(
+    config: &ExperimentConfig,
+    study: &crate::prolific::Study,
+) -> Result<i64, String> {
+    let places = study.total_available_places;
+    if !places.is_finite() || places <= 0.0 || places.fract() != 0.0 {
+        return Err("Prolific's available-place count is not a positive whole number.".to_string());
+    }
+    let participants_per_session = match config.agents.mode {
+        AgentsMode::HumanVsHuman => 2_i64,
+        AgentsMode::HumanVsAgent => 1_i64,
+    };
+    let places = places as i64;
+    if places % participants_per_session != 0 {
+        return Err(format!(
+            "Prolific has {places} available places, which cannot form complete {participants_per_session}-participant sessions."
+        ));
+    }
+    Ok(places / participants_per_session)
+}
+
+/// Refreshes the provider-owned study facts used by the progress target.
+async fn refresh_prolific_progress<A: Game>(
+    state: &Arc<AppState<A>>,
+    experiment_id: &str,
+) -> Result<VerifiedProlificStudy, AppError> {
+    let config = hydrated_experiment_config(state, experiment_id).await?;
+    if !config.recruitment.prolific.enabled {
+        return Err(AppError::bad_request(
+            "This experiment does not use Prolific intake.",
+        ));
+    }
+    let prolific_api_base_url = state
+        .game_settings
+        .read()
+        .await
+        .prolific_api_base_url
+        .clone();
+    let (issues, verified) = run_and_cache_prolific_activation_preflight(
+        state,
+        experiment_id,
+        &config,
+        &prolific_api_base_url,
+    )
+    .await;
+    if !issues.is_empty() {
+        return Err(AppError::new(StatusCode::CONFLICT, issues.join(" ")));
+    }
+    let verified = verified.ok_or_else(|| {
+        AppError::new(
+            StatusCode::BAD_GATEWAY,
+            "Prolific did not return the linked study.",
+        )
+    })?;
+    *state.prolific_study.write().await = Some(verified.clone());
+    Ok(verified)
+}
+
+/// Adds the configured or provider-derived target to durable progress data.
+async fn admin_progress_value<A: Game>(
+    state: &Arc<AppState<A>>,
+    experiment_id: &str,
+) -> Result<Value, AppError> {
+    let progress = state.store.session_progress(experiment_id).await?;
+    let config = hydrated_experiment_config(state, experiment_id).await?;
+    let mut value = serde_json::to_value(progress).map_err(anyhow::Error::from)?;
+    let object = value
+        .as_object_mut()
+        .expect("stored progress serializes as an object");
+    object.insert(
+        "prolific_enabled".to_string(),
+        json!(config.recruitment.prolific.enabled),
+    );
+    if let Some(planned_sessions) = config.progress.planned_sessions {
+        object.insert("planned_sessions".to_string(), json!(planned_sessions));
+        object.insert("plan_source".to_string(), json!("configured"));
+    } else if config.recruitment.prolific.enabled {
+        if let Some(verified) = state
+            .prolific_study
+            .read()
+            .await
+            .clone()
+            .filter(|verified| verified.study.id == config.recruitment.prolific.study_id)
+        {
+            object.insert(
+                "prolific_total_available_places".to_string(),
+                json!(verified.study.total_available_places),
+            );
+            object.insert(
+                "plan_refreshed_at".to_string(),
+                json!(verified.refreshed_at),
+            );
+            match prolific_planned_sessions(&config, &verified.study) {
+                Ok(planned_sessions) => {
+                    object.insert("planned_sessions".to_string(), json!(planned_sessions));
+                    object.insert("plan_source".to_string(), json!("prolific"));
+                }
+                Err(issue) => {
+                    object.insert("plan_issue".to_string(), json!(issue));
+                }
+            }
+        }
+    }
+    Ok(value)
+}
+
+/// Returns complete experiment-wide session counts and the chronological session log.
 async fn admin_progress<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     scope: Option<Extension<AdminExperimentScope>>,
 ) -> Result<Json<Value>, AppError> {
     let experiment_id = admin_experiment_id(&state, scope.as_ref());
-    let progress = state.store.session_progress(&experiment_id).await?;
+    let progress = admin_progress_value(&state, &experiment_id).await?;
+    Ok(Json(json!({
+        "experiment_id": experiment_id,
+        "progress": progress,
+    })))
+}
+
+/// Performs an explicit Prolific refresh and returns the updated progress projection.
+async fn admin_refresh_progress<A: Game>(
+    State(state): State<Arc<AppState<A>>>,
+    scope: Option<Extension<AdminExperimentScope>>,
+) -> Result<Json<Value>, AppError> {
+    let experiment_id = admin_experiment_id(&state, scope.as_ref());
+    refresh_prolific_progress(&state, &experiment_id).await?;
+    let progress = admin_progress_value(&state, &experiment_id).await?;
     Ok(Json(json!({
         "experiment_id": experiment_id,
         "progress": progress,

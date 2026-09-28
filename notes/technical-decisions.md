@@ -3331,9 +3331,68 @@ inspection, but do not use that bounded list as progress data. Keep counts in a 
 the count, total, and percentage through keyboard-accessible tooltips on both bar segments and
 legend items.
 
-Tradeoffs and risks: The dedicated progress query returns only aggregate counts, avoiding both an
-arbitrary sample and the cost of sending every session record to the browser. The colors distinguish
-Parlando lifecycle outcomes; they do not introduce or infer game-specific win/loss semantics.
+The progress query also returns one lightweight row for every durable session, ordered newest first
+so the oldest session remains at the bottom. The log is deliberately unpaginated and scrolls with
+the Progress panel. Each row links to the existing Sessions detail view. Testing sessions remain in
+this chronological record with muted text, but aggregates and recruitment targets count research
+sessions only. This preserves operational visibility without letting local previews alter study
+progress.
+
+An experiment may optionally configure `progress.planned_sessions` for direct or mixed recruitment.
+When it is absent and Prolific intake is enabled, derive the target from the linked study's current
+`total_available_places`: divide by two for human-human experiments and by one for human-agent
+experiments. Do not round an odd human-human place count; omit the target box and report the
+configuration issue instead. A configured target takes precedence because Prolific places cannot
+describe participants recruited outside Prolific.
+
+Refresh the Prolific study facts after each newly created research session and through an explicit
+Progress-tab action. Keep the last successfully verified facts when a refresh fails, and do not
+delay session creation on the provider request. Provider refresh updates runtime metadata rather
+than creating experiment-configuration revisions. This adds no database migration and changes no
+session-state transition.
+
+When a target exists, show it as a bordered white capacity box filled by completed and active
+research sessions. Unsuccessful ended sessions do not consume planned capacity; show them to the
+right as recruitment overhead. Completed or active sessions beyond the target also extend to the
+right, so progress may visibly exceed 100% without compressing failures into the planned target.
+When no target is available, retain the ordinary proportional outcome bar and do not draw a target
+box.
+
+Tradeoffs and risks: Returning all lightweight rows makes the Progress response grow linearly with
+the experiment, as explicitly chosen for an unpaginated scrollable log. It still omits participants,
+events, and game state. The colors distinguish Parlando lifecycle outcomes; they do not introduce
+or infer game-specific win/loss semantics.
+
+Visual verification with a disposable Great Tree database exposed one dashboard-shell issue: the
+generic `.secondary` button rule could override the browser's `hidden` presentation, leaving the
+Prolific refresh action visible for direct-only experiments. Give the HTML `hidden` attribute one
+global, important display rule. Serve embedded dashboard CSS and JavaScript with `Cache-Control:
+no-store` so a restarted server cannot combine a newly compiled dashboard module with an older
+cached stylesheet. This is limited to the protected administrator shell assets.
+
+Keep a reusable disposable-data script in `notes/progress-demo.sql`. It deliberately combines a
+configured six-session target, completed sessions, active sessions, multiple terminal failure
+causes, and muted testing sessions. The script is for manual visual verification against an empty
+`progress-demo` experiment after the disposable server has started; applying it earlier would
+correctly cause startup recovery to terminate its artificial open sessions. Two small companion
+scripts switch between the fully filled target and a partially filled target without recreating the
+fixture. These are not supported database migrations or production fixtures.
+Load progress during initial dashboard setup, whenever the Progress tab opens, and while that tab is
+visible during periodic refresh. Render loading and request-failure messages inside the chart panel
+so a missing request cannot leave an unexplained empty rectangle.
+
+Keep the tab visually consistent with the dashboard's other experiment views: one section heading,
+compact totals, the chart, and its legend. Do not add explanatory subtitles or a prose footer when
+the labels and totals already state what the visualization contains.
+
+Draw the planned-session boundary above the colored fills so the white capacity box remains visible
+as it fills. When outcomes extend beyond the target, separate them from the full-height target box
+with a small gap and render them as a shorter bar. This keeps recruitment overhead visible without
+giving it the same visual weight as planned progress. Make each session-log row the link to
+its Sessions detail rather than nesting a link inside it. Use a twelve-pixel outcome stripe, align
+all names to a fixed column, render research-session names in the dashboard's normal text color,
+and distinguish testing sessions only through muted row text and an accessible label instead of a
+repeated visible “Testing” suffix.
 
 ## 2026-09-28: Test Prolific returns at the admission boundary
 
@@ -3362,3 +3421,61 @@ on credentials placed in shared test state by another concurrently running test.
 The Prolific disclosure tooltip uses three short labeled lines—participant, check status, and click
 action—rather than prose. The shared dashboard tooltip preserves explicit line breaks, while its
 plain-text content and `aria-label` remain equivalent for keyboard and assistive-technology use.
+
+## 2026-09-28: Keep unsuccessful waiting time with session state
+
+Context: An unsuccessful waiting duration was rendered as a sixth top-level session fact. On the
+five-column summary grid this wrapped beneath “Session state,” making its label and value look like
+a detached second row.
+
+Decision: Keep the duration as compact secondary text inside the Session state value. Render
+“Unsuccessful wait” in the dashboard's muted small text and give the duration normal-text emphasis.
+The End reason remains a separate fact because it describes why the session ended, while the wait
+duration qualifies the ended state. The session catalogue retains its existing inline “waited”
+suffix.
+
+## 2026-09-28: Align Prolific target refresh with the progress chart
+
+Context: The Prolific refresh action was a wide text button aligned to the full Progress panel,
+while the chart itself has a narrower maximum width. The unrelated right edges made the action look
+detached from the data it refreshes.
+
+Decision: Constrain the Progress header to the chart width and render the action as a compact refresh
+icon at its right edge. Its accessible name and tooltip are both “Refresh session target from
+Prolific.” Keep the control hidden when the target is not sourced from Prolific, as before.
+
+## 2026-09-28: Use one session-outcome palette throughout the dashboard
+
+Context: Progress bars and chronological stripes distinguished each terminal cause, but status dots
+in the Sessions view and participant cards reused broad lifecycle colors. Completed sessions could
+therefore appear green in Progress and blue in Sessions; connection loss, no partner, timeouts, and
+technical failures also changed color between views.
+
+Decision: Define the session-outcome palette once as CSS custom properties and use those properties
+for chart segments, legends, chronological stripes, session-catalogue dots, summary badges, and
+participant outcomes. The palette is: completed green, participant left red, connection lost orange,
+no partner ochre, inactivity timeout gray, duration limit blue, and technical failure purple. A
+generic lifecycle value of `ended` remains blue because it does not identify a terminal cause; when
+a durable end cause is available, the session catalogue now uses that cause's status class instead.
+
+## 2026-09-28: Separate Progress dates and times
+
+Context: Each Progress row formatted its creation timestamp as one locale string, which joined the
+date and time with punctuation and made clock values begin at different horizontal positions.
+
+Decision: Render the localized date and clock time in separate columns shared by every row through
+CSS subgrid. Size the date and time columns to their widest contents and use one uniform gap before
+the date, time, and session name. Use tabular numerals and prevent wrapping so times align
+vertically. Retain the original ISO timestamp in each semantic `time` element's `datetime`
+attribute.
+
+## 2026-09-28: Preserve the Progress DOM between unchanged polls
+
+Context: The five-second Progress poll replaced the chart with a loading message before every
+request and then rebuilt both the chart and session log even when the response was unchanged. This
+caused visible flicker and disrupted hover and focus state.
+
+Decision: Show “Loading…” only before the first Progress response. Retain the last successful view
+during later requests and transient failures. Compare the complete response projection with the
+last rendered projection and rebuild the chart and log only when it changes. Reset that comparison
+when the user selects another experiment. Manual Prolific refresh uses the same update path.

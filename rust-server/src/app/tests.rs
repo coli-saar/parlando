@@ -454,6 +454,10 @@ async fn admin_dashboard_serves_html_css_and_javascript_assets() {
             asset.headers().get(http::header::CONTENT_TYPE).unwrap(),
             expected_content_type
         );
+        assert_eq!(
+            asset.headers().get(http::header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
         assert!(!to_bytes(asset.into_body(), usize::MAX)
             .await
             .unwrap()
@@ -1772,6 +1776,7 @@ async fn prolific_run_readiness_verifies_the_linked_study_before_start() {
                             {"code": "NOCONSENT", "code_type": "NO_CONSENT", "actions": [{"action": "REQUEST_RETURN"}]}
                         ],
                         "estimated_completion_time": 120,
+                        "total_available_places": 20,
                         "maximum_allowed_time": null,
                         "project": "project1"
                     }))
@@ -1876,6 +1881,26 @@ async fn prolific_run_readiness_verifies_the_linked_study_before_start() {
     );
     assert_eq!(study_requests.load(Ordering::SeqCst), 1);
     assert_eq!(project_requests.load(Ordering::SeqCst), 1);
+    let (progress_status, progress) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/progress",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(progress_status, StatusCode::OK, "{progress}");
+    assert!(progress["progress"].get("planned_sessions").is_none());
+    let (refresh_status, refreshed) = json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/progress",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(refresh_status, StatusCode::OK, "{refreshed}");
+    assert_eq!(refreshed["progress"]["planned_sessions"], 10);
+    assert_eq!(study_requests.load(Ordering::SeqCst), 2);
+    assert_eq!(project_requests.load(Ordering::SeqCst), 2);
     let (start_status, started) = json_request(
         router,
         http::Method::POST,
@@ -1888,8 +1913,8 @@ async fn prolific_run_readiness_verifies_the_linked_study_before_start() {
     )
     .await;
     assert_eq!(start_status, StatusCode::OK, "{started}");
-    assert_eq!(study_requests.load(Ordering::SeqCst), 1);
-    assert_eq!(project_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(study_requests.load(Ordering::SeqCst), 2);
+    assert_eq!(project_requests.load(Ordering::SeqCst), 2);
     provider_task.abort();
 }
 
@@ -5996,6 +6021,15 @@ async fn admin_sessions_api_reads_actions_from_database() {
     assert_eq!(progress_status, StatusCode::OK);
     assert_eq!(progress["progress"]["total_sessions"], 1);
     assert_eq!(progress["progress"]["ended_sessions"], 0);
+    assert_eq!(
+        progress["progress"]["sessions"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        progress["progress"]["sessions"][0]["session_id"],
+        session_id
+    );
+    assert!(progress["progress"].get("planned_sessions").is_none());
     let (poll_status, poll) = json_request(
         router,
         http::Method::GET,
@@ -6006,6 +6040,64 @@ async fn admin_sessions_api_reads_actions_from_database() {
     assert_eq!(poll_status, StatusCode::OK);
     assert!(poll["events"].as_array().unwrap().is_empty());
     server.abort();
+}
+
+/// Prolific participant places become whole planned sessions for each pairing mode.
+#[test]
+fn prolific_places_are_normalized_to_planned_sessions() {
+    let mut config = ExperimentConfig::default();
+    let mut study = crate::prolific::Study {
+        id: "study".to_string(),
+        external_study_url: "https://example.test".to_string(),
+        prolific_id_option: "url_parameters".to_string(),
+        completion_codes: Vec::new(),
+        estimated_completion_time: 10,
+        total_available_places: 20.0,
+        maximum_allowed_time: Some(30.0),
+        is_external_study_url_secure: true,
+        device_compatibility: Vec::new(),
+        peripheral_requirements: Vec::new(),
+        project: Some("project".to_string()),
+        status: Some("ACTIVE".to_string()),
+    };
+    assert_eq!(prolific_planned_sessions(&config, &study), Ok(10));
+    config.agents.mode = AgentsMode::HumanVsAgent;
+    assert_eq!(prolific_planned_sessions(&config, &study), Ok(20));
+    config.agents.mode = AgentsMode::HumanVsHuman;
+    study.total_available_places = 21.0;
+    assert!(prolific_planned_sessions(&config, &study)
+        .expect_err("an odd place count cannot form two-person sessions")
+        .contains("cannot form complete"));
+    for invalid in [0.0, -2.0, 20.5, f64::NAN, f64::INFINITY] {
+        study.total_available_places = invalid;
+        assert!(prolific_planned_sessions(&config, &study).is_err());
+    }
+}
+
+/// A configured direct-recruitment target is available before any session exists.
+#[tokio::test]
+async fn configured_progress_target_is_returned_for_an_empty_experiment() {
+    let (mut config, _temp) = sqlite_config();
+    config.progress.planned_sessions = Some(6);
+    let router = build_router(TinyAdapter, config, ServeOptions::default())
+        .await
+        .unwrap();
+    authenticate_test_admin(router.clone()).await.unwrap();
+    let (status, response) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/progress",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["progress"]["planned_sessions"], 6);
+    assert_eq!(response["progress"]["plan_source"], "configured");
+    assert_eq!(response["progress"]["total_sessions"], 0);
+    assert!(response["progress"]["sessions"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]

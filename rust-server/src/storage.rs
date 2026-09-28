@@ -380,12 +380,31 @@ pub struct StoredSessionSummary {
 /// Complete experiment-wide counts used by the administrator progress view.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct StoredSessionProgress {
-    /// Number of durable sessions in the experiment, regardless of lifecycle.
+    /// Number of research sessions in the experiment, regardless of lifecycle.
     pub total_sessions: i64,
-    /// Number of durable sessions whose lifecycle is terminal.
+    /// Number of research sessions whose lifecycle is terminal.
     pub ended_sessions: i64,
-    /// Terminal session counts keyed by the serialized session-end cause.
+    /// Terminal research-session counts keyed by the serialized session-end cause.
     pub end_causes: BTreeMap<String, i64>,
+    /// All sessions in reverse chronological order, including testing sessions.
+    pub sessions: Vec<StoredProgressSession>,
+}
+
+/// Lightweight durable session entry displayed in the experiment progress log.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct StoredProgressSession {
+    /// Database identifier used to open the session in the administrator dashboard.
+    pub session_id: i64,
+    /// Human-readable session name assigned by Parlando.
+    pub dialogue_id: Option<String>,
+    /// Research or testing purpose recorded when the session was created.
+    pub purpose: String,
+    /// Current durable lifecycle.
+    pub lifecycle: String,
+    /// Durable creation timestamp.
+    pub created_at: String,
+    /// Structured terminal reason, when the session has ended.
+    pub session_end: Option<SessionEnd>,
 }
 
 /// Durable participant metadata for one session-local game appearance.
@@ -2433,17 +2452,18 @@ impl ExperimentStore for SqliteExperimentStore {
     }
 
     async fn session_progress(&self, experiment_id: &str) -> Result<StoredSessionProgress> {
-        let total_sessions =
-            sqlx::query_scalar::<_, i64>("select count(*) from sessions where experiment_id = ?")
-                .bind(experiment_id)
-                .fetch_one(&self.pool)
-                .await?;
+        let total_sessions = sqlx::query_scalar::<_, i64>(
+            "select count(*) from sessions where experiment_id = ? and purpose = 'research'",
+        )
+        .bind(experiment_id)
+        .fetch_one(&self.pool)
+        .await?;
         let rows = sqlx::query(
             r#"
             select coalesce(json_extract(session_end_json, '$.cause.type'), 'unavailable') as cause,
                    count(*) as session_count
             from sessions
-            where experiment_id = ? and lifecycle = 'ended'
+            where experiment_id = ? and purpose = 'research' and lifecycle = 'ended'
             group by cause
             order by cause
             "#,
@@ -2459,10 +2479,37 @@ impl ExperimentStore for SqliteExperimentStore {
             ended_sessions += count;
             end_causes.insert(cause, count);
         }
+        let sessions = sqlx::query(
+            r#"
+            select session_id, dialogue_id, purpose, lifecycle, created_at, session_end_json
+            from sessions
+            where experiment_id = ?
+            order by created_at desc, session_id desc
+            "#,
+        )
+        .bind(experiment_id)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(|row| {
+            Ok(StoredProgressSession {
+                session_id: row.try_get("session_id")?,
+                dialogue_id: row.try_get("dialogue_id")?,
+                purpose: row.try_get("purpose")?,
+                lifecycle: row.try_get("lifecycle")?,
+                created_at: row.try_get("created_at")?,
+                session_end: row
+                    .try_get::<Option<String>, _>("session_end_json")?
+                    .map(|raw| serde_json::from_str::<SessionEnd>(&raw))
+                    .transpose()?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
         Ok(StoredSessionProgress {
             total_sessions,
             ended_sessions,
             end_causes,
+            sessions,
         })
     }
 

@@ -36,6 +36,7 @@ pub struct Study {
     #[serde(default)]
     pub completion_codes: Vec<CompletionCode>,
     pub estimated_completion_time: i64,
+    pub total_available_places: f64,
     pub maximum_allowed_time: Option<f64>,
     #[serde(default)]
     pub is_external_study_url_secure: bool,
@@ -356,6 +357,7 @@ mod tests {
                 })
                 .collect(),
             estimated_completion_time: 10,
+            total_available_places: 20.0,
             maximum_allowed_time: Some(30.0),
             is_external_study_url_secure: false,
             device_compatibility: vec![],
@@ -385,6 +387,7 @@ mod tests {
                 }],
             }],
             estimated_completion_time: 10,
+            total_available_places: 20.0,
             maximum_allowed_time: Some(30.0),
             is_external_study_url_secure: false,
             device_compatibility: vec![],

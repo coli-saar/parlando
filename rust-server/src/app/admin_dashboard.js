@@ -1,5 +1,5 @@
 import { state } from './admin-dashboard-state.js';
-import { escapeHtml, experimentDisplayStatus, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, sessionEndCauseRows, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
+import { escapeHtml, experimentDisplayStatus, fmtClockTime, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, plannedProgressLayout, sessionEndCauseRows, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
 import { absoluteParticipantUrl, adminFetch, experimentRuntimeApi, participantUrlCanOpen } from './admin-dashboard-api.js';
 const experimentList = document.getElementById('experimentList');
 const menuButton = document.getElementById('menuButton');
@@ -10,6 +10,9 @@ const emptyExperimentWorkspace = document.getElementById('emptyExperimentWorkspa
 const experimentWorkspaceTabs = document.getElementById('experimentWorkspaceTabs');
 const sessionList = document.getElementById('sessionList');
 const sessionEndChart = document.getElementById('sessionEndChart');
+const progressSessionLog = document.getElementById('progressSessionLog');
+const progressSessionCount = document.getElementById('progressSessionCount');
+const refreshProgressButton = document.getElementById('refreshProgress');
 const sessionDetail = document.getElementById('sessionDetail');
 const summary = document.getElementById('summary');
 const timeline = document.getElementById('timeline');
@@ -771,46 +774,124 @@ function sessionGameDidNotStart(session) {
   return sessionOutcomes(session).includes('partner_unavailable');
 }
 
-// Formats exact unsuccessful waiting time from durable server timestamps.
-function unsuccessfulWait(session) {
+// Returns the exact unsuccessful waiting duration from durable server timestamps.
+function unsuccessfulWaitDuration(session) {
   if (!sessionGameDidNotStart(session) || !session.waiting_started_at) return '';
   const end = new Date(session.ended_at || session.waiting_deadline_at).getTime();
   const start = new Date(session.waiting_started_at).getTime();
   if (!Number.isFinite(end - start)) return '';
-  return ` · waited ${formatDuration(Math.max(0, end - start))}`;
+  return formatDuration(Math.max(0, end - start));
+}
+
+// Formats unsuccessful waiting time for the compact session catalogue.
+function unsuccessfulWait(session) {
+  const duration = unsuccessfulWaitDuration(session);
+  return duration ? ` · waited ${duration}` : '';
 }
 
 // Renders one proportional bar and legend from complete experiment-wide session counts.
 function renderSessionEndChart() {
-  const progress = state.sessionProgress || { total_sessions: 0, ended_sessions: 0, end_causes: {} };
+  const progress = state.sessionProgress || { total_sessions: 0, ended_sessions: 0, end_causes: {}, sessions: [] };
   const rows = sessionEndCauseRows(progress.end_causes);
-  const total = Number(progress.ended_sessions) || 0;
-  if (!progress.total_sessions) {
-    sessionEndChart.innerHTML = '<div class="empty">No sessions in this experiment yet.</div>';
+  const ended = Number(progress.ended_sessions) || 0;
+  const total = Number(progress.total_sessions) || 0;
+  const layout = plannedProgressLayout(progress);
+  refreshProgressButton.hidden = !progress.prolific_enabled || progress.plan_source === 'configured';
+  refreshProgressButton.disabled = false;
+  if (layout) {
+    const { active, completed, failures: failedRows, insideActive, insideCompleted, overflow, overflowTotal, planned, remaining } = layout;
+    const scaleTotal = planned + overflowTotal;
+    sessionEndChart.innerHTML = `
+      <div class="session-end-chart-heading"><strong>${completed} / ${planned} completed</strong><span class="muted small">${total} research sessions</span></div>
+      <div class="planned-session-stack" role="img" aria-label="${completed} completed of ${planned} planned sessions; ${overflowTotal} sessions outside the plan">
+        <span class="planned-session-target" style="--segment-weight:${planned};--scale-weight:${scaleTotal}">
+          ${insideCompleted ? `<i class="session-end-segment completed" style="--segment-weight:${insideCompleted}" data-quick-tooltip="${insideCompleted} completed" tabindex="0"></i>` : ''}
+          ${insideActive ? `<i class="session-end-segment active" style="--segment-weight:${insideActive}" data-quick-tooltip="${insideActive} active" tabindex="0"></i>` : ''}
+          ${remaining ? `<i class="session-end-segment remaining" style="--segment-weight:${remaining}" data-quick-tooltip="${remaining} remaining" tabindex="0"></i>` : ''}
+        </span>
+        ${overflow.map(row => {
+          const presentation = row.type === 'active' ? { status: 'active', label: 'Active' } : sessionEndPresentation({ session_end: { cause: { type: row.type } } });
+          return `<span class="session-end-segment overflow ${escapeHtml(presentation.status)}" style="--segment-weight:${row.count};--scale-weight:${scaleTotal}" data-quick-tooltip="${escapeHtml(`${presentation.label}: ${row.count}`)}" tabindex="0"></span>`;
+        }).join('')}
+      </div>
+      <div class="session-end-legend">
+        ${progressLegendItem('completed', 'Completed', completed)}
+        ${active ? progressLegendItem('active', 'Active', active) : ''}
+        ${failedRows.map(row => {
+          const presentation = sessionEndPresentation({ session_end: { cause: { type: row.type } } });
+          return progressLegendItem(presentation.status, presentation.label, row.count);
+        }).join('')}
+      </div>
+      ${progress.plan_issue ? `<div class="warning small">${escapeHtml(progress.plan_issue)}</div>` : ''}`;
     return;
   }
   if (!total) {
-    sessionEndChart.innerHTML = `<div class="empty">None of the ${progress.total_sessions} sessions has ended yet.</div>`;
+    sessionEndChart.innerHTML = progress.plan_issue
+      ? `<div class="empty">No research sessions yet.</div><div class="warning small">${escapeHtml(progress.plan_issue)}</div>`
+      : '<div class="empty">No research sessions yet.</div>';
+    return;
+  }
+  if (!ended) {
+    sessionEndChart.innerHTML = '<div class="empty">No ended research sessions yet.</div>';
     return;
   }
   sessionEndChart.innerHTML = `
-    <div class="session-end-chart-heading"><strong>Session results</strong><span class="muted small">${total} ended</span></div>
-    <div class="session-end-stack" role="img" aria-label="Distribution of ${total} ended sessions">${rows.map(row => {
+    <div class="session-end-chart-heading"><strong>${ended} ended</strong><span class="muted small">${total} research sessions</span></div>
+    <div class="session-end-stack" role="img" aria-label="Distribution of ${ended} ended sessions">${rows.map(row => {
       const presentation = sessionEndPresentation({ session_end: { cause: { type: row.type } } });
-      const percentage = Math.round((row.count / total) * 100);
-      const tooltip = `${presentation.label}: ${row.count} of ${total} ended sessions (${percentage}%).`;
+      const percentage = Math.round((row.count / ended) * 100);
+      const tooltip = `${presentation.label}: ${row.count} of ${ended} ended sessions (${percentage}%).`;
       return `<span class="session-end-segment ${escapeHtml(presentation.status)}" style="--segment-weight:${row.count}" data-quick-tooltip="${escapeHtml(tooltip)}" tabindex="0" aria-label="${escapeHtml(tooltip)}"></span>`;
     }).join('')}</div>
     <div class="session-end-legend">${rows.map(row => {
       const presentation = sessionEndPresentation({ session_end: { cause: { type: row.type } } });
-      const percentage = Math.round((row.count / total) * 100);
-      const tooltip = `${presentation.label}: ${row.count} of ${total} ended sessions (${percentage}%).`;
+      const percentage = Math.round((row.count / ended) * 100);
+      const tooltip = `${presentation.label}: ${row.count} of ${ended} ended sessions (${percentage}%).`;
       return `<span class="session-end-legend-item" data-quick-tooltip="${escapeHtml(tooltip)}" tabindex="0">
         <i class="session-end-swatch ${escapeHtml(presentation.status)}" aria-hidden="true"></i>
         <span>${escapeHtml(presentation.label)}</span><strong>${row.count}</strong>
       </span>`;
-    }).join('')}</div>
-    <p class="muted small">All ${progress.total_sessions} sessions in this experiment are included. The bar shows the ${total} ended sessions by outcome.</p>`;
+    }).join('')}</div>`;
+}
+
+// Renders one compact legend item shared by planned and unplanned progress bars.
+function progressLegendItem(status, label, count) {
+  return `<span class="session-end-legend-item"><i class="session-end-swatch ${escapeHtml(status)}" aria-hidden="true"></i><span>${escapeHtml(label)}</span><strong>${count}</strong></span>`;
+}
+
+// Maps an in-progress lifecycle to the same visual vocabulary as terminal causes.
+function progressSessionPresentation(session) {
+  if (session.lifecycle === 'ended') return sessionEndPresentation(session);
+  if (session.lifecycle === 'running') return { status: 'active', label: 'Running' };
+  return { status: 'forming', label: 'Waiting' };
+}
+
+// Renders every durable session newest first; testing sessions remain visible but muted.
+function renderProgressSessions() {
+  const sessions = state.sessionProgress?.sessions || [];
+  progressSessionCount.textContent = sessions.length ? String(sessions.length) : '';
+  if (!sessions.length) {
+    progressSessionLog.innerHTML = '<div class="empty">No sessions yet.</div>';
+    return;
+  }
+  progressSessionLog.innerHTML = sessions.map(session => {
+    const presentation = progressSessionPresentation(session);
+    const name = session.dialogue_id || `Session #${session.session_id}`;
+    return `<button class="progress-session-row ${session.purpose === 'testing' ? 'testing' : ''}" data-progress-session="${session.session_id}" type="button" aria-label="Open ${escapeHtml(name)}${session.purpose === 'testing' ? ', testing session' : ''}">
+      <i class="progress-session-stripe ${escapeHtml(presentation.status)}" aria-hidden="true"></i>
+      <time class="progress-session-date" datetime="${escapeHtml(session.created_at)}">${escapeHtml(fmtDate(session.created_at))}</time>
+      <time class="progress-session-time" datetime="${escapeHtml(session.created_at)}">${escapeHtml(fmtClockTime(session.created_at))}</time>
+      <strong>${escapeHtml(name)}</strong>
+      <span>${escapeHtml(presentation.label)}</span>
+    </button>`;
+  }).join('');
+  progressSessionLog.querySelectorAll('[data-progress-session]').forEach(button => {
+    button.addEventListener('click', async () => {
+      state.activeTab = 'sessions';
+      renderTabs();
+      await selectSession(Number(button.dataset.progressSession));
+    });
+  });
 }
 
 // Renders the selected experiment's durable sessions with lifecycle dots and compact event counts.
@@ -819,15 +900,19 @@ function renderSessions() {
     sessionList.innerHTML = '<div class="empty">No sessions in this experiment yet.</div>';
     return;
   }
-  sessionList.innerHTML = state.sessions.map(session => `
-    <button class="session ${state.selected === session.session_id ? 'active' : ''}" data-session="${session.session_id}">
-      <span class="session-main">
-        <span class="session-name">${statusLabel(session.lifecycle, true)}<strong>${escapeHtml(session.dialogue_id || `Session #${session.session_id}`)}</strong></span>
-        <span class="muted small">${escapeHtml(factualSessionStatus(session))} · #${session.session_id} · ${escapeHtml(fmtTime(session.created_at))}${escapeHtml(unsuccessfulWait(session))}${session.purpose === 'testing' ? ` · <span class="purpose-marker"><span class="status-dot testing" aria-hidden="true"></span>Testing</span>` : ''}</span>
-      </span>
-      <span class="session-count small" title="${session.event_count} events">${icon('list-tree', 'count-icon')}${session.event_count}</span>
-    </button>
-  `).join('');
+  sessionList.innerHTML = state.sessions.map(session => {
+    const terminal = session.lifecycle === 'ended' ? sessionEndPresentation(session) : null;
+    const sessionMark = terminal ? namedStatusLabel(terminal.status, terminal.label, true) : statusLabel(session.lifecycle, true);
+    return `
+      <button class="session ${state.selected === session.session_id ? 'active' : ''}" data-session="${session.session_id}">
+        <span class="session-main">
+          <span class="session-name">${sessionMark}<strong>${escapeHtml(session.dialogue_id || `Session #${session.session_id}`)}</strong></span>
+          <span class="muted small">${escapeHtml(factualSessionStatus(session))} · #${session.session_id} · ${escapeHtml(fmtTime(session.created_at))}${escapeHtml(unsuccessfulWait(session))}${session.purpose === 'testing' ? ` · <span class="purpose-marker"><span class="status-dot testing" aria-hidden="true"></span>Testing</span>` : ''}</span>
+        </span>
+        <span class="session-count small" title="${session.event_count} events">${icon('list-tree', 'count-icon')}${session.event_count}</span>
+      </button>
+    `;
+  }).join('');
   sessionList.querySelectorAll('.session').forEach(button => {
     button.addEventListener('click', () => selectSession(Number(button.dataset.session)));
   });
@@ -842,12 +927,7 @@ async function loadSessions() {
   if (!response.ok) throw new Error(await response.text());
   const data = await response.json();
   state.sessions = data.sessions || [];
-  if (state.selected && !state.sessions.some(session => session.session_id === state.selected)) {
-    state.selected = null;
-    state.selectedSession = null;
-    state.selectedParticipants = [];
-    sessionDetail.hidden = true;
-  } else if (state.selectedSession) {
+  if (state.selectedSession) {
     const refreshed = state.sessions.find(session => session.session_id === state.selected);
     if (refreshed) Object.assign(state.selectedSession, refreshed);
   }
@@ -856,14 +936,50 @@ async function loadSessions() {
   if (!state.selected && state.sessions[0]) selectSession(state.sessions[0].session_id);
 }
 
-// Loads complete experiment-wide counts for the Progress tab.
+// Applies a new progress projection only when its rendered data changed.
+function applySessionProgress(progress) {
+  const signature = JSON.stringify(progress);
+  if (signature === state.sessionProgressSignature) return false;
+  state.sessionProgress = progress;
+  state.sessionProgressSignature = signature;
+  renderSessionEndChart();
+  renderProgressSessions();
+  return true;
+}
+
+// Loads complete experiment-wide counts without disturbing the current rendered projection.
 async function loadProgress() {
   if (!state.experiment) return;
-  const response = await adminFetch(state, runtimeApi('progress'));
-  if (!response.ok) throw new Error(await response.text());
-  const data = await response.json();
-  state.sessionProgress = data.progress || null;
-  renderSessionEndChart();
+  const initialLoad = state.sessionProgressSignature === null;
+  if (initialLoad) sessionEndChart.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const response = await adminFetch(state, runtimeApi('progress'));
+    if (!response.ok) throw new Error(await response.text());
+    const data = await response.json();
+    applySessionProgress(data.progress || null);
+  } catch (error) {
+    if (initialLoad) {
+      sessionEndChart.innerHTML = `<div class="empty">Progress unavailable: ${escapeHtml(error.message)}</div>`;
+      progressSessionLog.innerHTML = '';
+      progressSessionCount.textContent = '';
+    }
+  }
+}
+
+// Refreshes the linked Prolific study before re-rendering progress.
+async function refreshProgress() {
+  refreshProgressButton.disabled = true;
+  try {
+    const response = await adminFetch(state, runtimeApi('progress'), {
+      method: 'POST',
+      headers: { 'X-CSRF-Token': state.csrfToken || '' }
+    });
+    if (!response.ok) throw new Error(await response.text());
+    const data = await response.json();
+    applySessionProgress(data.progress || null);
+  } finally {
+    refreshProgressButton.disabled = false;
+  }
 }
 
 // Refreshes game identity, catalogue metadata, shared settings, and the selected configuration.
@@ -948,6 +1064,7 @@ async function selectExperiment(experimentId) {
   state.privacy = null;
   state.activationIssues = [];
   state.sessionProgress = null;
+  state.sessionProgressSignature = null;
   state.configLoadFailed = false;
   state.configLoadError = null;
   sessionDetail.hidden = true;
@@ -1075,6 +1192,9 @@ const CONSENT_TEMPLATE_CHOICES = [
 ];
 
 const PARLANDO_CONFIG_SECTIONS = [
+  { title: 'Progress', description: 'Optional target for direct or mixed recruitment.', fields: [
+    { path: 'progress.planned_sessions', label: 'Planned sessions', help: 'Leave empty to use the linked Prolific study when available.', type: 'optional-number', min: 1 }
+  ]},
   { title: 'Session lifecycle', description: 'Timeouts applied uniformly to every session in this experiment.', fields: [
     { path: 'session.waiting_session_timeout_seconds', label: 'Waiting-session timeout (seconds)', help: 'Time before an unmatched session expires.', type: 'number', min: 1 },
     { path: 'session.reconnect_grace_seconds', label: 'Reconnect grace (seconds)', help: 'Time a disconnected player may return.', type: 'number', min: 0 },
@@ -1193,6 +1313,7 @@ function renderConfigField(field, config) {
   if (field.type === 'agents') return renderAgentEditor(field, value || {});
   if (field.type === 'boolean') return `<label class="config-field config-boolean"><span class="checkbox-line"><input data-config-path="${escapeHtml(field.path)}" data-config-type="boolean" type="checkbox" ${value ? 'checked' : ''}><span>${escapeHtml(field.label)}</span></span>${help}</label>`;
   else if (field.type === 'number') control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="number" type="number" value="${escapeHtml(value)}" ${field.min != null ? `min="${field.min}"` : ''} ${field.max != null ? `max="${field.max}"` : ''} step="${field.step || '1'}">`;
+  else if (field.type === 'optional-number') control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="optional-number" type="number" value="${escapeHtml(value ?? '')}" ${field.min != null ? `min="${field.min}"` : ''} ${field.max != null ? `max="${field.max}"` : ''} step="${field.step || '1'}">`;
   else if (field.type === 'decimal') control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="number" type="text" inputmode="decimal" pattern="-?[0-9]+(?:\\.[0-9]+)?" value="${escapeHtml(value)}" placeholder="1.2" title="Use a decimal point, for example 1.2">`;
   else if (field.type === 'select') control = `<select data-config-path="${escapeHtml(field.path)}" data-config-type="string">${field.options.map(([option, label]) => `<option value="${escapeHtml(option)}" ${value === option ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select>`;
   else if (field.type === 'json') control = `<textarea data-config-path="${escapeHtml(field.path)}" data-config-type="json" rows="${field.rows || 5}" spellcheck="false">${escapeHtml(JSON.stringify(value, null, 2))}</textarea>`;
@@ -1466,6 +1587,10 @@ function configurationFromForm() {
   configForm.querySelectorAll('[data-config-path]').forEach(control => {
     let value;
     if (control.dataset.configType === 'boolean') value = control.checked;
+    else if (control.dataset.configType === 'optional-number') {
+      value = control.value.trim() === '' ? null : Number(control.value);
+      if (value !== null && !Number.isFinite(value)) throw new Error(`${control.dataset.configPath} must be a number`);
+    }
     else if (control.dataset.configType === 'number') {
       value = Number(control.value);
       if (!Number.isFinite(value)) throw new Error(`${control.dataset.configPath} must be a number written with a decimal point`);
@@ -2010,8 +2135,9 @@ function renderSummary(session, participantRows) {
   const expectedHealth = session.lifecycle === 'forming' ? 'waiting' : session.lifecycle === 'ended' ? 'ended' : 'live';
   const isProlific = participantRows.some(row => row.identity_provider === 'prolific');
   const healthDetail = live ? `Meaningful activity ${formatAge(new Date(live.meaningful_activity_at).getTime())}` : session.lifecycle === 'ended' ? '' : 'Session is not present in this process runtime';
+  const waitDuration = unsuccessfulWaitDuration(session);
   const facts = [
-    `<div><dt>Session state</dt><dd>${statusLabel(session.lifecycle)}</dd></div>`,
+    `<div><dt>Session state</dt><dd class="session-state-value">${statusLabel(session.lifecycle)}${waitDuration ? `<span class="session-wait-detail">Unsuccessful wait <strong>${escapeHtml(waitDuration)}</strong></span>` : ''}</dd></div>`,
     `<div><dt>Health</dt><dd>${livenessBadge(health, healthDetail)}</dd></div>`,
     `<div><dt>Purpose</dt><dd>${statusLabel(session.purpose || 'research')}</dd></div>`,
     `<div><dt>Recruitment</dt><dd>${isProlific ? 'Prolific' : 'Direct'}</dd></div>`
@@ -2022,8 +2148,6 @@ function renderSummary(session, participantRows) {
   }
   if (session.lifecycle === 'ended') {
     facts.push(`<div><dt>End reason</dt><dd>${sessionEndBadge(session)}</dd></div>`);
-    const waited = unsuccessfulWait(session).replace(/^ · /, '');
-    if (waited) facts.push(`<div><dt>Unsuccessful wait</dt><dd>${escapeHtml(waited)}</dd></div>`);
   }
   if (session.lifecycle === 'running' && health !== expectedHealth) {
     facts.push(`<div><dt>Last meaningful activity</dt><dd>${escapeHtml(fmtTime(session.last_meaningful_activity_at))}</dd></div>`);
@@ -2288,6 +2412,7 @@ async function refreshEvents() {
 
 showHousekeeping.addEventListener('change', renderEventBundles);
 showLogs.addEventListener('change', renderEventBundles);
+refreshProgressButton.addEventListener('click', () => refreshProgress().catch(error => window.alert(error.message)));
 document.getElementById('createExperimentButton').addEventListener('click', () => {
   document.getElementById('createExperimentForm').reset();
   createExperimentDialog.showModal();
@@ -2344,6 +2469,7 @@ tabButtons.forEach(button => {
   button.addEventListener('click', () => {
     state.activeTab = button.dataset.tab;
     renderTabs();
+    if (state.activeTab === 'progress') loadProgress();
     if (state.activeTab === 'privacy') loadPrivacy().catch(error => { privacyContent.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; });
   });
 });
@@ -2378,13 +2504,13 @@ summary.addEventListener('click', event => {
 });
 makeResizable(document.getElementById('catalogueResizer'), '--catalogue-width', 230, 430);
 makeResizable(document.getElementById('sessionResizer'), '--session-width', 250, 480);
-loadExperiment().then(() => Promise.all([loadSessions(), loadLoad()])).catch(error => {
+loadExperiment().then(() => Promise.all([loadSessions(), loadProgress(), loadLoad()])).catch(error => {
   sessionList.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
 });
 renderTabs();
 showScope('experiments');
 setInterval(() => {
-  loadExperiment().then(() => Promise.all([loadSessions(), loadLoad()])).catch(error => {
+  loadExperiment().then(() => Promise.all([loadSessions(), state.activeTab === 'progress' ? loadProgress() : Promise.resolve(), loadLoad()])).catch(error => {
     liveStatus.textContent = error.message;
   });
 }, 5000);

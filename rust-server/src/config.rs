@@ -18,6 +18,14 @@ pub struct SessionConfig {
     pub session_max_lifetime_seconds: i64,
 }
 
+/// Optional researcher-owned target used only to visualize experiment progress.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProgressConfig {
+    /// Intended number of playable sessions for direct or mixed recruitment.
+    pub planned_sessions: Option<i64>,
+}
+
 impl Default for SessionConfig {
     /// Uses conservative lifecycle limits for a modest research deployment.
     fn default() -> Self {
@@ -321,6 +329,7 @@ pub struct ExperimentConfig {
     #[serde(skip)]
     pub experiment: ExperimentIdentityConfig,
     pub session: SessionConfig,
+    pub progress: ProgressConfig,
     pub direct: DirectConfig,
     pub recruitment: RecruitmentConfig,
     #[serde(skip)]
@@ -347,6 +356,7 @@ impl Default for ExperimentConfig {
         Self {
             experiment: ExperimentIdentityConfig::default(),
             session: SessionConfig::default(),
+            progress: ProgressConfig::default(),
             direct: DirectConfig::default(),
             recruitment: RecruitmentConfig::default(),
             server: ServerConfig::default(),
@@ -380,6 +390,13 @@ impl ExperimentConfig {
         }
         if self.session.waiting_session_timeout_seconds <= 0 {
             bail!("session.waiting_session_timeout_seconds must be positive");
+        }
+        if self
+            .progress
+            .planned_sessions
+            .is_some_and(|value| value <= 0)
+        {
+            bail!("progress.planned_sessions must be positive when configured");
         }
         if self.session.reconnect_grace_seconds < 0 {
             bail!("session.reconnect_grace_seconds must not be negative");
@@ -1036,6 +1053,20 @@ mod tests {
         assert!(config.validate().is_ok());
 
         config.recruitment.prolific.completion_paths.completed = "not-safe".to_string();
+        assert!(config.validate().is_err());
+    }
+
+    /// Confirms the optional progress target is either absent or a positive whole session count.
+    #[test]
+    fn validation_checks_planned_session_target() {
+        let mut config = valid_config();
+        assert!(config.progress.planned_sessions.is_none());
+        assert!(config.validate().is_ok());
+        config.progress.planned_sessions = Some(1);
+        assert!(config.validate().is_ok());
+        config.progress.planned_sessions = Some(0);
+        assert!(config.validate().is_err());
+        config.progress.planned_sessions = Some(-1);
         assert!(config.validate().is_err());
     }
 }

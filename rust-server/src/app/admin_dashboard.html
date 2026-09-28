@@ -27,6 +27,7 @@
     <symbol id="icon-alert" viewBox="0 0 24 24"><path d="M12 3 22 21H2L12 3Z"/><path d="M12 9v5M12 18h.01"/></symbol>
     <symbol id="icon-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7V5Z"/></symbol>
     <symbol id="icon-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 20h16"/></symbol>
+    <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 8.5A7 7 0 0 1 18.7 7M17.9 15.5A7 7 0 0 1 5.3 17"/></symbol>
     <symbol id="icon-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 21c.8-4.6 3.3-7 7.5-7s6.7 2.4 7.5 7"/></symbol>
     <symbol id="icon-bot" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 7V4M9 4h6M9 16h6"/><circle cx="9" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1" fill="currentColor" stroke="none"/></symbol>
     <symbol id="icon-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6"/></symbol>
@@ -127,9 +128,13 @@
           </div>
         </section>
 
-        <section id="progressPanel" class="tab-panel simple-panel" hidden>
-          <header class="section-intro"><h2>Progress</h2><p class="muted">How the most recent sessions ended, based on Parlando’s durable session records.</p></header>
+        <section id="progressPanel" class="tab-panel simple-panel progress-panel" hidden>
+          <header class="progress-header"><h2>Progress</h2><button id="refreshProgress" class="secondary progress-refresh" type="button" aria-label="Refresh session target from Prolific" data-quick-tooltip="Refresh session target from Prolific" hidden><svg class="icon" aria-hidden="true"><use href="#icon-refresh"></use></svg></button></header>
           <section id="sessionEndChart" class="session-end-chart" aria-label="Session results"></section>
+          <section class="progress-session-section">
+            <header class="progress-session-header"><h3>Sessions</h3><span id="progressSessionCount" class="muted small"></span></header>
+            <div id="progressSessionLog" class="progress-session-log"></div>
+          </section>
         </section>
 
         <section id="notesPanel" class="tab-panel simple-panel" hidden>
