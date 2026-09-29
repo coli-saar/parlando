@@ -7,6 +7,8 @@ RUST_SERVER_TESTS_DIR := $(PARLANDO_DIR)/rust-server-tests
 CLIENT_SERVER_TESTS_DIR := $(PARLANDO_DIR)/client-server-tests
 JS_CLIENT_DIR := $(PARLANDO_DIR)/js-client
 PYTHON_AGENT_SDK_DIR := $(PARLANDO_DIR)/parlando-agent-sdk
+PYTHON_TEST_VENV := $(PARLANDO_DIR)/.local/python-test-venv
+PYTHON_TEST := $(PYTHON_TEST_VENV)/bin/python
 NPM_CACHE ?= $(PARLANDO_DIR)/.local/npm-cache
 PYTHON ?= python3
 
@@ -43,6 +45,7 @@ test-browser-e2e: test-js-client
 
 # Runs the standalone process-boundary Prolific scenario matrix and its durable report.
 test-prolific-e2e:
+	cd "$(RUST_SERVER_TESTS_DIR)" && cargo build --bins
 	cd "$(RUST_SERVER_TESTS_DIR)" && cargo run --bin prolific-test-runner
 
 # Release-oriented acceptance gate. The coordinator runs every layer after failures.
@@ -58,14 +61,16 @@ test-e2e:
 	fixture_status=$$?; \
 	browser_status=$$fixture_status; \
 	if [ $$fixture_status -eq 0 ]; then cd "$(CLIENT_SERVER_TESTS_DIR)" && cargo test --test browser_e2e -- --ignored --nocapture; browser_status=$$?; fi; \
-	cd "$(RUST_SERVER_TESTS_DIR)" && cargo run --bin prolific-test-runner; \
+	cd "$(RUST_SERVER_TESTS_DIR)" && cargo build --bins && cargo run --bin prolific-test-runner; \
 	prolific_status=$$?; \
 	"$(PYTHON)" "$(PARLANDO_DIR)/scripts/write_e2e_report.py" $$js_status $$rust_status $$contract_status $$browser_status $$prolific_status; \
 	if [ $$js_status -ne 0 ] || [ $$rust_status -ne 0 ] || [ $$contract_status -ne 0 ] || [ $$browser_status -ne 0 ] || [ $$prolific_status -ne 0 ]; then exit 1; fi
 
 # Runs the Python SDK suite in an environment where its package dependencies are installed.
 test-python:
-	cd "$(PYTHON_AGENT_SDK_DIR)" && "$(PYTHON)" -m unittest discover -s tests -v
+	"$(PYTHON)" -m venv "$(PYTHON_TEST_VENV)"
+	"$(PYTHON_TEST)" -m pip install --quiet --disable-pip-version-check --editable "$(PYTHON_AGENT_SDK_DIR)"
+	cd "$(PYTHON_AGENT_SDK_DIR)" && "$(PYTHON_TEST)" -m unittest discover -s tests -v
 
 # Install all top-level local dependencies.
 install-local: install-js-client

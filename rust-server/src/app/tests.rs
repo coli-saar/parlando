@@ -32,12 +32,32 @@ use crate::game::{
 use super::*;
 
 /// Participant credentials issued by test routers, indexed by their public session handles.
-static TEST_PARTICIPANT_CREDENTIALS: LazyLock<Mutex<HashMap<String, String>>> =
+static TEST_PARTICIPANT_CREDENTIALS: LazyLock<Mutex<HashMap<String, Vec<String>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Real administrator sessions issued by test routers.
 static TEST_ADMIN_SESSIONS: LazyLock<Mutex<Vec<AdminTestSession>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Retains every credential issued for a human-readable test participant handle.
+fn record_test_participant_credential(participant_id: String, credential: String) {
+    TEST_PARTICIPANT_CREDENTIALS
+        .lock()
+        .unwrap()
+        .entry(participant_id)
+        .or_default()
+        .push(credential);
+}
+
+/// Returns all credentials which parallel test routers issued for one participant handle.
+fn test_participant_credentials(participant_id: &str) -> Vec<String> {
+    TEST_PARTICIPANT_CREDENTIALS
+        .lock()
+        .unwrap()
+        .get(participant_id)
+        .cloned()
+        .unwrap_or_default()
+}
 
 /// Confirms Local Preview cannot replace a missing Prolific refusal redirect with local UI.
 #[test]
@@ -2234,7 +2254,7 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         secondary_participant["participant_id"]
     );
     for participant in [&primary_participant, &secondary_participant] {
-        TEST_PARTICIPANT_CREDENTIALS.lock().unwrap().insert(
+        record_test_participant_credential(
             participant["participant_id"].as_str().unwrap().to_string(),
             participant["participant_credential"]
                 .as_str()
@@ -3459,15 +3479,15 @@ async fn json_request(
         object.remove("mode");
         object.remove("participant_session_id")
     });
-    let participant_credential = participant_session_id
+    let participant_credentials = participant_session_id
         .and_then(|value| value.as_str().map(ToOwned::to_owned))
-        .and_then(|participant_session_id| {
-            TEST_PARTICIPANT_CREDENTIALS
-                .lock()
-                .unwrap()
-                .get(&participant_session_id)
-                .cloned()
-        });
+        .map(|participant_session_id| test_participant_credentials(&participant_session_id))
+        .unwrap_or_default();
+    let participant_credentials = if participant_credentials.is_empty() {
+        vec![None]
+    } else {
+        participant_credentials.into_iter().rev().map(Some).collect()
+    };
     let admin_sessions = if path.starts_with("/api/admin/")
         && path != "/api/admin/setup"
         && path != "/api/admin/login"
@@ -3477,32 +3497,35 @@ async fn json_request(
         Vec::new()
     };
     let mut response = None;
-    for admin_session in admin_sessions
-        .iter()
-        .rev()
-        .map(Some)
-        .chain(std::iter::once(None))
-    {
-        let mut request = Request::builder()
-            .method(method.clone())
-            .uri(path)
-            .header(http::header::CONTENT_TYPE, "application/json");
-        if let Some(credential) = &participant_credential {
-            request = request.header(AUTHORIZATION, format!("Bearer {credential}"));
-        }
-        if let Some(admin_session) = admin_session {
-            request = request
-                .header(http::header::COOKIE, &admin_session.cookie)
-                .header("x-csrf-token", &admin_session.csrf_token);
-        }
-        let candidate = router
-            .clone()
-            .oneshot(request.body(Body::from(body.to_string())).unwrap())
-            .await
-            .unwrap();
-        if candidate.status() != StatusCode::UNAUTHORIZED || admin_session.is_none() {
+    'credentials: for participant_credential in &participant_credentials {
+        for admin_session in admin_sessions
+            .iter()
+            .rev()
+            .map(Some)
+            .chain(std::iter::once(None))
+        {
+            let mut request = Request::builder()
+                .method(method.clone())
+                .uri(path)
+                .header(http::header::CONTENT_TYPE, "application/json");
+            if let Some(credential) = participant_credential {
+                request = request.header(AUTHORIZATION, format!("Bearer {credential}"));
+            }
+            if let Some(admin_session) = admin_session {
+                request = request
+                    .header(http::header::COOKIE, &admin_session.cookie)
+                    .header("x-csrf-token", &admin_session.csrf_token);
+            }
+            let candidate = router
+                .clone()
+                .oneshot(request.body(Body::from(body.to_string())).unwrap())
+                .await
+                .unwrap();
+            if candidate.status() != StatusCode::UNAUTHORIZED {
+                response = Some(candidate);
+                break 'credentials;
+            }
             response = Some(candidate);
-            break;
         }
     }
     let response = response.expect("test request produced no response");
@@ -3581,10 +3604,7 @@ async fn create_direct_participant(router: Router, _name: &str) -> String {
         .as_str()
         .unwrap()
         .to_string();
-    TEST_PARTICIPANT_CREDENTIALS
-        .lock()
-        .unwrap()
-        .insert(participant_session_id.clone(), credential);
+    record_test_participant_credential(participant_session_id.clone(), credential);
     participant_session_id
 }
 
@@ -3639,10 +3659,7 @@ async fn create_prolific_testing_participant(
         .as_str()
         .unwrap()
         .to_string();
-    TEST_PARTICIPANT_CREDENTIALS
-        .lock()
-        .unwrap()
-        .insert(participant_id.clone(), credential);
+    record_test_participant_credential(participant_id.clone(), credential);
     participant_id
 }
 
@@ -3670,22 +3687,27 @@ async fn game_socket_url(
     public_session_id: &str,
     participant_session_id: &str,
 ) -> String {
-    let credential = TEST_PARTICIPANT_CREDENTIALS
-        .lock()
-        .unwrap()
-        .get(participant_session_id)
-        .cloned()
-        .expect("test participant credential was not recorded");
-    let response = reqwest::Client::new()
-        .post(format!(
-            "{base_url}/api/sessions/{public_session_id}/game-session"
-        ))
-        .bearer_auth(credential)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let plan: Value = response.json().await.unwrap();
+    let mut plan = None;
+    for credential in test_participant_credentials(participant_session_id)
+        .into_iter()
+        .rev()
+    {
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{base_url}/api/sessions/{public_session_id}/game-session"
+            ))
+            .bearer_auth(credential)
+            .send()
+            .await
+            .unwrap();
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            continue;
+        }
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        plan = Some(response.json::<Value>().await.unwrap());
+        break;
+    }
+    let plan = plan.expect("no recorded test credential authenticated for the game session");
     let token = plan["token"].as_str().unwrap();
     let host = base_url.trim_start_matches("http://");
     format!("ws://{host}/ws/game/{public_session_id}?token={token}")
@@ -4783,30 +4805,36 @@ async fn authenticated_routes_reject_participant_identity_in_request_bodies() {
         .await
         .unwrap();
     let participant_session_id = create_direct_participant(router.clone(), "A").await;
-    let credential = TEST_PARTICIPANT_CREDENTIALS
-        .lock()
-        .unwrap()
-        .get(&participant_session_id)
-        .cloned()
-        .unwrap();
-    let response = router
-        .oneshot(
-            Request::builder()
-                .method(http::Method::POST)
-                .uri("/api/consent")
-                .header(http::header::CONTENT_TYPE, "application/json")
-                .header(AUTHORIZATION, format!("Bearer {credential}"))
-                .body(Body::from(
-                    json!({
-                        "participant_session_id": participant_session_id,
-                        "decisions": {"study": true}
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let mut response = None;
+    for credential in test_participant_credentials(&participant_session_id)
+        .into_iter()
+        .rev()
+    {
+        let candidate = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(http::Method::POST)
+                    .uri("/api/consent")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .header(AUTHORIZATION, format!("Bearer {credential}"))
+                    .body(Body::from(
+                        json!({
+                            "participant_session_id": participant_session_id,
+                            "decisions": {"study": true}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if candidate.status() != StatusCode::UNAUTHORIZED {
+            response = Some(candidate);
+            break;
+        }
+    }
+    let response = response.expect("no recorded test credential authenticated");
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 

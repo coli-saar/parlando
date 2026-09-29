@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "install:browsers": "playwright install chromium",
+    "install:browsers": "node ensure-browser.mjs",
     "test": "playwright test"
   },
   "dependencies": {

@@ -6,11 +6,33 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## Unreleased
 
+## [0.4.3] - 2026-09-29
+
+### Added
+
+- Added an experiment Progress view with an outcome chart, a real-time chronological session log,
+  direct-recruitment targets, and Prolific-derived planned-session targets that can be refreshed
+  automatically or manually.
+- Added a real-browser release acceptance matrix that drives two independent Chromium clients
+  through the participant state machine, alongside the existing process-boundary Prolific matrix
+  and a combined human-readable report.
+
 ### Changed
 
+- Made the shared participant client explain waiting outcomes with a countdown and Prolific-specific
+  partial-payment guidance, without requiring game-specific UI code.
+- Kept voice open for a configurable, server-enforced farewell period after an ordinarily completed
+  human–human game, with a shared countdown and an immediate end-voice-chat action.
 - Documented one coordinated Rust and JavaScript release process with patch-version defaults,
   complete correctness gates, centralized release notes, conditional migration guides, and
   patient handling of npm's browser-based login and publication approval.
+
+### Fixed
+
+- Reused the same Parlando participant and session for a returning Prolific submission while
+  allowing the same Prolific participant to enter a new session through a new submission.
+- Kept unsuccessful waits as ended sessions with precise causes, consistent dashboard colors, and
+  stable progress updates that no longer flicker while polling.
 
 ## [0.4.2] - 2026-09-24
 

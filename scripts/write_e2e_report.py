@@ -62,8 +62,8 @@ def main() -> int:
     prolific_status = statuses["Prolific process-boundary matrix"]
     browser_text = (
         BROWSER_REPORT.read_text()
-        if BROWSER_REPORT.is_file()
-        else "# Parlando browser end-to-end report\n\nNo browser report was produced.\n"
+        if browser_status == 0 and BROWSER_REPORT.is_file()
+        else "# Parlando browser end-to-end report\n\nNo successful browser report was produced by this run.\n"
     )
     overall = "PASSED" if all(status == 0 for status in statuses.values()) else "FAILED"
     summary = [

@@ -249,6 +249,7 @@ fn study_value(external_url: &str, secure: bool, overrides: &HashMap<String, Str
         "prolific_id_option": "url_parameters",
         "completion_codes": completion_codes,
         "estimated_completion_time": 20,
+        "total_available_places": 20.0,
         "maximum_allowed_time": 240.0,
         "is_external_study_url_secure": secure,
         "device_compatibility": ["desktop"],

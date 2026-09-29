@@ -3625,3 +3625,42 @@ The completion step gives the maintainer an annotated `v<version>` tag command a
 single-tag push command `git push origin v<version>`. Release agents must substitute the actual
 version and ask the maintainer to run it; a vague instruction to push tags or a broad
 `git push --tags` command is not sufficient.
+
+## 2026-09-29: Release the participant-lifecycle and progress corrections as 0.4.3
+
+Context: The coordinated 0.4.2 packages predate the corrected Prolific return behavior, shared
+waiting and farewell countdowns, experiment Progress view, and real-browser release acceptance
+matrix now present in the repository.
+
+Decision: Publish these changes as the normal patch release 0.4.3 for both `parlando` and
+`@coli-saar/parlando-client`. No migration guide is required because existing games receive the
+participant UI and runtime corrections through their dependency update, and neither their source
+interfaces nor their databases require conversion. Refresh first-party registry consumer
+lockfiles only after publication so they record the immutable 0.4.3 tarball checksums rather than
+local or invented metadata.
+
+During the 0.4.3 release gate, `make test` exposed that `test-python` used whichever system Python
+was active without installing the SDK's declared dependencies. The target now owns a reusable
+repository-local virtual environment under `.local`, installs the SDK editable from its
+`pyproject.toml`, and runs the suite with that interpreter. This keeps a fresh release checkout
+self-contained without changing the developer's global Python installation.
+
+The same gate exposed two stale harness assumptions. The browser setup command could remain alive
+after Playwright's exact Chromium installation was already complete, so setup now checks the
+executable selected by the installed Playwright package and invokes the installer only when that
+file is absent. It never falls back to a desktop browser. The Prolific mock study now includes
+`total_available_places`, which became a required production response field when planned-session
+progress was added. Combined reports no longer display an older successful browser report when the
+current browser layer fails before producing one.
+
+The Prolific runner launches sibling mock and server executables, but `cargo run --bin
+prolific-test-runner` rebuilds only the runner itself. The Make targets now build all binaries first,
+so source changes to any companion are guaranteed to be present in both focused and coordinated
+E2E runs.
+
+One full-suite run exposed a parallel-test collision in the in-process credential helper: random
+human-readable participant handles are intentionally not globally unique, but the helper retained
+only one credential per handle across all test routers. A concurrent test could therefore replace
+another router's credential and cause a spurious 401. The helper now retains every credential for a
+colliding handle and tries them against the target router; production credential lookup remains
+unchanged.
