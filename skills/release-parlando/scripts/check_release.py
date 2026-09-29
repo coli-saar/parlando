@@ -122,6 +122,9 @@ def check_published_consumer_lockfiles(root: Path, version: str, errors: list[st
     for package_path in sorted(root.rglob("package.json")):
         if any(part in {"target", "node_modules"} for part in package_path.parts):
             continue
+        if package_path == root / "client-server-tests/browser/package.json":
+            # The unpublished browser fixture must exercise the local package under test.
+            continue
         package = read_json(package_path)
         dependencies = package.get("dependencies")
         if not isinstance(dependencies, dict) or package_name not in dependencies:
