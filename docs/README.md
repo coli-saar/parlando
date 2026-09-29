@@ -99,3 +99,7 @@ controller, legal basis, retention, provider agreements, and release approval.
 
 [Publishing Packages](publishing-packages.md) covers local package smoke tests and
 publishing for `parlando` and `@coli-saar/parlando-client`.
+
+[Releasing Parlando](releasing-parlando.md) defines the coordinated maintainer release process,
+including lockstep versions, test gates, changelog and migration requirements, registry login, and
+post-publication verification.

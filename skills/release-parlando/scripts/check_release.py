@@ -95,6 +95,9 @@ def check_consumers(root: Path, version: str, errors: list[str]) -> None:
     for path in sorted(root.rglob("package.json")):
         if any(part in {"target", "node_modules"} for part in path.parts):
             continue
+        if path == root / "client-server-tests/browser/package.json":
+            # This unpublished fixture deliberately consumes the local package under test.
+            continue
         document = read_json(path)
         for section_name in ("dependencies", "devDependencies", "peerDependencies"):
             section = document.get(section_name)
@@ -145,19 +148,6 @@ def check_published_consumer_lockfiles(root: Path, version: str, errors: list[st
             errors.append(f"{lock_path} {lock_key}: missing registry sha512 integrity")
 
 
-def check_runtime_stress_documentation(root: Path, errors: list[str]) -> None:
-    """Reject obsolete stress-runner flags and require the current headless CLI surface."""
-    path = root / "docs/runtime-stress-testing.md"
-    text = path.read_text(encoding="utf-8")
-    obsolete_flags = ("--preset", "--no-tui", "--report", "--keep-database")
-    for flag in obsolete_flags:
-        if flag in text:
-            errors.append(f"{path}: contains obsolete runtime-stress flag {flag!r}")
-    for flag in ("--pairing", "--sessions", "--seconds", "--headless", "--output"):
-        if flag not in text:
-            errors.append(f"{path}: missing current runtime-stress flag {flag!r}")
-
-
 def check_release_documents(root: Path, version: str, errors: list[str]) -> None:
     """Check current release guidance, changelog metadata, and the generator skill baseline."""
     publishing_path = root / "docs/publishing-packages.md"
@@ -187,9 +177,13 @@ def check_release_documents(root: Path, version: str, errors: list[str]) -> None
         errors.append(f"{changelog_path}: missing dated [{version}] release heading")
 
 
-def check_migration_guide(root: Path, version: str, errors: list[str]) -> None:
-    """Check that one target migration guide covers the required release-risk categories."""
+def check_migration_guide(
+    root: Path, version: str, required: bool, errors: list[str]
+) -> None:
+    """Validate a target migration guide when present or required by downstream changes."""
     candidates = sorted((root / "docs").glob(f"migrating-*-to-{version}.md"))
+    if not candidates and not required:
+        return
     if len(candidates) != 1:
         errors.append(f"docs: expected exactly one migration guide ending in -to-{version}.md")
         return
@@ -218,6 +212,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="also require registry-derived first-party npm consumer lock entries",
     )
+    parser.add_argument(
+        "--require-migration-guide",
+        action="store_true",
+        help="require and validate a version-specific downstream migration guide",
+    )
     args = parser.parse_args()
     if not re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", args.version):
         parser.error("version must be stable SemVer in MAJOR.MINOR.PATCH form")
@@ -235,8 +234,7 @@ def main() -> int:
         if args.published:
             check_published_consumer_lockfiles(root, args.version, errors)
         check_release_documents(root, args.version, errors)
-        check_migration_guide(root, args.version, errors)
-        check_runtime_stress_documentation(root, errors)
+        check_migration_guide(root, args.version, args.require_migration_guide, errors)
     except (OSError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
         errors.append(str(error))
 

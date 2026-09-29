@@ -2,6 +2,10 @@
 
 This page is for maintainers publishing Parlando packages and for game authors deciding how to depend on them. Most game projects should use released registry packages; local paths are only for temporary debugging.
 
+For a coordinated Parlando release, follow [Releasing Parlando](releasing-parlando.md). That process
+defines version selection, changelog and migration requirements, complete test gates, interactive
+registry authentication, publication, and post-publication verification.
+
 Parlando has two reusable packages:
 
 - `parlando`: Rust library crate under `rust-server`, published to crates.io.

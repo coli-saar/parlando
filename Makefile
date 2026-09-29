@@ -10,7 +10,7 @@ PYTHON_AGENT_SDK_DIR := $(PARLANDO_DIR)/parlando-agent-sdk
 NPM_CACHE ?= $(PARLANDO_DIR)/.local/npm-cache
 PYTHON ?= python3
 
-.PHONY: all test test-rust test-js-client test-client-server test-python install-local install-js-client package-local package-rust-server-local package-js-client-local publish-dry-run publish-rust-server-dry-run publish-js-client-dry-run publish-rust-server publish-js-client
+.PHONY: all test test-rust test-js-client test-client-server test-browser-e2e test-prolific-e2e test-e2e test-python install-local install-js-client package-local package-rust-server-local package-js-client-local publish-dry-run publish-rust-server-dry-run publish-js-client-dry-run publish-rust-server publish-js-client
 
 # Default workflow: prepare the reusable JavaScript client for local development.
 all: install-local
@@ -33,6 +33,35 @@ test-js-client:
 # Runs the explicit live client/server contract suite, including its Node audio driver.
 test-client-server: test-js-client
 	cd "$(CLIENT_SERVER_TESTS_DIR)" && cargo test
+
+# Builds the disposable browser client and runs the real Chromium lifecycle matrix.
+test-browser-e2e: test-js-client
+	cd "$(CLIENT_SERVER_TESTS_DIR)/browser" && npm --cache "$(NPM_CACHE)" install
+	cd "$(CLIENT_SERVER_TESTS_DIR)/browser" && npm --cache "$(NPM_CACHE)" run install:browsers
+	cd "$(CLIENT_SERVER_TESTS_DIR)/browser" && npm --cache "$(NPM_CACHE)" run build
+	cd "$(CLIENT_SERVER_TESTS_DIR)" && cargo test --test browser_e2e -- --ignored --nocapture
+
+# Runs the standalone process-boundary Prolific scenario matrix and its durable report.
+test-prolific-e2e:
+	cd "$(RUST_SERVER_TESTS_DIR)" && cargo run --bin prolific-test-runner
+
+# Release-oriented acceptance gate. The coordinator runs every layer after failures.
+test-e2e:
+	@set +e; \
+	$(MAKE) test-js-client; \
+	js_status=$$?; \
+	cargo test --manifest-path "$(PARLANDO_DIR)/rust-server/Cargo.toml"; \
+	rust_status=$$?; \
+	cd "$(CLIENT_SERVER_TESTS_DIR)" && cargo test; \
+	contract_status=$$?; \
+	cd "$(CLIENT_SERVER_TESTS_DIR)/browser" && npm --cache "$(NPM_CACHE)" install && npm --cache "$(NPM_CACHE)" run install:browsers && npm --cache "$(NPM_CACHE)" run build; \
+	fixture_status=$$?; \
+	browser_status=$$fixture_status; \
+	if [ $$fixture_status -eq 0 ]; then cd "$(CLIENT_SERVER_TESTS_DIR)" && cargo test --test browser_e2e -- --ignored --nocapture; browser_status=$$?; fi; \
+	cd "$(RUST_SERVER_TESTS_DIR)" && cargo run --bin prolific-test-runner; \
+	prolific_status=$$?; \
+	"$(PYTHON)" "$(PARLANDO_DIR)/scripts/write_e2e_report.py" $$js_status $$rust_status $$contract_status $$browser_status $$prolific_status; \
+	if [ $$js_status -ne 0 ] || [ $$rust_status -ne 0 ] || [ $$contract_status -ne 0 ] || [ $$browser_status -ne 0 ] || [ $$prolific_status -ne 0 ]; then exit 1; fi
 
 # Runs the Python SDK suite in an environment where its package dependencies are installed.
 test-python:

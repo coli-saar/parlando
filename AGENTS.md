@@ -1,5 +1,10 @@
 # Agent Instructions
 
+## Releases
+- Follow [`docs/releasing-parlando.md`](docs/releasing-parlando.md) for every Parlando release.
+- Treat the Rust `parlando` crate and `@coli-saar/parlando-client` as one lockstep release. Unless the user requests another version, increment the current version by `0.0.1`.
+- Do not publish either package unless the user explicitly requests actual publication.
+
 ## Git commands require explicit authorization
 - Do not execute any `git` command unless the user specifically asks for that command or Git operation.
 - General requests to inspect, edit, test, or clean up the repository do not authorize Git commands.

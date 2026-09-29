@@ -3491,8 +3491,9 @@ Decision: Keep both experiences in `js-client` so games require no code changes.
 explains the concrete consequence of leaving or reaching the deadline. Only Prolific intake mentions
 returning the submission and researcher-issued payment for waiting; Parlando does not promise or
 issue that payment. On normal completion of a voice-enabled human–human session, commit the terminal
-result immediately and attach a server-owned deadline 60 seconds later only when both audio roles
-are connected. Keep partner audio relay available until that deadline while rejecting game input
+result immediately and attach a server-owned deadline after the configured farewell interval
+(60 seconds by default) only when both audio roles are connected. Keep partner audio relay available
+until that deadline while rejecting game input
 and suppressing transcription. The terminal client renders the countdown, mute control, and an
 explicit End voice chat action. All other terminal causes and human–agent sessions close voice
 immediately.
@@ -3503,3 +3504,124 @@ recorded result. The server, rather than the browser timer, enforces the deadlin
 timer throttling cannot extend microphone relay. Post-completion audio is relayed but neither raw
 audio nor transcript text is stored. The Prolific completion control remains immediately available;
 following it ends the optional farewell through normal page teardown.
+
+## 2026-09-29: Real-browser release acceptance around the contract game
+
+Context: The existing contract tests separately exercised the live Rust server, the published
+JavaScript protocol client, rendered lifecycle behavior, audio transport, and the Prolific API.
+They did not establish that two independent browser contexts could traverse the participant state
+machine against one live server. Manual release checks therefore remained necessary.
+
+Decision: `client-server-tests/browser` contains a deliberately small React consumer of the public
+`@coli-saar/parlando-client/react` package. A Rust matrix starts the existing `ContractGame` with a
+fresh SQLite database for each scenario and drives the built client in independent headless Chromium
+contexts. Each scenario configures the existing waiting, reconnect, idle, and maximum-lifetime
+fields, using short real deadlines rather than a second test clock. The matrix continues after a
+scenario failure and writes `client-server-tests/target/browser-e2e/report.md`. `make test-e2e`
+combines this browser matrix with the existing standalone Prolific process-boundary matrix.
+
+Tradeoffs: Chromium exercises real browser storage, fetch, WebSocket, reload, and offline behavior
+without making pixel layout part of the contract. Exact countdown formatting remains in fake-timer
+unit tests, while the end-to-end suite verifies that configured deadlines cause the expected live
+transitions. The first matrix run is allowed to fail: failures are evidence about the current
+runtime unless they arise from the harness itself, and assertions must not be weakened to obtain a
+green result.
+
+Follow-up risk: The initial browser matrix covers the principal direct-recruitment transitions and
+relies on the existing standalone Prolific runner for provider configuration, signed admission,
+returning submissions, handoff mapping, and provider-write safety. A later extension can drive the
+signed Prolific launch URL through Chromium without changing the production interfaces.
+
+The final implementation also exercises browser-visible `technical_failure` through an intentionally
+failing test agent factory, making the browser coverage gate exhaustive over the current participant
+outcome and session-end-cause vocabularies. The `make test-e2e` shell coordinator runs the browser
+and Prolific matrices even if either fails, then `scripts/write_e2e_report.py` combines their durable
+results in `target/e2e-report.md`. Browser execution remains a direct child of the shell because the
+macOS application sandbox aborts an installed Chrome process nested below a Python subprocess.
+
+## 2026-09-29: Put precise deadline assertions below the browser acceptance layer
+
+Context: Waiting, reconnect, inactivity, and post-completion voice surfaces all count down from
+server timestamps. Exact second-by-second browser assertions are sensitive to scheduler delays and
+would make the release gate flaky. Conversely, a component-only test cannot prove that a production
+server deadline reaches a mounted client, survives reload, and causes the corresponding terminal
+transition.
+
+Decision: Test formatting, boundary changes, zero clamping, recruitment-specific wording, timer
+cleanup, and exactly-once farewell shutdown with fake-time JavaScript component tests. Keep coarse
+integration assertions in Chromium: the waiting and farewell countdowns must decrease, waiting and
+paused sessions must survive reload without extending their deadlines, and the configured server
+deadline must end the relevant capability. Retain atomic race, replay, activity, and Prolific
+identity cases in the existing process-boundary suites, where synchronization is deterministic.
+The browser matrix adds only browser-owned risks: reload recovery, a duplicated tab, and real media
+setup and relay through two independent browser contexts.
+
+The `make test-e2e` coordinator also runs the JavaScript client checks, the complete Rust server
+suite, and the live client/server contract suite before the two acceptance matrices. It records all
+five exit statuses, continues through later layers after a failure, and includes every layer in the
+combined report. This prevents an early deterministic failure from suppressing evidence from the
+remaining release checks.
+
+To keep the real-media acceptance scenario short, `voice.post_completion_seconds` now configures
+the farewell interval. Its production default remains 60 seconds and validation permits 1–3600
+seconds. This replaces the previous hard-coded constant without changing the lifecycle state
+machine or requiring game code changes.
+
+Tradeoffs and risks: Chromium uses its fake microphone device, so the test proves browser media
+permission, AudioWorklet setup, authenticated transport, relay observation, terminal UI, and
+deadline shutdown, but not physical hardware quality. Prolific browser parameter capture remains a
+deterministic JavaScript protocol test, while the standalone Prolific matrix covers real server
+admission, restoration, handoffs, races, and provider safety; duplicating those cases in Chromium
+would increase runtime without crossing an otherwise untested boundary.
+
+## 2026-09-29: Never fall back from Playwright Chromium to desktop Chrome
+
+Context: The browser driver previously fell back to the user's installed Google Chrome when the
+Playwright-pinned executable was absent. A desktop application launched as a child of Codex's
+restricted macOS process aborted in LaunchServices registration before reaching headless startup.
+macOS treated every scenario attempt as an unexpected Google Chrome termination and displayed a
+crash dialog for each one.
+
+Decision: The E2E driver launches only Playwright's isolated Chromium build. Both browser Make
+targets run Playwright's idempotent Chromium installer before building and executing the fixture.
+If installation or launch fails, the matrix reports one ordinary test/setup failure; it never opens
+or crashes the user's desktop browser.
+
+Tradeoff: The first browser test run must download the Playwright browser and therefore needs
+network access. Later runs reuse the versioned browser cache. This is preferable to coupling the
+release test to an independently updated personal browser or producing macOS crash reports.
+
+## 2026-09-29: One canonical coordinated release procedure
+
+Context: Package publishing commands existed in public documentation and a release skill, but the
+skill required a caller-supplied version, treated long stress workloads as correctness gates, and
+always required a migration guide. The repository did not have one task-oriented document joining
+version selection, lockstep package preparation, complete correctness tests, npm's interactive web
+approval, publication recovery, and downstream migration duties.
+
+Decision: `docs/releasing-parlando.md` is the canonical maintainer procedure and `AGENTS.md` points
+future agents to it. A release increments the coordinated Rust and JavaScript patch version by
+`0.0.1` unless the maintainer selects another version. The root `CHANGELOG.md` records both packages.
+The release candidate must run `make test` and `make test-e2e`, but the runtime stress programs are
+opt-in performance evidence rather than ordinary release gates. The game-generation skill and
+current user documentation advance with each release. A version-specific migration guide is
+required only when downstream games must change code, configuration, deployment, or data.
+
+The release audit therefore accepts releases without a migration guide by default and validates
+one when present. `--require-migration-guide` makes the conditional policy explicit for releases
+with downstream work. The release skill now follows the canonical document and instructs agents to
+keep npm login or publish processes alive while the maintainer completes web approval. The audit
+excludes only `client-server-tests/browser/package.json` from registry-consumer version checks
+because that unpublished E2E fixture deliberately uses the local JavaScript package under test;
+first-party games remain subject to exact registry-version checks.
+
+Tradeoffs: Running both test targets repeats some JavaScript, Rust, and contract checks because the
+E2E coordinator is independently useful. The duplicate work is acceptable for an infrequent
+release and makes both entry points self-contained. Omitting stress workloads shortens routine
+releases but means capacity regressions require a deliberate stress run when a relevant subsystem
+changes.
+
+The completion step gives the maintainer an annotated `v<version>` tag command and the exact
+single-tag push command `git push origin v<version>`. Release agents must substitute the actual
+version and ask the maintainer to run it; a vague instruction to push tags or a broad
+`git push --tags` command is not sufficient.

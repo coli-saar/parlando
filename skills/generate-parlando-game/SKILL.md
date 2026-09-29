@@ -11,7 +11,7 @@ Generate a complete two-player game using published registry packages. Read `ref
 
 ## Discover versions
 
-Query crates.io for `parlando` and npm for `@coli-saar/parlando-client`. Use the newest release available from both registries, and never mix different Parlando minor versions. Only when the user explicitly requests work on an unpublished future release, use the repository's matching manifest versions for release preparation and disclose that external registry builds remain blocked until both packages are published.
+Query crates.io for `parlando` and npm for `@coli-saar/parlando-client`. Use the newest exact version available from both registries, and never mix different coordinated Parlando versions. Only when the user explicitly requests work on an unpublished future release, use the repository's matching manifest versions for release preparation and disclose that external registry builds remain blocked until both packages are published.
 
 ## Clarify only domain choices
 

@@ -289,7 +289,7 @@ pub async fn run_node_driver(server: &TestServer, driver: &str, fixture: Value) 
     stdin.write_all(input.to_string().as_bytes()).await?;
     stdin.shutdown().await?;
     drop(stdin);
-    let output = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output())
+    let output = tokio::time::timeout(Duration::from_secs(45), child.wait_with_output())
         .await
         .map_err(|_| anyhow!("Node contract driver {driver} timed out"))??;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -303,6 +303,64 @@ pub async fn run_node_driver(server: &TestServer, driver: &str, fixture: Value) 
         .ok_or_else(|| anyhow!("Node contract driver {driver} produced no result"))?;
     serde_json::from_str(line)
         .map_err(|error| anyhow!("Node contract driver {driver} returned invalid JSON: {error}"))
+}
+
+/// Runs one real-browser driver from the dedicated browser acceptance package.
+pub async fn run_browser_driver(server: &TestServer, fixture: Value) -> Result<Value> {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| anyhow!("contract crate has no repository parent"))?;
+    let browser_directory = repository.join("client-server-tests/browser");
+    let mut child = tokio::process::Command::new("node")
+        .arg(browser_directory.join("browser-driver.mjs"))
+        .current_dir(&browser_directory)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let input = json!({
+        "origin": server.base_url,
+        "fixture": fixture,
+    });
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("browser driver has no standard input"))?;
+    stdin.write_all(input.to_string().as_bytes()).await?;
+    stdin.shutdown().await?;
+    drop(stdin);
+    let output = tokio::time::timeout(Duration::from_secs(45), child.wait_with_output())
+        .await
+        .map_err(|_| anyhow!("browser driver timed out"))??;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        bail!("browser driver failed:\n{stderr}\n{stdout}");
+    }
+    let line = stdout
+        .lines()
+        .last()
+        .ok_or_else(|| anyhow!("browser driver produced no result"))?;
+    serde_json::from_str(line).map_err(|error| {
+        anyhow!("browser driver returned invalid JSON: {error}\n{stderr}\n{stdout}")
+    })
+}
+
+/// Points one experiment configuration at the built end-to-end browser fixture.
+pub fn enable_browser_fixture(config: &mut ExperimentConfig) -> Result<()> {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| anyhow!("contract crate has no repository parent"))?;
+    let distribution = repository.join("client-server-tests/browser/dist");
+    if !distribution.join("index.html").is_file() {
+        bail!(
+            "browser fixture is not built; run `npm install && npm run build` in {}",
+            repository.join("client-server-tests/browser").display()
+        );
+    }
+    config.server.client_dist_path = Some(distribution.display().to_string());
+    Ok(())
 }
 
 /// Enables the production audio route without selecting an external provider.

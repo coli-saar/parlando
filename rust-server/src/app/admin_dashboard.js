@@ -1210,6 +1210,7 @@ const PARLANDO_CONFIG_SECTIONS = [
   { title: 'Voice transport', description: 'Live browser audio carried through Parlando. This is independent of speech recognition.', fields: [
     { path: 'voice.enabled', label: 'Enable voice transport', help: 'Allow participants to send and receive live audio. Parlando relays audio but does not store the raw recording.', type: 'boolean' },
     { path: 'voice.jitter_buffer_ms', label: 'Playback jitter buffer (ms)', help: 'Audio buffered before playback.', type: 'number', min: 20, max: 5000 },
+    { path: 'voice.post_completion_seconds', label: 'Post-game voice time (seconds)', help: 'Time participants may keep talking after an ordinarily completed game.', type: 'number', min: 1, max: 3600 },
   ]},
   { title: 'Speech recognition', description: 'Optional Speechmatics conversion of participant speech into text.', fields: [
     { path: 'transcription.enabled', label: 'Enable speech recognition', help: 'Send live participant audio to Speechmatics and make recognized text available to the game and agents.', type: 'boolean' },

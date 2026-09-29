@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## Unreleased
 
+### Changed
+
+- Documented one coordinated Rust and JavaScript release process with patch-version defaults,
+  complete correctness gates, centralized release notes, conditional migration guides, and
+  patient handling of npm's browser-based login and publication approval.
+
 ## [0.4.2] - 2026-09-24
 
 ### Fixed

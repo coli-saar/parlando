@@ -5,7 +5,13 @@ import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialVoicePreflight, initialVoiceStatus } from "./audio/types";
 import type { ExperimentInfo, ParticipantOutcome, ParticipantState } from "./protocol";
-import { FarewellVoiceNotice, ParticipantAppTestHarness, type GameSession } from "./startup";
+import {
+  FarewellVoiceNotice,
+  IdleDeadlineNotice,
+  ParticipantAppTestHarness,
+  WaitingRoomNotice,
+  type GameSession
+} from "./startup";
 
 class FakeWebSocket extends EventTarget {
   static OPEN = 1;
@@ -375,5 +381,73 @@ describe("FarewellVoiceNotice", () => {
     act(() => vi.advanceTimersByTime(2_000));
     expect(onEnd).toHaveBeenCalledOnce();
     expect(screen.getByText("Voice chat has closed.")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(onEnd).toHaveBeenCalledOnce();
+  });
+});
+
+describe("deadline notices", () => {
+  it("formats and advances the waiting deadline from the authoritative timestamps", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-29T12:00:00Z"));
+    render(<WaitingRoomNotice
+      deadlineAt="2026-09-29T12:01:00Z"
+      prolific={false}
+      startedAt="2026-09-29T12:00:00Z"
+    />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("1:00 remaining");
+    act(() => vi.advanceTimersByTime(1_250));
+    expect(screen.getByRole("status")).toHaveTextContent("0:59 remaining");
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(screen.getByRole("status")).toHaveTextContent("0:00 remaining");
+    expect(screen.getByRole("status")).not.toHaveTextContent("-1");
+  });
+
+  it("keeps direct and Prolific waiting guidance distinct", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-29T12:00:00Z"));
+    const { rerender } = render(<WaitingRoomNotice
+      deadlineAt="2026-09-29T12:02:00Z"
+      prolific={false}
+      startedAt="2026-09-29T12:00:00Z"
+    />);
+    expect(screen.getByRole("status")).toHaveTextContent("maximum wait is 2 minutes");
+    expect(screen.getByRole("status")).not.toHaveTextContent("Prolific");
+
+    rerender(<WaitingRoomNotice
+      deadlineAt="2026-09-29T12:02:00Z"
+      prolific
+      startedAt="2026-09-29T12:00:00Z"
+    />);
+    expect(screen.getByRole("status")).toHaveTextContent("return to Prolific");
+    expect(screen.getByRole("status")).toHaveTextContent("partial payment");
+  });
+
+  it("shows the idle warning only during its final minute and clamps at zero", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-29T12:00:00Z"));
+    const { rerender } = render(<IdleDeadlineNotice deadlineAt="2026-09-29T12:01:01Z" />);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+    rerender(<IdleDeadlineNotice deadlineAt="2026-09-29T12:01:00Z" />);
+    expect(screen.getByRole("status")).toHaveTextContent("60 seconds");
+    act(() => vi.advanceTimersByTime(59_000));
+    expect(screen.getByRole("status")).toHaveTextContent("1 second");
+    act(() => vi.advanceTimersByTime(2_000));
+    expect(screen.getByRole("status")).toHaveTextContent("0 seconds");
+  });
+
+  it("clears a waiting countdown interval when it unmounts", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-29T12:00:00Z"));
+    const clearInterval = vi.spyOn(window, "clearInterval");
+    const view = render(<WaitingRoomNotice
+      deadlineAt="2026-09-29T12:01:00Z"
+      prolific={false}
+      startedAt="2026-09-29T12:00:00Z"
+    />);
+    view.unmount();
+    expect(clearInterval).toHaveBeenCalledOnce();
   });
 });

@@ -76,7 +76,6 @@ use crate::{
 };
 
 /// Fixed time in which two human participants may speak after normal completion.
-const POST_COMPLETION_VOICE_SECONDS: i64 = 60;
 
 /// Validated inputs retained until a live session can supply an agent-scoped logger.
 struct PreparedAgentConstruction<A: Game> {
@@ -9584,8 +9583,11 @@ where
             let completed_at = chrono::Utc::now();
             session.updated_at = completed_at.to_rfc3339();
             session.voice_ends_at = keep_voice_open.then(|| {
-                (completed_at + chrono::Duration::seconds(POST_COMPLETION_VOICE_SECONDS))
-                    .to_rfc3339()
+                (completed_at
+                    + chrono::Duration::seconds(
+                        state.config.voice.post_completion_seconds as i64,
+                    ))
+                .to_rfc3339()
             });
             session.lifecycle = SessionLifecycle::Ended(
                 session_end.expect("completed transition has a terminal value"),

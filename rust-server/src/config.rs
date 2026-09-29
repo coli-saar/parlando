@@ -199,6 +199,8 @@ pub struct VoiceConfig {
     pub frame_duration_ms: u16,
     /// Browser playback buffer target before audio starts or resumes.
     pub jitter_buffer_ms: u16,
+    /// Seconds that participant audio remains available after ordinary game completion.
+    pub post_completion_seconds: u64,
 }
 
 impl Default for VoiceConfig {
@@ -209,6 +211,7 @@ impl Default for VoiceConfig {
             sample_rate_hz: 24_000,
             frame_duration_ms: 20,
             jitter_buffer_ms: 100,
+            post_completion_seconds: 60,
         }
     }
 }
@@ -478,6 +481,11 @@ impl ExperimentConfig {
             || self.voice.jitter_buffer_ms > 5_000
         {
             bail!("voice.jitter_buffer_ms must be between one frame and 5000 ms");
+        }
+        if self.voice.post_completion_seconds == 0
+            || self.voice.post_completion_seconds > 3_600
+        {
+            bail!("voice.post_completion_seconds must be between 1 and 3600");
         }
         if self.tts.enabled {
             if self.tts.provider != "elevenlabs" {
@@ -869,6 +877,16 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("protocol version 1"));
+        }
+        for seconds in [1, 3_600] {
+            let mut config = valid_config();
+            config.voice.post_completion_seconds = seconds;
+            config.validate().unwrap();
+        }
+        for seconds in [0, 3_601] {
+            let mut config = valid_config();
+            config.voice.post_completion_seconds = seconds;
+            assert!(config.validate().is_err());
         }
     }
 
