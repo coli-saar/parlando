@@ -293,38 +293,6 @@ pub enum ParticipantState {
     },
 }
 
-/// Lifecycle-only participant phase used to validate transitions independently of payload data.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ParticipantPhase {
-    Registered,
-    Waiting,
-    Active,
-    Paused,
-    Ended,
-}
-
-/// Reports whether two distinct participant phases form an allowed lifecycle transition.
-#[cfg(test)]
-pub fn participant_transition_allowed(from: ParticipantPhase, to: ParticipantPhase) -> bool {
-    matches!(
-        (from, to),
-        (ParticipantPhase::Registered, ParticipantPhase::Waiting)
-            | (
-                ParticipantPhase::Waiting,
-                ParticipantPhase::Active | ParticipantPhase::Ended
-            )
-            | (
-                ParticipantPhase::Active,
-                ParticipantPhase::Paused | ParticipantPhase::Ended
-            )
-            | (
-                ParticipantPhase::Paused,
-                ParticipantPhase::Active | ParticipantPhase::Ended
-            )
-    )
-}
-
 /// The deliberately closed participant pause-reason vocabulary.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -431,31 +399,7 @@ impl ServerMessage {
 mod tests {
     use serde_json::Value;
 
-    use super::{participant_transition_allowed, ParticipantPhase};
     use super::{ClientMessage, ServerMessage};
-
-    /// Locks the deliberately small participant transition graph, including its absorbing end.
-    #[test]
-    fn participant_transition_graph_is_strict() {
-        use ParticipantPhase::*;
-        let allowed = [
-            (Registered, Waiting),
-            (Waiting, Active),
-            (Waiting, Ended),
-            (Active, Paused),
-            (Active, Ended),
-            (Paused, Active),
-            (Paused, Ended),
-        ];
-        for from in [Registered, Waiting, Active, Paused, Ended] {
-            for to in [Registered, Waiting, Active, Paused, Ended] {
-                assert_eq!(
-                    participant_transition_allowed(from, to),
-                    allowed.contains(&(from, to))
-                );
-            }
-        }
-    }
 
     /// Confirms the game channel accepts only the current four operation names.
     #[test]

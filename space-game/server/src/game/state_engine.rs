@@ -34,8 +34,8 @@ pub enum SpaceAction {
 }
 
 impl SpaceAction {
-    /// Returns the player encoded in this action, when the action is player-scoped.
-    pub fn player(&self) -> Option<&str> {
+    /// Returns the player encoded in this action.
+    pub fn player(&self) -> &str {
         match self {
             Self::MoveStep { player, .. }
             | Self::ToggleFuse { player, .. }
@@ -45,7 +45,7 @@ impl SpaceAction {
             | Self::ChargeBattery { player }
             | Self::MoveBattery { player }
             | Self::CycleRelay { player }
-            | Self::LaunchBeacon { player } => Some(player),
+            | Self::LaunchBeacon { player } => player,
         }
     }
 
@@ -356,10 +356,10 @@ pub fn available_actions(state: &SpaceGameState, player: &str) -> Vec<SpaceActio
 
 /// Validates a typed action against the current state and player role.
 pub fn validate_action(state: &SpaceGameState, action: &SpaceAction, player: &str) -> Result<()> {
-    if action.player() != Some(player) {
+    if action.player() != player {
         bail!(
             "Cannot submit an action for Player {} as Player {player}.",
-            action.player().unwrap_or("?")
+            action.player()
         );
     }
     if matches!(action, SpaceAction::MoveStep { .. }) {
@@ -372,7 +372,7 @@ pub fn validate_action(state: &SpaceGameState, action: &SpaceAction, player: &st
 }
 
 /// Applies one typed action and returns the next immutable game state.
-pub fn apply_action(state: &SpaceGameState, action: &SpaceAction) -> Result<SpaceGameState> {
+pub fn apply_action(state: &SpaceGameState, action: &SpaceAction) -> SpaceGameState {
     let before = derive_systems(state);
     let mut next = state.clone();
     let mut effects = vec![];
@@ -406,7 +406,7 @@ pub fn apply_action(state: &SpaceGameState, action: &SpaceAction) -> Result<Spac
         }
         SpaceAction::LaunchBeacon { player } => launch_beacon(&mut next, &before, player),
     }
-    Ok(finalize(next, before, effects))
+    finalize(next, before, effects)
 }
 
 // Applies one grid step, including door and pressure-gate handling.
@@ -750,7 +750,7 @@ mod tests {
     fn apply(actions: Vec<SpaceAction>) -> SpaceGameState {
         let mut state = initial_state();
         for action in actions {
-            state = apply_action(&state, &action).unwrap();
+            state = apply_action(&state, &action);
         }
         state
     }
@@ -826,8 +826,7 @@ mod tests {
             &SpaceAction::LaunchBeacon {
                 player: "B".to_string(),
             },
-        )
-        .unwrap();
+        );
         assert!(launched.beacon_launched);
     }
 

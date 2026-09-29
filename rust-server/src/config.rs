@@ -353,6 +353,85 @@ pub struct ExperimentConfig {
     pub game_secrets: HashMap<String, String>,
 }
 
+/// Revisioned experiment settings, excluding process resources, identity, and credentials.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct StoredExperimentConfig {
+    pub session: SessionConfig,
+    pub progress: ProgressConfig,
+    pub direct: DirectConfig,
+    pub recruitment: RecruitmentConfig,
+    pub voice: VoiceConfig,
+    pub speechmatics: SpeechmaticsConfig,
+    pub transcription: TranscriptionConfig,
+    pub tts: TtsConfig,
+    pub agents: AgentsConfig,
+    pub capacity: CapacityConfig,
+    pub privacy: PrivacyConfig,
+    pub game: Value,
+}
+
+impl Default for StoredExperimentConfig {
+    /// Creates the revisioned portion of the default experiment configuration.
+    fn default() -> Self {
+        Self::from(&ExperimentConfig::default())
+    }
+}
+
+impl From<&ExperimentConfig> for StoredExperimentConfig {
+    /// Copies only fields that belong to an experiment revision.
+    fn from(config: &ExperimentConfig) -> Self {
+        Self {
+            session: config.session.clone(),
+            progress: config.progress.clone(),
+            direct: config.direct.clone(),
+            recruitment: config.recruitment.clone(),
+            voice: config.voice.clone(),
+            speechmatics: config.speechmatics.clone(),
+            transcription: config.transcription.clone(),
+            tts: config.tts.clone(),
+            agents: config.agents.clone(),
+            capacity: config.capacity.clone(),
+            privacy: config.privacy.clone(),
+            game: config.game.clone(),
+        }
+    }
+}
+
+impl StoredExperimentConfig {
+    /// Combines one stored revision with process-owned resources and experiment identity.
+    pub(crate) fn into_runtime(
+        self,
+        bootstrap: &ExperimentConfig,
+        experiment_id: &str,
+        public_base_url: String,
+    ) -> ExperimentConfig {
+        ExperimentConfig {
+            experiment: ExperimentIdentityConfig {
+                id: Some(experiment_id.to_string()),
+            },
+            session: self.session,
+            progress: self.progress,
+            direct: self.direct,
+            recruitment: self.recruitment,
+            server: ServerConfig {
+                public_base_url,
+                ..bootstrap.server.clone()
+            },
+            database: bootstrap.database.clone(),
+            voice: self.voice,
+            speechmatics: self.speechmatics,
+            transcription: self.transcription,
+            tts: self.tts,
+            agents: self.agents,
+            capacity: self.capacity,
+            privacy: self.privacy,
+            game: self.game,
+            game_secrets: HashMap::new(),
+        }
+    }
+}
+
 impl Default for ExperimentConfig {
     /// Creates a complete experiment configuration with an empty game-owned mapping.
     fn default() -> Self {
@@ -482,9 +561,7 @@ impl ExperimentConfig {
         {
             bail!("voice.jitter_buffer_ms must be between one frame and 5000 ms");
         }
-        if self.voice.post_completion_seconds == 0
-            || self.voice.post_completion_seconds > 3_600
-        {
+        if self.voice.post_completion_seconds == 0 || self.voice.post_completion_seconds > 3_600 {
             bail!("voice.post_completion_seconds must be between 1 and 3600");
         }
         if self.tts.enabled {

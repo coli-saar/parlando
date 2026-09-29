@@ -22,18 +22,18 @@ fn agent_identifier_uses_durable_type_and_version_metadata() {
         identity_provider: "remote_grpc".to_string(),
         external_id: Some("Python Agent@v1.2 beta".to_string()),
         metadata: json!({
-            "agent_type": "remote_grpc",
+            "factory": "remote_grpc",
             "agent_name": "Python Agent",
             "agent_version": "v1.2 beta",
         }),
     };
 
     assert_eq!(
-        participant_identifier_candidate(&participant, 1),
+        participant_identifier_candidate(&participant, 1).unwrap(),
         "agent:remote_grpc:Python-Agent@v1.2-beta"
     );
     assert_eq!(
-        participant_identifier_candidate(&participant, 2),
+        participant_identifier_candidate(&participant, 2).unwrap(),
         "agent:remote_grpc:Python-Agent@v1.2-beta~2"
     );
 
@@ -45,10 +45,7 @@ fn agent_identifier_uses_durable_type_and_version_metadata() {
         }),
         ..participant
     };
-    assert_eq!(
-        participant_identifier_candidate(&unversioned, 1),
-        "agent:remote_grpc:Python-Agent@unversioned"
-    );
+    assert!(participant_identifier_candidate(&unversioned, 1).is_err());
 }
 
 /// Confirms only human durable participants receive random three-word names.
@@ -74,7 +71,7 @@ async fn sqlite_assigns_random_names_only_to_humans() {
             identity_provider: "space_game".to_string(),
             external_id: Some("space_game.back_and_forth@0.2.0".to_string()),
             metadata: json!({
-                "agent_type": "space_game.back_and_forth",
+                "factory": "space_game.back_and_forth",
                 "agent_name": "BackAndForthAgent",
                 "agent_version": "0.2.0",
             }),
@@ -1060,7 +1057,13 @@ async fn sqlite_holds_mixed_participant_and_event_shapes_for_weird_experiments()
             participant_kind: "agent".to_string(),
             identity_provider: "agent".to_string(),
             external_id: Some("back-and-forth@v2".to_string()),
-            metadata: json!({"temperature": 0, "seed": 1234}),
+            metadata: json!({
+                "factory": "back-and-forth",
+                "agent_name": "Back and forth",
+                "agent_version": "v2",
+                "temperature": 0,
+                "seed": 1234
+            }),
         })
         .await
         .unwrap();
@@ -1264,16 +1267,16 @@ async fn sqlite_game_settings_reject_stale_updates() {
         "shared-speechmatics-key".to_string(),
     );
     let revision = store
-        .update_game_settings(
-            settings.revision,
-            "Saarland University".to_string(),
-            vec!["192.0.2.0/24".to_string()],
-            "wss://eu.rt.speechmatics.com/v2".to_string(),
-            "wss://api.elevenlabs.io".to_string(),
-            "https://api.prolific.com".to_string(),
-            provider_updates,
-            vec![],
-        )
+        .update_game_settings(GameSettingsUpdate {
+            expected_revision: settings.revision,
+            institution: "Saarland University".to_string(),
+            admin_allowed_ip_ranges: vec!["192.0.2.0/24".to_string()],
+            speechmatics_realtime_url: "wss://eu.rt.speechmatics.com/v2".to_string(),
+            tts_base_url: "wss://api.elevenlabs.io".to_string(),
+            prolific_api_base_url: "https://api.prolific.com".to_string(),
+            secret_updates: provider_updates,
+            secret_deletions: vec![],
+        })
         .await
         .unwrap();
     assert_eq!(revision, settings.revision + 1);
@@ -1295,16 +1298,16 @@ async fn sqlite_game_settings_reject_stale_updates() {
         Some("shared-speechmatics-key")
     );
     assert!(store
-        .update_game_settings(
-            settings.revision,
-            "Stale".to_string(),
-            vec![],
-            "wss://eu.rt.speechmatics.com/v2".to_string(),
-            "wss://api.elevenlabs.io".to_string(),
-            "https://api.prolific.com".to_string(),
-            HashMap::new(),
-            vec![],
-        )
+        .update_game_settings(GameSettingsUpdate {
+            expected_revision: settings.revision,
+            institution: "Stale".to_string(),
+            admin_allowed_ip_ranges: vec![],
+            speechmatics_realtime_url: "wss://eu.rt.speechmatics.com/v2".to_string(),
+            tts_base_url: "wss://api.elevenlabs.io".to_string(),
+            prolific_api_base_url: "https://api.prolific.com".to_string(),
+            secret_updates: HashMap::new(),
+            secret_deletions: vec![],
+        })
         .await
         .is_err());
 }
@@ -1552,7 +1555,83 @@ async fn sqlite_rejects_prebaseline_schema_versions() {
     assert!(error
         .to_string()
         .contains("schema version 10 is unsupported"));
-    assert!(error.to_string().contains("export"));
+    assert!(error.to_string().contains("convert it explicitly"));
+}
+
+/// Rejects an existing unversioned database before adding any Parlando tables.
+#[tokio::test]
+async fn sqlite_does_not_mutate_an_unversioned_existing_database() {
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("unversioned.sqlite");
+    let database_url = format!("sqlite:///{}", path.display());
+    std::fs::File::create(&path).unwrap();
+    let pool = SqlitePool::connect(&database_url).await.unwrap();
+    sqlx::query("create table existing_data (value text not null)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+
+    let error = match SqliteExperimentStore::connect(&database_url).await {
+        Ok(_) => panic!("unversioned existing database should fail"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("no Parlando schema version"));
+
+    let pool = SqlitePool::connect(&database_url).await.unwrap();
+    let tables = sqlx::query_scalar::<_, String>(
+        "select name from sqlite_master where type = 'table' order by name",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(tables, vec!["existing_data"]);
+}
+
+/// Surfaces malformed persisted JSON instead of replacing it with JSON null in exports.
+#[tokio::test]
+async fn sqlite_export_rejects_malformed_persisted_json() {
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+    store
+        .create_experiment(ExperimentRecord {
+            experiment_id: "malformed-export".to_string(),
+            game_version: "0.4.0".to_string(),
+            config: json!({}),
+            server_version: None,
+            version_manifest: None,
+            status: "inactive".to_string(),
+            notes: None,
+        })
+        .await
+        .unwrap();
+    let session_id = store
+        .create_session(SessionRecord {
+            experiment_id: "malformed-export".to_string(),
+            config_revision: 1,
+            game_version: "0.4.0".to_string(),
+            public_session_id: "MALFORMED".to_string(),
+            mode: "direct".to_string(),
+            lifecycle: "running".to_string(),
+            purpose: "research".to_string(),
+            waiting_timeout_seconds: 600,
+            maximum_lifetime_seconds: 14_400,
+        })
+        .await
+        .unwrap();
+    sqlx::query("update sessions set completion_json = ? where session_id = ?")
+        .bind("{")
+        .bind(session_id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    let error = store
+        .export_session("malformed-export", session_id)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("completion_json"));
 }
 
 /// Rejects storage URLs for backends that this installation does not implement.
@@ -1698,7 +1777,7 @@ async fn live_session_logger_drains_with_exact_attribution() {
             participant_kind: "agent".to_string(),
             identity_provider: "test".to_string(),
             external_id: Some("logger@1".to_string()),
-            metadata: json!({"agent_type": "test", "agent_name": "logger", "agent_version": "1"}),
+            metadata: json!({"factory": "test", "agent_name": "logger", "agent_version": "1"}),
         })
         .await
         .unwrap();

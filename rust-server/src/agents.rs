@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::canonical_json::canonical_value;
 use crate::game::{AgentDefinition, Game, PlayerRole, SecretValues};
 use crate::SessionLogger;
 
@@ -55,24 +56,6 @@ pub fn configuration_fingerprint(factory_id: &str, settings: &Value) -> Result<S
     let document = serde_json::json!({"version": 1, "factory": factory_id, "settings": settings});
     let bytes = serde_json::to_vec(&canonical_value(&document))?;
     Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
-}
-
-/// Recursively sorts object keys while preserving array order.
-fn canonical_value(value: &Value) -> Value {
-    match value {
-        Value::Object(object) => {
-            let mut entries = object.iter().collect::<Vec<_>>();
-            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
-            Value::Object(
-                entries
-                    .into_iter()
-                    .map(|(key, value)| (key.clone(), canonical_value(value)))
-                    .collect(),
-            )
-        }
-        Value::Array(values) => Value::Array(values.iter().map(canonical_value).collect()),
-        _ => value.clone(),
-    }
 }
 
 /// One non-empty output produced by an agent decision.

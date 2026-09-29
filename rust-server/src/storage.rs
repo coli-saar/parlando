@@ -6,14 +6,13 @@ use std::{
 };
 
 use crate::{
-    game::{Game, Seat},
+    game::{Game, PlayerRole},
     identity::new_id,
     protocol::{ParticipantResult, SessionEnd},
     readable_id::{dialogue_id, participant_id as readable_participant_id},
     session_log::{SessionLogWriter, SessionLogger},
 };
-use anyhow::{anyhow, bail, Result};
-use async_trait::async_trait;
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -52,45 +51,38 @@ pub fn generated_experiment_id() -> String {
     new_id("exp")
 }
 
-/// Builds the base identifier for a non-human participant from durable identity metadata.
-fn nonhuman_participant_identifier(participant: &ParticipantRecord) -> String {
-    let metadata = participant.metadata.as_object();
-    let external_parts = participant
+/// Builds a non-human identifier from its single current durable representation.
+fn nonhuman_participant_identifier(participant: &ParticipantRecord) -> Result<String> {
+    if participant.participant_kind == "agent" {
+        let metadata = participant
+            .metadata
+            .as_object()
+            .ok_or_else(|| anyhow!("agent metadata must be an object"))?;
+        let required = |key: &str| {
+            metadata
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| anyhow!("agent metadata requires {key:?}"))
+        };
+        return Ok(format!(
+            "agent:{}:{}@{}",
+            identifier_component(required("factory")?),
+            identifier_component(required("agent_name")?),
+            identifier_component(required("agent_version")?),
+        ));
+    }
+    let external_id = participant
         .external_id
         .as_deref()
-        .and_then(|value| value.rsplit_once('@'));
-    let agent_type = metadata
-        .and_then(|value| value.get("agent_type").or_else(|| value.get("agent_name")))
-        .and_then(Value::as_str)
-        .or_else(|| external_parts.map(|(name, _)| name))
-        .unwrap_or(&participant.identity_provider);
-    let agent_name = metadata
-        .and_then(|value| value.get("agent_name"))
-        .and_then(Value::as_str)
-        .filter(|name| *name != agent_type);
-    let version = metadata
-        .and_then(|value| value.get("agent_version"))
-        .and_then(Value::as_str)
-        .or_else(|| external_parts.map(|(_, version)| version));
-
-    let mut identity_parts = vec![identifier_component(&participant.participant_kind)];
-    identity_parts.push(identifier_component(agent_type));
-    if let Some(agent_name) = agent_name {
-        identity_parts.push(identifier_component(agent_name));
-    }
-    let version = version.map(identifier_component).unwrap_or_else(|| {
-        if participant.participant_kind == "agent" {
-            "unversioned".to_string()
-        } else {
-            participant
-                .external_id
-                .as_deref()
-                .filter(|external_id| *external_id != agent_type)
-                .map(identifier_component)
-                .unwrap_or_else(|| "unversioned".to_string())
-        }
-    });
-    format!("{}@{version}", identity_parts.join(":"))
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow!("non-human participants require external_id"))?;
+    Ok(format!(
+        "{}:{}@{}",
+        identifier_component(&participant.participant_kind),
+        identifier_component(&participant.identity_provider),
+        identifier_component(external_id),
+    ))
 }
 
 /// Restricts one externally supplied identifier component to a compact display-safe alphabet.
@@ -117,15 +109,18 @@ fn identifier_component(value: &str) -> String {
 }
 
 /// Produces a unique candidate, using random names only for human participants.
-fn participant_identifier_candidate(participant: &ParticipantRecord, attempt: usize) -> String {
+fn participant_identifier_candidate(
+    participant: &ParticipantRecord,
+    attempt: usize,
+) -> Result<String> {
     if participant.participant_kind == "human" {
-        readable_participant_id()
+        Ok(readable_participant_id())
     } else {
-        let base = nonhuman_participant_identifier(participant);
+        let base = nonhuman_participant_identifier(participant)?;
         if attempt == 1 {
-            base
+            Ok(base)
         } else {
-            format!("{base}~{attempt}")
+            Ok(format!("{base}~{attempt}"))
         }
     }
 }
@@ -212,6 +207,26 @@ pub struct StoredGameSettings {
     pub prolific_api_base_url: String,
     /// Optimistic-concurrency revision for dashboard updates.
     pub revision: i64,
+}
+
+/// Complete validated update to installation-wide game settings and provider secrets.
+pub(crate) struct GameSettingsUpdate {
+    /// Revision which must still be current when the transaction commits.
+    pub expected_revision: i64,
+    /// Institution displayed by hosted experiments.
+    pub institution: String,
+    /// Administrator source networks accepted by the installation.
+    pub admin_allowed_ip_ranges: Vec<String>,
+    /// Default realtime transcription endpoint.
+    pub speechmatics_realtime_url: String,
+    /// Default text-to-speech endpoint.
+    pub tts_base_url: String,
+    /// Shared Prolific API endpoint.
+    pub prolific_api_base_url: String,
+    /// Secret values to insert or replace.
+    pub secret_updates: HashMap<String, String>,
+    /// Secret keys to remove.
+    pub secret_deletions: Vec<String>,
 }
 
 impl Default for StoredGameSettings {
@@ -521,228 +536,8 @@ pub struct StorageCapacity {
     pub database_total_bytes: u64,
 }
 
-/// Backend-neutral storage interface centered on experiment evaluation.
-#[async_trait]
-pub trait ExperimentStore: Send + Sync {
-    /// Confirms the SQLite store can acquire a write transaction and execute a read.
-    async fn health_check(&self) -> Result<()>;
-    /// Reports disk capacity for file-backed SQLite, or `None` for in-memory tests.
-    async fn storage_capacity(&self) -> Result<Option<StorageCapacity>>;
-    /// Loads the singleton administrator credential, if initial setup is complete.
-    async fn admin_credential(&self) -> Result<Option<StoredAdminCredential>>;
-    /// Atomically creates the singleton administrator credential.
-    ///
-    /// Returns `false` when another request or process completed setup first.
-    async fn create_admin_credential(&self, credential: StoredAdminCredential) -> Result<bool>;
-    /// Persists a newly authenticated administrator session without storing its bearer token.
-    async fn save_admin_session(&self, session: StoredAdminSession) -> Result<()>;
-    /// Loads one administrator session by its bearer-token digest.
-    async fn admin_session(&self, token_digest: &str) -> Result<Option<StoredAdminSession>>;
-    /// Advances the durable idle timestamp for one administrator session.
-    async fn touch_admin_session(&self, token_digest: &str, last_seen_at: i64) -> Result<()>;
-    /// Revokes one administrator session by its bearer-token digest.
-    async fn delete_admin_session(&self, token_digest: &str) -> Result<()>;
-    /// Removes administrator sessions outside either the idle or absolute lifetime.
-    async fn delete_expired_admin_sessions(
-        &self,
-        idle_before: i64,
-        absolute_before: i64,
-    ) -> Result<()>;
-    /// Ensures the bootstrap experiment exists without changing its durable lifecycle.
-    async fn ensure_experiment(&self, experiment: ExperimentRecord) -> Result<String>;
-    /// Lists all experiments owned by the compiled game process.
-    async fn list_experiments(&self, limit: i64) -> Result<Vec<StoredExperimentSummary>>;
-    /// Loads the complete current definition needed to construct a runtime.
-    async fn experiment_definition(
-        &self,
-        experiment_id: &str,
-    ) -> Result<Option<StoredExperimentDefinition>>;
-    /// Creates a new inactive experiment and its immutable first configuration revision.
-    async fn create_experiment(&self, experiment: ExperimentRecord) -> Result<()>;
-    /// Loads write-only experiment credentials for runtime construction.
-    async fn experiment_secrets(&self, experiment_id: &str) -> Result<HashMap<String, String>>;
-    /// Atomically saves a configuration revision and its independent secret changes.
-    async fn save_experiment_configuration(
-        &self,
-        experiment_id: &str,
-        expected_revision: i64,
-        config: Value,
-        change_summary: Option<String>,
-        secret_updates: HashMap<String, String>,
-        secret_deletions: Vec<String>,
-    ) -> Result<i64>;
-    /// Lists immutable configuration revisions newest first.
-    async fn experiment_revisions(
-        &self,
-        experiment_id: &str,
-    ) -> Result<Vec<StoredExperimentRevision>>;
-    /// Updates researcher-facing catalogue metadata independently of lifecycle.
-    async fn update_experiment_catalogue(
-        &self,
-        experiment_id: &str,
-        pinned: bool,
-        notes: Option<String>,
-    ) -> Result<()>;
-    /// Loads settings shared by all experiments in this game process.
-    async fn game_settings(&self) -> Result<StoredGameSettings>;
-    /// Loads provider credentials shared by every experiment in this game process.
-    async fn game_secrets(&self) -> Result<HashMap<String, String>>;
-    /// Updates shared game settings when the caller edited the current revision.
-    async fn update_game_settings(
-        &self,
-        expected_revision: i64,
-        institution: String,
-        admin_allowed_ip_ranges: Vec<String>,
-        speechmatics_realtime_url: String,
-        tts_base_url: String,
-        prolific_api_base_url: String,
-        secret_updates: HashMap<String, String>,
-        secret_deletions: Vec<String>,
-    ) -> Result<i64>;
-    /// Returns one experiment with compact session aggregates.
-    async fn experiment_summary(
-        &self,
-        experiment_id: &str,
-    ) -> Result<Option<StoredExperimentSummary>>;
-    /// Updates the lifecycle status for one experiment row.
-    async fn update_experiment_status(&self, experiment_id: &str, status: &str) -> Result<()>;
-    /// Archives an inactive or completed experiment without loading its runtime configuration.
-    ///
-    /// This one-way catalogue operation deliberately cannot restore an experiment and rejects
-    /// open intake or an already archived row. It is intended for legacy configurations that
-    /// the current game binary can no longer parse.
-    async fn archive_experiment(&self, experiment_id: &str) -> Result<()>;
-    /// Closes all intake that was open before the current game-process startup.
-    async fn deactivate_open_experiments(&self) -> Result<u64>;
-    /// Creates or reuses a durable participant identity and returns `participant_id`.
-    async fn upsert_participant(&self, participant: ParticipantRecord) -> Result<i64>;
-    /// Atomically creates or resumes one admission for a verified Prolific submission.
-    async fn admit_prolific_submission(
-        &self,
-        submission: ProlificSubmissionRecord,
-    ) -> Result<ProlificAdmission>;
-    /// Stores the narrow, payment-free provider reconciliation projection.
-    async fn reconcile_prolific_submission(
-        &self,
-        experiment_id: &str,
-        prolific_session_id: &str,
-        status: &str,
-        entered_code: Option<String>,
-        return_requested_at: Option<String>,
-    ) -> Result<()>;
-    /// Returns the human-readable experiment-specific identifier for a durable participant.
-    async fn participant_research_id(&self, participant_id: i64) -> Result<Option<String>>;
-    /// Creates a session for a client-facing session id and returns its per-experiment `session_id`.
-    async fn create_session(&self, session: SessionRecord) -> Result<i64>;
-    /// Reads the immutable phase clocks created with a session.
-    async fn session_timing(&self, experiment_id: &str, session_id: i64) -> Result<SessionTiming>;
-    /// Moves one successfully constructed session from `initializing` to `waiting`.
-    async fn complete_session_initialization(
-        &self,
-        experiment_id: &str,
-        session_id: i64,
-    ) -> Result<bool>;
-    /// Terminates initialization and appends a bounded failure event atomically.
-    async fn fail_session_initialization(
-        &self,
-        experiment_id: &str,
-        session_id: i64,
-        reason_code: &str,
-    ) -> Result<()>;
-    /// Atomically moves one waiting session to running and records its first start time.
-    async fn start_session(
-        &self,
-        experiment_id: &str,
-        session_id: i64,
-        started_at: &str,
-        idle_deadline_at: &str,
-    ) -> Result<bool>;
-    /// Persists accepted participant activity and advances the fixed idle deadline.
-    async fn touch_session_activity(
-        &self,
-        experiment_id: &str,
-        session_id: i64,
-        activity_at: &str,
-        idle_deadline_at: &str,
-    ) -> Result<()>;
-    /// Maps an RFC3339 timestamp onto one running session's authoritative game clock.
-    async fn session_game_time_ms(
-        &self,
-        experiment_id: &str,
-        session_id: i64,
-        timestamp: &str,
-    ) -> Result<i64>;
-    /// Adds a participant to a session with a session-local role.
-    async fn add_session_participant(&self, participant: SessionParticipantRecord) -> Result<()>;
-    /// Updates connection status for a participant's session appearance.
-    async fn update_session_participant_connection(
-        &self,
-        participant_session_id: &str,
-        connection_status: &str,
-        left_at: Option<String>,
-        reconnect_deadline_at: Option<String>,
-    ) -> Result<()>;
-    /// Records one item-level consent declaration.
-    async fn record_consent_declaration(&self, declaration: ConsentDeclarationRecord)
-        -> Result<()>;
-    /// Appends one ordered session event and returns its event index.
-    async fn append_session_event(&self, event: SessionEventRecord) -> Result<i64>;
-    /// Atomically appends one game transition and optionally commits its terminal value.
-    async fn commit_session_transition(
-        &self,
-        events: Vec<SessionEventRecord>,
-        session_end: Option<SessionEnd>,
-    ) -> Result<bool>;
-    /// Atomically commits one non-game terminal transition and its participant results.
-    async fn end_session(&self, event: SessionEventRecord, session_end: SessionEnd)
-        -> Result<bool>;
-    /// Reads a retained terminal result by the authenticated participant-session handle.
-    async fn terminal_participant_state(
-        &self,
-        experiment_id: &str,
-        participant_session_id: &str,
-    ) -> Result<Option<StoredTerminalParticipantState>>;
-    /// Returns ordered events for one session, optionally filtered by event type.
-    async fn session_events(
-        &self,
-        experiment_id: &str,
-        session_id: i64,
-        event_type: Option<&str>,
-    ) -> Result<Vec<StoredSessionEvent>>;
-    /// Returns recent sessions with compact aggregate metadata for inspection UIs.
-    async fn recent_sessions(
-        &self,
-        experiment_id: &str,
-        limit: i64,
-    ) -> Result<Vec<StoredSessionSummary>>;
-    /// Counts every session and terminal cause in one experiment without a sampling limit.
-    async fn session_progress(&self, experiment_id: &str) -> Result<StoredSessionProgress>;
-    /// Returns session-local participant metadata joined to durable participant records.
-    async fn session_participants(
-        &self,
-        experiment_id: &str,
-        session_id: i64,
-    ) -> Result<Vec<StoredSessionParticipant>>;
-    /// Exports all durable evaluation data for one experiment.
-    async fn export_experiment(&self, experiment_id: &str) -> Result<Value>;
-    /// Exports all durable evaluation data for one session.
-    async fn export_session(&self, experiment_id: &str, session_id: i64) -> Result<Value>;
-    /// Counts records affected by manual participant-data deletion.
-    async fn participant_data_preview(
-        &self,
-        experiment_id: &str,
-        participant_id: i64,
-    ) -> Result<ParticipantDataPreview>;
-    /// Physically removes a participant and every session in which they appeared.
-    async fn delete_participant_data(
-        &self,
-        experiment_id: &str,
-        participant_id: i64,
-    ) -> Result<ParticipantDataPreview>;
-}
-
-/// Shared trait-object handle for the configured experiment store backend.
-pub type SharedExperimentStore = Arc<dyn ExperimentStore>;
+/// Shared handle for the one supported SQLite experiment store.
+pub type SharedExperimentStore = Arc<SqliteExperimentStore>;
 
 /// Returns whether SQLite names the expected unique column in its constraint error.
 fn sqlite_unique_constraint_for(error: &sqlx::Error, column: &str) -> bool {
@@ -832,7 +627,7 @@ impl SqliteExperimentStore {
                 pool,
                 database_path: None,
             };
-            store.ensure_schema().await?;
+            store.initialize_or_validate_schema().await?;
             return Ok(store);
         }
         if !database_url.starts_with("sqlite:///") {
@@ -856,12 +651,37 @@ impl SqliteExperimentStore {
             pool,
             database_path: Some(PathBuf::from(path)),
         };
-        store.ensure_schema().await?;
+        store.initialize_or_validate_schema().await?;
         Ok(store)
     }
 
-    /// Creates the relational evaluation schema.
-    async fn ensure_schema(&self) -> Result<()> {
+    /// Validates an existing schema before writes, or initializes a new database atomically.
+    pub(crate) async fn initialize_or_validate_schema(&self) -> Result<()> {
+        const CURRENT_SCHEMA_VERSION: i64 = 16;
+        let existing_tables = sqlx::query_scalar::<_, String>(
+            "select name from sqlite_master where type = 'table' and name not like 'sqlite_%' order by name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        if !existing_tables.is_empty() {
+            if !existing_tables
+                .iter()
+                .any(|table| table == "schema_migrations")
+            {
+                bail!("database has no Parlando schema version; convert it explicitly before opening it with this release");
+            }
+            let version =
+                sqlx::query_scalar::<_, Option<i64>>("select max(version) from schema_migrations")
+                    .fetch_one(&self.pool)
+                    .await?
+                    .unwrap_or(0);
+            if version != CURRENT_SCHEMA_VERSION {
+                bail!("database schema version {version} is unsupported; convert it explicitly to version {CURRENT_SCHEMA_VERSION} before opening it");
+            }
+            return Ok(());
+        }
+
+        let mut transaction = self.pool.begin().await?;
         for statement in [
             r#"
             create table if not exists administrator_credential (
@@ -1059,53 +879,24 @@ impl SqliteExperimentStore {
             "create unique index if not exists idx_participants_research_id on participants(research_id) where research_id is not null",
             "create unique index if not exists idx_sessions_dialogue_id on sessions(dialogue_id) where dialogue_id is not null",
         ] {
-            sqlx::query(statement).execute(&self.pool).await?;
-        }
-        self.apply_pending_migrations().await?;
-        sqlx::query("insert or ignore into game_settings (singleton, updated_at) values (1, ?)")
-            .bind(now_iso())
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    /// Accepts only the current schema baseline or stamps a genuinely empty database.
-    async fn apply_pending_migrations(&self) -> Result<()> {
-        const CURRENT_SCHEMA_VERSION: i64 = 16;
-        let version =
-            sqlx::query_scalar::<_, Option<i64>>("select max(version) from schema_migrations")
-                .fetch_one(&self.pool)
-                .await?
-                .unwrap_or(0);
-        if version == CURRENT_SCHEMA_VERSION {
-            return Ok(());
-        }
-        if version != 0 {
-            bail!(
-                "database schema version {version} is unsupported; export it with a compatible older Parlando release and import it into a new database"
-            );
-        }
-        let stored_rows = sqlx::query_scalar::<_, i64>(
-            "select (select count(*) from experiments) + (select count(*) from participants) + (select count(*) from sessions)",
-        )
-        .fetch_one(&self.pool)
-        .await?;
-        if stored_rows != 0 {
-            bail!(
-                "a populated pre-baseline database is unsupported; export it with a compatible older Parlando release and import it into a new database"
-            );
+            sqlx::query(statement).execute(&mut *transaction).await?;
         }
         sqlx::query("insert into schema_migrations (version, applied_at) values (?, ?)")
             .bind(CURRENT_SCHEMA_VERSION)
             .bind(now_iso())
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
+        sqlx::query("insert or ignore into game_settings (singleton, updated_at) values (1, ?)")
+            .bind(now_iso())
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
         Ok(())
     }
 
     /// Returns SQLite user table names for schema tests.
     #[cfg(test)]
-    async fn table_names(&self) -> Result<Vec<String>> {
+    pub(crate) async fn table_names(&self) -> Result<Vec<String>> {
         Ok(sqlx::query_scalar::<_, String>(
             "select name from sqlite_master where type = 'table' and name not like 'sqlite_%' order by name",
         )
@@ -1114,9 +905,8 @@ impl SqliteExperimentStore {
     }
 }
 
-#[async_trait]
-impl ExperimentStore for SqliteExperimentStore {
-    async fn health_check(&self) -> Result<()> {
+impl SqliteExperimentStore {
+    pub(crate) async fn health_check(&self) -> Result<()> {
         let mut connection = self.pool.acquire().await?;
         sqlx::query("begin immediate")
             .execute(&mut *connection)
@@ -1130,7 +920,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(())
     }
 
-    async fn storage_capacity(&self) -> Result<Option<StorageCapacity>> {
+    pub(crate) async fn storage_capacity(&self) -> Result<Option<StorageCapacity>> {
         let Some(path) = self.database_path.clone() else {
             return Ok(None);
         };
@@ -1159,7 +949,7 @@ impl ExperimentStore for SqliteExperimentStore {
         .await?
     }
 
-    async fn admin_credential(&self) -> Result<Option<StoredAdminCredential>> {
+    pub(crate) async fn admin_credential(&self) -> Result<Option<StoredAdminCredential>> {
         Ok(sqlx::query_as::<_, (String, String, String)>(
             "select username, password_hash, role from administrator_credential where singleton = 1",
         )
@@ -1172,7 +962,10 @@ impl ExperimentStore for SqliteExperimentStore {
         }))
     }
 
-    async fn create_admin_credential(&self, credential: StoredAdminCredential) -> Result<bool> {
+    pub(crate) async fn create_admin_credential(
+        &self,
+        credential: StoredAdminCredential,
+    ) -> Result<bool> {
         let result = sqlx::query(
             r#"
             insert into administrator_credential
@@ -1190,7 +983,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(result.rows_affected() == 1)
     }
 
-    async fn save_admin_session(&self, session: StoredAdminSession) -> Result<()> {
+    pub(crate) async fn save_admin_session(&self, session: StoredAdminSession) -> Result<()> {
         sqlx::query(
             r#"
             insert into administrator_sessions
@@ -1208,7 +1001,10 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(())
     }
 
-    async fn admin_session(&self, token_digest: &str) -> Result<Option<StoredAdminSession>> {
+    pub(crate) async fn admin_session(
+        &self,
+        token_digest: &str,
+    ) -> Result<Option<StoredAdminSession>> {
         Ok(sqlx::query_as::<_, (String, String, String, i64, i64)>(
             r#"
             select token_digest, role, csrf_token, created_at, last_seen_at
@@ -1230,7 +1026,11 @@ impl ExperimentStore for SqliteExperimentStore {
         ))
     }
 
-    async fn touch_admin_session(&self, token_digest: &str, last_seen_at: i64) -> Result<()> {
+    pub(crate) async fn touch_admin_session(
+        &self,
+        token_digest: &str,
+        last_seen_at: i64,
+    ) -> Result<()> {
         sqlx::query("update administrator_sessions set last_seen_at = ? where token_digest = ?")
             .bind(last_seen_at)
             .bind(token_digest)
@@ -1239,7 +1039,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(())
     }
 
-    async fn delete_admin_session(&self, token_digest: &str) -> Result<()> {
+    pub(crate) async fn delete_admin_session(&self, token_digest: &str) -> Result<()> {
         sqlx::query("delete from administrator_sessions where token_digest = ?")
             .bind(token_digest)
             .execute(&self.pool)
@@ -1247,7 +1047,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(())
     }
 
-    async fn delete_expired_admin_sessions(
+    pub(crate) async fn delete_expired_admin_sessions(
         &self,
         idle_before: i64,
         absolute_before: i64,
@@ -1262,7 +1062,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(())
     }
 
-    async fn ensure_experiment(&self, experiment: ExperimentRecord) -> Result<String> {
+    pub(crate) async fn ensure_experiment(&self, experiment: ExperimentRecord) -> Result<String> {
         let config_json = serde_json::to_string(&experiment.config)?;
         let created_at = now_iso();
         let status = sqlx::query_scalar::<_, String>(
@@ -1307,7 +1107,10 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(status)
     }
 
-    async fn list_experiments(&self, limit: i64) -> Result<Vec<StoredExperimentSummary>> {
+    pub(crate) async fn list_experiments(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<StoredExperimentSummary>> {
         let experiment_ids = sqlx::query_scalar::<_, String>(
             r#"
             select experiment_id
@@ -1330,7 +1133,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(experiments)
     }
 
-    async fn experiment_definition(
+    pub(crate) async fn experiment_definition(
         &self,
         experiment_id: &str,
     ) -> Result<Option<StoredExperimentDefinition>> {
@@ -1358,7 +1161,7 @@ impl ExperimentStore for SqliteExperimentStore {
         .transpose()
     }
 
-    async fn create_experiment(&self, experiment: ExperimentRecord) -> Result<()> {
+    pub(crate) async fn create_experiment(&self, experiment: ExperimentRecord) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         let created_at = now_iso();
         let config_json = serde_json::to_string(&experiment.config)?;
@@ -1399,7 +1202,10 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(())
     }
 
-    async fn experiment_secrets(&self, experiment_id: &str) -> Result<HashMap<String, String>> {
+    pub(crate) async fn experiment_secrets(
+        &self,
+        experiment_id: &str,
+    ) -> Result<HashMap<String, String>> {
         Ok(sqlx::query_as::<_, (String, String)>(
             "select secret_key, secret_value from experiment_secrets where experiment_id = ?",
         )
@@ -1410,7 +1216,7 @@ impl ExperimentStore for SqliteExperimentStore {
         .collect())
     }
 
-    async fn save_experiment_configuration(
+    pub(crate) async fn save_experiment_configuration(
         &self,
         experiment_id: &str,
         expected_revision: i64,
@@ -1468,7 +1274,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(next_revision)
     }
 
-    async fn experiment_revisions(
+    pub(crate) async fn experiment_revisions(
         &self,
         experiment_id: &str,
     ) -> Result<Vec<StoredExperimentRevision>> {
@@ -1495,7 +1301,7 @@ impl ExperimentStore for SqliteExperimentStore {
             .collect()
     }
 
-    async fn update_experiment_catalogue(
+    pub(crate) async fn update_experiment_catalogue(
         &self,
         experiment_id: &str,
         pinned: bool,
@@ -1514,7 +1320,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(())
     }
 
-    async fn game_settings(&self) -> Result<StoredGameSettings> {
+    pub(crate) async fn game_settings(&self) -> Result<StoredGameSettings> {
         let row = sqlx::query_as::<_, (String, String, String, String, String, i64)>(
             "select institution, admin_allowed_ip_ranges_json, speechmatics_realtime_url, tts_base_url, prolific_api_base_url, revision from game_settings where singleton = 1",
         )
@@ -1530,7 +1336,7 @@ impl ExperimentStore for SqliteExperimentStore {
         })
     }
 
-    async fn reconcile_prolific_submission(
+    pub(crate) async fn reconcile_prolific_submission(
         &self,
         experiment_id: &str,
         prolific_session_id: &str,
@@ -1552,7 +1358,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(())
     }
 
-    async fn game_secrets(&self) -> Result<HashMap<String, String>> {
+    pub(crate) async fn game_secrets(&self) -> Result<HashMap<String, String>> {
         Ok(sqlx::query_as::<_, (String, String)>(
             "select secret_key, secret_value from game_secrets",
         )
@@ -1562,39 +1368,30 @@ impl ExperimentStore for SqliteExperimentStore {
         .collect())
     }
 
-    async fn update_game_settings(
-        &self,
-        expected_revision: i64,
-        institution: String,
-        admin_allowed_ip_ranges: Vec<String>,
-        speechmatics_realtime_url: String,
-        tts_base_url: String,
-        prolific_api_base_url: String,
-        secret_updates: HashMap<String, String>,
-        secret_deletions: Vec<String>,
-    ) -> Result<i64> {
+    /// Atomically replaces shared settings and applies the associated secret changes.
+    pub(crate) async fn update_game_settings(&self, update: GameSettingsUpdate) -> Result<i64> {
         let mut tx = self.pool.begin().await?;
-        let next_revision = expected_revision + 1;
+        let next_revision = update.expected_revision + 1;
         let result = sqlx::query(
             r#"
             update game_settings set institution = ?, admin_allowed_ip_ranges_json = ?, speechmatics_realtime_url = ?, tts_base_url = ?, prolific_api_base_url = ?, revision = ?, updated_at = ?
             where singleton = 1 and revision = ?
             "#,
         )
-        .bind(institution.trim())
-        .bind(serde_json::to_string(&admin_allowed_ip_ranges)?)
-        .bind(speechmatics_realtime_url.trim())
-        .bind(tts_base_url.trim())
-        .bind(prolific_api_base_url.trim())
+        .bind(update.institution.trim())
+        .bind(serde_json::to_string(&update.admin_allowed_ip_ranges)?)
+        .bind(update.speechmatics_realtime_url.trim())
+        .bind(update.tts_base_url.trim())
+        .bind(update.prolific_api_base_url.trim())
         .bind(next_revision)
         .bind(now_iso())
-        .bind(expected_revision)
+        .bind(update.expected_revision)
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() != 1 {
             bail!("game settings changed concurrently");
         }
-        for (key, value) in secret_updates {
+        for (key, value) in update.secret_updates {
             sqlx::query("insert into game_secrets (secret_key, secret_value, updated_at) values (?, ?, ?) on conflict(secret_key) do update set secret_value = excluded.secret_value, updated_at = excluded.updated_at")
                 .bind(key)
                 .bind(value)
@@ -1602,7 +1399,7 @@ impl ExperimentStore for SqliteExperimentStore {
                 .execute(&mut *tx)
                 .await?;
         }
-        for key in secret_deletions {
+        for key in update.secret_deletions {
             sqlx::query("delete from game_secrets where secret_key = ?")
                 .bind(key)
                 .execute(&mut *tx)
@@ -1612,7 +1409,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(next_revision)
     }
 
-    async fn experiment_summary(
+    pub(crate) async fn experiment_summary(
         &self,
         experiment_id: &str,
     ) -> Result<Option<StoredExperimentSummary>> {
@@ -1659,7 +1456,11 @@ impl ExperimentStore for SqliteExperimentStore {
         .transpose()
     }
 
-    async fn update_experiment_status(&self, experiment_id: &str, status: &str) -> Result<()> {
+    pub(crate) async fn update_experiment_status(
+        &self,
+        experiment_id: &str,
+        status: &str,
+    ) -> Result<()> {
         sqlx::query("update experiments set status = ? where experiment_id = ?")
             .bind(status)
             .bind(experiment_id)
@@ -1668,7 +1469,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(())
     }
 
-    async fn archive_experiment(&self, experiment_id: &str) -> Result<()> {
+    pub(crate) async fn archive_experiment(&self, experiment_id: &str) -> Result<()> {
         let result = sqlx::query(
             "update experiments set status = 'archived' where experiment_id = ? and status in ('inactive', 'completed')",
         )
@@ -1693,7 +1494,7 @@ impl ExperimentStore for SqliteExperimentStore {
         }
     }
 
-    async fn deactivate_open_experiments(&self) -> Result<u64> {
+    pub(crate) async fn deactivate_open_experiments(&self) -> Result<u64> {
         let result = sqlx::query(
             "update experiments set status = 'inactive' where status in ('active', 'testing')",
         )
@@ -1702,7 +1503,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(result.rows_affected())
     }
 
-    async fn upsert_participant(&self, participant: ParticipantRecord) -> Result<i64> {
+    pub(crate) async fn upsert_participant(&self, participant: ParticipantRecord) -> Result<i64> {
         if let Some(external_id) = participant.external_id.as_deref() {
             if let Some(participant_id) = sqlx::query_scalar::<_, i64>(
                 "select participant_id from participants where experiment_id = ? and identity_provider = ? and external_id = ?",
@@ -1718,7 +1519,7 @@ impl ExperimentStore for SqliteExperimentStore {
         }
         let mut identifier_attempt = 1;
         loop {
-            let identifier = participant_identifier_candidate(&participant, identifier_attempt);
+            let identifier = participant_identifier_candidate(&participant, identifier_attempt)?;
             let result = sqlx::query(
                 r#"
                 insert into participants
@@ -1746,7 +1547,7 @@ impl ExperimentStore for SqliteExperimentStore {
         }
     }
 
-    async fn admit_prolific_submission(
+    pub(crate) async fn admit_prolific_submission(
         &self,
         submission: ProlificSubmissionRecord,
     ) -> Result<ProlificAdmission> {
@@ -1791,7 +1592,7 @@ impl ExperimentStore for SqliteExperimentStore {
             let mut identifier_attempt = 1;
             loop {
                 let research_id =
-                    participant_identifier_candidate(&participant_record, identifier_attempt);
+                    participant_identifier_candidate(&participant_record, identifier_attempt)?;
                 let result = sqlx::query(
                     r#"
                     insert into participants
@@ -1846,7 +1647,10 @@ impl ExperimentStore for SqliteExperimentStore {
         })
     }
 
-    async fn participant_research_id(&self, participant_id: i64) -> Result<Option<String>> {
+    pub(crate) async fn participant_research_id(
+        &self,
+        participant_id: i64,
+    ) -> Result<Option<String>> {
         Ok(sqlx::query_scalar::<_, String>(
             "select research_id from participants where participant_id = ?",
         )
@@ -1855,7 +1659,7 @@ impl ExperimentStore for SqliteExperimentStore {
         .await?)
     }
 
-    async fn create_session(&self, session: SessionRecord) -> Result<i64> {
+    pub(crate) async fn create_session(&self, session: SessionRecord) -> Result<i64> {
         let mut tx = self.pool.begin().await?;
         if !matches!(session.purpose.as_str(), "testing" | "research") {
             return Err(anyhow::anyhow!(
@@ -1915,7 +1719,11 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(next_session_id)
     }
 
-    async fn session_timing(&self, experiment_id: &str, session_id: i64) -> Result<SessionTiming> {
+    pub(crate) async fn session_timing(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+    ) -> Result<SessionTiming> {
         let (waiting_started_at, waiting_deadline_at, lifetime_deadline_at) =
             sqlx::query_as::<_, (String, String, String)>(
                 "select waiting_started_at, waiting_deadline_at, lifetime_deadline_at from sessions where experiment_id = ? and session_id = ?",
@@ -1931,7 +1739,7 @@ impl ExperimentStore for SqliteExperimentStore {
         })
     }
 
-    async fn complete_session_initialization(
+    pub(crate) async fn complete_session_initialization(
         &self,
         experiment_id: &str,
         session_id: i64,
@@ -1946,7 +1754,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(result.rows_affected() == 1)
     }
 
-    async fn fail_session_initialization(
+    pub(crate) async fn fail_session_initialization(
         &self,
         experiment_id: &str,
         session_id: i64,
@@ -1993,7 +1801,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(())
     }
 
-    async fn start_session(
+    pub(crate) async fn start_session(
         &self,
         experiment_id: &str,
         session_id: i64,
@@ -2028,7 +1836,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(result.rows_affected() == 1)
     }
 
-    async fn touch_session_activity(
+    pub(crate) async fn touch_session_activity(
         &self,
         experiment_id: &str,
         session_id: i64,
@@ -2047,7 +1855,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(())
     }
 
-    async fn session_game_time_ms(
+    pub(crate) async fn session_game_time_ms(
         &self,
         experiment_id: &str,
         session_id: i64,
@@ -2065,7 +1873,10 @@ impl ExperimentStore for SqliteExperimentStore {
         relative_game_time_ms(&started_at, timestamp)
     }
 
-    async fn add_session_participant(&self, participant: SessionParticipantRecord) -> Result<()> {
+    pub(crate) async fn add_session_participant(
+        &self,
+        participant: SessionParticipantRecord,
+    ) -> Result<()> {
         sqlx::query(
             r#"
             insert into session_participants
@@ -2089,7 +1900,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(())
     }
 
-    async fn update_session_participant_connection(
+    pub(crate) async fn update_session_participant_connection(
         &self,
         participant_session_id: &str,
         connection_status: &str,
@@ -2112,7 +1923,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(())
     }
 
-    async fn record_consent_declaration(
+    pub(crate) async fn record_consent_declaration(
         &self,
         declaration: ConsentDeclarationRecord,
     ) -> Result<()> {
@@ -2137,7 +1948,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(())
     }
 
-    async fn append_session_event(&self, event: SessionEventRecord) -> Result<i64> {
+    pub(crate) async fn append_session_event(&self, event: SessionEventRecord) -> Result<i64> {
         let occurred_at = now_iso();
         let mut tx = self.pool.begin().await?;
         let game_time_ms = stored_game_time_ms(
@@ -2176,7 +1987,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(event_index)
     }
 
-    async fn commit_session_transition(
+    pub(crate) async fn commit_session_transition(
         &self,
         events: Vec<SessionEventRecord>,
         session_end: Option<SessionEnd>,
@@ -2245,7 +2056,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(true)
     }
 
-    async fn end_session(
+    pub(crate) async fn end_session(
         &self,
         event: SessionEventRecord,
         session_end: SessionEnd,
@@ -2315,7 +2126,7 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(true)
     }
 
-    async fn terminal_participant_state(
+    pub(crate) async fn terminal_participant_state(
         &self,
         experiment_id: &str,
         participant_session_id: &str,
@@ -2344,7 +2155,7 @@ impl ExperimentStore for SqliteExperimentStore {
         .transpose()
     }
 
-    async fn session_events(
+    pub(crate) async fn session_events(
         &self,
         experiment_id: &str,
         session_id: i64,
@@ -2383,7 +2194,7 @@ impl ExperimentStore for SqliteExperimentStore {
             .collect()
     }
 
-    async fn recent_sessions(
+    pub(crate) async fn recent_sessions(
         &self,
         experiment_id: &str,
         limit: i64,
@@ -2451,7 +2262,10 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(sessions)
     }
 
-    async fn session_progress(&self, experiment_id: &str) -> Result<StoredSessionProgress> {
+    pub(crate) async fn session_progress(
+        &self,
+        experiment_id: &str,
+    ) -> Result<StoredSessionProgress> {
         let total_sessions = sqlx::query_scalar::<_, i64>(
             "select count(*) from sessions where experiment_id = ? and purpose = 'research'",
         )
@@ -2513,7 +2327,7 @@ impl ExperimentStore for SqliteExperimentStore {
         })
     }
 
-    async fn session_participants(
+    pub(crate) async fn session_participants(
         &self,
         experiment_id: &str,
         session_id: i64,
@@ -2579,15 +2393,19 @@ impl ExperimentStore for SqliteExperimentStore {
         Ok(participants)
     }
 
-    async fn export_experiment(&self, experiment_id: &str) -> Result<Value> {
-        export_rows(&self.pool, Some((experiment_id, None))).await
+    pub(crate) async fn export_experiment(&self, experiment_id: &str) -> Result<Value> {
+        export_rows(&self.pool, experiment_id, None).await
     }
 
-    async fn export_session(&self, experiment_id: &str, session_id: i64) -> Result<Value> {
-        export_rows(&self.pool, Some((experiment_id, Some(session_id)))).await
+    pub(crate) async fn export_session(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+    ) -> Result<Value> {
+        export_rows(&self.pool, experiment_id, Some(session_id)).await
     }
 
-    async fn participant_data_preview(
+    pub(crate) async fn participant_data_preview(
         &self,
         experiment_id: &str,
         participant_id: i64,
@@ -2595,7 +2413,7 @@ impl ExperimentStore for SqliteExperimentStore {
         sqlite_participant_data_preview(&self.pool, experiment_id, participant_id).await
     }
 
-    async fn delete_participant_data(
+    pub(crate) async fn delete_participant_data(
         &self,
         experiment_id: &str,
         participant_id: i64,
@@ -2824,11 +2642,12 @@ fn stored_event_from_sql_row(row: SessionEventSqlRow) -> Result<StoredSessionEve
 }
 
 /// Exports SQLite rows as JSON objects for the current admin/evaluation export.
-async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> Result<Value> {
-    let (experiment_id, session_id) = scope.unwrap_or(("", None));
-    let experiment = if experiment_id.is_empty() {
-        json!(null)
-    } else {
+async fn export_rows(
+    pool: &SqlitePool,
+    experiment_id: &str,
+    session_id: Option<i64>,
+) -> Result<Value> {
+    let experiment = {
         let row = sqlx::query_as::<
             _,
             (
@@ -2849,20 +2668,41 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
         .bind(experiment_id)
         .fetch_optional(pool)
         .await?;
-        json!(row.map(
-            |(id, game_version, config_revision, created_at, config_json, server_version, version_manifest_json, status, notes, pinned)| json!({
+        row.map(
+            |(
+                id,
+                game_version,
+                config_revision,
+                created_at,
+                config_json,
+                server_version,
+                version_manifest_json,
+                status,
+                notes,
+                pinned,
+            )|
+             -> Result<Value> {
+                let config = serde_json::from_str::<Value>(&config_json)
+                    .with_context(|| format!("experiment {id:?} has invalid config_json"))?;
+                let version_manifest = parse_optional_json(
+                    version_manifest_json,
+                    &format!("experiment {id:?} version_manifest_json"),
+                )?;
+                Ok(json!({
                 "experiment_id": id,
                 "game_version": game_version,
                 "config_revision": config_revision,
                 "created_at": created_at,
-                "config": serde_json::from_str::<Value>(&config_json).unwrap_or(Value::Null),
+                "config": config,
                 "server_version": server_version,
-                "version_manifest": version_manifest_json.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
+                "version_manifest": version_manifest,
                 "status": status,
                 "notes": notes,
                 "pinned": pinned,
-            })
-        ))
+                }))
+            },
+        )
+        .transpose()?
     };
     let sessions_sql = if session_id.is_some() {
         "select experiment_id, session_id, public_session_id, dialogue_id, mode, lifecycle, purpose, config_revision, game_version, created_at, started_at, ended_at, completion_json, session_end_json from sessions where experiment_id = ? and session_id = ? order by session_id"
@@ -2896,8 +2736,12 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
         .fetch_all(pool)
         .await?
         .into_iter()
-        .map(|row| {
-            json!({
+        .map(|row| -> Result<Value> {
+            let completion =
+                parse_optional_json(row.12, &format!("session {} completion_json", row.1))?;
+            let session_end =
+                parse_optional_json(row.13, &format!("session {} session_end_json", row.1))?;
+            Ok(json!({
                 "experiment_id": row.0,
                 "session_id": row.1,
                 "public_session_id": row.2,
@@ -2910,18 +2754,18 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
                 "created_at": row.9,
                 "started_at": row.10,
                 "ended_at": row.11,
-                "completion": row.12.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
-                "session_end": row.13.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
-            })
+                "completion": completion,
+                "session_end": session_end,
+            }))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     let event_sql = if session_id.is_some() {
         "select event_id, experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, game_time_ms from session_events where experiment_id = ? and session_id = ? order by session_id, event_index"
     } else {
         "select event_id, experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, game_time_ms from session_events where experiment_id = ? order by session_id, event_index"
     };
     let mut event_query = sqlx::query_as::<_, SessionEventSqlRow>(event_sql).bind(experiment_id);
-    if let Some(session_id) = scope.and_then(|(_, id)| id) {
+    if let Some(session_id) = session_id {
         event_query = event_query.bind(session_id);
     }
     let events = event_query
@@ -2962,25 +2806,27 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
         ),
     >(participants_sql)
     .bind(experiment_id);
-    if let Some(session_id) = scope.and_then(|(_, id)| id) {
+    if let Some(session_id) = session_id {
         participants_query = participants_query.bind(session_id);
     }
     let participants = participants_query
         .fetch_all(pool)
         .await?
         .into_iter()
-        .map(|row| {
-            json!({
+        .map(|row| -> Result<Value> {
+            let metadata =
+                parse_optional_json(row.5, &format!("participant {} metadata_json", row.0))?;
+            Ok(json!({
                 "participant_id": row.0,
                 "research_id": row.1,
                 "participant_kind": row.2,
                 "identity_provider": row.3,
                 "external_id": row.4,
-                "metadata": row.5.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
+                "metadata": metadata,
                 "created_at": row.6,
-            })
+            }))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     let session_participants_sql = if session_id.is_some() {
         "select experiment_id, session_id, participant_id, participant_session_id, role, joined_at, left_at, connection_status from session_participants where experiment_id = ? and session_id = ? order by session_id, role"
     } else {
@@ -3000,7 +2846,7 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
         ),
     >(session_participants_sql)
     .bind(experiment_id);
-    if let Some(session_id) = scope.and_then(|(_, id)| id) {
+    if let Some(session_id) = session_id {
         session_participants_query = session_participants_query.bind(session_id);
     }
     let session_participants = session_participants_query
@@ -3041,15 +2887,19 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
         ),
     >(consent_sql)
     .bind(experiment_id);
-    if let Some(session_id) = scope.and_then(|(_, id)| id) {
+    if let Some(session_id) = session_id {
         consent_query = consent_query.bind(session_id);
     }
     let consent_declarations = consent_query
         .fetch_all(pool)
         .await?
         .into_iter()
-        .map(|row| {
-            json!({
+        .map(|row| -> Result<Value> {
+            let metadata = parse_optional_json(
+                row.9,
+                &format!("consent declaration {} metadata_json", row.0),
+            )?;
+            Ok(json!({
                 "consent_id": row.0,
                 "experiment_id": row.1,
                 "session_id": row.2,
@@ -3059,10 +2909,10 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
                 "purpose": row.6,
                 "declared_at": row.7,
                 "consent_text_hash": row.8,
-                "metadata": row.9.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
-            })
+                "metadata": metadata,
+            }))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     Ok(json!({
         "experiment": experiment,
         "participants": participants,
@@ -3071,6 +2921,14 @@ async fn export_rows(pool: &SqlitePool, scope: Option<(&str, Option<i64>)>) -> R
         "consent_declarations": consent_declarations,
         "session_events": events,
     }))
+}
+
+/// Decodes an optional stored JSON column without conflating corruption with SQL NULL.
+fn parse_optional_json(raw: Option<String>, label: &str) -> Result<Option<Value>> {
+    raw.map(|value| {
+        serde_json::from_str(&value).with_context(|| format!("{label} contains invalid JSON"))
+    })
+    .transpose()
 }
 
 /// Runtime participant session record used by active server tasks.
@@ -3095,7 +2953,7 @@ pub struct SessionParticipant {
     pub participant_id: i64,
     /// Runtime participant source, used to distinguish humans from agents.
     pub source: String,
-    pub role: Seat,
+    pub role: PlayerRole,
     pub connected: bool,
     /// Whether the browser declared its game channel ready at least once.
     pub ready: bool,

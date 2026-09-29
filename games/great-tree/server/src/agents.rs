@@ -129,7 +129,7 @@ impl RootBotAgent {
 
         for &root in RootId::ALL.iter() {
             let name = format!("{root:?}").to_lowercase();
-            if words.iter().any(|w| *w == name) {
+            if words.contains(&name) {
                 let reply = match self
                     .latest_roots
                     .and_then(|roots| roots.iter().find(|view| view.id == root).copied())

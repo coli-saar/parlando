@@ -406,7 +406,12 @@ async fn authenticate_test_admin(router: Router) -> Result<()> {
     Ok(())
 }
 
-fn admin_test_event(index: i64, event_type: &str, role: Option<&str>, payload: Value) -> Value {
+fn admin_test_event(
+    index: i64,
+    event_type: &str,
+    role: Option<&str>,
+    payload: Value,
+) -> AdminEventSummary {
     let stored = crate::storage::StoredSessionEvent {
         event_id: index,
         experiment_id: "experiment".to_string(),
@@ -2562,10 +2567,10 @@ fn admin_timeline_includes_logs_with_readable_attribution() {
 
     let events = important_admin_events(vec![stored]);
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0]["title"], "Game log");
+    assert_eq!(events[0].title, "Game log");
     assert_eq!(
-        events[0]["text"],
-        "accepted Great Tree action from role A: SetSun"
+        events[0].text.as_deref(),
+        Some("accepted Great Tree action from role A: SetSun")
     );
 
     let bundles = admin_event_bundles(&events);
@@ -2824,13 +2829,63 @@ impl Agent<TinyAdapter> for NoopAgent {
 struct NoopAgentFactory;
 
 struct GatedAgentFactory {
-    started: Arc<AtomicUsize>,
+    entered: Arc<Notify>,
     release: Arc<Notify>,
 }
 
 struct FailingAgentFactory;
 
 struct SecretAgentFactory;
+
+struct StartFailingAgent {
+    shutdowns: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Agent<TinyAdapter> for StartFailingAgent {
+    /// Fails after construction so the runner must execute its cleanup path.
+    async fn start(&mut self, _initial_observation: TinyObservation) -> Result<()> {
+        anyhow::bail!("intentional agent start failure")
+    }
+
+    /// Cannot be reached after the deliberate start failure.
+    async fn respond(
+        &mut self,
+        _available_actions: Option<Vec<TinyAction>>,
+    ) -> Result<Option<AgentResponse<TinyAction>>> {
+        unreachable!("respond must not follow a failed start")
+    }
+
+    /// Records cleanup of an agent whose start callback failed.
+    async fn shutdown(&mut self) -> Result<()> {
+        self.shutdowns.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+struct StartFailingAgentFactory {
+    shutdowns: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl AgentFactory<TinyAdapter> for StartFailingAgentFactory {
+    /// Describes the start-failure cleanup fixture.
+    fn definition(&self) -> AgentDefinition {
+        test_agent_definition()
+    }
+
+    /// Creates an agent that fails only when the runner starts it.
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
+        Ok(Box::new(StartFailingAgent {
+            shutdowns: self.shutdowns.clone(),
+        }))
+    }
+
+    /// Returns stable non-secret identity metadata for the fixture.
+    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+        test_agent_identity()
+    }
+}
 
 struct ShutdownRecordingAgent {
     shutdowns: Arc<AtomicUsize>,
@@ -2950,7 +3005,7 @@ impl AgentFactory<TinyAdapter> for GatedAgentFactory {
 
     /// Waits for the test to prove the human has already entered the waiting room.
     async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
-        self.started.fetch_add(1, Ordering::SeqCst);
+        self.entered.notify_one();
         self.release.notified().await;
         Ok(Box::new(NoopAgent))
     }
@@ -3486,7 +3541,11 @@ async fn json_request(
     let participant_credentials = if participant_credentials.is_empty() {
         vec![None]
     } else {
-        participant_credentials.into_iter().rev().map(Some).collect()
+        participant_credentials
+            .into_iter()
+            .rev()
+            .map(Some)
+            .collect()
     };
     let admin_sessions = if path.starts_with("/api/admin/")
         && path != "/api/admin/setup"
@@ -6284,14 +6343,14 @@ async fn human_vs_agent_direct_room_eventually_supplies_agent_role_b() {
 
 #[tokio::test]
 async fn human_enters_waiting_room_before_agent_construction_finishes() {
-    let started = Arc::new(AtomicUsize::new(0));
+    let entered = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let router = build_router(
         TinyAdapter,
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(Arc::new(GatedAgentFactory {
-                started: started.clone(),
+                entered: entered.clone(),
                 release: release.clone(),
             })),
             ..ServeOptions::default()
@@ -6311,30 +6370,9 @@ async fn human_enters_waiting_room_before_agent_construction_finishes() {
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    for _ in 0..20 {
-        if started.load(Ordering::SeqCst) == 1 {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
-    assert_eq!(started.load(Ordering::SeqCst), 1);
+    entered.notified().await;
     assert!(created["participant_state"]["presence"]["B"].is_null());
     release.notify_one();
-    for _ in 0..20 {
-        let (state_status, participant_state) = json_request(
-            router.clone(),
-            http::Method::GET,
-            "/api/participant-state",
-            json!({"participant_session_id": human.clone()}),
-        )
-        .await;
-        assert_eq!(state_status, StatusCode::OK);
-        if participant_state["participant_state"]["presence"]["B"]["connected"] == true {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("agent did not join the reserved seat after construction completed");
 }
 
 #[tokio::test]
@@ -6380,6 +6418,41 @@ async fn failed_agent_construction_ends_the_waiting_session_as_technical_failure
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("failed agent construction did not terminate the waiting session");
+}
+
+#[tokio::test]
+async fn failed_agent_start_ends_the_session_and_shuts_the_agent_down() {
+    let shutdowns = Arc::new(AtomicUsize::new(0));
+    let router = build_router(
+        TinyAdapter,
+        human_vs_agent_config(),
+        ServeOptions {
+            agent_factory: Some(Arc::new(StartFailingAgentFactory {
+                shutdowns: shutdowns.clone(),
+            })),
+            ..ServeOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    let (human, public_session_id) = create_human_vs_agent_room(router.clone(), "Human").await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
+    let (mut socket, _) =
+        connect_async(game_socket_url(&base_url, &public_session_id, &human).await)
+            .await
+            .unwrap();
+    let ended = read_participant_state(&mut socket, "ended").await;
+    assert_eq!(ended["result"]["outcome"], "technical_failure");
+
+    for _ in 0..20 {
+        if shutdowns.load(Ordering::SeqCst) == 1 {
+            server.abort();
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    server.abort();
+    panic!("failed agent start ended the session without shutting the agent down");
 }
 
 #[tokio::test]

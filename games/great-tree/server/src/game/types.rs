@@ -122,7 +122,7 @@ mod tests {
             limb: LimbId::Hook,
             lit: true,
         };
-        let value = serde_json::to_value(&action).unwrap();
+        let value = serde_json::to_value(action).unwrap();
         assert_eq!(value["type"], "setSun");
         assert_eq!(value["limb"], "hook");
         assert_eq!(value["lit"], true);
@@ -134,7 +134,7 @@ mod tests {
             root: RootId::Deep,
             open: false,
         };
-        let value = serde_json::to_value(&action).unwrap();
+        let value = serde_json::to_value(action).unwrap();
         assert_eq!(value["type"], "setFlow");
         assert_eq!(value["root"], "deep");
         assert_eq!(value["open"], false);

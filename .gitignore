@@ -35,3 +35,6 @@ rust-server/config/*.private.yaml
 rust-server/config/*.private.yml
 space-game/.local/
 outputs
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/

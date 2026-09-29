@@ -53,19 +53,19 @@ use crate::{
         ParticipantPrincipal, UpgradePurpose, UpgradeTicketClaims, UpgradeTicketStore,
         ADMIN_ABSOLUTE_SECONDS,
     },
-    config::{AgentsMode, ExperimentConfig},
+    config::{AgentsMode, ExperimentConfig, StoredExperimentConfig},
     game::{
         parse_game_config, ActionRejection, AgentDefinition, Game, GameFactory,
-        GameInitializationContext, GameMetadata, GameSessionContext, PlayerRole, Seat,
-        SecretValues,
+        GameInitializationContext, GameMetadata, GameSessionContext, PlayerRole, SecretValues,
     },
     identity::{new_id, session_code},
     protocol::*,
     storage::{
         experiment_store_from_url, generated_experiment_id, now_iso, ConsentDeclarationRecord,
-        ExperimentRecord, LiveSession, MemoryState, ParticipantRecord, ProlificSubmissionRecord,
-        SessionEventRecord, SessionLifecycle, SessionParticipant, SessionParticipantRecord,
-        SessionRecord, SharedExperimentStore, StoredGameSettings, TranscriptSegment,
+        ExperimentRecord, GameSettingsUpdate, LiveSession, MemoryState, ParticipantRecord,
+        ProlificSubmissionRecord, SessionEventRecord, SessionLifecycle, SessionParticipant,
+        SessionParticipantRecord, SessionRecord, SharedExperimentStore, StoredGameSettings,
+        TranscriptSegment,
     },
     transcription::{
         FinalTranscriptUtterance, SpeechmaticsTranscriptionProvider, TranscriptionEvent,
@@ -74,8 +74,6 @@ use crate::{
     tts::{ElevenLabsStreamingTtsProvider, StreamingTtsProvider},
     SessionLogger,
 };
-
-/// Fixed time in which two human participants may speak after normal completion.
 
 /// Validated inputs retained until a live session can supply an agent-scoped logger.
 struct PreparedAgentConstruction<A: Game> {
@@ -86,6 +84,17 @@ struct PreparedAgentConstruction<A: Game> {
     agent_instance_secrets: SecretValues,
     factory: SharedAgentFactory<A>,
     timeout: f64,
+    invalid_action_limit: usize,
+    metadata: Value,
+    external_id: String,
+}
+
+/// A constructed agent and the validated settings needed by its runtime task.
+struct PendingAgent<A: Game> {
+    agent: Box<dyn Agent<A> + Send>,
+    timeout: f64,
+    invalid_action_limit: usize,
+    metadata: Value,
 }
 
 /// Optional runtime components supplied by the game-specific binary.
@@ -103,8 +112,6 @@ pub struct ServeOptions<A: Game> {
     pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
     /// Optional server-side STT provider override used by tests or local deployments.
     pub transcription_provider: Option<Arc<dyn TranscriptionProvider>>,
-    /// Game/client version metadata supplied by the game-specific binary.
-    pub game_version_manifest: Option<Value>,
 }
 
 impl<A: Game> Default for ServeOptions<A> {
@@ -117,14 +124,13 @@ impl<A: Game> Default for ServeOptions<A> {
             tts_provider: None,
             audio_publisher: None,
             transcription_provider: None,
-            game_version_manifest: None,
         }
     }
 }
 
 /// Produces the only configuration representation allowed to enter durable storage.
 fn persistable_config_json(config: &ExperimentConfig) -> Result<Value> {
-    let mut value = serde_json::to_value(config)?;
+    let mut value = serde_json::to_value(StoredExperimentConfig::from(config))?;
     redact_secret_fields(&mut value);
     Ok(value)
 }
@@ -191,22 +197,12 @@ fn experiment_config_from_json_unvalidated(
     if !value.is_object() {
         bail!("experiment configuration must be a JSON object");
     }
-    let mut config: ExperimentConfig = serde_json::from_value(value)?;
-    apply_experiment_bootstrap_settings(&mut config, bootstrap, experiment_id);
-    Ok(config)
-}
-
-/// Applies process-owned settings and the canonical public route for one experiment.
-fn apply_experiment_bootstrap_settings(
-    config: &mut ExperimentConfig,
-    bootstrap: &ExperimentConfig,
-    experiment_id: &str,
-) {
-    config.experiment.id = Some(experiment_id.to_string());
-    config.server = bootstrap.server.clone();
-    config.database = bootstrap.database.clone();
-    config.server.public_base_url =
-        experiment_public_base_url(&bootstrap.server.public_base_url, experiment_id);
+    let stored: StoredExperimentConfig = serde_json::from_value(value)?;
+    Ok(stored.into_runtime(
+        bootstrap,
+        experiment_id,
+        experiment_public_base_url(&bootstrap.server.public_base_url, experiment_id),
+    ))
 }
 
 /// Builds the canonical externally visible participant base for one experiment.
@@ -612,7 +608,7 @@ fn local_testing_issues_for_config<A: Game>(
     }
     let mut issues = config.activation_issues();
     issues.extend(prolific_completion_path_issues(config));
-    if let Err(error) = validate_agent_configuration(&state.agent_definitions, &config, true) {
+    if let Err(error) = validate_agent_configuration(&state.agent_definitions, config, true) {
         issues.push(error.to_string());
     }
     issues
@@ -1149,9 +1145,7 @@ where
                         reason: reason.to_string(),
                         completion: None,
                         final_observation: Some(protocol_json(
-                            &session
-                                .game
-                                .observation(&session.state, participant.role.player_role()),
+                            &session.game.observation(&session.state, participant.role),
                         )?),
                     },
                 ))
@@ -1243,13 +1237,10 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
                 {
                     Some("idle_timeout")
                 } else if session.lifecycle.is_ended()
-                    && voice_deadline.is_some_and(|deadline| deadline <= now)
-                {
-                    Some("terminal_cleanup")
-                } else if session.lifecycle.is_ended()
-                    && voice_deadline.is_none()
-                    && !has_connection
-                    && reconnect_deadline.is_some_and(|deadline| deadline <= now)
+                    && (voice_deadline.is_some_and(|deadline| deadline <= now)
+                        || (voice_deadline.is_none()
+                            && !has_connection
+                            && reconnect_deadline.is_some_and(|deadline| deadline <= now)))
                 {
                     Some("terminal_cleanup")
                 } else {
@@ -1361,8 +1352,8 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
             .filter_map(|key| pending.remove(&key))
             .collect::<Vec<_>>()
     };
-    for mut agent in pending_agents {
-        let _ = tokio::time::timeout(Duration::from_secs(5), agent.shutdown()).await;
+    for mut pending in pending_agents {
+        let _ = tokio::time::timeout(Duration::from_secs(5), pending.agent.shutdown()).await;
     }
     state.game_connections.write().await.retain(|key, _| {
         !removed
@@ -1878,6 +1869,9 @@ struct MountedExperimentRouters {
     admin: Router,
 }
 
+/// Shared locks serializing lazy construction of each experiment router.
+type RuntimeRouterBuildLocks = Arc<RwLock<HashMap<String, Arc<Mutex<()>>>>>;
+
 /// Shared server state used by HTTP handlers, WebSocket tasks, and background agents.
 pub struct AppState<A: Game> {
     pub game_factory: Arc<dyn GameFactory<Game = A>>,
@@ -1903,7 +1897,7 @@ pub struct AppState<A: Game> {
     /// Agent choices registered by the compiled server and rendered by the dashboard.
     pub agent_definitions: Vec<AgentDefinition>,
     pub started_agents: RwLock<HashSet<String>>,
-    pending_agents: Mutex<HashMap<String, Box<dyn Agent<A> + Send>>>,
+    pending_agents: Mutex<HashMap<String, PendingAgent<A>>>,
     agent_inboxes: RwLock<HashMap<String, mpsc::Sender<AgentObservation<A>>>>,
     pub tts_provider: Option<Arc<dyn StreamingTtsProvider>>,
     pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
@@ -1928,7 +1922,7 @@ pub struct AppState<A: Game> {
     /// Mounted runtime routers invalidated after inactive configuration or catalogue changes.
     runtime_router_cache: Option<Arc<RwLock<HashMap<String, MountedExperimentRouters>>>>,
     /// Per-experiment construction locks shared with configuration invalidation.
-    runtime_router_build_locks: Option<Arc<RwLock<HashMap<String, Arc<Mutex<()>>>>>>,
+    runtime_router_build_locks: Option<RuntimeRouterBuildLocks>,
     session_transition_locks: RwLock<HashMap<String, Arc<Mutex<()>>>>,
     game_connections: RwLock<HashMap<String, ConnectionControl>>,
     audio_connections: RwLock<HashMap<String, ConnectionControl>>,
@@ -2466,7 +2460,7 @@ fn retain_absolute_deadline(
 
 /// Minimal participant projection copied while taking a liveness snapshot.
 struct ParticipantOperationalSnapshot {
-    role: Seat,
+    role: PlayerRole,
     source: String,
     connected: bool,
     audio_ready: bool,
@@ -3247,31 +3241,19 @@ where
     require_session_storage_reserve(&state).await?;
     let requested_mode = "direct".to_string();
     let prepared_agent = if state.config.agents.mode == AgentsMode::HumanVsAgent {
+        let agent_config = state.config.agents.human_vs_agent.as_ref().ok_or_else(|| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Validated human-versus-agent configuration is missing",
+            )
+        })?;
         let session_seed = rand::random::<u64>();
-        let agent_seed = state
-            .config
-            .agents
-            .human_vs_agent
-            .as_ref()
-            .and_then(|config| config.seed)
-            .unwrap_or(session_seed);
-        let raw_settings = state
-            .config
-            .agents
-            .human_vs_agent
-            .as_ref()
-            .map(|config| config.config.clone())
-            .unwrap_or_else(|| json!({}));
+        let agent_seed = agent_config.seed.unwrap_or(session_seed);
+        let raw_settings = agent_config.config.clone();
         let factory = state.agent_factory.clone().ok_or_else(|| {
             AppError::new(StatusCode::SERVICE_UNAVAILABLE, "No agent is registered")
         })?;
-        let timeout = state
-            .config
-            .agents
-            .human_vs_agent
-            .as_ref()
-            .map(|config| config.act_timeout_seconds)
-            .unwrap_or(10.0);
+        let timeout = agent_config.act_timeout_seconds;
         let definition = factory.definition();
         let settings = definition.normalize_settings(&raw_settings).map_err(|_| {
             AppError::new(
@@ -3287,20 +3269,33 @@ where
                     "The configured agent references an unavailable secret",
                 )
             })?;
+        let identity = factory.identity(&settings)?;
+        identity.validate()?;
+        let fingerprint = configuration_fingerprint(&definition.id, &settings)?;
+        let metadata = json!({
+            "agent_name": identity.name,
+            "agent_version": identity.version,
+            "factory": definition.id,
+            "configuration_fingerprint": fingerprint,
+        });
+        let external_id = format!("{}@{}#{}", identity.name, identity.version, fingerprint);
         Some(PreparedAgentConstruction {
-            session_seed: session_seed,
+            session_seed,
             agent_seed,
             settings,
             factory_secrets,
             agent_instance_secrets,
             factory,
             timeout,
+            invalid_action_limit: agent_config.invalid_action_limit,
+            metadata,
+            external_id,
         })
     } else {
         None
     };
     let admission = state.session_admission.clone().lock_owned().await;
-    let paired_or_created: Result<(String, Seat, bool), AppError> = {
+    let paired_or_created: Result<(String, PlayerRole, bool), AppError> = {
         if state.config.agents.mode == AgentsMode::HumanVsHuman {
             let existing = {
                 let memory = state.memory.read().await;
@@ -3333,7 +3328,7 @@ where
                     &state,
                     participant_session_id.clone(),
                     requested_mode.clone(),
-                    Seat::A,
+                    PlayerRole::A,
                     rand::random::<u64>(),
                 )
                 .await?;
@@ -3352,7 +3347,7 @@ where
                 &state,
                 participant_session_id.clone(),
                 requested_mode.clone(),
-                Seat::A,
+                PlayerRole::A,
                 session_seed,
             )
             .await?;
@@ -3586,7 +3581,7 @@ fn open_human_session_for_pairing<G: Game>(
             session.lifecycle == SessionLifecycle::Forming
                 && session.mode == mode
                 && session.purpose == purpose
-                && next_role(session) == Some(Seat::B)
+                && next_role(session) == Some(PlayerRole::B)
                 && session
                     .participants
                     .values()
@@ -3601,7 +3596,7 @@ fn add_human_participant_to_session_locked<A: Game>(
     memory: &mut MemoryState<A>,
     public_session_id: &str,
     participant_session_id: &str,
-) -> Result<Seat, AppError> {
+) -> Result<PlayerRole, AppError> {
     let participant = memory
         .participants
         .get(participant_session_id)
@@ -3646,9 +3641,9 @@ async fn create_live_session_locked<A: Game>(
     state: &AppState<A>,
     participant_session_id: String,
     mode: String,
-    role: Seat,
+    role: PlayerRole,
     seed: u64,
-) -> Result<(String, Seat), AppError> {
+) -> Result<(String, PlayerRole), AppError> {
     let participant = state
         .memory
         .read()
@@ -3864,30 +3859,14 @@ where
             .ok_or_else(|| AppError::new(StatusCode::CONFLICT, "Session is no longer waiting"))?;
         (session.purpose.clone(), session.logger.clone())
     };
-    let definition = prepared.factory.definition();
-    let identity = prepared.factory.identity(&prepared.settings)?;
-    identity.validate()?;
-    let fingerprint = configuration_fingerprint(&definition.id, &prepared.settings)?;
-    let event_metadata = json!({
-        "agent_name": identity.name,
-        "agent_version": identity.version,
-        "factory": definition.id,
-        "configuration_fingerprint": fingerprint.clone(),
-    });
+    let event_metadata = prepared.metadata.clone();
     let participant_id = state
         .store
         .upsert_participant(ParticipantRecord {
             experiment_id: state.experiment_id.clone(),
             participant_kind: "agent".to_string(),
             identity_provider: "agent".to_string(),
-            external_id: Some(format!(
-                "{}@{}#{}",
-                event_metadata["agent_name"].as_str().unwrap_or("agent"),
-                event_metadata["agent_version"]
-                    .as_str()
-                    .unwrap_or("unknown"),
-                fingerprint
-            )),
+            external_id: Some(prepared.external_id),
             metadata: event_metadata.clone(),
         })
         .await?;
@@ -3940,11 +3919,15 @@ where
     let transition_lock = session_transition_lock(state, public_session_id).await;
     let transition_guard = transition_lock.lock().await;
     let pending_key = agent_key(public_session_id, &agent_session_id);
-    state
-        .pending_agents
-        .lock()
-        .await
-        .insert(pending_key.clone(), agent);
+    state.pending_agents.lock().await.insert(
+        pending_key.clone(),
+        PendingAgent {
+            agent,
+            timeout: prepared.timeout,
+            invalid_action_limit: prepared.invalid_action_limit,
+            metadata: event_metadata.clone(),
+        },
+    );
     let attach_result = {
         let mut memory = state.memory.write().await;
         let runtime_agent = memory.participants.get(&agent_session_id).cloned();
@@ -3965,7 +3948,7 @@ where
                         participant_session_id: agent_session_id.clone(),
                         participant_id: runtime_agent.participant_id,
                         source: "agent".to_string(),
-                        role: Seat::B,
+                        role: PlayerRole::B,
                         connected: true,
                         ready: true,
                         audio_ready: true,
@@ -3981,8 +3964,8 @@ where
         }
     };
     if let Err(error) = attach_result {
-        if let Some(mut agent) = state.pending_agents.lock().await.remove(&pending_key) {
-            let _ = agent.shutdown().await;
+        if let Some(mut pending) = state.pending_agents.lock().await.remove(&pending_key) {
+            let _ = pending.agent.shutdown().await;
         }
         return Err(error);
     }
@@ -3998,8 +3981,8 @@ where
         {
             session.participants.remove(&agent_session_id);
         }
-        if let Some(mut agent) = state.pending_agents.lock().await.remove(&pending_key) {
-            let _ = agent.shutdown().await;
+        if let Some(mut pending) = state.pending_agents.lock().await.remove(&pending_key) {
+            let _ = pending.agent.shutdown().await;
         }
         return Err(AppError::from(error));
     }
@@ -4029,47 +4012,47 @@ struct ParticipantView {
 async fn participant_view<A: Game>(
     state: &Arc<AppState<A>>,
     public_session_id: &str,
-    role: Seat,
+    role: PlayerRole,
 ) -> Result<ParticipantView, AppError>
 where
     A::State: Serialize,
 {
-    let (presence, observation, available_actions) = {
-        let memory = state.memory.read().await;
-        let session = memory
-            .sessions
-            .get(public_session_id)
-            .ok_or_else(|| AppError::not_found("Session not found."))?;
-        let presence = session_presence(session);
-        if session.lifecycle == SessionLifecycle::Forming {
-            return Ok(ParticipantView {
-                presence,
-                observation: None,
-                available_actions: None,
-            });
-        }
-        let player = role.player_role();
-        (
+    let memory = state.memory.read().await;
+    let session = memory
+        .sessions
+        .get(public_session_id)
+        .ok_or_else(|| AppError::not_found("Session not found."))?;
+    participant_view_from_session(session, role)
+}
+
+/// Computes a participant view from the same session snapshot as its lifecycle.
+fn participant_view_from_session<A: Game>(
+    session: &LiveSession<A>,
+    role: PlayerRole,
+) -> Result<ParticipantView, AppError> {
+    let presence = session_presence(session);
+    if session.lifecycle == SessionLifecycle::Forming {
+        return Ok(ParticipantView {
             presence,
-            Some(protocol_json(
-                &session.game.observation(&session.state, player),
-            )?),
-            session
-                .game
-                .available_actions(&session.state, player)
-                .map(|actions| {
-                    actions
-                        .into_iter()
-                        .map(|action| protocol_json(&action))
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .transpose()?,
-        )
-    };
+            observation: None,
+            available_actions: None,
+        });
+    }
     Ok(ParticipantView {
         presence,
-        observation,
-        available_actions,
+        observation: Some(protocol_json(
+            &session.game.observation(&session.state, role),
+        )?),
+        available_actions: session
+            .game
+            .available_actions(&session.state, role)
+            .map(|actions| {
+                actions
+                    .into_iter()
+                    .map(|action| protocol_json(&action))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?,
     })
 }
 
@@ -4077,17 +4060,17 @@ where
 async fn participant_state_response<A: Game>(
     state: &Arc<AppState<A>>,
     public_session_id: &str,
-    role: Seat,
+    role: PlayerRole,
 ) -> Result<ParticipantStateResponse, AppError>
 where
     A::State: Serialize,
 {
-    let view = participant_view(state, public_session_id, role).await?;
     let memory = state.memory.read().await;
     let session = memory
         .sessions
         .get(public_session_id)
         .ok_or_else(|| AppError::not_found("Session not found."))?;
+    let view = participant_view_from_session(session, role)?;
     let presence = view.presence;
     let participant_state = match &session.lifecycle {
         SessionLifecycle::Forming => ParticipantState::Waiting {
@@ -4102,7 +4085,12 @@ where
                 public_session_id: public_session_id.to_string(),
                 role: role.as_str().to_string(),
                 reason: reason.clone(),
-                observation: view.observation.unwrap_or(Value::Null),
+                observation: view.observation.ok_or_else(|| {
+                    AppError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Running session has no observation",
+                    )
+                })?,
                 available_actions: view.available_actions,
                 presence,
                 idle_deadline_at: session.idle_deadline_at.clone().ok_or_else(|| {
@@ -4115,7 +4103,12 @@ where
             None => ParticipantState::Active {
                 public_session_id: public_session_id.to_string(),
                 role: role.as_str().to_string(),
-                observation: view.observation.unwrap_or(Value::Null),
+                observation: view.observation.ok_or_else(|| {
+                    AppError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Running session has no observation",
+                    )
+                })?,
                 available_actions: view.available_actions,
                 presence,
                 idle_deadline_at: session.idle_deadline_at.clone().ok_or_else(|| {
@@ -4440,13 +4433,7 @@ async fn commit_conversation_message<A: Game>(
     if matches!(origin, ConversationOrigin::Typed) {
         state.telemetry.record_chat_accepted();
     }
-    notify_agents_of_message(
-        state,
-        public_session_id,
-        sender_role.player_role(),
-        message.text.clone(),
-    )
-    .await;
+    notify_agents_of_message(state, public_session_id, sender_role, message.text.clone()).await;
     Ok(Json(message))
 }
 
@@ -6408,16 +6395,16 @@ async fn admin_update_game_settings<A: Game>(
     }
     let revision = state
         .store
-        .update_game_settings(
-            request.expected_revision,
-            institution.clone(),
-            admin_allowed_ip_ranges.clone(),
-            speechmatics_realtime_url.clone(),
-            tts_base_url.clone(),
-            prolific_api_base_url.clone(),
-            request.secret_updates,
-            request.secret_deletions,
-        )
+        .update_game_settings(GameSettingsUpdate {
+            expected_revision: request.expected_revision,
+            institution: institution.clone(),
+            admin_allowed_ip_ranges: admin_allowed_ip_ranges.clone(),
+            speechmatics_realtime_url: speechmatics_realtime_url.clone(),
+            tts_base_url: tts_base_url.clone(),
+            prolific_api_base_url: prolific_api_base_url.clone(),
+            secret_updates: request.secret_updates,
+            secret_deletions: request.secret_deletions,
+        })
         .await
         .map_err(|error| AppError::new(StatusCode::CONFLICT, error.to_string()))?;
     *state.game_settings.write().await = StoredGameSettings {
@@ -6870,7 +6857,7 @@ async fn admin_session_detail<A: Game>(
     let participants = participants
         .into_iter()
         .map(|participant| {
-            let mut value = serde_json::to_value(&participant).unwrap_or(Value::Null);
+            let mut value = serde_json::to_value(&participant).map_err(anyhow::Error::from)?;
             value["research_id"] = json!(participant.research_id);
             value["participant_state"] = if let Some(result) = &participant.terminal_result {
                 json!({"state": "ended", "result": result})
@@ -6883,9 +6870,9 @@ async fn admin_session_detail<A: Game>(
             } else {
                 Value::Null
             };
-            value
+            Ok::<Value, anyhow::Error>(value)
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     let events = important_admin_events(
         state
             .store
@@ -6932,7 +6919,9 @@ async fn admin_session_events<A: Game>(
 }
 
 /// Builds a compact timeline from durable events that matter during monitoring.
-fn important_admin_events(events: Vec<crate::storage::StoredSessionEvent>) -> Vec<Value> {
+fn important_admin_events(
+    events: Vec<crate::storage::StoredSessionEvent>,
+) -> Vec<AdminEventSummary> {
     events
         .into_iter()
         .filter(is_important_admin_event)
@@ -6941,7 +6930,7 @@ fn important_admin_events(events: Vec<crate::storage::StoredSessionEvent>) -> Ve
 }
 
 /// Groups durable admin events into display rows for the experiment dashboard.
-fn admin_event_bundles(events: &[Value]) -> Vec<Value> {
+fn admin_event_bundles(events: &[AdminEventSummary]) -> Vec<Value> {
     let mut bundles = Vec::<AdminEventBundle>::new();
     let mut open_bundles = HashMap::<String, usize>::new();
     let mut terminal_event_seen = false;
@@ -6992,25 +6981,25 @@ struct AdminEventBundle {
     kind: String,
     role: Option<String>,
     key: String,
-    events: Vec<Value>,
+    events: Vec<AdminEventSummary>,
     after_terminal_event: bool,
 }
 
-fn admin_event_is_terminal_boundary(event: &Value) -> bool {
+fn admin_event_is_terminal_boundary(event: &AdminEventSummary) -> bool {
     matches!(
         admin_event_type(event).as_str(),
         "session_completed" | "session_abandoned" | "session_expired" | "participant_disconnected"
     )
 }
 
-fn admin_event_is_action_request(event: &Value) -> bool {
+fn admin_event_is_action_request(event: &AdminEventSummary) -> bool {
     matches!(
         admin_event_type(event).as_str(),
         "agent_action" | "game_action_submitted"
     )
 }
 
-fn show_admin_event_in_timeline(event: &Value) -> bool {
+fn show_admin_event_in_timeline(event: &AdminEventSummary) -> bool {
     if admin_event_type(event) != "voice_diagnostic" {
         return true;
     }
@@ -7024,7 +7013,7 @@ fn show_admin_event_in_timeline(event: &Value) -> bool {
         || text.to_ascii_lowercase().contains("disconnect")
 }
 
-fn admin_bundle_kind(event: &Value) -> String {
+fn admin_bundle_kind(event: &AdminEventSummary) -> String {
     match admin_event_type(event).as_str() {
         "agent_action"
         | "game_action_accepted"
@@ -7036,11 +7025,7 @@ fn admin_bundle_kind(event: &Value) -> String {
         "voice_diagnostic" => "voice".to_string(),
         "transcript_segment" => "transcript".to_string(),
         "conversation_message"
-            if event
-                .get("detail")
-                .and_then(|detail| detail.get("origin"))
-                .and_then(Value::as_str)
-                == Some("voice_transcript") =>
+            if event.detail.get("origin").and_then(Value::as_str) == Some("voice_transcript") =>
         {
             "transcript".to_string()
         }
@@ -7049,14 +7034,14 @@ fn admin_bundle_kind(event: &Value) -> String {
     }
 }
 
-fn admin_bundle_key(event: &Value, kind: &str, role: &Option<String>) -> String {
+fn admin_bundle_key(event: &AdminEventSummary, kind: &str, role: &Option<String>) -> String {
     let role = role.as_deref().unwrap_or("system");
     match kind {
         "action" => format!(
             "action:{role}:{}",
             event
-                .get("detail")
-                .and_then(|detail| detail.get("action"))
+                .detail
+                .get("action")
                 .map(compact_json)
                 .unwrap_or_else(|| "null".to_string())
         ),
@@ -7068,7 +7053,7 @@ fn admin_bundle_key(event: &Value, kind: &str, role: &Option<String>) -> String 
 
 fn can_append_admin_bundle(
     bundle: &AdminEventBundle,
-    event: &Value,
+    event: &AdminEventSummary,
     kind: &str,
     role: &Option<String>,
 ) -> bool {
@@ -7125,8 +7110,14 @@ fn admin_bundle_is_closed(bundle: &AdminEventBundle) -> bool {
 }
 
 fn admin_bundle_json(bundle: AdminEventBundle) -> Value {
-    let first = bundle.events.first().cloned().unwrap_or_else(|| json!({}));
-    let last = bundle.events.last().cloned().unwrap_or_else(|| json!({}));
+    let first = bundle
+        .events
+        .first()
+        .expect("admin event bundles are constructed with one event");
+    let last = bundle
+        .events
+        .last()
+        .expect("admin event bundles are constructed with one event");
     let steps = if bundle.events.len() > 1 {
         bundle
             .events
@@ -7148,9 +7139,9 @@ fn admin_bundle_json(bundle: AdminEventBundle) -> Value {
         "kind": bundle.kind,
         "key": bundle.key,
         "role": bundle.role,
-        "first_index": admin_event_index(&first),
-        "last_index": admin_event_index(&last),
-        "game_time_ms": last.get("game_time_ms").cloned().unwrap_or(Value::Null),
+        "first_index": admin_event_index(first),
+        "last_index": admin_event_index(last),
+        "game_time_ms": last.game_time_ms,
         "title": admin_bundle_title(&bundle),
         "problem": problem,
         "problem_reason": problem_reason,
@@ -7221,10 +7212,10 @@ fn admin_rejection_reason(bundle: &AdminEventBundle) -> String {
         .iter()
         .find_map(|event| {
             event
-                .get("detail")
-                .and_then(|detail| detail.get("error"))
+                .detail
+                .get("error")
                 .and_then(Value::as_str)
-                .or_else(|| event.get("text").and_then(Value::as_str))
+                .or(event.text.as_deref())
                 .map(str::to_string)
         })
         .unwrap_or_else(|| "Action was rejected.".to_string())
@@ -7243,10 +7234,8 @@ fn admin_bundle_title(bundle: &AdminEventBundle) -> String {
         _ => bundle
             .events
             .first()
-            .and_then(|event| event.get("title"))
-            .and_then(Value::as_str)
-            .unwrap_or("Event")
-            .to_string(),
+            .map(|event| event.title.clone())
+            .unwrap_or_else(|| "Event".to_string()),
     }
 }
 
@@ -7290,7 +7279,7 @@ fn normalize_display_text(text: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn readable_admin_event_step(event: &Value) -> String {
+fn readable_admin_event_step(event: &AdminEventSummary) -> String {
     match admin_event_type(event).as_str() {
         "participant_joined" => "Joined".to_string(),
         "participant_connected" => "Connected".to_string(),
@@ -7298,86 +7287,55 @@ fn readable_admin_event_step(event: &Value) -> String {
         "ready" => "Ready".to_string(),
         "transcript_segment" => "Transcript saved".to_string(),
         "conversation_message"
-            if event
-                .get("detail")
-                .and_then(|detail| detail.get("origin"))
-                .and_then(Value::as_str)
-                == Some("voice_transcript") =>
+            if event.detail.get("origin").and_then(Value::as_str) == Some("voice_transcript") =>
         {
             "Transcript displayed".to_string()
         }
         "voice_diagnostic" => admin_event_text_value(event),
-        _ => event
-            .get("title")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| admin_event_type(event)),
+        _ => event.title.clone(),
     }
 }
 
-fn admin_event_type(event: &Value) -> String {
-    event
-        .get("event_type")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
+fn admin_event_type(event: &AdminEventSummary) -> String {
+    event.event_type.clone()
 }
 
-fn admin_event_role(event: &Value) -> Option<String> {
+fn admin_event_role(event: &AdminEventSummary) -> Option<String> {
     event
-        .get("actor_role")
-        .and_then(Value::as_str)
-        .or_else(|| {
-            event
-                .get("detail")
-                .and_then(|detail| detail.get("player"))
-                .and_then(Value::as_str)
-        })
-        .or_else(|| {
-            event
-                .get("detail")
-                .and_then(|detail| detail.get("sender_role"))
-                .and_then(Value::as_str)
-        })
-        .or_else(|| {
-            event
-                .get("detail")
-                .and_then(|detail| detail.get("role"))
-                .and_then(Value::as_str)
-        })
+        .actor_role
+        .as_deref()
+        .or_else(|| event.detail.get("player").and_then(Value::as_str))
+        .or_else(|| event.detail.get("sender_role").and_then(Value::as_str))
+        .or_else(|| event.detail.get("role").and_then(Value::as_str))
         .map(str::to_string)
 }
 
-fn admin_event_index(event: &Value) -> i64 {
-    event
-        .get("event_index")
-        .and_then(Value::as_i64)
-        .unwrap_or_default()
+fn admin_event_index(event: &AdminEventSummary) -> i64 {
+    event.event_index
 }
 
-fn admin_event_text_value(event: &Value) -> String {
+fn admin_event_text_value(event: &AdminEventSummary) -> String {
     event
-        .get("text")
-        .and_then(Value::as_str)
-        .map(str::to_string)
+        .text
+        .clone()
         .or_else(|| {
             event
-                .get("detail")
-                .and_then(|detail| detail.get("event"))
+                .detail
+                .get("event")
                 .and_then(Value::as_str)
                 .map(str::to_string)
         })
         .unwrap_or_else(|| admin_event_type(event))
 }
 
-fn normalized_transcript_text(event: &Value) -> String {
+fn normalized_transcript_text(event: &AdminEventSummary) -> String {
     event
-        .get("text")
-        .and_then(Value::as_str)
+        .text
+        .as_deref()
         .or_else(|| {
             event
-                .get("raw")
-                .and_then(|raw| raw.get("payload"))
+                .raw
+                .get("payload")
                 .and_then(|payload| payload.get("text"))
                 .and_then(Value::as_str)
         })
@@ -7387,18 +7345,14 @@ fn normalized_transcript_text(event: &Value) -> String {
         .to_ascii_lowercase()
 }
 
-fn admin_event_action(event: &Value) -> Option<Value> {
-    event
-        .get("detail")
-        .and_then(|detail| detail.get("action"))
-        .cloned()
-        .or_else(|| {
-            event
-                .get("raw")
-                .and_then(|raw| raw.get("payload"))
-                .and_then(|payload| payload.get("action"))
-                .cloned()
-        })
+fn admin_event_action(event: &AdminEventSummary) -> Option<Value> {
+    event.detail.get("action").cloned().or_else(|| {
+        event
+            .raw
+            .get("payload")
+            .and_then(|payload| payload.get("action"))
+            .cloned()
+    })
 }
 
 /// Returns whether a stored event should appear in the admin session monitor.
@@ -7425,7 +7379,23 @@ fn is_important_admin_event(event: &crate::storage::StoredSessionEvent) -> bool 
 }
 
 /// Converts one durable event row into UI-oriented metadata without game-specific types.
-fn admin_event_summary(event: crate::storage::StoredSessionEvent) -> Value {
+/// Typed dashboard projection of one durable event.
+#[derive(Clone, Debug, Serialize)]
+struct AdminEventSummary {
+    event_id: i64,
+    event_index: i64,
+    event_type: String,
+    actor_participant_id: Option<i64>,
+    actor_role: Option<String>,
+    game_time_ms: i64,
+    title: String,
+    text: Option<String>,
+    detail: Value,
+    raw: Value,
+}
+
+/// Builds the typed dashboard projection for one durable event.
+fn admin_event_summary(event: crate::storage::StoredSessionEvent) -> AdminEventSummary {
     let payload = event.payload.clone();
     let title = admin_event_title(&event.event_type, &payload);
     let text = admin_event_text(&event.event_type, &payload);
@@ -7442,18 +7412,18 @@ fn admin_event_summary(event: crate::storage::StoredSessionEvent) -> Value {
         "game_state": event.game_state,
         "game_time_ms": event.game_time_ms,
     });
-    json!({
-        "event_id": raw["event_id"],
-        "event_index": raw["event_index"],
-        "event_type": raw["event_type"],
-        "actor_participant_id": raw["actor_participant_id"],
-        "actor_role": raw["actor_role"],
-        "game_time_ms": raw["game_time_ms"],
-        "title": title,
-        "text": text,
-        "detail": detail,
-        "raw": raw,
-    })
+    AdminEventSummary {
+        event_id: event.event_id,
+        event_index: event.event_index,
+        event_type: event.event_type,
+        actor_participant_id: event.actor_participant_id,
+        actor_role: event.actor_role,
+        game_time_ms: event.game_time_ms,
+        title: title.to_string(),
+        text,
+        detail,
+        raw,
+    }
 }
 
 /// Produces a human-readable title for one admin timeline event.
@@ -8583,7 +8553,7 @@ async fn websocket_loop<A: Game>(
     socket: WebSocket,
     public_session_id: String,
     participant_session_id: String,
-    role: Seat,
+    role: PlayerRole,
 ) where
     A::State: Serialize,
 {
@@ -8952,9 +8922,7 @@ async fn abandon_session<A: Game>(
                         reason: reason.to_string(),
                         completion: None,
                         final_observation: Some(protocol_json(
-                            &session
-                                .game
-                                .observation(&session.state, participant.role.player_role()),
+                            &session.game.observation(&session.state, participant.role),
                         )?),
                     },
                 ))
@@ -9024,7 +8992,7 @@ async fn handle_client_message<A: Game>(
     bus: &broadcast::Sender<ServerMessage>,
     public_session_id: &str,
     participant_session_id: &str,
-    role: Seat,
+    role: PlayerRole,
     message: ClientMessage,
 ) where
     A::State: Serialize,
@@ -9236,13 +9204,8 @@ async fn handle_client_message<A: Game>(
             .await
             {
                 Ok(outcome) => {
-                    broadcast_player_views(
-                        state.clone(),
-                        public_session_id,
-                        role.player_role(),
-                        observed_action,
-                    )
-                    .await;
+                    broadcast_player_views(state.clone(), public_session_id, role, observed_action)
+                        .await;
                     if let TransitionOutcome::Completed = outcome {
                         broadcast_participant_states(&state, public_session_id).await;
                     }
@@ -9455,9 +9418,7 @@ where
                     reason: "game_completed".to_string(),
                     completion: Some(completion.clone()),
                     final_observation: Some(protocol_json(
-                        &session
-                            .game
-                            .observation(final_state, participant.role.player_role()),
+                        &session.game.observation(final_state, participant.role),
                     )?),
                 },
             ))
@@ -9474,13 +9435,13 @@ async fn submit_action<A: Game>(
     state: Arc<AppState<A>>,
     public_session_id: &str,
     participant_session_id: &str,
-    role: Seat,
+    role: PlayerRole,
     action: A::Action,
 ) -> Result<TransitionOutcome>
 where
     A::State: Serialize,
 {
-    let player = role.player_role();
+    let player = role;
     let transition_lock = session_transition_lock(&state, public_session_id).await;
     let _transition_guard = transition_lock.lock().await;
     let (after, completion, transition_metadata) = {
@@ -9584,9 +9545,7 @@ where
             session.updated_at = completed_at.to_rfc3339();
             session.voice_ends_at = keep_voice_open.then(|| {
                 (completed_at
-                    + chrono::Duration::seconds(
-                        state.config.voice.post_completion_seconds as i64,
-                    ))
+                    + chrono::Duration::seconds(state.config.voice.post_completion_seconds as i64))
                 .to_rfc3339()
             });
             session.lifecycle = SessionLifecycle::Ended(
@@ -9679,14 +9638,14 @@ where
     };
     for (participant_session_id, role) in agents {
         let key = agent_key(public_session_id, &participant_session_id);
-        let agent = state.pending_agents.lock().await.remove(&key);
-        if let Some(agent) = agent {
+        let pending = state.pending_agents.lock().await.remove(&key);
+        if let Some(pending) = pending {
             maybe_start_agent(
                 state.clone(),
                 public_session_id.to_string(),
                 participant_session_id,
                 role,
-                agent,
+                pending,
             )
             .await;
         }
@@ -9702,16 +9661,14 @@ fn agent_key(public_session_id: &str, participant_session_id: &str) -> String {
 async fn agent_available_actions<A: Game>(
     state: &Arc<AppState<A>>,
     public_session_id: &str,
-    role: Seat,
+    role: PlayerRole,
 ) -> Result<Option<Vec<A::Action>>> {
     let memory = state.memory.read().await;
     let session = memory
         .sessions
         .get(public_session_id)
         .ok_or_else(|| anyhow!("Session not found."))?;
-    Ok(session
-        .game
-        .available_actions(&session.state, role.player_role()))
+    Ok(session.game.available_actions(&session.state, role))
 }
 
 /// Sends an accepted-action observation to every started agent in the session.
@@ -9741,7 +9698,7 @@ async fn notify_agents_of_action<A: Game>(
                         action: action.clone(),
                         resulting_observation: session
                             .game
-                            .observation(&session.state, participant.role.player_role()),
+                            .observation(&session.state, participant.role),
                         completion: completion.clone(),
                     },
                 )
@@ -9771,9 +9728,7 @@ async fn notify_agents_of_message<A: Game>(
         session
             .participants
             .values()
-            .filter(|participant| {
-                participant.source == "agent" && participant.role.player_role() != speaker
-            })
+            .filter(|participant| participant.source == "agent" && participant.role != speaker)
             .map(|participant| agent_key(public_session_id, &participant.participant_session_id))
             .collect::<Vec<_>>()
     };
@@ -9806,7 +9761,7 @@ async fn handle_agent_response<A: Game>(
     state: Arc<AppState<A>>,
     public_session_id: &str,
     participant_session_id: &str,
-    role: Seat,
+    role: PlayerRole,
     response: AgentResponse<A::Action>,
 ) -> Result<TransitionOutcome>
 where
@@ -9821,7 +9776,7 @@ where
             public_session_id,
             Some(participant_session_id),
             "agent_action",
-            json!({"action": protocol_json(&action).unwrap_or(Value::Null)}),
+            json!({"action": observed_action.clone()}),
             None,
         )
         .await;
@@ -9833,13 +9788,7 @@ where
             action,
         )
         .await?;
-        broadcast_player_views(
-            state.clone(),
-            public_session_id,
-            role.player_role(),
-            observed_action,
-        )
-        .await;
+        broadcast_player_views(state.clone(), public_session_id, role, observed_action).await;
     }
     if let Some(text) = message {
         if let Ok(Json(message)) = commit_conversation_message(
@@ -9865,7 +9814,7 @@ async fn request_agent_decision<A: Game>(
     agent: &mut Box<dyn Agent<A> + Send>,
     public_session_id: &str,
     participant_session_id: &str,
-    role: Seat,
+    role: PlayerRole,
     timeout: f64,
 ) -> Result<Option<TransitionOutcome>>
 where
@@ -10042,181 +9991,210 @@ async fn maybe_start_agent<A: Game>(
     state: Arc<AppState<A>>,
     public_session_id: String,
     participant_session_id: String,
-    role: Seat,
-    mut agent: Box<dyn Agent<A> + Send>,
+    role: PlayerRole,
+    mut pending: PendingAgent<A>,
 ) where
     A::State: Serialize,
 {
-    let Some(factory) = state.agent_factory.clone() else {
-        return;
-    };
     let key = format!("{public_session_id}:{participant_session_id}");
     {
         let mut started = state.started_agents.write().await;
         if !started.insert(key.clone()) {
+            let _ = pending.agent.shutdown().await;
             return;
         }
     }
     tokio::spawn(async move {
+        let mut agent = pending.agent;
+        let timeout = pending.timeout;
+        let limit = pending.invalid_action_limit;
         let role_name = role.as_str().to_string();
-        let agent_settings = state
-            .config
-            .agents
-            .human_vs_agent
-            .as_ref()
-            .map(|config| config.config.clone())
-            .unwrap_or_else(|| json!({}));
-        let definition = factory.definition();
-        let Ok(agent_settings) = definition.normalize_settings(&agent_settings) else {
-            return;
-        };
-        let Ok(agent_identity) = factory.identity(&agent_settings) else {
-            return;
-        };
-        if agent_identity.validate().is_err() {
-            return;
-        }
-        let Ok(fingerprint) = configuration_fingerprint(&definition.id, &agent_settings) else {
-            return;
-        };
-        let agent_metadata = json!({
-            "agent_name": agent_identity.name,
-            "agent_version": agent_identity.version,
-            "factory": definition.id,
-            "configuration_fingerprint": fingerprint,
-        });
-        {
-            let mut memory = state.memory.write().await;
-            if let Some(session) = memory.sessions.get_mut(&public_session_id) {
-                if let Some(participant) = session.participants.get_mut(&participant_session_id) {
-                    participant.connected = true;
-                    participant.updated_at = now_iso();
-                    participant.disconnected_at = None;
-                    participant.reconnect_deadline_at = None;
+        let agent_metadata = pending.metadata;
+        async {
+            {
+                let mut memory = state.memory.write().await;
+                if let Some(session) = memory.sessions.get_mut(&public_session_id) {
+                    if let Some(participant) = session.participants.get_mut(&participant_session_id)
+                    {
+                        participant.connected = true;
+                        participant.updated_at = now_iso();
+                        participant.disconnected_at = None;
+                        participant.reconnect_deadline_at = None;
+                    }
                 }
             }
-        }
-        persist_event(
-            "agent_connected",
-            state.store.update_session_participant_connection(
-                &participant_session_id,
-                "connected",
-                None,
-                None,
-            ),
-        )
-        .await;
-        persist_session_event(
-            &state,
-            &public_session_id,
-            Some(&participant_session_id),
-            "participant_connected",
-            json!({
-                "source": "agent",
-                "agent": agent_event_metadata(&agent_metadata),
-            }),
-            None,
-        )
-        .await;
-        let (sender, mut receiver) = mpsc::channel(64);
-        state.agent_inboxes.write().await.insert(
-            agent_key(&public_session_id, &participant_session_id),
-            sender,
-        );
-        persist_session_event(
-            &state,
-            &public_session_id,
-            Some(&participant_session_id),
-            "agent_started",
-            json!({
-                "role": role_name,
-                "agent": agent_event_metadata(&agent_metadata),
-            }),
-            None,
-        )
-        .await;
-        let mut invalid_actions = 0usize;
-        let mut last_error = None;
-        let timeout = state
-            .config
-            .agents
-            .human_vs_agent
-            .as_ref()
-            .map(|c| c.act_timeout_seconds)
-            .unwrap_or(10.0);
-        let initial_observation = {
-            let memory = state.memory.read().await;
-            memory
-                .sessions
-                .get(&public_session_id)
-                .map(|session| session.game.observation(&session.state, role.player_role()))
-        };
-        let Some(initial_observation) = initial_observation else {
-            return;
-        };
-        let started = tokio::time::timeout(
-            Duration::from_secs_f64(timeout),
-            agent.start(initial_observation),
-        )
-        .await;
-        if let Err(error) = flatten_agent_timeout(started, "agent start timeout") {
+            persist_event(
+                "agent_connected",
+                state.store.update_session_participant_connection(
+                    &participant_session_id,
+                    "connected",
+                    None,
+                    None,
+                ),
+            )
+            .await;
             persist_session_event(
                 &state,
                 &public_session_id,
                 Some(&participant_session_id),
-                "agent_error",
-                json!({"last_error": error.to_string(), "phase": "start"}),
+                "participant_connected",
+                json!({
+                    "source": "agent",
+                    "agent": agent_event_metadata(&agent_metadata),
+                }),
                 None,
             )
             .await;
-            return;
-        }
-        let mut awaiting_completion = false;
-        'agent_loop: loop {
-            let limit = state
-                .config
-                .agents
-                .human_vs_agent
-                .as_ref()
-                .map(|c| c.invalid_action_limit)
-                .unwrap_or(3);
-            if !awaiting_completion {
-                match request_agent_decision(
-                    state.clone(),
-                    &mut agent,
+            let (sender, mut receiver) = mpsc::channel(64);
+            state.agent_inboxes.write().await.insert(
+                agent_key(&public_session_id, &participant_session_id),
+                sender,
+            );
+            persist_session_event(
+                &state,
+                &public_session_id,
+                Some(&participant_session_id),
+                "agent_started",
+                json!({
+                    "role": role_name,
+                    "agent": agent_event_metadata(&agent_metadata),
+                }),
+                None,
+            )
+            .await;
+            let mut invalid_actions = 0usize;
+            let mut last_error = None;
+            let initial_observation = {
+                let memory = state.memory.read().await;
+                memory
+                    .sessions
+                    .get(&public_session_id)
+                    .map(|session| session.game.observation(&session.state, role))
+            };
+            let Some(initial_observation) = initial_observation else {
+                return;
+            };
+            let started = tokio::time::timeout(
+                Duration::from_secs_f64(timeout),
+                agent.start(initial_observation),
+            )
+            .await;
+            if let Err(error) = flatten_agent_timeout(started, "agent start timeout") {
+                persist_session_event(
+                    &state,
                     &public_session_id,
-                    &participant_session_id,
-                    role,
-                    timeout,
+                    Some(&participant_session_id),
+                    "agent_error",
+                    json!({"last_error": error.to_string(), "phase": "start"}),
+                    None,
                 )
-                .await
-                {
-                    Ok(Some(TransitionOutcome::Completed)) => {
-                        awaiting_completion = true;
-                        broadcast_participant_states(&state, &public_session_id).await;
-                    }
-                    Ok(Some(TransitionOutcome::Continued)) => {}
-                    Ok(None) => {}
-                    Err(error) => {
-                        last_error = Some(error.to_string());
-                        if error.downcast_ref::<ActionRejection>().is_some() {
-                            invalid_actions += 1;
-                            if invalid_actions < limit {
-                                continue;
+                .await;
+                let _ = expire_live_session(&state, &public_session_id, "agent_start_failed").await;
+                broadcast_participant_states(&state, &public_session_id).await;
+                return;
+            }
+            let mut awaiting_completion = false;
+            'agent_loop: loop {
+                if !awaiting_completion {
+                    match request_agent_decision(
+                        state.clone(),
+                        &mut agent,
+                        &public_session_id,
+                        &participant_session_id,
+                        role,
+                        timeout,
+                    )
+                    .await
+                    {
+                        Ok(Some(TransitionOutcome::Completed)) => {
+                            awaiting_completion = true;
+                            broadcast_participant_states(&state, &public_session_id).await;
+                        }
+                        Ok(Some(TransitionOutcome::Continued)) => {}
+                        Ok(None) => {}
+                        Err(error) => {
+                            last_error = Some(error.to_string());
+                            if error.downcast_ref::<ActionRejection>().is_some() {
+                                invalid_actions += 1;
+                                if invalid_actions < limit {
+                                    continue;
+                                }
+                            } else {
+                                persist_session_event(
+                                    &state,
+                                    &public_session_id,
+                                    Some(&participant_session_id),
+                                    "agent_error",
+                                    json!({"last_error": last_error, "phase": "runtime"}),
+                                    None,
+                                )
+                                .await;
+                                break;
                             }
-                        } else {
-                            persist_session_event(
-                                &state,
-                                &public_session_id,
-                                Some(&participant_session_id),
-                                "agent_error",
-                                json!({"last_error": last_error, "phase": "runtime"}),
-                                None,
-                            )
-                            .await;
-                            break;
                         }
                     }
+                    if invalid_actions >= limit {
+                        persist_session_event(
+                            &state,
+                            &public_session_id,
+                            Some(&participant_session_id),
+                            "agent_error",
+                            json!({"last_error": last_error}),
+                            None,
+                        )
+                        .await;
+                        break;
+                    }
+                }
+
+                let Some(observation) = receiver.recv().await else {
+                    break;
+                };
+                let (observed, completion) = match observation {
+                    AgentObservation::Action {
+                        actor,
+                        action,
+                        resulting_observation,
+                        completion,
+                    } => (
+                        tokio::time::timeout(
+                            Duration::from_secs_f64(timeout),
+                            agent.observe_transition(actor, action, resulting_observation),
+                        )
+                        .await,
+                        completion,
+                    ),
+                    AgentObservation::Message { speaker, text } => (
+                        tokio::time::timeout(
+                            Duration::from_secs_f64(timeout),
+                            agent.observe_message(speaker, text),
+                        )
+                        .await,
+                        None,
+                    ),
+                };
+                if let Err(error) = flatten_agent_timeout(observed, "agent observe timeout") {
+                    last_error = Some(error.to_string());
+                    invalid_actions += 1;
+                }
+                if let Some(completion) = completion {
+                    let finished = tokio::time::timeout(
+                        Duration::from_secs_f64(timeout),
+                        agent.finish(completion),
+                    )
+                    .await;
+                    if let Err(error) = flatten_agent_timeout(finished, "agent finish timeout") {
+                        persist_session_event(
+                            &state,
+                            &public_session_id,
+                            Some(&participant_session_id),
+                            "agent_error",
+                            json!({"last_error": error.to_string(), "phase": "finish"}),
+                            None,
+                        )
+                        .await;
+                    }
+                    break;
                 }
                 if invalid_actions >= limit {
                     persist_session_event(
@@ -10230,71 +10208,10 @@ async fn maybe_start_agent<A: Game>(
                     .await;
                     break;
                 }
+                continue 'agent_loop;
             }
-
-            let Some(observation) = receiver.recv().await else {
-                break;
-            };
-            let (observed, completion) = match observation {
-                AgentObservation::Action {
-                    actor,
-                    action,
-                    resulting_observation,
-                    completion,
-                } => (
-                    tokio::time::timeout(
-                        Duration::from_secs_f64(timeout),
-                        agent.observe_transition(actor, action, resulting_observation),
-                    )
-                    .await,
-                    completion,
-                ),
-                AgentObservation::Message { speaker, text } => (
-                    tokio::time::timeout(
-                        Duration::from_secs_f64(timeout),
-                        agent.observe_message(speaker, text),
-                    )
-                    .await,
-                    None,
-                ),
-            };
-            if let Err(error) = flatten_agent_timeout(observed, "agent observe timeout") {
-                last_error = Some(error.to_string());
-                invalid_actions += 1;
-            }
-            if let Some(completion) = completion {
-                let finished = tokio::time::timeout(
-                    Duration::from_secs_f64(timeout),
-                    agent.finish(completion),
-                )
-                .await;
-                if let Err(error) = flatten_agent_timeout(finished, "agent finish timeout") {
-                    persist_session_event(
-                        &state,
-                        &public_session_id,
-                        Some(&participant_session_id),
-                        "agent_error",
-                        json!({"last_error": error.to_string(), "phase": "finish"}),
-                        None,
-                    )
-                    .await;
-                }
-                break;
-            }
-            if invalid_actions >= limit {
-                persist_session_event(
-                    &state,
-                    &public_session_id,
-                    Some(&participant_session_id),
-                    "agent_error",
-                    json!({"last_error": last_error}),
-                    None,
-                )
-                .await;
-                break;
-            }
-            continue 'agent_loop;
         }
+        .await;
         state
             .agent_inboxes
             .write()
@@ -10364,7 +10281,7 @@ async fn participant_role<A: Game>(
     state: &Arc<AppState<A>>,
     public_session_id: &str,
     participant_session_id: &str,
-) -> Result<Seat, AppError> {
+) -> Result<PlayerRole, AppError> {
     let memory = state.memory.read().await;
     let session = memory
         .sessions
@@ -10377,16 +10294,16 @@ async fn participant_role<A: Game>(
         .ok_or_else(|| AppError::forbidden("Participant is not in this session."))
 }
 
-fn next_role<G: Game>(session: &LiveSession<G>) -> Option<Seat> {
+fn next_role<G: Game>(session: &LiveSession<G>) -> Option<PlayerRole> {
     let roles = session
         .participants
         .values()
         .map(|p| p.role)
         .collect::<HashSet<_>>();
-    if !roles.contains(&Seat::A) {
-        Some(Seat::A)
-    } else if !roles.contains(&Seat::B) {
-        Some(Seat::B)
+    if !roles.contains(&PlayerRole::A) {
+        Some(PlayerRole::A)
+    } else if !roles.contains(&PlayerRole::B) {
+        Some(PlayerRole::B)
     } else {
         None
     }
@@ -10412,7 +10329,7 @@ fn session_ready_for_game<A: Game>(config: &ExperimentConfig, session: &LiveSess
         .participants
         .values()
         .filter(|participant| participant_ready_for_game(config, participant))
-        .map(|participant| participant.role.player_role())
+        .map(|participant| participant.role)
         .collect::<HashSet<_>>();
     ready_roles == HashSet::from([PlayerRole::A, PlayerRole::B])
 }
@@ -10565,7 +10482,7 @@ async fn send_role_assignment<A: Game>(
     state: &Arc<AppState<A>>,
     public_session_id: &str,
     participant_session_id: &str,
-    role: Seat,
+    role: PlayerRole,
 ) where
     A::State: Serialize,
 {
@@ -10623,7 +10540,7 @@ async fn voice_message<A: Game>(
                 .participants
                 .values()
                 .filter(|participant| participant.connected)
-                .map(|participant| participant.role.player_role())
+                .map(|participant| participant.role)
                 .collect::<HashSet<_>>();
             (
                 connected_roles == HashSet::from([PlayerRole::A, PlayerRole::B]),

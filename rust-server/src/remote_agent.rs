@@ -142,7 +142,7 @@ impl<A: Game> AgentFactory<A> for RemoteAgent {
         }
     }
 
-    /// Creates one lazy remote-agent handle for a session participant.
+    /// Creates one fully initialized remote-agent handle for a session participant.
     async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<A> + Send>> {
         create_remote_instance(context, None).await
     }
@@ -163,15 +163,45 @@ async fn create_remote_instance<A: Game>(
     checkpoint: Option<CheckpointId>,
 ) -> Result<Box<dyn Agent<A> + Send>> {
     let config = remote_config_from_settings(&context.settings)?;
-    let mut agent = RemoteAgentInstance {
+    validate_remote_endpoint(&config.endpoint, config.auth_token.is_some())?;
+    let channel = Channel::from_shared(config.endpoint.clone())
+        .context("invalid remote agent endpoint")?
+        .connect()
+        .await
+        .context("failed to connect to remote agent service")?;
+    let authorization = config
+        .auth_token
+        .as_ref()
+        .map(|token| format!("Bearer {token}").parse::<MetadataValue<Ascii>>())
+        .transpose()
+        .context("remote-agent bearer token is not valid metadata")?;
+    let mut client =
+        AgentServiceClient::with_interceptor(channel, RemoteAuthInterceptor { authorization });
+    let request = CreateAgentRequest {
+        role: context.role.as_str().to_string(),
+        seed: context.seed,
+        config: Some(json_to_struct(config.structured_settings()?)?),
+        checkpoint_id: checkpoint.map(|value| value.as_str().to_string()),
+    };
+    let response = tokio::time::timeout(config.request_timeout, client.create_agent(request))
+        .await
+        .context("remote agent create timed out")?
+        .context("remote agent create failed")?
+        .into_inner();
+    for entry in response.session_logs {
+        let _ = context.logger.log(entry);
+    }
+    if response.agent_id.is_empty() {
+        bail!("remote agent returned an empty agent_id");
+    }
+    Ok(Box::new(RemoteAgentInstance {
         config,
         init_context: context,
-        client: None,
-        agent_id: None,
-        checkpoint,
-    };
-    agent.ensure_created().await?;
-    Ok(Box::new(agent))
+        state: RemoteAgentState::Active {
+            client: Box::new(client),
+            agent_id: response.agent_id,
+        },
+    }))
 }
 
 /// Factory view of one immutable checkpoint owned by a remote learner.
@@ -291,55 +321,16 @@ impl RemoteGrpcAgentConfig {
 pub struct RemoteAgentInstance {
     config: RemoteGrpcAgentConfig,
     init_context: AgentContext,
-    client: Option<AuthenticatedAgentClient>,
-    agent_id: Option<String>,
-    checkpoint: Option<CheckpointId>,
+    state: RemoteAgentState,
 }
 
-impl RemoteAgentInstance {
-    /// Connects to the remote service and sends the create-agent request once.
-    async fn ensure_created(&mut self) -> Result<()> {
-        if self.agent_id.is_some() {
-            return Ok(());
-        }
-        validate_remote_endpoint(&self.config.endpoint, self.config.auth_token.is_some())?;
-        let channel = Channel::from_shared(self.config.endpoint.clone())
-            .context("invalid remote agent endpoint")?
-            .connect()
-            .await
-            .context("failed to connect to remote agent service")?;
-        let authorization = self
-            .config
-            .auth_token
-            .as_ref()
-            .map(|token| format!("Bearer {token}").parse::<MetadataValue<Ascii>>())
-            .transpose()
-            .context("remote-agent bearer token is not valid metadata")?;
-        let mut client =
-            AgentServiceClient::with_interceptor(channel, RemoteAuthInterceptor { authorization });
-        let request = CreateAgentRequest {
-            role: self.init_context.role.as_str().to_string(),
-            seed: self.init_context.seed,
-            config: Some(json_to_struct(self.config.structured_settings()?)?),
-            checkpoint_id: self
-                .checkpoint
-                .as_ref()
-                .map(|value| value.as_str().to_string()),
-        };
-        let response =
-            tokio::time::timeout(self.config.request_timeout, client.create_agent(request))
-                .await
-                .context("remote agent create timed out")?
-                .context("remote agent create failed")?
-                .into_inner();
-        self.record_remote_logs(response.session_logs);
-        if response.agent_id.is_empty() {
-            bail!("remote agent returned an empty agent_id");
-        }
-        self.client = Some(client);
-        self.agent_id = Some(response.agent_id);
-        Ok(())
-    }
+/// Transport resources exist exactly while the remote agent is active.
+enum RemoteAgentState {
+    Active {
+        client: Box<AuthenticatedAgentClient>,
+        agent_id: String,
+    },
+    Shutdown,
 }
 
 /// Rejects cleartext remote-agent transport unless it is confined to loopback development.
@@ -388,12 +379,13 @@ where
 {
     /// Delivers the first observation after the remote process has created the agent.
     async fn start(&mut self, initial_observation: A::Observation) -> Result<()> {
-        self.ensure_created().await?;
+        let request_timeout = self.config.request_timeout;
+        let (client, agent_id) = self.active()?;
         let request = StartRequest {
-            agent_id: self.agent_id()?,
+            agent_id,
             observation: Some(json_to_struct(serde_json::to_value(initial_observation)?)?),
         };
-        tokio::time::timeout(self.config.request_timeout, self.client()?.start(request))
+        tokio::time::timeout(request_timeout, client.start(request))
             .await
             .context("remote agent start timed out")?
             .context("remote agent start failed")?
@@ -413,10 +405,8 @@ where
         action: A::Action,
         observation: A::Observation,
     ) -> Result<()> {
-        self.ensure_created().await?;
-        let agent_id = self.agent_id()?;
         let request_timeout = self.config.request_timeout;
-        let client = self.client()?;
+        let (client, agent_id) = self.active()?;
         let request = ObserveTransitionRequest {
             agent_id,
             actor: actor.as_str().to_string(),
@@ -435,10 +425,8 @@ where
 
     /// Sends a conversation utterance to the remote agent.
     async fn observe_message(&mut self, sender: PlayerRole, text: String) -> Result<()> {
-        self.ensure_created().await?;
-        let agent_id = self.agent_id()?;
         let request_timeout = self.config.request_timeout;
-        let client = self.client()?;
+        let (client, agent_id) = self.active()?;
         let request = ObserveMessageRequest {
             agent_id,
             sender: sender.as_str().to_string(),
@@ -456,18 +444,18 @@ where
 
     /// Sends the shared terminal result to the remote agent before shutdown.
     async fn finish(&mut self, completion: A::Completion) -> Result<()> {
-        self.ensure_created().await?;
+        let request_timeout = self.config.request_timeout;
+        let (client, agent_id) = self.active()?;
         let request = FinishRequest {
-            agent_id: self.agent_id()?,
+            agent_id,
             completion: Some(json_to_struct(serde_json::to_value(completion)?)?),
         };
-        let logs =
-            tokio::time::timeout(self.config.request_timeout, self.client()?.finish(request))
-                .await
-                .context("remote agent finish timed out")?
-                .context("remote agent finish failed")?
-                .into_inner()
-                .session_logs;
+        let logs = tokio::time::timeout(request_timeout, client.finish(request))
+            .await
+            .context("remote agent finish timed out")?
+            .context("remote agent finish failed")?
+            .into_inner()
+            .session_logs;
         self.record_remote_logs(logs);
         Ok(())
     }
@@ -477,10 +465,10 @@ where
         &mut self,
         available_actions: Option<Vec<A::Action>>,
     ) -> Result<Option<AgentResponse<A::Action>>> {
-        self.ensure_created().await?;
         let request = self.decision_request(available_actions)?;
         let request_timeout = self.config.request_timeout;
-        let response = tokio::time::timeout(request_timeout, self.client()?.respond(request))
+        let (client, _) = self.active()?;
+        let response = tokio::time::timeout(request_timeout, client.respond(request))
             .await
             .context("remote agent respond timed out")?
             .context("remote agent respond failed")?
@@ -491,13 +479,18 @@ where
 
     /// Releases the corresponding remote server instance on normal completion or cancellation.
     async fn shutdown(&mut self) -> Result<()> {
-        let Some(agent_id) = self.agent_id.clone() else {
+        let state = std::mem::replace(&mut self.state, RemoteAgentState::Shutdown);
+        let RemoteAgentState::Active {
+            mut client,
+            agent_id,
+        } = state
+        else {
             return Ok(());
         };
         let request_timeout = self.config.request_timeout;
         let logs = tokio::time::timeout(
             request_timeout,
-            self.client()?.shutdown(ShutdownRequest { agent_id }),
+            client.shutdown(ShutdownRequest { agent_id }),
         )
         .await
         .context("remote agent shutdown timed out")?
@@ -505,7 +498,6 @@ where
         .into_inner()
         .session_logs;
         self.record_remote_logs(logs);
-        self.agent_id = None;
         Ok(())
     }
 }
@@ -518,18 +510,12 @@ impl RemoteAgentInstance {
         }
     }
 
-    /// Returns the remote agent id after creation.
-    fn agent_id(&self) -> Result<String> {
-        self.agent_id
-            .clone()
-            .ok_or_else(|| anyhow!("remote agent was not created"))
-    }
-
-    /// Returns the connected gRPC client after creation.
-    fn client(&mut self) -> Result<&mut AuthenticatedAgentClient> {
-        self.client
-            .as_mut()
-            .ok_or_else(|| anyhow!("remote agent client was not connected"))
+    /// Returns the resources of an agent that has not been shut down.
+    fn active(&mut self) -> Result<(&mut AuthenticatedAgentClient, String)> {
+        match &mut self.state {
+            RemoteAgentState::Active { client, agent_id } => Ok((client, agent_id.clone())),
+            RemoteAgentState::Shutdown => bail!("remote agent has been shut down"),
+        }
     }
 
     /// Builds a decision request with optional available actions.
@@ -544,7 +530,10 @@ impl RemoteAgentInstance {
             .map(action_to_struct::<Action>)
             .collect::<Result<Vec<_>>>()?;
         Ok(RespondRequest {
-            agent_id: self.agent_id()?,
+            agent_id: match &self.state {
+                RemoteAgentState::Active { agent_id, .. } => agent_id.clone(),
+                RemoteAgentState::Shutdown => bail!("remote agent has been shut down"),
+            },
             available_actions_provided,
             available_actions,
         })

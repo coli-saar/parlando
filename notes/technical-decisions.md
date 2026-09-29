@@ -3664,3 +3664,52 @@ only one credential per handle across all test routers. A concurrent test could 
 another router's credential and cause a spurious 401. The helper now retains every credential for a
 colliding handle and tries them against the target router; production credential lookup remains
 unchanged.
+
+The post-publication audit originally exempted the browser E2E fixture's local JavaScript
+dependency when checking manifests but accidentally inspected the same local link as though it
+were a registry consumer when checking lockfiles. The lockfile audit now applies the same narrow
+exemption. First-party games must resolve the published tarball and integrity digest; the browser
+fixture continues to resolve `../../js-client` so E2E tests exercise the source being released
+rather than the most recently published package.
+
+## 2026-09-29: Tighten Rust runtime invariants without changing game or agent APIs
+
+Context: The Rust runtime had accumulated compatibility parsing, optional construction states,
+duplicate domain types, and storage fallbacks. Several of those paths could hide corrupt data or
+leave a failed agent session partially alive. The same process also represented its global
+administrator dashboard as an experiment named `__dashboard__`, even though that route tree is
+installation-scoped.
+
+Decision: Preserve the public `Game`, `GameFactory`, `Agent`, and `AgentFactory` interfaces while
+making their surrounding runtime states explicit. Agent settings, identity, provenance, timeout,
+and invalid-action limit are resolved once before construction. A pending agent carries that
+validated data into the session, and every constructed agent reaches the same shutdown cleanup
+path even when `start` fails. Remote-agent factories now return an active remote instance after
+the create RPC succeeds, so callbacks no longer support a half-created state.
+
+Use `PlayerRole` as the sole seat type and canonicalize JSON through one shared helper. Keep
+dashboard event summaries typed until the HTTP serialization boundary. Persist only a
+`StoredExperimentConfig` containing revisioned experiment settings; process resources such as the
+database URL, listener settings, and provider secrets come from the current installation when a
+runtime is hydrated. Router construction uses a closed mode enum for standalone experiments,
+mounted experiments, and the installation dashboard. Dashboard construction has no synthetic
+experiment identifier and never persists an experiment record.
+
+Use `SqliteExperimentStore` directly instead of a private trait with one implementation. An empty
+database is initialized transactionally. A nonempty database must already contain the exact
+current schema marker before any schema write occurs; older or unversioned databases require an
+explicit one-off conversion. Export treats malformed stored JSON as corruption and returns an
+error. Nonhuman participant identity requires the current structured metadata, and scoped exports
+always require an experiment identifier.
+
+Tradeoffs: Existing databases below schema version 16 and stored agent rows missing current
+identity metadata now fail clearly instead of being interpreted heuristically. This deliberately
+removes implicit compatibility behavior. The remote factory performs its create RPC during
+`AgentFactory::create`, which can make construction slower, but callers receive either a fully
+usable agent or an error and agent implementations need no changes.
+
+The asynchronous construction regression test synchronizes on an explicit notification emitted
+when the gated factory is entered. Scheduler yields, polling intervals, and elapsed-time thresholds
+do not establish task ordering and are not used as evidence in this test. A separate runtime test
+already covers the agent eventually joining after construction, so this test ends after proving
+that the HTTP response returned while construction remained blocked.

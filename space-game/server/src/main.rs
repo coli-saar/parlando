@@ -1,6 +1,6 @@
 use std::net::{IpAddr, SocketAddr};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use parlando::{GameMetadata, Server};
 use parlando_space_game::{BackAndForthAgentFactory, SpaceGameFactory};
@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let cli = Cli::parse();
-    let build_manifest = space_game_version_manifest();
+    let build_manifest = space_game_version_manifest()?;
     let descriptor = GameMetadata {
         id: "space-game".to_string(),
         name: "Space Game".to_string(),
@@ -48,33 +48,44 @@ async fn main() -> Result<()> {
         .await
 }
 
-fn space_game_version_manifest() -> Value {
+/// Builds release provenance from the compile-time package manifests.
+fn space_game_version_manifest() -> Result<Value> {
     let cargo_toml = include_str!("../Cargo.toml");
     let client_package = include_str!("../../client/package.json");
     let local_warnings = local_dependency_warnings(env!("CARGO_MANIFEST_DIR"), cargo_toml);
-    let client_package_json: Value = serde_json::from_str(client_package).unwrap_or(Value::Null);
-    json!({
+    let client_package_json: Value = serde_json::from_str(client_package)
+        .context("embedded Space Game client package.json is invalid")?;
+    let client_name = client_package_json
+        .get("name")
+        .and_then(Value::as_str)
+        .context("embedded Space Game client package.json has no name")?;
+    let client_version = client_package_json
+        .get("version")
+        .and_then(Value::as_str)
+        .context("embedded Space Game client package.json has no version")?;
+    let parlando_client_version = client_package_json
+        .get("dependencies")
+        .and_then(|deps| deps.get("@coli-saar/parlando-client"))
+        .and_then(Value::as_str)
+        .context("embedded Space Game client package.json has no Parlando dependency")?;
+    Ok(json!({
         "name": env!("CARGO_PKG_NAME"),
         "version": env!("CARGO_PKG_VERSION"),
         "build_time": option_env!("PARLANDO_SPACE_GAME_BUILD_TIME"),
         "git_sha": option_env!("PARLANDO_SPACE_GAME_GIT_SHA"),
         "git_dirty": option_env!("PARLANDO_SPACE_GAME_GIT_DIRTY").unwrap_or("unknown"),
         "client": {
-            "name": client_package_json.get("name").and_then(Value::as_str).unwrap_or("parlando-space-game-client"),
-            "version": client_package_json.get("version").and_then(Value::as_str).unwrap_or("unknown"),
+            "name": client_name,
+            "version": client_version,
             "build_time": option_env!("PARLANDO_SPACE_GAME_BUILD_TIME"),
             "git_sha": option_env!("PARLANDO_SPACE_GAME_GIT_SHA"),
             "git_dirty": option_env!("PARLANDO_SPACE_GAME_GIT_DIRTY").unwrap_or("unknown"),
             "package": "@coli-saar/parlando-client",
-            "package_version": client_package_json
-                .get("dependencies")
-                .and_then(|deps| deps.get("@coli-saar/parlando-client"))
-                .and_then(Value::as_str)
-                .unwrap_or("unknown"),
+            "package_version": parlando_client_version,
         },
         "local_dependency_warnings": local_warnings,
         "warnings": local_warnings,
-    })
+    }))
 }
 
 fn local_dependency_warnings(manifest_dir: &str, cargo_toml: &str) -> Vec<Value> {

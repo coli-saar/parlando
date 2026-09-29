@@ -70,7 +70,7 @@ impl Game for SpaceGame {
         actor: PlayerRole,
     ) -> std::result::Result<Self::State, ActionRejection> {
         validate_action(state, action, actor.as_str()).map_err(|error| {
-            let code = if action.player() != Some(actor.as_str()) {
+            let code = if action.player() != actor.as_str() {
                 "wrong_role"
             } else {
                 "action_unavailable"
@@ -78,14 +78,12 @@ impl Game for SpaceGame {
             debug_assert!(!error.to_string().is_empty());
             ActionRejection::new(code)
         })?;
-        let next = apply_action(state, action).map_err(|_| ActionRejection::new("invalid_action"));
-        if next.is_ok() {
-            let _ = self.logger.log(format!(
-                "accepted Space Game action from role {}",
-                actor.as_str()
-            ));
-        }
-        next
+        let next = apply_action(state, action);
+        let _ = self.logger.log(format!(
+            "accepted Space Game action from role {}",
+            actor.as_str()
+        ));
+        Ok(next)
     }
 
     fn observation(&self, state: &Self::State, player: PlayerRole) -> Self::Observation {

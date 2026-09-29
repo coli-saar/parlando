@@ -29,7 +29,15 @@ struct RuntimeShared<A: Game> {
     runtime_registry: Arc<RwLock<HashMap<String, Weak<AppState<A>>>>>,
     prolific_preflight_cache: Arc<RwLock<HashMap<String, ProlificPreflightCacheEntry>>>,
     router_cache: Arc<RwLock<HashMap<String, MountedExperimentRouters>>>,
-    router_build_locks: Arc<RwLock<HashMap<String, Arc<Mutex<()>>>>>,
+    router_build_locks: RuntimeRouterBuildLocks,
+}
+
+/// Closed set of router construction contexts.
+enum RouterBuildMode<A: Game> {
+    #[cfg(any(test, feature = "internal-tools"))]
+    Standalone,
+    Mounted(RuntimeShared<A>),
+    Dashboard(RuntimeShared<A>),
 }
 
 /// One compiled game's installation-level dispatcher and lazily built experiment routers.
@@ -42,7 +50,7 @@ struct GameHost<A: Game> {
     game_settings: Arc<RwLock<StoredGameSettings>>,
     options_factory: ServeOptionsFactory<A>,
     routers: Arc<RwLock<HashMap<String, MountedExperimentRouters>>>,
-    router_build_locks: Arc<RwLock<HashMap<String, Arc<Mutex<()>>>>>,
+    router_build_locks: RuntimeRouterBuildLocks,
     telemetry: Arc<RuntimeTelemetry>,
     runtime_registry: Arc<RwLock<HashMap<String, Weak<AppState<A>>>>>,
     prolific_preflight_cache: Arc<RwLock<HashMap<String, ProlificPreflightCacheEntry>>>,
@@ -125,7 +133,7 @@ where
             self.game_factory.clone(),
             config,
             options,
-            Some(RuntimeShared {
+            RouterBuildMode::Mounted(RuntimeShared {
                 store: self.store.clone(),
                 admin_auth: self.admin_auth.clone(),
                 game_settings: self.game_settings.clone(),
@@ -135,7 +143,6 @@ where
                 router_cache: self.routers.clone(),
                 router_build_locks: self.router_build_locks.clone(),
             }),
-            true,
         )
         .await?;
         let router = MountedExperimentRouters {
@@ -251,16 +258,14 @@ where
         router_cache: router_cache.clone(),
         router_build_locks: router_build_locks.clone(),
     };
-    let mut admin_config = bootstrap.clone();
-    admin_config.experiment.id = Some("__dashboard__".to_string());
+    let admin_config = bootstrap.clone();
     let mut admin_options = options_factory(&admin_config)?;
     admin_options.game_descriptor = Some(descriptor.clone());
     let admin_router = build_router_with_resources(
         game_factory.clone(),
         admin_config,
         admin_options,
-        Some(shared),
-        false,
+        RouterBuildMode::Dashboard(shared),
     )
     .await?
     .primary;
@@ -355,20 +360,22 @@ pub async fn build_router<A: Game, GF: GameFactory<Game = A>>(
 where
     A::State: Serialize,
 {
-    Ok(
-        build_router_with_resources(Arc::new(game_factory), config, options, None, true)
-            .await?
-            .primary,
+    Ok(build_router_with_resources(
+        Arc::new(game_factory),
+        config,
+        options,
+        RouterBuildMode::Standalone,
     )
+    .await?
+    .primary)
 }
 
-/// Builds one experiment router with optional installation-owned storage and authentication.
+/// Builds a route tree for one of the closed construction modes.
 async fn build_router_with_resources<A: Game>(
     game_factory: Arc<dyn GameFactory<Game = A>>,
     config: ExperimentConfig,
     options: ServeOptions<A>,
-    shared: Option<RuntimeShared<A>>,
-    persist_experiment: bool,
+    mode: RouterBuildMode<A>,
 ) -> Result<BuiltRouters>
 where
     A::State: Serialize,
@@ -376,7 +383,17 @@ where
     config.validate()?;
     validate_game_config_contains_no_secrets(&config.game)?;
     let game_config = parse_game_config(game_factory.as_ref(), &config.game)?;
-    let clean_admin_sessions = shared.is_none();
+    let clean_admin_sessions = match &mode {
+        #[cfg(any(test, feature = "internal-tools"))]
+        RouterBuildMode::Standalone => true,
+        RouterBuildMode::Mounted(_) | RouterBuildMode::Dashboard(_) => false,
+    };
+    let persist_experiment = !matches!(mode, RouterBuildMode::Dashboard(_));
+    let shared = match &mode {
+        #[cfg(any(test, feature = "internal-tools"))]
+        RouterBuildMode::Standalone => None,
+        RouterBuildMode::Mounted(shared) | RouterBuildMode::Dashboard(shared) => Some(shared),
+    };
     let game_descriptor = options
         .game_descriptor
         .clone()
@@ -385,7 +402,7 @@ where
             name: "Embedded game".to_string(),
             version: semver::Version::parse(env!("CARGO_PKG_VERSION"))
                 .expect("parlando package version is semantic"),
-            build_manifest: options.game_version_manifest.clone().unwrap_or(Value::Null),
+            build_manifest: Value::Null,
         });
     game_descriptor.validate()?;
     let speechmatics_api_key = config.speechmatics.api_key.clone();
@@ -395,21 +412,34 @@ where
     } else {
         experiment_store_from_url(&config.database.url).await?
     };
-    let experiment_id = config
-        .experiment
-        .id
-        .clone()
-        .unwrap_or_else(generated_experiment_id);
-    let mounted_runtime = shared.is_some() && persist_experiment;
-    let participant_prefix = mounted_runtime
-        .then(|| format!("/e/{experiment_id}"))
-        .unwrap_or_default();
-    let runtime_admin_prefix = mounted_runtime
-        .then(|| format!("/api/admin/runtime/{experiment_id}"))
-        .unwrap_or_default();
+    let experiment_id = match &mode {
+        RouterBuildMode::Dashboard(_) => String::new(),
+        RouterBuildMode::Mounted(_) => config
+            .experiment
+            .id
+            .clone()
+            .unwrap_or_else(generated_experiment_id),
+        #[cfg(any(test, feature = "internal-tools"))]
+        RouterBuildMode::Standalone => config
+            .experiment
+            .id
+            .clone()
+            .unwrap_or_else(generated_experiment_id),
+    };
+    let mounted_runtime = matches!(mode, RouterBuildMode::Mounted(_));
+    let participant_prefix = if mounted_runtime {
+        format!("/e/{experiment_id}")
+    } else {
+        String::new()
+    };
+    let runtime_admin_prefix = if mounted_runtime {
+        format!("/api/admin/runtime/{experiment_id}")
+    } else {
+        String::new()
+    };
     let participant_path = |path: &str| format!("{participant_prefix}{path}");
     let runtime_admin_path = |path: &str| format!("{runtime_admin_prefix}{path}");
-    let version_manifest = version_manifest(options.game_version_manifest.clone());
+    let version_manifest = version_manifest(Some(game_descriptor.build_manifest.clone()));
     let (lifecycle, config_revision) = if persist_experiment {
         let lifecycle = store
             .ensure_experiment(ExperimentRecord {

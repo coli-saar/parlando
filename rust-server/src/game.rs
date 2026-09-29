@@ -470,36 +470,6 @@ impl PlayerRole {
     }
 }
 
-/// Identifies a participant's runtime seat in a live session.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum Seat {
-    /// The first active player seat.
-    #[serde(rename = "A")]
-    A,
-    /// The second active player seat.
-    #[serde(rename = "B")]
-    B,
-}
-
-impl Seat {
-    /// Returns the stable wire-format seat name.
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::A => "A",
-            Self::B => "B",
-        }
-    }
-
-    /// Converts the runtime seat into the public player role.
-    pub(crate) fn player_role(self) -> PlayerRole {
-        match self {
-            Self::A => PlayerRole::A,
-            Self::B => PlayerRole::B,
-        }
-    }
-}
-
 /// Machine-readable reason why a game rule rejected a typed action.
 ///
 /// The code is part of the game-specific protocol. It must not contain rendered

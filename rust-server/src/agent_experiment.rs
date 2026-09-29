@@ -18,6 +18,7 @@ use crate::{
     agents::{
         configuration_fingerprint, Agent, AgentContext, AgentFactory, AgentIdentity, AgentResponse,
     },
+    canonical_json::canonical_value,
     game::{
         ActionRejection, Game, GameFactory, GameInitializationContext, GameMetadata,
         GameSessionContext, PlayerRole, SecretValues,
@@ -2198,24 +2199,6 @@ fn hash_serializable(value: &impl Serialize) -> Result<String> {
 fn hash_value(value: &Value) -> Result<String> {
     let bytes = serde_json::to_vec(&canonical_value(value))?;
     Ok(format!("sha256-{:x}", Sha256::digest(bytes)))
-}
-
-/// Recursively sorts JSON object keys while preserving array order.
-fn canonical_value(value: &Value) -> Value {
-    match value {
-        Value::Object(object) => {
-            let mut entries = object.iter().collect::<Vec<_>>();
-            entries.sort_by_key(|(key, _)| *key);
-            Value::Object(
-                entries
-                    .into_iter()
-                    .map(|(key, value)| (key.clone(), canonical_value(value)))
-                    .collect(),
-            )
-        }
-        Value::Array(values) => Value::Array(values.iter().map(canonical_value).collect()),
-        _ => value.clone(),
-    }
 }
 
 /// Loads the existing run manifest or atomically creates a new run identity.
