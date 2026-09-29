@@ -75,6 +75,9 @@ use crate::{
     SessionLogger,
 };
 
+/// Fixed time in which two human participants may speak after normal completion.
+const POST_COMPLETION_VOICE_SECONDS: i64 = 60;
+
 /// Validated inputs retained until a live session can supply an agent-scoped logger.
 struct PreparedAgentConstruction<A: Game> {
     session_seed: u64,
@@ -1222,6 +1225,11 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
                     .filter_map(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
                     .map(|value| value.with_timezone(&chrono::Utc))
                     .min();
+                let voice_deadline = session
+                    .voice_ends_at
+                    .as_deref()
+                    .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                    .map(|value| value.with_timezone(&chrono::Utc));
                 let reason = if !session.lifecycle.is_ended() && lifetime_deadline <= now {
                     Some("maximum_lifetime")
                 } else if session.lifecycle == SessionLifecycle::Forming && waiting_deadline <= now
@@ -1236,6 +1244,11 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
                 {
                     Some("idle_timeout")
                 } else if session.lifecycle.is_ended()
+                    && voice_deadline.is_some_and(|deadline| deadline <= now)
+                {
+                    Some("terminal_cleanup")
+                } else if session.lifecycle.is_ended()
+                    && voice_deadline.is_none()
                     && !has_connection
                     && reconnect_deadline.is_some_and(|deadline| deadline <= now)
                 {
@@ -1301,6 +1314,7 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
             }
             broadcast_participant_states(state, &public_session_id).await;
         }
+        shutdown_session_connections(&state.audio_connections, &public_session_id).await;
         state
             .memory
             .write()
@@ -1366,6 +1380,24 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
             .iter()
             .any(|public_session_id| key.starts_with(&format!("{public_session_id}\0")))
     });
+}
+
+/// Cancels every current role-owned transport belonging to one session.
+async fn shutdown_session_connections(
+    connections: &RwLock<HashMap<String, ConnectionControl>>,
+    public_session_id: &str,
+) {
+    let prefix = format!("{public_session_id}:");
+    let shutdowns = connections
+        .read()
+        .await
+        .iter()
+        .filter(|(key, _)| key.starts_with(&prefix))
+        .map(|(_, control)| control.shutdown.clone())
+        .collect::<Vec<_>>();
+    for shutdown in shutdowns {
+        let _ = shutdown.try_send(());
+    }
 }
 
 /// Finalizes sessions left nonterminal by an earlier process before opening new intake.
@@ -3207,6 +3239,7 @@ where
                 public_session_id: stored.public_session_id,
                 role: stored.role,
                 result: stored.result,
+                voice_ends_at: None,
             },
         }));
     }
@@ -3401,6 +3434,7 @@ where
                 public_session_id: stored.public_session_id,
                 role: stored.role,
                 result: stored.result,
+                voice_ends_at: None,
             },
         }));
     }
@@ -3449,6 +3483,7 @@ where
                 public_session_id: stored.public_session_id,
                 role: stored.role,
                 result: stored.result,
+                voice_ends_at: None,
             },
         }));
     }
@@ -3751,6 +3786,7 @@ async fn create_live_session_locked<A: Game>(
             lifetime_deadline_at: timing.lifetime_deadline_at,
             last_meaningful_activity_at: None,
             idle_deadline_at: None,
+            voice_ends_at: None,
             updated_at: waiting_started_at,
         },
     );
@@ -4106,6 +4142,7 @@ where
                 public_session_id: public_session_id.to_string(),
                 role: role.as_str().to_string(),
                 result,
+                voice_ends_at: session.voice_ends_at.clone(),
             }
         }
     };
@@ -4122,6 +4159,9 @@ async fn audio_session<A: Game>(
     let role = participant_role(&state, &public_session_id, &participant_session_id).await?;
     if !state.config.voice.enabled {
         return Ok(Json(AudioSessionPlanResponse::disabled()));
+    }
+    if !session_accepts_audio(&state, &public_session_id).await {
+        return Err(AppError::bad_request("Voice chat is no longer available."));
     }
     let claims = UpgradeTicketClaims {
         public_session_id: public_session_id.clone(),
@@ -9529,6 +9569,10 @@ where
         return Err(anyhow!("Action could not be committed."));
     }
     state.telemetry.record_action_accepted();
+    let keep_voice_open = completed
+        && state.config.voice.enabled
+        && state.config.agents.mode == AgentsMode::HumanVsHuman
+        && state.audio_sessions.has_human_pair(public_session_id).await;
     {
         let mut memory = state.memory.write().await;
         let session = memory
@@ -9537,7 +9581,12 @@ where
             .ok_or_else(|| anyhow!("Session not found."))?;
         session.state = after;
         if completed {
-            session.updated_at = now_iso();
+            let completed_at = chrono::Utc::now();
+            session.updated_at = completed_at.to_rfc3339();
+            session.voice_ends_at = keep_voice_open.then(|| {
+                (completed_at + chrono::Duration::seconds(POST_COMPLETION_VOICE_SECONDS))
+                    .to_rfc3339()
+            });
             session.lifecycle = SessionLifecycle::Ended(
                 session_end.expect("completed transition has a terminal value"),
             );
@@ -10492,13 +10541,21 @@ async fn session_is_active<A: Game>(state: &Arc<AppState<A>>, public_session_id:
         })
 }
 
-/// Allows audio setup while forming but suppresses media during pause or after termination.
+/// Allows ordinary voice relay and the bounded post-completion farewell period.
 async fn session_accepts_audio<A: Game>(state: &Arc<AppState<A>>, public_session_id: &str) -> bool {
+    let now = chrono::Utc::now();
     let memory = state.memory.read().await;
     memory
         .sessions
         .get(public_session_id)
-        .is_some_and(|session| !session.lifecycle.is_ended() && session.pause.is_none())
+        .is_some_and(|session| match &session.lifecycle {
+            SessionLifecycle::Forming | SessionLifecycle::Running => session.pause.is_none(),
+            SessionLifecycle::Ended(_) => session
+                .voice_ends_at
+                .as_deref()
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                .is_some_and(|deadline| deadline.with_timezone(&chrono::Utc) > now),
+        })
 }
 
 /// Sends the targeted authoritative snapshot after a participant becomes active.

@@ -144,7 +144,7 @@ enter the conversation, so do not design participant feedback around word-by-wor
 
 ## Provide the in-game speech controls
 
-The standard participant startup flow handles microphone preparation before room entry. A
+The standard participant startup flow handles microphone preparation before entering a session. A
 participant selects **Prepare voice**, grants browser permission, chooses an input when necessary,
 and sees a level check. The waiting display then reports participant and transcription readiness.
 
@@ -152,6 +152,12 @@ The game's React interface remains responsible for controls needed during play. 
 state and call `setMicrophoneMuted(muted)` from a clearly labelled mute control. The session also
 reports `voiceEnabled`, `voiceStatus`, and voice-preflight state. Muting stops outgoing capture but
 does not stop incoming partner or agent playback.
+
+After a voice-enabled human–human game completes normally, the standard terminal screen keeps the
+existing partner audio relay open for one minute. It shows the server-owned countdown together with
+mute and End voice chat controls. Game input and transcription stop at completion, so speech during
+this farewell period is neither transcribed nor stored. Other session endings and human–agent
+sessions close voice immediately.
 
 Do not make the interface imply functionality that the experiment does not provide. Tell
 participants whether the other seat contains a person or an agent, that live microphone audio is

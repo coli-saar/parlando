@@ -288,6 +288,8 @@ pub enum ParticipantState {
         public_session_id: String,
         role: String,
         result: ParticipantResult,
+        /// End of the optional post-completion voice relay period.
+        voice_ends_at: Option<String>,
     },
 }
 

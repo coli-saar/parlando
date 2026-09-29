@@ -67,7 +67,7 @@ Parlando does not store raw microphone audio. It does not store microphone devic
 
 ## Who receives my communications?
 
-The other role receives the game events and communications intended for that role. If live voice is enabled, the other participant can hear your voice. Please do not record or redistribute another participant's communications. The research team cannot completely prevent a participant from making an independent recording or screenshot.
+The other role receives the game events and communications intended for that role. If live voice is enabled, the other participant can hear your voice. After a two-person game completes normally, the live voice connection may remain open for up to one minute so that you can speak before leaving; speech during this final minute is not transcribed or stored by Parlando. You can mute your microphone or end voice chat immediately. Please do not record or redistribute another participant's communications. The research team cannot completely prevent a participant from making an independent recording or screenshot.
 
 If hosted transcription is enabled, live microphone audio is sent to {{SPEECHMATICS_ENTITY_AND_SERVICE}} in {{SPEECHMATICS_PROCESSING_REGION}} for real-time transcription. Parlando receives the resulting text and timing information. Parlando does not provide its raw-audio stream to any other standard service. Further information about provider retention and transfers: {{SPEECHMATICS_RETENTION_AND_TRANSFER_INFORMATION}}.
 

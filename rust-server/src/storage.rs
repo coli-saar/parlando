@@ -3141,6 +3141,8 @@ pub struct LiveSession<G: Game> {
     pub last_meaningful_activity_at: Option<String>,
     /// Fixed idle deadline derived from the last meaningful activity.
     pub idle_deadline_at: Option<String>,
+    /// Fixed end of the optional post-completion human voice relay period.
+    pub voice_ends_at: Option<String>,
     pub updated_at: String,
 }
 

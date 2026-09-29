@@ -142,6 +142,17 @@ impl AudioSessionRegistry {
             .is_some_and(|peer| peer.generation == generation)
     }
 
+    /// Reports whether both human roles currently own live audio relay connections.
+    pub async fn has_human_pair(&self, public_session_id: &str) -> bool {
+        self.sessions
+            .read()
+            .await
+            .get(public_session_id)
+            .is_some_and(|session| {
+                session.peers.contains_key("A") && session.peers.contains_key("B")
+            })
+    }
+
     /// Relays a frame to the other human role without waiting on a slow browser.
     pub async fn relay_partner(&self, public_session_id: &str, sender_role: &str, bytes: Vec<u8>) {
         let partner_role = match sender_role {
@@ -269,6 +280,19 @@ mod tests {
         assert!(sessions.is_current("session", "A", &new_generation).await);
         sessions.disconnect("session", "A", &new_generation).await;
         assert!(!sessions.is_current("session", "A", &new_generation).await);
+    }
+
+    /// The completion path opens farewell voice only for a complete human pair.
+    #[tokio::test]
+    async fn human_pair_requires_both_audio_roles() {
+        let sessions = AudioSessionRegistry::default();
+        let (a_generation, _a) = sessions.connect("session", "A").await;
+        assert!(!sessions.has_human_pair("session").await);
+        let (b_generation, _b) = sessions.connect("session", "B").await;
+        assert!(sessions.has_human_pair("session").await);
+        sessions.disconnect("session", "B", &b_generation).await;
+        assert!(!sessions.has_human_pair("session").await);
+        sessions.disconnect("session", "A", &a_generation).await;
     }
 
     /// Confirms a saturated peer queue drops new frames without blocking or harming another session.

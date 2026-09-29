@@ -122,10 +122,11 @@ fixture.
 
 ### Waiting for a partner
 
-The waiting-room widget shows the server-owned deadline as a live countdown. It explains that the
-participant may leave immediately or wait until the deadline, and that either route produces the
-same Game did not start/return handling; the dashboard records the longer wait when the deadline
-expires.
+The waiting screen shows the server-owned deadline as a live countdown. It explains that the
+participant may leave immediately or wait until the deadline, and that either route ends the
+session before the game starts and asks the participant to return the Prolific submission. It also
+states that the researcher can issue a partial payment for the time spent waiting; Parlando does not
+promise or issue that payment. The dashboard records the longer wait when the deadline expires.
 
 The waiting duration is not estimated from browser heartbeats. Parlando stores the server timestamps
 `waiting_started_at` and `ended_at` (or the fixed `waiting_deadline_at`) and displays their difference.

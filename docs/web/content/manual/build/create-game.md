@@ -250,8 +250,9 @@ export default function App() {
 }
 ```
 
-`ParticipantApp` handles participant information, declarations, waiting, readiness, reconnection,
-voice preparation, and terminal handoff. Your view reads `session.observation` and sends actions with
+`ParticipantApp` handles participant information, declarations, the waiting countdown, readiness,
+reconnection, voice preparation, terminal handoff, and the one-minute human–human voice period after
+normal completion. Your view reads `session.observation` and sends actions with
 `session.sendAction`. Disable every task control when `interactionEnabled` is false. If the game
 supports typed dialogue, render `session.conversation` and send text with `session.sendMessage`.
 

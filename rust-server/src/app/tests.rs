@@ -4307,6 +4307,100 @@ async fn audio_websocket_relays_pcm_and_commits_one_final_utterance() {
     server.abort();
 }
 
+/// Normal completion records its result immediately while retaining live human audio relay.
+#[tokio::test]
+async fn completed_human_session_keeps_audio_relay_during_farewell_period() {
+    let mut config = voice_enabled_config();
+    config.transcription.enabled = true;
+    config.speechmatics.api_key = "server-only-test-key".to_string();
+    let router = build_router(
+        TinyAdapter,
+        config,
+        ServeOptions {
+            transcription_provider: Some(Arc::new(DuplicateFinalTranscriptionProvider)),
+            ..ServeOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    let (a, b, public_session_id) = create_joined_room(router.clone()).await;
+    let (_, plan_a) = json_request(
+        router.clone(),
+        http::Method::POST,
+        &format!("/api/sessions/{public_session_id}/audio-session"),
+        json!({"participant_session_id":a}),
+    )
+    .await;
+    let (_, plan_b) = json_request(
+        router.clone(),
+        http::Method::POST,
+        &format!("/api/sessions/{public_session_id}/audio-session"),
+        json!({"participant_session_id":b}),
+    )
+    .await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
+    let host = base_url.trim_start_matches("http://");
+    let (mut audio_a, _) = connect_async(format!(
+        "ws://{host}/ws/audio/{public_session_id}?token={}",
+        plan_a["token"].as_str().unwrap()
+    ))
+    .await
+    .unwrap();
+    let (mut audio_b, _) = connect_async(format!(
+        "ws://{host}/ws/audio/{public_session_id}?token={}",
+        plan_b["token"].as_str().unwrap()
+    ))
+    .await
+    .unwrap();
+    wait_for_audio_control(&mut audio_a).await;
+    wait_for_audio_control(&mut audio_b).await;
+    let (mut game_a, _) = connect_async(game_socket_url(&base_url, &public_session_id, &a).await)
+        .await
+        .unwrap();
+    let (mut game_b, _) = connect_async(game_socket_url(&base_url, &public_session_id, &b).await)
+        .await
+        .unwrap();
+    let _ = read_participant_state(&mut game_a, "active").await;
+    let _ = read_participant_state(&mut game_b, "active").await;
+
+    send_ws_json(
+        &mut game_a,
+        json!({"type": "action", "action": {"finish": true}}),
+    )
+    .await;
+    let completed_a = read_participant_state(&mut game_a, "ended").await;
+    let completed_b = read_participant_state(&mut game_b, "ended").await;
+    assert_eq!(completed_a["result"]["outcome"], "completed");
+    assert!(completed_a["voice_ends_at"].as_str().is_some());
+    assert_eq!(completed_b["voice_ends_at"], completed_a["voice_ends_at"]);
+
+    let farewell_frame = AudioFrame {
+        sequence: 0,
+        timestamp_ms: 0,
+        pcm: vec![5; crate::audio::AUDIO_FRAME_BYTES],
+    }
+    .encode();
+    audio_a
+        .send(TungsteniteMessage::Binary(farewell_frame.clone()))
+        .await
+        .unwrap();
+    assert_eq!(read_audio_binary(&mut audio_b).await, farewell_frame);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let (_, export) = json_request(
+        router,
+        http::Method::GET,
+        "/api/admin/export?variant=full",
+        Value::Null,
+    )
+    .await;
+    assert!(!export["session_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event["event_type"] == "conversation_message"));
+    server.abort();
+}
+
 /// Proves that two simultaneous player pairs receive audio only inside their own rooms.
 #[tokio::test]
 async fn audio_websockets_isolate_two_simultaneous_player_pairs() {
@@ -4850,9 +4944,11 @@ async fn explicit_leave_abandons_session_and_notifies_partner() {
     let withdrew = leave_response["participant_state"].clone();
     assert_eq!(withdrew["public_session_id"], public_session_id);
     assert_eq!(withdrew["result"]["outcome"], "left_game");
+    assert!(withdrew["voice_ends_at"].is_null());
     let abandoned = read_participant_state(&mut socket_b, "ended").await;
     assert_eq!(abandoned["public_session_id"], public_session_id);
     assert_eq!(abandoned["result"]["outcome"], "partner_left");
+    assert!(abandoned["voice_ends_at"].is_null());
 
     send_ws_json(
         &mut socket_a,

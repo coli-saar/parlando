@@ -83,7 +83,7 @@ export type ParticipantState<TObservation = unknown, TAction = unknown, TComplet
   | { state: "waiting"; public_session_id: string; role: PlayerRole; waiting_started_at: string; waiting_deadline_at: string; presence: Record<string, unknown> }
   | { state: "active"; public_session_id: string; role: PlayerRole; observation: TObservation; available_actions: TAction[] | null; presence: Record<string, unknown>; idle_deadline_at: string }
   | { state: "paused"; public_session_id: string; role: PlayerRole; reason: ParticipantPauseReason; observation: TObservation; available_actions: TAction[] | null; presence: Record<string, unknown>; idle_deadline_at: string }
-  | { state: "ended"; public_session_id: string; role: PlayerRole; result: ParticipantResult<TObservation, TCompletion> };
+  | { state: "ended"; public_session_id: string; role: PlayerRole; result: ParticipantResult<TObservation, TCompletion>; voice_ends_at?: string | null };
 
 /** Applies a complete snapshot while rejecting impossible lifecycle jumps. */
 export function reduceParticipantState<TObservation, TAction, TCompletion>(
@@ -270,6 +270,9 @@ function requireParticipantState(value: unknown): void {
     if (!isRecord(value.result)) throw new Error("invalid participant result");
     requireOutcome(value.result, "outcome");
     requireString(value.result, "reason");
+    if (value.voice_ends_at !== undefined && value.voice_ends_at !== null && typeof value.voice_ends_at !== "string") {
+      throw new Error("invalid voice_ends_at");
+    }
     return;
   }
   requireField(value, "observation");

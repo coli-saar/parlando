@@ -5,7 +5,7 @@ import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialVoicePreflight, initialVoiceStatus } from "./audio/types";
 import type { ExperimentInfo, ParticipantOutcome, ParticipantState } from "./protocol";
-import { ParticipantAppTestHarness, type GameSession } from "./startup";
+import { FarewellVoiceNotice, ParticipantAppTestHarness, type GameSession } from "./startup";
 
 class FakeWebSocket extends EventTarget {
   static OPEN = 1;
@@ -63,8 +63,8 @@ function game(session: GameSession<{ view: string }, { type: string }, { score: 
   </div>;
 }
 
-beforeEach(() => { FakeWebSocket.instances = []; vi.stubGlobal("WebSocket", FakeWebSocket); Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { enumerateDevices: vi.fn(async () => []), addEventListener: vi.fn(), removeEventListener: vi.fn() } }); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+beforeEach(() => { vi.clearAllMocks(); FakeWebSocket.instances = []; vi.stubGlobal("WebSocket", FakeWebSocket); Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { enumerateDevices: vi.fn(async () => []), addEventListener: vi.fn(), removeEventListener: vi.fn() } }); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("ParticipantApp participant state machine", () => {
   it("restores a completed participant directly to the terminal outcome", async () => {
@@ -227,6 +227,30 @@ describe("ParticipantApp participant state machine", () => {
     expect(client.getGameSession).toHaveBeenCalledTimes(2);
   });
 
+  it("explains a direct waiting deadline without mentioning Prolific payment", async () => {
+    const client = api();
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
+
+    expect(await screen.findByText(/session will end without starting the game/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Prolific|pay you/i)).not.toBeInTheDocument();
+  });
+
+  it("explains the Prolific return and manual waiting payment", async () => {
+    const client = api();
+    client.getExperiment.mockResolvedValue({
+      ...config(),
+      recruitment: { provider: "prolific", decline_url: null }
+    });
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
+
+    expect(await screen.findByText(/asked to return your submission/i)).toBeInTheDocument();
+    expect(screen.getByText(/researcher can issue a partial payment for the time you waited/i)).toBeInTheDocument();
+  });
+
   it.each<[ParticipantOutcome, RegExp]>([
     ["completed", /responses have been recorded/i],
     ["left_waiting_room", /before a playable game began/i],
@@ -296,5 +320,60 @@ describe("ParticipantApp participant state machine", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy Prolific completion code" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("GREENOWL"));
     expect(await screen.findByText("Copied to clipboard.")).toBeInTheDocument();
+  });
+
+  it("keeps connected voice open after normal completion until the participant ends it", async () => {
+    const client = api();
+    const connectedStatus = { ...initialVoiceStatus, connected: true, microphoneEnabled: true, message: "Microphone live" };
+    const farewellAudio = {
+      ...audio,
+      disconnect: vi.fn(async () => undefined),
+      snapshot: () => ({ voiceStatus: connectedStatus, voicePreflight: initialVoicePreflight }),
+      subscribe: (listener: (value: unknown) => void) => { listener({ voiceStatus: connectedStatus, voicePreflight: initialVoicePreflight }); return () => undefined; }
+    };
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => farewellAudio as never} renderGame={game} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    act(() => {
+      socket.open();
+      socket.message({ protocol_version: 2, type: "participant_state", participant_state: active });
+      socket.message({
+        protocol_version: 2,
+        type: "participant_state",
+        participant_state: {
+          state: "ended",
+          public_session_id: "ROOM1",
+          role: "A",
+          voice_ends_at: "2099-01-01T00:01:00Z",
+          result: { outcome: "completed", reason: "game_completed", completion: null, final_observation: { view: "final" }, handoff: null }
+        }
+      });
+    });
+
+    expect(await screen.findByText("Voice chat remains open")).toBeInTheDocument();
+    expect(screen.getByText(/not transcribed or stored/i)).toBeInTheDocument();
+    expect(farewellAudio.disconnect).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "End voice chat" }));
+    await waitFor(() => expect(farewellAudio.disconnect).toHaveBeenCalledWith(true));
+  });
+});
+
+describe("FarewellVoiceNotice", () => {
+  it("closes voice when the authoritative deadline arrives", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-28T20:00:00Z"));
+    const onEnd = vi.fn();
+    render(<FarewellVoiceNotice
+      deadlineAt="2026-09-28T20:00:02Z"
+      onEnd={onEnd}
+      onMutedChange={vi.fn()}
+      status={{ ...initialVoiceStatus, connected: true, microphoneEnabled: true }}
+    />);
+
+    expect(screen.getByText("0:02 remaining")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(2_000));
+    expect(onEnd).toHaveBeenCalledOnce();
+    expect(screen.getByText("Voice chat has closed.")).toBeInTheDocument();
   });
 });

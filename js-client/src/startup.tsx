@@ -9,7 +9,7 @@ import {
   type VoicePreflight,
   type VoiceStatus
 } from "./audio/types.js";
-import { experimentAllowsIntake, requiredConsentsAccepted } from "./helpers.js";
+import { experimentAllowsIntake, microphoneMuteButtonLabel, requiredConsentsAccepted } from "./helpers.js";
 import { MicrophoneLevelMeter, TranscriptionProgress } from "./voiceComponents.js";
 import {
   ParticipantClient,
@@ -331,7 +331,9 @@ function ParticipantAppRuntime<
           );
           if (message.participant_state.state === "ended") {
             reconnectEnabledRef.current = false;
-            void audioController.disconnect(true);
+            if (!farewellVoiceIsOpen(message.participant_state)) {
+              void audioController.disconnect(true);
+            }
             socket.close();
           }
           return;
@@ -469,9 +471,10 @@ function ParticipantAppRuntime<
     }
   }, [audioController, audioInputs, refreshAudioInputs, enabled]);
 
-  /** Builds the current room-bound context shared by voice connection and mute operations. */
+  /** Builds the current session-bound context shared by voice connection and mute operations. */
   const currentAudioContext = useCallback((): AudioSessionContext | null => {
-    if (!session || session.participantState.state === "registered" || session.participantState.state === "ended") return null;
+    if (!session || session.participantState.state === "registered") return null;
+    if (session.participantState.state === "ended" && !farewellVoiceIsOpen(session.participantState)) return null;
     const participantState = session.participantState;
     const selectedAudioInput = audioInputs.find((device) => device.deviceId === selectedAudioInputId);
     const logVoice = (event: string, metadata: Record<string, unknown> = {}) => {
@@ -628,6 +631,14 @@ function ParticipantAppRuntime<
         completionContent={result.outcome === "completed" && result.completion !== null
           ? renderCompletion?.(result.completion)
           : null}
+        farewellContent={result.outcome === "completed" && session.participantState.voice_ends_at ? (
+          <FarewellVoiceNotice
+            deadlineAt={session.participantState.voice_ends_at}
+            onEnd={() => void audioController.disconnect(true)}
+            onMutedChange={setMicrophoneMuted}
+            status={status}
+          />
+        ) : null}
       />
     );
   }
@@ -823,8 +834,8 @@ export function WaitingRoomNotice({
   const remainingMinutes = Math.floor(remainingSeconds / 60);
   const seconds = remainingSeconds % 60;
   const terminalGuidance = prolific
-    ? "If you leave now or the countdown expires, Parlando will end this waiting session and show your Game did not start completion path for returning to Prolific."
-    : "If you leave now or the countdown expires, Parlando will record that the game did not start.";
+    ? "If no partner joins, or you leave now, the game will not start. You will return to Prolific and be asked to return your submission. The researcher can issue a partial payment for the time you waited."
+    : "If no partner joins, or you leave now, this session will end without starting the game.";
   return (
     <section aria-live="polite" className="parlando-waiting-room" role="status">
       <strong>Waiting for your partner</strong>
@@ -876,13 +887,15 @@ function SessionOutcomePanel({
   reason,
   handoff,
   recruitment,
-  completionContent
+  completionContent,
+  farewellContent
 }: {
   outcome: ParticipantOutcome | null;
   reason: string | null;
   handoff: RecruitmentHandoff | null;
   recruitment?: ExperimentInfo["recruitment"];
   completionContent?: ReactNode;
+  farewellContent?: ReactNode;
 }) {
   const heading = outcome === "completed" ? "Session complete" : "Session ended";
   return (
@@ -892,11 +905,79 @@ function SessionOutcomePanel({
       {completionContent && (
         <div className="parlando-game-completion">{completionContent}</div>
       )}
+      {farewellContent}
       {handoff && (
         <ProlificHandoff handoff={handoff} />
       )}
     </section>
   );
+}
+
+/** Standard terminal notice for the bounded participant-to-participant voice period. */
+export function FarewellVoiceNotice({
+  deadlineAt,
+  onEnd,
+  onMutedChange,
+  status
+}: {
+  deadlineAt: string;
+  onEnd: () => void;
+  onMutedChange: (muted: boolean) => void;
+  status: VoiceStatus;
+}) {
+  const [now, setNow] = useState(Date.now());
+  const endedRef = useRef(false);
+  const remainingSeconds = Math.max(0, Math.ceil((Date.parse(deadlineAt) - now) / 1_000));
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    if (remainingSeconds > 0 || endedRef.current) return;
+    endedRef.current = true;
+    onEnd();
+  }, [onEnd, remainingSeconds]);
+  const muted = status.connected && !status.microphoneEnabled;
+  return (
+    <section className="parlando-farewell-voice">
+      <strong>Voice chat remains open</strong>
+      {remainingSeconds > 0 && status.connected ? (
+        <>
+          <span>{formatCountdown(remainingSeconds)} remaining</span>
+          <span>You can talk with your partner until the timer reaches zero. This conversation is not transcribed or stored.</span>
+          <div className="parlando-farewell-actions">
+            <button
+              aria-pressed={muted}
+              className={`microphone-mute-button ${muted ? "muted" : "live"}`}
+              disabled={status.microphoneChanging}
+              onClick={() => onMutedChange(!muted)}
+              type="button"
+            >
+              {microphoneMuteButtonLabel(status)}
+            </button>
+            <button onClick={onEnd} type="button">End voice chat</button>
+          </div>
+        </>
+      ) : (
+        <span>Voice chat has closed.</span>
+      )}
+    </section>
+  );
+}
+
+/** Reports whether an ended participant snapshot still authorizes farewell voice. */
+export function farewellVoiceIsOpen(
+  state: { result: { outcome: ParticipantOutcome }; voice_ends_at?: string | null },
+  now = Date.now()
+): boolean {
+  return state.result.outcome === "completed"
+    && typeof state.voice_ends_at === "string"
+    && Date.parse(state.voice_ends_at) > now;
+}
+
+/** Formats one non-negative countdown as minutes and two-digit seconds. */
+function formatCountdown(seconds: number): string {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 /** Premade Prolific completion-code widget appended to a game's terminal content. */

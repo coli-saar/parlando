@@ -64,6 +64,13 @@ Microphone preparation happens before room entry. Waiting-room startup reuses th
 
 Mute is a participant-controlled transport preference rather than a voice disconnect. The browser preserves it across automatic audio reconnection, continues to play partner or agent audio, and shows the still-local microphone level in a colorless meter with an explicit muted label. Quiet audio does not determine transport liveness; the game channel owns heartbeat-based liveness independently. A deliberate leave resets the next session to the default live-microphone state.
 
+Normal completion of a voice-enabled human–human session keeps the two existing browser audio
+connections open for a fixed 60-second farewell period. The session result is already final, and
+the server rejects further game input. It relays PCM between the participants without sending those
+frames to transcription, then closes both audio connections at the server-owned deadline. Other
+terminal causes, human–agent sessions, and completions without both audio roles connected receive no
+farewell period.
+
 Agent TTS is finite audio rather than a naturally clocked microphone. The server sends the initial jitter-buffer window immediately, then schedules later frames against absolute 20 ms deadlines. Absolute deadlines prevent per-frame processing and timer overhead from accumulating until the browser buffer runs dry.
 
 ## Transcription Boundary

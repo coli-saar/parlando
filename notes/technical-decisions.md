@@ -3479,3 +3479,27 @@ Decision: Show “Loading…” only before the first Progress response. Retain 
 during later requests and transient failures. Compare the complete response projection with the
 last rendered projection and rebuild the chart and log only when it changes. Reset that comparison
 when the user selects another experiment. Manual Prolific refresh uses the same update path.
+
+## 2026-09-28: Keep waiting and post-completion guidance in the shared participant client
+
+Context: The shared participant client already received the server-owned waiting start and deadline
+and rendered a countdown, but its explanation exposed the internal Prolific completion-path model
+and did not mention waiting compensation. Normal game completion immediately disconnected the
+audio transport, leaving two human participants no time to react or say goodbye.
+
+Decision: Keep both experiences in `js-client` so games require no code changes. The waiting screen
+explains the concrete consequence of leaving or reaching the deadline. Only Prolific intake mentions
+returning the submission and researcher-issued payment for waiting; Parlando does not promise or
+issue that payment. On normal completion of a voice-enabled human–human session, commit the terminal
+result immediately and attach a server-owned deadline 60 seconds later only when both audio roles
+are connected. Keep partner audio relay available until that deadline while rejecting game input
+and suppressing transcription. The terminal client renders the countdown, mute control, and an
+explicit End voice chat action. All other terminal causes and human–agent sessions close voice
+immediately.
+
+Tradeoffs and risks: The farewell period is transient transport state, not a new session lifecycle
+state or durable database value. A server restart therefore ends it early without affecting the
+recorded result. The server, rather than the browser timer, enforces the deadline so background-tab
+timer throttling cannot extend microphone relay. Post-completion audio is relayed but neither raw
+audio nor transcript text is stored. The Prolific completion control remains immediately available;
+following it ends the optional farewell through normal page teardown.
