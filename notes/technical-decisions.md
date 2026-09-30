@@ -3713,3 +3713,155 @@ when the gated factory is entered. Scheduler yields, polling intervals, and elap
 do not establish task ordering and are not used as evidence in this test. A separate runtime test
 already covers the agent eventually joining after construction, so this test ends after proving
 that the HTTP response returned while construction remained blocked.
+
+## 2026-09-29: Remove private Rust indirection without changing extension APIs
+
+Context: A source-level review found private helpers with long positional argument lists, output
+parameters, duplicated event-record construction, transport wrappers in domain helpers, redundant
+trait bounds, cloning dashboard projections, and request builders that resolved the same remote
+agent state twice. These were implementation smells rather than missing runtime behavior.
+
+Decision: Keep the exported `Game`, `GameFactory`, `Agent`, `AgentFactory`, experiment-runner result,
+and protocol types unchanged. Inside the headless runner, share one serialized decision input
+between trace and trajectory capture, group the values shared by action application in a private
+execution context, and return an explicit accepted-or-rejected action result. Build session event
+records through one required constructor and let best-effort callers choose to discard its error.
+Dashboard bundles borrow typed event summaries until JSON serialization. Internal conversation
+commit code returns its domain response directly, while HTTP boundaries remain responsible for
+`Json`. Remote decision requests receive an already resolved agent identity.
+
+Tradeoffs: The private execution context is deliberately limited to the runner operations that
+actually share its fields; it is not a new public framework or extension point. Borrowed dashboard
+bundles have lifetimes tied to the event slice, which is appropriate because they are serialized
+within the same call. Focused tests preserve remote affordance presence, provider-secret status
+shape, runner lifecycle and trajectory behavior, dashboard bundle output, and conversation-event
+persistence.
+
+## 2026-09-30: Preserve complete output for every coordinated E2E layer
+
+Context: A live contract failure was followed by successful browser and Prolific suites. The
+coordinator preserved the failing status, but its combined report had no saved contract output,
+so the original assertion could not be recovered from artifacts.
+
+Decision: Give each `make test-e2e` invocation a unique directory in `target/e2e-runs`. Stream
+each layer's combined stdout and stderr through `tee` into its own log. Bash `pipefail` preserves
+test failures through that pipeline, and later layers still execute. Save a run-specific report
+and structured exit statuses, and link every log from the latest combined report. Copy the browser
+report into the run directory and resolve the Prolific report from this run's announced path
+instead of selecting an unrelated newest artifact.
+
+Validation: Deterministic subprocess tests exercise the real Make recipe with a contract failure
+and with all layers succeeding. They verify stderr retention, exit-status propagation, continued
+execution, report links, and rejection of stale Prolific artifacts. Existing runs cannot recover
+output that was never logged; subsequent runs retain it.
+
+## 2026-09-30: Diagnose the audio contract activation race
+
+Context: The audio contract sometimes relays marker 1 to the partner without recording it in
+transcription. An instrumented failure recorded only role-B marker 9 and role-A marker 3.
+The transcription Ready handler sends its status before marking participant audio readiness
+and completing durable game activation. Relay accepts forming sessions; transcription requires
+a running, unpaused session. The test treated provider readiness as proof of game activation.
+
+Decision: Retain recorded-frame details in assertion failures. A temporary diagnostic change
+waited for authoritative participant state `active` before capture; all ten repeated runs passed.
+Remove that temporary change after the experiment. The correction should synchronize capture
+with the active game state, rather than delay capture for an arbitrary duration or relax the
+server's transcription lifecycle gate. This diagnosis does not change runtime behavior.
+
+## 2026-09-30: Add deliberately failing readiness regression tests
+
+Context: Existing agent delivery tests wait for an internal `agent_started` event after the
+public active notification. This can conceal activation preceding usable agent initialization.
+The user requested regression tests now, leaving production fixes for a later change.
+
+Decision: Add a recording agent with explicit construction/start gates and callback channels.
+Test that blocked start keeps the public session waiting and that the first action and message
+after public activation are delivered exactly once, with no internal readiness wait. Exercise
+leave during both construction and start, checking disposal and preservation of the terminal
+result; setup-time departure must be classified as leaving the waiting room. Strengthen the
+existing start-failure test to reject any intermediate public active state and replace its
+shutdown polling with a notification.
+
+For audio, preserve the current active-game transcription boundary. Hold activation open by
+withholding game connections, verify forming-room relay without transcription, then send the
+first frame immediately after the public active notification. A recording transcription peer
+reports only after receiving ordered Finish, so neither assertion relies on a sleep. This test
+does not claim provider readiness alone means the game is active or weaken the existing JavaScript
+mute contract. No public API or production code is changed.
+
+Expected current failures: blocked agent start already advertises `active`; leave during blocked
+start yields `left_game` rather than `left_waiting_room`; failed start advertises activation before
+ending. Late-construction disposal and the explicit audio lifecycle boundary currently pass.
+Handshake and callback timeouts bound failed execution; elapsed time does not establish ordering.
+
+Validation: The full Rust library suite completed with 223 passing tests and exactly the three
+expected failures above. Three further focused repetitions produced the same failures each time,
+with the audio boundary and late-construction cleanup passing every repetition. Full output is
+saved in `target/readiness-tests/full-rust.log`; focused and repeated runs have separate logs in
+the same directory. The failing tests are enabled, not ignored or converted into expected panics.
+
+## 2026-09-30: Make readiness follow usable agent and transcription state
+
+Context: The new readiness tests showed that the server activated the game before agent start
+completed, misclassified departure during start as `left_game`, and advertised an active game
+even when start failed. The JavaScript audio contract also exposed transcription readiness being
+published before the durable forming-to-running transition.
+
+Decision: Attach a constructed agent with `ready=false` and give its task ownership of start,
+execution, and shutdown. Run start without holding the session transition lock, so leave and
+expiry remain possible. After successful start, acquire that lock, verify the session is still
+forming, install the inbox, and mark the participant ready. Failed or cancelled setup never
+marks readiness and always reaches shutdown. Remove the pending-agent registry and the path
+which launched initialization after game activation; initialization now has one owner.
+
+Activation queues an internal Activated event before public input can arrive. The agent waits
+for that event and the activation transition lock before making its initial decision. Thus it
+cannot act before activation snapshots are published, and immediate participant observations
+are queued behind activation rather than silently omitted for a missing inbox. The callback
+API for games and agents is unchanged; start receives the forming session's initial observation.
+
+Transcription provider readiness marks internal audio setup complete, but client-facing
+transcription readiness requires a committed running, unpaused session. Both audio control
+messages and game-channel voice status use that condition. Activation updates all participant
+audio sockets, including peers whose provider finished earlier. Forming-room voice relay remains
+supported and untranscribed; this is now explicitly distinguished from transcription readiness.
+The audio regression checks both false readiness during formation and true readiness after
+activation, and the original JavaScript mute contract needs no added wait.
+
+Tradeoffs: Initialization can begin before the human/audio connections finish, but autonomous
+decisions cannot. Cancellation during a start callback remains bounded by the configured start
+timeout; after it returns, terminal state is rechecked and the agent is disposed of. No database
+schema, public trait, or protocol shape changes are needed.
+
+Validation: All 226 Rust library tests pass, including the three previously failing regressions.
+The complete `make test-e2e` gate exited zero: 119 JavaScript tests, 8 live contracts, 13 browser
+scenarios, and 35 Prolific scenarios pass, alongside the Rust layer and logging regression tests.
+The original JavaScript audio mute contract passed ten further consecutive runs with its driver
+unchanged. The separate runtime integration suite passed all five tests, including the remote
+gRPC agent and Speechmatics streaming contracts. The immutable gate report and all layer logs
+are in `target/e2e-runs/20260930-072240-yH5FZj`; focused diagnostic logs are in
+`target/readiness-tests`.
+
+## 2026-09-30: Keep the E2E reporter usable with the maintainer's Python 3.9
+
+Context: The E2E gate passed with the agent shell's Homebrew Python 3.14.6, but its logging
+prerequisite failed in the maintainer's Conda base environment (Python 3.9.13). The fixture's
+report writer used `zip(strict=True)`, introduced in Python 3.10. The resulting subprocess
+TypeError was hidden by the fixture subsequently indexing the missing report and raising KeyError.
+
+Decision: Remove the unnecessary strict argument; the reporter already checks the exact CLI
+argument count before pairing its five statuses with the five layers. No interpreter switching,
+version fallback, or new dependency is needed. Assert report existence with the coordinator's
+captured stdout/stderr before inspecting report contents, exposing the original failure if
+generation fails again. The success and failure-path logging tests pass on both Python 3.9.13
+and 3.14.6. Prior full-gate validation applied only to the agent interpreter; the full gate is
+being revalidated explicitly with `/opt/anaconda3/bin/python3`.
+
+The combined report also records the interpreter version and executable, and the subprocess tests
+verify that metadata. This makes environment-specific validation evidence visible in the artifact.
+
+Validation: The full `make test-e2e PYTHON=/opt/anaconda3/bin/python3` completed with exit zero:
+all five layers pass, including 13 browser scenarios and 35 Prolific scenarios. Its immutable
+report at `target/e2e-runs/20260930-073933-Smfa5j/report.md` records Python 3.9.13 and
+`/opt/anaconda3/bin/python3`. No Conda environment change is required to run the default command.

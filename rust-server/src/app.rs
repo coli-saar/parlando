@@ -90,7 +90,7 @@ struct PreparedAgentConstruction<A: Game> {
 }
 
 /// A constructed agent and the validated settings needed by its runtime task.
-struct PendingAgent<A: Game> {
+struct AgentTaskInput<A: Game> {
     agent: Box<dyn Agent<A> + Send>,
     timeout: f64,
     invalid_action_limit: usize,
@@ -1077,10 +1077,7 @@ async fn expire_live_session<A: Game>(
     state: &Arc<AppState<A>>,
     public_session_id: &str,
     reason: &str,
-) -> Result<bool>
-where
-    A::State: Serialize,
-{
+) -> Result<bool> {
     let (event, session_end) = {
         let memory = state.memory.read().await;
         let session = memory
@@ -1337,24 +1334,6 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
             .iter()
             .any(|public_session_id| key.starts_with(&format!("{public_session_id}:")))
     });
-    let pending_agents = {
-        let mut pending = state.pending_agents.lock().await;
-        let keys = pending
-            .keys()
-            .filter(|key| {
-                removed
-                    .iter()
-                    .any(|public_session_id| key.starts_with(&format!("{public_session_id}:")))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        keys.into_iter()
-            .filter_map(|key| pending.remove(&key))
-            .collect::<Vec<_>>()
-    };
-    for mut pending in pending_agents {
-        let _ = tokio::time::timeout(Duration::from_secs(5), pending.agent.shutdown()).await;
-    }
     state.game_connections.write().await.retain(|key, _| {
         !removed
             .iter()
@@ -1391,10 +1370,7 @@ async fn shutdown_session_connections(
 }
 
 /// Finalizes sessions left nonterminal by an earlier process before opening new intake.
-async fn finalize_interrupted_sessions<A: Game>(state: &Arc<AppState<A>>) -> Result<()>
-where
-    A::State: Serialize,
-{
+async fn finalize_interrupted_sessions<A: Game>(state: &Arc<AppState<A>>) -> Result<()> {
     let sessions = state
         .store
         .recent_sessions(&state.experiment_id, 10_000)
@@ -1897,7 +1873,6 @@ pub struct AppState<A: Game> {
     /// Agent choices registered by the compiled server and rendered by the dashboard.
     pub agent_definitions: Vec<AgentDefinition>,
     pub started_agents: RwLock<HashSet<String>>,
-    pending_agents: Mutex<HashMap<String, PendingAgent<A>>>,
     agent_inboxes: RwLock<HashMap<String, mpsc::Sender<AgentObservation<A>>>>,
     pub tts_provider: Option<Arc<dyn StreamingTtsProvider>>,
     pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
@@ -2068,6 +2043,8 @@ use telemetry::{
 
 /// Event delivered to one started agent instance.
 enum AgentObservation<A: Game> {
+    /// Starts decision processing after the session's activation has been committed.
+    Activated,
     /// Accepted action plus role-specific state snapshot after the action.
     Action {
         actor: PlayerRole,
@@ -2115,43 +2092,19 @@ async fn persist_session_event<A: Game>(
     payload: Value,
     game_state: Option<Value>,
 ) {
-    let resolved = {
-        let memory = state.memory.read().await;
-        let Some(session) = memory.sessions.get(public_session_id) else {
-            return;
-        };
-        let actor = participant_session_id.and_then(|id| {
-            session.participants.get(id).map(|participant| {
-                (
-                    participant.participant_id,
-                    participant.role.as_str().to_string(),
-                )
-            })
-        });
-        Some((session.experiment_id.clone(), session.session_id, actor))
-    };
-    let Some((experiment_id, session_id, actor)) = resolved else {
-        return;
-    };
-    if session_id <= 0 {
-        return;
-    }
-    let (actor_participant_id, actor_role) = actor
-        .map(|(participant_id, role)| (Some(participant_id), Some(role)))
-        .unwrap_or((None, None));
-    persist_event(
+    let Ok(record) = session_event_record(
+        state,
+        public_session_id,
+        participant_session_id,
         event_type,
-        state.store.append_session_event(SessionEventRecord {
-            experiment_id,
-            session_id,
-            event_type: event_type.to_string(),
-            actor_participant_id,
-            actor_role,
-            payload,
-            game_state,
-        }),
+        payload,
+        game_state,
     )
-    .await;
+    .await
+    else {
+        return;
+    };
+    persist_event(event_type, state.store.append_session_event(record)).await;
 }
 
 /// Appends a session event and propagates any persistence failure to the caller.
@@ -3203,10 +3156,7 @@ async fn create_session<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     principal: Option<Extension<ParticipantPrincipal>>,
     Json(_request): Json<CreateSessionRequest>,
-) -> Result<Json<CreateSessionResponse>, AppError>
-where
-    A::State: Serialize,
-{
+) -> Result<Json<CreateSessionResponse>, AppError> {
     let participant_session_id = authenticated_participant_id(principal)?;
     let existing = {
         let memory = state.memory.read().await;
@@ -3399,10 +3349,7 @@ where
 async fn get_participant_state<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     principal: Option<Extension<ParticipantPrincipal>>,
-) -> Result<Json<ParticipantStateResponse>, AppError>
-where
-    A::State: Serialize,
-{
+) -> Result<Json<ParticipantStateResponse>, AppError> {
     let participant_session_id = authenticated_participant_id(principal)?;
     let live = {
         let memory = state.memory.read().await;
@@ -3442,10 +3389,7 @@ async fn leave_session<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     principal: Option<Extension<ParticipantPrincipal>>,
     Path(public_session_id): Path<String>,
-) -> Result<Json<ParticipantStateResponse>, AppError>
-where
-    A::State: Serialize,
-{
+) -> Result<Json<ParticipantStateResponse>, AppError> {
     let participant_session_id = authenticated_participant_id(principal)?;
     let role = {
         let memory = state.memory.read().await;
@@ -3830,9 +3774,7 @@ async fn construct_and_join_agent<A: Game>(
     state: Arc<AppState<A>>,
     public_session_id: String,
     prepared: PreparedAgentConstruction<A>,
-) where
-    A::State: Serialize,
-{
+) {
     if let Err(error) = try_construct_and_join_agent(&state, &public_session_id, prepared).await {
         tracing::error!(message = %error.message, %public_session_id, "software agent could not join its reserved session");
         let _ = expire_live_session(&state, &public_session_id, "agent_construction_failed").await;
@@ -3846,10 +3788,7 @@ async fn try_construct_and_join_agent<A: Game>(
     state: &Arc<AppState<A>>,
     public_session_id: &str,
     prepared: PreparedAgentConstruction<A>,
-) -> Result<(), AppError>
-where
-    A::State: Serialize,
-{
+) -> Result<(), AppError> {
     let (purpose, logger) = {
         let memory = state.memory.read().await;
         let session = memory
@@ -3895,7 +3834,7 @@ where
         agent_instance_secrets: prepared.agent_instance_secrets,
         logger: logger.for_agent(participant_id, PlayerRole::B),
     };
-    let agent = match tokio::time::timeout(
+    let mut agent = match tokio::time::timeout(
         Duration::from_secs_f64(prepared.timeout),
         prepared.factory.create(context),
     )
@@ -3918,16 +3857,6 @@ where
     let event_metadata = agent_event_metadata(&event_metadata);
     let transition_lock = session_transition_lock(state, public_session_id).await;
     let transition_guard = transition_lock.lock().await;
-    let pending_key = agent_key(public_session_id, &agent_session_id);
-    state.pending_agents.lock().await.insert(
-        pending_key.clone(),
-        PendingAgent {
-            agent,
-            timeout: prepared.timeout,
-            invalid_action_limit: prepared.invalid_action_limit,
-            metadata: event_metadata.clone(),
-        },
-    );
     let attach_result = {
         let mut memory = state.memory.write().await;
         let runtime_agent = memory.participants.get(&agent_session_id).cloned();
@@ -3950,7 +3879,7 @@ where
                         source: "agent".to_string(),
                         role: PlayerRole::B,
                         connected: true,
-                        ready: true,
+                        ready: false,
                         audio_ready: true,
                         consent_decisions: HashMap::new(),
                         joined_at: now_iso(),
@@ -3964,9 +3893,7 @@ where
         }
     };
     if let Err(error) = attach_result {
-        if let Some(mut pending) = state.pending_agents.lock().await.remove(&pending_key) {
-            let _ = pending.agent.shutdown().await;
-        }
+        let _ = tokio::time::timeout(Duration::from_secs(5), agent.shutdown()).await;
         return Err(error);
     }
     if let Err(error) =
@@ -3981,9 +3908,7 @@ where
         {
             session.participants.remove(&agent_session_id);
         }
-        if let Some(mut pending) = state.pending_agents.lock().await.remove(&pending_key) {
-            let _ = pending.agent.shutdown().await;
-        }
+        let _ = tokio::time::timeout(Duration::from_secs(5), agent.shutdown()).await;
         return Err(AppError::from(error));
     }
     persist_session_event(
@@ -3997,7 +3922,19 @@ where
     .await;
     drop(transition_guard);
     broadcast_participant_states(state, public_session_id).await;
-    maybe_start_game(state.clone(), public_session_id).await;
+    start_agent_task(
+        state.clone(),
+        public_session_id.to_string(),
+        agent_session_id,
+        PlayerRole::B,
+        AgentTaskInput {
+            agent,
+            timeout: prepared.timeout,
+            invalid_action_limit: prepared.invalid_action_limit,
+            metadata: event_metadata,
+        },
+    )
+    .await;
     Ok(())
 }
 
@@ -4013,10 +3950,7 @@ async fn participant_view<A: Game>(
     state: &Arc<AppState<A>>,
     public_session_id: &str,
     role: PlayerRole,
-) -> Result<ParticipantView, AppError>
-where
-    A::State: Serialize,
-{
+) -> Result<ParticipantView, AppError> {
     let memory = state.memory.read().await;
     let session = memory
         .sessions
@@ -4061,10 +3995,7 @@ async fn participant_state_response<A: Game>(
     state: &Arc<AppState<A>>,
     public_session_id: &str,
     role: PlayerRole,
-) -> Result<ParticipantStateResponse, AppError>
-where
-    A::State: Serialize,
-{
+) -> Result<ParticipantStateResponse, AppError> {
     let memory = state.memory.read().await;
     let session = memory
         .sessions
@@ -4385,7 +4316,7 @@ async fn commit_conversation_message<A: Game>(
     text: String,
     source_message_id: Option<String>,
     metadata: Value,
-) -> Result<Json<ConversationMessageResponse>, AppError> {
+) -> Result<ConversationMessageResponse, AppError> {
     require_session(state, public_session_id).await?;
     ensure_participant_interaction_active(state, public_session_id).await?;
     if text.chars().count() > 4_000 {
@@ -4434,7 +4365,7 @@ async fn commit_conversation_message<A: Game>(
         state.telemetry.record_chat_accepted();
     }
     notify_agents_of_message(state, public_session_id, sender_role, message.text.clone()).await;
-    Ok(Json(message))
+    Ok(message)
 }
 
 /// Rejects meaningful participant input unless the projected lifecycle is exactly `Active`.
@@ -6035,23 +5966,17 @@ async fn admin_experiment_config<A: Game>(
 
 /// Describes secret availability without returning credential values.
 fn configured_provider_secret_statuses(stored: &HashMap<String, String>) -> Vec<Value> {
-    vec![
-        json!({
-            "key": "speechmatics.api_key",
-            "configured": stored.contains_key("speechmatics.api_key"),
-            "source": if stored.contains_key("speechmatics.api_key") { "game" } else { "missing" },
-        }),
-        json!({
-            "key": "tts.api_key",
-            "configured": stored.contains_key("tts.api_key"),
-            "source": if stored.contains_key("tts.api_key") { "game" } else { "missing" },
-        }),
-        json!({
-            "key": "prolific.api_token",
-            "configured": stored.contains_key("prolific.api_token"),
-            "source": if stored.contains_key("prolific.api_token") { "game" } else { "missing" },
-        }),
-    ]
+    ["speechmatics.api_key", "tts.api_key", "prolific.api_token"]
+        .into_iter()
+        .map(|key| {
+            let configured = stored.contains_key(key);
+            json!({
+                "key": key,
+                "configured": configured,
+                "source": if configured { "game" } else { "missing" },
+            })
+        })
+        .collect()
 }
 
 /// Describes configured experiment-owned game secrets without revealing values.
@@ -6940,11 +6865,11 @@ fn admin_event_bundles(events: &[AdminEventSummary]) -> Vec<Value> {
     {
         let kind = admin_bundle_kind(event);
         let role = admin_event_role(event);
-        let key = admin_bundle_key(event, &kind, &role);
+        let key = admin_bundle_key(event, &kind, role);
         let existing_index = open_bundles.get(&key).copied();
         if let Some(index) = existing_index {
-            if can_append_admin_bundle(&bundles[index], event, &kind, &role) {
-                bundles[index].events.push(event.clone());
+            if can_append_admin_bundle(&bundles[index], event, &kind, role) {
+                bundles[index].events.push(event);
                 bundles[index].after_terminal_event =
                     bundles[index].after_terminal_event || terminal_event_seen;
                 if admin_bundle_is_closed(&bundles[index]) {
@@ -6959,9 +6884,9 @@ fn admin_event_bundles(events: &[AdminEventSummary]) -> Vec<Value> {
 
         let bundle = AdminEventBundle {
             kind: kind.clone(),
-            role: role.clone(),
+            role,
             key: key.clone(),
-            events: vec![event.clone()],
+            events: vec![event],
             after_terminal_event: terminal_event_seen,
         };
         bundles.push(bundle);
@@ -6977,30 +6902,30 @@ fn admin_event_bundles(events: &[AdminEventSummary]) -> Vec<Value> {
 }
 
 #[derive(Clone, Debug)]
-struct AdminEventBundle {
+struct AdminEventBundle<'a> {
     kind: String,
-    role: Option<String>,
+    role: Option<&'a str>,
     key: String,
-    events: Vec<AdminEventSummary>,
+    events: Vec<&'a AdminEventSummary>,
     after_terminal_event: bool,
 }
 
 fn admin_event_is_terminal_boundary(event: &AdminEventSummary) -> bool {
     matches!(
-        admin_event_type(event).as_str(),
+        event.event_type.as_str(),
         "session_completed" | "session_abandoned" | "session_expired" | "participant_disconnected"
     )
 }
 
 fn admin_event_is_action_request(event: &AdminEventSummary) -> bool {
     matches!(
-        admin_event_type(event).as_str(),
+        event.event_type.as_str(),
         "agent_action" | "game_action_submitted"
     )
 }
 
 fn show_admin_event_in_timeline(event: &AdminEventSummary) -> bool {
-    if admin_event_type(event) != "voice_diagnostic" {
+    if event.event_type != "voice_diagnostic" {
         return true;
     }
     let text = admin_event_text_value(event);
@@ -7014,7 +6939,7 @@ fn show_admin_event_in_timeline(event: &AdminEventSummary) -> bool {
 }
 
 fn admin_bundle_kind(event: &AdminEventSummary) -> String {
-    match admin_event_type(event).as_str() {
+    match event.event_type.as_str() {
         "agent_action"
         | "game_action_accepted"
         | "game_action_rejected"
@@ -7034,8 +6959,8 @@ fn admin_bundle_kind(event: &AdminEventSummary) -> String {
     }
 }
 
-fn admin_bundle_key(event: &AdminEventSummary, kind: &str, role: &Option<String>) -> String {
-    let role = role.as_deref().unwrap_or("system");
+fn admin_bundle_key(event: &AdminEventSummary, kind: &str, role: Option<&str>) -> String {
+    let role = role.unwrap_or("system");
     match kind {
         "action" => format!(
             "action:{role}:{}",
@@ -7047,34 +6972,41 @@ fn admin_bundle_key(event: &AdminEventSummary, kind: &str, role: &Option<String>
         ),
         "participant" | "voice" => format!("{kind}:{role}"),
         "transcript" => format!("{kind}:{role}:{}", normalized_transcript_text(event)),
-        _ => format!("{kind}:{role}:{}", admin_event_index(event)),
+        _ => format!("{kind}:{role}:{}", event.event_index),
     }
 }
 
 fn can_append_admin_bundle(
-    bundle: &AdminEventBundle,
+    bundle: &AdminEventBundle<'_>,
     event: &AdminEventSummary,
     kind: &str,
-    role: &Option<String>,
+    role: Option<&str>,
 ) -> bool {
     if bundle.kind != kind {
         return false;
     }
-    if (bundle.role.is_some() || role.is_some()) && bundle.role != *role {
+    if (bundle.role.is_some() || role.is_some()) && bundle.role != role {
         return false;
     }
     match kind {
         "action" => {
             !admin_bundle_is_closed(bundle)
-                && bundle.events.first().and_then(admin_event_action) == admin_event_action(event)
-                && !(bundle.events.iter().any(admin_event_is_action_request)
+                && bundle
+                    .events
+                    .first()
+                    .and_then(|event| admin_event_action(event))
+                    == admin_event_action(event)
+                && !(bundle
+                    .events
+                    .iter()
+                    .any(|event| admin_event_is_action_request(event))
                     && admin_event_is_action_request(event))
         }
         "transcript" => {
             bundle
                 .events
                 .first()
-                .map(normalized_transcript_text)
+                .map(|event| normalized_transcript_text(event))
                 .unwrap_or_default()
                 == normalized_transcript_text(event)
         }
@@ -7083,17 +7015,17 @@ fn can_append_admin_bundle(
     }
 }
 
-fn admin_bundle_is_closed(bundle: &AdminEventBundle) -> bool {
+fn admin_bundle_is_closed(bundle: &AdminEventBundle<'_>) -> bool {
     match bundle.kind.as_str() {
         "action" => bundle.events.iter().any(|event| {
             matches!(
-                admin_event_type(event).as_str(),
+                event.event_type.as_str(),
                 "game_action_accepted" | "game_action_rejected"
             )
         }),
         "participant" => bundle.events.iter().any(|event| {
             matches!(
-                admin_event_type(event).as_str(),
+                event.event_type.as_str(),
                 "ready" | "participant_disconnected"
             )
         }),
@@ -7109,7 +7041,7 @@ fn admin_bundle_is_closed(bundle: &AdminEventBundle) -> bool {
     }
 }
 
-fn admin_bundle_json(bundle: AdminEventBundle) -> Value {
+fn admin_bundle_json(bundle: AdminEventBundle<'_>) -> Value {
     let first = bundle
         .events
         .first()
@@ -7122,7 +7054,7 @@ fn admin_bundle_json(bundle: AdminEventBundle) -> Value {
         bundle
             .events
             .iter()
-            .map(readable_admin_event_step)
+            .map(|event| readable_admin_event_step(event))
             .collect::<Vec<_>>()
             .join(" -> ")
     } else {
@@ -7131,7 +7063,10 @@ fn admin_bundle_json(bundle: AdminEventBundle) -> Value {
     let problem_reason = admin_bundle_problem_reason(&bundle);
     let problem = problem_reason.is_some();
     let action = if bundle.kind == "action" {
-        bundle.events.iter().find_map(admin_event_action)
+        bundle
+            .events
+            .iter()
+            .find_map(|event| admin_event_action(event))
     } else {
         None
     };
@@ -7139,8 +7074,8 @@ fn admin_bundle_json(bundle: AdminEventBundle) -> Value {
         "kind": bundle.kind,
         "key": bundle.key,
         "role": bundle.role,
-        "first_index": admin_event_index(first),
-        "last_index": admin_event_index(last),
+        "first_index": first.event_index,
+        "last_index": last.event_index,
         "game_time_ms": last.game_time_ms,
         "title": admin_bundle_title(&bundle),
         "problem": problem,
@@ -7153,18 +7088,18 @@ fn admin_bundle_json(bundle: AdminEventBundle) -> Value {
     })
 }
 
-fn admin_bundle_is_housekeeping(bundle: &AdminEventBundle) -> bool {
+fn admin_bundle_is_housekeeping(bundle: &AdminEventBundle<'_>) -> bool {
     matches!(
         bundle.kind.as_str(),
         "participant" | "voice" | "session_created" | "session_completed"
     )
 }
 
-fn admin_bundle_problem_reason(bundle: &AdminEventBundle) -> Option<String> {
+fn admin_bundle_problem_reason(bundle: &AdminEventBundle<'_>) -> Option<String> {
     if bundle
         .events
         .iter()
-        .any(|event| admin_event_type(event).contains("rejected"))
+        .any(|event| event.event_type.contains("rejected"))
     {
         return Some(admin_rejection_reason(bundle));
     }
@@ -7176,13 +7111,13 @@ fn admin_bundle_problem_reason(bundle: &AdminEventBundle) -> Option<String> {
             || (!bundle.after_terminal_event && text.contains("disconnect")))
         .then(|| admin_event_text_value(event))
     }) {
-        return Some(text);
+        return Some(text.to_string());
     }
     match bundle.kind.as_str() {
         "action" => (!bundle.after_terminal_event
             && !bundle.events.iter().any(|event| {
                 matches!(
-                    admin_event_type(event).as_str(),
+                    event.event_type.as_str(),
                     "game_action_accepted" | "game_action_rejected"
                 )
             }))
@@ -7199,14 +7134,14 @@ fn admin_bundle_problem_reason(bundle: &AdminEventBundle) -> Option<String> {
         "participant" => (bundle
             .events
             .iter()
-            .any(|event| admin_event_type(event) == "participant_disconnected")
+            .any(|event| event.event_type == "participant_disconnected")
             && !bundle.after_terminal_event)
             .then(|| "Participant disconnected.".to_string()),
         _ => None,
     }
 }
 
-fn admin_rejection_reason(bundle: &AdminEventBundle) -> String {
+fn admin_rejection_reason(bundle: &AdminEventBundle<'_>) -> String {
     bundle
         .events
         .iter()
@@ -7221,7 +7156,7 @@ fn admin_rejection_reason(bundle: &AdminEventBundle) -> String {
         .unwrap_or_else(|| "Action was rejected.".to_string())
 }
 
-fn admin_bundle_title(bundle: &AdminEventBundle) -> String {
+fn admin_bundle_title(bundle: &AdminEventBundle<'_>) -> String {
     match bundle.kind.as_str() {
         "action" => "Action".to_string(),
         "participant" => "Participant".to_string(),
@@ -7239,7 +7174,7 @@ fn admin_bundle_title(bundle: &AdminEventBundle) -> String {
     }
 }
 
-fn admin_bundle_text(bundle: &AdminEventBundle) -> String {
+fn admin_bundle_text(bundle: &AdminEventBundle<'_>) -> String {
     if matches!(
         bundle.kind.as_str(),
         "action" | "participant" | "session_created"
@@ -7254,12 +7189,12 @@ fn admin_bundle_text(bundle: &AdminEventBundle) -> String {
             (!text.is_empty()).then_some(text)
         })
         .fold(Vec::<String>::new(), |mut texts, text| {
-            let normalized = normalize_display_text(&text);
+            let normalized = normalize_display_text(text);
             if !texts
                 .iter()
                 .any(|existing| normalize_display_text(existing) == normalized)
             {
-                texts.push(text);
+                texts.push(text.to_string());
             }
             texts
         })
@@ -7280,7 +7215,7 @@ fn normalize_display_text(text: &str) -> String {
 }
 
 fn readable_admin_event_step(event: &AdminEventSummary) -> String {
-    match admin_event_type(event).as_str() {
+    match event.event_type.as_str() {
         "participant_joined" => "Joined".to_string(),
         "participant_connected" => "Connected".to_string(),
         "participant_disconnected" => "Disconnected".to_string(),
@@ -7291,41 +7226,26 @@ fn readable_admin_event_step(event: &AdminEventSummary) -> String {
         {
             "Transcript displayed".to_string()
         }
-        "voice_diagnostic" => admin_event_text_value(event),
+        "voice_diagnostic" => admin_event_text_value(event).to_string(),
         _ => event.title.clone(),
     }
 }
 
-fn admin_event_type(event: &AdminEventSummary) -> String {
-    event.event_type.clone()
-}
-
-fn admin_event_role(event: &AdminEventSummary) -> Option<String> {
+fn admin_event_role(event: &AdminEventSummary) -> Option<&str> {
     event
         .actor_role
         .as_deref()
         .or_else(|| event.detail.get("player").and_then(Value::as_str))
         .or_else(|| event.detail.get("sender_role").and_then(Value::as_str))
         .or_else(|| event.detail.get("role").and_then(Value::as_str))
-        .map(str::to_string)
 }
 
-fn admin_event_index(event: &AdminEventSummary) -> i64 {
-    event.event_index
-}
-
-fn admin_event_text_value(event: &AdminEventSummary) -> String {
+fn admin_event_text_value(event: &AdminEventSummary) -> &str {
     event
         .text
-        .clone()
-        .or_else(|| {
-            event
-                .detail
-                .get("event")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| admin_event_type(event))
+        .as_deref()
+        .or_else(|| event.detail.get("event").and_then(Value::as_str))
+        .unwrap_or(event.event_type.as_str())
 }
 
 fn normalized_transcript_text(event: &AdminEventSummary) -> String {
@@ -7345,13 +7265,12 @@ fn normalized_transcript_text(event: &AdminEventSummary) -> String {
         .to_ascii_lowercase()
 }
 
-fn admin_event_action(event: &AdminEventSummary) -> Option<Value> {
-    event.detail.get("action").cloned().or_else(|| {
+fn admin_event_action(event: &AdminEventSummary) -> Option<&Value> {
+    event.detail.get("action").or_else(|| {
         event
             .raw
             .get("payload")
             .and_then(|payload| payload.get("action"))
-            .cloned()
     })
 }
 
@@ -7530,10 +7449,7 @@ async fn admin_export<A: Game>(
     State(state): State<Arc<AppState<A>>>,
     scope: Option<Extension<AdminExperimentScope>>,
     Query(query): Query<AdminExportQuery>,
-) -> Result<Response, AppError>
-where
-    A::State: Serialize,
-{
+) -> Result<Response, AppError> {
     let experiment_id = admin_experiment_id(&state, scope.as_ref());
     let raw = filtered_export(&state, &experiment_id).await?;
     let mut value = match query.variant.as_deref().unwrap_or("corpus") {
@@ -7730,10 +7646,7 @@ fn local_dependency_warnings(manifest_dir: &str, cargo_toml: &str) -> Vec<Value>
 async fn filtered_export<A: Game>(
     state: &Arc<AppState<A>>,
     experiment_id: &str,
-) -> Result<Value, AppError>
-where
-    A::State: Serialize,
-{
+) -> Result<Value, AppError> {
     let experiment = state
         .store
         .experiment_definition(experiment_id)
@@ -8220,10 +8133,7 @@ async fn game_socket<A: Game>(
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
-) -> Result<Response, AppError>
-where
-    A::State: Serialize,
-{
+) -> Result<Response, AppError> {
     validate_websocket_origin(&state.config, &headers)?;
     let ticket = query
         .get("token")
@@ -8278,10 +8188,7 @@ async fn audio_socket<A: Game>(
     Query(query): Query<AudioSocketQuery>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
-) -> Result<Response, AppError>
-where
-    A::State: Serialize,
-{
+) -> Result<Response, AppError> {
     validate_websocket_origin(&state.config, &headers)?;
     let claims = state
         .upgrade_tickets
@@ -8315,9 +8222,7 @@ async fn audio_websocket_loop<A: Game>(
     state: Arc<AppState<A>>,
     socket: WebSocket,
     claims: UpgradeTicketClaims,
-) where
-    A::State: Serialize,
-{
+) {
     let public_session_id = claims.public_session_id.clone();
     let role = claims.role.clone();
     let participant_session_id = claims.participant_session_id.clone();
@@ -8398,10 +8303,10 @@ async fn audio_websocket_loop<A: Game>(
             while let Some(event) = session.events.recv().await {
                 match event {
                     TranscriptionEvent::Ready => {
-                        state.audio_sessions.send_control(&public_session_id, &role, json!({"type":"transcriptionStatus","ready":true,"message":"ASR listening"}).to_string()).await;
                         mark_participant_audio_ready(&state, &public_session_id, &participant_session_id).await;
                         let _ = state.session_bus(&public_session_id).await.send(voice_message(&state, &public_session_id).await);
                         maybe_start_game(state.clone(), &public_session_id).await;
+                        publish_transcription_readiness(&state, &public_session_id, &role).await;
                     }
                     TranscriptionEvent::FinalUtterance(utterance) => {
                         let Some(stream_started_at) = transcription_stream_started_at.get() else {
@@ -8421,20 +8326,13 @@ async fn audio_websocket_loop<A: Game>(
         })
     });
     if transcription_input.is_none() && !state.config.transcription.enabled {
-        state
-            .audio_sessions
-            .send_control(
-                &public_session_id,
-                &role,
-                json!({"type":"transcriptionStatus","ready":true,"message":"ASR idle"}).to_string(),
-            )
-            .await;
         mark_participant_audio_ready(&state, &public_session_id, &participant_session_id).await;
         let _ = state
             .session_bus(&public_session_id)
             .await
             .send(voice_message(&state, &public_session_id).await);
         maybe_start_game(state.clone(), &public_session_id).await;
+        publish_transcription_readiness(&state, &public_session_id, &role).await;
     }
 
     let mut last_activity_touch = Instant::now();
@@ -8554,9 +8452,7 @@ async fn websocket_loop<A: Game>(
     public_session_id: String,
     participant_session_id: String,
     role: PlayerRole,
-) where
-    A::State: Serialize,
-{
+) {
     let connection_key = format!("{public_session_id}:{}", role.as_str());
     let liveness = Arc::new(ConnectionLiveness::new());
     let (connection_generation, mut shutdown, replaced) = register_connection(
@@ -8804,10 +8700,7 @@ async fn websocket_loop<A: Game>(
 }
 
 /// Broadcasts one authoritative lifecycle snapshot targeted to each human participant.
-async fn broadcast_participant_states<A: Game>(state: &Arc<AppState<A>>, public_session_id: &str)
-where
-    A::State: Serialize,
-{
+async fn broadcast_participant_states<A: Game>(state: &Arc<AppState<A>>, public_session_id: &str) {
     let recipients = state
         .memory
         .read()
@@ -8994,9 +8887,7 @@ async fn handle_client_message<A: Game>(
     participant_session_id: &str,
     role: PlayerRole,
     message: ClientMessage,
-) where
-    A::State: Serialize,
-{
+) {
     match message {
         ClientMessage::Heartbeat => {
             // Transport liveness only: heartbeats intentionally cause no database write,
@@ -9398,10 +9289,7 @@ fn completed_session_end<A: Game>(
     session: &LiveSession<A>,
     final_state: &A::State,
     completion: Value,
-) -> Result<SessionEnd>
-where
-    A::State: Serialize,
-{
+) -> Result<SessionEnd> {
     let participant_results = session
         .participants
         .values()
@@ -9437,10 +9325,7 @@ async fn submit_action<A: Game>(
     participant_session_id: &str,
     role: PlayerRole,
     action: A::Action,
-) -> Result<TransitionOutcome>
-where
-    A::State: Serialize,
-{
+) -> Result<TransitionOutcome> {
     let player = role;
     let transition_lock = session_transition_lock(&state, public_session_id).await;
     let _transition_guard = transition_lock.lock().await;
@@ -9578,9 +9463,7 @@ async fn broadcast_player_views<A: Game>(
     public_session_id: &str,
     actor: PlayerRole,
     action: Value,
-) where
-    A::State: Serialize,
-{
+) {
     let participants = {
         let memory = state.memory.read().await;
         memory
@@ -9614,44 +9497,6 @@ async fn broadcast_player_views<A: Game>(
     }
 }
 
-async fn maybe_start_session_agents<A: Game>(state: Arc<AppState<A>>, public_session_id: &str)
-where
-    A::State: Serialize,
-{
-    let agents = {
-        let memory = state.memory.read().await;
-        memory
-            .sessions
-            .get(public_session_id)
-            .filter(|session| session_ready_for_game::<A>(&state.config, session))
-            .map(|session| {
-                session
-                    .participants
-                    .values()
-                    .filter(|participant| participant.source == "agent")
-                    .map(|participant| {
-                        (participant.participant_session_id.clone(), participant.role)
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    };
-    for (participant_session_id, role) in agents {
-        let key = agent_key(public_session_id, &participant_session_id);
-        let pending = state.pending_agents.lock().await.remove(&key);
-        if let Some(pending) = pending {
-            maybe_start_agent(
-                state.clone(),
-                public_session_id.to_string(),
-                participant_session_id,
-                role,
-                pending,
-            )
-            .await;
-        }
-    }
-}
-
 /// Builds the stable map key used for one session-local agent instance.
 fn agent_key(public_session_id: &str, participant_session_id: &str) -> String {
     format!("{public_session_id}:{participant_session_id}")
@@ -9678,9 +9523,7 @@ async fn notify_agents_of_action<A: Game>(
     actor: PlayerRole,
     action: A::Action,
     completion: Option<A::Completion>,
-) where
-    A::State: Serialize,
-{
+) {
     let observations = {
         let memory = state.memory.read().await;
         let Some(session) = memory.sessions.get(public_session_id) else {
@@ -9763,10 +9606,7 @@ async fn handle_agent_response<A: Game>(
     participant_session_id: &str,
     role: PlayerRole,
     response: AgentResponse<A::Action>,
-) -> Result<TransitionOutcome>
-where
-    A::State: Serialize,
-{
+) -> Result<TransitionOutcome> {
     let (action, message) = response.into_parts();
     let mut outcome = TransitionOutcome::Continued;
     if let Some(action) = action {
@@ -9791,7 +9631,7 @@ where
         broadcast_player_views(state.clone(), public_session_id, role, observed_action).await;
     }
     if let Some(text) = message {
-        if let Ok(Json(message)) = commit_conversation_message(
+        if let Ok(message) = commit_conversation_message(
             &state,
             public_session_id,
             participant_session_id,
@@ -9811,15 +9651,12 @@ where
 /// Asks one agent for an optional response and applies it when present.
 async fn request_agent_decision<A: Game>(
     state: Arc<AppState<A>>,
-    agent: &mut Box<dyn Agent<A> + Send>,
+    agent: &mut dyn Agent<A>,
     public_session_id: &str,
     participant_session_id: &str,
     role: PlayerRole,
     timeout: f64,
-) -> Result<Option<TransitionOutcome>>
-where
-    A::State: Serialize,
-{
+) -> Result<Option<TransitionOutcome>> {
     let available_actions = agent_available_actions(&state, public_session_id, role).await?;
     let result = tokio::time::timeout(
         Duration::from_secs_f64(timeout),
@@ -9987,15 +9824,14 @@ async fn persist_tts_diagnostic<A: Game>(
     .await;
 }
 
-async fn maybe_start_agent<A: Game>(
+/// Owns initialization and execution of one attached agent, disposing of it on every exit.
+async fn start_agent_task<A: Game>(
     state: Arc<AppState<A>>,
     public_session_id: String,
     participant_session_id: String,
     role: PlayerRole,
-    mut pending: PendingAgent<A>,
-) where
-    A::State: Serialize,
-{
+    mut pending: AgentTaskInput<A>,
+) {
     let key = format!("{public_session_id}:{participant_session_id}");
     {
         let mut started = state.started_agents.write().await;
@@ -10011,64 +9847,12 @@ async fn maybe_start_agent<A: Game>(
         let role_name = role.as_str().to_string();
         let agent_metadata = pending.metadata;
         async {
-            {
-                let mut memory = state.memory.write().await;
-                if let Some(session) = memory.sessions.get_mut(&public_session_id) {
-                    if let Some(participant) = session.participants.get_mut(&participant_session_id)
-                    {
-                        participant.connected = true;
-                        participant.updated_at = now_iso();
-                        participant.disconnected_at = None;
-                        participant.reconnect_deadline_at = None;
-                    }
-                }
-            }
-            persist_event(
-                "agent_connected",
-                state.store.update_session_participant_connection(
-                    &participant_session_id,
-                    "connected",
-                    None,
-                    None,
-                ),
-            )
-            .await;
-            persist_session_event(
-                &state,
-                &public_session_id,
-                Some(&participant_session_id),
-                "participant_connected",
-                json!({
-                    "source": "agent",
-                    "agent": agent_event_metadata(&agent_metadata),
-                }),
-                None,
-            )
-            .await;
-            let (sender, mut receiver) = mpsc::channel(64);
-            state.agent_inboxes.write().await.insert(
-                agent_key(&public_session_id, &participant_session_id),
-                sender,
-            );
-            persist_session_event(
-                &state,
-                &public_session_id,
-                Some(&participant_session_id),
-                "agent_started",
-                json!({
-                    "role": role_name,
-                    "agent": agent_event_metadata(&agent_metadata),
-                }),
-                None,
-            )
-            .await;
-            let mut invalid_actions = 0usize;
-            let mut last_error = None;
             let initial_observation = {
                 let memory = state.memory.read().await;
                 memory
                     .sessions
                     .get(&public_session_id)
+                    .filter(|session| session.lifecycle == SessionLifecycle::Forming)
                     .map(|session| session.game.observation(&session.state, role))
             };
             let Some(initial_observation) = initial_observation else {
@@ -10093,12 +9877,66 @@ async fn maybe_start_agent<A: Game>(
                 broadcast_participant_states(&state, &public_session_id).await;
                 return;
             }
+            let transition_lock = session_transition_lock(&state, &public_session_id).await;
+            let transition_guard = transition_lock.lock().await;
+            let (sender, mut receiver) = mpsc::channel(64);
+            {
+                let mut memory = state.memory.write().await;
+                let Some(session) = memory
+                    .sessions
+                    .get_mut(&public_session_id)
+                    .filter(|session| session.lifecycle == SessionLifecycle::Forming)
+                else {
+                    return;
+                };
+                let Some(participant) = session.participants.get_mut(&participant_session_id)
+                else {
+                    return;
+                };
+                state
+                    .agent_inboxes
+                    .write()
+                    .await
+                    .insert(key.clone(), sender);
+                participant.ready = true;
+                participant.updated_at = now_iso();
+            }
+            persist_session_event(
+                &state,
+                &public_session_id,
+                Some(&participant_session_id),
+                "participant_connected",
+                json!({"source":"agent","agent":agent_event_metadata(&agent_metadata)}),
+                None,
+            )
+            .await;
+            persist_session_event(
+                &state,
+                &public_session_id,
+                Some(&participant_session_id),
+                "agent_started",
+                json!({"role":role_name,"agent":agent_event_metadata(&agent_metadata)}),
+                None,
+            )
+            .await;
+            drop(transition_guard);
+            maybe_start_game(state.clone(), &public_session_id).await;
+            // Activation is queued before public input can arrive. An ended forming session
+            // closes the inbox instead, so it cannot start autonomous decision processing.
+            if !matches!(receiver.recv().await, Some(AgentObservation::Activated)) {
+                return;
+            }
+            // Finish publishing the activation snapshot before an autonomous response can
+            // advance the game. The activation path holds this same transition lock.
+            drop(transition_lock.lock().await);
+            let mut invalid_actions = 0usize;
+            let mut last_error = None;
             let mut awaiting_completion = false;
             'agent_loop: loop {
                 if !awaiting_completion {
                     match request_agent_decision(
                         state.clone(),
-                        &mut agent,
+                        agent.as_mut(),
                         &public_session_id,
                         &participant_session_id,
                         role,
@@ -10151,6 +9989,7 @@ async fn maybe_start_agent<A: Game>(
                     break;
                 };
                 let (observed, completion) = match observation {
+                    AgentObservation::Activated => unreachable!("a session activates only once"),
                     AgentObservation::Action {
                         actor,
                         action,
@@ -10317,6 +10156,7 @@ fn speechmatics_readiness_required(config: &ExperimentConfig) -> bool {
 /// Returns whether one session participant can take part in game progression.
 fn participant_ready_for_game(config: &ExperimentConfig, participant: &SessionParticipant) -> bool {
     participant.connected
+        && (participant.source != "agent" || participant.ready)
         && (participant.source == "agent"
             || participant.source == "worker"
             || !speechmatics_readiness_required(config)
@@ -10339,9 +10179,7 @@ async fn mark_participant_audio_ready<A: Game>(
     state: &Arc<AppState<A>>,
     public_session_id: &str,
     participant_session_id: &str,
-) where
-    A::State: Serialize,
-{
+) {
     let changed = {
         let mut memory = state.memory.write().await;
         memory
@@ -10361,11 +10199,47 @@ async fn mark_participant_audio_ready<A: Game>(
     }
 }
 
+/// Publishes whether this participant's audio can currently enter game transcription.
+async fn publish_transcription_readiness<A: Game>(
+    state: &Arc<AppState<A>>,
+    public_session_id: &str,
+    role: &str,
+) {
+    let ready = {
+        let memory = state.memory.read().await;
+        let Some(session) = memory.sessions.get(public_session_id) else {
+            return;
+        };
+        let Some(participant) = session
+            .participants
+            .values()
+            .find(|p| p.role.as_str() == role)
+        else {
+            return;
+        };
+        session.lifecycle == SessionLifecycle::Running
+            && session.pause.is_none()
+            && participant.audio_ready
+    };
+    let message = if !ready {
+        "Waiting for game activation"
+    } else if state.config.transcription.enabled {
+        "ASR listening"
+    } else {
+        "ASR idle"
+    };
+    state
+        .audio_sessions
+        .send_control(
+            public_session_id,
+            role,
+            json!({"type":"transcriptionStatus","ready":ready,"message":message}).to_string(),
+        )
+        .await;
+}
+
 /// Starts a session once all humans/agents and required audio setup are ready.
-async fn maybe_start_game<A: Game>(state: Arc<AppState<A>>, public_session_id: &str)
-where
-    A::State: Serialize,
-{
+async fn maybe_start_game<A: Game>(state: Arc<AppState<A>>, public_session_id: &str) {
     let transition_lock = session_transition_lock(&state, public_session_id).await;
     let _transition_guard = transition_lock.lock().await;
     let durable_session = {
@@ -10434,10 +10308,20 @@ where
             })
             .unwrap_or_default()
     };
+    for (participant_session_id, _) in &participants {
+        let inboxes = state.agent_inboxes.read().await;
+        if let Some(sender) = inboxes.get(&agent_key(public_session_id, participant_session_id)) {
+            let _ = sender.send(AgentObservation::Activated).await;
+        }
+    }
+    let _ = state
+        .session_bus(public_session_id)
+        .await
+        .send(voice_message(&state, public_session_id).await);
     for (participant_session_id, role) in participants {
+        publish_transcription_readiness(&state, public_session_id, role.as_str()).await;
         send_role_assignment(&state, public_session_id, &participant_session_id, role).await;
     }
-    maybe_start_session_agents(state, public_session_id).await;
 }
 
 /// Returns whether a session has already left the waiting-session phase.
@@ -10483,9 +10367,7 @@ async fn send_role_assignment<A: Game>(
     public_session_id: &str,
     participant_session_id: &str,
     role: PlayerRole,
-) where
-    A::State: Serialize,
-{
+) {
     if let Ok(response) = participant_state_response(state, public_session_id, role).await {
         let bus = state.session_bus(public_session_id).await;
         let _ = bus.send(ServerMessage::targeted(
@@ -10544,11 +10426,13 @@ async fn voice_message<A: Game>(
                 .collect::<HashSet<_>>();
             (
                 connected_roles == HashSet::from([PlayerRole::A, PlayerRole::B]),
-                session_ready_for_game::<A>(&state.config, session),
+                session.lifecycle == SessionLifecycle::Running
+                    && session.pause.is_none()
+                    && session_ready_for_game::<A>(&state.config, session),
             )
         })
         .unwrap_or((false, false));
-    let transcription_ready = !state.config.transcription.enabled || game_ready;
+    let transcription_ready = game_ready;
     ServerMessage::broadcast(ServerPayload::VoiceStatus {
         public_session_id: public_session_id.to_string(),
         voice: json!({

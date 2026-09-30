@@ -90,10 +90,7 @@ async fn game_root() -> Redirect {
     Redirect::temporary("/admin/experiments")
 }
 
-impl<A: Game> GameHost<A>
-where
-    A::State: Serialize,
-{
+impl<A: Game> GameHost<A> {
     /// Returns an existing router or constructs one from the experiment's stored revision.
     async fn experiment_router(&self, experiment_id: &str) -> Result<MountedExperimentRouters> {
         if let Some(router) = self.routers.read().await.get(experiment_id).cloned() {
@@ -161,10 +158,10 @@ where
 }
 
 /// Resolves one experiment namespace from an unmatched host URI without rewriting it.
-async fn dispatch_experiment_service<A: Game>(host: Arc<GameHost<A>>, request: Request) -> Response
-where
-    A::State: Serialize,
-{
+async fn dispatch_experiment_service<A: Game>(
+    host: Arc<GameHost<A>>,
+    request: Request,
+) -> Response {
     let path = request.uri().path();
     let (surface, relative_path) = if let Some(path) = path.strip_prefix("/e/") {
         (RuntimeSurface::Participant, path)
@@ -210,7 +207,6 @@ pub async fn build_game_router<A, GF, F>(
 where
     A: Game,
     GF: GameFactory<Game = A>,
-    A::State: Serialize,
     F: Fn(&ExperimentConfig) -> Result<ServeOptions<A>> + Send + Sync + 'static,
 {
     crate::config::validate_public_origin(
@@ -318,7 +314,6 @@ pub async fn serve_game<A, GF, F>(
 where
     A: Game,
     GF: GameFactory<Game = A>,
-    A::State: Serialize,
     F: Fn(&ExperimentConfig) -> Result<ServeOptions<A>> + Send + Sync + 'static,
 {
     let router = build_game_router(game_factory, bootstrap, descriptor, options_factory).await?;
@@ -358,7 +353,6 @@ pub async fn build_router<A: Game, GF: GameFactory<Game = A>>(
     options: ServeOptions<A>,
 ) -> Result<Router>
 where
-    A::State: Serialize,
 {
     Ok(build_router_with_resources(
         Arc::new(game_factory),
@@ -378,7 +372,6 @@ async fn build_router_with_resources<A: Game>(
     mode: RouterBuildMode<A>,
 ) -> Result<BuiltRouters>
 where
-    A::State: Serialize,
 {
     config.validate()?;
     validate_game_config_contains_no_secrets(&config.game)?;
@@ -569,7 +562,6 @@ where
         agent_factory: options.agent_factory,
         agent_definitions,
         started_agents: RwLock::new(HashSet::new()),
-        pending_agents: Mutex::new(HashMap::new()),
         agent_inboxes: RwLock::new(HashMap::new()),
         tts_provider,
         audio_publisher,

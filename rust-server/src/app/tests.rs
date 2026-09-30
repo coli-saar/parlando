@@ -49,6 +49,27 @@ fn record_test_participant_credential(participant_id: String, credential: String
         .push(credential);
 }
 
+/// Provider-secret status rows retain their stable order and calculate availability once.
+#[test]
+fn provider_secret_statuses_report_configured_and_missing_values() {
+    let stored = HashMap::from([
+        ("speechmatics.api_key".to_string(), "speech-key".to_string()),
+        (
+            "prolific.api_token".to_string(),
+            "prolific-token".to_string(),
+        ),
+    ]);
+
+    assert_eq!(
+        configured_provider_secret_statuses(&stored),
+        vec![
+            json!({"key": "speechmatics.api_key", "configured": true, "source": "game"}),
+            json!({"key": "tts.api_key", "configured": false, "source": "missing"}),
+            json!({"key": "prolific.api_token", "configured": true, "source": "game"}),
+        ]
+    );
+}
+
 /// Returns all credentials which parallel test routers issued for one participant handle.
 fn test_participant_credentials(participant_id: &str) -> Vec<String> {
     TEST_PARTICIPANT_CREDENTIALS
@@ -333,10 +354,7 @@ async fn build_router<G: Game, F: crate::GameFactory<Game = G>>(
     adapter: F,
     config: ExperimentConfig,
     options: ServeOptions<G>,
-) -> Result<Router>
-where
-    G::State: Serialize,
-{
+) -> Result<Router> {
     let router = super::build_router(adapter, config, options).await?;
     authenticate_test_admin(router.clone()).await?;
     let (status, _) = json_request(
@@ -2839,6 +2857,7 @@ struct SecretAgentFactory;
 
 struct StartFailingAgent {
     shutdowns: Arc<AtomicUsize>,
+    stopped: Arc<Notify>,
 }
 
 #[async_trait]
@@ -2859,12 +2878,120 @@ impl Agent<TinyAdapter> for StartFailingAgent {
     /// Records cleanup of an agent whose start callback failed.
     async fn shutdown(&mut self) -> Result<()> {
         self.shutdowns.fetch_add(1, Ordering::SeqCst);
+        self.stopped.notify_one();
         Ok(())
     }
 }
 
 struct StartFailingAgentFactory {
     shutdowns: Arc<AtomicUsize>,
+    stopped: Arc<Notify>,
+}
+
+/// Holds construction or initialization at a known boundary and records delivered input.
+struct ReadinessAgentFactory {
+    gate_construction: bool,
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
+    events: mpsc::UnboundedSender<String>,
+}
+
+/// Records initialization, observations, and teardown without autonomous actions.
+struct ReadinessAgent {
+    gate_start: bool,
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
+    events: mpsc::UnboundedSender<String>,
+}
+
+#[async_trait]
+impl AgentFactory<TinyAdapter> for ReadinessAgentFactory {
+    /// Uses the same public agent definition as the other lifecycle fixtures.
+    fn definition(&self) -> AgentDefinition {
+        test_agent_definition()
+    }
+
+    /// Optionally blocks construction before returning the owned agent.
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
+        if self.gate_construction {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        Ok(Box::new(ReadinessAgent {
+            gate_start: !self.gate_construction,
+            entered: self.entered.clone(),
+            release: self.release.clone(),
+            events: self.events.clone(),
+        }))
+    }
+
+    /// Supplies stable identity metadata without depending on initialization.
+    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+        test_agent_identity()
+    }
+}
+
+#[async_trait]
+impl Agent<TinyAdapter> for ReadinessAgent {
+    /// Holds initialization open until the test explicitly releases it.
+    async fn start(&mut self, _observation: TinyObservation) -> Result<()> {
+        if self.gate_start {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        let _ = self.events.send("started".into());
+        Ok(())
+    }
+
+    /// Records each accepted human action in delivery order.
+    async fn observe_transition(
+        &mut self,
+        actor: PlayerRole,
+        action: TinyAction,
+        _observation: TinyObservation,
+    ) -> Result<()> {
+        let _ = self
+            .events
+            .send(format!("action:{}:{}", actor.as_str(), action.finish));
+        Ok(())
+    }
+
+    /// Records each human message in delivery order.
+    async fn observe_message(&mut self, speaker: PlayerRole, text: String) -> Result<()> {
+        let _ = self
+            .events
+            .send(format!("message:{}:{text}", speaker.as_str()));
+        Ok(())
+    }
+
+    /// Waits for external input without changing the game.
+    async fn respond(
+        &mut self,
+        _actions: Option<Vec<TinyAction>>,
+    ) -> Result<Option<AgentResponse<TinyAction>>> {
+        Ok(None)
+    }
+
+    /// Signals that the runtime finished disposing of the agent.
+    async fn shutdown(&mut self) -> Result<()> {
+        let _ = self.events.send("shutdown".into());
+        Ok(())
+    }
+}
+
+/// Bounds a fixture handshake without using elapsed time to infer ordering.
+async fn readiness_signal(signal: &Notify) {
+    tokio::time::timeout(Duration::from_secs(5), signal.notified())
+        .await
+        .expect("readiness fixture did not reach its gate");
+}
+
+/// Reads one recorded callback with a diagnostic timeout for stalled execution.
+async fn readiness_event(events: &mut mpsc::UnboundedReceiver<String>) -> String {
+    tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .expect("agent did not deliver the expected callback")
+        .expect("agent callback recorder closed")
 }
 
 #[async_trait]
@@ -2878,6 +3005,7 @@ impl AgentFactory<TinyAdapter> for StartFailingAgentFactory {
     async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
         Ok(Box::new(StartFailingAgent {
             shutdowns: self.shutdowns.clone(),
+            stopped: self.stopped.clone(),
         }))
     }
 
@@ -4232,6 +4360,163 @@ async fn enabled_audio_session_returns_parlando_websocket_contract() {
 
 /// Deterministic provider that finalizes the first received audio frame twice.
 struct DuplicateFinalTranscriptionProvider;
+
+/// Reports all accepted PCM markers when each stream is explicitly finished.
+struct ReadinessTranscriptionProvider {
+    finished: mpsc::UnboundedSender<(String, Vec<u8>)>,
+}
+
+#[async_trait]
+impl crate::transcription::TranscriptionProvider for ReadinessTranscriptionProvider {
+    /// Records frames and signals completion after the ordered input queue is drained.
+    async fn start_session(
+        &self,
+        context: crate::transcription::TranscriptionSessionContext,
+    ) -> Result<crate::transcription::TranscriptionSessionHandle> {
+        use crate::transcription::{
+            TranscriptionEvent, TranscriptionInput, TranscriptionSessionHandle,
+        };
+        let (input, mut inputs) = mpsc::channel(32);
+        let (events, receiver) = mpsc::channel(4);
+        let finished = self.finished.clone();
+        tokio::spawn(async move {
+            events.send(TranscriptionEvent::Ready).await.unwrap();
+            let mut markers = Vec::new();
+            while let Some(message) = inputs.recv().await {
+                match message {
+                    TranscriptionInput::Audio(frame) => markers.push(frame.pcm[0]),
+                    TranscriptionInput::Finish => {
+                        let _ = finished.send((context.role, markers));
+                        break;
+                    }
+                }
+            }
+        });
+        Ok(TranscriptionSessionHandle {
+            input,
+            events: receiver,
+        })
+    }
+}
+
+/// Reads a completed stream's markers; the timeout only bounds failure diagnosis.
+async fn readiness_finished_audio(
+    finished: &mut mpsc::UnboundedReceiver<(String, Vec<u8>)>,
+) -> (String, Vec<u8>) {
+    tokio::time::timeout(Duration::from_secs(5), finished.recv())
+        .await
+        .expect("audio stream did not finish")
+        .expect("transcription recorder closed before stream finished")
+}
+
+#[tokio::test]
+/// Forming audio is excluded, but the first frame after public activation is transcribed.
+async fn audio_readiness_first_active_frame_is_transcribed() {
+    let (finished, mut recordings) = mpsc::unbounded_channel();
+    let mut config = voice_enabled_config();
+    config.transcription.enabled = true;
+    config.speechmatics.api_key = "readiness-test-key".into();
+    let router = build_router(
+        TinyAdapter,
+        config,
+        ServeOptions {
+            transcription_provider: Some(Arc::new(ReadinessTranscriptionProvider { finished })),
+            ..ServeOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    let (a, b, room) = create_joined_room(router.clone()).await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
+    let host = base_url.trim_start_matches("http://");
+    let plan_b = request_audio_plan(router.clone(), &room, &b).await;
+    let (mut audio_b, _) = connect_async(format!(
+        "ws://{host}/ws/audio/{room}?token={}",
+        plan_b["token"].as_str().unwrap()
+    ))
+    .await
+    .unwrap();
+    let preparing_b = read_ws_type(&mut audio_b, "transcriptionStatus").await;
+    assert_eq!(
+        preparing_b["ready"], false,
+        "forming audio advertised transcription readiness"
+    );
+    let plan_a = request_audio_plan(router.clone(), &room, &a).await;
+    let (mut audio_a, _) = connect_async(format!(
+        "ws://{host}/ws/audio/{room}?token={}",
+        plan_a["token"].as_str().unwrap()
+    ))
+    .await
+    .unwrap();
+    let preparing_a = read_ws_type(&mut audio_a, "transcriptionStatus").await;
+    assert_eq!(
+        preparing_a["ready"], false,
+        "forming audio advertised transcription readiness"
+    );
+    // No game sockets have connected: activation cannot complete regardless of scheduling.
+    let (_, forming) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/participant-state",
+        json!({"participant_session_id":a}),
+    )
+    .await;
+    assert_eq!(forming["participant_state"]["state"], "waiting");
+    let pregame = AudioFrame {
+        sequence: 0,
+        timestamp_ms: 0,
+        pcm: vec![1; crate::audio::AUDIO_FRAME_BYTES],
+    }
+    .encode();
+    audio_a
+        .send(TungsteniteMessage::Binary(pregame.clone()))
+        .await
+        .unwrap();
+    assert_eq!(read_audio_binary(&mut audio_b).await, pregame);
+    audio_a.close(None).await.unwrap();
+    assert_eq!(
+        readiness_finished_audio(&mut recordings).await,
+        ("A".into(), vec![])
+    );
+
+    let plan_a = request_audio_plan(router.clone(), &room, &a).await;
+    let (mut audio_a, _) = connect_async(format!(
+        "ws://{host}/ws/audio/{room}?token={}",
+        plan_a["token"].as_str().unwrap()
+    ))
+    .await
+    .unwrap();
+    wait_for_audio_control(&mut audio_a).await;
+    let (mut game_a, _) = connect_async(game_socket_url(&base_url, &room, &a).await)
+        .await
+        .unwrap();
+    let (mut game_b, _) = connect_async(game_socket_url(&base_url, &room, &b).await)
+        .await
+        .unwrap();
+    let _ = read_participant_state(&mut game_a, "active").await;
+    let _ = read_participant_state(&mut game_b, "active").await;
+    let listening = read_ws_type(&mut audio_a, "transcriptionStatus").await;
+    assert_eq!(
+        listening["ready"], true,
+        "activation did not publish transcription readiness"
+    );
+    let first = AudioFrame {
+        sequence: 0,
+        timestamp_ms: 0,
+        pcm: vec![3; crate::audio::AUDIO_FRAME_BYTES],
+    }
+    .encode();
+    audio_a
+        .send(TungsteniteMessage::Binary(first.clone()))
+        .await
+        .unwrap();
+    assert_eq!(read_audio_binary(&mut audio_b).await, first);
+    // Finish is ordered after the frame on this socket and the transcription input queue.
+    audio_a.close(None).await.unwrap();
+    let recorded = readiness_finished_audio(&mut recordings).await;
+    server.abort();
+    assert_eq!(recorded, ("A".into(), vec![3]));
+}
 
 #[async_trait]
 impl TranscriptionProvider for DuplicateFinalTranscriptionProvider {
@@ -6421,14 +6706,186 @@ async fn failed_agent_construction_ends_the_waiting_session_as_technical_failure
 }
 
 #[tokio::test]
+/// Activation must wait for initialization; the first public input must reach the agent.
+async fn agent_readiness_activation_waits_for_start_and_delivers_first_input() {
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let (events, mut callbacks) = mpsc::unbounded_channel();
+    let router = build_router(
+        TinyAdapter,
+        human_vs_agent_config(),
+        ServeOptions {
+            agent_factory: Some(Arc::new(ReadinessAgentFactory {
+                gate_construction: false,
+                entered: entered.clone(),
+                release: release.clone(),
+                events,
+            })),
+            ..ServeOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    let (human, room) = create_human_vs_agent_room(router.clone(), "Human").await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
+    let (mut socket, _) = connect_async(game_socket_url(&base_url, &room, &human).await)
+        .await
+        .unwrap();
+    readiness_signal(&entered).await;
+    let (status, blocked) = json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/participant-state",
+        json!({"participant_session_id": human}),
+    )
+    .await;
+    release.notify_one();
+    // Only the public active notification authorizes input; no internal event wait.
+    let _ = read_participant_state(&mut socket, "active").await;
+    send_ws_json(
+        &mut socket,
+        json!({"type":"action", "action":{"finish":false}}),
+    )
+    .await;
+    let _ = read_ws_type(&mut socket, "transition").await;
+    send_ws_json(
+        &mut socket,
+        json!({"type":"message", "text":"first message"}),
+    )
+    .await;
+    let _ = read_ws_type(&mut socket, "message").await;
+    let mut observed = Vec::new();
+    // Confirm delivery before deliberately terminating the game.
+    for _ in 0..3 {
+        observed.push(readiness_event(&mut callbacks).await);
+    }
+    let (leave_status, _) = json_request(
+        router,
+        http::Method::POST,
+        &format!("/api/sessions/{room}/leave"),
+        json!({"participant_session_id": human}),
+    )
+    .await;
+    loop {
+        let event = readiness_event(&mut callbacks).await;
+        let stopped = event == "shutdown";
+        observed.push(event);
+        if stopped {
+            break;
+        }
+    }
+    server.abort();
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(leave_status, StatusCode::OK);
+    assert_eq!(
+        observed,
+        [
+            "started",
+            "action:A:false",
+            "message:A:first message",
+            "shutdown"
+        ]
+    );
+    assert_eq!(
+        blocked["participant_state"]["state"], "waiting",
+        "game advertised activation while Agent::start was still blocked"
+    );
+}
+
+/// Ending a forming session must dispose of late setup without changing its durable result.
+async fn assert_agent_readiness_cancellation(gate_construction: bool) {
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let (events, mut callbacks) = mpsc::unbounded_channel();
+    let router = build_router(
+        TinyAdapter,
+        human_vs_agent_config(),
+        ServeOptions {
+            agent_factory: Some(Arc::new(ReadinessAgentFactory {
+                gate_construction,
+                entered: entered.clone(),
+                release: release.clone(),
+                events,
+            })),
+            ..ServeOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    let (human, room) = create_human_vs_agent_room(router.clone(), "Human").await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
+    let (mut socket, _) = connect_async(game_socket_url(&base_url, &room, &human).await)
+        .await
+        .unwrap();
+    readiness_signal(&entered).await;
+    let (status, ended) = json_request(
+        router.clone(),
+        http::Method::POST,
+        &format!("/api/sessions/{room}/leave"),
+        json!({"participant_session_id": human}),
+    )
+    .await;
+    let terminal = read_participant_state(&mut socket, "ended").await;
+    release.notify_one();
+    let mut observed = Vec::new();
+    loop {
+        let event = readiness_event(&mut callbacks).await;
+        let stopped = event == "shutdown";
+        observed.push(event);
+        if stopped {
+            break;
+        }
+    }
+    let (_, after) = json_request(
+        router,
+        http::Method::GET,
+        "/api/participant-state",
+        json!({"participant_session_id": human}),
+    )
+    .await;
+    server.abort();
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(after["participant_state"]["state"], "ended");
+    assert_eq!(after["participant_state"]["result"], terminal["result"]);
+    assert_eq!(ended["participant_state"]["result"], terminal["result"]);
+    assert_eq!(
+        terminal["result"]["outcome"], "left_waiting_room",
+        "setup must remain forming until initialization succeeds"
+    );
+    if gate_construction {
+        assert_eq!(
+            observed,
+            ["shutdown"],
+            "late construction must never start its agent"
+        );
+    } else {
+        assert_eq!(observed, ["started", "shutdown"]);
+    }
+}
+
+#[tokio::test]
+/// A construction result arriving after leave must be shut down without activation.
+async fn agent_readiness_leave_during_construction_preserves_terminal_result() {
+    assert_agent_readiness_cancellation(true).await;
+}
+
+#[tokio::test]
+/// Initialization finishing after leave must be shut down without activation.
+async fn agent_readiness_leave_during_start_preserves_terminal_result() {
+    assert_agent_readiness_cancellation(false).await;
+}
+
+#[tokio::test]
 async fn failed_agent_start_ends_the_session_and_shuts_the_agent_down() {
     let shutdowns = Arc::new(AtomicUsize::new(0));
+    let stopped = Arc::new(Notify::new());
     let router = build_router(
         TinyAdapter,
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(Arc::new(StartFailingAgentFactory {
                 shutdowns: shutdowns.clone(),
+                stopped: stopped.clone(),
             })),
             ..ServeOptions::default()
         },
@@ -6441,18 +6898,24 @@ async fn failed_agent_start_ends_the_session_and_shuts_the_agent_down() {
         connect_async(game_socket_url(&base_url, &public_session_id, &human).await)
             .await
             .unwrap();
-    let ended = read_participant_state(&mut socket, "ended").await;
+    let mut advertised_active = false;
+    let ended = loop {
+        let message = read_ws_type(&mut socket, "participant_state").await;
+        let participant = &message["participant_state"];
+        advertised_active |= participant["state"] == "active";
+        if participant["state"] == "ended" {
+            break participant.clone();
+        }
+    };
     assert_eq!(ended["result"]["outcome"], "technical_failure");
 
-    for _ in 0..20 {
-        if shutdowns.load(Ordering::SeqCst) == 1 {
-            server.abort();
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    readiness_signal(&stopped).await;
     server.abort();
-    panic!("failed agent start ended the session without shutting the agent down");
+    assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
+    assert!(
+        !advertised_active,
+        "failed initialization advertised an active game"
+    );
 }
 
 #[tokio::test]

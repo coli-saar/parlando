@@ -385,16 +385,13 @@ where
             agent_id,
             observation: Some(json_to_struct(serde_json::to_value(initial_observation)?)?),
         };
-        tokio::time::timeout(request_timeout, client.start(request))
+        let logs = tokio::time::timeout(request_timeout, client.start(request))
             .await
             .context("remote agent start timed out")?
             .context("remote agent start failed")?
             .into_inner()
-            .session_logs
-            .into_iter()
-            .for_each(|entry| {
-                let _ = self.init_context.logger.log(entry);
-            });
+            .session_logs;
+        self.record_remote_logs(logs);
         Ok(())
     }
 
@@ -465,9 +462,9 @@ where
         &mut self,
         available_actions: Option<Vec<A::Action>>,
     ) -> Result<Option<AgentResponse<A::Action>>> {
-        let request = self.decision_request(available_actions)?;
         let request_timeout = self.config.request_timeout;
-        let (client, _) = self.active()?;
+        let (client, agent_id) = self.active()?;
+        let request = Self::decision_request(agent_id, available_actions)?;
         let response = tokio::time::timeout(request_timeout, client.respond(request))
             .await
             .context("remote agent respond timed out")?
@@ -520,7 +517,7 @@ impl RemoteAgentInstance {
 
     /// Builds a decision request with optional available actions.
     fn decision_request<Action: Serialize>(
-        &self,
+        agent_id: String,
         available_actions: Option<Vec<Action>>,
     ) -> Result<RespondRequest> {
         let available_actions_provided = available_actions.is_some();
@@ -530,10 +527,7 @@ impl RemoteAgentInstance {
             .map(action_to_struct::<Action>)
             .collect::<Result<Vec<_>>>()?;
         Ok(RespondRequest {
-            agent_id: match &self.state {
-                RemoteAgentState::Active { agent_id, .. } => agent_id.clone(),
-                RemoteAgentState::Shutdown => bail!("remote agent has been shut down"),
-            },
+            agent_id,
             available_actions_provided,
             available_actions,
         })
@@ -849,5 +843,27 @@ mod tests {
                 Value::Null
             );
         }
+    }
+
+    /// Decision requests preserve the active ID and distinguish absent from empty affordances.
+    #[test]
+    fn decision_request_uses_resolved_identity_and_affordance_presence() {
+        let absent = RemoteAgentInstance::decision_request::<Value>(
+            "agent-7".to_string(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(absent.agent_id, "agent-7");
+        assert!(!absent.available_actions_provided);
+        assert!(absent.available_actions.is_empty());
+
+        let empty = RemoteAgentInstance::decision_request::<Value>(
+            "agent-8".to_string(),
+            Some(Vec::new()),
+        )
+        .unwrap();
+        assert_eq!(empty.agent_id, "agent-8");
+        assert!(empty.available_actions_provided);
+        assert!(empty.available_actions.is_empty());
     }
 }

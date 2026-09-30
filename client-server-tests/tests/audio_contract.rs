@@ -63,7 +63,12 @@ async fn wait_for_markers(frames: &Arc<Mutex<Vec<(String, u8)>>>, expected: &[u8
         }
     })
     .await
-    .map_err(|_| anyhow!("transcription did not observe markers {expected:?}"))?;
+    .map_err(|_| {
+        anyhow!(
+            "transcription did not observe markers {expected:?}; recorded frames: {:?}",
+            frames.lock().unwrap()
+        )
+    })?;
     Ok(())
 }
 
