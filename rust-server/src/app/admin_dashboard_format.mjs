@@ -139,3 +139,56 @@ export function plannedProgressLayout(progress) {
     overflowTotal: overflow.reduce((sum, row) => sum + row.count, 0),
   };
 }
+
+// Identifies recorded speech; agent authorship alone does not imply audio output.
+export function isSpeechBundle(bundle) {
+  return bundle.kind === 'transcript' || (bundle.kind === 'conversation' && bundle.origin === 'agent' && bundle.spoken === true);
+}
+
+// Uses one chronological layout; token mode only expands recorded speech entries.
+export function sessionTimeline(bundles, view = 'utterances', renderBundle = timelineBundleText) {
+  if (!bundles.length) return '<div class="empty">No action or message events recorded yet.</div>';
+  const entries = bundles.flatMap(bundle => {
+    const expand = view === 'tokens' && isSpeechBundle(bundle);
+    if (expand && bundle.tokens?.length) return bundle.tokens.map((token, index) => ({ time: token.start_ms, token, bundle, index }));
+    return [{ time: bundle.utterance_timing?.start_ms ?? bundle.game_time_ms, bundle, index: 0, unavailable: expand }];
+  });
+  entries.sort((a, b) => (a.time ?? Number.MAX_SAFE_INTEGER) - (b.time ?? Number.MAX_SAFE_INTEGER)
+    || a.bundle.first_index - b.bundle.first_index || a.index - b.index);
+  const rows = [];
+  for (const entry of entries) {
+    const message = ['transcript', 'conversation'].includes(entry.bundle.kind);
+    const previous = rows.at(-1);
+    if (message && previous?.message && previous.time === entry.time) previous.entries.push(entry);
+    else rows.push({ time: entry.time, message, entries: [entry] });
+  }
+  return rows.map(row => `<div class="session-timeline-row">
+    <span class="game-time" title="Game time">${row.time == null ? '—' : escapeHtml(fmtGameTime(row.time))}</span>
+    <div class="session-timeline-content">${row.entries.map(entry => `<div class="session-timeline-entry">${roleBadge(entry.bundle.role)}<div class="timeline-entry-content">${row.message ? conversationBubble(entry) : renderBundle(entry.bundle)}</div></div>`).join('')}</div>
+  </div>`).join('');
+}
+
+// Provides escaped event text for consumers without the dashboard's full card renderer.
+function timelineBundleText(bundle) {
+  return escapeHtml(bundle.text || bundle.title || '');
+}
+
+// Renders tokens and whole messages with the same edge-aligned speaker bubble.
+function conversationBubble({ token, bundle, unavailable }) {
+  const timing = token || bundle.utterance_timing;
+  const duration = timing?.end_ms != null && timing?.start_ms != null ? timing.end_ms - timing.start_ms : null;
+  const parent = `Utterance #${bundle.first_index}: ${bundle.text || ''}`;
+  const title = token ? `${token.kind} · ${fmtGameTime(token.start_ms)}–${fmtGameTime(token.end_ms)} · ${duration} ms${token.confidence == null ? '' : ` · confidence ${token.confidence}`} · ${parent}` : parent;
+  const end = duration == null ? '' : `→ ${escapeHtml(fmtGameTime(timing.end_ms))} · ${duration} ms`;
+  return `<article class="speech-bubble speaker-${bundle.role === 'B' ? 'b' : 'a'}${token ? ' speech-token' : ''}${token?.kind === 'punctuation' ? ' punctuation' : ''}"${token ? ' tabindex="0"' : ''} title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">
+    <div>${escapeHtml(token ? token.text : bundle.text || '')}</div>
+    <div class="muted small">${end}${unavailable && end ? ' · ' : ''}${token?.kind === 'punctuation' ? ' · punctuation' : ''}${unavailable ? 'Token timings unavailable' : ''}</div>
+  </article>`;
+}
+
+// Uses the same participant colors in the timeline gutter and participant cards.
+export function roleBadge(role) {
+  const normalized = role === 'A' || role === 'B' ? role : '';
+  if (!normalized) return '<span class="role-badge role-system">SYS</span>';
+  return `<span class="role-badge role-${normalized.toLowerCase()}">${escapeHtml(normalized)}</span>`;
+}

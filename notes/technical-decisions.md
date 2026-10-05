@@ -3865,3 +3865,337 @@ Validation: The full `make test-e2e PYTHON=/opt/anaconda3/bin/python3` completed
 all five layers pass, including 13 browser scenarios and 35 Prolific scenarios. Its immutable
 report at `target/e2e-runs/20260930-073933-Smfa5j/report.md` records Python 3.9.13 and
 `/opt/anaconda3/bin/python3`. No Conda environment change is required to run the default command.
+
+## 2026-10-02: Measure ASR granularity and distinguish sample time from game time
+
+Context: Issue #41 requires exposing simultaneous speech without losing utterance text. We ran a read-only credential-backed experiment under `notes/asr-timing-2026-10-02/`, using cached ElevenLabs PCM and real Speechmatics responses, followed by an isolated in-memory Great Tree server probe. Production code and the live workspace database were not edited.
+
+Approach: Retain raw responses before proposing a token representation. Compare unchanged samples under leading silence, startup waits, sample-free pauses, omitted samples, and buffered delivery. Request entity details explicitly to inspect normalized multiword expressions. Keep source sample positions, actual dispatch clocks, and provider times separate. The successful native conversion trials used a transparent loopback relay for real cloud traffic after direct server-to-cloud backpressure prevented reliable paired output.
+
+Evidence: A normal English sentence yielded 14 independently timed words across 11 finals and one utterance end, identically across three repetitions. A money expression otherwise labelled one word exposed six timed spoken words with enable_entities=true. Provider times were stream-relative and advanced with supplied samples. In the paired native trials, source phrase separation was about 5.082 seconds both with silence and with a two-second sample-free pause. Provider word separation was 5.040 versus 3.040 seconds, and both utterances within each case received the same fixed game-clock anchor. Current conversion would therefore preserve the missing two seconds even after adding word results.
+
+Tradeoffs and follow-up: A future implementation should preserve formatted text and ordinary words plus entity spoken forms. It needs a sample-to-source-time correspondence, or equivalent transmitted silence for gaps, before claiming session-aligned token intervals. Utterance metadata included silence and should not substitute for spoken-word intervals. Boundary accuracy remains approximate; the provisional 150 ms target was not established against an independent oracle. Reconnect alignment remains inconclusive after quota/startup failures. Direct Rust-to-cloud backpressure is a separate observed limitation whose cause was not established. Complete evidence and reproduction commands are in the internal report; these observations do not yet define a supported public contract.
+
+Follow-up in the same experiment: A final orderly reconnect trial retained both phrases after waiting for pending transcript commitment and quota release. The old/new stream anchors were 46 ms and 15,670 ms on game time; reconstructed word separation differed from source dispatch by +42.2 ms. This verifies fresh-stream anchoring for that controlled local case. It supersedes the earlier inconclusive reconnect result, while abrupt reconnects, pending-final preservation, provider quota delays, and direct transport backpressure remain limitations.
+
+
+## 2026-10-02 — Timed speech tokens and capture-clock correspondence (issue #41)
+
+Context: saved Speechmatics responses expose independent word timings, but normalized
+entities otherwise collapse spoken words. Stream timestamps count supplied samples,
+so a fixed stream-origin addition compresses mute and dropped-frame gaps.
+
+Decision: explicitly enable entities, recursively retain their spoken forms as ordered
+word/punctuation tokens, and preserve formatted utterance text independently. Map
+provider offsets through successfully queued 20 ms frames using browser capture
+coordinates relative to the first accepted frame. Anchor that frame to server receipt
+on the game clock; use preceding frames for endpoints and following frames for word
+onsets at gaps. Keep point punctuation on the preceding boundary. Normalize dispatch
+jitter to non-overlapping frame intervals. Retain the current utterance's frames for
+idempotent retries, prune older correspondence, and scope deduplication to the stream
+origin. Read provider messages independently from writes and abort the writer when the
+receiver closes. An interrupted stream reports failure rather than treating pending
+fragments as a completed utterance.
+
+Storage/export: tokens belong to existing conversation-event JSON metadata; no database
+schema or conversion is needed. The corpus projects only kind, text, game-clock start_ms,
+end_ms, and optional confidence, validates them, and nests them under their utterance.
+The dashboard uses A/B bubbles and a shared bounded token axis. Repeated equal-text
+utterances remain distinct. Missing historical timings remain unavailable.
+
+Tradeoffs/limits: capture dispatch times and the server-receipt anchor estimate capture
+time; initial network latency and ASR boundary error remain. Missing samples and lost
+pending finals cannot be recovered. Tests use saved real ASR responses and synthetic
+speech PCM against a local protocol peer, without credentials or paid services. Direct
+provider reliability under interrupted networks remains a deployment check, not a
+conclusion from deterministic tests.
+
+Validation: 236 runtime library tests and one binary test passed; the local Speechmatics
+contract replay passed with all generated PCM frames; 17 dashboard tests passed. Browser
+inspection of the production renderer with synthetic overlapping A/B turns verified
+both views. JSON corpus schema parses, and export tests cover field projection and
+invalid intervals. No live provider calls, production database writes, Git operations,
+release, or publication were performed for this implementation.
+
+
+## 2026-10-02 — Complete vertical token view
+
+Context: the initial token view silently filtered the session to a ten-second
+window. Horizontal scrolling only traversed that window, so subsequent utterances
+were omitted and short words were clipped by duration-scaled bars.
+
+Decision: replace the windowed horizontal plot with all recorded speech tokens
+in vertically scrolling chronological rows, sharing a start-time column and
+separate A/B columns. Tokens with identical onsets share a row. Every token shows
+its endpoint and duration; punctuation remains distinct and parent utterance text
+and confidence remain accessible by hover or keyboard focus. Missing historical
+token data appears with its utterance in chronological order. Remove the obsolete
+start/window controls and horizontal-axis styles.
+
+Tradeoff: row spacing prioritizes legibility rather than proportional elapsed time;
+explicit start/end/duration values preserve timing and overlap information. Very
+long sessions render all tokens, as the session log already does for utterances.
+A future performance change must retain access to the entire recording.
+
+Validation: all 20 dashboard tests passed, including regression cases with
+utterances at 30 and 125 seconds, chronological ordering, simultaneous A/B onsets,
+missing historical tokens, escaping, and zero-duration punctuation. Browser
+inspection confirmed that scrolling down reaches all later words, the table
+header remains visible, and document width equals viewport width.
+
+
+## 2026-10-03 — Timed agent speech alongside human ASR
+
+Context: Great Tree session `merrily-amber-harbor` (database session 30)
+contains three human transcripts with 16 tokens and three agent messages without
+alignment. The token view previously selected only transcripts, hiding the agent
+side entirely. Human ASR does not process the server's own generated agent audio.
+
+Decision: request synchronized ElevenLabs character alignment, prefer normalized
+spoken characters, and group them into words across audio chunk boundaries.
+Represent synthesized PCM and tokens together in `SynthesizedSpeech`; generated
+tokens have no recognition confidence. Validate provider timing arrays and final
+completion rather than promoting interrupted responses to completed speech.
+The provider clock is cumulative across the entire synthesis request. An isolated
+live probe generated 38 words in 11 chunks (11,052.708 ms of PCM, alignment endpoint
+11,053 ms). Adding each chunk's PCM offset to these times double-counts elapsed
+time. Preserve the provider positions exactly once. The credential-free fixture
+in `rust-server/tests/fixtures/elevenlabs/` retains character timings and sample
+counts from that probe, with no audio, keys, or voice identifiers.
+
+Anchor those positions to the game clock immediately before server audio
+publication. After successful publication, append `conversation_speech_timing`
+linked to the original message ID and attributed to its agent participant. This
+preserves original text-commit order and lets the dashboard and corpus project
+speech timing onto one existing conversation message. Publication time estimates
+playback onset; network and browser buffering remain unmeasured delay. Publication
+failures do not create a completed speech-timing record. Existing event storage
+supports this representation without a database schema change or conversion.
+
+Include agent conversation bundles in the vertical token table. Historical agent
+messages remain visible with a timings-unavailable notice; no boundaries are
+invented from text. The three old B messages in the named session cannot recover
+original word boundaries because neither alignment nor generated audio was stored.
+New timings are recorded once the updated runtime is running. Existing providers
+without alignment retain audio publication and the speech interval, with no tokens.
+
+Validation: all 239 runtime library tests and one binary test passed, as did four
+local agent/client smoke tests, the Speechmatics contract test, and 21 dashboard
+tests. Local fake-provider tests check alignment casing, normalized text, cumulative
+chunk clocks, split words, and malformed intervals. Integration tests verify
+agent attribution and timing in both dashboard bundles and the single corpus
+message. Browser inspection using the production renderer showed all three old
+B messages beside A's tokens, and 38 aligned B words plus punctuation beside A
+in the synthetic recording, with no horizontal overflow. Great Tree also passed `cargo check` against the local runtime. The live
+database was read only; the running game was not restarted and no release was
+performed.
+
+
+## 2026-10-03 — Speech controls depend on recorded audio
+
+Context: an agent message can be purely typed, so agent authorship does not prove
+that the message was converted to voice. Typed-only sessions should not expose
+an utterance/token selector or notices about absent speech timings.
+
+Decision: dashboard bundles carry an explicit `spoken` flag. Human transcripts
+qualify directly; agent messages qualify through synthesis timing or a successful
+nonempty `tts_publish_completed` record linked by message ID. Existing durable
+publication evidence identifies old voiced messages without inventing their
+missing word boundaries. This is an event projection, with no database conversion
+or compatibility schema branch. Typed and failed-publication agent messages stay
+out of the token table. Hide the selector by default and reveal it only when a
+speech bundle exists; reset to utterances when switching to a typed-only session,
+so a previous token selection cannot hide that session's conversation.
+
+Validation: dashboard tests cover mixed typed/spoken agent replies and session
+switching from token view to typed-only conversation. Runtime integration checks
+new aligned speech, historical publication without alignment, and an agent message
+without publication evidence.
+
+
+## 2026-10-05 — Integrated clock oracle for generated and recognized speech
+
+Context: existing checks tested provider token parsing and clock mapping separately;
+the runtime ASR integration covered a single frame, while the TTS integration used
+a mock publisher. Those checks could miss a timestamp error between adapters,
+real publication, durable conversation records, and dashboard/corpus projection.
+
+Decision: add one credential-free combined integration test in
+`rust-server/src/app/tests/speech_timing.rs`. Local protocol peers exercise both
+production provider adapters and the production agent publisher in a human/agent
+room. ASR receives four known 20 ms frames starting at client capture offset 9000
+ms, with 960 ms without samples between the two turns. Provider tokens retain a
+continuous 0–80 ms sample clock; the expected game-clock positions independently
+require two 40 ms utterances beginning 1000 ms apart. Delay final ASR output so
+its receipt time cannot accidentally serve as audio time.
+
+TTS supplies 1600 ms of known PCM in two chunks, with cumulative character
+alignment and a word spanning the 300 ms chunk boundary. Delay synthesis after
+text commit. Check all 80 relay frames for sequence, timestamp, and exact payload;
+check publication onset between the separately observed provider response and
+first browser-socket audio receipt. Bound the ASR anchor between client send and
+provider input receipt, rather than deriving its oracle from stored timing. Verify
+exact offsets, durations, token counts, punctuation points, confidence semantics,
+and both A utterances plus B speech in dashboard and corpus projections.
+
+Tradeoff: deterministic local provider output tests transport and clock accuracy,
+not acoustic recognition boundaries or audible playback onset. Wall-clock brackets
+allow scheduler/network latency without using broad numeric tolerances that could
+hide offset errors. No paid provider calls, production database writes, schema
+changes, or runtime restarts are needed.
+
+Validation: the combined integration passed; all 240 runtime library tests and
+one binary test passed. The final attribution assertions also passed in the
+focused integration run. Targeted formatting checks passed and the context graph
+was refreshed.
+
+
+## 2026-10-05 — Preserve session events in token view and pin log controls
+
+Context: token view previously retained only speech, dropping game actions,
+logs, setup events, and typed turns. Session log controls shared the event scroll
+container and crowded a single row with the title and polling status.
+
+Decision: expand spoken bundles into token rows while preserving every other
+visible bundle at its game timestamp. Both views use the same card renderer for
+non-speech content, including structured actions, problem reasons, attribution,
+and event indexes. Apply the log/setup filters before either rendering path.
+Group simultaneous speech tokens only across adjacent speech entries, preserving
+event-index order when an action and token share an onset. Older speech without
+boundaries retains its existing notice; typed turns remain ordinary messages.
+
+Make the session log a flex column with an independently scrolling, keyboard-
+focusable event region. Keep its header outside that region; the table's column
+headings can still stick inside it. Arrange title and polling status on one row,
+and the labeled view selector and checkbox group on another, allowing wrapping.
+Use a bounded event region on narrow layouts so controls remain available there
+as well. This changes presentation only; stored clocks and event data are intact.
+
+Validation: all 23 dashboard tests passed, including production-renderer parity
+for actions, typed turns, logs, setup problems, completion, and both checkbox
+filters. Browser inspection rendered 30 actions and 30 speech turns in both
+views; token mode retained 150 tokens and all actions after filtering logs/setup.
+Scrolling the token region to its end left the header at exactly the same screen
+position, without horizontal overflow. Screenshot proof is stored in the local
+visualization directory as `session-log-events-scrolled.png`.
+
+A 560 px browser-frame check also retained the header position after scrolling,
+kept the control group aligned, and had document width equal to viewport width.
+
+
+## 2026-10-05 — Align the session log with summary cards
+
+Context: the unpadded shaded header looked disconnected from the session summary,
+and the token-table explanation and repeated polling timestamp added unnecessary
+text to an automatically updating view.
+
+Decision: remove the visible table caption and normal polling-status text. Retain
+a concise accessible table name and surface actual refresh errors only. Give the
+session log the same white card, border, corner radius, and header inset as the
+summary; align the table's first-column text with that inset. Use matching smaller
+insets on narrow screens. Keep the header outside the scroll region and preserve
+all existing event filters, token content, and automatic refresh behavior.
+
+Validation: all 23 dashboard tests passed. Browser geometry checks confirmed
+that the summary title, log title, and view control share the same left edge;
+no caption or polling text remains, there is no horizontal overflow, and the
+header position stays unchanged after scrolling. Screenshot: `session-log-clean-header.png`.
+
+
+## 2026-10-05 — One timeline for utterances and tokens
+
+Context: separate table and conversation layouts made changing speech resolution
+change speaker placement and event presentation as well.
+
+Decision: one sessionTimeline renderer projects bundles into chronological entries,
+expanding only recorded speech in token mode. Both modes use the same timestamp
+column, speaker bubbles, non-message cards, filters, and scrolling container.
+A bubbles align with the content area's left edge; B bubbles align with its right
+edge. Adjacent messages at identical onset share a timestamped row. Token focus
+and hover retain parent text and confidence; older recordings retain their whole
+message with an unavailable-timings notice. Removed the superseded token table,
+separate ordering function, duplicate speech renderer, and nested event timestamps.
+
+Tradeoff: token expansion can interleave events inside an utterance and increases
+vertical length; this is the intended finer temporal resolution. Identical onsets
+share one row, while event-index ordering remains deterministic. No timing data
+or clock conversion changed.
+
+Validation: 24 dashboard Node tests pass, including shared layout, simultaneous
+speakers, escaping, historical data, typed-only selection, and event/filter parity.
+Browser previews using production CSS and rendering functions verify both speaker
+edges, fixed controls through the last token, and no horizontal overflow on desktop
+and a 560-pixel-wide frame. Running game binaries still require rebuilding to embed
+updated dashboard assets.
+
+
+## 2026-10-05 — Compact action summaries and actor gutter
+
+Context: full action grids interrupted dialogue scanning; actor identity was
+repeated inside bubbles while logs resembled full operational event cards.
+
+Decision: each timeline entry carries a shared role badge beside its timestamp,
+using the existing blue A and amber B colors. Simultaneous speech retains one
+time row with a badge for each entry. Removed repeated actors and event IDs from
+bubble metadata; IDs remain in hover context. Actions use a native details
+summary with the type in bold and comma-separated key/value parameters. Matching
+player fields remain omitted because the gutter identifies the actor. Steps,
+IDs, original payload and additional text remain available through expansion.
+Logs show escaped muted text aligned to A's left or B's right edge without title
+labels. Unassigned events retain SYS in the gutter. Problem badges and reasons
+remain visible when action details are closed; error logs retain emphasis.
+
+Tradeoffs: ordinary lifecycle details take an expansion click; compact action
+summaries wrap at narrow widths rather than truncate. This changes presentation
+only and does not infer causal relationships from temporal proximity.
+
+Validation: all 25 dashboard Node tests pass, covering inline action parameters,
+actor badges, log label removal, escaping, visible problems, and existing
+speech/event/filter behavior. Production-renderer browser previews show compact
+SetFlow summaries, B logs aligned to the same right edge as speech, expandable
+steps/payload, and no horizontal overflow in a 560-pixel-wide frame. The running
+Great Tree binary was not restarted; rebuilding loads embedded dashboard assets.
+
+
+## 2026-10-05 — Plain action summaries and consistent log typography
+
+Context: the disclosure triangle implied additional interaction although the
+inline action already conveyed the information needed to read the timeline.
+Smaller log text introduced unnecessary typographic variation.
+
+Decision: remove action/setup disclosure controls and the hidden details markup,
+retaining compact inline summaries, actor badges and visible problem reasons.
+Event IDs remain hover metadata. Logs inherit the normal entry font size and
+retain gray text and speaker alignment. Removed obsolete disclosure styles.
+Tradeoff: the dashboard timeline no longer displays raw action payloads or
+lifecycle steps; durable records and corpus exports are unaffected.
+
+
+## 2026-10-05 — More space after timeline actors
+
+Context: the 10-pixel gap after actor badges was cramped for plain action rows.
+Decision: use one 24-pixel actor-to-content gap for every entry, reduced to
+16 pixels on narrow screens to retain reading width. Bubble padding no longer
+needs to compensate for an undersized shared gutter. No behavior changed.
+
+
+## 2026-10-05 — Symmetric timeline gutters
+
+Context: fixed timestamp widths left unused space beside the timestamp, making
+the visual gap to the actor larger than its CSS gap. Increasing only the gap
+after the actor did not establish a balanced layout.
+Decision: the timeline owns a content-sized timestamp column shared by subgrid
+rows. Timestamps align right so their visible ends stay aligned even as minute
+counts grow. Both timestamp-to-actor and actor-to-content use one inherited
+--timeline-gap (24 pixels, 16 on narrow screens). Empty states span both columns.
+This replaces fixed timestamp widths and independently configured gaps.
+
+
+## 2026-10-05 — Align plain logs with plain event text
+
+Context: log messages retained bubble-like horizontal padding despite having no
+bubble background, adding an extra indentation after the actor gutter.
+Decision: remove horizontal log padding at both desktop and narrow widths.
+System and A log text now begin at the same content edge as action summaries;
+B log text ends at the shared right edge. Vertical spacing and actor gutter
+sizes remain unchanged.

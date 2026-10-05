@@ -4186,8 +4186,37 @@ async fn commit_final_transcript<A: Game>(
     } else {
         utterance.result_ids.join(",")
     };
-    let idempotency_key =
-        format!("{public_session_id}:{participant_session_id}:{provider_identity}");
+    let idempotency_key = format!(
+        "{public_session_id}:{participant_session_id}:{stream_started_at}:{provider_identity}"
+    );
+    let tokens = utterance
+        .tokens
+        .iter()
+        .map(|token| {
+            let start_ms = stream_start_game_time_ms
+                .checked_add(token.start_time_ms)
+                .ok_or_else(|| {
+                    AppError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Token start time overflowed",
+                    )
+                })?;
+            let end_ms = stream_start_game_time_ms
+                .checked_add(token.end_time_ms)
+                .ok_or_else(|| {
+                    AppError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Token end time overflowed",
+                    )
+                })?;
+            let mut value =
+                json!({"kind":token.kind,"text":token.text,"start_ms":start_ms,"end_ms":end_ms});
+            if let Some(confidence) = token.confidence {
+                value["confidence"] = json!(confidence);
+            }
+            Ok(value)
+        })
+        .collect::<Result<Vec<Value>, AppError>>()?;
     if !state
         .committed_transcripts
         .write()
@@ -4216,6 +4245,7 @@ async fn commit_final_transcript<A: Game>(
         json!({
             "start_game_time_ms": stored.start_game_time_ms,
             "end_game_time_ms": stored.end_game_time_ms,
+            "tokens": tokens,
             "client_metadata": stored.metadata,
         }),
     )
@@ -4884,11 +4914,11 @@ async fn privacy_status<A: Game>(
             .to_string()
     } else if total == 1 {
         format!(
-            "Speech transcription through {provider_description} is enabled. Parlando stores event order, milliseconds from game start, speaking participant and role, final transcript text, and speech start and end positions on the same game clock. It does not store interim recognition hypotheses."
+            "Speech transcription through {provider_description} is enabled. Parlando stores event order, milliseconds from game start, speaking participant and role, final transcript text, and speech start and end positions on the same game clock, and independently timed spoken tokens with optional recognition confidence. It does not store interim recognition hypotheses."
         )
     } else {
         format!(
-            "Speech transcription is enabled in {transcription} of {total} covered experiments. Those experiments retain event order, milliseconds from game start, speaking participant and role, final transcript text, and speech start and end positions on the same game clock; interim recognition hypotheses are not stored."
+            "Speech transcription is enabled in {transcription} of {total} covered experiments. Those experiments retain event order, milliseconds from game start, speaking participant and role, final transcript text, and speech start and end positions on the same game clock, and independently timed spoken tokens with optional recognition confidence; interim recognition hypotheses are not stored."
         )
     };
     let (audio_behavior, audio_boundary, interim_behavior, interim_boundary) = if total > 1 {
@@ -5179,6 +5209,12 @@ async fn privacy_status<A: Game>(
                 detail: transcript_storage_detail,
             },
             PrivacyStorageStatus {
+                category: "Agent speech timings".to_string(),
+                persisted_when_produced: facts.iter().any(|fact| fact.tts_enabled && fact.human_vs_agent),
+                purpose: "Analyze generated agent speech alongside participant speech.".to_string(),
+                detail: "Agent message text, participant and role, estimated speech start and end on the game clock, and spoken words and punctuation from synthesis alignment. Timings are anchored to server audio publication; network and browser buffering can shift playback. Generated audio is not stored, and agent tokens have no recognition confidence.".to_string(),
+            },
+            PrivacyStorageStatus {
                 category: "Operational session events".to_string(),
                 persisted_when_produced: true,
                 purpose: "Diagnose session failures and establish what happened during collection."
@@ -5311,8 +5347,8 @@ async fn privacy_status<A: Game>(
                 },
                 PrivacyExportFieldStatus {
                     section: "Message event".to_string(),
-                    description: if transcription > 0 {
-                        "Order and game_time_ms in milliseconds from game start, participant and role, whether the message was typed or transcribed from speech, message text, and optional speech start and end positions on the same game clock."
+                    description: if transcription > 0 || facts.iter().any(|fact| fact.tts_enabled) {
+                        "Order and game_time_ms in milliseconds from game start, participant and role, whether the message was typed, transcribed from speech, or generated by an agent, message text, optional speech start and end positions on the same game clock, and independently timed spoken words and punctuation. Recognition confidence is available only for transcribed speech."
                     } else {
                         "Order and game_time_ms in milliseconds from game start, participant and role, typed message text, and its typed origin."
                     }
@@ -5326,6 +5362,7 @@ async fn privacy_status<A: Game>(
                         "origin",
                         "text",
                         "utterance_timing?.{origin=game_clock,start_ms,end_ms}",
+                    "tokens?.[{kind,text,start_ms,end_ms,confidence?}]",
                     ]),
                 },
                 PrivacyExportFieldStatus {
@@ -6847,10 +6884,42 @@ async fn admin_session_events<A: Game>(
 fn important_admin_events(
     events: Vec<crate::storage::StoredSessionEvent>,
 ) -> Vec<AdminEventSummary> {
+    let timings = collect_speech_timings(
+        events
+            .iter()
+            .filter(|event| event.event_type == "conversation_speech_timing")
+            .map(|event| &event.payload),
+    );
+    let published_messages = events
+        .iter()
+        .filter(|event| event.event_type == "tts_diagnostic")
+        .filter(|event| {
+            event.payload["event"] == "tts_publish_completed"
+                && event.payload["metadata"]["bytes"]
+                    .as_u64()
+                    .is_some_and(|bytes| bytes > 0)
+        })
+        .filter_map(|event| event.payload["metadata"]["message_id"].as_str())
+        .map(str::to_owned)
+        .collect::<HashSet<_>>();
     events
         .into_iter()
         .filter(is_important_admin_event)
-        .map(admin_event_summary)
+        .map(|mut event| {
+            if event.event_type == "conversation_message" {
+                attach_speech_timing(&mut event.payload, &timings);
+                if event.payload["id"]
+                    .as_str()
+                    .is_some_and(|id| published_messages.contains(id))
+                {
+                    if !event.payload["metadata"].is_object() {
+                        event.payload["metadata"] = json!({});
+                    }
+                    event.payload["metadata"]["speech_synthesized"] = json!(true);
+                }
+            }
+            admin_event_summary(event)
+        })
         .collect()
 }
 
@@ -7003,12 +7072,17 @@ fn can_append_admin_bundle(
                     && admin_event_is_action_request(event))
         }
         "transcript" => {
-            bundle
-                .events
-                .first()
-                .map(|event| normalized_transcript_text(event))
-                .unwrap_or_default()
-                == normalized_transcript_text(event)
+            !(event.event_type == "conversation_message"
+                && bundle
+                    .events
+                    .iter()
+                    .any(|item| item.event_type == "conversation_message"))
+                && bundle
+                    .events
+                    .first()
+                    .map(|event| normalized_transcript_text(event))
+                    .unwrap_or_default()
+                    == normalized_transcript_text(event)
         }
         "participant" | "voice" => true,
         _ => false,
@@ -7083,7 +7157,13 @@ fn admin_bundle_json(bundle: AdminEventBundle<'_>) -> Value {
         "housekeeping": admin_bundle_is_housekeeping(&bundle),
         "steps": steps,
         "text": admin_bundle_text(&bundle),
+        "origin": last.detail.get("origin"),
+        "spoken": bundle.kind == "transcript" || (last.detail["origin"] == "agent"
+            && (last.detail["metadata"]["timing_source"] == "tts_alignment"
+                || last.detail["metadata"]["speech_synthesized"] == true)),
         "action": action,
+        "utterance_timing": last.detail.get("metadata").map(|metadata| json!({"start_ms":metadata.get("start_game_time_ms"),"end_ms":metadata.get("end_game_time_ms")})),
+        "tokens": last.detail.get("metadata").and_then(|metadata| metadata.get("tokens")),
         "events": bundle.events,
     })
 }
@@ -7756,6 +7836,74 @@ fn filter_scoped_tables_to_sessions(exported: &mut Value) {
     }
 }
 
+/// Validates and projects only the documented token fields into a corpus candidate.
+fn export_transcript_tokens(value: &Value) -> Result<Value, AppError> {
+    let items = value
+        .as_array()
+        .ok_or_else(|| export_integrity_error("transcript tokens are not an array"))?;
+    let mut tokens = Vec::with_capacity(items.len());
+    for item in items {
+        let kind = item["kind"]
+            .as_str()
+            .filter(|kind| matches!(*kind, "word" | "punctuation"))
+            .ok_or_else(|| export_integrity_error("invalid transcript token kind"))?;
+        let text = item["text"]
+            .as_str()
+            .ok_or_else(|| export_integrity_error("missing transcript token text"))?;
+        let start = item["start_ms"]
+            .as_i64()
+            .filter(|value| *value >= 0)
+            .ok_or_else(|| export_integrity_error("invalid token onset"))?;
+        let end = item["end_ms"]
+            .as_i64()
+            .filter(|value| *value >= start)
+            .ok_or_else(|| export_integrity_error("invalid token endpoint"))?;
+        let mut token = json!({"kind":kind,"text":text,"start_ms":start,"end_ms":end});
+        if let Some(confidence) = item.get("confidence") {
+            let confidence = confidence
+                .as_f64()
+                .filter(|value| (0.0..=1.0).contains(value))
+                .ok_or_else(|| export_integrity_error("invalid token confidence"))?;
+            token["confidence"] = json!(confidence);
+        }
+        tokens.push(token);
+    }
+    Ok(json!(tokens))
+}
+
+/// Indexes published speech timing records by their existing conversation message.
+fn collect_speech_timings<'a>(payloads: impl Iterator<Item = &'a Value>) -> HashMap<String, Value> {
+    payloads
+        .filter_map(|payload| {
+            Some((
+                payload.get("message_id")?.as_str()?.to_string(),
+                payload.get("metadata")?.clone(),
+            ))
+        })
+        .collect()
+}
+
+/// Enriches a read projection without altering the originally committed message event.
+fn attach_speech_timing(payload: &mut Value, timings: &HashMap<String, Value>) {
+    let Some(timing) = payload
+        .get("id")
+        .and_then(Value::as_str)
+        .and_then(|id| timings.get(id))
+    else {
+        return;
+    };
+    let Some(fields) = timing.as_object() else {
+        return;
+    };
+    if !payload["metadata"].is_object() {
+        payload["metadata"] = json!({});
+    }
+    payload["metadata"]
+        .as_object_mut()
+        .expect("metadata is an object")
+        .extend(fields.clone());
+}
+
 /// Derives a publication-oriented dialogue corpus with consistent readable identifiers.
 fn corpus_experiment_export(
     mut exported: Value,
@@ -7862,6 +8010,7 @@ fn corpus_experiment_export(
             let created_at = required_timestamp_ms(session.get("created_at"), "session creation")?;
             let completed_at =
                 optional_timestamp_ms(session.get("completed_at"), "session completion")?;
+            let speech_timings = collect_speech_timings(event_rows.iter().filter(|row| row.get("session_id").and_then(Value::as_i64) == Some(internal_session_id) && row["event_type"] == "conversation_speech_timing").map(|row| &row["payload"]));
             let session_events = event_rows
                 .iter()
                 .filter(|row| {
@@ -7888,7 +8037,8 @@ fn corpus_experiment_export(
                         .get("actor_participant_id")
                         .and_then(Value::as_i64)
                         .and_then(|id| participant_ids.get(&id));
-                    let payload = row.get("payload").unwrap_or(&Value::Null);
+                    let mut payload = row.get("payload").cloned().unwrap_or(Value::Null);
+                    if row["event_type"] == "conversation_message" { attach_speech_timing(&mut payload, &speech_timings); }
                     semantic_event_count += 1;
                     match row.get("event_type").and_then(Value::as_str) {
                         Some("game_action_accepted") => {
@@ -7933,6 +8083,9 @@ fn corpus_experiment_export(
                                     "start_ms": start_time,
                                     "end_ms": end_time,
                                 });
+                            }
+                            if let Some(tokens) = payload.get("metadata").and_then(|metadata| metadata.get("tokens")) {
+                                event["tokens"] = export_transcript_tokens(tokens)?;
                             }
                             Ok(event)
                         }
@@ -8293,12 +8446,16 @@ async fn audio_websocket_loop<A: Game>(
     };
     let transcription_input = transcription.as_ref().map(|session| session.input.clone());
     let transcription_stream_started_at = Arc::new(OnceLock::<String>::new());
+    let transcription_clock = Arc::new(Mutex::new(
+        crate::transcription::clock::TranscriptionClock::default(),
+    ));
     let event_task = transcription.map(|mut session| {
         let state = state.clone();
         let public_session_id = public_session_id.clone();
         let role = role.clone();
         let participant_session_id = participant_session_id.clone();
         let transcription_stream_started_at = transcription_stream_started_at.clone();
+        let transcription_clock = transcription_clock.clone();
         tokio::spawn(async move {
             while let Some(event) = session.events.recv().await {
                 match event {
@@ -8309,6 +8466,17 @@ async fn audio_websocket_loop<A: Game>(
                         publish_transcription_readiness(&state, &public_session_id, &role).await;
                     }
                     TranscriptionEvent::FinalUtterance(utterance) => {
+                        let mut clock = transcription_clock.lock().await;
+                        let provider_start = utterance.start_time_ms;
+                        let utterance = match clock.map(utterance) {
+                            Ok(utterance) => utterance,
+                            Err(error) => {
+                                tracing::warn!(%error, %public_session_id, "invalid transcript clock correspondence");
+                                continue;
+                            }
+                        };
+                        clock.discard_before(provider_start);
+                        drop(clock);
                         let Some(stream_started_at) = transcription_stream_started_at.get() else {
                             tracing::warn!(%public_session_id, "transcription result arrived without an audio-stream clock origin");
                             continue;
@@ -8393,10 +8561,17 @@ async fn audio_websocket_loop<A: Game>(
                     {
                         if let Some(input) = &transcription_input {
                             let received_at = now_iso();
-                            let _ = transcription_stream_started_at.set(received_at);
+                            let timestamp_ms = frame.timestamp_ms;
+                            let mut clock = transcription_clock.lock().await;
                             match input.try_send(TranscriptionInput::Audio(frame)) {
-                                Ok(()) => {}
+                                Ok(()) => {
+                                    let _ = transcription_stream_started_at.set(received_at);
+                                    if let Err(error) = clock.record(timestamp_ms) {
+                                        tracing::warn!(%error, "failed to record transcription clock");
+                                    }
+                                }
                                 Err(_) => {
+                                    drop(clock);
                                     state.telemetry.record_asr_backpressure();
                                     state.audio_sessions.send_control(&public_session_id, &role, json!({"type":"transcriptionStatus","ready":false,"message":"ASR is falling behind"}).to_string()).await;
                                 }
@@ -9701,7 +9876,8 @@ async fn speak_agent_message<A: Game>(
     )
     .await
     {
-        Ok(Ok(chunks)) => {
+        Ok(Ok(speech)) => {
+            let chunks = speech.chunks;
             let mut saw_audio = false;
             for chunk in &chunks {
                 if !chunk.data.is_empty() && !saw_audio {
@@ -9740,11 +9916,25 @@ async fn speak_agent_message<A: Game>(
                     json!({"message_id": message.id}),
                 )
                 .await;
+                let publication_started_at = now_iso();
                 match publisher
                     .publish(public_session_id, &message.id, &chunks)
                     .await
                 {
                     Ok(summary) => {
+                        if let Err(error) = record_agent_speech_timing(
+                            state,
+                            public_session_id,
+                            message,
+                            &publication_started_at,
+                            &speech.tokens,
+                            &summary,
+                        )
+                        .await
+                        {
+                            failed = true;
+                            tracing::warn!(%error, %public_session_id, "failed to record agent speech timing");
+                        }
                         persist_tts_diagnostic(
                             state,
                             public_session_id,
@@ -9801,6 +9991,61 @@ async fn speak_agent_message<A: Game>(
         }
     }
     state.telemetry.finish_tts(failed);
+}
+
+/// Records published agent speech on the game clock without duplicating conversation text.
+/// The server publication anchor estimates playback onset; browser/network buffering
+/// may shift what the listener hears. Word offsets come from the TTS alignment.
+async fn record_agent_speech_timing<A: Game>(
+    state: &Arc<AppState<A>>,
+    public_session_id: &str,
+    message: &ConversationMessageResponse,
+    publication_started_at: &str,
+    tokens: &[crate::transcription::TranscriptToken],
+    summary: &crate::audio_publisher::AudioPublishSummary,
+) -> Result<()> {
+    let mut record = session_event_record(
+        state,
+        public_session_id,
+        message.sender_participant_session_id.as_deref(),
+        "conversation_speech_timing",
+        Value::Null,
+        None,
+    )
+    .await?;
+    let origin_ms = state
+        .store
+        .session_game_time_ms(
+            &record.experiment_id,
+            record.session_id,
+            publication_started_at,
+        )
+        .await?;
+    let denominator = i64::from(summary.sample_rate) * i64::from(summary.channels) * 2;
+    if denominator == 0 {
+        return Err(anyhow!("invalid published audio format"));
+    }
+    let duration_ms = i64::try_from(summary.bytes_published)?
+        .checked_mul(1000)
+        .and_then(|duration| duration.checked_add(denominator / 2))
+        .context("speech duration overflow")?
+        / denominator;
+    let end_ms = origin_ms
+        .checked_add(duration_ms)
+        .context("speech endpoint overflow")?;
+    let tokens = tokens
+        .iter()
+        .map(|token| -> Result<Value> {
+            Ok(json!({"kind":token.kind,"text":token.text,
+            "start_ms":origin_ms.checked_add(token.start_time_ms).context("token onset overflow")?,
+            "end_ms":origin_ms.checked_add(token.end_time_ms).context("token endpoint overflow")?}))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    record.payload = json!({"message_id":message.id,"metadata":{
+        "start_game_time_ms":origin_ms,"end_game_time_ms":end_ms,"tokens":tokens,"timing_source":"tts_alignment"
+    }});
+    state.store.append_session_event(record).await?;
+    Ok(())
 }
 
 // Persists one TTS diagnostic event into the evaluation event stream.

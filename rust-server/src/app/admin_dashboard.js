@@ -1,5 +1,5 @@
 import { state } from './admin-dashboard-state.js';
-import { escapeHtml, experimentDisplayStatus, fmtClockTime, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, plannedProgressLayout, sessionEndCauseRows, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
+import { isSpeechBundle, sessionTimeline, roleBadge, escapeHtml, experimentDisplayStatus, fmtClockTime, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, plannedProgressLayout, sessionEndCauseRows, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
 import { absoluteParticipantUrl, adminFetch, experimentRuntimeApi, participantUrlCanOpen } from './admin-dashboard-api.js';
 const experimentList = document.getElementById('experimentList');
 const menuButton = document.getElementById('menuButton');
@@ -16,7 +16,10 @@ const refreshProgressButton = document.getElementById('refreshProgress');
 const sessionDetail = document.getElementById('sessionDetail');
 const summary = document.getElementById('summary');
 const timeline = document.getElementById('timeline');
-const liveStatus = document.getElementById('liveStatus');
+const speechView = document.getElementById('speechView');
+// Re-renders the session log when switching between utterance and token views.
+speechView.addEventListener('change', renderEventBundles);
+const sessionLogError = document.getElementById('sessionLogError');
 const reproducibility = document.getElementById('reproducibility');
 const gameName = document.getElementById('gameName');
 const gameVersion = document.getElementById('gameVersion');
@@ -2003,7 +2006,7 @@ async function selectSession(sessionId) {
   state.selected = sessionId;
   state.lastEventIndex = 0;
   renderSessions();
-  liveStatus.textContent = 'Loading';
+  sessionLogError.hidden = true;
   const response = await adminFetch(state, runtimeApi(`sessions/${sessionId}`));
   if (!response.ok) throw new Error(await response.text());
   const data = await response.json();
@@ -2015,7 +2018,6 @@ async function selectSession(sessionId) {
   state.eventBundles = data.event_bundles || [];
   mergeEvents(data.events || []);
   renderEventBundles();
-  liveStatus.textContent = 'Live';
 }
 
 // Switches among the selected experiment's sessions, progress, notes, export, and configuration views.
@@ -2327,13 +2329,6 @@ function eventClass(bundle) {
   return '';
 }
 
-// Renders compact participant role markers for rows and event timeline entries.
-function roleBadge(role) {
-  const normalized = role === 'A' || role === 'B' ? role : '';
-  if (!normalized) return '<span class="role-badge role-system">SYS</span>';
-  return `<span class="role-badge role-${normalized.toLowerCase()}">${escapeHtml(normalized)}</span>`;
-}
-
 // Returns only extra event text that is not already implied by the title and badge.
 function mergeEvents(events) {
   const known = new Set(state.events.map(event => `${event.event_id}:${event.event_index}`));
@@ -2349,46 +2344,33 @@ function mergeEvents(events) {
 
 // Renders filtered event bundles as the selected session's chronological log.
 function renderEventBundles() {
+  const hasSpeech = (state.eventBundles || []).some(isSpeechBundle);
+  speechView.closest('label').hidden = !hasSpeech;
+  if (!hasSpeech) speechView.value = 'utterances';
   const bundles = (state.eventBundles || []).filter(bundle => {
     if (bundle.kind === 'log' && !showLogs.checked) return false;
     return showHousekeeping.checked || !bundle.housekeeping;
   });
-  timeline.innerHTML = '';
-  for (const bundle of bundles) {
-    timeline.insertAdjacentHTML('beforeend', `
-      <article class="event ${eventClass(bundle)}">
-        <div class="event-line">
-          <span class="game-time" title="Game time">${escapeHtml(fmtGameTime(bundle.game_time_ms))}</span>
-          ${roleBadge(bundle.role)}
-          <div class="event-main">
-            <span class="event-title">${escapeHtml(bundle.title)}${bundle.problem ? '<span class="problem-badge">Problem</span>' : ''}</span>
-            <span class="muted small">#${bundle.first_index}${bundle.first_index === bundle.last_index ? '' : `-${bundle.last_index}`}</span>
-            ${bundle.steps ? `<div class="bundle-steps">${escapeHtml(bundle.steps)}</div>` : ''}
-            ${bundle.problem_reason ? `<div class="problem-reason">${escapeHtml(bundle.problem_reason)}</div>` : ''}
-          </div>
-          <div class="event-text">${bundle.action ? `<div class="structured-action">${prettyAction(bundle.action, bundle.role)}</div>` : escapeHtml(bundle.text || '')}</div>
-        </div> 
-      </article>
-    `);
-  }
-  if (!timeline.children.length) timeline.innerHTML = '<div class="empty">No action or message events recorded yet.</div>';
+  timeline.innerHTML = sessionTimeline(bundles, speechView.value, renderEventBundle);
 }
 
-// Formats a structured action without repeating its already-visible actor role.
+// Presents compact actions and speaker-aligned logs without disclosure controls.
+function renderEventBundle(bundle) {
+  const problem = bundle.problem ? '<span class="problem-badge">Problem</span>' : '';
+  const reason = bundle.problem_reason ? `<div class="problem-reason">${escapeHtml(bundle.problem_reason)}</div>` : '';
+  if (bundle.kind === 'log') {
+    return `<article class="timeline-log speaker-${bundle.role === 'B' ? 'b' : 'a'}${bundle.problem ? ' problem' : ''}" title="#${bundle.first_index}">${escapeHtml(bundle.text || '')}${problem}${reason}</article>`;
+  }
+  const summary = bundle.action ? prettyAction(bundle.action, bundle.role) : `<strong>${escapeHtml(bundle.title)}</strong>${bundle.text ? ` · ${escapeHtml(bundle.text)}` : ''}`;
+  return `<article class="event ${eventClass(bundle)}" title="#${bundle.first_index}">${summary}${problem}${reason}</article>`;
+}
+
+// Formats action fields inline while omitting an actor already visible in the gutter.
 function prettyAction(action, role) {
   if (!action || typeof action !== 'object') return escapeHtml(String(action ?? ''));
-  const type = action.type;
-  const rows = Object.entries(action).filter(([key, value]) => {
-    if (key === 'type') return false;
-    if (key === 'player' && role && value === role) return false;
-    return true;
-  }).map(([key, value]) => `
-    <div class="action-row">
-      <span class="action-key">${escapeHtml(key)}</span>
-      <span class="action-value">${escapeHtml(formatActionValue(value))}</span>
-    </div>
-  `).join('');
-  return `${type ? `<strong class="action-type">${escapeHtml(type)}</strong>` : ''}${rows}`;
+  const fields = Object.entries(action).filter(([key, value]) => key !== 'type' && !(key === 'player' && role && value === role))
+    .map(([key, value]) => `${escapeHtml(key)}: ${escapeHtml(formatActionValue(value))}`).join(', ');
+  return `${action.type ? `<strong>${escapeHtml(action.type)}</strong>` : ''}${fields ? ` ${fields}` : ''}`;
 }
 
 // Serializes one structured action value for compact inline display.
@@ -2408,7 +2390,7 @@ async function refreshEvents() {
   state.eventBundles = data.event_bundles || state.eventBundles;
   mergeEvents(data.events || []);
   renderEventBundles();
-  liveStatus.textContent = `Last checked ${new Date().toLocaleTimeString()}`;
+  sessionLogError.hidden = true;
 }
 
 showHousekeeping.addEventListener('change', renderEventBundles);
@@ -2512,7 +2494,8 @@ renderTabs();
 showScope('experiments');
 setInterval(() => {
   loadExperiment().then(() => Promise.all([loadSessions(), state.activeTab === 'progress' ? loadProgress() : Promise.resolve(), loadLoad()])).catch(error => {
-    liveStatus.textContent = error.message;
+    sessionLogError.textContent = error.message;
+    sessionLogError.hidden = false;
   });
 }, 5000);
 state.timer = setInterval(refreshEvents, 1500);

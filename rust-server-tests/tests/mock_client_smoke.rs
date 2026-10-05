@@ -211,13 +211,20 @@ struct RecordingTts {
 
 #[async_trait]
 impl StreamingTtsProvider for RecordingTts {
-    async fn synthesize(&self, text: &str, _message_id: &str) -> Result<Vec<AudioChunk>> {
+    async fn synthesize(
+        &self,
+        text: &str,
+        _message_id: &str,
+    ) -> Result<parlando::test_support::SynthesizedSpeech> {
         self.messages.lock().unwrap().push(text.to_string());
-        Ok(vec![AudioChunk {
-            data: vec![1, 2, 3, 4],
-            sample_rate: 16000,
-            channels: 1,
-        }])
+        Ok(parlando::test_support::SynthesizedSpeech {
+            chunks: vec![AudioChunk {
+                data: vec![1, 2, 3, 4],
+                sample_rate: 16000,
+                channels: 1,
+            }],
+            tokens: vec![],
+        })
     }
 }
 

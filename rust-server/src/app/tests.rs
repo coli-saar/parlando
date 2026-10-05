@@ -1180,7 +1180,7 @@ fn corpus_export_is_nested_informative_and_structurally_minimized() {
                 "event_type": "conversation_message",
                 "actor_participant_id": 7,
                 "actor_role": "A",
-                "payload": {"text": "spoken hello", "origin": "voice_transcript", "metadata": {"start_game_time_ms": 3200, "end_game_time_ms": 3900}},
+                "payload": {"text": "spoken hello", "origin": "voice_transcript", "metadata": {"start_game_time_ms": 3200, "end_game_time_ms": 3900, "tokens":[{"kind":"word","text":"spoken","start_ms":3200,"end_ms":3500,"confidence":0.9,"private_provider_field":"excluded"}]}},
                 "game_time_ms": 4000
             },
             {
@@ -1231,6 +1231,13 @@ fn corpus_export_is_nested_informative_and_structurally_minimized() {
         corpus["experiment"]["sessions"][0]["events"][1]["utterance_timing"],
         json!({"origin": "game_clock", "start_ms": 3_200, "end_ms": 3_900})
     );
+    assert_eq!(
+        corpus["experiment"]["sessions"][0]["events"][1]["tokens"],
+        json!([{"kind":"word","text":"spoken","start_ms":3200,"end_ms":3500,"confidence":0.9}])
+    );
+    assert!(corpus["experiment"]["sessions"][0]["events"][0]
+        .get("tokens")
+        .is_none());
     assert_eq!(corpus["data_inventory"]["logs"], 2);
     assert_eq!(
         corpus["experiment"]["sessions"][0]["events"][2],
@@ -2770,6 +2777,42 @@ fn admin_event_bundles_merge_transcript_storage_and_display_rows() {
     assert_eq!(bundles[0]["text"], "Guten Abend.");
 }
 
+/// Equal words in consecutive turns must retain separate utterance parents.
+#[test]
+fn admin_bundles_keep_repeated_utterances_separate() {
+    let events = vec![
+        admin_test_event(
+            1,
+            "conversation_message",
+            Some("A"),
+            json!({"origin":"voice_transcript","text":"yes","metadata":{"start_game_time_ms":100,"end_game_time_ms":200,"tokens":[{"kind":"word","text":"yes","start_ms":100,"end_ms":200}]}}),
+        ),
+        admin_test_event(
+            2,
+            "conversation_message",
+            Some("A"),
+            json!({"origin":"voice_transcript","text":"yes","metadata":{"start_game_time_ms":400,"end_game_time_ms":500}}),
+        ),
+    ];
+    let bundles = admin_event_bundles(&events);
+    assert_eq!(bundles.len(), 2);
+    assert_eq!(bundles[0]["tokens"][0]["start_ms"], 100);
+    assert_eq!(bundles[1]["utterance_timing"]["start_ms"], 400);
+}
+
+/// Corrupt timing cannot silently enter a corpus with a false timestamp.
+#[test]
+fn corpus_tokens_reject_invalid_intervals() {
+    assert!(export_transcript_tokens(
+        &json!([{"kind":"word","text":"a","start_ms":20,"end_ms":10}])
+    )
+    .is_err());
+    assert!(export_transcript_tokens(
+        &json!([{"kind":"word","text":"a","start_ms":0,"end_ms":10,"confidence":2}])
+    )
+    .is_err());
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct TinyState {
     done: bool,
@@ -3417,16 +3460,25 @@ impl StreamingTtsProvider for MockTtsProvider {
         &self,
         _text: &str,
         _message_id: &str,
-    ) -> Result<Vec<crate::tts::AudioChunk>> {
+    ) -> Result<crate::tts::SynthesizedSpeech> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         if self.fail_first && call == 0 {
             return Err(anyhow!("mock tts failure"));
         }
-        Ok(vec![crate::tts::AudioChunk {
-            data: vec![1, 2, 3],
-            sample_rate: 24000,
-            channels: 1,
-        }])
+        Ok(crate::tts::SynthesizedSpeech {
+            chunks: vec![crate::tts::AudioChunk {
+                data: vec![0; 48000],
+                sample_rate: 24000,
+                channels: 1,
+            }],
+            tokens: vec![crate::transcription::TranscriptToken {
+                kind: "word".into(),
+                text: _text.into(),
+                start_time_ms: 100,
+                end_time_ms: 800,
+                confidence: None,
+            }],
+        })
     }
 }
 
@@ -4536,6 +4588,13 @@ impl TranscriptionProvider for DuplicateFinalTranscriptionProvider {
                         end_time_ms: 20,
                         text: "relay transcript".to_string(),
                         result_ids: vec!["stable-result".to_string()],
+                        tokens: vec![crate::transcription::TranscriptToken {
+                            kind: "word".into(),
+                            text: "relay".into(),
+                            start_time_ms: 0,
+                            end_time_ms: 20,
+                            confidence: Some(1.0),
+                        }],
                     };
                     let _ = events
                         .send(TranscriptionEvent::FinalUtterance(utterance.clone()))
@@ -4670,6 +4729,22 @@ async fn audio_websocket_relays_pcm_and_commits_one_final_utterance() {
         .unwrap()
         .iter()
         .any(|event| event["event_type"] == "transcript_segment"));
+    let message = export["session_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["event_type"] == "conversation_message")
+        .unwrap();
+    let metadata = &message["payload"]["metadata"];
+    assert_eq!(metadata["tokens"][0]["text"], "relay");
+    assert_eq!(
+        metadata["tokens"][0]["start_ms"],
+        metadata["start_game_time_ms"]
+    );
+    assert_eq!(
+        metadata["tokens"][0]["end_ms"],
+        metadata["end_game_time_ms"]
+    );
     server.abort();
 }
 
@@ -7329,6 +7404,61 @@ async fn agent_tts_records_diagnostics_for_agent_messages() {
     assert!(diagnostics.contains(&"tts_publish_started"));
     assert!(diagnostics.contains(&"tts_publish_completed"));
     assert!(diagnostics.contains(&"tts_message_completed"));
+    let timing = export["session_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["event_type"] == "conversation_speech_timing")
+        .expect("published speech has durable timing");
+    assert_eq!(timing["actor_role"], "B");
+    let metadata = &timing["payload"]["metadata"];
+    let origin = metadata["start_game_time_ms"].as_i64().unwrap();
+    assert_eq!(metadata["tokens"][0]["start_ms"], origin + 100);
+    assert_eq!(metadata["tokens"][0]["end_ms"], origin + 800);
+    assert!(metadata["tokens"][0].get("confidence").is_none());
+    let raw_events: Vec<crate::storage::StoredSessionEvent> =
+        serde_json::from_value(export["session_events"].clone()).unwrap();
+    let historical_events = raw_events
+        .iter()
+        .filter(|event| event.event_type != "conversation_speech_timing")
+        .cloned()
+        .collect::<Vec<_>>();
+    let historical_bundles =
+        admin_event_bundles(&important_admin_events(historical_events.clone()));
+    let historical = historical_bundles
+        .iter()
+        .find(|bundle| bundle["origin"] == "agent")
+        .unwrap();
+    assert_eq!(historical["spoken"], true);
+    assert!(historical["tokens"].is_null());
+    let typed_events = historical_events
+        .into_iter()
+        .filter(|event| event.event_type != "tts_diagnostic")
+        .collect();
+    let typed_bundles = admin_event_bundles(&important_admin_events(typed_events));
+    assert_eq!(
+        typed_bundles
+            .iter()
+            .find(|bundle| bundle["origin"] == "agent")
+            .unwrap()["spoken"],
+        false
+    );
+    let bundles = admin_event_bundles(&important_admin_events(raw_events));
+    let spoken = bundles
+        .iter()
+        .find(|bundle| bundle["origin"] == "agent")
+        .unwrap();
+    assert_eq!(spoken["spoken"], true);
+    assert_eq!(spoken["tokens"][0]["text"], "speak this");
+    assert_eq!(spoken["utterance_timing"]["start_ms"], origin);
+    let corpus = corpus_experiment_export(export, "2").unwrap();
+    let spoken = corpus["experiment"]["sessions"][0]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["origin"] == "agent")
+        .unwrap();
+    assert_eq!(spoken["tokens"][0]["start_ms"], origin + 100);
     assert_eq!(audio_publisher.calls.load(Ordering::SeqCst), 1);
     server.abort();
 }
@@ -7584,3 +7714,5 @@ async fn agent_construction_runs_after_the_human_waiting_session_exists() {
         &["initial_state", "agent_created"]
     );
 }
+
+mod speech_timing;

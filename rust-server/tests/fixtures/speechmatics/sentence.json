@@ -1,0 +1,315 @@
+[
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "So",
+            "language": "en"
+          }
+        ],
+        "end_time": 0.24,
+        "start_time": 0.08,
+        "type": "word"
+      },
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "I",
+            "language": "en"
+          }
+        ],
+        "end_time": 0.36,
+        "start_time": 0.24,
+        "type": "word"
+      }
+    ],
+    "metadata": {
+      "end_time": 0.36,
+      "start_time": 0.0,
+      "transcript": "So I "
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "think",
+            "language": "en"
+          }
+        ],
+        "end_time": 0.52,
+        "start_time": 0.36,
+        "type": "word"
+      },
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "you",
+            "language": "en"
+          }
+        ],
+        "end_time": 0.64,
+        "start_time": 0.56,
+        "type": "word"
+      }
+    ],
+    "metadata": {
+      "end_time": 0.64,
+      "start_time": 0.36,
+      "transcript": "think you "
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "should",
+            "language": "en"
+          }
+        ],
+        "end_time": 0.84,
+        "start_time": 0.64,
+        "type": "word"
+      },
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "do",
+            "language": "en"
+          }
+        ],
+        "end_time": 1.08,
+        "start_time": 0.84,
+        "type": "word"
+      }
+    ],
+    "metadata": {
+      "end_time": 1.08,
+      "start_time": 0.64,
+      "transcript": "should do "
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "two",
+            "language": "en"
+          }
+        ],
+        "end_time": 1.32,
+        "start_time": 1.08,
+        "type": "word"
+      }
+    ],
+    "metadata": {
+      "end_time": 1.32,
+      "start_time": 1.08,
+      "transcript": "two "
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "long",
+            "language": "en"
+          }
+        ],
+        "end_time": 1.6,
+        "start_time": 1.32,
+        "type": "word"
+      }
+    ],
+    "metadata": {
+      "end_time": 1.6,
+      "start_time": 1.32,
+      "transcript": "long "
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "presses",
+            "language": "en"
+          }
+        ],
+        "end_time": 2.16,
+        "start_time": 1.6,
+        "type": "word"
+      }
+    ],
+    "metadata": {
+      "end_time": 2.16,
+      "start_time": 1.6,
+      "transcript": "presses "
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "because",
+            "language": "en"
+          }
+        ],
+        "end_time": 2.56,
+        "start_time": 2.16,
+        "type": "word"
+      }
+    ],
+    "metadata": {
+      "end_time": 2.56,
+      "start_time": 2.16,
+      "transcript": "because "
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "the",
+            "language": "en"
+          }
+        ],
+        "end_time": 2.64,
+        "start_time": 2.56,
+        "type": "word"
+      }
+    ],
+    "metadata": {
+      "end_time": 2.64,
+      "start_time": 2.56,
+      "transcript": "the "
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "stripe",
+            "language": "en"
+          }
+        ],
+        "end_time": 3.0,
+        "start_time": 2.64,
+        "type": "word"
+      },
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "is",
+            "language": "en"
+          }
+        ],
+        "end_time": 3.2,
+        "start_time": 3.0,
+        "type": "word"
+      }
+    ],
+    "metadata": {
+      "end_time": 3.2,
+      "start_time": 2.64,
+      "transcript": "stripe is "
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "blue",
+            "language": "en"
+          }
+        ],
+        "end_time": 3.72,
+        "start_time": 3.2,
+        "type": "word"
+      },
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": ".",
+            "language": "en"
+          }
+        ],
+        "attaches_to": "previous",
+        "end_time": 3.72,
+        "is_eos": true,
+        "start_time": 3.72,
+        "type": "punctuation"
+      }
+    ],
+    "metadata": {
+      "end_time": 5.24,
+      "start_time": 3.2,
+      "transcript": "blue. "
+    }
+  },
+  {
+    "message": "EndOfUtterance",
+    "format": "2.9",
+    "metadata": {
+      "end_time": 5.32,
+      "start_time": 5.32
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [],
+    "metadata": {
+      "end_time": 5.8,
+      "start_time": 5.32,
+      "transcript": ""
+    }
+  },
+  {
+    "message": "EndOfTranscript"
+  }
+]

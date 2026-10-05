@@ -489,8 +489,10 @@ async fn main() -> Result<()> {
         if status != StatusCode::CONFLICT || !body.contains("must exactly match") {
             bail!("expected external-URL conflict, received {status}: {body}");
         }
-        Ok("activation rejected both a wrong completion action and another experiment's URL"
-            .to_string())
+        Ok(
+            "activation rejected both a wrong completion action and another experiment's URL"
+                .to_string(),
+        )
     })
     .await;
 

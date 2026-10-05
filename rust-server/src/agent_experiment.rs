@@ -1395,7 +1395,11 @@ async fn drive_session<G: Game>(
             .as_ref()
             .is_some_and(|capture| capture.learner == plan.seats[role_index(role)].name);
         let decision_input = if capture_training || plan.trace == TraceLevel::Full {
-            let phase = if capture_training { "trajectory" } else { "trace" };
+            let phase = if capture_training {
+                "trajectory"
+            } else {
+                "trace"
+            };
             Some(DecisionInput {
                 observation: serde_json::to_value(game.observation(&state, role)).map_err(
                     |error| SessionFailure {
@@ -1472,8 +1476,8 @@ async fn drive_session<G: Game>(
                     ActionAttempt::Rejected(error) => rejection = Some(error),
                 }
             } else if let Some(message) = message {
-                    deliver_message(agents, role, message, plan.limits.callback_timeout()).await?;
-                    result.messages += 1;
+                deliver_message(agents, role, message, plan.limits.callback_timeout()).await?;
+                result.messages += 1;
             }
         }
         record_trace::<G>(
@@ -1538,113 +1542,133 @@ impl<G: Game> DecisionExecution<'_, G> {
         learner_input: Option<&DecisionInput>,
     ) -> std::result::Result<ActionAttempt<G::Completion>, SessionFailure> {
         let next = match self.game.apply_action(state, action, actor) {
-        Ok(next) => next,
-        Err(error) => {
-            self.result.rejected_actions += 1;
-            self.record_trajectory(
-                state,
-                actor,
-                action,
-                learner_input,
-                TrajectoryOutcome::Rejected(error.clone()),
-            )?;
-            return Ok(ActionAttempt::Rejected(error));
+            Ok(next) => next,
+            Err(error) => {
+                self.result.rejected_actions += 1;
+                self.record_trajectory(
+                    state,
+                    actor,
+                    action,
+                    learner_input,
+                    TrajectoryOutcome::Rejected(error.clone()),
+                )?;
+                return Ok(ActionAttempt::Rejected(error));
+            }
+        };
+        self.result.accepted_actions += 1;
+        for role in [PlayerRole::A, PlayerRole::B] {
+            let observation = self.game.observation(&next, role);
+            timeout(
+                self.plan.limits.callback_timeout(),
+                self.agents[role_index(role)].observe_transition(
+                    actor,
+                    action.clone(),
+                    observation,
+                ),
+            )
+            .await
+            .map_err(|_| callback_timeout_failure("observe_transition", role))?
+            .map_err(|error| callback_failure("observe_transition", role, error))?;
         }
-    };
-    self.result.accepted_actions += 1;
-    for role in [PlayerRole::A, PlayerRole::B] {
-        let observation = self.game.observation(&next, role);
-        timeout(
-            self.plan.limits.callback_timeout(),
-            self.agents[role_index(role)].observe_transition(actor, action.clone(), observation),
-        )
-        .await
-        .map_err(|_| callback_timeout_failure("observe_transition", role))?
-        .map_err(|error| callback_failure("observe_transition", role, error))?;
-    }
-    let completion = self.game.completion(&next);
-    self.record_trajectory(
-        &next,
-        actor,
-        action,
-        learner_input,
-        TrajectoryOutcome::Accepted { before: state, completion: completion.as_ref() },
-    )?;
-    *state = next;
-    if completion.is_none() {
-        if let Some(message) = message {
-            deliver_message(self.agents, actor, message, self.plan.limits.callback_timeout()).await?;
-            self.result.messages += 1;
+        let completion = self.game.completion(&next);
+        self.record_trajectory(
+            &next,
+            actor,
+            action,
+            learner_input,
+            TrajectoryOutcome::Accepted {
+                before: state,
+                completion: completion.as_ref(),
+            },
+        )?;
+        *state = next;
+        if completion.is_none() {
+            if let Some(message) = message {
+                deliver_message(
+                    self.agents,
+                    actor,
+                    message,
+                    self.plan.limits.callback_timeout(),
+                )
+                .await?;
+                self.result.messages += 1;
+            }
         }
-    }
-    Ok(ActionAttempt::Accepted(completion))
+        Ok(ActionAttempt::Accepted(completion))
     }
 }
 
 /// Accepted or rejected transition data needed by trajectory capture.
 enum TrajectoryOutcome<'a, G: Game> {
-    Accepted { before: &'a G::State, completion: Option<&'a G::Completion> },
+    Accepted {
+        before: &'a G::State,
+        completion: Option<&'a G::Completion>,
+    },
     Rejected(ActionRejection),
 }
 
 impl<G: Game> DecisionExecution<'_, G> {
-/// Records one learner transition using only role-safe observations and numeric rewards.
-fn record_trajectory(
-    &mut self,
-    next_state: &G::State,
-    actor: PlayerRole,
-    action: &G::Action,
-    learner_input: Option<&DecisionInput>,
-    outcome: TrajectoryOutcome<'_, G>,
-) -> std::result::Result<(), SessionFailure> {
-    let (Some(input), Some(capture)) =
-        (learner_input, self.plan.training_capture.as_ref())
-    else {
-        return Ok(());
-    };
-    let (accepted, rejection, completion, rewards) = match outcome {
-        TrajectoryOutcome::Accepted { before, completion } => (
-            true,
-            None,
-            completion,
-            Some(capture.reward.rewards(before, next_state, actor, action, completion, &capture.parameters)),
-        ),
-        TrajectoryOutcome::Rejected(error) => (false, Some(error), None, None),
-    };
-    let next_observation =
-        serde_json::to_value(self.game.observation(next_state, actor)).map_err(|error| {
-            SessionFailure {
+    /// Records one learner transition using only role-safe observations and numeric rewards.
+    fn record_trajectory(
+        &mut self,
+        next_state: &G::State,
+        actor: PlayerRole,
+        action: &G::Action,
+        learner_input: Option<&DecisionInput>,
+        outcome: TrajectoryOutcome<'_, G>,
+    ) -> std::result::Result<(), SessionFailure> {
+        let (Some(input), Some(capture)) = (learner_input, self.plan.training_capture.as_ref())
+        else {
+            return Ok(());
+        };
+        let (accepted, rejection, completion, rewards) = match outcome {
+            TrajectoryOutcome::Accepted { before, completion } => (
+                true,
+                None,
+                completion,
+                Some(capture.reward.rewards(
+                    before,
+                    next_state,
+                    actor,
+                    action,
+                    completion,
+                    &capture.parameters,
+                )),
+            ),
+            TrajectoryOutcome::Rejected(error) => (false, Some(error), None, None),
+        };
+        let next_observation = serde_json::to_value(self.game.observation(next_state, actor))
+            .map_err(|error| SessionFailure {
                 phase: "trajectory",
                 role: Some(actor),
                 error: error.into(),
-            }
+            })?;
+        let action = serde_json::to_value(action).map_err(|error| SessionFailure {
+            phase: "trajectory",
+            role: Some(actor),
+            error: error.into(),
         })?;
-    let action = serde_json::to_value(action).map_err(|error| SessionFailure {
-        phase: "trajectory",
-        role: Some(actor),
-        error: error.into(),
-    })?;
-    self.result.trajectory.push(TrajectoryStep {
-        run_id: self.plan.run_id.clone(),
-        plan_id: self.plan.plan_id.clone(),
-        decision: self.result.decisions,
-        scenario: self.plan.scenario.clone(),
-        role: actor,
-        agent: capture.learner.clone(),
-        checkpoint: capture.checkpoint.clone(),
-        reward: capture.reward_kind.clone(),
-        reward_version: capture.reward_version.clone(),
-        observation: input.observation.clone(),
-        available_actions: input.available_actions.clone(),
-        action,
-        accepted,
-        rejection,
-        rewards,
-        next_observation,
-        terminal: completion.is_some(),
-    });
-    Ok(())
-}
+        self.result.trajectory.push(TrajectoryStep {
+            run_id: self.plan.run_id.clone(),
+            plan_id: self.plan.plan_id.clone(),
+            decision: self.result.decisions,
+            scenario: self.plan.scenario.clone(),
+            role: actor,
+            agent: capture.learner.clone(),
+            checkpoint: capture.checkpoint.clone(),
+            reward: capture.reward_kind.clone(),
+            reward_version: capture.reward_version.clone(),
+            observation: input.observation.clone(),
+            available_actions: input.available_actions.clone(),
+            action,
+            accepted,
+            rejection,
+            rewards,
+            next_observation,
+            terminal: completion.is_some(),
+        });
+        Ok(())
+    }
 }
 
 /// Delivers one player message only to the opposite role.
@@ -1698,10 +1722,7 @@ async fn shutdown_agents<G: Game>(
 }
 
 /// Applies the bounded best-effort shutdown contract to one agent.
-async fn shutdown_agent<G: Game>(
-    agent: &mut dyn Agent<G>,
-    duration: Duration,
-) -> Option<String> {
+async fn shutdown_agent<G: Game>(agent: &mut dyn Agent<G>, duration: Duration) -> Option<String> {
     match timeout(duration, agent.shutdown()).await {
         Ok(Ok(())) => None,
         Ok(Err(error)) => Some(format!("shutdown failed: {error:#}")),

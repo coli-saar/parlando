@@ -848,20 +848,15 @@ mod tests {
     /// Decision requests preserve the active ID and distinguish absent from empty affordances.
     #[test]
     fn decision_request_uses_resolved_identity_and_affordance_presence() {
-        let absent = RemoteAgentInstance::decision_request::<Value>(
-            "agent-7".to_string(),
-            None,
-        )
-        .unwrap();
+        let absent =
+            RemoteAgentInstance::decision_request::<Value>("agent-7".to_string(), None).unwrap();
         assert_eq!(absent.agent_id, "agent-7");
         assert!(!absent.available_actions_provided);
         assert!(absent.available_actions.is_empty());
 
-        let empty = RemoteAgentInstance::decision_request::<Value>(
-            "agent-8".to_string(),
-            Some(Vec::new()),
-        )
-        .unwrap();
+        let empty =
+            RemoteAgentInstance::decision_request::<Value>("agent-8".to_string(), Some(Vec::new()))
+                .unwrap();
         assert_eq!(empty.agent_id, "agent-8");
         assert!(empty.available_actions_provided);
         assert!(empty.available_actions.is_empty());

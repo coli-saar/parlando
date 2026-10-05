@@ -159,6 +159,53 @@ credentials have no corpus output field.
 Use export data for task success, action sequences, utterance counts, timing,
 agent comparisons, transcription diagnostics, and exclusion decisions.
 
+### Inspect speech and export tokens
+
+The utterance/token selector appears only when a session contains recorded speech.
+Typed-only sessions show the normal conversation log. Agent messages count as
+speech only when audio publication succeeded.
+
+Both session-log views show timestamps and color-coded actor badges on the left
+and conversation bubbles
+against the left edge for A and the right edge for B. Choose **Utterances** to read
+whole messages or **Tokens** to expand spoken messages into individual tokens.
+Speech is ordered by estimated onset and shows its end time and duration; other
+events retain their event time. Game events, logs, setup events, and
+typed messages remain in both views; the same visibility filters apply. The
+Session log header and controls remain visible while you scroll its events. Actions show their
+name in bold followed by inline parameters. Log messages use the same font size
+as other entries, with muted text aligned with their speaker. Game logs have a
+system actor badge. Problems and their reasons remain visible. Each
+word shows its end time and duration; hover or focus for parent-utterance context
+and available recognition confidence. Punctuation has no spoken duration.
+Recordings without token data show a timings-unavailable notice.
+
+A spoken message retains its formatted `text` and optional `utterance_timing`.
+Human transcripts and synthesized agent messages can also contain an ordered
+`tokens` array:
+
+```json
+{"kind":"word","text":"seventeen","start_ms":1400,"end_ms":1960,"confidence":1.0}
+```
+
+Each token has `kind` (`word` or `punctuation`), `text`, `start_ms`, and `end_ms`;
+`confidence` is optional. Token boundaries share the game clock with
+`utterance_timing`. The message's `game_time_ms` records when its final text was
+committed. Human speech can precede that commit; agent speech follows it while
+synthesis runs. Entity normalization can make formatted text differ from the
+sequence of spoken tokens.
+
+Human token timings are ASR estimates. Agent token timings come from the TTS
+provider's character alignment, grouped into words across audio chunks. Their
+speech interval starts when the server begins publishing the generated audio;
+network and browser buffering can shift actual playback. Agent tokens have no
+recognition confidence. Neither source provides manually annotated boundaries.
+
+JSON and YAML preserve tokens under their parent message. CSV uses the same
+nested message value in its `row_json` column. Typed messages have no speech
+timings. Older human and agent messages remain visible in the token view with a
+timings-unavailable notice when their token boundaries were not recorded.
+
 ## Delete participant data
 
 Human participant cards provide a preview and confirmed deletion action. Deletion
