@@ -4222,3 +4222,16 @@ Cargo cache and unused-local-patch warnings do not affect verified artifacts.
 Clean-source dry run requires a committed candidate; npm identity returned E401.
 No packages were uploaded and no Git commands were run. The concrete review,
 commit, authentication and post-publication checklist is notes/release-0.5.0.md.
+
+
+0.5.0 publication completed after the maintainer committed the candidate and
+renewed npm authentication. Cargo's clean-source dry run passed. Rust and npm
+published successfully; exact versions and npm latest were verified from their
+registries. npm visibility lagged the successful upload by several minutes;
+the original process was preserved and no duplicate publication was attempted.
+Clean Rust and TypeScript registry consumers build. Both game-client npm locks
+were refreshed to the immutable 0.5.0 tarball and sha512 integrity, and the
+--published metadata audit passed. Rust artifact provenance is
+ a8c0eb5690e7fcd5009a04ce116a8a0086e124e8 from packaged VCS metadata. No
+publishable package source changed after upload. The lockfile completion commit
+and annotated v0.5.0 tag/push remain maintainer-owned; no Git commands were run.
