@@ -13,7 +13,11 @@ condition. The dashboard exposes both, but only the research record belongs in t
 
 Open the experiment's **Sessions** tab. Each session shows its lifecycle state and assigned roles.
 Select a session to inspect accepted actions, messages or final transcripts, agent events, and
-completion. Use this view to determine what happened in one participant pair.
+completion. Use this view to determine what happened in one participant pair. For speech sessions,
+choose **Utterances** to read whole messages or **Tokens** to expand recorded speech into words
+and punctuation. Both views retain game events and use the same visibility filters. Timestamps
+and color-coded actor badges share the left margin; logs use muted text and actions show compact
+inline parameters. The log controls remain visible while its entries scroll.
 
 Open **Operations** to inspect the installation rather than one session. It shows active and waiting
 capacity, connection health, lifecycle deadlines, throughput, speech-service pressure, and storage
@@ -62,7 +66,10 @@ After a pilot or collection block:
 
 The export contains only the documented research fields. It includes non-testing sessions,
 experiment-scoped participant and session labels, structured outcomes, and event times relative to
-game start. It omits provider credentials, declaration evidence, administrator and recruitment
+game start. Spoken messages retain formatted text and, when recorded, utterance intervals and
+nested tokens with game-clock start/end times. Human tokens may include recognition confidence;
+generated agent tokens have no ASR confidence. Earlier recordings without token alignment remain
+readable, and typed messages have no speech timings. It omits provider credentials, declaration evidence, administrator and recruitment
 data, security information, and temporary operations metrics.
 
 Local Preview sessions are testing data and do not enter the corpus candidate. If an expected

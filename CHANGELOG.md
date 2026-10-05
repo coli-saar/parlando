@@ -6,6 +6,34 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## Unreleased
 
+## [0.5.0] - 2026-10-05
+
+### Added
+
+- Record word and punctuation timings for recognized human speech and generated agent speech,
+  preserving formatted utterance text and nesting tokens under messages in corpus exports.
+- Test both production speech adapters against independent game-clock observations, including
+  capture gaps, delayed recognition, split generated words, and cumulative synthesis timestamps.
+
+### Changed
+
+- Use one chronological dashboard layout for utterances, tokens, actions, and logs, with
+  color-coded actors, aligned speaker bubbles, compact actions, and fixed log controls.
+- Show speech-resolution controls only for sessions with recorded speech. Preserve older speech
+  without token boundaries rather than inventing timings.
+- Make agent and transcription readiness follow usable provider state before activating a game.
+- Reject incompatible populated databases explicitly instead of interpreting older schemas at
+  startup. The current SQLite schema remains version 16, as in 0.4.3.
+
+### Fixed
+
+- Preserve capture pauses and dropped-frame gaps when mapping ASR sample timestamps to game time.
+- Interpret ElevenLabs character offsets once across synthesis chunks and record agent timing
+  only after successful audio publication.
+- Retain all game events and both speakers in token view, with identical visibility filters.
+- Keep complete output from every E2E layer when a release gate fails.
+
+
 ## [0.4.3] - 2026-09-29
 
 ### Added

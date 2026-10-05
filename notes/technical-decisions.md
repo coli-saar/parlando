@@ -4199,3 +4199,26 @@ Decision: remove horizontal log padding at both desktop and narrow widths.
 System and A log text now begin at the same content edge as action summaries;
 B log text ends at the shared right edge. Vertical spacing and actor gutter
 sizes remain unchanged.
+
+
+## 2026-10-05 — Prepare coordinated release 0.5.0
+
+The maintainer explicitly selected and requested publication of 0.5.0. Both
+registries expose 0.4.3 and neither contains the target. This release records
+human/agent speech tokens and improves the shared dashboard chronology and
+provider readiness. Supported game/agent APIs and schema 16 remain unchanged
+from 0.4.3; no downstream migration guide is required. Earlier-schema databases
+must already be converted explicitly. Consumer npm lockfiles are deferred until
+the immutable 0.5.0 registry package exists. Publication requires a committed,
+clean candidate; Git commands remain separately subject to user authorization.
+
+
+0.5.0 candidate validation: metadata, make test, 25 dashboard tests, release
+builds, Hugo, local packaging and dirty-source publication dry runs all passed.
+The first E2E attempt hit sandbox-only Chromium launch denial; the unsandboxed
+rerun passed all 13 browser and 35 Prolific scenarios. Package contents were
+reviewed (49 Rust files, 50 npm files), with no private configuration or notes.
+Cargo cache and unused-local-patch warnings do not affect verified artifacts.
+Clean-source dry run requires a committed candidate; npm identity returned E401.
+No packages were uploaded and no Git commands were run. The concrete review,
+commit, authentication and post-publication checklist is notes/release-0.5.0.md.
