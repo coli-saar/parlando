@@ -1,0 +1,62 @@
+use crate::app::{HeaderValue, Html, IntoResponse, Response, CACHE_CONTROL, CONTENT_TYPE};
+
+/// Serves the database-backed experiment/session dashboard.
+pub(in crate::app) async fn admin_experiments_page() -> Html<&'static str> {
+    Html(ADMIN_EXPERIMENT_HTML)
+}
+
+/// Serves the embedded dashboard stylesheet as a same-origin protected asset.
+pub(in crate::app) async fn admin_dashboard_css() -> Response {
+    admin_dashboard_asset(ADMIN_EXPERIMENT_CSS, "text/css; charset=utf-8")
+}
+
+/// Serves the embedded dashboard module as a same-origin protected asset.
+pub(in crate::app) async fn admin_dashboard_javascript() -> Response {
+    admin_dashboard_asset(
+        ADMIN_EXPERIMENT_JAVASCRIPT,
+        "text/javascript; charset=utf-8",
+    )
+}
+
+/// Serves the dashboard's mutable state module as a same-origin protected asset.
+pub(in crate::app) async fn admin_dashboard_state_javascript() -> Response {
+    admin_dashboard_asset(
+        ADMIN_EXPERIMENT_STATE_JAVASCRIPT,
+        "text/javascript; charset=utf-8",
+    )
+}
+
+/// Serves pure dashboard formatting helpers as a same-origin protected asset.
+pub(in crate::app) async fn admin_dashboard_format_javascript() -> Response {
+    admin_dashboard_asset(
+        ADMIN_EXPERIMENT_FORMAT_JAVASCRIPT,
+        "text/javascript; charset=utf-8",
+    )
+}
+
+/// Serves administrator request helpers as a same-origin protected asset.
+pub(in crate::app) async fn admin_dashboard_api_javascript() -> Response {
+    admin_dashboard_asset(
+        ADMIN_EXPERIMENT_API_JAVASCRIPT,
+        "text/javascript; charset=utf-8",
+    )
+}
+
+/// Prevents a restarted dashboard from combining newly embedded markup with stale assets.
+fn admin_dashboard_asset(body: &'static str, content_type: &'static str) -> Response {
+    let mut response = body.into_response();
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+const ADMIN_EXPERIMENT_HTML: &str = include_str!("../admin_dashboard.html");
+const ADMIN_EXPERIMENT_CSS: &str = include_str!("../admin_dashboard.css");
+const ADMIN_EXPERIMENT_JAVASCRIPT: &str = include_str!("../admin_dashboard.js");
+const ADMIN_EXPERIMENT_STATE_JAVASCRIPT: &str = include_str!("../admin_dashboard_state.js");
+const ADMIN_EXPERIMENT_FORMAT_JAVASCRIPT: &str = include_str!("../admin_dashboard_format.mjs");
+const ADMIN_EXPERIMENT_API_JAVASCRIPT: &str = include_str!("../admin_dashboard_api.mjs");

@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   isVoiceEnabled,
-  normalizePresence,
   participantMicrophoneLabel,
-  platformLabel,
   selectableAudioInputs,
   voiceStatusUpdate
-} from "./startup";
+} from "./participant/microphone";
+import { normalizePresence, platformLabel } from "./participant/lobby";
 import type { ExperimentInfo } from "./protocol";
 import { experimentAllowsIntake, requiredConsentsAccepted, transcriptionProgressForStatus } from "./helpers";
 

@@ -1,5 +1,14 @@
-//! Consistent experiment exports and narrow administrator lookups.
-use super::*;
+//! Consistent experiment exports and session detail projections.
+
+use super::{
+    session_queries::{stored_event_from_sql_row, SessionEventSqlRow},
+    SqliteExperimentStore, StoredSessionEvent,
+};
+use crate::protocol::SessionEnd;
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sqlx::{Row, SqlitePool};
 
 /// The session fields used by both the dashboard detail and the corpus projector.
 #[derive(Debug, Deserialize, Serialize)]
@@ -32,26 +41,6 @@ pub(crate) struct ExperimentSnapshot {
 }
 
 impl SqliteExperimentStore {
-    /// Resolves a public identifier only when the participant belongs to this experiment.
-    pub(crate) async fn participant_id_for_research_id(
-        &self,
-        experiment_id: &str,
-        research_id: &str,
-    ) -> Result<Option<i64>> {
-        Ok(sqlx::query_scalar(
-            "select p.participant_id
-             from participants p
-             where p.research_id = ? and exists (
-                 select 1 from session_participants sp
-                 where sp.experiment_id = ? and sp.participant_id = p.participant_id
-             )",
-        )
-        .bind(research_id)
-        .bind(experiment_id)
-        .fetch_optional(&self.pool)
-        .await?)
-    }
-
     /// Fetches one durable session without loading its event history or related tables.
     pub(crate) async fn session_detail(
         &self,
@@ -315,4 +304,12 @@ async fn read_export_snapshot(
         consent_declarations,
         session_events: events,
     })
+}
+
+/// Decodes an optional stored JSON column without conflating corruption with SQL NULL.
+fn parse_optional_json(raw: Option<String>, label: &str) -> Result<Option<Value>> {
+    raw.map(|value| {
+        serde_json::from_str(&value).with_context(|| format!("{label} contains invalid JSON"))
+    })
+    .transpose()
 }

@@ -48,3 +48,8 @@ export function microphoneMuteButtonLabel(status: VoiceStatus): string {
   if (status.microphoneChanging) return status.microphoneEnabled ? "Muting…" : "Unmuting…";
   return status.microphoneEnabled ? "Mute mic" : "Unmute mic";
 }
+
+/** Uses the error message when a browser or transport operation provides one. */
+export function errorMessage(caught: unknown, fallback: string): string {
+  return caught instanceof Error ? caught.message : fallback;
+}

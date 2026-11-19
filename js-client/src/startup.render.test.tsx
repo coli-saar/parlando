@@ -6,14 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialVoicePreflight, initialVoiceStatus } from "./audio/types";
 import type { ExperimentInfo, ParticipantOutcome, ParticipantState } from "./protocol";
 import {
-  FarewellVoiceNotice,
-  IdleDeadlineNotice,
-  ParticipantAppTestHarness,
   ReplayPlayer,
-  WaitingRoomNotice,
   type GameSnapshot,
   type SessionReplay
 } from "./startup";
+import { IdleDeadlineNotice, WaitingRoomNotice } from "./participant/deadlines";
+import { FarewellVoiceNotice } from "./participant/outcome";
+import { ParticipantAppRuntime } from "./participant/runtime";
 
 class FakeWebSocket extends EventTarget {
   static OPEN = 1;
@@ -118,7 +117,7 @@ describe("ParticipantApp participant state machine", () => {
       }
     });
 
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
 
     expect(await screen.findByText(/responses have been recorded/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Enter waiting room" })).not.toBeInTheDocument();
@@ -128,7 +127,7 @@ describe("ParticipantApp participant state machine", () => {
 
   it("moves Waiting to Active only from an authoritative snapshot", async () => {
     const client = api();
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     const socket = FakeWebSocket.instances[0];
@@ -143,7 +142,7 @@ describe("ParticipantApp participant state machine", () => {
     const client = api();
     let release!: (plan: { websocketUrl: string; token: string }) => void;
     client.getGameSession.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
     fireEvent.click(await screen.findByRole("button", { name: "Leave waiting room" }));
     await waitFor(() => expect(client.leaveSession).toHaveBeenCalledOnce());
@@ -159,7 +158,7 @@ describe("ParticipantApp participant state machine", () => {
       voice_ends_at: farewell ? "2099-01-01T00:00:00Z" : null,
       result: { outcome: "completed", reason: "game_completed", final_observation: {}, completion: null, handoff: null }
     });
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     act(() => FakeWebSocket.instances[0].close());
@@ -171,7 +170,7 @@ describe("ParticipantApp participant state machine", () => {
   it("checks retained game callbacks against the current participant state", async () => {
     const client = api();
     let send!: () => void;
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={snapshot => {
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={snapshot => {
       if (snapshot.interactionEnabled) send = () => snapshot.act({ type: "move" });
       return game(snapshot);
     }} />);
@@ -193,7 +192,7 @@ describe("ParticipantApp participant state machine", () => {
 
   it("renders Paused while strictly disabling interaction", async () => {
     const client = api();
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     const socket = FakeWebSocket.instances[0]; act(() => socket.open());
@@ -205,7 +204,7 @@ describe("ParticipantApp participant state machine", () => {
 
   it("waits for the HTTP terminal response before closing on leave", async () => {
     const client = api();
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     const socket = FakeWebSocket.instances[0]; act(() => { socket.open(); socket.message({ protocol_version: 2, type: "participant_state", participant_state: active }); });
@@ -217,7 +216,7 @@ describe("ParticipantApp participant state machine", () => {
 
   it("applies every live server update to the public game session", async () => {
     const client = api();
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     const socket = FakeWebSocket.instances[0];
@@ -264,7 +263,7 @@ describe("ParticipantApp participant state machine", () => {
       consents: [{ id: "research", title: "Research use", body: "Use my responses.", required: true }],
       recruitment: { provider: "prolific", decline_url: "https://app.prolific.com/submissions/complete?cc=DECLINE" }
     });
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
 
     const enter = await screen.findByRole("button", { name: "Enter waiting room" });
     expect(enter).toBeDisabled();
@@ -283,7 +282,7 @@ describe("ParticipantApp participant state machine", () => {
       consents: [{ id: "research", title: "Research use", body: "Use my responses.", required: true }],
       recruitment: { provider: "prolific", decline_url: null }
     });
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
 
     await screen.findByRole("button", { name: "Enter waiting room" });
     expect(screen.queryByRole("button", { name: "Do not consent" })).not.toBeInTheDocument();
@@ -299,7 +298,7 @@ describe("ParticipantApp participant state machine", () => {
     client.getGameSession
       .mockRejectedValueOnce(new TypeError("temporary channel failure"))
       .mockResolvedValueOnce({ websocketUrl: "/ws/game/ROOM1", token: "ticket" });
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
 
     const enter = await screen.findByRole("button", { name: "Enter waiting room" });
     fireEvent.click(enter);
@@ -316,7 +315,7 @@ describe("ParticipantApp participant state machine", () => {
 
   it("explains a direct waiting deadline without mentioning Prolific payment", async () => {
     const client = api();
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
 
@@ -330,7 +329,7 @@ describe("ParticipantApp participant state machine", () => {
       ...config(),
       recruitment: { provider: "prolific", decline_url: null }
     });
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
 
@@ -349,7 +348,7 @@ describe("ParticipantApp participant state machine", () => {
     ["lifetime_limit_reached", /absolute lifetime limit/i]
   ])("renders the %s terminal outcome", async (outcome, expectedText) => {
     const client = api();
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     const socket = FakeWebSocket.instances[0];
@@ -373,7 +372,7 @@ describe("ParticipantApp participant state machine", () => {
     const client = api();
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    render(<ParticipantAppTestHarness
+    render(<ParticipantAppRuntime
       apiClient={client as never}
       createAudioController={() => audio as never}
       renderCompletion={(completion) => <h1>Score: {completion.score}</h1>}
@@ -418,7 +417,7 @@ describe("ParticipantApp participant state machine", () => {
       snapshot: () => ({ voiceStatus: connectedStatus, voicePreflight: initialVoicePreflight }),
       subscribe: (listener: (value: unknown) => void) => { listener({ voiceStatus: connectedStatus, voicePreflight: initialVoicePreflight }); return () => undefined; }
     };
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => farewellAudio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => farewellAudio as never} renderGame={game} />);
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     const socket = FakeWebSocket.instances[0];
