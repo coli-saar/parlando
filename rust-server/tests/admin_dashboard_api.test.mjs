@@ -58,3 +58,22 @@ test('repeated polling shares its pending read and invalidation discards late da
   await pending;
   assert.deepEqual(received, ['selected']);
 });
+
+test('refresh after deletion replaces a stale list and preserves unrelated pending reads', async t => {
+  const requests = new SelectionRequests();
+  const replies = [];
+  t.mock.method(globalThis, 'fetch', () => new Promise(resolve => replies.push(resolve)));
+  const seen = [];
+  const read = key => requests.json(key, {}, '/' + key, data => seen.push(data));
+  const old = read('sessions');
+  const config = read('config');
+  requests.invalidate('sessions');
+  const fresh = read('sessions');
+  assert.equal(config, read('config'));
+  replies[2](Response.json('fresh'));
+  await fresh;
+  replies[0](Response.json('obsolete'));
+  replies[1](Response.json('configuration'));
+  await Promise.all([old, config]);
+  assert.deepEqual(seen, ['fresh', 'configuration']);
+});

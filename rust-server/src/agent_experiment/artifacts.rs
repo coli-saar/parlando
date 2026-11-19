@@ -61,8 +61,15 @@ impl RunArtifacts {
         write_json_atomic(&result_path(&self.directory, &result.plan_id), result).await
     }
 
-    /// Reads the learner checkpoint at this numbered boundary, validating its provenance.
-    pub(super) async fn checkpoint(&self, number: u64) -> Result<Option<CheckpointId>> {
+    /// Restores a checkpoint only for the expected run, number, update ID and base.
+    /// A missing record permits the caller to submit the idempotent learner update.
+    /// An unreadable, malformed or mismatched record stops resumption.
+    pub(super) async fn checkpoint(
+        &self,
+        number: u64,
+        update_id: &str,
+        base: &CheckpointId,
+    ) -> Result<Option<CheckpointId>> {
         let path = checkpoint_path(&self.directory, number);
         let bytes = match tokio::fs::read(&path).await {
             Ok(bytes) => bytes,
@@ -71,7 +78,11 @@ impl RunArtifacts {
         };
         let record: CheckpointRecord = serde_json::from_slice(&bytes)
             .with_context(|| format!("invalid checkpoint record {}", path.display()))?;
-        if record.run_id != self.run_id || record.checkpoint_number != number {
+        if record.run_id != self.run_id
+            || record.checkpoint_number != number
+            || record.update_id != update_id
+            || &record.base != base
+        {
             bail!(
                 "checkpoint record {} has inconsistent identity",
                 path.display()
@@ -240,9 +251,9 @@ mod tests {
         );
     }
 
-    /// Restoring a copied checkpoint under another number must not advance the learner.
+    /// A checkpoint is reusable only at its original numbered update and base.
     #[tokio::test]
-    async fn checkpoint_resume_validates_the_update_number() {
+    async fn checkpoint_resume_validates_the_update_number_id_and_base() {
         let directory = tempdir().unwrap();
         let artifacts = RunArtifacts::open(directory.path(), "game", "1", "spec")
             .await
@@ -253,13 +264,18 @@ mod tests {
             .finalize_checkpoint(1, "update".into(), &base, &next)
             .await
             .unwrap();
-        assert_eq!(artifacts.checkpoint(1).await.unwrap(), Some(next));
+        assert_eq!(
+            artifacts.checkpoint(1, "update", &base).await.unwrap(),
+            Some(next.clone())
+        );
+        assert!(artifacts.checkpoint(1, "other", &base).await.is_err());
+        assert!(artifacts.checkpoint(1, "update", &next).await.is_err());
         tokio::fs::copy(
             checkpoint_path(directory.path(), 1),
             checkpoint_path(directory.path(), 2),
         )
         .await
         .unwrap();
-        assert!(artifacts.checkpoint(2).await.is_err());
+        assert!(artifacts.checkpoint(2, "update", &base).await.is_err());
     }
 }

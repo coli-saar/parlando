@@ -10,7 +10,9 @@ use anyhow::{bail, Result};
 use std::collections::BTreeMap;
 
 impl<G: Game> ExperimentRunner<G> {
-    /// Runs each training epoch and validates durable checkpoints at the requested cadence.
+    /// Accumulates learner steps until a checkpoint boundary, then trains or restores
+    /// that update. A restored checkpoint skips the learner callback. Validation
+    /// uses the resulting policy and its steps never enter the next training batch.
     pub(super) async fn train_epochs(
         &mut self,
         spec: &ExperimentFile,
@@ -85,10 +87,13 @@ impl<G: Game> ExperimentRunner<G> {
                 continue;
             }
             checkpoints += 1;
-            checkpoint = if let Some(existing) = artifacts.checkpoint(checkpoints).await? {
+            let update_id = format!("{run_id}:checkpoint:{checkpoints}");
+            checkpoint = if let Some(existing) = artifacts
+                .checkpoint(checkpoints, &update_id, &checkpoint)
+                .await?
+            {
                 existing
             } else {
-                let update_id = format!("{run_id}:checkpoint:{checkpoints}");
                 let next = self
                     .rl_agents
                     .get_mut(&learner_factory_id)

@@ -27,3 +27,33 @@ it("ignores a late microphone permission failure after the participant leaves", 
   expect(setError.mock.calls).toEqual([[""]]);
   unmount();
 });
+
+it("keeps the latest microphone list when passive scans finish out of order", async () => {
+  const devices = new EventTarget();
+  const enumerateDevices = vi.fn<() => Promise<MediaDeviceInfo[]>>();
+  const original = Object.getOwnPropertyDescriptor(navigator, "mediaDevices");
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true, value: Object.assign(devices, { enumerateDevices }),
+  });
+  let finishFirst!: (devices: MediaDeviceInfo[]) => void;
+  enumerateDevices.mockReturnValueOnce(new Promise((resolve) => { finishFirst = resolve; }));
+  const client = new ParticipantClient();
+  const audio = createDefaultAudioController();
+  const setError = vi.fn();
+  const { result, unmount } = renderHook(() => useParticipantVoice(audio, client, null, true, setError));
+  try {
+    const headset = { deviceId: "headset", kind: "audioinput" } as MediaDeviceInfo;
+    enumerateDevices.mockResolvedValueOnce([headset, { kind: "audiooutput" } as MediaDeviceInfo]);
+    await act(async () => { devices.dispatchEvent(new Event("devicechange")); });
+    await act(async () => { finishFirst([]); });
+    expect(result.current.audioInputs).toEqual([headset]);
+    enumerateDevices.mockRejectedValueOnce(new Error("Device list unavailable"));
+    await act(async () => { devices.dispatchEvent(new Event("devicechange")); });
+    expect(result.current.audioInputs).toEqual([headset]);
+    expect(setError).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    if (original) Object.defineProperty(navigator, "mediaDevices", original);
+    else Reflect.deleteProperty(navigator, "mediaDevices");
+  }
+});

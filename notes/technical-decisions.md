@@ -4461,3 +4461,15 @@ The live server, SQLite store, experiment runner, and participant shell each put
 * The headless runner keeps its public registry and uses private units for specification, planning, execution, training, and artifacts. The artifact store binds a run ID to its directory, verifies plan and checkpoint identity on resume, and publishes finalized records atomically. These invariants can be exercised without starting a game.
 * The browser shell coordinates the participant connection and rendering. Voice preparation owns its asynchronous cancellation and device lifecycle. Session controls own the chat draft during a pause. Integration suites continue to exercise the real public interfaces alongside the local tests.
 * The main tradeoff is additional navigation across explicit boundaries. The offline code atlas records the new symbol locations. A change to session serialization, a new retention rule, or another public entry point should be checked against its corresponding contract tests and atlas examples.
+
+## 2026-11-19 — Contract audit after the functional-unit split
+
+The source comments and the functional-unit audit in this directory describe the observable behavior at the new boundaries. Tests exercise the public caller when the invariant spans several units and the owning unit directly when ordering, rollback or time must be controlled.
+
+Participant deletion holds a SQLite write reservation before computing the affected graph. The live-room check, session list and deletes now share one snapshot. The read-only preview also uses one read transaction. This holds the writer during the preview queries, in exchange for ruling out a stale session list within the commit. The dashboard names the shared sessions before confirmation and refreshes the list after a successful delete. Administrator activity uses a monotone timestamp so an earlier request finishing late cannot shorten a valid session. No schema conversion is involved.
+
+Checkpoint parsing uses the same nonblank, opaque identity rule as construction. Resumption checks the persisted update ID and base alongside the run ID and checkpoint number. Valid files keep their wire format. A mismatched record stops the run because applying another policy's update would misattribute subsequent trajectories.
+
+Live expiry and the dashboard share their deadline candidates. The next scheduled deadline is chronological. Evaluation after several deadlines have elapsed uses cause precedence. Socket retirement drops registrations by complete session ID. Tests cover distinct roles, prefix collisions and deadlines expressed in different time zones.
+
+A replay URL owns its React component lifetime. Requests that finish after a switch cannot restore the preceding error or frames. Microphone device scans publish only the latest request's list, and a denied passive scan preserves the last list. The chat form checks interaction state on submission so a retained draft survives a pause.

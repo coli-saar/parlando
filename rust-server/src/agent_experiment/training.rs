@@ -10,11 +10,23 @@ use std::sync::Arc;
 
 /// Opaque learner-owned identity of one immutable policy checkpoint.
 ///
+/// Construction and deserialization reject empty and whitespace-only IDs. Every
+/// other ID retains its exact string representation, including surrounding spaces.
+///
 /// Parlando records and compares this value but never interprets it as a path, URI,
 /// model version, or in-memory handle. Resolution and persistence belong to [`RLAgent`].
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
-#[serde(transparent)]
+#[serde(try_from = "String")]
 pub struct CheckpointId(String);
+
+impl TryFrom<String> for CheckpointId {
+    type Error = anyhow::Error;
+
+    /// Applies the same identity contract to stored and newly returned checkpoints.
+    fn try_from(value: String) -> Result<Self> {
+        Self::new(value)
+    }
+}
 
 impl CheckpointId {
     /// Creates a non-empty opaque checkpoint identity.

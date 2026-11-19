@@ -28,6 +28,8 @@ it("keeps a draft while interaction is paused and sends it once when play resume
   expect(submit).toBeDisabled();
   expect(input).toHaveValue("  Hello  ");
   fireEvent.click(submit);
+  fireEvent.submit(input.closest("form")!);
+  expect(input).toHaveValue("  Hello  ");
   expect(send).not.toHaveBeenCalled();
   rerender(<SessionTools {...props} interactionEnabled />);
   fireEvent.click(submit);

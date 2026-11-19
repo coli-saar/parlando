@@ -38,30 +38,53 @@ impl LiveSessionTiming {
         }
     }
 
-    /// Selects the authoritative expiry cause, including simultaneous deadlines.
-    pub(in crate::app) fn due_deadline<'a>(
-        &self,
+    /// Yields valid live deadlines in expiry precedence order. Only disconnected
+    /// seats supply reconnect deadlines. Ended rooms have no live deadline.
+    fn deadlines<'a>(
+        &'a self,
         lifecycle: &SessionLifecycle,
-        mut reconnect_deadlines: impl Iterator<Item = &'a str>,
+        reconnect_deadlines: impl Iterator<Item = &'a str> + 'a,
+    ) -> impl Iterator<Item = (DateTime<Utc>, &'static str)> + 'a {
+        let live = !lifecycle.is_ended();
+        let forming = lifecycle == &SessionLifecycle::Forming;
+        let running = lifecycle == &SessionLifecycle::Running;
+        std::iter::once((self.lifetime_deadline_at.as_str(), "maximum_lifetime"))
+            .chain(forming.then_some((self.waiting_deadline_at.as_str(), "waiting_timeout")))
+            .chain(reconnect_deadlines.map(|stamp| (stamp, "reconnect_timeout")))
+            .chain(
+                self.idle_deadline_at
+                    .as_deref()
+                    .filter(|_| running)
+                    .map(|stamp| (stamp, "idle_timeout")),
+            )
+            .take_while(move |_| live)
+            .filter_map(|(stamp, reason)| {
+                Some((DateTime::parse_from_rfc3339(stamp).ok()?.to_utc(), reason))
+            })
+    }
+
+    /// At evaluation time, lifetime outranks waiting, reconnect and idle if several
+    /// deadlines have already elapsed. Equality with the supplied clock counts as due.
+    pub(in crate::app) fn due_deadline<'a>(
+        &'a self,
+        lifecycle: &SessionLifecycle,
+        reconnect_deadlines: impl Iterator<Item = &'a str> + 'a,
         now: DateTime<Utc>,
     ) -> Option<&'static str> {
-        let elapsed =
-            |stamp: &str| DateTime::parse_from_rfc3339(stamp).is_ok_and(|deadline| deadline <= now);
-        if lifecycle.is_ended() {
-            None
-        } else if elapsed(&self.lifetime_deadline_at) {
-            Some("maximum_lifetime")
-        } else if lifecycle == &SessionLifecycle::Forming && elapsed(&self.waiting_deadline_at) {
-            Some("waiting_timeout")
-        } else if reconnect_deadlines.any(elapsed) {
-            Some("reconnect_timeout")
-        } else if lifecycle == &SessionLifecycle::Running
-            && self.idle_deadline_at.as_deref().is_some_and(elapsed)
-        {
-            Some("idle_timeout")
-        } else {
-            None
-        }
+        self.deadlines(lifecycle, reconnect_deadlines)
+            .find(|(deadline, _)| *deadline <= now)
+            .map(|(_, reason)| reason)
+    }
+
+    /// Projects the earliest scheduled instant for monitoring. At equal instants
+    /// the dashboard reports the same winning cause as live expiry.
+    pub(in crate::app) fn next_deadline<'a>(
+        &'a self,
+        lifecycle: &SessionLifecycle,
+        reconnect_deadlines: impl Iterator<Item = &'a str> + 'a,
+    ) -> Option<(DateTime<Utc>, &'static str)> {
+        self.deadlines(lifecycle, reconnect_deadlines)
+            .min_by_key(|(stamp, _)| *stamp)
     }
 
     /// Advances both representations of meaningful activity and the associated idle deadline.
@@ -144,6 +167,34 @@ mod tests {
         assert_eq!(
             clock.due_deadline(&SessionLifecycle::Running, std::iter::empty(), cutoff),
             Some("idle_timeout")
+        );
+    }
+    /// Monitoring compares instants across time zones and ignores seats with invalid timestamps.
+    #[test]
+    fn monitoring_uses_the_earliest_valid_instant_and_breaks_ties_by_expiry_precedence() {
+        let at = DateTime::from_timestamp(0, 0).unwrap();
+        let mut clock = LiveSessionTiming::waiting(
+            at.to_rfc3339(),
+            at.to_rfc3339(),
+            (at + chrono::Duration::seconds(1)).to_rfc3339(),
+        );
+        clock.record_activity(at, at);
+        let reconnects = ["invalid", "1970-01-01T01:00:00+01:00"];
+        assert_eq!(
+            clock.next_deadline(&SessionLifecycle::Running, reconnects.into_iter()),
+            Some((at, "reconnect_timeout"))
+        );
+        assert_eq!(
+            clock.next_deadline(&SessionLifecycle::Forming, reconnects.into_iter()),
+            Some((at, "waiting_timeout"))
+        );
+        assert_eq!(
+            clock.due_deadline(
+                &SessionLifecycle::Running,
+                reconnects.into_iter(),
+                at + chrono::Duration::seconds(1)
+            ),
+            Some("maximum_lifetime")
         );
     }
 }

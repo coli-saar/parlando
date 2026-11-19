@@ -5,7 +5,10 @@ import { initialVoicePreflight, initialVoiceStatus, type AudioSessionContext, ty
 import type { ParticipantClient, ParticipantOutcome } from "../protocol.js";
 import { errorMessage } from "../helpers.js";
 
-/** Binds browser voice preparation, live transport and reconnection to the current seat. */
+/** Binds voice preparation and reconnection to the current seat. Each preparation
+ * supersedes earlier permission requests. Cancellation makes a pending request
+ * resolve false without publishing its error. Passive rescans keep the most recent
+ * device list and preserve the last successful list when enumeration fails. */
 export function useParticipantVoice<TObservation, TAction, TCompletion>(
   audioController: AudioSessionController,
   apiClient: ParticipantClient,
@@ -21,12 +24,15 @@ export function useParticipantVoice<TObservation, TAction, TCompletion>(
 
   const voicePreparationGenerationRef = useRef(0);
 
+  const deviceListGeneration = useRef(0);
+
   /** Enumerates available microphone inputs for selection before entering the room. */
   const refreshAudioInputs = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) return [];
+    const generation = ++deviceListGeneration.current;
     const devices = await navigator.mediaDevices.enumerateDevices();
     const inputs = devices.filter((device) => device.kind === "audioinput");
-    setAudioInputs(inputs);
+    if (generation === deviceListGeneration.current) setAudioInputs(inputs);
     return inputs;
   }, []);
 
@@ -97,11 +103,15 @@ export function useParticipantVoice<TObservation, TAction, TCompletion>(
   }, [audioController, currentAudioContext]);
 
   useEffect(() => {
-    void refreshAudioInputs();
-    if (!navigator.mediaDevices?.addEventListener) return;
-    const onDeviceChange = () => void refreshAudioInputs();
-    navigator.mediaDevices.addEventListener("devicechange", onDeviceChange);
-    return () => navigator.mediaDevices.removeEventListener("devicechange", onDeviceChange);
+    // A passive device scan may be denied before microphone permission is granted.
+    const onDeviceChange = () => void refreshAudioInputs().catch(() => undefined);
+    onDeviceChange();
+    const devices = navigator.mediaDevices;
+    devices?.addEventListener?.("devicechange", onDeviceChange);
+    return () => {
+      deviceListGeneration.current += 1;
+      devices?.removeEventListener?.("devicechange", onDeviceChange);
+    };
   }, [refreshAudioInputs]);
 
   useEffect(() => audioController.subscribe((snapshot) => {

@@ -4,7 +4,8 @@ import { microphoneMuteButtonLabel } from "../helpers.js";
 import { MicrophoneLevelMeter } from "../voiceComponents.js";
 import { type PlayerMessage, type PlayerRole } from "../protocol.js";
 
-/** Renders transport, conversation, microphone, and leave controls owned by Parlando. */
+/** Owns the local chat draft across pauses. Submission requires enabled interaction
+ * and nonblank text. A successful handoff sends the trimmed text and clears the draft. */
 export function SessionTools({
   connected,
   conversation,
@@ -45,7 +46,7 @@ export function SessionTools({
           <li className="parlando-session-tools-message" key={message.id}><strong>{message.sender}</strong><p>{message.text}</p></li>
         ))}
       </ol>
-      <form className="parlando-session-tools-form" onSubmit={(event) => { event.preventDefault(); const text = draft.trim(); if (!text) return; onMessage(text); setDraft(""); }}>
+      <form className="parlando-session-tools-form" onSubmit={(event) => { event.preventDefault(); const text = draft.trim(); if (!interactionEnabled || !text) return; onMessage(text); setDraft(""); }}>
         <input aria-label="Message" disabled={!interactionEnabled} onChange={(event) => setDraft(event.target.value)} value={draft} />
         <button disabled={!interactionEnabled || !draft.trim()} type="submit">Send message</button>
       </form>

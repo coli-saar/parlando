@@ -5,34 +5,11 @@ use super::{
     PlayerRole, SessionLiveness,
 };
 
-/// Adds one candidate timeout and keeps the earliest deadline affecting a session.
-fn retain_absolute_deadline(
-    current: &mut Option<(chrono::DateTime<chrono::Utc>, String)>,
-    timestamp: &str,
-    reason: &str,
-) {
-    let Some(deadline) = chrono::DateTime::parse_from_rfc3339(timestamp)
-        .ok()
-        .map(|value| value.with_timezone(&chrono::Utc))
-    else {
-        return;
-    };
-    let candidate = (deadline, reason.to_string());
-    if current
-        .as_ref()
-        .is_none_or(|(deadline, _)| candidate.0 < *deadline)
-    {
-        *current = Some(candidate);
-    }
-}
-
 /// Minimal participant projection copied while taking a liveness snapshot.
 struct ParticipantOperationalSnapshot {
     role: PlayerRole,
     source: String,
-    connected: bool,
     audio_ready: bool,
-    reconnect_deadline_at: Option<String>,
 }
 
 /// Minimal session projection that intentionally excludes potentially large game state.
@@ -42,9 +19,7 @@ struct SessionOperationalSnapshot {
     lifecycle: String,
     paused: bool,
     updated_at: String,
-    waiting_deadline_at: String,
-    lifetime_deadline_at: String,
-    idle_deadline_at: Option<String>,
+    deadline: Option<(chrono::DateTime<chrono::Utc>, &'static str)>,
     participants: Vec<ParticipantOperationalSnapshot>,
 }
 
@@ -63,18 +38,21 @@ pub(super) async fn build_session_liveness<A: Game>(
                 lifecycle: session.lifecycle().as_str().to_string(),
                 paused: session.pause().is_some(),
                 updated_at: session.timing().updated_at.clone(),
-                waiting_deadline_at: session.timing().waiting_deadline_at.clone(),
-                lifetime_deadline_at: session.timing().lifetime_deadline_at.clone(),
-                idle_deadline_at: session.timing().idle_deadline_at.clone(),
+                deadline: session.timing().next_deadline(
+                    session.lifecycle(),
+                    session
+                        .participants
+                        .values()
+                        .filter(|seat| !seat.connected)
+                        .filter_map(|seat| seat.reconnect_deadline_at.as_deref()),
+                ),
                 participants: session
                     .participants
                     .values()
                     .map(|participant| ParticipantOperationalSnapshot {
                         role: participant.role,
                         source: participant.source.clone(),
-                        connected: participant.connected,
                         audio_ready: participant.audio_ready(),
-                        reconnect_deadline_at: participant.reconnect_deadline_at.clone(),
                     })
                     .collect(),
             })
@@ -86,41 +64,6 @@ pub(super) async fn build_session_liveness<A: Game>(
     let mut sessions = sessions
         .into_iter()
         .map(|session| {
-            let mut deadline = None;
-            if session.lifecycle == "forming" {
-                retain_absolute_deadline(
-                    &mut deadline,
-                    &session.waiting_deadline_at,
-                    "waiting timeout",
-                );
-            } else if session.lifecycle == "running" {
-                if let Some(value) = session.idle_deadline_at.as_deref() {
-                    retain_absolute_deadline(&mut deadline, value, "idle timeout");
-                }
-            }
-            if !session_lifecycle_is_ended(&session.lifecycle) {
-                retain_absolute_deadline(
-                    &mut deadline,
-                    &session.lifetime_deadline_at,
-                    "maximum lifetime",
-                );
-            }
-            if !session_lifecycle_is_ended(&session.lifecycle)
-                && session.participants.iter().any(|row| !row.connected)
-            {
-                if let Some(latest) = session
-                    .participants
-                    .iter()
-                    .filter(|row| !row.connected)
-                    .min_by(|left, right| {
-                        left.reconnect_deadline_at.cmp(&right.reconnect_deadline_at)
-                    })
-                {
-                    if let Some(value) = latest.reconnect_deadline_at.as_deref() {
-                        retain_absolute_deadline(&mut deadline, value, "reconnect timeout");
-                    }
-                }
-            }
             let participants = session
                 .participants
                 .iter()
@@ -202,8 +145,11 @@ pub(super) async fn build_session_liveness<A: Game>(
                 lifecycle: session.lifecycle,
                 health: health.to_string(),
                 meaningful_activity_at: session.updated_at,
-                lifecycle_deadline_at: deadline.as_ref().map(|(value, _)| value.to_rfc3339()),
-                deadline_reason: deadline.map(|(_, reason)| reason),
+                lifecycle_deadline_at: session
+                    .deadline
+                    .as_ref()
+                    .map(|(value, _)| value.to_rfc3339()),
+                deadline_reason: session.deadline.map(|(_, reason)| reason.replace('_', " ")),
                 participants,
             }
         })

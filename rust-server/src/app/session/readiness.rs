@@ -31,7 +31,9 @@ impl SessionParticipant {
         self.audio_ready
     }
 
-    /// Evaluates the connection, agent startup and human transcription requirements.
+    /// Every seat must be connected. Agents also require their ready declaration.
+    /// Browser participants require audio readiness when transcription gates startup.
+    /// A worker seat has no browser microphone to initialize.
     pub(in crate::app) fn ready_for_game(&self, transcription_required: bool) -> bool {
         self.connected
             && (self.source != "agent" || self.ready)
@@ -104,5 +106,10 @@ mod tests {
         assert!(seat.ready_for_game(true));
         seat.connected = false;
         assert!(!seat.ready_for_game(false));
+        seat.source = "worker".into();
+        seat.audio_ready = false;
+        assert!(!seat.ready_for_game(true));
+        seat.connected = true;
+        assert!(seat.ready_for_game(true));
     }
 }

@@ -3,6 +3,15 @@ import { expect, test } from '@playwright/test';
 
 const assets = new URL('../../rust-server/src/app/', import.meta.url);
 
+const files = {
+  '/admin/': ['admin_dashboard.html', 'text/html'],
+  '/admin/assets/admin-dashboard.js': ['admin_dashboard.js', 'text/javascript'],
+  '/admin/assets/admin-dashboard-format.js': ['admin_dashboard_format.mjs', 'text/javascript'],
+  '/admin/assets/admin-dashboard-api.js': ['admin_dashboard_api.mjs', 'text/javascript'],
+  '/admin/assets/admin-dashboard-state.js': ['admin_dashboard_state.js', 'text/javascript'],
+  '/admin/assets/admin-dashboard.css': ['admin_dashboard.css', 'text/css']
+};
+
 /** Builds a minimal catalogue entry for the real dashboard selection controls. */
 function experiment(id) {
   return { experiment_id: id, game_version: '1.0', config_revision: 1, status: 'inactive', created_at: '2026-01-01T00:00:00Z' };
@@ -28,14 +37,6 @@ test('dashboard keeps late experiment lists and session details out of the selec
   const slowEvents = pendingResponse();
   const sessions = [session(2, 'New first room'), session(3, 'Selected room')];
   const experiments = [experiment('first'), experiment('second')];
-  const files = {
-    '/admin/': ['admin_dashboard.html', 'text/html'],
-    '/admin/assets/admin-dashboard.js': ['admin_dashboard.js', 'text/javascript'],
-    '/admin/assets/admin-dashboard-format.js': ['admin_dashboard_format.mjs', 'text/javascript'],
-    '/admin/assets/admin-dashboard-api.js': ['admin_dashboard_api.mjs', 'text/javascript'],
-    '/admin/assets/admin-dashboard-state.js': ['admin_dashboard_state.js', 'text/javascript'],
-    '/admin/assets/admin-dashboard.css': ['admin_dashboard.css', 'text/css']
-  };
   await page.route('http://dashboard.test/**', async route => {
     const path = new URL(route.request().url()).pathname;
     if (files[path]) {
@@ -97,4 +98,56 @@ test('dashboard keeps late experiment lists and session details out of the selec
   await page.locator('[data-tab="sessions"]').click();
   await expect(page.locator('#timeline')).toContainText('Selected room event');
   await expect(page.locator('#timeline')).not.toContainText('Stale event');
+});
+
+test('deletion blocks unfinished sessions, honors cancellation and removes deleted rows after confirmation', async ({ page }) => {
+  const entry = experiment('study');
+  const room = { ...session(7, 'shared-room'), lifecycle: 'ended' };
+  let unfinished = true;
+  let deletions = 0;
+  await page.route('http://dashboard.test/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (files[path]) {
+      const [name, contentType] = files[path];
+      return route.fulfill({ path: fileURLToPath(new URL(name, assets)), contentType });
+    }
+    let data = {};
+    if (path === '/api/admin/experiments') data = { experiments: [entry], game: { name: 'Fixture', version: '1.0' } };
+    else if (path.endsWith('/config')) data = { experiment: { ...entry, config: {} } };
+    else if (path.endsWith('/sessions')) data = { sessions: deletions ? [] : [room] };
+    else if (path.endsWith('/sessions/7')) data = { session: room, participants: [{ research_id: 'human-a', role: 'A', participant_kind: 'human' }] };
+    else if (path.endsWith('/progress')) data = { progress: { sessions: deletions ? [] : [room], total_sessions: deletions ? 0 : 1 } };
+    else if (path.endsWith('/load')) return route.fulfill({ status: 503 });
+    else if (path.endsWith('/participants/human-a/deletion')) {
+      if (route.request().method() === 'POST') {
+        deletions += 1;
+        data = { deleted: true };
+      } else {
+        data = { preview: { has_non_terminal_session: unfinished, session_ids: ['shared-room'], other_participant_ids: ['human-b'] } };
+      }
+    }
+    await route.fulfill({ json: data });
+  });
+  await page.goto('http://dashboard.test/admin/');
+  const remove = page.getByRole('button', { name: 'Delete participant data' });
+  /** Capture the actual prompt at the button and deliver the operator's response. */
+  async function respond(accept) {
+    const pending = page.waitForEvent('dialog');
+    const click = remove.click();
+    const dialog = await pending;
+    const message = dialog.message();
+    if (accept) await dialog.accept();
+    else await dialog.dismiss();
+    await click;
+    return message;
+  }
+  expect(await respond(true)).toContain('blocked');
+  expect(deletions).toBe(0);
+  unfinished = false;
+  expect(await respond(false)).toContain('human-b');
+  expect(deletions).toBe(0);
+  expect(await respond(true)).toContain('shared-room');
+  await expect(page.locator('[data-session="7"]')).toHaveCount(0);
+  await expect(remove).toBeHidden();
+  expect(deletions).toBe(1);
 });

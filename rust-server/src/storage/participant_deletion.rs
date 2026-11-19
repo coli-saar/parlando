@@ -3,7 +3,7 @@
 use super::SqliteExperimentStore;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::SqliteConnection;
 
 /// Counts participant-linked records before an administrator confirms deletion.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -16,7 +16,7 @@ pub struct ParticipantDataPreview {
     pub consent_count: i64,
     /// Number of authored message or transcript events that will be removed.
     pub content_event_count: i64,
-    /// Number of other authored events whose actor reference will be anonymized.
+    /// Number of other authored events removed with the affected sessions.
     pub other_event_count: i64,
     /// Dashboard session identifiers that will be deleted with the participant.
     pub session_ids: Vec<String>,
@@ -28,7 +28,7 @@ pub struct ParticipantDataPreview {
 
 /// Counts participant-linked rows in SQLite without modifying them.
 async fn sqlite_participant_data_preview(
-    pool: &SqlitePool,
+    connection: &mut SqliteConnection,
     experiment_id: &str,
     participant_id: i64,
 ) -> Result<ParticipantDataPreview> {
@@ -37,28 +37,28 @@ async fn sqlite_participant_data_preview(
     )
     .bind(experiment_id)
     .bind(participant_id)
-    .fetch_one(pool)
+    .fetch_one(&mut *connection)
     .await?;
     let consent_count = sqlx::query_scalar::<_, i64>(
         "select count(*) from consent_declarations where experiment_id = ? and participant_id = ?",
     )
     .bind(experiment_id)
     .bind(participant_id)
-    .fetch_one(pool)
+    .fetch_one(&mut *connection)
     .await?;
     let content_event_count = sqlx::query_scalar::<_, i64>(
         "select count(*) from session_events where experiment_id = ? and actor_participant_id = ? and event_type in ('conversation_message', 'transcript_segment')",
     )
     .bind(experiment_id)
     .bind(participant_id)
-    .fetch_one(pool)
+    .fetch_one(&mut *connection)
     .await?;
     let other_event_count = sqlx::query_scalar::<_, i64>(
         "select count(*) from session_events where experiment_id = ? and actor_participant_id = ? and event_type not in ('conversation_message', 'transcript_segment')",
     )
     .bind(experiment_id)
     .bind(participant_id)
-    .fetch_one(pool)
+    .fetch_one(&mut *connection)
     .await?;
     let sessions = sqlx::query_as::<_, (String, String)>(
         r#"
@@ -71,7 +71,7 @@ async fn sqlite_participant_data_preview(
     )
     .bind(experiment_id)
     .bind(participant_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *connection)
     .await?;
     let other_participant_ids = sqlx::query_scalar::<_, String>(
         r#"
@@ -90,7 +90,7 @@ async fn sqlite_participant_data_preview(
     .bind(participant_id)
     .bind(experiment_id)
     .bind(participant_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *connection)
     .await?;
     Ok(ParticipantDataPreview {
         participant_id,
@@ -111,35 +111,27 @@ impl SqliteExperimentStore {
         experiment_id: &str,
         participant_id: i64,
     ) -> Result<ParticipantDataPreview> {
-        sqlite_participant_data_preview(&self.pool, experiment_id, participant_id).await
+        let mut tx = self.pool.begin().await?;
+        let preview =
+            sqlite_participant_data_preview(&mut tx, experiment_id, participant_id).await?;
+        tx.commit().await?;
+        Ok(preview)
     }
 
-    /// Deletes a participant and the associated data within one transaction.
+    /// Deletes the participant, their consents and every shared session they joined.
+    ///
+    /// Reserve the SQLite writer before collecting affected session IDs. The live-room
+    /// check, returned preview and deletes then describe the same snapshot. Partner
+    /// identities and unrelated sessions survive. An error rolls back every delete.
     pub(crate) async fn delete_participant_data(
         &self,
         experiment_id: &str,
         participant_id: i64,
     ) -> Result<ParticipantDataPreview> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let preview =
-            sqlite_participant_data_preview(&self.pool, experiment_id, participant_id).await?;
+            sqlite_participant_data_preview(&mut tx, experiment_id, participant_id).await?;
         if preview.has_non_terminal_session {
-            bail!("affected sessions are live or non-terminal");
-        }
-        let mut tx = self.pool.begin().await?;
-        let non_terminal = sqlx::query_scalar::<_, i64>(
-            r#"
-            select count(*) from sessions s
-            join session_participants sp
-              on sp.experiment_id = s.experiment_id and sp.session_id = s.session_id
-            where sp.experiment_id = ? and sp.participant_id = ?
-              and s.lifecycle != 'ended'
-            "#,
-        )
-        .bind(experiment_id)
-        .bind(participant_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        if non_terminal > 0 {
             bail!("affected sessions are live or non-terminal");
         }
         sqlx::query(

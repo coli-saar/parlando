@@ -105,6 +105,10 @@ fn prepare_action<G: Game>(
 }
 
 /// Validates, durably commits, then publishes one action in session order.
+///
+/// Human and agent callers share the room lock with leave and expiry. Prepare both
+/// role views from one transition and reserve agent delivery before writing. Only
+/// the winner of the durable commit may install that state and publish acceptance.
 pub(super) async fn submit_action<A: Game>(
     state: Arc<AppState<A>>,
     public_session_id: &str,

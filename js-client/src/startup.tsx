@@ -10,7 +10,9 @@ export { ReplayPlayer } from "./participant/replay.js";
 export { PartnerReconnectNotice } from "./participant/deadlines.js";
 export { ProlificHandoff } from "./participant/outcome.js";
 
-/** Renders the standard participant experience with the game's own view. */
+/** Renders the participant lifecycle or the requested administrator replay.
+ * Each replay URL owns its loading, playback and error state. Switching URLs
+ * releases the previous view and ignores any response still in flight. */
 export function ParticipantApp<
   TObservation,
   TAction = unknown,
@@ -19,7 +21,7 @@ export function ParticipantApp<
   const apiClient = useMemo(() => new ParticipantClient({ baseUrl }), [baseUrl]);
   const replayUrl = replayRequestUrl();
   if (replayUrl) {
-    return <ReplayApp replayUrl={replayUrl} renderGame={renderGame} />;
+    return <ReplayApp key={replayUrl} replayUrl={replayUrl} renderGame={renderGame} />;
   }
   return (
     <ParticipantAppRuntime

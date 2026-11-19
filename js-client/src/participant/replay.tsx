@@ -3,12 +3,18 @@ import { type PlayerRole } from "../protocol.js";
 import { type GameSnapshot, type SessionReplay } from "./types.js";
 import { errorMessage } from "../helpers.js";
 
-/** Reads and validates the administrator replay endpoint requested by the dashboard. */
+/** Returns the path and query of a same-origin administrator endpoint. An absent,
+ * malformed or out-of-scope address leaves the application in participant mode. */
 export function replayRequestUrl(): string | null {
   if (typeof window === "undefined") return null;
   const value = new URLSearchParams(window.location.search).get("parlandoReplay");
   if (!value) return null;
-  const url = new URL(value, window.location.origin);
+  let url: URL;
+  try {
+    url = new URL(value, window.location.origin);
+  } catch {
+    return null;
+  }
   if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/admin/")) return null;
   return `${url.pathname}${url.search}`;
 }

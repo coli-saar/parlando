@@ -1,4 +1,7 @@
 //! Ordered session event writes and atomic terminal transitions.
+//! A terminal result and its event batch become visible together. If an insert
+//! fails, a retry can reuse the uncommitted event indices. A competing terminal
+//! writer observes the existing ending and cannot append another winning transition.
 
 use super::{now_iso, relative_game_time_ms, timestamp_millis, SqliteExperimentStore};
 use crate::protocol::SessionEnd;

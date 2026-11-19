@@ -119,3 +119,75 @@ async fn game_factory_creates_exactly_one_instance_per_planned_session() {
     assert_eq!(summary.planned, 2);
     assert_eq!(creations.load(Ordering::Acquire), 2);
 }
+
+/// Fail-fast finalizes the first failure before returning and starts no later plan.
+#[tokio::test]
+async fn fail_fast_finalizes_only_the_first_failed_plan() {
+    let temporary = TempDir::new().unwrap();
+    let output = temporary.path().join("results-root");
+    let yaml_path = temporary.path().join("fail-fast.yaml");
+    let yaml = experiment_yaml(&output)
+        .replace("seeds: [7]", "seeds: [7, 8, 9]")
+        .replace("concurrency: 2", "concurrency: 3\n  fail_fast: true");
+    tokio::fs::write(&yaml_path, yaml).await.unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let error = failing_test_runner(events.clone())
+        .run_yaml(&yaml_path)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("stopped after a failed session"));
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        ["create:A", "create:B", "shutdown:A"]
+    );
+    let results: Vec<_> = std::fs::read_dir(output.join("results")).unwrap().collect();
+    assert_eq!(results.len(), 1);
+    let bytes = std::fs::read(results[0].as_ref().unwrap().path()).unwrap();
+    let result: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["game_seed"], 7);
+}
+
+/// A final move wins at the action limit. Otherwise an action cap, decision cap
+/// or two consecutive yields each produces its own durable status and counts.
+#[tokio::test]
+async fn decision_loop_persists_the_cause_and_exact_counters() {
+    for (target, action_limit, decision_limit, status, decisions) in [
+        (1, 1, 1, "completed", 1),
+        (2, 1, 4, "action_limit", 1),
+        (2, 2, 2, "decision_limit", 2),
+        (2, 2, 4, "quiescent", 3),
+    ] {
+        let temporary = TempDir::new().unwrap();
+        let output = temporary.path().join("run");
+        let yaml_path = temporary.path().join("experiment.yaml");
+        let yaml = experiment_yaml(&output)
+            .replace("target: 1", &format!("target: {target}"))
+            .replace(
+                "accepted_actions: 2",
+                &format!("accepted_actions: {action_limit}"),
+            )
+            .replace("decisions: 4", &format!("decisions: {decision_limit}"));
+        tokio::fs::write(&yaml_path, yaml).await.unwrap();
+        let summary = test_runner(Arc::new(Mutex::new(Vec::new())))
+            .run_yaml(yaml_path)
+            .await
+            .unwrap();
+        let success = matches!(status, "completed" | "quiescent");
+        assert_eq!(
+            (summary.completed, summary.failed),
+            (usize::from(success), usize::from(!success))
+        );
+        let path = std::fs::read_dir(output.join("results"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let result: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(result["status"], status);
+        assert_eq!(result["decisions"], decisions);
+        assert_eq!(result["accepted_actions"], 1);
+        assert_eq!(result["completion"].is_object(), status == "completed");
+    }
+}

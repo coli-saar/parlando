@@ -169,3 +169,36 @@ async fn empty_database_url_is_rejected() {
 
     assert!(error.to_string().contains("database.url is required"));
 }
+
+/// Delayed touches cannot shorten a session, and either inclusive expiry cutoff revokes it.
+#[tokio::test]
+async fn administrator_session_expiry_uses_monotonic_activity_and_fixed_creation_time() {
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+    for (digest, created_at, last_seen_at) in
+        [("absolute", 10, 99), ("idle", 11, 20), ("active", 11, 20)]
+    {
+        store
+            .save_admin_session(StoredAdminSession {
+                token_digest: digest.into(),
+                role: "administrator".into(),
+                csrf_token: "token".into(),
+                created_at,
+                last_seen_at,
+            })
+            .await
+            .unwrap();
+    }
+    store.touch_admin_session("active", 21).await.unwrap();
+    store.touch_admin_session("active", 19).await.unwrap();
+    store.delete_expired_admin_sessions(20, 10).await.unwrap();
+    for digest in ["absolute", "idle"] {
+        assert!(store.admin_session(digest).await.unwrap().is_none());
+    }
+    let active = store.admin_session("active").await.unwrap().unwrap();
+    assert_eq!((active.created_at, active.last_seen_at), (11, 21));
+    store.delete_admin_session("active").await.unwrap();
+    store.touch_admin_session("active", 100).await.unwrap();
+    assert!(store.admin_session("active").await.unwrap().is_none());
+}

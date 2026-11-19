@@ -41,6 +41,11 @@ export class SelectionRequests {
     this.#requests.clear();
   }
 
+  // Discards a read begun before a committed change to this resource.
+  invalidate(resource) {
+    this.#requests.delete(resource);
+  }
+
   // Shares an identical pending read so regular polls cannot starve a slow response.
   json(resource, state, url, apply, options) {
     const pending = this.#requests.get(resource);

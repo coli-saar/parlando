@@ -1,5 +1,5 @@
 import { state } from './admin-dashboard-state.js';
-import { isSpeechBundle, sessionTimeline, roleBadge, escapeHtml, experimentDisplayStatus, fmtClockTime, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, plannedProgressLayout, sessionEndCauseRows, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
+import { isSpeechBundle, sessionTimeline, roleBadge, escapeHtml, experimentDisplayStatus, fmtClockTime, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, participantDeletionPrompt, plannedProgressLayout, sessionEndCauseRows, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
 import { absoluteParticipantUrl, adminFetch, SelectionRequests, experimentRuntimeApi, participantUrlCanOpen } from './admin-dashboard-api.js';
 const catalogueRequests = new SelectionRequests();
 const experimentRequests = new SelectionRequests();
@@ -2317,13 +2317,18 @@ function participantAssignments(rows, session = state.selectedSession) {
 async function deleteParticipantData(researchId) {
   if (!state.experiment) return;
   const path = runtimeApi(`participants/${encodeURIComponent(researchId)}/deletion`);
-  const sessionId = state.selected;
   await sessionRequests.json('deletion-preview', state, path, async ({ preview }) => {
-    const confirmed = window.confirm(
-      `Delete ${researchId}? This removes ${preview.content_event_count} message/transcript events and ${preview.consent_count} consent declarations, and anonymizes ${preview.other_event_count} other event references. This cannot be undone.`
-    );
-    if (confirmed) {
-      await sessionRequests.json('deletion', state, path, () => selectSession(sessionId), { method: 'POST' });
+    if (preview.has_non_terminal_session) {
+      window.alert('Deletion is blocked until every session involving this participant has ended.');
+      return;
+    }
+    if (window.confirm(participantDeletionPrompt(researchId, preview))) {
+      await sessionRequests.json('deletion', state, path, async () => {
+        clearSelectedSession();
+        experimentRequests.invalidate('sessions');
+        experimentRequests.invalidate('progress');
+        await Promise.all([loadSessions(), loadProgress()]);
+      }, { method: 'POST' });
     }
   });
 }

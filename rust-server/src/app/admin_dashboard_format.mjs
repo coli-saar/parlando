@@ -192,3 +192,15 @@ export function roleBadge(role) {
   if (!normalized) return '<span class="role-badge role-system">SYS</span>';
   return `<span class="role-badge role-${normalized.toLowerCase()}">${escapeHtml(normalized)}</span>`;
 }
+
+// Describes the shared session records SQLite will remove with this participant.
+export function participantDeletionPrompt(researchId, preview) {
+  const lines = [`Permanently delete participant ${researchId} and their consent records?`];
+  if (preview.session_ids.length) {
+    lines.push(`This also deletes these entire sessions, including both roles’ events and session-linked consents: ${preview.session_ids.join(', ')}.`);
+  }
+  if (preview.other_participant_ids.length) {
+    lines.push(`Other participants who will lose these shared sessions: ${preview.other_participant_ids.join(', ')}.`);
+  }
+  return lines.join('\n\n');
+}

@@ -8,6 +8,7 @@ import {
   formatBytes,
   formatDuration,
   namedStatusLabel,
+  participantDeletionPrompt,
   plannedProgressLayout,
   shortSha,
   statusText,
@@ -91,4 +92,14 @@ test('session end cause rows order complete server-provided counts', () => {
       { type: 'partner_unavailable', count: 1 },
     ],
   );
+});
+
+test('participant deletion names every shared session and affected partner before confirmation', () => {
+  const prompt = participantDeletionPrompt('participant-a', {
+    session_ids: ['room-one', 'room-two'], other_participant_ids: ['participant-b'],
+  });
+  assert.match(prompt, /delete participant participant-a/);
+  assert.match(prompt, /entire sessions.*room-one, room-two/);
+  assert.match(prompt, /Other participants.*participant-b/);
+  assert.doesNotMatch(participantDeletionPrompt('solo', { session_ids: [], other_participant_ids: [] }), /entire sessions/);
 });

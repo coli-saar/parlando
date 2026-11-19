@@ -17,6 +17,11 @@ pub(super) struct Occupancy {
 
 impl Occupancy {
     /// Adds one revision's usage under its own speech configuration.
+    ///
+    /// A forming room with one seat consumes waiting capacity. Once both seats are
+    /// assigned it consumes active capacity even before play starts. Ended rooms
+    /// contribute only to retention. Speech capacity counts non-agent seats in
+    /// unfinished rooms on revisions that require transcription.
     pub(super) fn include<G: Game>(
         &mut self,
         memory: &MemoryState<G>,

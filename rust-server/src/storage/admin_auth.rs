@@ -114,13 +114,13 @@ impl SqliteExperimentStore {
         ))
     }
 
-    /// Records the latest use of an administrator session.
+    /// Advances the last-use time even when concurrent requests finish in reverse order.
     pub(crate) async fn touch_admin_session(
         &self,
         token_digest: &str,
         last_seen_at: i64,
     ) -> Result<()> {
-        sqlx::query("update administrator_sessions set last_seen_at = ? where token_digest = ?")
+        sqlx::query("update administrator_sessions set last_seen_at = max(last_seen_at, ?) where token_digest = ?")
             .bind(last_seen_at)
             .bind(token_digest)
             .execute(&self.pool)
@@ -137,7 +137,7 @@ impl SqliteExperimentStore {
         Ok(())
     }
 
-    /// Removes administrator sessions older than the supplied cutoffs.
+    /// Removes sessions at or before either the idle or absolute cutoff.
     pub(crate) async fn delete_expired_admin_sessions(
         &self,
         idle_before: i64,

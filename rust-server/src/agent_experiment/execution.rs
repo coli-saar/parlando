@@ -65,7 +65,9 @@ impl<G: Game> ExperimentRunner<G> {
         })
     }
 
-    /// Executes or resumes one set of already resolved session plans.
+    /// Classifies existing result files as skipped and runs only the remaining plans.
+    /// Each fresh result is finalized before it contributes to the counts. Fail-fast
+    /// runs pending plans sequentially and returns after finalizing the first failure.
     pub(super) async fn execute_plans(
         &self,
         plans: Vec<SessionPlan<G>>,

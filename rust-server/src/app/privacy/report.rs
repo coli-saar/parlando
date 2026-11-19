@@ -7,7 +7,9 @@ use super::{
 };
 use crate::storage::now_iso;
 
-/// Projects already-resolved configurations into the report shared by all renderers.
+/// Projects the selected configurations into the single report used by all renderers.
+/// Only declared contract versions contribute to the sorted, distinct version list.
+/// External services are distinct by provider and purpose in first-seen order.
 pub(super) fn build_report(
     facts: &[PrivacyConfigFacts],
     experiment_id: Option<&str>,

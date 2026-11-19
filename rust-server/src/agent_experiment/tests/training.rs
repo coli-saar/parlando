@@ -260,6 +260,13 @@ fn checkpoint_ids_are_nonempty_and_opaque() {
     assert!(CheckpointId::new(" \n\t ").is_err());
     let checkpoint = CheckpointId::new("models/run 7/checkpoint:β").unwrap();
     assert_eq!(checkpoint.as_str(), "models/run 7/checkpoint:β");
+    let wire = serde_json::to_value(&checkpoint).unwrap();
+    assert_eq!(wire, json!(checkpoint.as_str()));
+    assert_eq!(
+        serde_json::from_value::<CheckpointId>(wire).unwrap(),
+        checkpoint
+    );
+    assert!(serde_json::from_value::<CheckpointId>(json!("  ")).is_err());
 }
 
 /// Per-role rewards retain fixed game-role meaning instead of acting-seat order.

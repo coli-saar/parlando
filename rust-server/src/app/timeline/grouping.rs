@@ -1,6 +1,8 @@
 use super::*;
 
-/// Groups durable admin events into display rows for the experiment dashboard.
+/// Groups durable events into display rows without changing the underlying history.
+/// Interleaved actions retain separate bundles, and identical transcript text
+/// from distinct utterances must remain distinguishable in the timeline.
 pub(in crate::app) fn admin_event_bundles(events: &[AdminEventSummary]) -> Vec<Value> {
     let mut bundles = Vec::<AdminEventBundle>::new();
     let mut open_bundles = HashMap::<String, usize>::new();

@@ -40,3 +40,16 @@ fn installation_report_deduplicates_services_by_provider_and_purpose() {
     );
     assert_eq!(report.configuration[0].status, "2");
 }
+
+/// Only declared versions affect the installation summary, independent of catalogue order.
+#[test]
+fn report_distinguishes_unspecified_single_and_mixed_contract_versions() {
+    let version = |v: &str| privacy_config_facts(&json!({"privacy": {"contract_version": v}}));
+    let report = |versions: &[&str]| {
+        let facts = versions.iter().map(|v| version(v)).collect::<Vec<_>>();
+        build_report(&facts, None).privacy_contract_version
+    };
+    assert_eq!(report(&[""]), "Unspecified");
+    assert_eq!(report(&["", "v2", "v2"]), "v2");
+    assert_eq!(report(&["v2", "", "v1", "v2"]), "Mixed (v1, v2)");
+}

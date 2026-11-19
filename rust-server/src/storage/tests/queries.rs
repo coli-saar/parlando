@@ -152,6 +152,7 @@ async fn sqlite_session_progress_counts_the_complete_experiment() {
         .all(|pair| pair[0].session_id > pair[1].session_id));
 }
 
+/// Verifies durable projections, shared-session deletion, rollback and retry.
 #[tokio::test]
 async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
     let temp = tempdir().expect("tempdir");
@@ -320,6 +321,45 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
         .delete_participant_data("exp_eval", participant_id)
         .await
         .is_err());
+    let partner_id = store
+        .upsert_participant(ParticipantRecord {
+            experiment_id: "exp_eval".into(),
+            participant_kind: "human".into(),
+            identity_provider: "direct".into(),
+            external_id: Some("other".into()),
+            metadata: Value::Null,
+        })
+        .await
+        .unwrap();
+    for (session_id, role, registration) in [
+        (session_one, "B", "peer-one"),
+        (session_two, "A", "peer-two"),
+    ] {
+        store
+            .add_session_participant(SessionParticipantRecord {
+                experiment_id: "exp_eval".into(),
+                session_id,
+                participant_id: partner_id,
+                participant_session_id: registration.into(),
+                role: role.into(),
+                connection_status: "joined".into(),
+            })
+            .await
+            .unwrap();
+    }
+    let preview = store
+        .participant_data_preview("exp_eval", participant_id)
+        .await
+        .unwrap();
+    assert_eq!(preview.session_ids, [dialogue_pseudonym]);
+    assert_eq!(preview.other_participant_ids.len(), 1);
+    assert_eq!(
+        store
+            .participant_id_for_research_id("exp_eval", &preview.other_participant_ids[0])
+            .await
+            .unwrap(),
+        Some(partner_id)
+    );
     let started_at = now_iso();
     let idle_deadline_at = (chrono::DateTime::parse_from_rfc3339(&started_at).unwrap()
         + chrono::Duration::seconds(300))
@@ -360,6 +400,20 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
         )
         .await
         .unwrap();
+    // A failure at the last delete must restore the whole session graph for a retry.
+    let before_delete = experiment_rows(&store, "exp_eval").await;
+    sqlx::query("create trigger refuse_deletion before delete on participants begin select raise(abort, 'fixture refusal'); end")
+        .execute(&store.pool).await.unwrap();
+    let failure = store
+        .delete_participant_data("exp_eval", participant_id)
+        .await
+        .unwrap_err();
+    assert!(failure.to_string().contains("fixture refusal"));
+    assert_eq!(experiment_rows(&store, "exp_eval").await, before_delete);
+    sqlx::query("drop trigger refuse_deletion")
+        .execute(&store.pool)
+        .await
+        .unwrap();
     store
         .delete_participant_data("exp_eval", participant_id)
         .await
@@ -371,6 +425,19 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
         .unwrap()
         .is_none());
     assert_eq!(deleted["sessions"][0]["session_id"], session_two);
-    assert!(deleted["participants"].as_array().unwrap().is_empty());
+    assert_eq!(deleted["participants"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        deleted["participants"][0]["research_id"],
+        preview.other_participant_ids[0]
+    );
+    assert_eq!(deleted["session_participants"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        deleted["session_participants"][0]["session_id"],
+        session_two
+    );
+    assert!(deleted["consent_declarations"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     assert!(deleted["session_events"].as_array().unwrap().is_empty());
 }

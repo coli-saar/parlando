@@ -19,7 +19,9 @@ interface ParticipantAppRuntimeProps<TObservation, TAction, TCompletion = Record
   createAudioController: () => AudioSessionController;
 }
 
-/** Owns the participant lifecycle using selected transport dependencies. */
+/** Renders the server's participant state using the supplied game and audio transports.
+ * A pending admission or leave keeps its current view until the server responds.
+ * Reconnecting and paused sessions disable game interaction. */
 export function ParticipantAppRuntime<
   TObservation,
   TAction = unknown,

@@ -6,12 +6,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialVoicePreflight, initialVoiceStatus } from "./audio/types";
 import type { ExperimentInfo, ParticipantOutcome, ParticipantState } from "./protocol";
 import {
+  ParticipantApp,
   ReplayPlayer,
   type GameSnapshot,
   type SessionReplay
 } from "./startup";
 import { IdleDeadlineNotice, WaitingRoomNotice } from "./participant/deadlines";
 import { FarewellVoiceNotice } from "./participant/outcome";
+import { VoicePreparationControls } from "./participant/microphone";
+import { replayRequestUrl } from "./participant/replay";
 import { ParticipantAppRuntime } from "./participant/runtime";
 
 class FakeWebSocket extends EventTarget {
@@ -70,8 +73,71 @@ function game(session: GameSnapshot<{ view: string }, { type: string }>) {
 beforeEach(() => { vi.clearAllMocks(); FakeWebSocket.instances = []; vi.stubGlobal("WebSocket", FakeWebSocket); Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { enumerateDevices: vi.fn(async () => []), addEventListener: vi.fn(), removeEventListener: vi.fn() } }); });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
+describe("microphone preparation controls", () => {
+  it("prepares the default input and switches only between available named microphones", () => {
+    const prepare = vi.fn();
+    const inputs = ["default", "built-in", "headset"].map((deviceId) => ({
+      kind: "audioinput", deviceId, label: deviceId,
+    } as MediaDeviceInfo));
+    const props = { audioInputs: inputs, enabled: true, onPrepareVoice: prepare, selectedAudioInputId: "built-in" };
+    const { rerender } = render(<VoicePreparationControls {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Prepare voice" }));
+    const ready = { ...initialVoicePreflight, ready: true };
+    rerender(<VoicePreparationControls {...props} voicePreflight={ready} />);
+    const selector = screen.getByRole("combobox", { name: "Microphone input" });
+    expect(screen.getAllByRole("option")).toHaveLength(2);
+    expect(selector).toHaveValue("built-in");
+    fireEvent.change(selector, { target: { value: "headset" } });
+    expect(prepare.mock.calls).toEqual([[""], ["headset"]]);
+    rerender(<VoicePreparationControls {...props} voicePreflight={{ ...ready, preparing: true }} />);
+    expect(selector).toBeDisabled();
+    rerender(<VoicePreparationControls {...props} audioInputs={[inputs[1]]} voicePreflight={ready} />);
+    expect(selector).toBeDisabled();
+  });
+});
+
+describe("administrator replay startup", () => {
+  afterEach(() => { window.history.replaceState(null, "", "/"); });
+
+  it.each([
+    ["http://[", null],
+    ["https://other.example/api/admin/replay", null],
+    ["/api/config", null],
+    ["/api/admin/replay?session=123#frame", "/api/admin/replay?session=123"],
+  ])("validates the dashboard replay address %s", (candidate, expected) => {
+    window.history.replaceState(null, "", "?" + new URLSearchParams({ parlandoReplay: candidate! }));
+    expect(replayRequestUrl()).toBe(expected);
+  });
+
+  it("loads only the current replay and clears a previous request's error", async () => {
+    const fetchReplay = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchReplay);
+    window.history.replaceState(null, "", "?parlandoReplay=/api/admin/first");
+    fetchReplay.mockResolvedValueOnce(new Response("Replay unavailable", { status: 404 }));
+    const { rerender } = render(<ParticipantApp renderGame={game} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Replay unavailable");
+
+    let finishSecond!: (response: Response) => void;
+    fetchReplay.mockReturnValueOnce(new Promise((resolve) => { finishSecond = resolve; }));
+    window.history.replaceState(null, "", "?parlandoReplay=/api/admin/second");
+    rerender(<ParticipantApp renderGame={game} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Loading replay");
+
+    window.history.replaceState(null, "", "?parlandoReplay=/api/admin/third");
+    fetchReplay.mockResolvedValueOnce(Response.json({ roles: { A: [], B: [] } }));
+    rerender(<ParticipantApp renderGame={game} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("This replay has no frames.");
+    await act(async () => { finishSecond(new Response("stale failure", { status: 404 })); });
+    expect(screen.getByRole("alert")).toHaveTextContent("This replay has no frames.");
+    expect(fetchReplay.mock.calls.map(([url]) => url)).toEqual([
+      "/api/admin/first", "/api/admin/second", "/api/admin/third",
+    ]);
+  });
+});
+
 describe("ReplayPlayer", () => {
   it("jumps between reconstructed events and role-specific observations", () => {
+    vi.useFakeTimers();
     const replay: SessionReplay<{ view: string }, { type: string }, { score: number }> = {
       experiment_id: "demo",
       session_id: 7,
@@ -97,6 +163,18 @@ describe("ReplayPlayer", () => {
     expect(screen.getByText("go")).toBeInTheDocument();
     fireEvent.change(screen.getByRole("combobox", { name: "Replay viewpoint" }), { target: { value: "B" } });
     expect(screen.getByText("B moved")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Play replay" }));
+    expect(screen.getByText("B start")).toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(799); });
+    expect(screen.getByText("B start")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Pause replay" }));
+    act(() => { vi.advanceTimersByTime(800); });
+    expect(screen.getByText("B start")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Play replay" }));
+    act(() => { vi.advanceTimersByTime(800); });
+    expect(screen.getByText("B moved")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next event" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Play replay" })).toBeEnabled();
   });
 });
 

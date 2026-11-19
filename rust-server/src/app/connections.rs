@@ -62,7 +62,9 @@ impl ConnectionRegistry {
         }
     }
 
-    /// Removes every registration belonging to a retired session.
+    /// Drops both roles of each named session, closing their shutdown channels.
+    /// Match the complete session ID so retiring one room preserves other rooms
+    /// whose IDs share its prefix. Retiring the same room again is a no-op.
     pub(super) async fn remove_sessions(&self, removed: &[String]) {
         self.owners.write().await.retain(|key, _| {
             !removed.iter().any(|id| {
@@ -113,5 +115,34 @@ mod tests {
         assert_eq!(other_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty));
         assert!(registry.unregister("room:A", &current).await);
         assert_eq!(registry.count().await, 1);
+    }
+    /// Batch retirement drops both seats and keeps the liveness and owner of a similarly named room.
+    #[tokio::test]
+    async fn retiring_sessions_releases_only_their_transports() {
+        let registry = ConnectionRegistry::default();
+        let mut receivers = Vec::new();
+        for key in ["room:A", "room:B", "elsewhere:B", "room2:A"] {
+            let (_, receiver, replaced) = registry
+                .register(key.into(), Arc::new(ConnectionLiveness::new()))
+                .await;
+            assert!(!replaced);
+            receivers.push(receiver);
+        }
+        registry
+            .remove_sessions(&["room".into(), "elsewhere".into()])
+            .await;
+        for receiver in &mut receivers[..3] {
+            assert_eq!(
+                receiver.try_recv(),
+                Err(mpsc::error::TryRecvError::Disconnected)
+            );
+        }
+        assert_eq!(
+            receivers[3].try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        );
+        let snapshots = registry.snapshots().await;
+        assert_eq!(snapshots.len(), 1);
+        assert!(snapshots.contains_key("room2:A"));
     }
 }

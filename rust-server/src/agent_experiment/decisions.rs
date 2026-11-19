@@ -15,7 +15,10 @@ use serde_json::{json, Value};
 use std::time::Instant;
 use tokio::time::timeout;
 
-/// Runs initialization callbacks and the ordered decision loop.
+/// Starts both agents with role-specific observations, then asks one scheduled agent
+/// per decision. Completion on the last permitted move wins over the action limit.
+/// Reaching a limit records its own terminal status. Two yields under the default
+/// alternating schedule end the run as quiescent, without a game completion.
 pub(super) async fn drive_session<G: Game>(
     game: &G,
     mut state: G::State,
