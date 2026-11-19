@@ -75,6 +75,10 @@ impl Game for GreatTree {
     type Observation = GreatTreeObservation;
     type Completion = GreatTreeCompletion;
 
+    const STATE_REPRESENTATION_VERSION: &'static str = "great-tree-state-v1";
+    const ACTION_REPRESENTATION_VERSION: &'static str = "great-tree-action-v1";
+    const RULES_VERSION: &'static str = "great-tree-rules-v1";
+
     fn initial_state(
         &self,
         context: GameInitializationContext<'_, Self::Config>,

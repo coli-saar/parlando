@@ -64,9 +64,9 @@ After a pilot or collection block:
 
 {{< figure src="manual/images/experiment-export.png" alt="Export tab with Corpus candidate and JSON selected beside the Download export button" caption="The corpus candidate is available in JSON, YAML, and CSV. JSON preserves the complete nested structure." >}}
 
-The export contains only the documented research fields. It includes non-testing sessions,
+The export contains only the documented research fields. It includes research sessions that reached gameplay,
 experiment-scoped participant and session labels, structured outcomes, and event times relative to
-game start. Spoken messages retain formatted text and, when recorded, utterance intervals and
+game start. Negative-time setup logs remain in the dashboard history. Running sessions have status `playing` and a null duration. Ended sessions have a duration and status `completed`, `abandoned`, `expired`, or `failed`, according to the recorded cause. Spoken messages retain formatted text and, when recorded, utterance intervals and
 nested tokens with game-clock start/end times. Human tokens may include recognition confidence;
 generated agent tokens have no ASR confidence. Earlier recordings without token alignment remain
 readable, and typed messages have no speech timings. It omits provider credentials, declaration evidence, administrator and recruitment

@@ -1,16 +1,15 @@
 import { ParticipantClient, type ExperimentInfo } from "@coli-saar/parlando-client";
-import { MicrophoneMuteButton, type GameSession } from "@coli-saar/parlando-client/react";
+import { ParticipantApp, type GameSnapshot } from "@coli-saar/parlando-client/react";
 
 const client = new ParticipantClient({ baseUrl: "https://study.example/e/test" });
 const experiment: Promise<ExperimentInfo> = client.getExperiment();
 
-/** Compiles the public React session and microphone component contracts as an external consumer. */
-export function Consumer({ session }: { session: GameSession<{ turn: number }, { type: "pass" }> }) {
+/** Compiles the public React game-snapshot contract as an external consumer. */
+export function Consumer({ snapshot }: { snapshot: GameSnapshot<{ turn: number }, { type: "pass" }> }) {
   void experiment;
   return (
-    <>
-      <span>{session.observation.turn}</span>
-      <MicrophoneMuteButton enabled={session.voiceEnabled} status={session.voiceStatus} onMutedChange={session.setMicrophoneMuted} />
-    </>
+    <span>{snapshot.observation.turn}<button onClick={() => snapshot.act({ type: "pass" })}>Pass</button></span>
   );
 }
+
+export const App = () => <ParticipantApp<{ turn: number }, { type: "pass" }> renderGame={(snapshot) => <Consumer snapshot={snapshot} />} />;

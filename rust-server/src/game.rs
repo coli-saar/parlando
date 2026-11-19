@@ -509,7 +509,7 @@ pub trait Game: Send + Sync + 'static {
     /// Game-owned per-experiment configuration edited through the dashboard.
     type Config: Serialize + DeserializeOwned + Send + Sync + 'static;
     /// Authoritative game state owned by the runtime and never sent to participants.
-    type State: Serialize + Send + Sync + 'static;
+    type State: Serialize + DeserializeOwned + Send + Sync + 'static;
     /// Structured game operation proposed by either player role.
     type Action: Serialize + DeserializeOwned + Clone + Send + Sync + 'static;
     /// Complete game information currently available to one player role.
@@ -519,6 +519,24 @@ pub trait Game: Send + Sync + 'static {
     /// This shared value may contain public facts such as the winner and scores.
     /// Put role-private terminal facts only in that role's final [`Game::Observation`].
     type Completion: Serialize + Clone + Send + Sync + 'static;
+
+    /// Version of the serialized authoritative state accepted by this game build.
+    ///
+    /// Change this value only when an older recorded initial state can no longer be
+    /// deserialized with the same meaning. Ordinary game releases do not require a bump.
+    const STATE_REPRESENTATION_VERSION: &'static str = "1";
+
+    /// Version of the serialized action representation accepted by this game build.
+    ///
+    /// Change this value only when recorded actions are no longer decodable. Adding a
+    /// backwards-compatible action variant does not require a bump.
+    const ACTION_REPRESENTATION_VERSION: &'static str = "1";
+
+    /// Version of the transition semantics used to reconstruct recorded sessions.
+    ///
+    /// Change this value when applying the same recorded action to the same state would
+    /// intentionally produce a different authoritative result.
+    const RULES_VERSION: &'static str = "1";
 
     /// Creates a fresh authoritative state from game configuration and a recorded seed.
     fn initial_state(

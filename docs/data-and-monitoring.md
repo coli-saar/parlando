@@ -145,14 +145,20 @@ explicit identifying information from that participant-authored text.
 ## Choose an export
 
 The dashboard provides one data variant, **Corpus candidate**, in JSON, YAML, and
-CSV. It contains every non-testing session in the experiment. Parlando constructs
+CSV. It contains every research session that entered gameplay. Parlando constructs
 the corpus as a new document from a fixed output-field list; new database fields
 do not enter it automatically.
 
 The corpus retains the experiment-specific participant and dialogue labels so
 repeated exports can be joined. Events and transcript boundaries use the stored
 game clock, in milliseconds from game start; waiting time and session duration
-are derived from lifecycle timestamps. Consent declarations, internal database keys,
+are derived from lifecycle timestamps. A running session has `metadata.status`
+set to `playing` and a null duration. An ended session has its elapsed gameplay
+duration and a status derived from the recorded cause. Normal game completion
+yields `completed`, explicit departure yields `abandoned`, a timeout yields
+`expired`, and infrastructure failure yields `failed`. Logs with timestamps
+before game start remain available in the dashboard session history and fall
+outside the corpus event interval. Consent declarations, internal database keys,
 room and connection identifiers, operational events, administrator data, and
 credentials have no corpus output field.
 

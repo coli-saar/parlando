@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  SelectionRequests,
   absoluteParticipantUrl,
   adminRequestOptions,
   experimentRuntimeApi,
@@ -38,4 +39,22 @@ test('provider-backed participant templates cannot be opened directly', () => {
   assert.equal(participantUrlCanOpen({ participant_url: { kind: 'prolific' } }), false);
   assert.equal(participantUrlCanOpen({ participant_url: { kind: 'local' } }), true);
   assert.equal(participantUrlCanOpen({ participant_url: { kind: 'direct' } }), true);
+});
+
+test('repeated polling shares its pending read and invalidation discards late data and errors', async t => {
+  const requests = new SelectionRequests();
+  const fetch = t.mock.method(globalThis, 'fetch');
+  let finish;
+  fetch.mock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const received = [];
+  const read = () => requests.json('sessions', {}, '/first/sessions', data => received.push(data.room));
+  const pending = read();
+  assert.equal(pending, read());
+  assert.equal(fetch.mock.callCount(), 1);
+  requests.reset();
+  fetch.mock.mockImplementationOnce(async () => Response.json({ room: 'selected' }));
+  await requests.json('sessions', {}, '/second/sessions', data => received.push(data.room));
+  finish(new Response('old failure', { status: 503 }));
+  await pending;
+  assert.deepEqual(received, ['selected']);
 });

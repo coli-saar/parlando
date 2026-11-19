@@ -162,7 +162,7 @@ async fn generated_and_recognized_speech_keep_audio_clock_timings_end_to_end() {
     .await
     .unwrap();
     wait_for_audio_control(&mut audio).await;
-    let (mut game, _) = connect_async(game_socket_url(&base_url, &room, &human).await)
+    let (mut game, _) = connect_async(game_socket_url(&router, &base_url, &room, &human).await)
         .await
         .unwrap();
     let _ = read_participant_state(&mut game, "active").await;
@@ -247,7 +247,7 @@ async fn generated_and_recognized_speech_keep_audio_clock_timings_end_to_end() {
         "fixture must exercise delayed synthesis"
     );
     let bundles = admin_event_bundles(&important_admin_events(events));
-    let corpus = corpus_experiment_export(export, "2").unwrap();
+    let corpus = corpus_experiment_export(serde_json::from_value(export).unwrap(), "2").unwrap();
     let corpus_messages = corpus["experiment"]["sessions"][0]["events"]
         .as_array()
         .unwrap();

@@ -362,6 +362,41 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(contexts[0].settings, {"difficulty": 2.0})
         self.assertIsInstance(contexts[0].logger, server.SessionLogger)
 
+    async def test_shutdown_waits_for_active_callback_and_its_logs(self) -> None:
+        """Closing the instance lets an in-flight callback finish and drain its own logs."""
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        class SlowAgent(RecordingAgent):
+            """Pauses start until shutdown has had an opportunity to run."""
+
+            async def start(self, observation: dict[str, object]) -> None:
+                """Records a log after the close request has arrived."""
+                entered.set()
+                await release.wait()
+                logger.log("start finished")
+
+        def factory(context: server.Context) -> SlowAgent:
+            """Retains the session logger used by the in-flight callback."""
+            nonlocal logger
+            logger = context.logger
+            return SlowAgent()
+
+        logger: server.SessionLogger
+        service = self.service(factory)
+        created = await service.CreateAgent(self.create_request(), FakeContext())
+        request = SimpleNamespace(agent_id=created.agent_id, observation=Struct())
+        callback = asyncio.create_task(service.Start(request, FakeContext()))
+        await entered.wait()
+        shutdown = asyncio.create_task(service.Shutdown(request, FakeContext()))
+        await asyncio.sleep(0)
+        self.assertFalse(shutdown.done())
+        late_callback = asyncio.create_task(service.Start(request, FakeContext()))
+        release.set()
+        self.assertEqual((await callback).session_logs, ["start finished"])
+        self.assertEqual((await shutdown).session_logs, [])
+        with self.assertRaises(AbortedRpc):
+            await late_callback
+
     async def test_unknown_agent_ids_abort(self) -> None:
         """Observation RPCs reject unknown capability identifiers."""
         service = self.service(lambda _: RecordingAgent())

@@ -278,7 +278,7 @@ pub(crate) struct LoadSample {
 }
 
 /// Current use and configured ceilings for admitted research resources.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct CapacitySample {
     pub active_reserved_sessions: usize,
     pub active_session_limit: usize,
@@ -294,7 +294,7 @@ pub(crate) struct CapacitySample {
 }
 
 /// Instantaneous transport counts and heartbeat health bands.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct ConnectionSample {
     pub game_connections: usize,
     pub game_live: usize,

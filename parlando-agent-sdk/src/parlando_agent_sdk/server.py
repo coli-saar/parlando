@@ -8,6 +8,8 @@ import inspect
 import os
 import threading
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal, Optional
 
@@ -146,6 +148,15 @@ class Agent:
 AgentFactory = Callable[[Context], Agent | Awaitable[Agent]]
 
 
+@dataclass
+class _AgentInstance:
+    """Binds one agent to its callback order and session log for its entire lifetime."""
+
+    agent: Agent
+    logger: SessionLogger
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
 class _AgentService:
     """Generated gRPC servicer implementation backed by Python Agent instances."""
 
@@ -156,10 +167,8 @@ class _AgentService:
         self._factory = factory
         self._auth_token = auth_token
         self._max_agents = max_agents
-        self._agents: dict[str, Agent] = {}
-        self._loggers: dict[str, SessionLogger] = {}
+        self._agents: dict[str, _AgentInstance] = {}
         self._creating_agents = 0
-        self._agent_lock = asyncio.Lock()
         self._pb2, _pb2_grpc = _generated_modules()
 
     async def _authenticate(self, context: grpc.aio.ServicerContext) -> None:
@@ -176,111 +185,99 @@ class _AgentService:
         await self._authenticate(context)
         if request.role not in {"A", "B"}:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "unknown player role")
-        async with self._agent_lock:
-            if len(self._agents) + self._creating_agents >= self._max_agents:
-                await context.abort(
-                    grpc.StatusCode.RESOURCE_EXHAUSTED, "agent capacity reached"
-                )
-            self._creating_agents += 1
-        logger = SessionLogger()
-        init_context = Context(
-            role=request.role,
-            seed=request.seed,
-            settings=_struct_to_dict(request.config),
-            checkpoint_id=_optional_checkpoint(request),
-            logger=logger,
-        )
+        # All registry operations run on the gRPC event loop. Reserve capacity before
+        # awaiting the factory so concurrently starting instances count toward the limit.
+        if len(self._agents) + self._creating_agents >= self._max_agents:
+            await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "agent capacity reached")
+        self._creating_agents += 1
         try:
+            logger = SessionLogger()
+            init_context = Context(
+                role=request.role,
+                seed=request.seed,
+                settings=_struct_to_dict(request.config),
+                checkpoint_id=_optional_checkpoint(request),
+                logger=logger,
+            )
             maybe_agent = self._factory(init_context)
             agent = (
                 await maybe_agent if inspect.isawaitable(maybe_agent) else maybe_agent
             )
             agent_id = str(uuid.uuid4())
-            async with self._agent_lock:
-                self._agents[agent_id] = agent
-                self._loggers[agent_id] = logger
+            self._agents[agent_id] = _AgentInstance(agent, logger)
         finally:
-            async with self._agent_lock:
-                self._creating_agents -= 1
+            self._creating_agents -= 1
         return self._pb2.CreateAgentResponse(
             agent_id=agent_id, session_logs=logger._drain()
         )
 
+    @asynccontextmanager
+    async def _instance(
+        self, agent_id: str, context: grpc.aio.ServicerContext
+    ) -> AsyncIterator[_AgentInstance]:
+        """Serializes a callback with other callbacks and shutdown for this instance."""
+        await self._authenticate(context)
+        instance = self._agents.get(agent_id)
+        if instance is None:
+            await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
+        async with instance.lock:
+            if agent_id not in self._agents:
+                await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
+            yield instance
+
     async def Start(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote Start request from the Rust server."""
-        await self._authenticate(context)
-        agent = self._agents.get(request.agent_id)
-        if agent is None:
-            await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
-        await agent.start(_struct_to_dict(request.observation))
-        return self._pb2.ObserveResponse(
-            session_logs=self._loggers[request.agent_id]._drain()
-        )
+        async with self._instance(request.agent_id, context) as instance:
+            await instance.agent.start(_struct_to_dict(request.observation))
+            return self._pb2.ObserveResponse(session_logs=instance.logger._drain())
 
     async def ObserveTransition(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote ObserveTransition request from the Rust server."""
-        await self._authenticate(context)
-        agent = self._agents.get(request.agent_id)
-        if agent is None:
-            await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
-        await agent.observe_transition(
-            request.actor,
-            _struct_to_dict(request.action),
-            _struct_to_dict(request.observation),
-        )
-        return self._pb2.ObserveResponse(
-            session_logs=self._loggers[request.agent_id]._drain()
-        )
+        async with self._instance(request.agent_id, context) as instance:
+            await instance.agent.observe_transition(
+                request.actor,
+                _struct_to_dict(request.action),
+                _struct_to_dict(request.observation),
+            )
+            return self._pb2.ObserveResponse(session_logs=instance.logger._drain())
 
     async def ObserveMessage(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote ObserveMessage request from the Rust server."""
-        await self._authenticate(context)
-        agent = self._agents.get(request.agent_id)
-        if agent is None:
-            await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
-        await agent.observe_message(
-            request.sender, request.text
-        )
-        return self._pb2.ObserveResponse(
-            session_logs=self._loggers[request.agent_id]._drain()
-        )
+        async with self._instance(request.agent_id, context) as instance:
+            await instance.agent.observe_message(request.sender, request.text)
+            return self._pb2.ObserveResponse(session_logs=instance.logger._drain())
 
     async def Finish(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote Finish request from the Rust server."""
-        await self._authenticate(context)
-        agent = self._agents.get(request.agent_id)
-        if agent is None:
-            await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
-        await agent.finish(_struct_to_dict(request.completion))
-        return self._pb2.ObserveResponse(
-            session_logs=self._loggers[request.agent_id]._drain()
-        )
+        async with self._instance(request.agent_id, context) as instance:
+            await instance.agent.finish(_struct_to_dict(request.completion))
+            return self._pb2.ObserveResponse(session_logs=instance.logger._drain())
 
     async def Respond(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote Respond request from the Rust server."""
-        await self._authenticate(context)
-        agent = self._agents.get(request.agent_id)
-        if agent is None:
-            await context.abort(grpc.StatusCode.NOT_FOUND, "unknown agent_id")
-        result = await agent.respond(_available_actions(request))
-        logs = self._loggers[request.agent_id]._drain()
-        if result is None:
-            return self._pb2.RespondResponse(session_logs=logs)
-        return self._pb2.RespondResponse(
-            response=_response_to_proto(self._pb2, result), session_logs=logs
-        )
+        async with self._instance(request.agent_id, context) as instance:
+            result = await instance.agent.respond(_available_actions(request))
+            logs = instance.logger._drain()
+            if result is None:
+                return self._pb2.RespondResponse(session_logs=logs)
+            return self._pb2.RespondResponse(
+                response=_response_to_proto(self._pb2, result), session_logs=logs
+            )
 
     async def Shutdown(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote Shutdown request from the Rust server."""
         await self._authenticate(context)
-        async with self._agent_lock:
-            agent = self._agents.pop(request.agent_id, None)
-            logger = self._loggers.pop(request.agent_id, None)
-        if agent is not None:
-            await agent.shutdown()
-        return self._pb2.ShutdownResponse(
-            session_logs=[] if logger is None else logger._drain()
-        )
+        instance = self._agents.get(request.agent_id)
+        if instance is None:
+            return self._pb2.ShutdownResponse(session_logs=[])
+        async with instance.lock:
+            if request.agent_id not in self._agents:
+                return self._pb2.ShutdownResponse(session_logs=[])
+            try:
+                await instance.agent.shutdown()
+                return self._pb2.ShutdownResponse(session_logs=instance.logger._drain())
+            finally:
+                del self._agents[request.agent_id]
 
 
 async def _serve_async(

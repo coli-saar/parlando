@@ -4235,3 +4235,218 @@ were refreshed to the immutable 0.5.0 tarball and sha512 integrity, and the
  a8c0eb5690e7fcd5009a04ce116a8a0086e124e8 from packaged VCS metadata. No
 publishable package source changed after upload. The lockfile completion commit
 and annotated v0.5.0 tag/push remain maintainer-owned; no Git commands were run.
+
+
+## 2026-10-21 — Deterministic session replay and narrow game surfaces
+
+Context: administrators need to launch a replay from a recorded human–human,
+human–agent, or agent–agent session. Recording every authoritative state would
+duplicate data that deterministic game mechanics can derive. The previous React
+`GameSession` also mixed game rendering with connection, conversation, voice,
+and lifecycle controls, which made it unsuitable as a shared live/replay surface.
+
+Decision: the `session_created` event stores the one serialized initial
+authoritative state and the game's state, action, and rules compatibility
+identifiers. Accepted-action events store the actor and action but no resulting
+state. The administrator replay endpoint checks those identifiers, deserializes
+the initial state, and calls the normal `Game::apply_action` in event order. It
+derives both role-specific observations, available actions, completion, and the
+conversation timeline. Package release versions do not participate in replay
+compatibility. `Game::State` is now deserializable, and games may keep the three
+compatibility constants stable across releases that preserve representation and
+transition meaning.
+
+The React renderer now receives `GameSnapshot`, containing only the role,
+observation, latest accepted transition, available actions, interaction status,
+and `act`. Parlando renders conversation, connection, microphone, leave, and
+replay controls around that surface. The dashboard opens the experiment's normal
+frontend with an administrator replay URL; `ParticipantApp` bypasses participant
+registration, consent, matchmaking, and terminal flow, fetches reconstructed
+frames, and supplies them to the same renderer. Replay surfaces are inert, while
+live game handlers may update ordinary local React state before calling `act`, so
+the API does not impose a server round trip before immediate visual feedback.
+
+Tradeoffs: the default replay reproduces authoritative observations, accepted
+actions, and messages rather than undocumented transient animation frames. A
+future optional display-event extension can reproduce those animations without
+changing the stored replay model. Sessions recorded before this change return a
+clear replay-unavailable conflict because they have no initial-state record or
+compatibility identifiers. No database schema migration is required; the
+existing event state column now holds only the initial state.
+
+Validation: the server integration test records an initial state, conversation
+message, and accepted action, verifies that only the creation event has a stored
+state, and reconstructs three frames for both roles. React tests cover event
+jumps, role switching, disabled interaction, and replayed conversation. Runtime,
+package-surface, example-game, and browser-fixture builds exercise the narrowed
+API and Parlando-owned session controls.
+
+
+## 2026-10-28 — Agent-agent games appear as ordinary dashboard sessions
+
+Context: the standalone agent experiment runner executes replayable games but
+currently writes only runner results and optional traces. Administrators need
+to inspect those games through the normal session detail and replay surfaces,
+without exposing runner batches, plans, training phases, or controls in the
+dashboard.
+
+Decision: when explicitly configured with an experiment store destination, the
+runner projects each terminated headless game into the existing participant,
+session, and event schema. `SessionRunner` remains the sole owner of execution;
+the dashboard record is an atomic completed-session projection independent of
+trace capture. A deterministic opaque public session identifier derived from
+`(run_id, plan_id)` makes resume idempotent without a schema change, while the
+normal random dialogue identifier remains the administrator-facing label. The
+dashboard continues to expose only ordinary sessions, details, exports, and
+replay. Runner orchestration remains in YAML and runner artifacts.
+
+Tradeoffs: sessions appear only after their headless task terminates, and the
+dashboard cannot launch, monitor, or cancel runner work. Runner limits,
+quiescence, and cancellation are recorded as a runner-specific terminal event
+rather than being misrepresented as human participant outcomes. The detailed
+contract, invariants, validation plan, and deferred work are recorded in
+`notes/agent-agent-dashboard-session-design.md`.
+
+
+## 2026-10-28 — Clembench evaluation reads typed completion scores from session databases
+
+Context: an initial Clembench-porting discussion introduced a corpus export,
+a parallel game-end taxonomy, and a game-specific post-hoc scorer. Those
+mechanisms duplicate existing Parlando responsibilities. `Game::Completion` is
+already the structured terminal result and is stored in `SessionEnd`; the
+headless runner already has deterministic plans, typed game execution, and a
+design for projecting terminated sessions into the ordinary experiment
+database. The LM Playschool shared task accepted submitted model systems, which
+organizers executed themselves, rather than treating author-produced game runs
+as authoritative submissions.
+
+Decision: scored games use a reusable typed completion envelope with a stable
+serialized score field, validated binary or normalized numeric score, and
+game-specific terminal details. Clembench ports compose that general envelope
+with a benchmark-specific typed request-count result. The existing completion
+is the only game-score authority. Protocol-aborted games have no quality score;
+normal losses have a score, and infrastructure failures continue to use the
+existing `SessionEndCause` taxonomy. Headless evaluation sessions are recorded
+in one or more ordinary Parlando databases. A read-only evaluator unions those
+databases, rejects duplicate plan identities, reads the common completion
+envelope, and applies pinned Clembench/shared-task aggregation. Corpus export is
+reserved for optional publication after evaluation.
+
+Tradeoffs and risks: consistent score serialization constrains benchmark game
+completion types but eliminates a second scorer and permits cross-game database
+queries without knowing each result type. Moving source scorer calculations
+into authoritative state and completion requires differential tests against
+the pinned Clembench game master. Accepted actions are visible to both Parlando
+roles, so every port must verify that a raw response is public before using it
+as an action; games with private submissions need a safe representation or a
+future runtime capability. The detailed port mapping, experiment model,
+database boundary, implementation sequence, and provisional difficulty
+assessment are recorded in
+`notes/clembench-porting-and-evaluation-design.md`.
+
+## 2026-10-30 — Unified actions and native Rust games behind OpenEnv
+
+Context: the message/action split bypasses game transitions for conversation,
+restricts training capture, and makes raw-response benchmark ports awkward.
+Automatic disclosure of accepted actions also conflicts with private player
+submissions. OpenEnv needs externally stepped episodes, while Clembench source
+compatibility would introduce Python game hosting and suspension machinery.
+
+Proposed direction: use `Action<Operation, Message>` with distinct `Message`
+and `Operation` variants, both interpreted by the native Rust game. Supply a
+standard multimodal message representation while allowing custom payloads.
+Games emit recipient-scoped delivery effects; participant presentation and TTS
+consume those effects rather than raw submitted actions. Agents remain unaware
+of audio. A resumable session combines a Rust game with a frozen-policy partner
+and exposes the remaining role through an OpenEnv adapter. Clembench games are
+ported to Rust and validated for behavioral fidelity; unchanged Python game
+masters are outside the compatibility target.
+
+Tradeoffs: Rust ports require manual translation and upstream parity checks,
+but avoid a second game implementation runtime. OpenEnv trainers can retain
+their learning machinery, while environment-specific agents and scripts may
+still need schema, prompt, or wrapper changes. Generic message payloads require
+conversion into standard delivery content before generic rendering or TTS.
+
+Follow-up questions: finalize delivery/history semantics, multimodal asset
+access, scheduling and yields, announcement sender identity, the Rust/Python
+transport, and a pinned external compatibility matrix. This records a design
+proposal only; no APIs, databases, releases, or packages were changed. The
+current proposal and migration experiences are detailed in
+`notes/actions-and-openenv-design.md`. It supersedes the earlier note's message
+bypass and public-action assumptions while retaining its completion-score and
+evaluation direction.
+
+## 2026-11-19 — Internal ownership boundaries
+
+The live runtime, data projection, clients, and headless runner had independently evolving representations of session state. The implementation keeps the game and agent author contracts at their existing public entry points. SQLite retains its current schema, and the protocol and corpus retain their existing versions.
+
+### Live session ownership, ordering, and admission
+
+A live room owns the mutex that orders admission of its second seat, game actions, conversation, expiry, and connection lifecycle updates. The deadline sweep and socket grace timer recheck the current deadline while holding this mutex. A reconnect timer identifies the exact deadline it scheduled. Outbound actions carry immutable observations and affordances captured from that revision before persistence. The synchronous broadcast and mailbox publication follow SQLite's winning commit under the same ordering boundary. The SQL action writer explicitly reports an already-ended session, and a losing action publishes nothing. The implementation keeps role-private state and the existing participant wire format.
+
+The single optional software seat owns a bounded inbox in its room. The runtime reserves capacity before committing input and prioritizes already queued callbacks before requesting another decision. A full or unexpectedly closed inbox ends that room with a technical failure before the input commits. This trades continued interaction with an unresponsive agent for bounded memory and complete, ordered delivery of accepted transitions. Callback timeouts and shutdown still bound individual agent operations. Ordinary rooms never wait for another room's agent to consume a queue. A terminal commit closes the room's sender and lets the receiver drain, including its terminal observation and finish callback for completed games.
+
+Admission rechecks participant assignment while holding the experiment admission guard. Construction still obtains a durable session ID and logger before invoking the game factory. Initial membership and the initialization marker commit together before publication in live memory. Existing-room memberships also persist before insertion in memory. Initialization errors drain the provisional writer and terminate the durable reservation via one cleanup path. An admitted request runs to completion even if its HTTP client disconnects during persistence. Process failure remains subject to the existing interrupted-session policy.
+
+Regression cases use real HTTP, SQLite, and WebSocket paths for repeated concurrent joins, failed membership insertion followed by retry, a competing durable terminal writer, both roles' concurrent action streams against replay, agent mailbox exhaustion alongside an independent healthy room, and two disconnects within overlapping grace periods.
+
+Only human game connections and their grace periods keep an ended room in memory. A participant who never opened a socket receives the configured grace period from the terminal commit. Farewell audio closes on its own deadline. After room eviction the authenticated participant can still reconcile the terminal result from SQLite.
+
+### Corpus projection and administrator reads
+
+The durable store records session lifecycle, structured terminal cause, and end time, while corpus v1 requires a status string and gameplay-relative duration. A private typed session record now feeds both the single-session dashboard query and the experiment-wide snapshot. A dedicated corpus module owns the v1 projection and validates consistent lifecycle, terminal cause, and timestamps. A running session maps to `playing`, normal game completion to `completed`, participant departure to `abandoned`, timeout or partner unavailability to `expired`, and infrastructure failure to `failed`. An ongoing session has null duration. No persisted values or database schema change.
+
+The corpus game clock begins at game start. Setup logs with a negative game-relative timestamp are retained in SQLite and visible in session history. They are omitted from the v1 corpus, which requires nonnegative event times. A negative action or message timestamp still signals an integrity error. Event indices retain their durable values, including gaps from omitted records.
+
+The store uses one SQLite read transaction for all export tables. The projector groups events and memberships once by session and preserves SQL event and role ordering. Snapshot materialization still consumes memory proportional to the selected experiment. A long export holds a read snapshot while concurrently committed changes wait for the next export to appear. Administrator session detail and participant identity resolution use targeted reads, with experiment membership enforced in SQL.
+
+Regression coverage checks SQLite-backed corpus responses against the downloadable JSON Schema for active, completed and timed-out sessions. Setup log coverage checks the original entries in storage and the subsequent corpus. Schema validation is a development dependency with remote and file schema resolution disabled.
+
+### Participant connection, snapshot decoding, and dashboard selection
+
+The same participant state can arrive in a socket stream, an HTTP reconciliation, or a completed leave request. Keeping React state setters, a mutable mirror, and independent retry callbacks made response order determine which transport and observation the user saw. A private connection controller now owns the socket, heartbeat, retry window, pending ticket, and current view. Each attempt has a generation. Closing or replacing a session invalidates work started by the prior attempt. The latest view gates actions and chat, including callbacks retained by game renderers. Terminal snapshots share the same teardown and farewell-voice decision. Consecutive socket snapshots enforce lifecycle adjacency. Initial and resynchronized snapshots may skip intermediate lifecycle messages. HTTP and WebSocket decode the same platform-owned fields while game payloads stay opaque. This introduces a small transport controller and leaves the public TypeScript package entry points and game props intact.
+
+Dashboard catalogue, experiment, and session reads have distinct ownership. Changing selection invalidates pending responses, clears old detail/configuration from the view, and scopes subsequent requests to the selected resource. Identical reads in flight are shared, which prevents repeated polling from indefinitely superseding a slow response. In-flight requests may finish on the server after selection changes. Their replies and errors have no effect on the new view. An intercepted-network browser test exercises reversed experiment-list, session-detail, and event-poll responses through the production dashboard.
+
+### Installation and experiment resources
+
+The dashboard and experiment routes use separate construction paths. The installation owns storage, administrator authentication, settings, telemetry, and the mount registry. Dashboard handlers use a configuration context that can operate without a live session runtime. Each mounted experiment binds its own typed game configuration and session resources. Mounts use the same definitions for scoped administrative operations on both supported experiment URL prefixes.
+
+Closing intake or saving configuration retires the current admission owner. Existing rooms keep their original game settings, transports, reconnect deadlines, and providers. Reopened intake reads the latest stored configuration. A verified repeat Prolific submission rejoins its existing room. An unassigned direct registration can enter a reopened direct study after giving fresh consent under the current study purpose. Changing recruitment to Prolific requires a fresh verified launch. The HTTP credential format and the single-use WebSocket ticket contract stay the same.
+
+The host retains one small identity and recovery record per successfully mounted catalogue experiment for the life of the process. A full retired runtime remains while it owns a room within its normal lifecycle or transport grace window, or an unused registration within its configured waiting timeout. Periodic cleanup releases empty owners. Terminal participant reads then use SQLite. Sixty-four lock slots serialize configuration changes and construction. Unrelated names can briefly contend on a slot, and unknown namespaces allocate no permanent entries. Opening the first mount reconciles all unfinished SQLite sessions from the previous process. Replacing a mount in the same process preserves every live session.
+
+Admission and live-resource accounting include all retained revisions of the same experiment. Only the current revision contributes configured limits to installation load. Verified participant credential generation and cleanup are scoped to the issuing owner. Revoking an expired registration on an older revision cannot revoke a newer credential for the same durable participant.
+
+### Headless accounting and resumption
+
+Only the current training update owns accumulated trajectory steps. Run-wide accounting retains scalar counts and the durable result files retain complete per-session trajectories. Resumption reads the run ID, plan ID, status and learner steps together from each result exactly once. Fresh and resumed work use the same status classification. This keeps previous checkpoints out of memory while preserving plan identity, result filenames and the learner's existing idempotent update contract. Memory still scales with the trajectories in one pending update.
+
+### Remote Python agent lifetime
+
+An instance record binds each Python agent to its logger and callback lock. All callbacks for that instance drain their own logs under the lock. Shutdown shares the same lock, waits for earlier callbacks, and releases the registration after cleanup. Distinct instances can run independently. Creation reserves capacity on the asyncio service loop before awaiting the user factory. A stalled callback can delay shutdown for its own instance until it finishes or is cancelled.
+
+### Isolated HTTP fixtures
+
+Each server fixture owns its issued credentials. Anonymous, participant, and administrator requests send one caller-selected payload and observe the first response. This requires test callers to supply identity explicitly, makes authorization failures visible, and prevents unrelated concurrent tests from supplying substitute credentials.
+
+## 2026-11-19 — Offline code atlas
+
+The architecture guide in docs/code-atlas opens directly from a checkout. Hash routes address a component, evidence view, or action step. The map focuses on the five boundaries of live play. Its connections represent interactions, not a complete dependency graph. Source excerpts are embedded so opening the file requires neither a server nor permission to fetch local files. Run python3 scripts/refresh-code-atlas.py when the implementation changes and review the accompanying explanations. Recorded test passes refer to the dated local run and must be reassessed when fixtures or behavior change.
+
+## 2026-11-19 — Source-backed maintainer reference
+
+The replacement for the five-component overview lives in developer/code-atlas, outside the user manual and private working notes. Its directed neighborhoods describe witnessed runtime relationships, including calls, transport, channels and durable reads. Their edge counts would not measure static fan-in or fan-out. The session explorer keeps room lifecycle, pause, participant projection and retention distinct. Flow steps identify where a write becomes durable and where publication can occur. A searchable offline source bundle contains complete Graft symbol spans. Regenerate it with python3 scripts/refresh-code-atlas.py and review the editorial edge witnesses against changed implementations. The dated local result covers the Rust library suite (252 passed); the separate browser matrix is listed as inspected. The atlas does not run tests in the reader's browser.
+
+## 2026-11-19 — Orient the internals atlas around a concrete room
+
+The atlas opens with the Cue Choice Dax fixture to explain the distinction between room state, game mechanics and a role’s view. Each of the fifteen responsibility guides names inputs, outputs, motivation and an ordered list of source definitions. Paths and line anchors are derived from the existing offline source bundle. A reverse file index makes responsibilities implemented in the same module visible together. Dependency edges now lead to related reading paths, and regression fixtures can support more than one subsystem. The competing-deadline illustration models a single server evaluation for a paused running room; its example timestamps are independent of deployment settings. A real-socket regression in rust-server checks that reconnecting after idle but before grace returns the same room’s idle ending. The fixture permits either a prior cleanup sweep or the reconnect check to commit the terminal outcome, matching the externally observable contract.
+
+## 2026-11-19 — Developer reference as technical documentation
+
+The overview defines game, experiment, session, and observation in dependency order, then uses one existing Cue Choice fixture to relate the definitions to the code. The subsystem and file indexes hold lookup material on separate routes so the initial reading path can remain short. Documentation links retain the offline symbol bundle and line anchors. The dependency diagram documents selected calls, and the deadline illustration explicitly assumes one evaluation time; neither is a complete execution model.
+
+## 2026-11-19 — Reading order and source boundaries in the developer reference
+
+The overview introduces the players and their task before the Cue Choice state machine. It opens before the deal and treats a wrong-role request as an alternative to the first move. The view labels paraphrase the observations. The adjacent source controls retain the precise enum variants. The dependency map describes the operation at each edge and identifies entry definitions for responsibilities that span or share files. The file index uses the shared move handler to explain both a possible module split and the synchronization constraint such a split would need to preserve. These are editorial groupings; a code change to a role, observation, or handoff requires checking its corresponding explanation.

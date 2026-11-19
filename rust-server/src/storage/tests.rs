@@ -13,6 +13,11 @@ fn test_session_end(cause: SessionEndCause, completion: Option<Value>) -> Sessio
     }
 }
 
+/// Reads the raw rows through the production experiment snapshot for serialization assertions.
+async fn experiment_rows(store: &SqliteExperimentStore, experiment_id: &str) -> Value {
+    serde_json::to_value(store.export_snapshot(experiment_id).await.unwrap()).unwrap()
+}
+
 /// Confirms agent identifiers expose the configured type, implementation name, and version.
 #[test]
 fn agent_identifier_uses_durable_type_and_version_metadata() {
@@ -331,9 +336,11 @@ async fn sqlite_stamps_testing_and_research_session_purpose() {
     assert_eq!(sessions[1].purpose, "testing");
     assert_eq!(
         store
-            .export_session("purpose", testing_session)
+            .session_detail("purpose", testing_session)
             .await
-            .unwrap()["sessions"][0]["purpose"],
+            .unwrap()
+            .unwrap()
+            .purpose,
         "testing"
     );
 }
@@ -625,8 +632,8 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
         .unwrap();
     assert_eq!((session_one, session_two), (1, 2));
 
-    store
-        .add_session_participant(SessionParticipantRecord {
+    assert!(store
+        .complete_session_initialization(SessionParticipantRecord {
             experiment_id: "exp_eval".to_string(),
             session_id: session_one,
             participant_id,
@@ -635,7 +642,7 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
             connection_status: "joined".to_string(),
         })
         .await
-        .unwrap();
+        .unwrap());
     store
         .record_consent_declaration(ConsentDeclarationRecord {
             experiment_id: "exp_eval".to_string(),
@@ -675,8 +682,8 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
         .unwrap();
     assert_eq!((first_event, second_event), (1, 2));
 
-    let exported = store.export_session("exp_eval", session_one).await.unwrap();
-    assert_eq!(exported["sessions"].as_array().unwrap().len(), 1);
+    let exported = experiment_rows(&store, "exp_eval").await;
+    assert_eq!(exported["sessions"].as_array().unwrap().len(), 2);
     assert_eq!(exported["session_events"].as_array().unwrap().len(), 2);
     let participant_pseudonym = exported["participants"][0]["research_id"]
         .as_str()
@@ -686,9 +693,23 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
         .as_str()
         .unwrap()
         .to_string();
+    assert_eq!(
+        store
+            .participant_id_for_research_id("exp_eval", &participant_pseudonym)
+            .await
+            .unwrap(),
+        Some(participant_id)
+    );
+    assert_eq!(
+        store
+            .participant_id_for_research_id("other", &participant_pseudonym)
+            .await
+            .unwrap(),
+        None
+    );
     assert_eq!(participant_pseudonym.split('-').count(), 3);
     assert_eq!(dialogue_pseudonym.split('-').count(), 3);
-    let repeated_export = store.export_session("exp_eval", session_one).await.unwrap();
+    let repeated_export = experiment_rows(&store, "exp_eval").await;
     assert_eq!(
         repeated_export["participants"][0]["research_id"],
         participant_pseudonym
@@ -710,10 +731,6 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
         .delete_participant_data("exp_eval", participant_id)
         .await
         .is_err());
-    assert!(store
-        .complete_session_initialization("exp_eval", session_one)
-        .await
-        .unwrap());
     let started_at = now_iso();
     let idle_deadline_at = (chrono::DateTime::parse_from_rfc3339(&started_at).unwrap()
         + chrono::Duration::seconds(300))
@@ -758,8 +775,13 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
         .delete_participant_data("exp_eval", participant_id)
         .await
         .unwrap();
-    let deleted = store.export_session("exp_eval", session_one).await.unwrap();
-    assert!(deleted["sessions"].as_array().unwrap().is_empty());
+    let deleted = experiment_rows(&store, "exp_eval").await;
+    assert!(store
+        .session_detail("exp_eval", session_one)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(deleted["sessions"][0]["session_id"], session_two);
     assert!(deleted["participants"].as_array().unwrap().is_empty());
     assert!(deleted["session_events"].as_array().unwrap().is_empty());
 }
@@ -873,7 +895,7 @@ async fn sqlite_allows_returning_participant_in_multiple_sessions_with_different
         .await
         .unwrap();
 
-    let experiment = store.export_experiment("exp_returning").await.unwrap();
+    let experiment = experiment_rows(&store, "exp_returning").await;
     assert_eq!(experiment["participants"].as_array().unwrap().len(), 1);
     assert_eq!(
         experiment["session_participants"].as_array().unwrap().len(),
@@ -883,13 +905,12 @@ async fn sqlite_allows_returning_participant_in_multiple_sessions_with_different
     assert_eq!(experiment["session_participants"][0]["role"], "A");
     assert_eq!(experiment["session_participants"][1]["role"], "B");
 
-    let second = store
-        .export_session("exp_returning", second_session)
-        .await
-        .unwrap();
-    assert_eq!(second["participants"].as_array().unwrap().len(), 1);
     assert_eq!(
-        second["session_participants"][0]["participant_session_id"],
+        store
+            .session_participants("exp_returning", second_session)
+            .await
+            .unwrap()[0]
+            .participant_session_id,
         "ps_repeat_b"
     );
 }
@@ -916,14 +937,18 @@ async fn sqlite_session_participants_survive_prolific_correlation_purge() {
     let mut participant_ids = Vec::new();
     for suffix in ["A", "B"] {
         let admission = store
-            .admit_prolific_submission(ProlificSubmissionRecord {
-                experiment_id: "exp_prolific_purge".to_string(),
-                prolific_participant_id: format!("PROLIFIC-{suffix}"),
-                prolific_study_id: "STUDY-PRIVATE".to_string(),
-                prolific_session_id: format!("SUBMISSION-{suffix}"),
-                verification_method: "submission_api".to_string(),
-            })
+            .admit_prolific_submission(
+                ProlificSubmissionRecord {
+                    experiment_id: "exp_prolific_purge".to_string(),
+                    prolific_participant_id: format!("PROLIFIC-{suffix}"),
+                    prolific_study_id: "STUDY-PRIVATE".to_string(),
+                    prolific_session_id: format!("SUBMISSION-{suffix}"),
+                    verification_method: "submission_api".to_string(),
+                },
+                true,
+            )
             .await
+            .unwrap()
             .unwrap();
         participant_ids.push(admission.participant_id);
     }
@@ -1175,7 +1200,7 @@ async fn sqlite_holds_mixed_participant_and_event_shapes_for_weird_experiments()
             .unwrap();
     }
 
-    let exported = store.export_session("exp_weird", session_id).await.unwrap();
+    let exported = experiment_rows(&store, "exp_weird").await;
     assert_eq!(exported["participants"].as_array().unwrap().len(), 3);
     assert_eq!(
         exported["session_participants"].as_array().unwrap().len(),
@@ -1183,8 +1208,7 @@ async fn sqlite_holds_mixed_participant_and_event_shapes_for_weird_experiments()
     );
     assert_eq!(
         exported["consent_declarations"].as_array().unwrap().len(),
-        1,
-        "session export should include only session-scoped consent"
+        2
     );
     assert_eq!(exported["session_events"].as_array().unwrap().len(), 3);
     assert_eq!(exported["session_events"][0]["event_index"], 1);
@@ -1192,12 +1216,6 @@ async fn sqlite_holds_mixed_participant_and_event_shapes_for_weird_experiments()
     assert_eq!(
         exported["session_events"][1]["game_state"]["systems"]["aux"],
         true
-    );
-
-    let experiment = store.export_experiment("exp_weird").await.unwrap();
-    assert_eq!(
-        experiment["consent_declarations"].as_array().unwrap().len(),
-        2
     );
 }
 
@@ -1360,7 +1378,7 @@ async fn sqlite_session_expiry_records_reason_and_status_atomically() {
         )
         .await
         .unwrap();
-    let exported = store.export_session("expiry", session_id).await.unwrap();
+    let exported = experiment_rows(&store, "expiry").await;
     assert_eq!(exported["sessions"][0]["lifecycle"], "ended");
     assert_eq!(exported["session_events"].as_array().unwrap().len(), 1);
     assert_eq!(
@@ -1515,7 +1533,7 @@ async fn sqlite_session_abandonment_records_actor_and_status_atomically() {
         .await
         .unwrap();
 
-    let exported = store.export_session("departure", session_id).await.unwrap();
+    let exported = experiment_rows(&store, "departure").await;
     assert_eq!(exported["sessions"][0]["lifecycle"], "ended");
     assert_eq!(
         exported["session_events"][0]["event_type"],
@@ -1627,10 +1645,7 @@ async fn sqlite_export_rejects_malformed_persisted_json() {
         .await
         .unwrap();
 
-    let error = store
-        .export_session("malformed-export", session_id)
-        .await
-        .unwrap_err();
+    let error = store.export_snapshot("malformed-export").await.unwrap_err();
     assert!(error.to_string().contains("completion_json"));
 }
 
@@ -1902,10 +1917,7 @@ async fn concurrent_terminal_transitions_have_exactly_one_winner() {
     expiry.await.unwrap();
     abandonment.await.unwrap();
 
-    let export = store
-        .export_session("terminal-race", session_id)
-        .await
-        .unwrap();
+    let export = experiment_rows(&store, "terminal-race").await;
     assert_eq!(export["sessions"][0]["lifecycle"], "ended");
     let terminal_events = export["session_events"]
         .as_array()

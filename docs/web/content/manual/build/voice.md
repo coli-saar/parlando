@@ -15,7 +15,7 @@ This chapter documents the communication interfaces that Parlando 0.5.0 supports
 paths. It does not treat every combination of low-level configuration switches as a separate
 condition.
 
-{{< figure class="architecture-figure" src="manual/images/parlando-speech-paths.svg" alt="The three documented Parlando communication paths: a game-authored typed interface, transcribed human–human speech, and transcribed human–agent speech with a synthesized agent reply" caption="Typed dialogue is implemented in the game interface. The two documented speech paths use transcription; human–agent speech also synthesizes the agent's stored reply." >}}
+{{< figure class="architecture-figure" src="manual/images/parlando-speech-paths.svg" alt="The three documented Parlando communication paths: typed dialogue, transcribed human–human speech, and transcribed human–agent speech with a synthesized agent reply" caption="Parlando owns the typed and microphone controls around the game surface. The two documented speech paths use transcription; human–agent speech also synthesizes the agent's stored reply." >}}
 
 ## Choose one documented communication interface
 
@@ -23,62 +23,24 @@ Parlando 0.5.0 supports the following interfaces:
 
 | Interface | What you provide or enable | What Parlando records |
 | --- | --- | --- |
-| Typed dialogue | A message display and text input in the game's React interface | Sent message text |
+| Typed dialogue | Parlando's session controls | Sent message text |
 | Human–human speech | Voice transport and Speechmatics transcription | Final transcript text and utterance timing; no raw audio |
 | Human–agent speech | Voice transport, Speechmatics transcription, a human–agent experiment, and ElevenLabs text-to-speech | Final human transcripts and agent message text; no raw or synthesized audio |
 
-There is no generic chat widget in the Parlando 0.5.0 React package. The client package supports
-typed messages, but the game author must decide how to display the conversation and must provide the
-text-entry control. Likewise, this manual does not define a voice-without-transcription condition or
-text-only variants of the spoken human–agent path. The fact that the configuration model exposes
-several technical switches does not by itself make every switch combination a supported study
-interface.
+`ParticipantApp` renders the conversation, text entry, microphone status, mute control, connection
+status, and leave control outside the game surface. A game can style these elements through their
+`parlando-*` classes and CSS custom properties, but it cannot replace their transport behavior.
+This manual does not define a voice-without-transcription condition or text-only variants of the
+spoken human–agent path. The fact that the configuration model exposes several technical switches
+does not by itself make every switch combination a supported study interface.
 
 ## Add typed dialogue to a game
 
-Typed dialogue belongs to the game-specific React application, not to the experiment dashboard.
-The `GameSession` supplied to `renderGame` contains the current `conversation` and a
-`sendMessage(text)` method. Render the conversation, collect a non-empty string from the
-participant, and pass it to that method:
-
-```tsx
-function GreatTreeGame({ session }: { session: GreatTreeSession }) {
-  const [draft, setDraft] = useState("");
-
-  function sendMessage(event: FormEvent) {
-    event.preventDefault();
-    const text = draft.trim();
-    if (!text || !session.interactionEnabled) return;
-    session.sendMessage(text);
-    setDraft("");
-  }
-
-  return (
-    <>
-      <ol aria-label="Conversation">
-        {session.conversation.map((message) => (
-          <li key={message.id}>{message.text}</li>
-        ))}
-      </ol>
-      <form onSubmit={sendMessage}>
-        <label htmlFor="message">Message</label>
-        <input
-          id="message"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          disabled={!session.interactionEnabled}
-        />
-        <button disabled={!session.interactionEnabled || !draft.trim()}>Send</button>
-      </form>
-    </>
-  );
-}
-```
-
-The example is deliberately plain. A production interface should also distinguish the two
-speakers, keep the newest message visible, announce incoming messages accessibly, and explain
-whether the other seat is occupied by a person or an agent. Test the control with keyboard-only
-navigation and disable it whenever `interactionEnabled` is false.
+Typed dialogue requires no game-specific React code. `ParticipantApp` shows the same conversation
+and text-entry control for human and agent partners and disables entry when interaction is paused.
+Style `.parlando-session-tools`, `.parlando-session-tools-conversation`,
+`.parlando-session-tools-message`, and `.parlando-session-tools-form` to integrate the controls
+with the game's visual design.
 
 A message communicates language to the other seat; it does not change authoritative game state.
 For example, “I think we should tend the eastern branch” is a message, whereas choosing the eastern

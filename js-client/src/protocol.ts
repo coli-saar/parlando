@@ -100,8 +100,11 @@ export function reduceParticipantState<TObservation, TAction, TCompletion>(
   return next;
 }
 
-interface ParticipantStateResponse<TObservation = unknown, TAction = unknown, TCompletion = Record<string, unknown>> {
-  participant_state: ParticipantState<TObservation, TAction, TCompletion>;
+/** Decodes the participant snapshot shared by join, reconciliation, and leave responses. */
+function readParticipantSnapshot<TObservation, TAction, TCompletion>(response: unknown): ParticipantState<TObservation, TAction, TCompletion> {
+  if (!isRecord(response)) throw new Error("invalid participant state response");
+  requireParticipantState<TObservation, TAction, TCompletion>(response.participant_state);
+  return response.participant_state;
 }
 
 export interface ParticipantClientOptions {
@@ -238,6 +241,10 @@ export function decodeServerMessage<
       break;
     case "voice_status":
       if (!isRecord(input.voice)) throw new Error("invalid voice-status payload");
+      for (const flag of ["audioReady", "transcriptionReady"]) {
+        if (flag in input.voice && typeof input.voice[flag] !== "boolean") throw new Error(`invalid ${flag}`);
+      }
+      if ("transcriptionStatus" in input.voice && typeof input.voice.transcriptionStatus !== "string") throw new Error("invalid transcriptionStatus");
       break;
     case "action_rejected":
       requireString(input, "code");
@@ -249,12 +256,13 @@ export function decodeServerMessage<
     default:
       throw new Error(`unknown participant protocol message ${input.type}`);
   }
+  if (input.type !== "participant_state") requireString(input, "public_session_id");
   return input as ServerMessage<TObservation, TAction, TCompletion>;
 }
 
 /** Validates one complete participant-state snapshot. */
-function requireParticipantState(value: unknown): void {
-  if (!isRecord(value) || !["registered", "waiting", "active", "paused", "ended"].includes(String(value.state))) {
+function requireParticipantState<TObservation, TAction, TCompletion>(value: unknown): asserts value is ParticipantState<TObservation, TAction, TCompletion> {
+  if (!isRecord(value) || typeof value.state !== "string" || !["registered", "waiting", "active", "paused", "ended"].includes(value.state)) {
     throw new Error("invalid participant state");
   }
   if (value.state === "registered") return;
@@ -270,6 +278,9 @@ function requireParticipantState(value: unknown): void {
     if (!isRecord(value.result)) throw new Error("invalid participant result");
     requireOutcome(value.result, "outcome");
     requireString(value.result, "reason");
+    requireField(value.result, "completion");
+    requireField(value.result, "final_observation");
+    if (value.result.handoff !== null && !isRecruitmentHandoff(value.result.handoff)) throw new Error("invalid recruitment handoff");
     if (value.voice_ends_at !== undefined && value.voice_ends_at !== null && typeof value.voice_ends_at !== "string") {
       throw new Error("invalid voice_ends_at");
     }
@@ -279,7 +290,10 @@ function requireParticipantState(value: unknown): void {
   requireString(value, "idle_deadline_at");
   requireActions(value);
   if (!isRecord(value.presence)) throw new Error("invalid participant presence");
-  if (value.state === "paused" && !isRecord(value.reason)) throw new Error("invalid pause reason");
+  if (value.state === "paused") {
+    if (!isRecord(value.reason) || value.reason.type !== "partner_reconnecting") throw new Error("invalid pause reason");
+    requireString(value.reason, "deadline_at");
+  }
 }
 
 /** Returns whether one untrusted value is a plain JSON object shape. */
@@ -306,7 +320,8 @@ function requireRole(value: Record<string, unknown>, key: string): void {
 
 /** Requires one participant outcome from the stable provider-neutral vocabulary. */
 function requireOutcome(value: Record<string, unknown>, key: string): void {
-  if (!["completed", "left_waiting_room", "left_game", "connection_lost", "partner_left", "partner_unavailable", "idle_limit_reached", "technical_failure", "lifetime_limit_reached"].includes(String(value[key]))) {
+  const outcome = value[key];
+  if (typeof outcome !== "string" || !["completed", "left_waiting_room", "left_game", "connection_lost", "partner_left", "partner_unavailable", "idle_limit_reached", "technical_failure", "lifetime_limit_reached"].includes(outcome)) {
     throw new Error(`invalid ${key}`);
   }
 }
@@ -397,20 +412,20 @@ export class ParticipantClient {
 
   /** Joins or reuses one session and returns the authoritative participant snapshot. */
   async join<TObservation = unknown, TAction = unknown, TCompletion = Record<string, unknown>>(): Promise<ParticipantState<TObservation, TAction, TCompletion>> {
-    const response = await this.postAuthenticated<ParticipantStateResponse<TObservation, TAction, TCompletion>>("/api/sessions", {});
-    return response.participant_state;
+    const response = await this.postAuthenticated<unknown>("/api/sessions", {});
+    return readParticipantSnapshot<TObservation, TAction, TCompletion>(response);
   }
 
   /** Reconciles participant lifecycle independently of any WebSocket connection. */
   async getParticipantState<TObservation = unknown, TAction = unknown, TCompletion = Record<string, unknown>>(): Promise<ParticipantState<TObservation, TAction, TCompletion>> {
-    const response = await this.getAuthenticated<ParticipantStateResponse<TObservation, TAction, TCompletion>>("/api/participant-state");
-    return response.participant_state;
+    const response = await this.getAuthenticated<unknown>("/api/participant-state");
+    return readParticipantSnapshot<TObservation, TAction, TCompletion>(response);
   }
 
   /** Idempotently leaves a waiting, active, or paused session over reliable HTTP. */
   async leaveSession<TObservation = unknown, TAction = unknown, TCompletion = Record<string, unknown>>(sessionId: string): Promise<ParticipantState<TObservation, TAction, TCompletion>> {
-    const response = await this.postAuthenticated<ParticipantStateResponse<TObservation, TAction, TCompletion>>(`/api/sessions/${sessionId}/leave`, {});
-    return response.participant_state;
+    const response = await this.postAuthenticated<unknown>(`/api/sessions/${sessionId}/leave`, {});
+    return readParticipantSnapshot<TObservation, TAction, TCompletion>(response);
   }
 
   /** Obtains an authenticated audio plan when a custom client needs voice transport. */

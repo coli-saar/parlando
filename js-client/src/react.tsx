@@ -32,7 +32,10 @@ export {
   ParticipantApp,
   PartnerReconnectNotice,
   ProlificHandoff,
-  type GameSession,
+  ReplayPlayer,
+  type GameSnapshot,
   type GameTransition,
-  type ParticipantAppProps
+  type ParticipantAppProps,
+  type ReplayFrame,
+  type SessionReplay
 } from "./startup.js";

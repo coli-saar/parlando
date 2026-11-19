@@ -176,6 +176,7 @@ textarea { min-height: 92px; resize: vertical; width: 100%; }
 .session-summary h2 { margin: 0; }
 .session-summary-heading { align-items: baseline; display: flex; flex-wrap: wrap; gap: 8px 14px; }
 .session-dialogue-name { color: var(--subtle); font-size: 16px; overflow-wrap: anywhere; }
+.session-replay { margin-left: auto; }
 .session-facts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; }
 .session-facts > div { border-left: 1px solid var(--strong-line); display: grid; gap: 5px; min-width: 0; padding: 0 18px; }
 .session-facts > div:first-child { border-left: 0; padding-left: 0; }

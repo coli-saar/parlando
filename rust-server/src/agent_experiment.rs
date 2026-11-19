@@ -372,7 +372,7 @@ impl<G: Game> ExperimentRunner<G> {
             &spec_hash,
         )
         .await?;
-        let mut totals = ExecutionBatch::default();
+        let mut totals = ExecutionCounts::default();
         if let Some(sessions) = &spec.sessions {
             let plans = self.plan_set(
                 &spec,
@@ -387,7 +387,8 @@ impl<G: Game> ExperimentRunner<G> {
             )?;
             totals.merge(
                 self.execute_plans(plans, &spec.execution, &output, &manifest.run_id)
-                    .await?,
+                    .await?
+                    .counts,
             );
         }
 
@@ -447,9 +448,9 @@ impl<G: Game> ExperimentRunner<G> {
                 let batch = self
                     .execute_plans(plans, &spec.execution, &output, &manifest.run_id)
                     .await?;
-                pending_steps.extend(batch.steps.clone());
+                pending_steps.extend(batch.steps);
                 let training_failed = batch.has_failure;
-                totals.merge(batch);
+                totals.merge(batch.counts);
                 if training_failed {
                     bail!("training stopped because an epoch contains a failed session");
                 }
@@ -511,7 +512,8 @@ impl<G: Game> ExperimentRunner<G> {
                         )?;
                         totals.merge(
                             self.execute_plans(plans, &spec.execution, &output, &manifest.run_id)
-                                .await?,
+                                .await?
+                                .counts,
                         );
                     }
                 }
@@ -537,18 +539,15 @@ impl<G: Game> ExperimentRunner<G> {
         output: &Path,
         run_id: &str,
     ) -> Result<ExecutionBatch> {
-        let mut batch = ExecutionBatch {
-            planned: plans.len(),
-            ..ExecutionBatch::default()
-        };
+        let mut batch = ExecutionBatch::default();
+        batch.counts.planned = plans.len();
         let mut pending = Vec::new();
         for plan in plans {
             let path = result_path(output, &plan.plan_id);
-            if finalized_result_matches(&path, run_id, &plan.plan_id).await? {
-                batch.skipped += 1;
-                let (steps, succeeded) = load_result_data(&path).await?;
-                batch.steps.extend(steps);
-                batch.has_failure |= !succeeded;
+            if let Some(result) = read_finalized_result(&path, run_id, &plan.plan_id).await? {
+                batch.counts.skipped += 1;
+                batch.steps.extend(result.trajectory);
+                batch.has_failure |= !result.status.is_success();
             } else {
                 pending.push(plan);
             }
@@ -577,9 +576,9 @@ impl<G: Game> ExperimentRunner<G> {
             let (succeeded, steps) = result?;
             batch.steps.extend(steps);
             if succeeded {
-                batch.completed += 1;
+                batch.counts.completed += 1;
             } else {
-                batch.failed += 1;
+                batch.counts.failed += 1;
                 batch.has_failure = true;
                 if execution.fail_fast {
                     bail!("agent experiment stopped after a failed session");
@@ -939,26 +938,30 @@ pub struct ExperimentRunSummary {
     pub output_directory: PathBuf,
 }
 
-/// Mutable aggregate for one or more execution phases.
+/// Training data and outcomes for a single execution phase.
 #[derive(Default)]
 struct ExecutionBatch {
-    planned: usize,
-    completed: usize,
-    failed: usize,
-    skipped: usize,
+    counts: ExecutionCounts,
     steps: Vec<TrajectoryStep>,
     has_failure: bool,
 }
 
-impl ExecutionBatch {
-    /// Adds another phase's counts and trajectory steps to this aggregate.
+/// Run-wide summary independent of learner trajectory ownership.
+#[derive(Default)]
+struct ExecutionCounts {
+    planned: usize,
+    completed: usize,
+    failed: usize,
+    skipped: usize,
+}
+
+impl ExecutionCounts {
+    /// Includes the counts from one execution phase.
     fn merge(&mut self, other: Self) {
         self.planned += other.planned;
         self.completed += other.completed;
         self.failed += other.failed;
         self.skipped += other.skipped;
-        self.steps.extend(other.steps);
-        self.has_failure |= other.has_failure;
     }
 }
 
@@ -1027,7 +1030,7 @@ impl<G: Game> Clone for TrainingCapture<G> {
 }
 
 /// Stable terminal classification stored with every headless session result.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     /// The game returned its shared completion value.
@@ -2283,41 +2286,38 @@ async fn load_checkpoint_record(
     Ok(Some(record))
 }
 
-/// Reads learner transitions from a finalized result while resuming training.
-async fn load_result_data(path: &Path) -> Result<(Vec<TrajectoryStep>, bool)> {
-    let value: Value = serde_json::from_slice(&tokio::fs::read(path).await?)?;
-    let steps = match value.get("trajectory") {
-        Some(steps) => serde_json::from_value(steps.clone())
-            .with_context(|| format!("invalid trajectory in {}", path.display())),
-        None => Ok(Vec::new()),
-    }?;
-    let succeeded = matches!(
-        value.get("status").and_then(Value::as_str),
-        Some("completed" | "quiescent")
-    );
-    Ok((steps, succeeded))
+/// Projection of the durable session fields needed to resume a plan.
+#[derive(Deserialize)]
+struct FinalizedResult {
+    run_id: String,
+    plan_id: String,
+    status: SessionStatus,
+    #[serde(default)]
+    trajectory: Vec<TrajectoryStep>,
 }
 
-/// Verifies whether one existing result belongs to the requested run and plan.
-async fn finalized_result_matches(path: &Path, run_id: &str, plan_id: &str) -> Result<bool> {
+/// Reads and verifies a result in one pass, including any learner steps.
+async fn read_finalized_result(
+    path: &Path,
+    run_id: &str,
+    plan_id: &str,
+) -> Result<Option<FinalizedResult>> {
     let bytes = match tokio::fs::read(path).await {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(error).with_context(|| format!("failed to read {}", path.display()))
         }
     };
-    let value: Value = serde_json::from_slice(&bytes)
+    let result: FinalizedResult = serde_json::from_slice(&bytes)
         .with_context(|| format!("invalid finalized result {}", path.display()))?;
-    if value.get("run_id").and_then(Value::as_str) != Some(run_id)
-        || value.get("plan_id").and_then(Value::as_str) != Some(plan_id)
-    {
+    if result.run_id != run_id || result.plan_id != plan_id {
         bail!(
             "result {} has inconsistent run or plan identity",
             path.display()
         );
     }
-    Ok(true)
+    Ok(Some(result))
 }
 
 /// Writes one JSON file through an adjacent temporary path and atomic rename.
@@ -2368,7 +2368,7 @@ mod tests {
     }
 
     /// Authoritative state which completes when its counter reaches the target.
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     struct TinyState {
         count: u8,
         target: u8,

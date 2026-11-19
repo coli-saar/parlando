@@ -65,6 +65,8 @@ A `Response` contains an action, a message, or both. `None` means that the agent
 until another event arrives. Messages communicate with the other player; actions are always checked
 against the game rules.
 
+In a live human–agent session, the server queues up to 64 observations while an agent callback is running. If the queue fills and another input needs delivery, the server ends that session with a technical failure before accepting the input. The agent can drain the observations already queued. Other sessions continue independently.
+
 The factory creates one agent for each automated seat. Its definition supplies the dashboard fields,
 a stable implementation name and version, and any references to installation secrets. Put model,
 prompt, and decoding choices in the configurable settings so that the saved experiment identifies

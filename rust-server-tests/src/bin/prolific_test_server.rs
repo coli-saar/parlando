@@ -24,7 +24,7 @@ struct Args {
 }
 
 /// Small deterministic state sufficient for session-start and terminal-outcome scenarios.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct FixtureState {
     actions: u64,
     complete: bool,

@@ -9,6 +9,8 @@ The [Parlando manual](docs/web/content/manual/_index.md) is the self-contained s
 running the Great Tree example, creating a game, configuring a study, deploying it, and managing
 research data.
 
+Maintaining Parlando itself? Open the [internals atlas](developer/code-atlas/index.html) from a local checkout to inspect runtime dependencies, session transitions, ownership and regression fixtures.
+
 ## Run the Great Tree example
 
 Install stable Rust, Node.js 20.19 or newer (or 22.12 or newer), npm, and GNU Make. Then run:

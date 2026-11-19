@@ -1,3 +1,4 @@
+import { ParticipantConnection, type LiveSession } from "./participantConnection.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AudioSessionController } from "./audio/audioSessionController.js";
 import { ParlandoAudioSink } from "./audio/parlandoAudioSink.js";
@@ -13,37 +14,23 @@ import { experimentAllowsIntake, microphoneMuteButtonLabel, requiredConsentsAcce
 import { MicrophoneLevelMeter, TranscriptionProgress } from "./voiceComponents.js";
 import {
   ParticipantClient,
-  decodeServerMessage,
-  reduceParticipantState,
   type ExperimentInfo,
-  type ParticipantState,
   type ParticipantOutcome,
   type RecruitmentHandoff,
   type PlayerMessage,
   type PlayerRole,
-  type Presence,
-  playerMessage,
-  type ServerMessage
+  type Presence
 } from "./protocol.js";
 
-export interface GameSession<TObservation, TAction, TCompletion = Record<string, unknown>> {
+export interface GameSnapshot<TObservation, TAction> {
   sessionId: string;
   role: PlayerRole;
   observation: TObservation;
   /** Most recent accepted action, or null for an initial or resynchronized observation. */
   transition: GameTransition<TAction> | null;
   availableActions: TAction[] | null;
-  conversation: PlayerMessage[];
-  presence: Presence;
-  voiceStatus: VoiceStatus;
-  voicePreflight: VoicePreflight;
-  voiceEnabled: boolean;
-  connected: boolean;
   interactionEnabled: boolean;
-  sendAction(action: TAction): void;
-  sendMessage(text: string): void;
-  setMicrophoneMuted(muted: boolean): Promise<void>;
-  leave(): void;
+  act(action: TAction): void;
 }
 
 /** One accepted action made observable to both player roles. */
@@ -53,77 +40,50 @@ export interface GameTransition<TAction> {
 }
 
 export interface ParticipantAppProps<TObservation, TAction, TCompletion = Record<string, unknown>> {
-  renderGame(session: GameSession<TObservation, TAction, TCompletion>): ReactNode;
+  renderGame(snapshot: GameSnapshot<TObservation, TAction>): ReactNode;
   /** Renders game-specific public success content inside the standard terminal shell. */
   renderCompletion?(completion: TCompletion): ReactNode;
   baseUrl?: string;
 }
 
+/** One authoritative point on a reconstructed session timeline. */
+export interface ReplayFrame<TObservation, TAction, TCompletion = Record<string, unknown>> {
+  event_index: number;
+  game_time_ms: number;
+  observation: TObservation;
+  available_actions: TAction[] | null;
+  transition: GameTransition<TAction> | null;
+  conversation: PlayerMessage[];
+  completion: TCompletion | null;
+}
+
+/** Complete administrator replay payload containing both role-specific views. */
+export interface SessionReplay<TObservation, TAction, TCompletion = Record<string, unknown>> {
+  experiment_id: string;
+  session_id: number;
+  public_session_id: string;
+  compatibility: { state: string; action: string; rules: string };
+  roles: Record<PlayerRole, ReplayFrame<TObservation, TAction, TCompletion>[]>;
+}
+
 interface ParticipantAppRuntimeProps<TObservation, TAction, TCompletion = Record<string, unknown>> {
-  renderGame(session: GameSession<TObservation, TAction, TCompletion>): ReactNode;
+  renderGame(snapshot: GameSnapshot<TObservation, TAction>): ReactNode;
   renderCompletion?(completion: TCompletion): ReactNode;
   apiClient: ParticipantClient;
   createAudioController: () => AudioSessionController;
 }
 
-interface LiveSession<TObservation, TAction, TCompletion = Record<string, unknown>> {
-  participantState: ParticipantState<TObservation, TAction, TCompletion>;
-  transition: GameTransition<TAction> | null;
-  socket: WebSocket | null;
-  synchronization: "connecting" | "connected" | "reconnecting";
-  conversation: PlayerMessage[];
-}
-
-/** @internal Minimal channel state used by source-level tests. */
-export interface GameInputSession {
-  socket: WebSocket;
-  participantState: { state: string };
-  synchronization: "connecting" | "connected" | "reconnecting";
-}
-
-/** @internal Game-channel heartbeat cadence; heartbeats are never research activity. */
-export const CLIENT_HEARTBEAT_INTERVAL_MS = 1_000;
-
-/** @internal Returns the state update applied when the server announces game completion. */
-export function completedSessionPatch<TCompletion>(completion: TCompletion | undefined): {
-  completed: true;
-  completion: TCompletion | null;
-} {
-  return { completed: true, completion: completion ?? null };
-}
-
-/** @internal Returns whether participant game-channel messages should still be sent. */
-export function canSendGameMessage(session: Pick<GameInputSession, "participantState" | "synchronization"> | null): boolean {
-  return Boolean(session?.participantState.state === "active" && session.synchronization === "connected");
-}
-
-/** @internal Sends an action only while the reusable session is still accepting game input. */
-export function sendActionIfGameActive<TAction>(
-  apiClient: Pick<ParticipantClient, "sendAction">,
-  session: GameInputSession | null,
-  action: TAction
-): void {
-  if (!session || !canSendGameMessage(session)) return;
-  apiClient.sendAction(session.socket, action);
-}
-
-/** @internal Sends a chat message only while the reusable session is still accepting game input. */
-export function sendMessageIfGameActive(
-  apiClient: Pick<ParticipantClient, "sendMessage">,
-  session: GameInputSession | null,
-  text: string
-): void {
-  if (!session || !canSendGameMessage(session)) return;
-  apiClient.sendMessage(session.socket, text);
-}
-
-/** Runs the standard participant lifecycle before rendering one game session. */
+/** Renders the standard participant experience with the game's own view. */
 export function ParticipantApp<
   TObservation,
   TAction = unknown,
   TCompletion = Record<string, unknown>
 >({ renderGame, renderCompletion, baseUrl }: ParticipantAppProps<TObservation, TAction, TCompletion>) {
   const apiClient = useMemo(() => new ParticipantClient({ baseUrl }), [baseUrl]);
+  const replayUrl = replayRequestUrl();
+  if (replayUrl) {
+    return <ReplayApp replayUrl={replayUrl} renderGame={renderGame} />;
+  }
   return (
     <ParticipantAppRuntime
       apiClient={apiClient}
@@ -131,6 +91,97 @@ export function ParticipantApp<
       renderGame={renderGame}
       renderCompletion={renderCompletion}
     />
+  );
+}
+
+/** Reads and validates the administrator replay endpoint requested by the dashboard. */
+function replayRequestUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  const value = new URLSearchParams(window.location.search).get("parlandoReplay");
+  if (!value) return null;
+  const url = new URL(value, window.location.origin);
+  if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/admin/")) return null;
+  return `${url.pathname}${url.search}`;
+}
+
+/** Loads an administrator replay without entering any participant lifecycle. */
+function ReplayApp<TObservation, TAction, TCompletion>({
+  replayUrl,
+  renderGame
+}: {
+  replayUrl: string;
+  renderGame(snapshot: GameSnapshot<TObservation, TAction>): ReactNode;
+}) {
+  const [replay, setReplay] = useState<SessionReplay<TObservation, TAction, TCompletion> | null>(null);
+  const [error, setReplayError] = useState("");
+  useEffect(() => {
+    let active = true;
+    void fetch(replayUrl)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await response.text());
+        return response.json() as Promise<SessionReplay<TObservation, TAction, TCompletion>>;
+      })
+      .then((value) => { if (active) setReplay(value); })
+      .catch((caught) => { if (active) setReplayError(errorMessage(caught, "Could not load replay.")); });
+    return () => { active = false; };
+  }, [replayUrl]);
+  if (error) return <section className="parlando-replay-error" role="alert">{error}</section>;
+  if (!replay) return <section className="parlando-replay-loading" role="status">Loading replay…</section>;
+  return <ReplayPlayer replay={replay} renderGame={renderGame} />;
+}
+
+/** Renders one recorded session through the same game surface used during live play. */
+export function ReplayPlayer<TObservation, TAction, TCompletion = Record<string, unknown>>({
+  replay,
+  renderGame
+}: {
+  replay: SessionReplay<TObservation, TAction, TCompletion>;
+  renderGame(snapshot: GameSnapshot<TObservation, TAction>): ReactNode;
+}) {
+  const [role, setRole] = useState<PlayerRole>("A");
+  const [position, setPosition] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const frames = replay.roles[role] ?? [];
+  const safePosition = Math.min(position, Math.max(0, frames.length - 1));
+  const frame = frames[safePosition];
+  useEffect(() => {
+    if (!playing || !frame || safePosition >= frames.length - 1) {
+      if (playing && safePosition >= frames.length - 1) setPlaying(false);
+      return;
+    }
+    const delay = Math.max(100, frames[safePosition + 1].game_time_ms - frame.game_time_ms);
+    const timer = window.setTimeout(() => setPosition((current) => current + 1), delay);
+    return () => window.clearTimeout(timer);
+  }, [frame, frames, playing, safePosition]);
+  if (!frame) return <section className="parlando-replay-error" role="alert">This replay has no frames.</section>;
+  const snapshot: GameSnapshot<TObservation, TAction> = {
+    sessionId: replay.public_session_id,
+    role,
+    observation: frame.observation,
+    transition: frame.transition,
+    availableActions: frame.available_actions,
+    interactionEnabled: false,
+    act: () => undefined
+  };
+  return (
+    <div className="parlando-replay">
+      <style>{`.parlando-replay{min-height:100%;padding-bottom:6.5rem}.parlando-replay-conversation{position:fixed;z-index:999;top:1rem;right:1rem;display:grid;gap:.4rem;width:min(20rem,calc(100vw - 2rem));max-height:35vh;overflow:auto;margin:0;padding:.75rem;list-style:none;border:1px solid var(--parlando-replay-border,#68707c);border-radius:.8rem;background:var(--parlando-replay-background,rgba(20,24,31,.96));color:var(--parlando-replay-color,#fff)}.parlando-replay-message{display:grid;grid-template-columns:auto 1fr;gap:.5rem}.parlando-replay-message p{margin:0}.parlando-replay-controls{position:fixed;z-index:1000;left:50%;bottom:1rem;transform:translateX(-50%);display:grid;grid-template-columns:auto auto auto minmax(12rem,32rem) auto;gap:.6rem;align-items:center;width:min(54rem,calc(100vw - 2rem));padding:.8rem 1rem;border:1px solid var(--parlando-replay-border,#68707c);border-radius:.8rem;background:var(--parlando-replay-background,rgba(20,24,31,.96));color:var(--parlando-replay-color,#fff);box-shadow:0 .6rem 2rem rgba(0,0,0,.3)}.parlando-replay-controls button,.parlando-replay-controls select{font:inherit}.parlando-replay-controls input{width:100%}.parlando-replay-time{font-variant-numeric:tabular-nums;white-space:nowrap}@media(max-width:640px){.parlando-replay-controls{grid-template-columns:auto auto auto 1fr;}.parlando-replay-controls select{grid-column:1/-1}.parlando-replay-time{display:none}}`}</style>
+      <div aria-disabled="true" className="parlando-replay-surface" inert>{renderGame(snapshot)}</div>
+      {frame.conversation.length > 0 && <ol className="parlando-replay-conversation" aria-label="Conversation at this event">
+        {frame.conversation.map((message) => <li className="parlando-replay-message" key={message.id}><strong>{message.sender}</strong><p>{message.text}</p></li>)}
+      </ol>}
+      <nav className="parlando-replay-controls" aria-label="Replay timeline">
+        <button aria-label="Previous event" disabled={safePosition === 0} onClick={() => { setPlaying(false); setPosition(safePosition - 1); }} type="button">←</button>
+        <button aria-label={playing ? "Pause replay" : "Play replay"} onClick={() => { if (safePosition >= frames.length - 1) setPosition(0); setPlaying((value) => !value); }} type="button">{playing ? "Pause" : "Play"}</button>
+        <button aria-label="Next event" disabled={safePosition >= frames.length - 1} onClick={() => { setPlaying(false); setPosition(safePosition + 1); }} type="button">→</button>
+        <input aria-label="Replay event" max={Math.max(0, frames.length - 1)} min={0} onChange={(event) => { setPlaying(false); setPosition(Number(event.target.value)); }} type="range" value={safePosition} />
+        <span className="parlando-replay-time">{Math.round(frame.game_time_ms / 100) / 10}s · {safePosition + 1}/{frames.length}</span>
+        <select aria-label="Replay viewpoint" onChange={(event) => setRole(event.target.value as PlayerRole)} value={role}>
+          <option value="A">Player A view</option>
+          <option value="B">Player B view</option>
+        </select>
+      </nav>
+    </div>
   );
 }
 
@@ -166,13 +217,12 @@ function ParticipantAppRuntime<
   const [voiceReconnectGeneration, setVoiceReconnectGeneration] = useState(0);
   const [entering, setEntering] = useState(false);
   const enteringRef = useRef(false);
-  const sessionRef = useRef<LiveSession<TObservation, TAction, TCompletion> | null>(null);
-  const connectSessionRef = useRef<(state: ParticipantState<TObservation, TAction, TCompletion>) => Promise<void>>(async () => {});
-  const scheduleGameReconnectRef = useRef<(state: ParticipantState<TObservation, TAction, TCompletion>) => void>(() => {});
-  const reconnectEnabledRef = useRef(false);
-  const reconnectStartedAtRef = useRef(0);
-  const reconnectAttemptsRef = useRef(0);
-  const reconnectTimerRef = useRef<number | null>(null);
+  const connection = useMemo(() => new ParticipantConnection<TObservation, TAction, TCompletion>(apiClient, {
+    change: setSession,
+    error: setError,
+    terminal: (snapshot) => { if (!farewellVoiceIsOpen(snapshot)) void audioController.disconnect(true); },
+    voice: (voice) => audioController.updateVoiceStatus(voiceStatusUpdate(voice))
+  }), [apiClient, audioController]);
   const voicePreparationGenerationRef = useRef(0);
   const consentReady = requiredConsentsAccepted(publicConfig, consentDecisions);
   const enabled = isVoiceEnabled(publicConfig);
@@ -190,221 +240,15 @@ function ParticipantAppRuntime<
 
   const endCurrentSession = useCallback(() => {
     voicePreparationGenerationRef.current += 1;
-    reconnectEnabledRef.current = false;
-    if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current);
-    reconnectTimerRef.current = null;
+    connection.stop();
     void audioController.disconnect(true);
-    closeSessionSocket(sessionRef.current);
-  }, [audioController]);
+  }, [audioController, connection]);
 
-  /** Commits an explicit leave over HTTP, then closes transports after receiving the terminal state. */
+  /** Commits leave before releasing session transports. */
   const leave = useCallback(() => {
-    const current = sessionRef.current;
-    if (!current || current.participantState.state === "registered" || current.participantState.state === "ended") return;
-    const sessionId = current.participantState.public_session_id;
-    reconnectEnabledRef.current = false;
-    if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current);
-    reconnectTimerRef.current = null;
-    void audioController.disconnect(true);
     setError("");
-    void apiClient.leaveSession<TObservation, TAction, TCompletion>(sessionId).then((participantState) => {
-      setSession((current) => {
-        if (!current || current.participantState.state === "registered" || current.participantState.public_session_id !== sessionId) return current;
-        const next = { ...current, participantState };
-        sessionRef.current = next;
-        closeSessionSocket(next);
-        return next;
-      });
-    }).catch((caught) => setError(errorMessage(caught, "Could not record that you left the session.")));
-  }, [apiClient, audioController]);
-
-  const scheduleGameReconnect = useCallback(
-    (participantState: ParticipantState<TObservation, TAction, TCompletion>) => {
-      const current = sessionRef.current;
-      if (!reconnectEnabledRef.current || !current || current.participantState.state === "ended" || reconnectTimerRef.current !== null) return;
-      if (reconnectStartedAtRef.current === 0) reconnectStartedAtRef.current = Date.now();
-      if (Date.now() - reconnectStartedAtRef.current >= 15_000) {
-        setError("The connection could not be restored in time.");
-        return;
-      }
-      const delays = [1_000, 2_000, 5_000, 10_000];
-      const remaining = 15_000 - (Date.now() - reconnectStartedAtRef.current);
-      const delay = Math.min(delays[Math.min(reconnectAttemptsRef.current, delays.length - 1)], remaining);
-      reconnectAttemptsRef.current += 1;
-      reconnectTimerRef.current = window.setTimeout(() => {
-        reconnectTimerRef.current = null;
-        void connectSessionRef.current(participantState).catch((caught) => {
-          setError(errorMessage(caught, "Could not reconnect to the game channel."));
-          scheduleGameReconnectRef.current(participantState);
-        });
-      }, delay);
-    },
-    []
-  );
-  scheduleGameReconnectRef.current = scheduleGameReconnect;
-
-  const connectSession = useCallback(
-    async (participantState: ParticipantState<TObservation, TAction, TCompletion>) => {
-      if (participantState.state === "registered" || participantState.state === "ended") {
-        if (participantState.state === "ended") {
-          setSession((current) => {
-            const next = current
-              ? { ...current, participantState }
-              : {
-                participantState,
-                transition: null,
-                socket: null,
-                synchronization: "connected" as const,
-                conversation: []
-              };
-            sessionRef.current = next;
-            return next;
-          });
-        }
-        return;
-      }
-      const sessionId = participantState.public_session_id;
-      setSession((current) => {
-        const currentId = current?.participantState.state === "registered" ? null : current?.participantState.public_session_id;
-        const next = currentId === sessionId
-          ? { ...current!, participantState, synchronization: "connecting" as const }
-          : {
-            participantState,
-            transition: null,
-            socket: null,
-            synchronization: "connecting" as const,
-            conversation: []
-            };
-        sessionRef.current = next;
-        return next;
-      });
-      const gameSession = await apiClient.getGameSession(sessionId);
-      const socket = new WebSocket(apiClient.socketUrl(gameSession));
-      setSession((current) => {
-        const currentId = current?.participantState.state === "registered" ? null : current?.participantState.public_session_id;
-        const next = currentId === sessionId
-          ? { ...current!, participantState, socket, synchronization: "connecting" as const }
-          : {
-            participantState,
-            transition: null,
-            socket,
-            synchronization: "connecting" as const,
-            conversation: []
-            };
-        sessionRef.current = next;
-        return next;
-      });
-
-      socket.addEventListener("open", () => {
-        if (sessionRef.current?.socket !== socket) return;
-        reconnectStartedAtRef.current = 0;
-        reconnectAttemptsRef.current = 0;
-        setError("");
-        socket.send(JSON.stringify({ type: "ready" }));
-        setSession((current) => (current?.socket === socket ? { ...current, synchronization: "connected" } : current));
-      });
-      socket.addEventListener("error", () => {
-        if (sessionRef.current?.socket !== socket) return;
-        setError("Could not connect to the game channel. Retrying…");
-      });
-      socket.addEventListener("message", (event) => {
-        if (sessionRef.current?.socket !== socket) return;
-        let message: ServerMessage<TObservation, TAction, TCompletion>;
-        try {
-          if (typeof event.data !== "string") throw new Error("non-text message");
-          message = decodeServerMessage<TObservation, TAction, TCompletion>(JSON.parse(event.data));
-        } catch {
-          setError("The server sent an invalid game message.");
-          socket.close(1002, "Invalid server message");
-          return;
-        }
-        if (message.type === "participant_state") {
-          setSession((current) =>
-            current?.socket === socket
-              ? {
-                  ...current,
-                  participantState: reduceParticipantState(current.participantState, message.participant_state),
-                  transition: null,
-                  synchronization: "connected"
-                }
-              : current
-          );
-          if (message.participant_state.state === "ended") {
-            reconnectEnabledRef.current = false;
-            if (!farewellVoiceIsOpen(message.participant_state)) {
-              void audioController.disconnect(true);
-            }
-            socket.close();
-          }
-          return;
-        }
-        if (message.type === "transition") {
-          setSession((current) =>
-            current?.socket === socket
-              ? {
-                  ...current,
-                  transition: { actor: message.actor, action: message.action },
-                  participantState: current.participantState.state === "active"
-                    ? { ...current.participantState, observation: message.observation, available_actions: message.available_actions }
-                    : current.participantState
-                }
-              : current
-          );
-          return;
-        }
-        if (message.type === "presence") {
-          setSession((current) =>
-            current?.socket === socket && ["waiting", "active", "paused"].includes(current.participantState.state)
-              ? { ...current, participantState: { ...current.participantState, presence: message.presence } as ParticipantState<TObservation, TAction, TCompletion> }
-              : current
-          );
-          return;
-        }
-        if (message.type === "voice_status") {
-          audioController.updateVoiceStatus(voiceStatusUpdate(message.voice));
-          return;
-        }
-        if (message.type === "message") {
-          setSession((current) =>
-            current?.socket === socket
-              ? { ...current, conversation: appendConversation(current.conversation, playerMessage(message.message)) }
-              : current
-          );
-          return;
-        }
-        if (message.type === "action_rejected") {
-          setError(`Action rejected: ${message.code}`);
-          return;
-        }
-        if (message.type === "error") {
-          setError(errorText(message.code));
-          return;
-        }
-        const unreachable: never = message;
-        throw new Error(`unhandled server message ${String(unreachable)}`);
-      });
-      socket.addEventListener("close", () => {
-        setSession((current) => {
-          const next = current?.socket === socket ? { ...current, synchronization: "reconnecting" as const } : current;
-          sessionRef.current = next;
-          return next;
-        });
-        const current = sessionRef.current;
-        if (!reconnectEnabledRef.current || current?.socket !== socket || current.participantState.state === "ended") return;
-        void apiClient.getParticipantState<TObservation, TAction, TCompletion>().then((reconciled) => {
-          if (reconciled.state === "ended") {
-            setSession((current) => current?.socket === socket
-              ? { ...current, participantState: reconciled }
-              : current);
-            return;
-          }
-          scheduleGameReconnectRef.current(reconciled as ParticipantState<TObservation, TAction, TCompletion>);
-        }).catch(() => scheduleGameReconnectRef.current(participantState));
-      });
-    },
-    [apiClient, audioController]
-  );
-  connectSessionRef.current = connectSession;
+    void connection.leave().catch((caught) => setError(errorMessage(caught, "Could not record that you left the session.")));
+  }, [connection]);
 
   const ensureParticipant = useCallback(async () => {
     if (!publicConfig) throw new Error("Experiment config has not loaded.");
@@ -423,31 +267,24 @@ function ParticipantAppRuntime<
     setEntering(true);
     try {
       setError("");
-      await ensureParticipant();
-      reconnectEnabledRef.current = true;
-      const participantState = await apiClient.join<TObservation, TAction, TCompletion>();
-      await connectSession(participantState);
+      await connection.join(ensureParticipant);
     } catch (caught) {
-      reconnectEnabledRef.current = false;
       setError(errorMessage(caught, "Could not create the waiting room."));
     } finally {
       enteringRef.current = false;
       setEntering(false);
     }
-  }, [apiClient, connectSession, ensureParticipant]);
+  }, [connection, ensureParticipant]);
 
   /** Retries only the game channel after the server has already admitted this participant. */
   const retryGameConnection = useCallback(async () => {
-    const current = sessionRef.current;
-    if (!current || current.socket || current.participantState.state === "registered" || current.participantState.state === "ended") return;
     setError("");
-    reconnectEnabledRef.current = true;
     try {
-      await connectSession(current.participantState);
+      await connection.retry();
     } catch (caught) {
       setError(errorMessage(caught, "Could not connect to the game channel."));
     }
-  }, [connectSession]);
+  }, [connection]);
 
   const prepareVoice = useCallback(async (deviceId = ""): Promise<boolean> => {
     if (!enabled) return false;
@@ -532,13 +369,8 @@ function ParticipantAppRuntime<
   // A reload reuses the tab-scoped credential and asks the server for the same room.
   useEffect(() => {
     if (!publicConfig || session || typeof apiClient.hasCredential !== "function" || !apiClient.hasCredential()) return;
-    reconnectEnabledRef.current = true;
-    void apiClient.join<TObservation, TAction, TCompletion>()
-      .then(connectSession)
-      .catch(() => {
-        reconnectEnabledRef.current = false;
-      });
-  }, [apiClient, connectSession, publicConfig, session]);
+    if (!enteringRef.current) void connection.join().catch(() => {});
+  }, [apiClient, connection, publicConfig, session]);
 
   // Rechecks closed intake so a waiting visitor can proceed after an administrator opens it.
   useEffect(() => {
@@ -569,22 +401,6 @@ function ParticipantAppRuntime<
     if (status.connected) setVoiceReconnectGeneration(0);
   }, [status.connected]);
 
-  useEffect(() => {
-    sessionRef.current = session;
-  }, [session]);
-
-  // One-second transport heartbeat. It is deliberately not research activity and
-  // therefore never extends the server's meaningful session-idle deadline.
-  useEffect(() => {
-    if (!session || session.participantState.state === "ended") return;
-    const socket = session.socket;
-    if (!socket) return;
-    const timer = window.setInterval(() => {
-      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "heartbeat" }));
-    }, CLIENT_HEARTBEAT_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, [session?.socket, session?.participantState.state]);
-
   useEffect(() => () => {
     endCurrentSession();
   }, [endCurrentSession]);
@@ -600,7 +416,7 @@ function ParticipantAppRuntime<
   }, [endCurrentSession]);
 
   useEffect(() => {
-    if (session?.synchronization !== "connected" || !enabled || !voicePreflight.ready || status.connected || status.connecting) return;
+    if (session?.synchronization !== "connected" || session.participantState.state === "ended" || !enabled || !voicePreflight.ready || status.connected || status.connecting) return;
     const delays = [1_000, 2_000, 5_000, 10_000];
     const timer = window.setTimeout(
       () => void connectVoice(),
@@ -657,31 +473,31 @@ function ParticipantAppRuntime<
 
   if (session?.participantState.state === "active" || session?.participantState.state === "paused") {
     const participantState = session.participantState;
-    const activeSession: GameSession<TObservation, TAction, TCompletion> = {
+    const gameSnapshot: GameSnapshot<TObservation, TAction> = {
       sessionId: participantState.public_session_id,
       role: participantState.role,
       observation: participantState.observation,
       transition: session.transition,
       availableActions: participantState.available_actions,
-      conversation: session.conversation,
-      presence: normalizePresence(participantState.presence),
-      voiceStatus: status,
-      voicePreflight,
-      voiceEnabled: enabled,
-      connected: session.synchronization === "connected",
       interactionEnabled: participantState.state === "active" && session.synchronization === "connected",
-      sendAction: (action) => {
-        if (session.socket) sendActionIfGameActive(apiClient, { ...session, socket: session.socket }, action);
-      },
-      sendMessage: (text) => {
-        if (session.socket) sendMessageIfGameActive(apiClient, { ...session, socket: session.socket }, text);
-      },
-      setMicrophoneMuted,
-      leave
+      act: (action) => connection.act(action)
     };
     return (
       <>
-        {renderGame(activeSession)}
+        <div className="parlando-game-surface">{renderGame(gameSnapshot)}</div>
+        <SessionTools
+          connected={session.synchronization === "connected"}
+          conversation={session.conversation}
+          interactionEnabled={gameSnapshot.interactionEnabled}
+          onLeave={leave}
+          onMessage={(text) => connection.message(text)}
+          onMutedChange={setMicrophoneMuted}
+          role={participantState.role}
+          sessionId={participantState.public_session_id}
+          voiceEnabled={enabled}
+          voicePreflight={voicePreflight}
+          voiceStatus={status}
+        />
         <IdleDeadlineNotice deadlineAt={participantState.idle_deadline_at} />
         {participantState.state === "paused" && participantState.reason.type === "partner_reconnecting" && <PartnerReconnectNotice deadlineAt={participantState.reason.deadline_at} />}
         {error && <p className="online-error">{error}</p>}
@@ -722,7 +538,7 @@ function ParticipantAppRuntime<
           </div>
         </div>
         <div className="lobby-actions">
-          {!session.socket && <button onClick={() => void retryGameConnection()}>Retry connection</button>}
+          {session.synchronization === "disconnected" && <button onClick={() => void retryGameConnection()}>Retry connection</button>}
           <button onClick={leave}>Leave waiting room</button>
         </div>
       </StartupShell>
@@ -809,6 +625,65 @@ function ParticipantAppRuntime<
         ) : null}
       </div>
     </StartupShell>
+  );
+}
+
+/** Renders transport, conversation, microphone, and leave controls owned by Parlando. */
+function SessionTools({
+  connected,
+  conversation,
+  interactionEnabled,
+  onLeave,
+  onMessage,
+  onMutedChange,
+  role,
+  sessionId,
+  voiceEnabled,
+  voicePreflight,
+  voiceStatus
+}: {
+  connected: boolean;
+  conversation: PlayerMessage[];
+  interactionEnabled: boolean;
+  onLeave: () => void;
+  onMessage: (text: string) => void;
+  onMutedChange: (muted: boolean) => Promise<void>;
+  role: PlayerRole;
+  sessionId: string;
+  voiceEnabled: boolean;
+  voicePreflight: VoicePreflight;
+  voiceStatus: VoiceStatus;
+}) {
+  const [draft, setDraft] = useState("");
+  const muted = voiceStatus.connected && !voiceStatus.microphoneEnabled;
+  const messages = conversation.filter((message) => message.input === "text").slice(-6);
+  return (
+    <section className="parlando-session-tools" aria-label="Session controls">
+      <style>{`.parlando-session-tools{display:grid;gap:.75rem;padding:1rem;border:1px solid var(--parlando-tools-border,currentColor);border-radius:var(--parlando-tools-radius,.75rem);background:var(--parlando-tools-background,transparent);color:var(--parlando-tools-color,inherit)}.parlando-session-tools-header,.parlando-session-tools-actions{display:flex;align-items:center;justify-content:space-between;gap:.75rem}.parlando-session-tools-conversation{display:grid;gap:.35rem;max-height:10rem;overflow:auto;margin:0;padding:0;list-style:none}.parlando-session-tools-message{display:grid;grid-template-columns:auto 1fr;gap:.5rem}.parlando-session-tools-message p{margin:0}.parlando-session-tools-form{display:flex;gap:.5rem}.parlando-session-tools-form input{min-width:0;flex:1}.parlando-session-tools-voice{display:grid;gap:.4rem}`}</style>
+      <header className="parlando-session-tools-header">
+        <span><strong>Session {sessionId}</strong> · Player {role} · {connected ? "Connected" : "Reconnecting"}</span>
+        <button className="parlando-leave-session" onClick={onLeave} type="button">Leave game</button>
+      </header>
+      <ol className="parlando-session-tools-conversation" aria-label="Text conversation" data-testid="messages">
+        {messages.length === 0 ? <li className="parlando-session-tools-empty">No messages yet.</li> : messages.map((message) => (
+          <li className="parlando-session-tools-message" key={message.id}><strong>{message.sender}</strong><p>{message.text}</p></li>
+        ))}
+      </ol>
+      <form className="parlando-session-tools-form" onSubmit={(event) => { event.preventDefault(); const text = draft.trim(); if (!text) return; onMessage(text); setDraft(""); }}>
+        <input aria-label="Message" disabled={!interactionEnabled} onChange={(event) => setDraft(event.target.value)} value={draft} />
+        <button disabled={!interactionEnabled || !draft.trim()} type="submit">Send message</button>
+      </form>
+      {voiceEnabled && <div className={`parlando-session-tools-voice ${muted ? "muted" : "live"}`}>
+        <div className="parlando-session-tools-actions">
+          <strong>Microphone</strong>
+          <button aria-pressed={muted} className={`microphone-mute-button ${muted ? "muted" : "live"}`} disabled={!voiceStatus.connected || voiceStatus.microphoneChanging} onClick={() => void onMutedChange(!muted)} type="button">{microphoneMuteButtonLabel(voiceStatus)}</button>
+        </div>
+        <MicrophoneLevelMeter active={voicePreflight.micProbeActive} label={voicePreflight.deviceLabel || "Level"} level={voicePreflight.micLevel} muted={muted} />
+        <span data-testid="voice">{voiceStatus.message}</span>
+        <span data-testid="remote-audio">{voiceStatus.remoteAudio ? "heard" : "silent"}</span>
+        {voiceStatus.error && <p className="voice-error" role="alert">{voiceStatus.error}</p>}
+      </div>}
+    </section>
   );
 }
 
@@ -1207,35 +1082,6 @@ export function voiceStatusUpdate(voice: { audioReady?: boolean; transcriptionRe
   if (voice?.transcriptionStatus) update.transcriptionMessage = voice.transcriptionStatus;
   if (typeof voice?.transcriptionReady === "boolean") update.transcriptionReady = voice.transcriptionReady;
   return update;
-}
-
-function appendConversation(current: PlayerMessage[], message: PlayerMessage): PlayerMessage[] {
-  if (current.some((candidate) => candidate.id === message.id)) return current;
-  return [...current, message].slice(-50);
-}
-
-/** Maps stable protocol error codes onto the standard participant application's copy. */
-function errorText(code: string): string {
-  const messages: Record<string, string> = {
-    action_too_large: "The action was too large.",
-    internal_error: "The server could not complete the request.",
-    invalid_action: "The action was not valid.",
-    invalid_message: "The server could not read the game message.",
-    message_rate_limited: "Please wait a moment before sending another message.",
-    message_rejected: "The message could not be sent.",
-    message_too_large: "The message was too long.",
-    participant_left: "This session ended because a player left.",
-    readiness_failed: "The session could not be started.",
-    session_end_failed: "The session could not be ended cleanly.",
-  };
-  return messages[code] ?? "The server rejected the last request.";
-}
-
-// Closes the game WebSocket so the server records the same participant_disconnected event as the Leave action.
-function closeSessionSocket(session: { socket: WebSocket | null } | null): void {
-  if (session?.socket && (session.socket.readyState === WebSocket.OPEN || session.socket.readyState === WebSocket.CONNECTING)) {
-    session.socket.close();
-  }
 }
 
 function selectedAudioInputLabel(audioInputs: MediaDeviceInfo[], selectedAudioInputId: string): string {

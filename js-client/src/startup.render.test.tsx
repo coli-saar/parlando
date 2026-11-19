@@ -9,8 +9,10 @@ import {
   FarewellVoiceNotice,
   IdleDeadlineNotice,
   ParticipantAppTestHarness,
+  ReplayPlayer,
   WaitingRoomNotice,
-  type GameSession
+  type GameSnapshot,
+  type SessionReplay
 } from "./startup";
 
 class FakeWebSocket extends EventTarget {
@@ -58,19 +60,46 @@ const audio = {
   subscribe: (listener: (value: unknown) => void) => { listener({ voiceStatus: initialVoiceStatus, voicePreflight: initialVoicePreflight }); return () => undefined; }
 };
 
-function game(session: GameSession<{ view: string }, { type: string }, { score: number }>) {
+function game(session: GameSnapshot<{ view: string }, { type: string }>) {
   return <div>
     <span>{session.observation.view}</span>
     <span>{String(session.interactionEnabled)}</span>
-    <span>Messages: {session.conversation.length}</span>
     <span>Actor: {session.transition?.actor ?? "none"}</span>
-    <span>Player B: {session.presence.B?.connected ? "connected" : "waiting"}</span>
-    <button onClick={session.leave}>Leave</button>
   </div>;
 }
 
 beforeEach(() => { vi.clearAllMocks(); FakeWebSocket.instances = []; vi.stubGlobal("WebSocket", FakeWebSocket); Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { enumerateDevices: vi.fn(async () => []), addEventListener: vi.fn(), removeEventListener: vi.fn() } }); });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+describe("ReplayPlayer", () => {
+  it("jumps between reconstructed events and role-specific observations", () => {
+    const replay: SessionReplay<{ view: string }, { type: string }, { score: number }> = {
+      experiment_id: "demo",
+      session_id: 7,
+      public_session_id: "ROOM1",
+      compatibility: { state: "1", action: "1", rules: "1" },
+      roles: {
+        A: [
+          { event_index: 1, game_time_ms: 0, observation: { view: "A start" }, available_actions: null, transition: null, conversation: [], completion: null },
+          { event_index: 4, game_time_ms: 800, observation: { view: "A moved" }, available_actions: null, transition: { actor: "B", action: { type: "move" } }, conversation: [{ id: "m1", sender: "A", text: "go", input: "text", createdAt: "" }], completion: null }
+        ],
+        B: [
+          { event_index: 1, game_time_ms: 0, observation: { view: "B start" }, available_actions: null, transition: null, conversation: [], completion: null },
+          { event_index: 4, game_time_ms: 800, observation: { view: "B moved" }, available_actions: null, transition: { actor: "B", action: { type: "move" } }, conversation: [{ id: "m1", sender: "A", text: "go", input: "text", createdAt: "" }], completion: null }
+        ]
+      }
+    };
+    render(<ReplayPlayer replay={replay} renderGame={game} />);
+    expect(screen.getByText("A start")).toBeInTheDocument();
+    expect(screen.getByText("false")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Next event" }));
+    expect(screen.getByText("A moved")).toBeInTheDocument();
+    expect(screen.getByText("Actor: B")).toBeInTheDocument();
+    expect(screen.getByText("go")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "Replay viewpoint" }), { target: { value: "B" } });
+    expect(screen.getByText("B moved")).toBeInTheDocument();
+  });
+});
 
 describe("ParticipantApp participant state machine", () => {
   it("restores a completed participant directly to the terminal outcome", async () => {
@@ -110,6 +139,58 @@ describe("ParticipantApp participant state machine", () => {
     expect(screen.getByText("true")).toBeInTheDocument();
   });
 
+  it("ignores a pending game ticket after the HTTP leave has committed", async () => {
+    const client = api();
+    let release!: (plan: { websocketUrl: string; token: string }) => void;
+    client.getGameSession.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Leave waiting room" }));
+    await waitFor(() => expect(client.leaveSession).toHaveBeenCalledOnce());
+    await act(async () => { release({ websocketUrl: "/unused", token: "late" }); });
+    expect(FakeWebSocket.instances).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Leave waiting room" })).not.toBeInTheDocument();
+  });
+
+  it.each([false, true])("applies farewell voice policy to HTTP terminal reconciliation (farewell %s)", async (farewell) => {
+    const client = api();
+    client.getParticipantState.mockResolvedValueOnce({
+      state: "ended", public_session_id: "ROOM1", role: "A",
+      voice_ends_at: farewell ? "2099-01-01T00:00:00Z" : null,
+      result: { outcome: "completed", reason: "game_completed", final_observation: {}, completion: null, handoff: null }
+    });
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    act(() => FakeWebSocket.instances[0].close());
+    expect(await screen.findByText(/responses have been recorded/i)).toBeInTheDocument();
+    expect(audio.disconnect).toHaveBeenCalledTimes(farewell ? 0 : 1);
+    expect(client.getGameSession).toHaveBeenCalledOnce();
+  });
+
+  it("checks retained game callbacks against the current participant state", async () => {
+    const client = api();
+    let send!: () => void;
+    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={snapshot => {
+      if (snapshot.interactionEnabled) send = () => snapshot.act({ type: "move" });
+      return game(snapshot);
+    }} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    act(() => {
+      socket.open();
+      socket.message({ protocol_version: 2, type: "participant_state", participant_state: active });
+    });
+    send();
+    act(() => socket.message({ protocol_version: 2, type: "participant_state", participant_state: {
+      ...active, state: "paused", reason: { type: "partner_reconnecting", deadline_at: "2099-01-01T00:00:00Z" }
+    } }));
+    send();
+    expect(client.sendAction).toHaveBeenCalledOnce();
+    expect(client.sendAction).toHaveBeenCalledWith(socket, { type: "move" });
+  });
+
   it("renders Paused while strictly disabling interaction", async () => {
     const client = api();
     render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
@@ -128,7 +209,7 @@ describe("ParticipantApp participant state machine", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     const socket = FakeWebSocket.instances[0]; act(() => { socket.open(); socket.message({ protocol_version: 2, type: "participant_state", participant_state: active }); });
-    fireEvent.click(await screen.findByRole("button", { name: "Leave" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Leave game" }));
     await waitFor(() => expect(client.leaveSession).toHaveBeenCalledWith("ROOM1"));
     await waitFor(() => expect(socket.close).toHaveBeenCalled());
     expect(await screen.findByText(/left after the game started/i)).toBeInTheDocument();
@@ -164,8 +245,8 @@ describe("ParticipantApp participant state machine", () => {
 
     expect(await screen.findByText("moved")).toBeInTheDocument();
     expect(screen.getByText("Actor: B")).toBeInTheDocument();
-    expect(screen.getByText("Messages: 1")).toBeInTheDocument();
-    expect(screen.getByText("Player B: connected")).toBeInTheDocument();
+    expect(screen.getByText("hello")).toBeInTheDocument();
+    expect(screen.getByText(/Player A · Connected/)).toBeInTheDocument();
     expect(audio.updateVoiceStatus).toHaveBeenCalledWith(expect.objectContaining({ transcriptionReady: true }));
 
     act(() => socket.message({ protocol_version: 2, type: "action_rejected", public_session_id: "ROOM1", code: "invalid_action" }));

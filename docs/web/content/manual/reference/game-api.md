@@ -28,6 +28,10 @@ impl Game for MyGame {
     type Observation = MyObservation;
     type Completion = MyCompletion;
 
+    const STATE_REPRESENTATION_VERSION: &'static str = "my-game-state-v1";
+    const ACTION_REPRESENTATION_VERSION: &'static str = "my-game-action-v1";
+    const RULES_VERSION: &'static str = "my-game-rules-v1";
+
     fn initial_state(
         &self,
         context: GameInitializationContext<'_, Self::Config>,
@@ -63,6 +67,12 @@ the serialized observations, not merely the browser, for private-information lea
 Use a stable `ActionRejection` code for an expected refusal. The operation should be deterministic
 and perform no I/O. Initialize stochastic state from the recorded `seed` and retain the result in
 the authoritative state.
+
+Parlando records the serialized initial state and the accepted action sequence. Replaying a session
+deserializes that initial state and calls `apply_action` again. The state, action, and rules constants
+are compatibility identifiers for that operation; they are independent of the package release.
+Keep an identifier stable across compatible releases and change it only when its representation or
+transition meaning becomes incompatible. `State` must implement `Deserialize` as well as `Serialize`.
 
 `Completion` is a shared structured terminal value delivered to both roles and retained for
 analysis. Include only facts safe for both participants. Put role-private terminal facts in the
@@ -148,16 +158,16 @@ your game screen.
 ```tsx
 import {
   ParticipantApp,
-  type GameSession,
+  type GameSnapshot,
 } from "@coli-saar/parlando-client/react";
 
-type Session = GameSession<MyObservation, MyAction, MyCompletion>;
+type Snapshot = GameSnapshot<MyObservation, MyAction>;
 
-function GameView({ session }: { session: Session }) {
+function GameView({ snapshot }: { snapshot: Snapshot }) {
   return (
     <main>
-      <pre>{JSON.stringify(session.observation, null, 2)}</pre>
-      <button onClick={() => session.sendAction({ type: "ready" })}>
+      <pre>{JSON.stringify(snapshot.observation, null, 2)}</pre>
+      <button disabled={!snapshot.interactionEnabled} onClick={() => snapshot.act({ type: "ready" })}>
         Ready
       </button>
     </main>
@@ -167,17 +177,18 @@ function GameView({ session }: { session: Session }) {
 export default function App() {
   return (
     <ParticipantApp<MyObservation, MyAction, MyCompletion>
-      renderGame={(session) => <GameView session={session} />}
+      renderGame={(snapshot) => <GameView snapshot={snapshot} />}
       renderCompletion={(completion) => <Result value={completion} />}
     />
   );
 }
 ```
 
-`GameSession` provides the current role and observation, the most recent accepted transition,
-optional available actions, conversation, presence, connection state, voice controls, and the
-methods `sendAction`, `sendMessage`, and `leave`. Disable controls when `interactionEnabled` is
-false. The client never receives authoritative state or provider credentials.
+`GameSnapshot` provides the current role and observation, the most recent accepted transition,
+optional available actions, interaction status, and `act`. Disable controls when
+`interactionEnabled` is false. Parlando renders and operates conversation, connection,
+microphone, leave, and replay widgets outside the game surface. The client never receives
+authoritative state or provider credentials.
 
 Great Tree switches its entire game view on the observation's `role` field. Crown buttons send
 `setSun` actions; Root buttons send `setFlow` actions. Its custom completion renderer turns the

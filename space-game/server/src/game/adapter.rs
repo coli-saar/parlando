@@ -56,6 +56,10 @@ impl Game for SpaceGame {
     type Observation = SpaceObservation;
     type Completion = SpaceCompletion;
 
+    const STATE_REPRESENTATION_VERSION: &'static str = "space-game-state-v1";
+    const ACTION_REPRESENTATION_VERSION: &'static str = "space-game-action-v1";
+    const RULES_VERSION: &'static str = "space-game-rules-v1";
+
     fn initial_state(
         &self,
         _context: GameInitializationContext<'_, Self::Config>,

@@ -25,8 +25,9 @@ test-rust:
 	cd "$(RUST_SERVER_DIR)" && cargo test --all-features
 	cd "$(RUST_SERVER_TESTS_DIR)" && cargo test
 
-# Runs browser-client tests, type compilation, and the coverage regression gate.
+# Runs participant and dashboard tests, type compilation, and the coverage regression gate.
 test-js-client:
+	cd "$(RUST_SERVER_DIR)" && node --test tests/admin_dashboard*.test.mjs
 	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" test
 	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" run build
 	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" run test:coverage
@@ -41,6 +42,7 @@ test-browser-e2e: test-js-client
 	cd "$(CLIENT_SERVER_TESTS_DIR)/browser" && npm --cache "$(NPM_CACHE)" install
 	cd "$(CLIENT_SERVER_TESTS_DIR)/browser" && npm --cache "$(NPM_CACHE)" run install:browsers
 	cd "$(CLIENT_SERVER_TESTS_DIR)/browser" && npm --cache "$(NPM_CACHE)" run build
+	cd "$(CLIENT_SERVER_TESTS_DIR)/browser" && npm --cache "$(NPM_CACHE)" test
 	cd "$(CLIENT_SERVER_TESTS_DIR)" && cargo test --test browser_e2e -- --ignored --nocapture
 
 # Runs the standalone process-boundary Prolific scenario matrix and its durable report.
@@ -60,7 +62,7 @@ test-e2e: test-e2e-logging
 	rust_status=$$?; \
 	(cd "$(CLIENT_SERVER_TESTS_DIR)" && cargo test) 2>&1 | tee "$$run_dir/contracts.log"; \
 	contract_status=$$?; \
-	(cd "$(CLIENT_SERVER_TESTS_DIR)/browser" && npm --cache "$(NPM_CACHE)" install && npm --cache "$(NPM_CACHE)" run install:browsers && npm --cache "$(NPM_CACHE)" run build && cd "$(CLIENT_SERVER_TESTS_DIR)" && cargo test --test browser_e2e -- --ignored --nocapture) 2>&1 | tee "$$run_dir/browser.log"; \
+	(cd "$(CLIENT_SERVER_TESTS_DIR)/browser" && npm --cache "$(NPM_CACHE)" install && npm --cache "$(NPM_CACHE)" run install:browsers && npm --cache "$(NPM_CACHE)" run build && npm --cache "$(NPM_CACHE)" test && cd "$(CLIENT_SERVER_TESTS_DIR)" && cargo test --test browser_e2e -- --ignored --nocapture) 2>&1 | tee "$$run_dir/browser.log"; \
 	browser_status=$$?; \
 	if [ $$browser_status -eq 0 ]; then cp "$(CLIENT_SERVER_TESTS_DIR)/target/browser-e2e/report.md" "$$run_dir/browser-report.md" || exit 1; fi; \
 	(cd "$(RUST_SERVER_TESTS_DIR)" && cargo build --bins && cargo run --bin prolific-test-runner) 2>&1 | tee "$$run_dir/prolific.log"; \

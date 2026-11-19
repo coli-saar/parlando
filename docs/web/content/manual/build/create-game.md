@@ -112,6 +112,10 @@ impl Game for MyGame {
     type Observation = MyObservation;
     type Completion = MyCompletion;
 
+    const STATE_REPRESENTATION_VERSION: &'static str = "my-game-state-v1";
+    const ACTION_REPRESENTATION_VERSION: &'static str = "my-game-action-v1";
+    const RULES_VERSION: &'static str = "my-game-rules-v1";
+
     fn initial_state(
         &self,
         context: GameInitializationContext<'_, Self::Config>,
@@ -141,6 +145,12 @@ impl Game for MyGame {
 `initial_state` receives the experiment's typed game configuration and a recorded seed. Derive all
 randomized initial facts from that seed and retain the results in `State`. The same configuration,
 seed, and accepted action sequence should reproduce the same trajectory.
+
+The replay compatibility constants belong to the game's stored representations and mechanics, not
+to its package release. Keep each value stable while old initial states and actions retain the same
+meaning. Change the corresponding value only when deserialization or transition semantics becomes
+incompatible. Derive both `Serialize` and `Deserialize` for `State`; Parlando stores it once when the
+session is created and reconstructs later states from accepted actions.
 
 `apply_action` must check the actor and every state-dependent rule before returning a new state. An
 expected refusal returns an `ActionRejection` with a stable code such as `wrong_role` or
@@ -221,18 +231,18 @@ browser never receives `State` or provider credentials. Render the active game i
 ```tsx
 import {
   ParticipantApp,
-  type GameSession,
+  type GameSnapshot,
 } from "@coli-saar/parlando-client/react";
 
-type Session = GameSession<MyObservation, MyAction, MyCompletion>;
+type Snapshot = GameSnapshot<MyObservation, MyAction>;
 
-function GameView({ session }: { session: Session }) {
+function GameView({ snapshot }: { snapshot: Snapshot }) {
   return (
     <main>
-      <ObservationView observation={session.observation} />
+      <ObservationView observation={snapshot.observation} />
       <button
-        disabled={!session.interactionEnabled}
-        onClick={() => session.sendAction({ type: "ready" })}
+        disabled={!snapshot.interactionEnabled}
+        onClick={() => snapshot.act({ type: "ready" })}
       >
         Ready
       </button>
@@ -243,7 +253,7 @@ function GameView({ session }: { session: Session }) {
 export default function App() {
   return (
     <ParticipantApp<MyObservation, MyAction, MyCompletion>
-      renderGame={(session) => <GameView session={session} />}
+      renderGame={(snapshot) => <GameView snapshot={snapshot} />}
       renderCompletion={(completion) => <Result value={completion} />}
     />
   );
@@ -252,9 +262,9 @@ export default function App() {
 
 `ParticipantApp` handles participant information, declarations, the waiting countdown, readiness,
 reconnection, voice preparation, terminal handoff, and the one-minute human–human voice period after
-normal completion. Your view reads `session.observation` and sends actions with
-`session.sendAction`. Disable every task control when `interactionEnabled` is false. If the game
-supports typed dialogue, render `session.conversation` and send text with `session.sendMessage`.
+normal completion. Your view reads `snapshot.observation` and sends actions with
+`snapshot.act`. Disable every task control when `interactionEnabled` is false. Parlando owns the
+conversation, microphone, connection, and leave controls surrounding the game surface.
 
 Great Tree switches between `CrownView` and `RootView` on the observation's `role` tag. Crown buttons
 send `setSun`; Root buttons send `setFlow`. Neither view knows the hidden mapping.

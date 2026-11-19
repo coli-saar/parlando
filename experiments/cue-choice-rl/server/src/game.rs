@@ -61,7 +61,7 @@ pub struct CueChoiceConfig {
 }
 
 /// The three authoritative phases of one two-action session.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum CueChoiceState {
     AwaitingDeal {
         level: Level,
@@ -114,6 +114,10 @@ impl Game for CueChoiceGame {
     type Action = CueChoiceAction;
     type Observation = CueChoiceObservation;
     type Completion = CueChoiceCompletion;
+
+    const STATE_REPRESENTATION_VERSION: &'static str = "cue-choice-state-v1";
+    const ACTION_REPRESENTATION_VERSION: &'static str = "cue-choice-action-v1";
+    const RULES_VERSION: &'static str = "cue-choice-rules-v1";
 
     /// Creates a deterministic nonce without revealing the correct choice.
     fn initial_state(

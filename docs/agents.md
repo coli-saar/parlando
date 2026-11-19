@@ -59,6 +59,8 @@ impl Agent<MyGame> for MyAgent {
 
 A `Response` is always non-empty: action, message, or action and message. `None` means the agent declines to respond now. Messages communicate with the other player and do not change state. Every action is validated by the game.
 
+In a live human–agent session, the server queues up to 64 observations while an agent callback is running. If the queue fills and another input needs delivery, the server ends that session with a technical failure before accepting the input. The agent can drain the observations already queued. Other sessions continue independently.
+
 Once completion is known, the runtime requests no further responses. It delivers already-queued observations in order through the terminal `observe_transition`, then calls `finish` with the shared completion and finally calls `shutdown` for resource cleanup.
 
 `Factory::create(Context { role, seed, settings, factory_secrets, agent_instance_secrets }).await` constructs the agent before game state is delivered. Settings are server-validated, normalized non-secret JSON. The two secret sets contain only explicitly referenced values and redact their debug output. They are available to in-process factories and agents; the standard remote adapter declares no secret references and does not transport either set. After construction returns, the runtime creates the initial game state and calls `start(initial_observation)`.

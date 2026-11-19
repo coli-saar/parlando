@@ -20,6 +20,10 @@ impl Game for MyGame {
     type Observation = MyObservation;
     type Completion = MyCompletion;
 
+    const STATE_REPRESENTATION_VERSION: &'static str = "my-game-state-v1";
+    const ACTION_REPRESENTATION_VERSION: &'static str = "my-game-action-v1";
+    const RULES_VERSION: &'static str = "my-game-rules-v1";
+
     fn validate_config(&self, config: &Self::Config) -> Result<()> {
         validate_config(config)
     }
@@ -65,6 +69,8 @@ impl Game for MyGame {
 
 `apply_action` must check the actor and every state-dependent rule before returning a new state. Use a stable `ActionRejection` code for an expected rejection. The method should be deterministic and perform no I/O. Put semantic configuration validation on `GameFactory::validate_config`.
 
+Parlando records one serialized initial `State` and each accepted `Action`. The three replay constants decide whether the current game build may reconstruct that recording. Change the state or action version only when the corresponding stored representation becomes incompatible; change the rules version when the same state and action would acquire different transition semantics. Do not change these constants for an ordinary package release, frontend-only change, or compatible additive change. `State` must therefore implement both `Serialize` and `Deserialize`.
+
 `available_actions` is optional. `None` means the action space is not enumerated; `Some(vec![])` means it is enumerated and currently empty. It never replaces `apply_action` validation.
 
 When the dashboard or exported log needs game-specific analysis fields, implement `transition_metadata`. Return only structured, role-neutral domain data. Participant prose and animation belong in the participant application.
@@ -109,23 +115,25 @@ Serving participant assets is optional. The HTTP/JSON/WebSocket protocol does no
 ## Build a React participant application
 
 ```tsx
-import { ParticipantApp, type GameSession } from "@coli-saar/parlando-client/react";
+import { ParticipantApp, type GameSnapshot } from "@coli-saar/parlando-client/react";
 
-function GameView({ session }: { session: GameSession<MyObservation, MyAction, MyCompletion> }) {
+function GameView({ snapshot }: { snapshot: GameSnapshot<MyObservation, MyAction> }) {
   return (
     <main>
-      <pre>{JSON.stringify(session.observation, null, 2)}</pre>
-      <button onClick={() => session.sendAction({ kind: "ready" })}>Ready</button>
+      <pre>{JSON.stringify(snapshot.observation, null, 2)}</pre>
+      <button disabled={!snapshot.interactionEnabled} onClick={() => snapshot.act({ kind: "ready" })}>Ready</button>
     </main>
   );
 }
 
 export default function App() {
-  return <ParticipantApp renderGame={(session) => <GameView session={session} />} />;
+  return <ParticipantApp renderGame={(snapshot) => <GameView snapshot={snapshot} />} />;
 }
 ```
 
-The game screen uses `observation`, optional `transition`, `availableActions`, `conversation`, `presence`, the shared `completion`, and narrow voice properties. It sends typed actions with `sendAction` and player communication with `sendMessage`. `transition` identifies the most recent accepted actor and action; a frontend that only needs the resulting state can ignore it. The screen never receives authoritative state or generic presentation events.
+The game screen receives only its role-specific observation, optional accepted `transition`, optional `availableActions`, interaction status, and the `act` function. `transition` identifies the most recent accepted actor and action; a frontend that only needs the resulting observation can ignore it. Parlando owns connection status, conversation, microphone controls, leaving, and replay controls. The game can style those widgets through their `parlando-*` classes and CSS custom properties, but it does not implement their behavior.
+
+The same renderer is used for live play and replay. In replay, `interactionEnabled` is false and `act` has no effect. Parlando replaces snapshots from the live channel with snapshots reconstructed from the recorded initial state and accepted actions.
 
 A non-React application can use `ParticipantClient` from the package root or implement the documented [client protocol](client-protocol.md).
 

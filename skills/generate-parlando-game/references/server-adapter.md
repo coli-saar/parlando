@@ -14,6 +14,10 @@ pub trait Game: Send + Sync + 'static {
     type Observation;
     type Completion;
 
+    const STATE_REPRESENTATION_VERSION: &'static str;
+    const ACTION_REPRESENTATION_VERSION: &'static str;
+    const RULES_VERSION: &'static str;
+
     fn validate_config(&self, config: &Self::Config) -> anyhow::Result<()>;
     fn initial_state(&self, context: GameInitializationContext<'_, Self::Config>) -> anyhow::Result<Self::State>;
     fn apply_action(&self, state: &Self::State, action: &Self::Action, actor: PlayerRole)
@@ -27,7 +31,7 @@ pub trait Game: Send + Sync + 'static {
 }
 ```
 
-Associated types must satisfy the serialization and clone bounds in the actual trait. `State` is authoritative and runtime-private. `Observation` is complete for one role. `Action` is deserialized automatically and, once accepted, delivered to both player roles alongside their role-specific observations. `apply_action` combines authorization, validation, and transition and performs no I/O. `available_actions` is optional guidance. `transition_metadata` is structured, role-neutral analysis data. `completion` atomically expresses terminal detection and a shared result safe for both roles.
+Associated types must satisfy the serialization and clone bounds in the actual trait; `State` must also be deserializable for replay. `State` is authoritative and runtime-private. `Observation` is complete for one role. `Action` is deserialized automatically and, once accepted, delivered to both player roles alongside their role-specific observations. `apply_action` combines authorization, validation, and transition and performs no I/O. `available_actions` is optional guidance. `transition_metadata` is structured, role-neutral analysis data. `completion` atomically expresses terminal detection and a shared result safe for both roles. Define stable state, action, and rules compatibility identifiers and change them only when the corresponding stored representation or transition meaning becomes incompatible; do not derive them from the package version.
 
 Read configuration and seed from `GameInitializationContext`; game-owned experiment secrets are available through its redacting `secrets.get(key)` lookup. Never copy a value into state, logs, or serialized configuration.
 

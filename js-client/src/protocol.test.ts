@@ -61,7 +61,7 @@ describe("ParticipantClient room helpers", () => {
       }), { status: 200, headers: { "Content-Type": "application/json" } }))
       .mockResolvedValueOnce(new Response(
         JSON.stringify({ participant_state: {
-          state: "waiting", public_session_id: "ROOM1", role: "A", presence: {}
+          state: "waiting", public_session_id: "ROOM1", role: "A", waiting_started_at: "2026-01-01T00:00:00Z", waiting_deadline_at: "2026-01-01T00:05:00Z", presence: {}
         } }),
         { status: 200, headers: { "Content-Type": "application/json" } }
       )
@@ -160,7 +160,7 @@ describe("ParticipantClient room helpers", () => {
     const registration = deferredResponse();
     vi.spyOn(globalThis, "fetch")
       .mockImplementationOnce(() => registration.promise)
-      .mockResolvedValueOnce(new Response(JSON.stringify({ participant_state: { state: "waiting", public_session_id: "room", role: "A", presence: {} } }), { status: 200 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ participant_state: { state: "waiting", public_session_id: "room", role: "A", waiting_started_at: "2026-01-01T00:00:00Z", waiting_deadline_at: "2026-01-01T00:05:00Z", presence: {} } }), { status: 200 }));
     const client = new ParticipantClient({ baseUrl: "http://server.test" });
 
     const firstRequest = client.register();
@@ -184,7 +184,7 @@ describe("ParticipantClient room helpers", () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(participantResponse("stable", "stable-credential"))
       .mockRejectedValueOnce(new TypeError("network unavailable"))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ participant_state: { state: "waiting", public_session_id: "room", role: "A", presence: {} } }), { status: 200 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ participant_state: { state: "waiting", public_session_id: "room", role: "A", waiting_started_at: "2026-01-01T00:00:00Z", waiting_deadline_at: "2026-01-01T00:05:00Z", presence: {} } }), { status: 200 }));
     const client = new ParticipantClient({ baseUrl: "http://server.test" });
 
     await client.register();
@@ -336,6 +336,24 @@ describe("shared participant protocol fixtures", () => {
     for (const message of messages) {
       expect(message).not.toHaveProperty("room_id");
       expect(message).not.toHaveProperty("participant_session_id");
+    }
+  });
+
+  it("decodes the shared snapshots identically over HTTP and WebSocket", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(participantResponse("one", "credential-1"));
+    const client = new ParticipantClient({ baseUrl: "http://server.test" });
+    await client.register();
+    for (const message of fixtures.server_messages.filter((entry) => entry.type === "participant_state")) {
+      fetch.mockResolvedValueOnce(Response.json({ participant_state: message.participant_state }));
+      const decoded = decodeServerMessage(message);
+      expect(decoded.type === "participant_state" && decoded.participant_state).toEqual(await client.getParticipantState());
+    }
+    const paused = fixtures.server_messages.find((entry) => entry.participant_state?.state === "paused")!;
+    for (const reason of [{}, { type: "partner_reconnecting" }, { type: "unknown", deadline_at: "later" }]) {
+      const invalid = { ...paused.participant_state, reason };
+      fetch.mockResolvedValueOnce(Response.json({ participant_state: invalid }));
+      await expect(client.getParticipantState()).rejects.toThrow();
+      expect(() => decodeServerMessage({ ...paused, participant_state: invalid })).toThrow();
     }
   });
 

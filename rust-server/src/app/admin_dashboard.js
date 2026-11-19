@@ -1,6 +1,9 @@
 import { state } from './admin-dashboard-state.js';
 import { isSpeechBundle, sessionTimeline, roleBadge, escapeHtml, experimentDisplayStatus, fmtClockTime, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, plannedProgressLayout, sessionEndCauseRows, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
-import { absoluteParticipantUrl, adminFetch, experimentRuntimeApi, participantUrlCanOpen } from './admin-dashboard-api.js';
+import { absoluteParticipantUrl, adminFetch, SelectionRequests, experimentRuntimeApi, participantUrlCanOpen } from './admin-dashboard-api.js';
+const catalogueRequests = new SelectionRequests();
+const experimentRequests = new SelectionRequests();
+const sessionRequests = new SelectionRequests();
 const experimentList = document.getElementById('experimentList');
 const menuButton = document.getElementById('menuButton');
 const experimentHeader = document.getElementById('experimentHeader');
@@ -479,9 +482,10 @@ function renderLivenessTable() {
       renderTabs();
       showScope('experiments');
       if (state.experiment?.experiment_id !== row.dataset.experiment) {
-        await selectExperiment(row.dataset.experiment);
+        await Promise.all([selectExperiment(row.dataset.experiment), selectSession(Number(row.dataset.session))]);
+      } else {
+        await selectSession(Number(row.dataset.session));
       }
-      await selectSession(Number(row.dataset.session));
     });
   });
 }
@@ -926,17 +930,16 @@ async function loadSessions() {
   if (!state.experiment) return;
   const params = new URLSearchParams({ limit: '80' });
   if (sessionLifecycleFilter.value) params.set('lifecycle', sessionLifecycleFilter.value);
-  const response = await adminFetch(state, `${runtimeApi('sessions')}?${params}`);
-  if (!response.ok) throw new Error(await response.text());
-  const data = await response.json();
-  state.sessions = data.sessions || [];
-  if (state.selectedSession) {
-    const refreshed = state.sessions.find(session => session.session_id === state.selected);
-    if (refreshed) Object.assign(state.selectedSession, refreshed);
-  }
-  renderSessions();
-  if (state.selectedSession) renderSummary(state.selectedSession, state.selectedParticipants);
-  if (!state.selected && state.sessions[0]) selectSession(state.sessions[0].session_id);
+  await experimentRequests.json('sessions', state, `${runtimeApi('sessions')}?${params}`, data => {
+    state.sessions = data.sessions || [];
+    if (state.selectedSession) {
+      const refreshed = state.sessions.find(session => session.session_id === state.selected);
+      if (refreshed) Object.assign(state.selectedSession, refreshed);
+    }
+    renderSessions();
+    if (state.selectedSession) renderSummary(state.selectedSession, state.selectedParticipants);
+    if (!state.selected && state.sessions[0]) selectSession(state.sessions[0].session_id);
+  });
 }
 
 // Applies a new progress projection only when its rendered data changed.
@@ -956,10 +959,7 @@ async function loadProgress() {
   const initialLoad = state.sessionProgressSignature === null;
   if (initialLoad) sessionEndChart.innerHTML = '<div class="empty">Loading…</div>';
   try {
-    const response = await adminFetch(state, runtimeApi('progress'));
-    if (!response.ok) throw new Error(await response.text());
-    const data = await response.json();
-    applySessionProgress(data.progress || null);
+    await experimentRequests.json('progress', state, runtimeApi('progress'), data => applySessionProgress(data.progress || null));
   } catch (error) {
     if (initialLoad) {
       sessionEndChart.innerHTML = `<div class="empty">Progress unavailable: ${escapeHtml(error.message)}</div>`;
@@ -973,13 +973,7 @@ async function loadProgress() {
 async function refreshProgress() {
   refreshProgressButton.disabled = true;
   try {
-    const response = await adminFetch(state, runtimeApi('progress'), {
-      method: 'POST',
-      headers: { 'X-CSRF-Token': state.csrfToken || '' }
-    });
-    if (!response.ok) throw new Error(await response.text());
-    const data = await response.json();
-    applySessionProgress(data.progress || null);
+    await experimentRequests.json('progress', state, runtimeApi('progress'), data => applySessionProgress(data.progress || null), { method: 'POST' });
   } finally {
     refreshProgressButton.disabled = false;
   }
@@ -987,43 +981,34 @@ async function refreshProgress() {
 
 // Refreshes game identity, catalogue metadata, shared settings, and the selected configuration.
 async function loadExperiment() {
-  const response = await adminFetch(state, '/api/admin/experiments');
-  if (!response.ok) throw new Error(await response.text());
-  const data = await response.json();
-  state.experiments = data.experiments || [];
-  state.game = data.game || null;
-  state.versionManifest = data.version_manifest || null;
-  state.gameSettings = data.game_settings || null;
-  state.gameProviderSecrets = data.game_provider_secrets || [];
-  state.csrfToken = data.csrf_token || null;
-  state.configLoadFailed = false;
-  state.configLoadError = null;
-  const selectedId = state.experiment?.experiment_id || state.experiments.find(item => ['active', 'testing'].includes(item.status))?.experiment_id;
-  state.experiment = state.experiments.find(item => item.experiment_id === selectedId) || state.experiments[0] || null;
-  if (!state.experiment) {
-    state.selected = null;
-    state.selectedSession = null;
-    state.selectedParticipants = [];
-    state.sessions = [];
-    state.events = [];
-    state.eventBundles = [];
-    state.load = null;
-    state.privacy = null;
-    state.activationIssues = [];
-    state.loadedConfigKey = null;
-    state.configValue = null;
-    sessionDetail.hidden = true;
-    sessionList.innerHTML = '<div class="empty">No experiment selected.</div>';
-  }
-  renderExperiment();
-  renderExperimentHeader();
-  renderExperimentWorkspaceState();
-  renderExperimentDetails();
-  renderNotes();
-  if (!state.gameSettingsDirty) synchronizeGameSettingsForm();
-  const configKey = state.experiment ? `${state.experiment.experiment_id}:${state.experiment.config_revision}` : null;
-  if (configKey && configKey !== state.loadedConfigKey) await loadConfigurationSafely();
-  updateConfigurationEditability();
+  await catalogueRequests.json('catalogue', state, '/api/admin/experiments', async data => {
+    state.experiments = data.experiments || [];
+    state.game = data.game || null;
+    state.versionManifest = data.version_manifest || null;
+    state.gameSettings = data.game_settings || null;
+    state.gameProviderSecrets = data.game_provider_secrets || [];
+    state.csrfToken = data.csrf_token || null;
+    const selectedId = state.experiment?.experiment_id || state.experiments.find(item => ['active', 'testing'].includes(item.status))?.experiment_id;
+    setSelectedExperiment(state.experiments.find(item => item.experiment_id === selectedId) || state.experiments[0] || null);
+    if (!state.experiment) {
+      sessionList.innerHTML = '<div class="empty">No experiment selected.</div>';
+    }
+    renderExperiment();
+    renderExperimentHeader();
+    renderExperimentWorkspaceState();
+    renderExperimentDetails();
+    renderNotes();
+    if (!state.gameSettingsDirty) synchronizeGameSettingsForm();
+    const configKey = state.experiment ? `${state.experiment.experiment_id}:${state.experiment.config_revision}` : null;
+    if (configKey && configKey !== state.loadedConfigKey) await loadConfigurationSafely();
+    updateConfigurationEditability();
+  });
+}
+
+// Starts a fresh catalogue read after a durable change, even when polling is in flight.
+function reloadCatalogue() {
+  catalogueRequests.reset();
+  return loadExperiment();
 }
 
 // Changes the selected experiment's durable lifecycle.
@@ -1041,7 +1026,7 @@ async function updateExperimentStatus(status, verifyProlific = false, participan
     window.alert(await response.text());
     return false;
   }
-  if (statusChanged) await loadExperiment();
+  if (statusChanged) await reloadCatalogue();
   else buttons.forEach(button => { button.disabled = false; });
   return true;
 }
@@ -1054,30 +1039,58 @@ async function archiveSelectedExperiment() {
     method: 'POST', headers: { 'X-CSRF-Token': state.csrfToken || '' }
   });
   if (!response.ok) { window.alert(await response.text()); return; }
-  await loadExperiment();
+  await reloadCatalogue();
 }
 
-// Selects one experiment and scopes session, export, and configuration requests to it.
-async function selectExperiment(experimentId) {
-  state.experiment = state.experiments.find(item => item.experiment_id === experimentId) || null;
-  state.selected = null;
-  state.selectedSession = null;
-  state.selectedParticipants = [];
-  state.load = null;
+// Replaces projections and invalidates their outstanding requests when changing experiments.
+function setSelectedExperiment(experiment) {
+  const same = state.experiment?.experiment_id === experiment?.experiment_id;
+  state.experiment = experiment;
+  if (same) return;
+  experimentRequests.reset();
+  clearSelectedSession();
+  state.sessions = [];
   state.privacy = null;
   state.activationIssues = [];
   state.sessionProgress = null;
   state.sessionProgressSignature = null;
   state.configLoadFailed = false;
   state.configLoadError = null;
+  state.loadedConfigKey = null;
+  state.configValue = null;
+  revisionHistory.replaceChildren();
+  configRevision.textContent = '';
+  configForm.replaceChildren();
+  privacyContent.replaceChildren();
+  document.getElementById('privacyMarkdown').removeAttribute('href');
+  document.getElementById('privacyJson').removeAttribute('href');
+  saveConfiguration.disabled = true;
+  renderSessions();
+  renderProgressSessions();
+  renderSessionEndChart();
+}
+
+// Clears the previous detail before a new selection or lifecycle filter begins loading.
+function clearSelectedSession() {
+  sessionRequests.reset();
+  state.selected = null;
+  state.selectedSession = null;
+  state.selectedParticipants = [];
+  state.events = [];
+  state.eventBundles = [];
+  state.lastEventIndex = 0;
   sessionDetail.hidden = true;
+}
+
+// Selects one experiment and scopes session, export, and configuration requests to it.
+async function selectExperiment(experimentId) {
+  setSelectedExperiment(state.experiments.find(item => item.experiment_id === experimentId) || null);
   closeExperimentMenu();
   renderExperiment();
   renderExperimentHeader();
   renderExperimentDetails();
   renderNotes();
-  await Promise.all([loadConfigurationSafely(), loadSessions(), loadProgress(), loadLoad()]);
-  if (state.activeTab === 'privacy') await loadPrivacy();
+  await Promise.all([loadConfigurationSafely(), loadSessions(), loadProgress(), loadLoad(), state.activeTab === 'privacy' && loadPrivacy()]);
 }
 
 // Returns an authenticated runtime API path for the selected experiment.
@@ -1085,36 +1098,42 @@ function runtimeApi(path) {
   return experimentRuntimeApi(state.experiment, path);
 }
 
+// Builds the participant-frontend URL that loads one administrator-only replay.
+function replayPageHref(sessionId) {
+  const url = new URL(`/e/${encodeURIComponent(state.experiment.experiment_id)}/`, window.location.origin);
+  url.searchParams.set('parlandoReplay', runtimeApi(`sessions/${sessionId}/replay`));
+  return `${url.pathname}${url.search}`;
+}
+
 // Loads the selected experiment's authoritative database-backed configuration.
 async function loadConfiguration() {
   if (!state.experiment) return;
   const id = encodeURIComponent(state.experiment.experiment_id);
-  const response = await adminFetch(state, `/api/admin/experiments/${id}/config`);
-  if (!response.ok) throw new Error(await response.text());
-  const data = await response.json();
-  state.configLoadFailed = false;
-  state.agentFactories = data.agent_factories || [];
-  state.configuredSecrets = data.configured_secrets || [];
-  state.activationIssues = data.activation_issues || [];
-  renderExperimentHeader();
-  state.gameSecretKeys = state.configuredSecrets.filter(item => item.key.startsWith('game.')).map(item => item.key);
-  state.secretDeletions = new Set();
-  const authoritativeExperiment = data.experiment;
-  if (state.experiment?.experiment_id === authoritativeExperiment.experiment_id) {
-    Object.assign(state.experiment, authoritativeExperiment);
-    const catalogueExperiment = state.experiments.find(item => item.experiment_id === authoritativeExperiment.experiment_id);
-    if (catalogueExperiment && catalogueExperiment !== state.experiment) Object.assign(catalogueExperiment, authoritativeExperiment);
-    renderExperiment();
+  await experimentRequests.json('config', state, `/api/admin/experiments/${id}/config`, async data => {
+    state.configLoadFailed = false;
+    state.agentFactories = data.agent_factories || [];
+    state.configuredSecrets = data.configured_secrets || [];
+    state.activationIssues = data.activation_issues || [];
     renderExperimentHeader();
-    renderExperimentDetails();
-  }
-  renderConfigurationForm(data.experiment.config, data.game_yaml || '{}\n');
-  renderExperimentHeader();
-  upgradeYamlEditor();
-  configRevision.textContent = `Revision ${data.experiment.config_revision}`;
-  state.loadedConfigKey = `${data.experiment.experiment_id}:${data.experiment.config_revision}`;
-  await loadRevisionHistory();
-  updateConfigurationEditability(authoritativeExperiment);
+    state.gameSecretKeys = state.configuredSecrets.filter(item => item.key.startsWith('game.')).map(item => item.key);
+    state.secretDeletions = new Set();
+    const authoritativeExperiment = data.experiment;
+    if (state.experiment?.experiment_id === authoritativeExperiment.experiment_id) {
+      Object.assign(state.experiment, authoritativeExperiment);
+      const catalogueExperiment = state.experiments.find(item => item.experiment_id === authoritativeExperiment.experiment_id);
+      if (catalogueExperiment && catalogueExperiment !== state.experiment) Object.assign(catalogueExperiment, authoritativeExperiment);
+      renderExperiment();
+      renderExperimentHeader();
+      renderExperimentDetails();
+    }
+    renderConfigurationForm(data.experiment.config, data.game_yaml || '{}\n');
+    renderExperimentHeader();
+    upgradeYamlEditor();
+    configRevision.textContent = `Revision ${data.experiment.config_revision}`;
+    state.loadedConfigKey = `${data.experiment.experiment_id}:${data.experiment.config_revision}`;
+    updateConfigurationEditability(authoritativeExperiment);
+    await loadRevisionHistory();
+  });
 }
 
 // Keeps session browsing available and prevents stale configuration saves after a load error.
@@ -1137,7 +1156,7 @@ async function loadConfigurationSafely() {
 
 // Reapplies editor availability after lifecycle-only refreshes that do not reload configuration data.
 function updateConfigurationEditability(experiment = state.experiment) {
-  const readOnly = state.configLoadFailed || !experiment || experiment.status !== 'inactive' || experiment.game_version !== state.game?.version;
+  const readOnly = !state.loadedConfigKey || state.configLoadFailed || !experiment || experiment.status !== 'inactive' || experiment.game_version !== state.game?.version;
   configForm.querySelectorAll('input, textarea, select, button:not([data-reveal-secret])').forEach(control => { control.disabled = readOnly; });
   saveConfiguration.disabled = readOnly;
 }
@@ -1145,16 +1164,15 @@ function updateConfigurationEditability(experiment = state.experiment) {
 // Loads compact immutable revision metadata for the selected experiment.
 async function loadRevisionHistory() {
   const id = encodeURIComponent(state.experiment.experiment_id);
-  const response = await adminFetch(state, `/api/admin/experiments/${id}/revisions`);
-  if (!response.ok) throw new Error(await response.text());
-  const data = await response.json();
-  revisionHistory.innerHTML = (data.revisions || []).map(revision => `
-    <div class="revision-row">
-      <strong>Revision ${revision.revision}</strong>
-      <span class="muted small">${escapeHtml(fmtTime(revision.created_at))}</span>
-      ${revision.change_summary ? `<div class="small">${escapeHtml(revision.change_summary)}</div>` : ''}
-    </div>
-  `).join('') || '<div class="empty">No revisions stored.</div>';
+  await experimentRequests.json('revisions', state, `/api/admin/experiments/${id}/revisions`, data => {
+    revisionHistory.innerHTML = (data.revisions || []).map(revision => `
+      <div class="revision-row">
+        <strong>Revision ${revision.revision}</strong>
+        <span class="muted small">${escapeHtml(fmtTime(revision.created_at))}</span>
+        ${revision.change_summary ? `<div class="small">${escapeHtml(revision.change_summary)}</div>` : ''}
+      </div>
+    `).join('') || '<div class="empty">No revisions stored.</div>';
+  });
 }
 
 const CONSENT_TEMPLATES = {
@@ -1752,8 +1770,7 @@ async function createExperiment(experimentId, notes) {
     body: JSON.stringify({ experiment_id: experimentId, notes: notes.trim() || null })
   });
   if (!response.ok) throw new Error(await response.text());
-  state.experiment = { experiment_id: experimentId };
-  await loadExperiment();
+  await reloadCatalogue();
   await selectExperiment(experimentId);
 }
 
@@ -1769,8 +1786,7 @@ async function cloneSelectedExperiment() {
     body: JSON.stringify({ experiment_id: experimentId })
   });
   if (!response.ok) throw new Error(await response.text());
-  state.experiment = { experiment_id: experimentId };
-  await loadExperiment();
+  await reloadCatalogue();
   await selectExperiment(experimentId);
 }
 
@@ -1787,7 +1803,7 @@ async function updateCatalogue(changes) {
     })
   });
   if (!response.ok) throw new Error(await response.text());
-  await loadExperiment();
+  await reloadCatalogue();
 }
 
 // Saves Markdown notes as catalogue metadata without creating a configuration revision.
@@ -1795,20 +1811,16 @@ async function saveNotes() {
   const selectedId = state.experiment?.experiment_id;
   if (!selectedId) return;
   const value = state.notesSource.trim() || null;
-  const response = await adminFetch(state, `/api/admin/experiments/${encodeURIComponent(selectedId)}/catalogue`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
-    body: JSON.stringify({ pinned: state.experiment.pinned, notes: value })
-  });
-  if (!response.ok) throw new Error(await response.text());
-  if (state.experiment?.experiment_id !== selectedId) return;
-  state.experiment.notes = value;
-  const catalogue = state.experiments.find(item => item.experiment_id === selectedId);
-  if (catalogue) catalogue.notes = value;
-  state.notesSource = value || '';
-  state.notesDirty = false;
-  notesSaveState.textContent = 'Saved';
-  renderExperiment();
+  await experimentRequests.json('save-notes', state, `/api/admin/experiments/${encodeURIComponent(selectedId)}/catalogue`, () => {
+    state.experiment.notes = value;
+    const catalogue = state.experiments.find(item => item.experiment_id === selectedId);
+    if (catalogue) catalogue.notes = value;
+    if ((state.notesSource.trim() || null) === value) {
+      state.notesDirty = false;
+      notesSaveState.textContent = 'Saved';
+    }
+    renderExperiment();
+  }, { method: 'POST', body: JSON.stringify({ pinned: state.experiment.pinned, notes: value }) });
 }
 
 // Validates and stores the editor contents as a new immutable revision.
@@ -1835,7 +1847,7 @@ async function saveConfigRevision() {
     })
   });
   if (!response.ok) { window.alert(await response.text()); return; }
-  await loadExperiment();
+  await reloadCatalogue();
 }
 
 // Copies the latest committed shared settings into controls when no local draft exists.
@@ -1998,26 +2010,25 @@ async function saveSharedGameSettings() {
   state.gameSettingsDraftRevision = null;
   state.loadedConfigKey = null;
   flashGameSettingsSaved();
-  await loadExperiment();
+  await reloadCatalogue();
 }
 
 // Loads one selected session, its participants, and its initial event bundle.
 async function selectSession(sessionId) {
+  clearSelectedSession();
   state.selected = sessionId;
-  state.lastEventIndex = 0;
   renderSessions();
   sessionLogError.hidden = true;
-  const response = await adminFetch(state, runtimeApi(`sessions/${sessionId}`));
-  if (!response.ok) throw new Error(await response.text());
-  const data = await response.json();
-  state.selectedSession = data.session;
-  state.selectedParticipants = data.participants || [];
-  renderSummary(data.session, state.selectedParticipants);
-  sessionDetail.hidden = false;
-  state.events = [];
-  state.eventBundles = data.event_bundles || [];
-  mergeEvents(data.events || []);
-  renderEventBundles();
+  await sessionRequests.json('detail', state, runtimeApi(`sessions/${sessionId}`), data => {
+    state.selectedSession = data.session;
+    state.selectedParticipants = data.participants || [];
+    renderSummary(data.session, state.selectedParticipants);
+    sessionDetail.hidden = false;
+    state.events = [];
+    state.eventBundles = data.event_bundles || [];
+    mergeEvents(data.events || []);
+    renderEventBundles();
+  });
 }
 
 // Switches among the selected experiment's sessions, progress, notes, export, and configuration views.
@@ -2077,10 +2088,10 @@ async function loadPrivacy() {
   const id = encodeURIComponent(state.experiment.experiment_id);
   document.getElementById('privacyMarkdown').href = `/api/admin/experiments/${id}/privacy.md`;
   document.getElementById('privacyJson').href = `/api/admin/experiments/${id}/privacy.json`;
-  const response = await adminFetch(state, `/api/admin/experiments/${id}/privacy`);
-  if (!response.ok) throw new Error(await response.text());
-  state.privacy = await response.json();
-  renderPrivacy();
+  await experimentRequests.json('privacy', state, `/api/admin/experiments/${id}/privacy`, data => {
+    state.privacy = data;
+    renderPrivacy();
+  });
 }
 
 // Constrains one draggable catalogue width to useful desktop limits.
@@ -2156,7 +2167,7 @@ function renderSummary(session, participantRows) {
     facts.push(`<div><dt>Last meaningful activity</dt><dd>${escapeHtml(fmtTime(session.last_meaningful_activity_at))}</dd></div>`);
   }
   summary.innerHTML = `
-    <div class="session-summary-heading"><h2>Session ${escapeHtml(session.session_id)}</h2>${session.dialogue_id ? `<strong class="session-dialogue-name">${escapeHtml(session.dialogue_id)}</strong>` : ''}</div>
+    <div class="session-summary-heading"><h2>Session ${escapeHtml(session.session_id)}</h2>${session.dialogue_id ? `<strong class="session-dialogue-name">${escapeHtml(session.dialogue_id)}</strong>` : ''}<a class="secondary session-replay" href="${escapeHtml(replayPageHref(session.session_id))}" target="_blank" rel="noopener">${icon('play')}Replay</a></div>
     <dl class="session-facts">${facts.join('')}</dl>
     ${participantAssignments(participantRows, session)}
   `;
@@ -2306,19 +2317,15 @@ function participantAssignments(rows, session = state.selectedSession) {
 async function deleteParticipantData(researchId) {
   if (!state.experiment) return;
   const path = runtimeApi(`participants/${encodeURIComponent(researchId)}/deletion`);
-  const previewResponse = await adminFetch(state, path);
-  if (!previewResponse.ok) throw new Error(await previewResponse.text());
-  const preview = (await previewResponse.json()).preview;
-  const confirmed = window.confirm(
-    `Delete ${researchId}? This removes ${preview.content_event_count} message/transcript events and ${preview.consent_count} consent declarations, and anonymizes ${preview.other_event_count} other event references. This cannot be undone.`
-  );
-  if (!confirmed) return;
-  const response = await adminFetch(state, path, {
-    method: 'POST',
-    headers: { 'X-CSRF-Token': state.csrfToken || '' }
+  const sessionId = state.selected;
+  await sessionRequests.json('deletion-preview', state, path, async ({ preview }) => {
+    const confirmed = window.confirm(
+      `Delete ${researchId}? This removes ${preview.content_event_count} message/transcript events and ${preview.consent_count} consent declarations, and anonymizes ${preview.other_event_count} other event references. This cannot be undone.`
+    );
+    if (confirmed) {
+      await sessionRequests.json('deletion', state, path, () => selectSession(sessionId), { method: 'POST' });
+    }
   });
-  if (!response.ok) throw new Error(await response.text());
-  await selectSession(state.selected);
 }
 
 // Maps one event bundle to its restrained visual category.
@@ -2382,15 +2389,14 @@ function formatActionValue(value) {
 
 // Polls for new durable events in the currently selected session.
 async function refreshEvents() {
-  if (!state.selected) return;
+  if (!state.selectedSession) return;
   const params = new URLSearchParams({ after: String(state.lastEventIndex) });
-  const response = await adminFetch(state, `${runtimeApi(`sessions/${state.selected}/events`)}?${params}`);
-  if (!response.ok) throw new Error(await response.text());
-  const data = await response.json();
-  state.eventBundles = data.event_bundles || state.eventBundles;
-  mergeEvents(data.events || []);
-  renderEventBundles();
-  sessionLogError.hidden = true;
+  await sessionRequests.json('events', state, `${runtimeApi(`sessions/${state.selected}/events`)}?${params}`, data => {
+    state.eventBundles = data.event_bundles || state.eventBundles;
+    mergeEvents(data.events || []);
+    renderEventBundles();
+    sessionLogError.hidden = true;
+  });
 }
 
 showHousekeeping.addEventListener('change', renderEventBundles);
@@ -2462,10 +2468,7 @@ scopeButtons.forEach(button => {
 document.querySelectorAll('[data-status-filter]').forEach(initializeStatusFilter);
 experimentStatusFilter.addEventListener('change', renderExperiment);
 sessionLifecycleFilter.addEventListener('change', () => {
-  state.selected = null;
-  state.selectedSession = null;
-  state.selectedParticipants = [];
-  sessionDetail.hidden = true;
+  clearSelectedSession();
   loadSessions();
 });
 document.getElementById('downloadExport').addEventListener('click', () => {

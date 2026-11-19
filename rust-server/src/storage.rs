@@ -1,3 +1,6 @@
+mod export;
+pub(crate) use export::{ExperimentSnapshot, ExportSession};
+
 use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
@@ -6,11 +9,9 @@ use std::{
 };
 
 use crate::{
-    game::{Game, PlayerRole},
     identity::new_id,
     protocol::{ParticipantResult, SessionEnd},
     readable_id::{dialogue_id, participant_id as readable_participant_id},
-    session_log::{SessionLogWriter, SessionLogger},
 };
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
@@ -323,6 +324,15 @@ pub struct ConsentDeclarationRecord {
     pub accepted: bool,
     pub consent_text_hash: Option<String>,
     pub metadata: Value,
+}
+
+/// Outcome of writing an action against the durable session lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransitionCommit {
+    /// The action and its optional terminal value were persisted together.
+    Committed,
+    /// Another terminal writer already ended the session.
+    AlreadyEnded,
 }
 
 /// Input for one ordered event inside a session.
@@ -1547,10 +1557,12 @@ impl SqliteExperimentStore {
         }
     }
 
+    /// Reuses a verified submission, allocating durable identity only when intake has capacity.
     pub(crate) async fn admit_prolific_submission(
         &self,
         submission: ProlificSubmissionRecord,
-    ) -> Result<ProlificAdmission> {
+        allow_new: bool,
+    ) -> Result<Option<ProlificAdmission>> {
         let mut tx = self.pool.begin().await?;
         let existing = sqlx::query_as::<_, (i64, String, String, String, String)>(
             r#"
@@ -1574,13 +1586,16 @@ impl SqliteExperimentStore {
                 bail!("Prolific submission identifiers conflict with an existing admission");
             }
             tx.commit().await?;
-            return Ok(ProlificAdmission {
+            return Ok(Some(ProlificAdmission {
                 participant_id,
                 research_id,
                 participant_session_id,
-            });
+            }));
         }
 
+        if !allow_new {
+            return Ok(None);
+        }
         let participant_record = ParticipantRecord {
             experiment_id: submission.experiment_id.clone(),
             participant_kind: "human".to_string(),
@@ -1640,11 +1655,11 @@ impl SqliteExperimentStore {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(ProlificAdmission {
+        Ok(Some(ProlificAdmission {
             participant_id,
             research_id,
             participant_session_id,
-        })
+        }))
     }
 
     pub(crate) async fn participant_research_id(
@@ -1739,19 +1754,25 @@ impl SqliteExperimentStore {
         })
     }
 
+    /// Atomically completes initialization and admits the first human member.
     pub(crate) async fn complete_session_initialization(
         &self,
-        experiment_id: &str,
-        session_id: i64,
+        participant: SessionParticipantRecord,
     ) -> Result<bool> {
+        let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
             "update sessions set initialization_complete = 1 where experiment_id = ? and session_id = ? and lifecycle = 'forming' and initialization_complete = 0",
         )
-        .bind(experiment_id)
-        .bind(session_id)
-        .execute(&self.pool)
+        .bind(&participant.experiment_id)
+        .bind(participant.session_id)
+        .execute(&mut *tx)
         .await?;
-        Ok(result.rows_affected() == 1)
+        if result.rows_affected() == 0 {
+            return Ok(false);
+        }
+        Self::insert_session_participant(&mut tx, participant).await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     pub(crate) async fn fail_session_initialization(
@@ -1873,8 +1894,20 @@ impl SqliteExperimentStore {
         relative_game_time_ms(&started_at, timestamp)
     }
 
+    /// Durably admits a member before making the session-local assignment visible.
     pub(crate) async fn add_session_participant(
         &self,
+        participant: SessionParticipantRecord,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        Self::insert_session_participant(&mut tx, participant).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Inserts the assignment within the caller's session admission transaction.
+    async fn insert_session_participant(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         participant: SessionParticipantRecord,
     ) -> Result<()> {
         sqlx::query(
@@ -1895,7 +1928,7 @@ impl SqliteExperimentStore {
         .bind(participant.role)
         .bind(now_iso())
         .bind(participant.connection_status)
-        .execute(&self.pool)
+        .execute(&mut **tx)
         .await?;
         Ok(())
     }
@@ -1991,9 +2024,9 @@ impl SqliteExperimentStore {
         &self,
         events: Vec<SessionEventRecord>,
         session_end: Option<SessionEnd>,
-    ) -> Result<bool> {
+    ) -> Result<TransitionCommit> {
         let Some(first) = events.first() else {
-            return Ok(false);
+            bail!("an action transition must contain an event");
         };
         let experiment_id = first.experiment_id.clone();
         let session_id = first.session_id;
@@ -2019,7 +2052,7 @@ impl SqliteExperimentStore {
         };
         if lifecycle == "ended" {
             tx.rollback().await?;
-            return Ok(false);
+            return Ok(TransitionCommit::AlreadyEnded);
         }
         let mut event_index = sqlx::query_scalar::<_, i64>(
             "select coalesce(max(event_index), 0) from session_events where experiment_id = ? and session_id = ?",
@@ -2053,7 +2086,7 @@ impl SqliteExperimentStore {
             persist_terminal_value(&mut tx, &experiment_id, session_id, session_end).await?;
         }
         tx.commit().await?;
-        Ok(true)
+        Ok(TransitionCommit::Committed)
     }
 
     pub(crate) async fn end_session(
@@ -2192,6 +2225,15 @@ impl SqliteExperimentStore {
             .into_iter()
             .map(stored_event_from_sql_row)
             .collect()
+    }
+
+    /// Lists all unfinished sessions for process recovery without dashboard limits or event joins.
+    pub(crate) async fn interrupted_sessions(
+        &self,
+        experiment_id: &str,
+    ) -> Result<Vec<(i64, bool)>> {
+        Ok(sqlx::query_as("SELECT session_id, started_at IS NOT NULL FROM sessions WHERE experiment_id = ? AND lifecycle != 'ended' ORDER BY session_id")
+            .bind(experiment_id).fetch_all(&self.pool).await?)
     }
 
     pub(crate) async fn recent_sessions(
@@ -2391,18 +2433,6 @@ impl SqliteExperimentStore {
         })
         .collect::<Result<Vec<_>>>()?;
         Ok(participants)
-    }
-
-    pub(crate) async fn export_experiment(&self, experiment_id: &str) -> Result<Value> {
-        export_rows(&self.pool, experiment_id, None).await
-    }
-
-    pub(crate) async fn export_session(
-        &self,
-        experiment_id: &str,
-        session_id: i64,
-    ) -> Result<Value> {
-        export_rows(&self.pool, experiment_id, Some(session_id)).await
     }
 
     pub(crate) async fn participant_data_preview(
@@ -2641,395 +2671,12 @@ fn stored_event_from_sql_row(row: SessionEventSqlRow) -> Result<StoredSessionEve
     })
 }
 
-/// Exports SQLite rows as JSON objects for the current admin/evaluation export.
-async fn export_rows(
-    pool: &SqlitePool,
-    experiment_id: &str,
-    session_id: Option<i64>,
-) -> Result<Value> {
-    let experiment = {
-        let row = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                i64,
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-                String,
-                Option<String>,
-                bool,
-            ),
-        >(
-            "select experiment_id, game_version, config_revision, created_at, config_json, server_version, version_manifest_json, status, notes, pinned from experiments where experiment_id = ?",
-        )
-        .bind(experiment_id)
-        .fetch_optional(pool)
-        .await?;
-        row.map(
-            |(
-                id,
-                game_version,
-                config_revision,
-                created_at,
-                config_json,
-                server_version,
-                version_manifest_json,
-                status,
-                notes,
-                pinned,
-            )|
-             -> Result<Value> {
-                let config = serde_json::from_str::<Value>(&config_json)
-                    .with_context(|| format!("experiment {id:?} has invalid config_json"))?;
-                let version_manifest = parse_optional_json(
-                    version_manifest_json,
-                    &format!("experiment {id:?} version_manifest_json"),
-                )?;
-                Ok(json!({
-                "experiment_id": id,
-                "game_version": game_version,
-                "config_revision": config_revision,
-                "created_at": created_at,
-                "config": config,
-                "server_version": server_version,
-                "version_manifest": version_manifest,
-                "status": status,
-                "notes": notes,
-                "pinned": pinned,
-                }))
-            },
-        )
-        .transpose()?
-    };
-    let sessions_sql = if session_id.is_some() {
-        "select experiment_id, session_id, public_session_id, dialogue_id, mode, lifecycle, purpose, config_revision, game_version, created_at, started_at, ended_at, completion_json, session_end_json from sessions where experiment_id = ? and session_id = ? order by session_id"
-    } else {
-        "select experiment_id, session_id, public_session_id, dialogue_id, mode, lifecycle, purpose, config_revision, game_version, created_at, started_at, ended_at, completion_json, session_end_json from sessions where experiment_id = ? order by session_id"
-    };
-    let mut sessions_query = sqlx::query_as::<
-        _,
-        (
-            String,
-            i64,
-            String,
-            String,
-            String,
-            String,
-            String,
-            i64,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        ),
-    >(sessions_sql)
-    .bind(experiment_id);
-    if let Some(session_id) = session_id {
-        sessions_query = sessions_query.bind(session_id);
-    }
-    let sessions = sessions_query
-        .fetch_all(pool)
-        .await?
-        .into_iter()
-        .map(|row| -> Result<Value> {
-            let completion =
-                parse_optional_json(row.12, &format!("session {} completion_json", row.1))?;
-            let session_end =
-                parse_optional_json(row.13, &format!("session {} session_end_json", row.1))?;
-            Ok(json!({
-                "experiment_id": row.0,
-                "session_id": row.1,
-                "public_session_id": row.2,
-                "dialogue_id": row.3,
-                "mode": row.4,
-                "lifecycle": row.5,
-                "purpose": row.6,
-                "config_revision": row.7,
-                "game_version": row.8,
-                "created_at": row.9,
-                "started_at": row.10,
-                "ended_at": row.11,
-                "completion": completion,
-                "session_end": session_end,
-            }))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let event_sql = if session_id.is_some() {
-        "select event_id, experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, game_time_ms from session_events where experiment_id = ? and session_id = ? order by session_id, event_index"
-    } else {
-        "select event_id, experiment_id, session_id, event_index, event_type, actor_participant_id, actor_role, payload_json, game_state_json, game_time_ms from session_events where experiment_id = ? order by session_id, event_index"
-    };
-    let mut event_query = sqlx::query_as::<_, SessionEventSqlRow>(event_sql).bind(experiment_id);
-    if let Some(session_id) = session_id {
-        event_query = event_query.bind(session_id);
-    }
-    let events = event_query
-        .fetch_all(pool)
-        .await?
-        .into_iter()
-        .map(stored_event_from_sql_row)
-        .collect::<Result<Vec<_>>>()?;
-    let participants_sql = if session_id.is_some() {
-        r#"
-        select distinct p.participant_id, p.research_id, p.participant_kind, p.identity_provider, p.external_id,
-               p.metadata_json, p.created_at
-        from participants p
-        join session_participants sp on sp.participant_id = p.participant_id
-        where sp.experiment_id = ? and sp.session_id = ?
-        order by p.participant_id
-        "#
-    } else {
-        r#"
-        select distinct p.participant_id, p.research_id, p.participant_kind, p.identity_provider, p.external_id,
-               p.metadata_json, p.created_at
-        from participants p
-        join session_participants sp on sp.participant_id = p.participant_id
-        where sp.experiment_id = ?
-        order by p.participant_id
-        "#
-    };
-    let mut participants_query = sqlx::query_as::<
-        _,
-        (
-            i64,
-            Option<String>,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            String,
-        ),
-    >(participants_sql)
-    .bind(experiment_id);
-    if let Some(session_id) = session_id {
-        participants_query = participants_query.bind(session_id);
-    }
-    let participants = participants_query
-        .fetch_all(pool)
-        .await?
-        .into_iter()
-        .map(|row| -> Result<Value> {
-            let metadata =
-                parse_optional_json(row.5, &format!("participant {} metadata_json", row.0))?;
-            Ok(json!({
-                "participant_id": row.0,
-                "research_id": row.1,
-                "participant_kind": row.2,
-                "identity_provider": row.3,
-                "external_id": row.4,
-                "metadata": metadata,
-                "created_at": row.6,
-            }))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let session_participants_sql = if session_id.is_some() {
-        "select experiment_id, session_id, participant_id, participant_session_id, role, joined_at, left_at, connection_status from session_participants where experiment_id = ? and session_id = ? order by session_id, role"
-    } else {
-        "select experiment_id, session_id, participant_id, participant_session_id, role, joined_at, left_at, connection_status from session_participants where experiment_id = ? order by session_id, role"
-    };
-    let mut session_participants_query = sqlx::query_as::<
-        _,
-        (
-            String,
-            i64,
-            i64,
-            String,
-            String,
-            String,
-            Option<String>,
-            String,
-        ),
-    >(session_participants_sql)
-    .bind(experiment_id);
-    if let Some(session_id) = session_id {
-        session_participants_query = session_participants_query.bind(session_id);
-    }
-    let session_participants = session_participants_query
-        .fetch_all(pool)
-        .await?
-        .into_iter()
-        .map(|row| {
-            json!({
-                "experiment_id": row.0,
-                "session_id": row.1,
-                "participant_id": row.2,
-                "participant_session_id": row.3,
-                "role": row.4,
-                "joined_at": row.5,
-                "left_at": row.6,
-                "connection_status": row.7,
-            })
-        })
-        .collect::<Vec<_>>();
-    let consent_sql = if session_id.is_some() {
-        "select consent_id, experiment_id, session_id, participant_id, consent_item_id, accepted, purpose, declared_at, consent_text_hash, metadata_json from consent_declarations where experiment_id = ? and session_id = ? order by declared_at, consent_id"
-    } else {
-        "select consent_id, experiment_id, session_id, participant_id, consent_item_id, accepted, purpose, declared_at, consent_text_hash, metadata_json from consent_declarations where experiment_id = ? order by declared_at, consent_id"
-    };
-    let mut consent_query = sqlx::query_as::<
-        _,
-        (
-            i64,
-            String,
-            Option<i64>,
-            i64,
-            String,
-            i64,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-        ),
-    >(consent_sql)
-    .bind(experiment_id);
-    if let Some(session_id) = session_id {
-        consent_query = consent_query.bind(session_id);
-    }
-    let consent_declarations = consent_query
-        .fetch_all(pool)
-        .await?
-        .into_iter()
-        .map(|row| -> Result<Value> {
-            let metadata = parse_optional_json(
-                row.9,
-                &format!("consent declaration {} metadata_json", row.0),
-            )?;
-            Ok(json!({
-                "consent_id": row.0,
-                "experiment_id": row.1,
-                "session_id": row.2,
-                "participant_id": row.3,
-                "consent_item_id": row.4,
-                "accepted": row.5 != 0,
-                "purpose": row.6,
-                "declared_at": row.7,
-                "consent_text_hash": row.8,
-                "metadata": metadata,
-            }))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(json!({
-        "experiment": experiment,
-        "participants": participants,
-        "sessions": sessions,
-        "session_participants": session_participants,
-        "consent_declarations": consent_declarations,
-        "session_events": events,
-    }))
-}
-
 /// Decodes an optional stored JSON column without conflating corruption with SQL NULL.
 fn parse_optional_json(raw: Option<String>, label: &str) -> Result<Option<Value>> {
     raw.map(|value| {
         serde_json::from_str(&value).with_context(|| format!("{label} contains invalid JSON"))
     })
     .transpose()
-}
-
-/// Runtime participant session record used by active server tasks.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ParticipantSession {
-    pub id: String,
-    pub participant_id: i64,
-    pub research_id: String,
-    pub source: String,
-    /// Immutable data-use purpose selected when participant intake opened.
-    pub purpose: String,
-    pub status: String,
-    pub consent_decisions: HashMap<String, bool>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-/// Runtime record for one participant's membership in a session.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct SessionParticipant {
-    pub participant_session_id: String,
-    pub participant_id: i64,
-    /// Runtime participant source, used to distinguish humans from agents.
-    pub source: String,
-    pub role: PlayerRole,
-    pub connected: bool,
-    /// Whether the browser declared its game channel ready at least once.
-    pub ready: bool,
-    /// Whether this participant has completed required audio/STT setup for this session.
-    pub audio_ready: bool,
-    pub consent_decisions: HashMap<String, bool>,
-    pub joined_at: String,
-    pub updated_at: String,
-    /// Most recent disconnection instant for restart-safe grace handling.
-    pub disconnected_at: Option<String>,
-    /// Fixed reconnect deadline derived when the connection was lost.
-    pub reconnect_deadline_at: Option<String>,
-}
-
-/// Runtime session record parameterized by a concrete game state type.
-pub struct LiveSession<G: Game> {
-    pub id: String,
-    pub experiment_id: String,
-    pub session_id: i64,
-    pub mode: String,
-    /// Immutable data-use purpose shared by every participant in this session.
-    pub purpose: String,
-    /// Session-local behavior object retaining session-scoped capabilities.
-    pub game: G,
-    /// Authoritative serializable mechanics state.
-    pub state: G::State,
-    /// Base game-scoped handle for this session's log.
-    pub logger: SessionLogger,
-    /// Owned writer task drained when the session log is closed.
-    pub log_writer: Option<SessionLogWriter>,
-    /// Authoritative shared lifecycle for this forming, running, or ended session.
-    pub lifecycle: SessionLifecycle,
-    /// Temporary interaction pause while a required role may reconnect.
-    pub pause: Option<crate::protocol::ParticipantPauseReason>,
-    pub participants: HashMap<String, SessionParticipant>,
-    /// Fixed beginning of the unmatched waiting phase.
-    pub waiting_started_at: String,
-    /// Fixed server-owned deadline for finding a partner.
-    pub waiting_deadline_at: String,
-    /// Fixed absolute infrastructure lifetime deadline.
-    pub lifetime_deadline_at: String,
-    /// Last accepted message or action; heartbeats never advance this value.
-    pub last_meaningful_activity_at: Option<String>,
-    /// Fixed idle deadline derived from the last meaningful activity.
-    pub idle_deadline_at: Option<String>,
-    /// Fixed end of the optional post-completion human voice relay period.
-    pub voice_ends_at: Option<String>,
-    pub updated_at: String,
-}
-
-/// Typed shared session lifecycle used by every runtime transition.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(tag = "state", content = "end", rename_all = "snake_case")]
-pub enum SessionLifecycle {
-    /// Participants or required services are still assembling.
-    Forming,
-    /// The game has started and may be active or temporarily paused.
-    Running,
-    /// One immutable shared terminal value has been committed.
-    Ended(SessionEnd),
-}
-
-impl SessionLifecycle {
-    /// Returns the stable database lifecycle value.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Forming => "forming",
-            Self::Running => "running",
-            Self::Ended(_) => "ended",
-        }
-    }
-
-    /// Reports whether the session has reached its absorbing state.
-    pub fn is_ended(&self) -> bool {
-        matches!(self, Self::Ended(_))
-    }
 }
 
 /// Stored transcript segment received from the browser transcription flow.
@@ -3045,63 +2692,6 @@ pub struct TranscriptSegment {
     pub end_game_time_ms: i64,
     pub text: String,
     pub metadata: Value,
-}
-
-/// In-memory active-session cache used for live WebSocket and game execution state.
-pub struct MemoryState<G: Game> {
-    pub participants: HashMap<String, ParticipantSession>,
-    pub sessions: HashMap<String, LiveSession<G>>,
-}
-
-impl<G: Game> Default for MemoryState<G> {
-    fn default() -> Self {
-        Self {
-            participants: HashMap::new(),
-            sessions: HashMap::new(),
-        }
-    }
-}
-
-impl<G: Game> MemoryState<G> {
-    /// Creates and stores an active participant session after durable identity creation.
-    pub fn create_participant(
-        &mut self,
-        participant_id: i64,
-        research_id: String,
-        source: String,
-        purpose: String,
-    ) -> ParticipantSession {
-        self.create_participant_with_id(new_id("ps"), participant_id, research_id, source, purpose)
-    }
-
-    /// Restores or creates a participant session with a durable admission subject.
-    pub fn create_participant_with_id(
-        &mut self,
-        participant_session_id: String,
-        participant_id: i64,
-        research_id: String,
-        source: String,
-        purpose: String,
-    ) -> ParticipantSession {
-        if let Some(existing) = self.participants.get(&participant_session_id) {
-            return existing.clone();
-        }
-        let now = now_iso();
-        let participant = ParticipantSession {
-            id: participant_session_id,
-            participant_id,
-            research_id,
-            source,
-            purpose,
-            status: "created".to_string(),
-            consent_decisions: HashMap::new(),
-            created_at: now.clone(),
-            updated_at: now,
-        };
-        self.participants
-            .insert(participant.id.clone(), participant.clone());
-        participant
-    }
 }
 
 #[cfg(test)]
