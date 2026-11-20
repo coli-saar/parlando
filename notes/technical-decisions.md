@@ -4752,3 +4752,9 @@ The old full-depth brass jambs overlapped the wallpaper with identical face dept
 
 ### Bridge doorway running clearance
 The retractable steel plate now spans the actual 130 mm gap from the parquet edge to the landing on either car. Its endpoints use the physical floor geometry and wing transform, independent of the walking guide. The East stringcourse and West lintel below each stop finish 140 mm below the landing, clearing the 100 mm plate. Formerly their top surfaces coincided with the steel and the outer edge of the stone at upper stops.
+
+### Render deployment for Counterweight Hotel
+Build the locked server and web app against the monorepo SDKs, including the shared bridge route in the Rust stage. Restrict Docker context inputs to source and build manifests so the local dashboard login, database and experiment exports stay on the development machine. The single Starter instance uses a 1 GB disk, with an application-owned directory created after mount. The service drops privileges before starting Parlando. Render provisions a new catalogue independently of the development server.
+
+### Free Render demo
+The hotel Blueprint now selects Free compute and requests no disk. The container runs as parlando and writes SQLite into its writable home directory. Local state is ephemeral. Durable storage requires a separately configured store or a paid persistent disk.

@@ -60,3 +60,14 @@ The default port is `8081`, the database is `.local/hotel.sqlite`, and the compi
 ## Landscape credits
 
 The Alpine skyline wraps the original alpenglow mountain artwork around the hotel.
+
+## Deploy on Render
+
+The hotel Blueprint builds the server and participant client against the Parlando source in this repository. One Free web service serves both. Its local SQLite database lives in the container user’s home directory. Render discards local files on spin-down, restart, or redeploy, including the administrator account, experiments, and session records.
+
+1. Push the hotel and its build inputs to a branch Render can access. In the Render dashboard choose **New → Blueprint**, connect the repository, select that branch, and enter `games/counterweight-hotel/render.yaml` as the Blueprint path. The Docker context is the repository root.
+2. Confirm the service shows Free compute and deploy. Once `/health` passes, open the service URL followed by `/admin` and create the first administrator before sharing the URL.
+3. Create an experiment named `porter` with **Human vs agent**, **Hotel porter**, and typed chat. Use `{}` for the game and porter settings. Activate it and open `/e/porter/`. For two guests, create and activate `paired` with **Human vs human**. Use the participant link shown by the dashboard.
+4. For speech, enter provider credentials in **Game settings** and configure voice in the experiment. After a reset, repeat administrator setup and recreate or import your experiments before activating them. Re-enter provider credentials for voice.
+
+The repository’s [Render deployment guide](../../docs/deploying-on-render.md) covers storage, administrator setup, and backups.
