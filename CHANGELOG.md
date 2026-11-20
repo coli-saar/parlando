@@ -6,6 +6,35 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## Unreleased
 
+## [0.6.0] - 2026-11-20
+
+### Added
+
+- Replay newly recorded sessions from the administrator dashboard. Play, pause, seek, and switch
+  between player viewpoints in the same game view used for live play.
+- Add The Last Screening and Counterweight Hotel as example games for two people or one person
+  with a software partner.
+
+### Changed
+
+- Replace the React renderer's `GameSession` with `GameSnapshot` and rename `sendAction` to `act`.
+  The shared participant app now renders conversation, microphone, connection, and leave controls.
+- Require Rust `Game::State` to implement `Deserialize`. Replay uses the original game rules and
+  three game-defined compatibility versions for state, actions, and rules.
+- Store one initial state and a sequence of accepted actions. New corpus action events carry
+  `null` in their `state` field. Existing records remain available with SQLite schema version 16.
+- Update the participant lobby, waiting room, and administrator screens with shared Parlando branding.
+
+### Fixed
+
+- Keep participant admission, action delivery, and session expiry consistent under concurrent
+  requests. Preserve active rooms and their settings when intake closes or configuration changes.
+- Discard stale reconnect and dashboard responses when their session or experiment changes.
+- Export a consistent SQLite snapshot and retain setup logs in session history while omitting
+  events before gameplay from the corpus.
+
+See [Upgrade from 0.5.0 to 0.6.0](docs/migrating-0.5.0-to-0.6.0.md).
+
 ## [0.5.0] - 2026-10-05
 
 ### Added

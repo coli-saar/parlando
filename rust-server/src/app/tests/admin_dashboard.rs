@@ -25,6 +25,9 @@ async fn admin_dashboard_serves_html_css_and_javascript_assets() {
     assert!(page_html.contains("id=\"icon-prolific\""));
 
     for (path, expected_content_type) in [
+        ("/admin/assets/parlando-mark.svg", "image/svg+xml"),
+        ("/admin/assets/parlando-wordmark.svg", "image/svg+xml"),
+        ("/admin/assets/palette.css", "text/css; charset=utf-8"),
         (
             "/admin/assets/admin-dashboard.css",
             "text/css; charset=utf-8",

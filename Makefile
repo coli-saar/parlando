@@ -17,6 +17,13 @@ PYTHON ?= python3
 # Default workflow: prepare the reusable JavaScript client for local development.
 all: install-local
 
+.PHONY: sync-brand
+# Refresh packaged copies of the canonical logos and screen palette.
+sync-brand:
+	cp brand/parlando-mark.svg brand/parlando-wordmark.svg brand/palette.css rust-server/brand/
+	cp brand/parlando-mark.svg brand/parlando-wordmark.svg brand/palette.css docs/web/static/brand/
+	cp brand/parlando-mark.svg js-client/src/participant/
+
 # Runs the complete reusable-server, browser-client, and Python-SDK test matrix.
 test: test-rust test-client-server test-python
 

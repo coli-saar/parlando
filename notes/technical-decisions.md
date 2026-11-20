@@ -4761,3 +4761,20 @@ The hotel Blueprint now selects Free compute and requests no disk. The container
 
 ### Hotel participant waiting room
 The shared participant view labels the seats relative to the connected guest. The microphone status stays visible and a disclosure holds transcription diagnostics. The hotel groups the authoritative timer and recruitment guidance in one inset, ahead of seat status and secondary controls. The countdown uses timer semantics to avoid announcing each tick.
+
+### Parlando logos and official screen palette (2026-11-20)
+
+The canonical assets are `brand/parlando-mark.svg`, `parlando-wordmark.svg`, and `palette.css` in the same directory. The five-piece lowercase p refers to the tangram communication task of Clark and Wilkes-Gibbs. Use the wordmark in product headers and the standalone p in compact contexts such as favicons. Both use the same Futura Bold p outline, white interior seams, and a thin charcoal outline around the letter. The remaining letters are outlined paths so rendering needs no installed font. Preserve the wordmark’s spacing, x-height and proportions.
+
+| Tile | Official sRGB | Interface role |
+| --- | --- | --- |
+| Stem, UdS blue | `#004875` | Primary action, link, selection |
+| Left, forest green | `#33684B` | Active, success |
+| Top, ochre | `#AD790C` | Draft and warning accents |
+| Right, brick red | `#A04432` | Danger and error |
+| Bottom, plum | `#71456E` | Testing and secondary emphasis |
+
+The blue matches the solid pixels in the supplied UdS-Logo-Leitfarbe-blau-transparent.png (RGB 0, 72, 117). The published style guide gives #004877 and the supplied JPEG uses Adobe RGB. For screen assets use the PNG value. Neutral text, backgrounds, and lighter state fills support legibility. Status labels carry the meaning alongside color. Preserve study-specific colors where they encode game mechanics or experimental stimuli.
+
+The repository-root `brand/` directory owns the originals so designers and contributors can find them directly. Run `make sync-brand` after editing the originals. It copies both logos and the palette to the Rust crate and Hugo static assets, and the standalone mark to the participant SDK. Local copies keep each subproject independently buildable.
+The participant SDK bundles the same mark alongside the lobby module, so its platform label works in independently hosted game clients.

@@ -6,10 +6,10 @@
   --muted: #65716f;
   --line: #d9ddd8;
   --line-strong: #b9c2bd;
-  --teal: #0b625e;
-  --teal-dark: #074845;
-  --teal-soft: #e5f1ef;
-  --gold: #b78332;
+  --link: var(--parlando-blue);
+  --link-dark: #003658;
+  --link-soft: #e5eff5;
+  --gold: var(--parlando-ochre);
   --code: #f2f4f2;
   --shadow: 0 1rem 2.8rem rgb(29 41 40 / 9%);
   --header-height: 4rem;
@@ -38,13 +38,13 @@ body {
 }
 
 a {
-  color: var(--teal);
+  color: var(--link);
   text-decoration-thickness: 0.08em;
   text-underline-offset: 0.18em;
 }
 
 a:hover {
-  color: var(--teal-dark);
+  color: var(--link-dark);
 }
 
 button,
@@ -65,7 +65,7 @@ img {
   padding: 0.6rem 0.8rem;
   transform: translateY(-150%);
   color: white;
-  background: var(--teal-dark);
+  background: var(--link-dark);
 }
 
 .skip-link:focus {
@@ -98,37 +98,6 @@ img {
   text-decoration: none;
 }
 
-.wordmark-mark {
-  display: flex;
-  width: 1.85rem;
-  height: 1.85rem;
-  align-items: flex-end;
-  justify-content: center;
-  gap: 0.14rem;
-  padding: 0.38rem;
-  border-radius: 50%;
-  background: var(--teal);
-}
-
-.wordmark-mark i {
-  display: block;
-  width: 0.2rem;
-  border-radius: 1rem;
-  background: white;
-}
-
-.wordmark-mark i:nth-child(1) {
-  height: 0.38rem;
-}
-
-.wordmark-mark i:nth-child(2) {
-  height: 0.82rem;
-}
-
-.wordmark-mark i:nth-child(3) {
-  height: 0.58rem;
-}
-
 .site-links {
   display: flex;
   align-items: center;
@@ -144,7 +113,7 @@ img {
 
 .site-links a[aria-current="page"],
 .site-links a:hover {
-  color: var(--teal);
+  color: var(--link);
 }
 
 .search-open,
@@ -211,14 +180,14 @@ kbd {
   height: 31rem;
   border: 1px solid #c9d8d4;
   border-radius: 50%;
-  box-shadow: inset 0 0 0 4rem var(--teal-soft), inset 0 0 0 4.1rem #c9d8d4;
+  box-shadow: inset 0 0 0 4rem var(--link-soft), inset 0 0 0 4.1rem #c9d8d4;
   content: "";
   opacity: 0.72;
 }
 
 .eyebrow {
   margin: 0 0 1rem;
-  color: var(--teal);
+  color: var(--link);
   font-size: 0.78rem;
   font-weight: 800;
   letter-spacing: 0.14em;
@@ -267,19 +236,19 @@ kbd {
 }
 
 .button:hover {
-  border-color: var(--teal);
-  color: var(--teal);
+  border-color: var(--link);
+  color: var(--link);
 }
 
 .button--primary {
-  border-color: var(--teal);
+  border-color: var(--link);
   color: white;
-  background: var(--teal);
+  background: var(--link);
 }
 
 .button--primary:hover {
   color: white;
-  background: var(--teal-dark);
+  background: var(--link-dark);
 }
 
 .home-principles {
@@ -314,7 +283,7 @@ kbd {
 
 .principle-number {
   margin: 0;
-  color: var(--gold);
+  color: var(--parlando-green);
   font-size: 0.75rem;
   font-weight: 800;
   letter-spacing: 0.12em;
@@ -355,14 +324,14 @@ kbd {
 }
 
 .manual-nav a:hover {
-  color: var(--teal);
+  color: var(--link);
   background: rgb(229 241 239 / 55%);
 }
 
 .manual-nav a.is-current {
-  border-left-color: var(--teal);
-  color: var(--teal-dark);
-  background: var(--teal-soft);
+  border-left-color: var(--link);
+  color: var(--link-dark);
+  background: var(--link-soft);
   font-weight: 720;
 }
 
@@ -407,7 +376,7 @@ kbd {
 
 .manual-nav-mobile summary {
   padding: 0.8rem 1rem;
-  color: var(--teal-dark);
+  color: var(--link-dark);
   font-weight: 720;
   cursor: pointer;
 }
@@ -576,7 +545,7 @@ kbd {
   margin: 1.6rem 0;
   padding: 1rem 1.15rem;
   border: 1px solid #bfd3cf;
-  border-left: 4px solid var(--teal);
+  border-left: 4px solid var(--link);
   border-radius: 0.35rem;
   background: #f0f7f5;
 }
@@ -589,7 +558,7 @@ kbd {
 
 .callout-title {
   margin: 0 0 0.35rem !important;
-  color: var(--teal-dark);
+  color: var(--link-dark);
   font-size: 0.85rem;
   font-weight: 800;
   letter-spacing: 0.02em;
@@ -641,7 +610,7 @@ kbd {
 }
 
 .page-toc a:hover {
-  color: var(--teal);
+  color: var(--link);
 }
 
 .standalone-content {
@@ -694,7 +663,7 @@ kbd {
 }
 
 .search-input:focus {
-  border-color: var(--teal);
+  border-color: var(--link);
   box-shadow: 0 0 0 3px rgb(11 98 94 / 12%);
 }
 
@@ -722,7 +691,7 @@ kbd {
 }
 
 .search-results a:hover {
-  background: var(--teal-soft);
+  background: var(--link-soft);
 }
 
 .search-results strong,

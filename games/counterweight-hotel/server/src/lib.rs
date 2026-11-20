@@ -375,13 +375,10 @@ impl GameFactory for HotelFactory {
 }
 impl Game for Hotel {
     /// Replay state can record the latest guest pose for each side of the crossing.
-    #[cfg(feature = "local-replay")]
     const STATE_REPRESENTATION_VERSION: &'static str = "6";
     /// Bridge pose actions carry the latest position or clear it on reentry.
-    #[cfg(feature = "local-replay")]
     const ACTION_REPRESENTATION_VERSION: &'static str = "4";
     /// Rescue freight is staged at a dedicated dock and a wrong seal trips the local lock.
-    #[cfg(feature = "local-replay")]
     const RULES_VERSION: &'static str = "5";
 
     type Config = Config;

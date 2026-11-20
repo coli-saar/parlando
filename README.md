@@ -1,4 +1,4 @@
-# Parlando
+# <img src="brand/parlando-wordmark.svg" width="260" alt="Parlando">
 
 Parlando is a platform for running two-player online dialogue-game experiments. A game supplies a
 browser interface and typed task rules; Parlando supplies participant entry, consent, pairing,
@@ -10,6 +10,8 @@ running the Great Tree example, creating a game, configuring a study, deploying 
 research data.
 
 Maintaining Parlando itself? Open the [internals atlas](developer/code-atlas/index.html) from a local checkout to inspect runtime dependencies, session transitions, ownership and regression fixtures.
+
+The [brand directory](brand/) contains the official Parlando logos and screen palette. After editing them, run `make sync-brand` to refresh the subproject copies.
 
 ## Run the Great Tree example
 
@@ -29,13 +31,13 @@ Games use the coordinated Rust and JavaScript releases:
 
 ```toml
 [dependencies]
-parlando = "0.5.0"
+parlando = "0.6.0"
 ```
 
 ```json
 {
   "dependencies": {
-    "@coli-saar/parlando-client": "^0.5.0"
+    "@coli-saar/parlando-client": "^0.6.0"
   }
 }
 ```
@@ -63,7 +65,7 @@ without introducing a second site generator or publishing the older technical do
 
 ## Current scope
 
-Parlando 0.5.0 supports roles `A` and `B`, live human–human and human–agent sessions, headless
+Parlando 0.6.0 supports roles `A` and `B`, live human–human and human–agent sessions, headless
 agent–agent evaluation, SQLite persistence, typed communication, optional live voice and
 transcription, and single-process live session state. Different compiled games run as separate
 processes with separate databases.

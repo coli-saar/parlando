@@ -5,7 +5,7 @@ COPY rust-server/ ./rust-server/
 COPY games/counterweight-hotel/server/ ./games/counterweight-hotel/server/
 # The porter and the rendered walkway use the same route geometry.
 COPY games/counterweight-hotel/client/web/src/scene/bridge-route.json ./games/counterweight-hotel/client/web/src/scene/
-RUN cargo build --release --locked --features local-replay \
+RUN cargo build --release --locked \
     --config 'patch.crates-io.parlando.path="/app/rust-server"' \
     --manifest-path games/counterweight-hotel/server/Cargo.toml
 
@@ -15,9 +15,9 @@ COPY js-client/ ./
 RUN npm ci && npm run build
 WORKDIR /app/games/counterweight-hotel/client/web
 COPY games/counterweight-hotel/client/web/ ./
-# Match run.sh --local: install the locked tree and use the SDK from this checkout.
-RUN npm ci && rm -r node_modules/@coli-saar/parlando-client \
-    && ln -s /app/js-client node_modules/@coli-saar/parlando-client && npm run build
+# Match run.sh --local and resolve the SDK from this checkout.
+RUN npm install --no-save --package-lock=false --install-links --no-audit --no-fund /app/js-client \
+    && npm run build
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \

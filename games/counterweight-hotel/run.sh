@@ -41,11 +41,11 @@ client_stamp() {
 
 if [[ "$rebuild" == true || ! -s "$client_dir/dist/index.html" || ! -f "$stamp" || "$(client_stamp)" != "$(cat "$stamp")" ]]; then
   echo "Building the hotel browser client with $mode Parlando"
-  (cd "$client_dir" && npm ci --no-audit --no-fund)
   if [[ "$mode" == local ]]; then
     (cd "$repo_dir/js-client" && npm ci --no-audit --no-fund && npm run build)
-    mv "$client_dir/node_modules/@coli-saar/parlando-client" "$client_dir/node_modules/.registry-parlando-client"
-    ln -s "$repo_dir/js-client" "$client_dir/node_modules/@coli-saar/parlando-client"
+    (cd "$client_dir" && npm install --no-save --package-lock=false --install-links --no-audit --no-fund "$repo_dir/js-client")
+  else
+    (cd "$client_dir" && npm ci --no-audit --no-fund)
   fi
   (cd "$client_dir" && npm run build)
   client_stamp > "$stamp"
@@ -56,7 +56,7 @@ fi
 # Cargo reads config from the invocation directory. Keep the repository patch out of published builds.
 cargo_options=(--manifest-path "$game_dir/server/Cargo.toml")
 if [[ "$mode" == local ]]; then
-  cargo_options+=(--features local-replay --config "patch.crates-io.parlando.path=\"$repo_dir/rust-server\"")
+  cargo_options+=(--config "patch.crates-io.parlando.path=\"$repo_dir/rust-server\"")
 fi
 (cd / && cargo build "${cargo_options[@]}")
 

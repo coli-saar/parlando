@@ -63,6 +63,8 @@ pub(super) async fn admin_login_page<A: Game>(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="/admin/assets/parlando-mark.svg">
+  <link rel="stylesheet" href="/admin/assets/palette.css">
   <title>{title} · Parlando</title>
   <style>
     :root {{ font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #182026; }}
@@ -71,19 +73,18 @@ pub(super) async fn admin_login_page<A: Game>(
     button, input {{ font: inherit; }}
     .app-header {{ align-items: center; background: #fff; border-bottom: 1px solid #dde2e7; display: flex; min-height: 64px; padding: 12px 24px; }}
     .brand {{ display: grid; gap: 3px; }}
-    .brand-name {{ font-size: 20px; font-weight: 800; line-height: 1.15; }}
     .brand-section {{ color: #65717c; font-size: 12px; font-weight: 700; text-transform: uppercase; }}
     .page {{ align-items: center; display: flex; justify-content: center; min-height: calc(100vh - 64px); padding: 48px 20px; }}
     .auth-shell {{ display: grid; grid-template-columns: minmax(0, 42%) minmax(0, 58%); max-width: 880px; overflow: hidden; width: 100%; background: #fff; border: 1px solid #dce2e8; border-radius: 12px; box-shadow: 0 18px 60px rgba(20, 34, 45, .12); }}
-    .context {{ background: #185f8f; color: #fff; display: flex; flex-direction: column; justify-content: space-between; min-height: 500px; padding: 42px; position: relative; }}
+    .context {{ background: var(--parlando-blue); color: #fff; display: flex; flex-direction: column; justify-content: space-between; min-height: 500px; padding: 42px; position: relative; }}
     .context::after {{ background: rgba(255,255,255,.08); border-radius: 999px; content: ""; height: 240px; position: absolute; right: -110px; top: -90px; width: 240px; }}
-    .mark {{ align-items: center; background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.22); border-radius: 10px; display: inline-flex; font-size: 24px; font-weight: 850; height: 48px; justify-content: center; letter-spacing: -.04em; width: 48px; }}
+    .mark {{ background: white; border-radius: 8px; padding: 4px; width: 48px; }}
     .context-copy {{ position: relative; z-index: 1; }}
     .context h2 {{ font-size: 29px; letter-spacing: -.02em; line-height: 1.15; margin: 24px 0 12px; max-width: 300px; }}
     .context p {{ color: #dbeaf4; line-height: 1.6; margin: 0; max-width: 310px; }}
     .context-footer {{ color: #c9dfed; font-size: 12px; font-weight: 650; position: relative; z-index: 1; }}
     .auth-panel {{ display: flex; flex-direction: column; justify-content: center; padding: 48px; }}
-    .eyebrow {{ color: #185f8f; font-size: 12px; font-weight: 800; letter-spacing: .08em; margin-bottom: 10px; text-transform: uppercase; }}
+    .eyebrow {{ color: var(--parlando-blue); font-size: 12px; font-weight: 800; letter-spacing: .08em; margin-bottom: 10px; text-transform: uppercase; }}
     h1 {{ font-size: 28px; letter-spacing: -.02em; line-height: 1.2; margin: 0; }}
     .intro {{ color: #65717c; line-height: 1.55; margin: 10px 0 28px; }}
     form {{ display: grid; gap: 18px; }}
@@ -92,8 +93,8 @@ pub(super) async fn admin_login_page<A: Game>(
     .field small {{ color: #76838e; font-size: 12px; }}
     input {{ appearance: none; background: #fff; border: 1px solid #c9d2da; border-radius: 7px; color: #182026; outline: none; padding: 11px 12px; transition: border-color 120ms ease, box-shadow 120ms ease; width: 100%; }}
     input:hover {{ border-color: #9fadb8; }}
-    input:focus {{ border-color: #185f8f; box-shadow: 0 0 0 3px rgba(24,95,143,.14); }}
-    .primary {{ background: #185f8f; border: 1px solid #185f8f; border-radius: 7px; color: #fff; cursor: pointer; font-weight: 750; margin-top: 4px; min-height: 44px; padding: 10px 16px; transition: background 120ms ease, transform 80ms ease; }}
+    input:focus {{ border-color: var(--parlando-blue); box-shadow: 0 0 0 3px rgba(0,72,117,.14); }}
+    .primary {{ background: var(--parlando-blue); border: 1px solid var(--parlando-blue); border-radius: 7px; color: #fff; cursor: pointer; font-weight: 750; margin-top: 4px; min-height: 44px; padding: 10px 16px; transition: background 120ms ease, transform 80ms ease; }}
     .primary:hover {{ background: #124f79; }}
     .primary:active {{ transform: translateY(1px); }}
     .primary:disabled {{ cursor: wait; opacity: .7; }}
@@ -102,11 +103,10 @@ pub(super) async fn admin_login_page<A: Game>(
     .setup-note div {{ display: grid; gap: 2px; }}
     .setup-note strong {{ font-size: 13px; }}
     .setup-note div span {{ color: #5b6873; font-size: 12px; line-height: 1.4; }}
-    .error {{ background: #fff8f7; border: 1px solid #efc3bf; border-radius: 7px; color: #9f1d16; display: none; font-size: 13px; line-height: 1.4; margin: 16px 0 0; padding: 10px 12px; }}
+    .error {{ background: #fff8f7; border: 1px solid #efc3bf; border-radius: 7px; color: var(--parlando-brick); display: none; font-size: 13px; line-height: 1.4; margin: 16px 0 0; padding: 10px 12px; }}
     .error.visible {{ display: block; }}
     @media (max-width: 720px) {{
       .app-header {{ padding: 10px 16px; }}
-      .brand-name {{ font-size: 18px; }}
       .page {{ align-items: flex-start; padding: 24px 14px; }}
       .auth-shell {{ display: block; }}
       .context {{ min-height: auto; padding: 26px; }}
@@ -118,10 +118,10 @@ pub(super) async fn admin_login_page<A: Game>(
   </style>
 </head>
 <body>
-  <header class="app-header"><div class="brand"><span class="brand-name">Parlando</span><span class="brand-section">Experimenter dashboard</span></div></header>
+  <header class="app-header"><div class="brand"><img src="/admin/assets/parlando-wordmark.svg" width="110" alt="Parlando"><span class="brand-section">Experimenter dashboard</span></div></header>
   <main class="page">
     <section class="auth-shell" aria-labelledby="auth-title">
-      <aside class="context"><div class="context-copy"><div class="mark" aria-hidden="true">P</div><h2>Dialogue experiments, clearly managed.</h2><p>Configure experiments, follow live sessions, and export research data from one focused workspace.</p></div><div class="context-footer">Secure administrator area</div></aside>
+      <aside class="context"><div class="context-copy"><img class="mark" src="/admin/assets/parlando-mark.svg" alt=""><h2>Dialogue experiments, clearly managed.</h2><p>Configure experiments, follow live sessions, and export research data from one focused workspace.</p></div><div class="context-footer">Secure administrator area</div></aside>
       <div class="auth-panel">
         <div class="eyebrow">{eyebrow}</div>
         <h1 id="auth-title">{title}</h1>

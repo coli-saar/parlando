@@ -11,7 +11,7 @@ to Speechmatics for transcription. In a human–agent session, the final transcr
 message that the agent receives. When the agent replies, Parlando stores the reply as text and uses
 ElevenLabs to make it audible to the participant.
 
-This chapter documents the communication interfaces that Parlando 0.5.0 supports as complete study
+This chapter documents the communication interfaces that Parlando 0.6.0 supports as complete study
 paths. It does not treat every combination of low-level configuration switches as a separate
 condition.
 
@@ -19,7 +19,7 @@ condition.
 
 ## Choose one documented communication interface
 
-Parlando 0.5.0 supports the following interfaces:
+Parlando 0.6.0 supports the following interfaces:
 
 | Interface | What you provide or enable | What Parlando records |
 | --- | --- | --- |
@@ -101,7 +101,7 @@ audible but absent from the record, or present in the record but not audible, re
 failures.
 
 The Speechmatics setting **Show partial transcripts** asks the provider to produce provisional
-results. Parlando 0.5.0 neither displays nor stores those partial hypotheses. Only final utterances
+results. Parlando 0.6.0 neither displays nor stores those partial hypotheses. Only final utterances
 enter the conversation, so do not design participant feedback around word-by-word captions. Final recognized utterances retain
 word and punctuation timings, and synthesized agent speech retains provider alignment when
 available. The dashboard can show utterances or tokens alongside game events. Corpus exports
@@ -180,7 +180,7 @@ The stress tests exercise Parlando under sustained speech traffic without paid p
 do not test a participant browser, public deployment, actual provider account, or participant
 network. Run both the stress test and a complete public-origin pilot before recruitment.
 
-Parlando 0.5.0 includes Speechmatics transcription and ElevenLabs synthesis, stores neither raw
+Parlando 0.6.0 includes Speechmatics transcription and ElevenLabs synthesis, stores neither raw
 microphone nor synthesized audio, provides no built-in local recognizer, and has no speech path in a
 headless agent–agent run. These are current product boundaries, not a catalogue of hypothetical
 conditions.

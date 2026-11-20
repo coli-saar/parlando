@@ -171,6 +171,18 @@ pub(super) fn experiment_admin_routes<A: Game>(prefix: &str) -> Router<Arc<AppSt
 pub(super) fn dashboard_routes<A: Game>(state: &Arc<ServerContext<A>>, prefix: &str) -> Router {
     let participant_path = |path: &str| format!("{prefix}{path}");
     let public_admin_routes = Router::new()
+        .route(
+            &participant_path("/admin/assets/parlando-mark.svg"),
+            get(parlando_mark),
+        )
+        .route(
+            &participant_path("/admin/assets/parlando-wordmark.svg"),
+            get(parlando_wordmark),
+        )
+        .route(
+            &participant_path("/admin/assets/palette.css"),
+            get(parlando_palette),
+        )
         .route(&participant_path("/admin"), get(admin_entry))
         .route(&participant_path("/admin/"), get(admin_entry))
         .route(

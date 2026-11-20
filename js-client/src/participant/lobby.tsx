@@ -27,7 +27,14 @@ export function StartupShell({
   return (
     <section className="lobby-panel">
       <div className="lobby-heading">
-        <p className="platform-label">{platformLabel(institution)}</p>
+        <p className="platform-label">
+          <img
+            src={new URL("./parlando-mark.svg", import.meta.url).href}
+            width="20" height="20" alt=""
+            style={{ verticalAlign: "middle", marginInlineEnd: "0.4em", display: "inline-block" }}
+          />
+          {platformLabel(institution)}
+        </p>
         {gameName && <p className="game-name">{gameName}</p>}
         {heading && <h1>{heading}</h1>}
       </div>

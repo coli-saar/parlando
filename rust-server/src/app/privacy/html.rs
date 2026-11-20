@@ -56,6 +56,8 @@ pub(super) fn render_privacy_status_html(status: &PrivacyStatus) -> String {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="/admin/assets/parlando-mark.svg">
+  <link rel="stylesheet" href="/admin/assets/palette.css">
   <title>Parlando Privacy Status</title>
   <style>
     :root {{ font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #182026; }}
@@ -63,11 +65,10 @@ pub(super) fn render_privacy_status_html(status: &PrivacyStatus) -> String {
     body {{ margin: 0; min-height: 100vh; }}
     .app-header {{ align-items: center; background: #fff; border-bottom: 1px solid #dde2e7; display: flex; justify-content: space-between; min-height: 64px; padding: 12px 24px; }}
     .brand {{ display: grid; gap: 3px; }}
-    .brand strong {{ font-size: 20px; }}
     .brand span {{ color: #65717c; font-size: 12px; font-weight: 700; text-transform: uppercase; }}
     .header-actions {{ display: flex; flex-wrap: wrap; gap: 8px; }}
     .button {{ background: #fff; border: 1px solid #c9d2da; border-radius: 6px; color: #31404c; font-size: 13px; font-weight: 750; padding: 8px 11px; text-decoration: none; }}
-    .button.primary {{ background: #185f8f; border-color: #185f8f; color: #fff; }}
+    .button.primary {{ background: var(--parlando-blue); border-color: var(--parlando-blue); color: #fff; }}
     main {{ margin: 0 auto; max-width: 1100px; padding: 28px 24px 48px; }}
     h1 {{ font-size: 28px; margin: 0 0 8px; }}
     h2 {{ font-size: 18px; margin: 0 0 12px; }}
@@ -87,7 +88,7 @@ pub(super) fn render_privacy_status_html(status: &PrivacyStatus) -> String {
 </head>
 <body>
   <header class="app-header">
-    <div class="brand"><strong>Parlando</strong><span>Privacy status</span></div>
+    <div class="brand"><img src="/admin/assets/parlando-wordmark.svg" width="110" alt="Parlando"><span>Privacy status</span></div>
     <nav class="header-actions"><a class="button" href="/admin/experiments">Dashboard</a><a class="button" download href="/api/admin/privacy.md">Markdown</a><a class="button primary" download href="/api/admin/privacy.json">JSON</a></nav>
   </header>
   <main>

@@ -53,7 +53,7 @@ A route combines a starting position, bridge locations, initial ballast and an o
 
 ## Build and storage
 
-The launcher uses the sibling Rust runtime and JavaScript SDK by default. Use `--published` for the matching crates.io and npm packages at version 0.5.0. `--build-only` builds without serving. Unchanged launches reuse the browser bundle. Changing sources or package mode rebuilds it; `--rebuild` forces a fresh browser build.
+The launcher uses the sibling Rust runtime and JavaScript SDK by default. Use `--published` for the matching crates.io and npm packages at version 0.6.0. `--build-only` builds without serving. Unchanged launches reuse the browser bundle. Changing sources or package mode rebuilds it; `--rebuild` forces a fresh browser build.
 
 The default port is `8081`, the database is `.local/hotel.sqlite`, and the compiled participant client is `client/web/dist/`. Override the port with `PORT` or the SQLite location with `PARLANDO_DATABASE_URL`. Run `cargo test --manifest-path games/counterweight-hotel/server/Cargo.toml` from the repository root to exercise seeded routes, recovery from detours, private observations, and porter play.
 

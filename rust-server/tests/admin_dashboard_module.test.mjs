@@ -28,7 +28,7 @@ test('dashboard utility classes cannot override the hidden attribute', () => {
   assert.match(css, /\.progress-session-row\s*\{[^}]*column-gap:\s*20px;[^}]*grid-column:\s*1 \/ -1;[^}]*grid-template-columns:\s*subgrid/);
   assert.match(css, /\.progress-session-row strong\s*\{[^}]*color:\s*var\(--text\)/);
   assert.match(css, /\.progress-header\s*\{[^}]*max-width:\s*900px/);
-  assert.match(css, /--session-completed:\s*#2f9e62/);
+  assert.match(css, /--session-completed:\s*var\(--parlando-green\)/);
   assert.match(css, /\.status-dot\.completed\s*\{\s*background:\s*var\(--session-completed\)/);
   assert.match(css, /\.status-dot\.connection-lost\s*\{\s*background:\s*var\(--session-connection-lost\)/);
   assert.match(css, /\.status-dot\.no-partner\s*\{\s*background:\s*var\(--session-no-partner\)/);

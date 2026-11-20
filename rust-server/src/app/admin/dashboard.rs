@@ -4,6 +4,30 @@
 
 use crate::app::{HeaderValue, Html, IntoResponse, Response, CACHE_CONTROL, CONTENT_TYPE};
 
+/// Serves the shared parlando-mark.svg brand asset, including on the sign-in page.
+pub(in crate::app) async fn parlando_mark() -> Response {
+    admin_dashboard_asset(
+        include_str!("../../../brand/parlando-mark.svg"),
+        "image/svg+xml",
+    )
+}
+
+/// Serves the shared parlando-wordmark.svg brand asset, including on the sign-in page.
+pub(in crate::app) async fn parlando_wordmark() -> Response {
+    admin_dashboard_asset(
+        include_str!("../../../brand/parlando-wordmark.svg"),
+        "image/svg+xml",
+    )
+}
+
+/// Serves the shared palette.css brand asset, including on the sign-in page.
+pub(in crate::app) async fn parlando_palette() -> Response {
+    admin_dashboard_asset(
+        include_str!("../../../brand/palette.css"),
+        "text/css; charset=utf-8",
+    )
+}
+
 /// Serves the database-backed experiment/session dashboard.
 pub(in crate::app) async fn admin_experiments_page() -> Html<&'static str> {
     Html(ADMIN_EXPERIMENT_HTML)

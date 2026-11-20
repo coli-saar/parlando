@@ -233,10 +233,6 @@ p, h1, h2 { margin: 0; }
   color: var(--subtle);
   font-size: .85rem;
 }
-.registry-conversation .parlando-session-tools-header,
-.registry-conversation .parlando-session-tools-actions,
-.registry-conversation .parlando-session-tools-form { display: flex; align-items: center; gap: .45rem; }
-.registry-conversation .parlando-session-tools-header { justify-content: space-between; }
 .parlando-session-tools .parlando-leave-session { flex: none; }
 .parlando-session-tools-form input { flex: 1; min-width: 0; }
 .parlando-session-tools-conversation { list-style: none; padding: 0; margin: 0; max-height: 9rem; overflow: auto; }
