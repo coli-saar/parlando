@@ -266,19 +266,16 @@ export function ParticipantAppRuntime<
             startedAt={session.participantState.waiting_started_at}
           />
         )}
-        <ReadinessBoard
-          connected={session.synchronization === "connected"}
-          enabled={enabled}
-          presence={presence}
-          status={status}
-        />
-        {enabled && <TranscriptionProgress connected={session.synchronization === "connected"} status={status} />}
-        <div className="voice-preflight">
-          <div>
-            <strong>Voice chat</strong>
-            <span>{enabled ? status.message : "Voice is disabled for this experiment"}</span>
+        <ReadinessBoard presence={presence} role={session.participantState.state === "waiting" ? session.participantState.role : undefined} />
+        {enabled && (
+          <div className="voice-preflight">
+            <div><strong>Voice chat</strong>{" "}<span>{status.message}</span></div>
+            <details>
+              <summary>Voice connection details</summary>
+              <TranscriptionProgress connected={session.synchronization === "connected"} status={status} />
+            </details>
           </div>
-        </div>
+        )}
         <div className="lobby-actions">
           {session.synchronization === "disconnected" && <button onClick={() => void retryGameConnection()}>Retry connection</button>}
           <button onClick={leave}>Leave waiting room</button>

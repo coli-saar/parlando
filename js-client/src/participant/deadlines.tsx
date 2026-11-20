@@ -33,8 +33,8 @@ export function WaitingRoomNotice({
     : "If no partner joins, or you leave now, this session will end without starting the game.";
   return (
     <section aria-live="polite" className="parlando-waiting-room" role="status">
-      <strong>Waiting for your partner</strong>
-      <span className="parlando-waiting-countdown">
+      <strong>Time left</strong>{" "}
+      <span className="parlando-waiting-countdown" role="timer" aria-live="off">
         {remainingMinutes}:{String(seconds).padStart(2, "0")} remaining
       </span>
       <span>The maximum wait is {maximumMinutes} minute{maximumMinutes === 1 ? "" : "s"}. Keep this tab open.</span>

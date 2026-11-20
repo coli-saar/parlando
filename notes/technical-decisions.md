@@ -4758,3 +4758,6 @@ Build the locked server and web app against the monorepo SDKs, including the sha
 
 ### Free Render demo
 The hotel Blueprint now selects Free compute and requests no disk. The container runs as parlando and writes SQLite into its writable home directory. Local state is ephemeral. Durable storage requires a separately configured store or a paid persistent disk.
+
+### Hotel participant waiting room
+The shared participant view labels the seats relative to the connected guest. The microphone status stays visible and a disclosure holds transcription diagnostics. The hotel groups the authoritative timer and recruitment guidance in one inset, ahead of seat status and secondary controls. The countdown uses timer semantics to avoid announcing each tick.

@@ -263,6 +263,41 @@ p, h1, h2 { margin: 0; }
 .parlando-decline-consent { color: var(--subtle); text-decoration: none; }
 .consent-list, .voice-preflight, .consent-row span { display: grid; gap: .45rem; }
 .consent-list, .voice-preflight, .parlando-partner-reconnect, .parlando-recruitment-handoff { margin-block: .8rem; }
+/* The timer, guests and optional voice setup are separate parts of the waiting card. */
+.lobby-panel:has(.seat-grid) {
+  width: min(100% - 2rem, 38rem);
+  margin-block: clamp(1rem, 6vh, 4rem);
+  border-top: 3px solid var(--brass);
+}
+.lobby-panel:has(.seat-grid) h1 { font-size: clamp(1.8rem, 5vw, 2.45rem); }
+.parlando-waiting-room {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: .4rem 1rem;
+  margin-block: 1.35rem 1rem;
+  padding: .9rem 1rem;
+  background: #23261e;
+  border-inline-start: 2px solid var(--brass);
+}
+.parlando-waiting-countdown { color: var(--brass); font-variant-numeric: tabular-nums; }
+.parlando-waiting-room > span:last-child,
+.parlando-waiting-room > span:nth-last-child(2) { grid-column: 1 / -1; color: var(--subtle); }
+.lobby-panel .seat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.lobby-panel .seat-grid > div { display: grid; gap: .15rem; }
+.lobby-panel .seat-grid span, .lobby-panel .voice-preflight span { color: var(--subtle); }
+.lobby-panel .seat-ready span { color: #bfd8ad; }
+.lobby-panel:has(.seat-grid) .voice-preflight {
+  border-top: 1px solid #54503e;
+  margin-top: 1rem;
+  padding-top: .85rem;
+}
+.lobby-panel:has(.seat-grid) .voice-preflight > div,
+.lobby-panel .transcription-progress > div:first-child { display: flex; flex-wrap: wrap; gap: .15rem .75rem; }
+.lobby-panel .voice-preflight summary { color: var(--subtle); cursor: pointer; padding-block: .35rem; }
+.lobby-panel .transcription-progress { padding: .6rem 1rem; background: #23261e; }
+.lobby-panel .transcription-progress ol { padding-inline-start: 1.4rem; margin-block: .5rem; }
+.lobby-panel:has(.seat-grid) .lobby-actions button:only-child { background: transparent; }
 .consent-row { display: grid; grid-template-columns: auto 1fr; align-items: start; gap: .65rem; }
 .consent-row input { margin-top: .35rem; }
 .parlando-partner-reconnect, .parlando-idle-deadline {

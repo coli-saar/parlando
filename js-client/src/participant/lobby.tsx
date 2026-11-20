@@ -6,8 +6,7 @@
  */
 
 import { type ReactNode } from "react";
-import { type VoiceStatus } from "../audio/types.js";
-import { type Presence } from "../protocol.js";
+import { type Presence, type PlayerRole } from "../protocol.js";
 
 /** Displays the common experiment heading, participant controls, and error feedback. */
 export function StartupShell({
@@ -43,36 +42,18 @@ export function StartupShell({
   );
 }
 
-/** Displays connection and service readiness while participants wait. */
-export function ReadinessBoard({
-  connected,
-  enabled,
-  presence,
-  status
-}: {
-  connected: boolean;
-  enabled: boolean;
-  presence: Presence;
-  status: VoiceStatus;
-}) {
-  const aConnected = Boolean(presence.A?.connected);
-  const bConnected = Boolean(presence.B?.connected);
+/** Shows both seats from the waiting guest’s perspective using server-reported presence. */
+export function ReadinessBoard({ presence, role }: { presence: Presence; role?: PlayerRole }) {
+  const first = role ?? "A";
+  const seats: PlayerRole[] = [first, first === "A" ? "B" : "A"];
   return (
     <div className="seat-grid">
-      <div className={aConnected ? "seat-ready" : ""}>
-        <strong>Player A</strong>
-        <span>{aConnected ? "Connected" : "Waiting"}</span>
-      </div>
-      <div className={bConnected ? "seat-ready" : ""}>
-        <strong>Player B</strong>
-        <span>{bConnected ? "Connected" : "Waiting"}</span>
-      </div>
-      {enabled && (
-        <div className={status.transcriptionReady ? "seat-ready" : ""}>
-          <strong>Transcription Service</strong>
-          <span>{status.transcriptionReady ? "Ready" : connected ? status.transcriptionMessage : "Not started"}</span>
+      {seats.map(seat => (
+        <div key={seat} className={presence[seat]?.connected ? "seat-ready" : ""}>
+          <strong>{role ? (seat === role ? "You" : "Your partner") : "Player " + seat}</strong>{" "}
+          <span>{presence[seat]?.connected ? "Connected" : "Waiting"}</span>
         </div>
-      )}
+      ))}
     </div>
   );
 }
