@@ -1,4 +1,9 @@
 //! Seat-level declarations and the policy for activating both player roles.
+//!
+//! The activation coordinator and action preparation share the same role checks. Both
+//! roles must be connected. Software seats also declare startup complete, and
+//! transcription-gated browser seats complete audio setup. The worker seat has no
+//! microphone requirement.
 
 use super::*;
 

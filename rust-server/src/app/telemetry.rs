@@ -1,3 +1,8 @@
+//! Collects process-local operational counters, per-connection liveness readings, and
+//! bounded load history. HTTP middleware, transports, and gameplay operations record
+//! observations here. The monitoring sampler and administrator load endpoint read them.
+//! Research exports come from the durable store.
+
 use std::{
     collections::VecDeque,
     sync::{

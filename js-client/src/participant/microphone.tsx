@@ -1,3 +1,10 @@
+/**
+ * The microphone preparation UI adapts browser device choices, preflight readings, and server
+ * voice updates for the participant runtime. It calls the voice hook's selection and
+ * preparation callbacks and disables selection during preparation. Its default controller
+ * pairs MicrophoneSource with ParlandoAudioSink.
+ */
+
 import { AudioSessionController } from "../audio/audioSessionController.js";
 import { ParlandoAudioSink } from "../audio/parlandoAudioSink.js";
 import { MicrophoneSource } from "../audio/microphoneSource.js";

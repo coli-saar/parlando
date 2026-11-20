@@ -1,4 +1,9 @@
 //! Resolves durable event identities and appends session events.
+//!
+//! Runtime operations provide live session and actor identities. This module resolves
+//! their durable identifiers for storage. Transitions can construct a record for an
+//! atomic batch, callers that depend on an append can propagate its failure, and
+//! diagnostic paths can log an unsuccessful write.
 
 use super::{anyhow, AppState, Arc, Future, Game, Result, SessionEventRecord, Value};
 

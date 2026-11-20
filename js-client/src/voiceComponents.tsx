@@ -1,3 +1,9 @@
+/**
+ * Microphone and transcription indicators translate level readings and VoiceStatus into
+ * participant-visible feedback. Preparation and session controls supply the readings. The
+ * audio controller owns device access and connection changes.
+ */
+
 import { useMemo } from "react";
 import type { VoiceStatus } from "./audio/types.js";
 import { initialVoiceStatus } from "./audio/types.js";

@@ -1,4 +1,9 @@
 //! Runtime cleanup and terminalization of interrupted sessions.
+//!
+//! Mounted runtimes schedule cleanup of transient credentials, expired sessions, and
+//! ended rooms. The sweep obtains the session transition lock before applying an expiry.
+//! Startup finalization separately records terminal outcomes for durable sessions
+//! interrupted by a previous process.
 
 use super::{
     broadcast_participant_states, expire_live_session_locked, prolific_handoff, room_cleanup,

@@ -1,3 +1,10 @@
+/**
+ * ParticipantConnection owns one participant's game socket, heartbeat, and retry timer. It
+ * combines ParticipantClient snapshots and socket events into LiveSession updates for the
+ * React runtime. Input requires an active, synchronized connection. A committed leave ends the
+ * connection, and callbacks from superseded attempts are ignored.
+ */
+
 import {
   decodeServerMessage, playerMessage, reduceParticipantState, type ParticipantClient,
   type ParticipantState, type PlayerMessage, type PlayerRole, type ServerMessage

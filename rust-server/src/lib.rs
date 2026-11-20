@@ -1,3 +1,8 @@
+//! Parlando runs a compiled two-player game in a participant-facing server or a headless
+//! experiment. Game authors supply a `GameFactory` and session-local `Game`. Agent authors
+//! register factories through `agent`. Both runtimes use the game to validate moves and
+//! compute each role’s observation.
+
 mod agent_experiment;
 mod agents;
 mod app;

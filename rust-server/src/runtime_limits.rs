@@ -1,4 +1,8 @@
 //! Process-wide safety limits shared by the server and bundled operational tools.
+//!
+//! Participant intake and operational tools read the same embedded creation-rate window and
+//! attempt ceiling. Loading validates the bundled configuration once and returns a shared
+//! immutable value for enforcement and preflight checks.
 
 use std::sync::OnceLock;
 

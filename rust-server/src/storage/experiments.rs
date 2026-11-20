@@ -1,4 +1,9 @@
 //! Experiment catalogue, versioned configuration, lifecycle and secrets.
+//!
+//! Catalogue and activation handlers read experiment definitions and update their lifecycle.
+//! Configuration saves create revisions and store secret values separately from the
+//! configuration shown to readers. The host uses the definition and revision when
+//! constructing a runtime.
 
 use super::{now_iso, SqliteExperimentStore};
 use anyhow::{anyhow, bail, Result};

@@ -1,5 +1,8 @@
 syntax = "proto3";
 
+// The experiment runner groups role-specific trajectory steps into updates.
+// A learner receives the update ID and base checkpoint and returns the resulting
+// checkpoint ID. A retry of the same update must refer to the same result.
 package parlando.rl.v1;
 
 import "google/protobuf/struct.proto";

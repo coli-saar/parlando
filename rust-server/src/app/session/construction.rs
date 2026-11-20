@@ -1,4 +1,9 @@
 //! Initialization of a durable session, its game, and reserved agent seat.
+//!
+//! Admission passes a reservation for the seat allocation. Construction creates the
+//! durable room, constructs a fresh game, and records the initial membership before
+//! publishing the room. The agent path joins a separately constructed agent to the
+//! reserved seat and hands it to the live agent task.
 
 use crate::app::admission::AdmissionReservation;
 use crate::app::{

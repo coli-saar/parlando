@@ -1,3 +1,7 @@
+//! Builds the stored-data and transient-processing sections of the privacy report. It uses
+//! voice, transcription, consent and agent configuration to distinguish which data can be
+//! produced in a single experiment and to summarize mixed installations.
+
 use super::{facts::PrivacyConfigFacts, PrivacyNonRetentionStatus, PrivacyStorageStatus};
 
 /// Lists the data written by the configured features.

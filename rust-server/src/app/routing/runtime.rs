@@ -1,4 +1,9 @@
 //! Initializes the resources and shared state of a mounted experiment.
+//!
+//! The mount registry supplies installation services, an experiment configuration, and
+//! factories for the compiled game. Construction prepares the session cache, transport
+//! registries, providers, and background tasks, then gives initialized state to the route
+//! builder.
 
 use super::*;
 

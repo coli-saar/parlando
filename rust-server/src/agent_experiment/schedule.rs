@@ -1,4 +1,8 @@
 //! Selects the next agent from the preceding response and rejection.
+//!
+//! The decision loop asks the schedule for an initial role and the next role after each
+//! response. A schedule can hand control to the partner, keep the current role, or end the
+//! session when neither role will act.
 
 use crate::agents::AgentResponse;
 use crate::game::{ActionRejection, Game, PlayerRole};

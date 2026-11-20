@@ -1,4 +1,9 @@
 //! Experiment activation checks and Prolific study preflight.
+//!
+//! Catalogue and launch handlers supply the effective configuration and registered
+//! capabilities. They receive the issues that block intake. A Prolific preflight checks
+//! the linked study and caches the result against the local inputs that were checked, so
+//! an edited configuration cannot silently reuse an unrelated result.
 
 use super::{
     hydrated_experiment_config, now_iso, prolific_setup_url, validate_agent_configuration,

@@ -1,4 +1,8 @@
 //! Versioned installation settings and their associated secrets.
+//!
+//! Installation handlers read the shared settings and submit updates with an expected
+//! revision. The store rejects stale writes and keeps provider secrets available through a
+//! separate read. Experiment configuration uses the installation values as defaults.
 
 use super::{now_iso, SqliteExperimentStore};
 use anyhow::{bail, Result};

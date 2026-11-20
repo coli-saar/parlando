@@ -1,3 +1,9 @@
+/**
+ * The participant runtime and voice controls use these pure decisions to interpret consent,
+ * intake, presence, and voice status. Each caller supplies the current protocol or audio
+ * snapshot and uses the returned eligibility, progress, or label when rendering.
+ */
+
 import type { ConsentItem, ExperimentInfo, Presence } from "./protocol.js";
 import type { VoiceStatus } from "./audio/types.js";
 

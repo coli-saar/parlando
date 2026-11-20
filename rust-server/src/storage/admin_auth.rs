@@ -1,4 +1,9 @@
 //! Durable administrator credentials and authenticated sessions.
+//!
+//! The administrator authenticator supplies a password hash at setup and a token digest when
+//! issuing a browser session. Login, logout, and expiry use these durable records across
+//! restarts. Touches only advance last use, so concurrent requests cannot move the idle clock
+//! backwards.
 
 use super::{now_iso, SqliteExperimentStore};
 use anyhow::Result;

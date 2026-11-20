@@ -1,3 +1,10 @@
+/**
+ * The audio controller gives this sink a prepared MicrophoneInput and a session context that
+ * issues a one-use audio ticket. It bridges the capture and playback worklets to the server's
+ * audio socket and sends transcription status back through the context. Muting gates outbound
+ * frames while the local level probe stays live.
+ */
+
 import type { AudioSessionContext, LocalAudioSink, MicrophoneInput } from "./types.js";
 
 const HEADER_BYTES = 13;

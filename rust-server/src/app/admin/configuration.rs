@@ -1,3 +1,8 @@
+//! Reads and revises the configuration of a selected experiment. The editor submits its
+//! expected revision, game YAML and explicit secret changes. A successful save invalidates
+//! the cached mount so its successor uses the new revision. Ordinary configuration reads
+//! describe secret availability. Revealing a value has a separate authenticated handler.
+
 use crate::app::{
     apply_experiment_secrets, apply_game_provider_secrets, apply_provider_endpoint_defaults,
     dashboard_agent_definitions, experiment_config_from_json,

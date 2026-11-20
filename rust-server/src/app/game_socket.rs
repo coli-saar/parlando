@@ -1,4 +1,10 @@
 //! Authenticated game transport and connection lifecycle.
+//!
+//! The upgrade route verifies origin, consumes the game ticket, and resolves the
+//! participant's role. The socket registers its generation, forwards decoded input to the
+//! message dispatcher, and delivers role-addressed server messages. Teardown consults the
+//! registry before changing room presence so an old connection cannot disconnect its
+//! replacement.
 
 use super::{
     broadcast_participant_states, depart_session_locked, due_live_deadline, error_message,

@@ -1,4 +1,9 @@
 //! Defines reward, trajectory, and learner checkpoint contracts.
+//!
+//! The decision loop records role-specific inputs and rewards in trajectory steps. Epoch
+//! execution batches these steps for the registered learner, which trains from a named base
+//! checkpoint and returns the resulting checkpoint ID. Validation uses the corresponding
+//! policy factory.
 
 use crate::agents::AgentFactory;
 use crate::game::{ActionRejection, Game, PlayerRole, SecretValues};

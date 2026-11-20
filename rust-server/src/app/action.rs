@@ -1,4 +1,10 @@
 //! Preparation and ordered commitment of a live game action.
+//!
+//! Browser input and agent decisions enter through `submit_action`. Under the room's
+//! transition lock, it derives each role's view from the same proposed game state and
+//! reserves any required agent delivery. A successful storage commit authorizes
+//! installation and publication. A failed commit or an already-ended room leaves the
+//! proposed move unpublished.
 
 use super::{
     anyhow, broadcast_participant_states, expire_if_due_locked, json, mpsc, prolific_handoff,

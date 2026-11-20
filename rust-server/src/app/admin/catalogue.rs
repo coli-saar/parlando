@@ -1,3 +1,8 @@
+//! Manages the dashboard catalogue of experiment definitions. Listing combines stored
+//! revisions with game and provider readiness information. Creation and cloning produce
+//! inactive experiments for the compiled game version. Activation belongs to the mounted
+//! experiment.
+
 use crate::app::{
     apply_provider_endpoint_defaults, cached_prolific_activation_preflight,
     configured_provider_secret_statuses, experiment_config_from_json, experiment_public_base_url,

@@ -1,3 +1,10 @@
+/**
+ * SessionTools takes the runtime's conversation, input eligibility, and voice state, and
+ * delegates sending, muting, and leaving through callbacks. It owns the chat draft across
+ * pauses. Only an enabled submission with nonempty trimmed text calls onMessage and clears the
+ * draft.
+ */
+
 import { useState } from "react";
 import { type VoicePreflight, type VoiceStatus } from "../audio/types.js";
 import { microphoneMuteButtonLabel } from "../helpers.js";

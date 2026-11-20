@@ -1,4 +1,10 @@
 //! Waiting, activity, and farewell deadlines owned by a live session.
+//!
+//! The session initializes fixed waiting and lifetime deadlines at construction. Accepted
+//! activity advances the idle deadline. Monitoring asks for the earliest scheduled
+//! instant, while transitions ask which elapsed cause wins at a supplied time. Both
+//! queries draw on the same candidates, including disconnected seats' reconnect
+//! deadlines.
 
 use super::SessionLifecycle;
 use chrono::{DateTime, Utc};

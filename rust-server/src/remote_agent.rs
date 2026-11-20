@@ -1,3 +1,9 @@
+//! The live runtime and headless runner use this adapter through their ordinary agent and
+//! learner interfaces. It sends role-scoped observations to a remote gRPC instance, decodes
+//! its decisions, and writes returned log entries through the local session logger. The
+//! decision request preserves the distinction between an empty action list and a game that
+//! does not enumerate actions.
+
 use std::{collections::BTreeMap, env, fmt, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, bail, Context, Result};

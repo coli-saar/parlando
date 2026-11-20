@@ -1,4 +1,9 @@
 //! Session activity timestamps and lifecycle queries.
+//!
+//! Transport, action, and conversation paths resolve live rooms and roles here. Accepted
+//! activity updates the session clock. Storage receives the new deadline through the
+//! best-effort event writer. Heartbeats belong to transport liveness. Session teardown
+//! uses this module to drain the room's log writer.
 
 use super::{
     broadcast_participant_states, expire_if_due_locked, persist_event, AppError, AppState, Arc,

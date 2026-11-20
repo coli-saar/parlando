@@ -1,3 +1,8 @@
+//! The HTTP handlers, game socket, and participant client exchange these serialized requests,
+//! snapshots, and events. Participant state carries the result or observation for its
+//! recipient. The server marks outgoing messages as targeted or broadcast so the socket loop
+//! can select what each participant receives.
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;

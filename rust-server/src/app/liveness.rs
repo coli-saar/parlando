@@ -1,4 +1,9 @@
 //! Produces per-session operational liveness snapshots.
+//!
+//! The load endpoint combines a snapshot of room and participant metadata with the
+//! transport registries' liveness readings. It uses the session timing policy to show the
+//! next scheduled deadline. Expiration and cleanup remain decisions for the transition
+//! and maintenance units.
 
 use super::{
     game_connection_health, session_lifecycle_is_ended, AppState, Arc, Game, ParticipantLiveness,

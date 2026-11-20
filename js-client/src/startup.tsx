@@ -1,3 +1,9 @@
+/**
+ * ParticipantApp selects the live participant runtime or the administrator replay from the
+ * page URL. Both paths use the game's renderGame callback. Each accepted replay URL gets a
+ * fresh player, while live play uses ParticipantClient and a session audio controller.
+ */
+
 import { useMemo } from "react";
 import { ParticipantClient } from "./protocol.js";
 import { type ParticipantAppProps } from "./participant/types.js";

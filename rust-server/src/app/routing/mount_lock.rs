@@ -1,4 +1,9 @@
 //! Synchronization of runtime mounting with configuration changes.
+//!
+//! Mount construction and configuration invalidation serialize on the same
+//! experiment-name slot. A fixed slot table bounds memory for unknown namespaces.
+//! Invalidation makes a changed configuration visible on the next mount while the mount
+//! registry manages existing rooms.
 use super::*;
 
 /// Selects a fixed lock slot for an experiment name, including unknown request namespaces.

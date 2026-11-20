@@ -4473,3 +4473,282 @@ Checkpoint parsing uses the same nonblank, opaque identity rule as construction.
 Live expiry and the dashboard share their deadline candidates. The next scheduled deadline is chronological. Evaluation after several deadlines have elapsed uses cause precedence. Socket retirement drops registrations by complete session ID. Tests cover distinct roles, prefix collisions and deadlines expressed in different time zones.
 
 A replay URL owns its React component lifetime. Requests that finish after a switch cannot restore the preceding error or frames. Microphone device scans publish only the latest request's list, and a denied passive scan preserves the last list. The chat form checks interaction state on submission so a retained draft survives a pause.
+
+## 2026-11-19 — Source ownership of functional-unit contracts
+
+Module introductions describe the unit’s state or computation, its immediate callers and dependencies, and the guarantees that cross that boundary. Existing function comments retain the detailed ordering, failure, and retry rules beside the implementation that enforces them. The contract audit remains the index of behavioral tests. Moving an implementation requires carrying its contract to the new owner and refreshing source spans in the maintainer atlas.
+
+## 2026-11-19 — The Last Screening
+
+The game needs repeatable staging problems and a recognizable theater shared by two operators. Rust evaluates an ordered score of optical predicates on discrete lamp and flat detents. The score separates conditions that must stay true from the next required picture. Each seeded reel starts off its target marks. The projectionist holds the tower cue and the stagehand holds the aperture cue. New compositions can reuse the same predicates, slides, scene geometry, and wire actions. A reel with a new ID also needs a participant cue illustration and instructions.
+
+Babylon.js renders the two rooms from the public stage picture and the equipment owned by the seat. Clickable machines move the first-person camera to inspection positions. Local animation handles fly-rail travel, occlusion, projection shafts and the safety curtain. The server evaluates settled equipment states so frame rate and network timing do not determine success. The single-seat Vite preview supplies example observations only in development. Live play and completion run through Parlando.
+
+The launcher defaults to the sibling Parlando packages. Both registry manifests specify 0.5.0. Cargo's configuration is discovered from its invocation directory, so published builds run outside the checkout and local builds supply an explicit path patch. npm installs the locked dependencies before local mode substitutes a link to the sibling SDK. The published browser SDK and the checkout have different participant render callbacks under the same version number. A small adapter handles the action callback and the registry SDK's intercom controls. Parlando continues to own transport, admission and outcomes in both modes. The Rust game uses the shared trait surface and the checkout's initial replay-version defaults.
+
+The built-in image generator supplied the midnight seascape, repeating Deco wall panel and lighthouse cutout in client/web/src/art. The scenery directions were a hand-painted Scottish sea without moon, vessel or lighthouse; a face-on walnut and patinated bronze cinema wall bay; and an isolated Bell Rock stone lighthouse on transparent canvas. The moon and ship are separate projected slides. Both camera views, the two-reel playthrough including role chat and exits, and 256 seeded solves were checked during implementation.
+
+## 2026-11-19 — Solo operator in The Last Screening
+
+Human–agent pairing puts the human in seat A. An optional game setting assigns the projection booth to either seat, so the same registered partner can operate either room. The standard assignment remains A in existing games and replays. The operator reads its role-specific observation, exchanges its private one-based cue mark in chat, and chooses from the ordinary legal-action catalogue. Receiving a new reel clears the earlier mark. This keeps the clue exchange playable by one person while preserving the information split used in human–human sessions. The policy knows the two shipped reels; new reels with different lantern choreography need corresponding behavior for a computer projectionist.
+
+The Last Screening launcher prints the experiment dashboard URL immediately before starting the server. One resolved port supplies both the URL and the listener argument. The dashboard works with every experiment database and provides each experiment’s participant link.
+
+## 2026-11-19 — Counterweight Hotel
+
+A single East cable coordinate determines both suites’ positions. Parked guests can exchange luggage with staffed landing racks. Finite car capacity supplies the balance puzzle, while replenishable racks make wrong turns recoverable. Travel is quantized to a one-floor release and a separate brake action so network delay cannot decide a puzzle. Route data specifies initial and exit ranges and an optional pair of delivery manifests. The second itinerary uses the same machinery but requires a reversal at the exchange grille and different final loads. The physical controls reveal neither a valid seal nor destination through the list of available exit attempts.
+
+The porter acts through public observations and intercom messages. It can share a dispatch and operate independently, but needs the guest’s ledger entry to complete its own checkout. A rejected lock attempt waits for a corrected entry. Human and solo experiences use the same server and database. The new local demonstration uses text communication with its own dashboard credentials stored under the ignored, user-only .local directory.
+
+Babylon.js interpolates accepted floor changes against the shaft, opposite car and Alpine vista. The scene represents luggage counts and removable brake ownership. A keyboard-accessible dock offers the same actions as picking props. The React participant boundary handles the checkout and published 0.5.0 SDK callback differences used by Last Screening. The built-in image generator supplied five local textures: morning Alps, Jugendstil wallpaper, a marble landing, a woven carpet, and a travel trunk face.
+
+The launcher selects local or published Parlando as a pair. The browser build stamp covers browser sources, selected local SDK sources, dependency manifests, tool versions and output assets. An ordinary restart reuses the verified bundle and lets Cargo do its incremental check. Changing modes can rewrite the game's Cargo lock resolution; the delivered checkout is in local mode.
+
+### Walking inside the Counterweight Hotel suites
+
+The two suites now enclose a walkable space on all four sides. A local camera tracks the guest within their car while the shared cable state drives the view outside. Local movement needs no server events or changes to recorded puzzle actions. A circular walking footprint slides along walls and furnishings. The exchange grille stays a boundary at every floor. New furniture that blocks a walkway needs a corresponding footprint.
+
+A writing desk at the rear of each suite opens the same guest ledger as the keyboard-accessible controls. This gives the guest a reason to turn away from the shaft while preserving both itineraries, the porter policy, and access to every action from the controls. Keyboard and touch movement pause when a dialog takes focus.
+
+### Counterweight Hotel exterior and environmental clues
+
+The window bay and lift well have separate geometry. Deep reveals mask the edges of the alpine panorama. Continuous masonry encloses the five-storey shaft. The moving counterpart has an opaque shell and a fluted opal pane above a blind transfer hatch. The relative floor animation moves the entire shell and hatch together. The thin invisible interaction meshes remain independent of the visible surfaces.
+
+A dated workshop plate records the paired-car mechanism in the hotel's own visual language. The concierge's coloured reservation copy derives only from the current participant's view, including any luggage count. The stamped reservation panel and accessible control names provide the same information without requiring close visual inspection. The two suites preserve different halves of a rescue story, linked by torn rope and the porter's striped cloth. These objects add a reason for the guests to compare their rooms without adding another puzzle dependency. The porter asks for reciprocal booking information while leaving mechanical deductions to the guests.
+
+### Making the hotel service legible from the opening
+
+The guest’s objective and first social action appear together on a front desk slip. It follows the actual rendezvous, handoff and checkout states, using only each guest’s observation. The ledger links to the participant intercom so the guests still exchange their own bookings. Both luggage counts and their relative pull appear at the rack as cases move. Guests can inspect the hatch, brake and landing lock when an operation is unavailable. The dock and physical stations share the same panels and only the server catalogue can authorize a game action. The hatch has a separate pick surface in front of the grille. The commissioning plate and rescue keepsakes support inspection, while the window and incidental furniture remain scenery.
+
+### Counterweight Hotel interaction outlines
+
+Each usable furnishing has a persistent turquoise silhouette while the room accepts input. Babylon’s depth-aware selection pass groups visible mesh parts by the same interaction ID used for picking. Transparent hit areas stay out of that pass. Rescue gear uses a shared hit area and individually marked visible parts. The short prompt uses the same colour sample and changes from a general click or tap instruction to the action under the mouse. The outline pass pauses while an instrument panel is open.
+
+### Hover-only hotel affordances
+
+The selection layer starts empty. Changing the hovered object selects only its visible parts and updates its action prompt. Mouse leave, drag and instrument panels clear the selection. Cases, the luggage rack, the reservation copy and the ledger can share controls while keeping independent visual identities. Touch taps use the same pick path without requiring a prior hover.
+
+### Account for baggage on the landings
+
+The earlier model kept only the two car loads. Each wing now keeps a five-floor ledger. Each landing starts an itinerary with three cases and has six rack slots. A transfer conserves the wing’s total and changes exactly one rack and one cabin. Local transfers have priority. An empty source or full destination uses the nearest eligible rack on the same wing, breaking ties toward the lower floor. This preserves the original control availability and recovery from detours. Published observations supply the selected floor for each direction. The current wing sees its own racks and both car loads.
+
+The luggage panel frames both racks across a cutout in the cabin wall. A case changes its attachment from the cabin to the stationary shaft, with a visible hoist carrying it through the opening. An inter-floor transfer follows the separate service well. Queued, acknowledged transfers animate in sequence. Opening and closing the rack preserves the guest’s walking position.
+
+The interrupted live session was ended with authorization to update port 8081. Before the transactional replay conversion the hotel process was stopped and the SQLite file checked for open handles. Backup: games/counterweight-hotel/.local/hotel.sqlite.before-baggage-20261119T153714129154Z.backup. Storage schema version 16 was retained. All 16 recorded initial states received two five-rack allocations of three cases and updated state/rules compatibility metadata. Historical landing counts are reconstructible from accepted load/unload actions; they were never individually observed in the earlier game. SQLite integrity, foreign keys, unchanged table counts and unchanged unaffected row contents were verified against the backup, including 16 sessions, 20 participants, 662 events, and 31 session-participant rows.
+
+After restart, the live administrator replay endpoint reconstructed all 16 historical sessions. All 840 role-specific frames had five bounded landing inventories and conserved the total case count within each itinerary and wing.
+
+### Counterweight Hotel document inspection
+
+The workshop plate and each booking document use a shared Canvas2D drawing in the scene texture and the inspection canvas. The wall copy and desk ledger keep their own layouts, and both record the partner's wing, destination, seal, and any baggage delivery from the local observation. The scene redraws the booking textures only when those values change. The canvas supplies an accessible description because its printed text is rasterized. Only the book and framed documents own document interactions. Ordinary enamel labels remain scenery and the mechanisms retain their own pick targets.
+
+### Counterweight Hotel demo voice
+
+The paired demo uses Parlando's built-in live guest-to-guest audio relay. The dashboard setting changed in paired configuration revision 2 while no sessions were open, and the same experiment was reactivated. Transcription and speech synthesis stay disabled. Participants give browser microphone permission to prepare voice and can still use text. A test on port 8081 with two independent Chromium contexts and synthetic microphones verified that both seats sent audio frames and received nonzero audio from their partner. The test session was ended through participant controls.
+
+The hotel porter's policy consumes conversation text and returns text. Great Tree has separately configured transcription and speech synthesis. The hotel demo has no corresponding provider credentials or approved transcription flow, so spoken porter dialogue is pending while typed dialogue remains available.
+
+The two cars have permanent, unlatched brass ventilators facing the same full-height masonry air well. Their voices carry through the shaft at every stop and in transit. The grilles and their labels are scenery. Communication belongs to the participant session and continues independently of the walking camera, baggage view and document inspection.
+
+### Solo porter booking receipts
+
+The porter used to store a recognized reservation silently when it was waiting for the other guest to act. The revised policy sends a read-back of the floor, seal and optional luggage count, even when the guest repeats the entry. At a parked Floor 2 rendezvous the West porter names the handle handoff as the next action. Replies can accompany a legal physical action in the same agent response. A peer porter’s receipt does not trigger another receipt. The porter identity version distinguishes the new policy in recorded sessions.
+
+### Fixed brake levers and a transferable key
+
+Each Counterweight Hotel lift has a permanently mounted brake lever. One brass key unlocks the lever in the lift that holds it. At Floor 2 the aligned hatches let East pass it to West. Both levers remain visible throughout the exchange so the mechanism matches the room, workshop engraving, and porter’s instructions. The existing pass action and handle observation field already encode this exclusive ownership, preserving game rules and recorded actions.
+
+### Making the Counterweight Hotel cable and delivery observable
+
+The old solo session record shows that the porter reached East’s second booked floor, then emptied its car to satisfy West’s zero-case delivery. The guest continued trying to travel to the first booking. A separate stall occurred if the porter acquired the key before hearing its booking, although the coupled floors already determined both destinations.
+
+The first service now opens with two empty cars and East one stop above the hatch. Loading one case into East produces an observable change from equilibrium to descent. One release advances a single stop under gravity. Parking preserves position and loads. The server supplies each wing’s next possible landing from the same calculation that accepts a release. The client displays both weights, the available direction and the reserved landing. The 3D cars share one interpolated cable position, with West’s or East’s cases visible through the opposing rack and only the keyed lever operated. New services begin at their own initial pose. Stage one’s new initial deal changes new sessions only. Recorded initial states and later-stage deals still apply the same action rules.
+
+The porter derives travel from its partner’s ledger and the fixed sum of floor numbers. It loads or unloads its own car, asks for an explicit case adjustment if the other guest must act, and gives arrival instructions using that guest’s floor, seal and delivery count. Its own seal and ordered load must still come from the other guest. The porter waits 900 ms before parking so individual stops remain visible. A custom agent response timeout must allow time for this pause. It resets its booking on each service and can repeat the current one. The next service announces fresh bookings and the luggage needed for checkout is distinguished from the ballast used for travel.
+
+### One evacuation per hotel session
+
+Both guests reaching the old first exit triggered a fresh hotel booking inside the same session. The earlier destination had no visible significance beyond a desk entry. A session now has one physical objective: reach the two rescue bridges across the avalanche-damaged hotel, unlatch the gates and cross together. The default route teaches the freight balance and key exchange. The extra freight-manifest puzzle is a separately configured rescue-supplies run. Each route retains its seed-specific deal. Crossing both gates completes the session immediately.
+
+Both parked cars must align with their bridges after the key exchange for the arrival signal. The HUD marks the milestone immediately. Once the rendered cabin docks, the bridge replaces the ordinary landing and its lamps illuminate behind the closed gate. A short bell accompanies an actual arrival when browser audio is available. The gate opens after the guest uses the correct seal. The refuge ending appears after both guests cross. Supply alignment and crossing remain distinct so crews can see the bridge while finishing their loads.
+
+State now stores the selected route in place of a progression index and a seed for another service. The local SDK records state and rules version 3. Historical version 2 sessions need the earlier hotel binary for replay. No stored session records were converted. The launcher enables the local-replay Cargo feature only when using the local SDK, since the published 0.5.0 Game trait predates the replay constants.
+
+### Walkable avalanche terraces
+
+The rescue brief used to explain the avalanche before guests saw any damage. Both routes now start facing a terrace doorway. Parked lifts let either guest walk onto a fixed hotel gallery to see the broken stairs, damaged service gallery and refuge across the ravine. The route instructions are available on request. The terrace entrance and the sealed bridge gate sit on different sides of the car so exploring a blocked route cannot accidentally complete the escape.
+
+The server records each guest’s location when they cross the threshold. Walking, touch movement and the accessible dock use the same actions. A guest on the terrace can always board again. Both lifts remain parked until both guests are aboard, including when the porter operates the opposite brake. The walking controller retains the guest’s heading on a physical crossing and restores the correct side after reconnecting. The stairwell, avalanche and distant structures stay in shaft coordinates as the lift moves. Existing replay snapshots place both guests aboard, matching their original rules.
+
+The user authorized restarting the Counterweight Hotel demo to apply future changes, including ending an active game on its local port.
+
+### Hotel puzzle feedback and discovery
+
+The hotel supplies observations through its scenery, illustrated mechanism plate, private ledger, gauges, and inspection panels. Hover identifies the object under the cursor. The arrival bell, lamps, and banner acknowledge a successful docking. The client no longer generates route advice, appends instructions to milestones, or highlights the next control. The solo porter acts on the mechanism and exchanges ledger information as the other guest. It can report what it knows and acknowledge a failed attempt without giving the player a sequence of actions.
+
+### Directional lift sounds
+
+Each guest hears their own lift travel. The sign of the animated cabin displacement selects one of two quiet mechanical loops: a rising sheave whine with fast ratchet clicks for ascent and a lower, descending drum with paired knocks for descent. The render loop starts playback when the car actually moves, including after baggage work has finished, and fades it at the stop or a reversal. A stationary brake stroke and a fresh session snapshot produce no travel cue. The sound is independent of camera direction, voice settings and the bridge arrival bell.
+
+### Counterweight Hotel exterior and cabin motion
+
+A copy of the broken staircase on every deck and opaque service doors made the same terrace appear to follow the guests. The hotel now occupies stationary world coordinates. The guest suite and opposite cabin each translate four metres per floor in opposite directions. The camera, cases and hoist use the frame of their current support. The crossing to a terrace places the guest camera in the building frame. The server continues to interlock the brakes while either guest is outside.
+
+The broken stair flight belongs to the second-floor terrace. Each of the other four landings has a different edge profile, visible through the sliding service-door grilles while the car travels. All five decks share a walkable footprint so crossing and collision behavior are consistent. The bridge and refuge are placed in the building frame at the paired destination elevations selected for the route.
+
+### Keeping the refuge in sight
+
+The bridge previously appeared only on docking and ended at a sign. Each wing now has a permanent access gallery and trussed footbridge at its destination elevation. The gallery turns around the hotel and meets the near bridge joint. The far end meets the refuge’s doorway. Guests can see the span from their terrace throughout play. Only the short gangway across the opposing lift track deploys on docking. The threshold position and rooftop railing preserve sightlines across the possible starting and destination heights.
+
+### Making the solo porter's ballast changes perceptible
+
+In a live solo session, the porter moved two cases within a tenth of a second of the guest setting the brake. Travel itself preserves cargo. Each porter transfer now carries a chat message with the rack used and the resulting cabin load. The runtime delivers the message after accepting that transfer. The porter gives each brake stop and each of its transfers 900 ms to register before another decision. Ledger clues and travelling with a human partner retain their existing rules.
+
+### The bridge inspection lock
+
+The three gate marks previously appeared as names on buttons, with no connection to the bridge's condition. They now represent the individual stamps of the hotel's bridge inspectors. The inspector sets the latch after testing the span and files a stamped copy with the opposite crew for an independent check. The in-world lock, its close-up controls and the paper records share the same die artwork. Docking engages the release mechanism, while the existing server-side seal and supply checks still determine whether a crossing succeeds.
+
+### Crossing the bridge and resetting the lift
+
+Unlocking used to mark the guest as having escaped, which disabled scene input immediately. In rules version 4, unlocking pins the cars to their bridges and releases the gate. Each guest reaches the refuge independently. Manual and assisted walking use the same physical deck and slope coordinates, and the lodge lights come on before the client reports arrival. Both arrivals produce shared completion. A reconnect at an unlocked gate can repeat the crossing, and a guest already marked safe reconnects at the lodge.
+
+An incorrect inspection seal returns the coupled cars to the central safety catch when both guests are aboard with closed gates. If a guest is outside or a gate is open, the local inspection lock trips instead; the brake pedestal rewinds the spring for just over three seconds and resets it without moving the cars. A brake release advances one load-driven detent and catches automatically. Client sound, lever movement and the travel interlock follow the animated position.
+
+A visible suitcase click selects the mesh and transfers it according to its supporting rack. The server checks cabin capacity and the named source rack. The client animates the selected case on acknowledgement and fills its former slot. The accessible dispatch control can use the nearest eligible rack when the local rack is empty or full.
+
+Game URLs, experiment configurations and session records stay in the same local installation. The replay manifest changes from state/rules 3 and actions 1 to state/rules 4 and actions 2. The previous executable and participant build are retained in games/counterweight-hotel/.local/replay-v3 for replaying version 3 sessions against a copy of the database. A replay request for a v3 session on the new server correctly reports a version mismatch. The retained build does not cover earlier v2 sessions.
+
+### Bridge power, freight, and arrival signals
+
+Passing the key at the central exchange now seats it in the West master contact. The commissioning drawing, socket, receiver and peaked gallery entrance carry corresponding physical marks. Both bridge circuits energize when the key seats. The level gauge reports weights and balance, leaving guests to predict travel. The solo porter uses a dispatch assembled from the other guest’s messages before it drives onward, and asks for outstanding facts at the handoff. It does not reconstruct its own route from the opposing bridge elevation.
+
+A freight order pairs a stores floor with the two delivery ranges. Rescue Supplies adds a dedicated green dispensary chest to the East stores rack, one detent beyond the exchange. Only East can collect it at the powered dock with both guests aboard and room for a case. The case is counted separately from ordinary landing stock and occupies one cabin slot for the rest of the run. The service hoist carries the same mesh to the cabin. Both the signed cargo counts and the collected chest govern the freight scale. The inspection lock engages only after docking and freight clearance. Every incorrect engraving trips the local rewindable spring, preserving the solved lift journey and the partner’s position.
+
+Each wing has an arrival lamp on the refuge porch. The local arrival camera acknowledges reaching the threshold before the server ends the game. The completion view shows both lamps lit even when the runtime replaces the scene immediately. The local release and restore paths avoid replaying an already seated key’s relay sound.
+
+This revision uses state version 5, actions 3 and rules 5. The installed version 4 server and corresponding browser bundle were preserved in games/counterweight-hotel/.local/replay-v4 before rebuilding. Experiments and existing recordings retain their identifiers and database schema. Historical v4 replay requires its preserved build and a copy of the database.
+
+### Counterweight Hotel entry view and exterior doorway
+
+The first cabin view looks diagonally across the carpet toward the lounge furniture, windows and brake. Walking back inside still preserves the guest’s heading. Both wings share the initial sight line, with their own furnishing arrangements.
+
+The moving jamb defines the clear service opening. Cabin wall returns and fixed masonry terminate at staggered offsets behind it, and the terrace paving meets the brass sill at its outer edge. Intermediate cornices stop beside the doorway and each lintel ends below the next terrace. These clearances eliminate competing depth surfaces and keep trim from the floor below projecting into the walking route.
+
+### Counterweight Hotel exterior landscape
+
+The window billboard and distant gallery cards each carried independent mountain images, so a guest turning on the bridge could see their edges and the empty space below them. All openings now share one 4096 × 2048 equirectangular alpine photograph on a camera-centred Babylon sphere. The sphere is created after the cabin furniture is grouped so it remains a scene root during lift travel. A separate textured gorge in shaft coordinates provides parallax and a visible channel beneath the span. Vertex opacity tapers the distant perimeter into the photograph. The terrain is scenic and does not participate in walkable-floor queries or picking. Photographic sources and licenses are listed in the game README.
+
+### Counterweight Hotel exterior finish scale and delivery (2026-11-20)
+
+The terrace, gallery and refuge share nine small tiled colour and tangent-space normal map pairs. Their repeat dimensions are in metres, so moving along a long ashlar wall retains the same course height as approaching a short parapet. Box faces use construction coordinates for stone and paint, with local grain axes and slight per-member offsets for timber. Flagstone and transverse bridge planks use actual joints in the geometry. Bridge planks are merged by material within their moving or stationary groups. The walk surface and crossing coordinates remain independent of the small render-only joints.
+
+Map synthesis is an offline, deterministic authoring step in the web client's `tools/bake-exterior-finishes.mjs`. The WebP tiles total 590,008 bytes. Browser startup needs texture decoding and upload, with mipmapping and anisotropic filtering for oblique views. The baked normal maps and tiling trade unique large-scale building weathering for stable close-range detail, fewer uploads and no browser-side noise generation. The rounded avalanche banks share the snow map and retain smooth normals. Compacted ice and slate use faceted normals and distinct relief tiles to preserve visibly steeper fracture faces.
+
+The exterior shell includes the hotel’s side walls, casements, plinth and roof around the walkable gallery. The refuge sits on a continuous ledge whose snow and rock share a rim. Its toe extends below the gorge bed for all booking heights. The bridge has cross-girders and sway braces visible from the lower terraces. A directional light casts shadows across the outdoor architecture. Because its casters are fixed for a given booking, the shadow map refreshes when the booked elevation changes. The completion illustration is a render of this same scene with both arrival lamps on.
+
+### Counterweight Hotel brake interlock and suitcase dialogue
+
+Both cars use one removable brake key so only one operator can release the shared cable. The East socket operates the local brake and the West master additionally powers both bridge gate releases. The two workshop plates show this circuit beside the counterweight diagram, and the gate and socket markings identify the same feed. Suitcase racks and the cable gauge describe the present weight relationship. The porter attaches its motive to each committed transfer and recalls it for follow-up questions. Motives distinguish changing the direction of travel, freeing space for the dispensary suitcase, and meeting a delivery manifest. Participant-facing instruments, documents and dialogue call these objects suitcases. Players can still use older colloquial wording in chat.
+
+### Counterweight Hotel camera comfort
+
+Both lift cars previously began a trip with exponential catch-up, reaching peak velocity immediately. Guided movement also rotated toward each new path segment without a turn-rate limit. The terrace controls repositioned the walking camera between separate collision margins. Pointer drags used a fixed angular gain per pixel, so a full-width drag turned farther on a larger screen.
+
+The participant view now defaults to reduced motion and stores the guest’s override and vertical field of view locally. Audio and transit status accompany a discrete floor change in this mode, and an explicitly requested guided crossing cuts to the porch. Guests can still walk across manually. Animated travel has a rest-to-rest curve and a capped guide turn rate. The camera starts level, walking accelerates into a 1.75 m/s stride, mouse and touch turning scale with the displayed view, and a shared walkable sill keeps the guest’s heading and position across the server-approved transition. Manually arriving at the porch keeps the guest’s own view.
+
+In Chromium, fixed 16 ms scene steps produced only the two endpoint heights during reduced-motion travel. Animated travel covered the same 4 m, with a largest frame step of 0.054 m. In the doorway check the location change advanced the camera 0.004 m to the sill, and releasing movement input left the camera stationary. A browser playthrough verified the default mode, saved field of view, guided crossing and celebration.
+
+### Counterweight Hotel scene rendering and pointer sampling
+
+The entry view previously drew hundreds of individual planks, brass fittings and grille bars. Rigid parts now share a mesh when they belong to the same assembly and have the same opaque material, vertex attributes and interaction identity. Batches use the assembly's local coordinates so a suitcase, door leaf or brake pulley can still move independently. Transparent hit areas remain separate. The canvas renders one pixel per CSS pixel, trading some high-density detail for less GPU work. Hover sampling runs at most twenty times per second, including when scenery moves beneath a stationary pointer. A click still resolves the exact pointer position immediately.
+
+On a 1000 × 700 CSS pixel Chromium viewport at device pixel ratio 2, the warm entry view went from 538 to 258 draws per frame and from 1,143 to 624 scene meshes. The framebuffer fell from 1600 × 1120 to 1000 × 700. A comparison of 2,320 rays from four camera positions produced identical actions and occlusion. In a short SwiftShader run, median and 95th-percentile frame intervals fell from 159 and 218 ms to 141 and 197 ms. Software rasterization limits the applicability of these timings to players' GPUs.
+
+On the same viewport using Chromium's ANGLE Metal renderer on an Apple M5, median and 95th-percentile entry frame intervals were 16.8 and 17.7 ms before the change and 16.7 and 18.4 ms after. Both sustained approximately 60 fps in this short sample. Median and 95th-percentile JavaScript render times fell from 2.7 and 3.3 ms to 2.3 and 3.0 ms.
+
+### Counterweight Hotel observation window, skyline and lift animation
+
+The north masonry wing projected several metres beyond the observation glass and obscured the peaks from inside the cabin. The observation wing, plinth and roof now end at the glazing plane. A shallow window reveal and a splayed shaft partition preserve a solid enclosure around the neighbouring car and open the oblique sightlines. The shared exterior once again uses the original alpenglow artwork, wrapped continuously, fading into glacial haze below the bridge and clear sky above the mountains.
+
+Automatic lift travel and guided crossing are independent camera preferences. Lift rides default to the eased animation even for browsers with the previous reduced-motion preference, which still governs the guided crossing. An explicit choice to skip lift animation is saved separately.
+
+### Counterweight Hotel automatic brake pacing and receipts
+
+The porter waits after observing a committed key pass or brake release. The standard browser animation seats the key after 1,770 ms and travels one floor in 2,250 ms. The porter allows 2,000 ms and 2,500 ms respectively, with a margin for normal frame and delivery timing. These are agent presentation delays rather than new game rules. Slow or suspended browsers can still render the scene behind the server.
+
+Every porter release carries a chat receipt through the existing action-and-message response. The runner sends the receipt after accepting the release. The receipt identifies the operated wing and the purpose of the one-stop stroke, and the resulting floor indicators display where both lifts actually landed. This keeps the dialogue accurate even when another guest changes the balance near the time of the action.
+
+### Counterweight Hotel lift playback under rapid observations
+
+The hotel scene presents acknowledged changes in a single queue. Each cable release reaches its own landing before the next travel cue starts. A brake-key transfer holds both cars at level 2 until the key seats. That frame closes the bridge contact and can play the relay sound before the next stroke. A local hoist trip holds its position in the same sequence, with the existing hoist timing and catch-up rate. The scene reports completed landings to the view so the gauge can follow the presented motion. Initial scene setup installs the recorded floor and seated key immediately.
+
+The playback honors the stationary audio cue when lift animation is disabled. If the view observes a floor jump, the scene can reconstruct the intermediate landings along its direction and place an observed key change at the exchange. An excursion that reverses entirely between delivered observations cannot be reconstructed from endpoint observations alone.
+
+In Chromium, a fixed-step replay queued the sequence 1 → 2 → 3 → 4 → 3 with two hoist trips around the handoff. Each hoist moved only at its acknowledged floor. The bridge circuit energized on the frame before either car moved away from the exchange. The active lever switched with the seated key, and the open-gate snapshot applied only on the final visit to level 3.
+
+### Counterweight Hotel partner crossing poses
+
+Parlando 0.5.0 exposes game actions and observations on its authenticated participant socket. The hotel uses this channel for changed crossing poses, sampled at no more than four regular updates per second and quantized to five centimeters and 0.05 radians. The server binds reports to the acting assignment and accepts them only with that guest’s bridge gate open and before their refuge arrival. The latest sample follows the standard reconnect snapshot. Horizontal coordinates use the common crossing frame so the rendered guest acquires the local deck elevation in either wing. A return to the cabin or confirmation of arrival clears the crossing pose.
+
+The existing channel records accepted samples in session events and delivers them to the agent runner. The hotel porter skips a response to the human guest’s pose updates. A future transient participant transport could reduce event volume while preserving authenticated scoping. The controls and completion predicates remain independent of pose.
+
+### Counterweight Hotel refuge entrance and interaction visibility
+
+The furnished lodge door owns its own pickable leaf, glazing and brass push bar. Leaving these meshes out of the facade batch gives them one hover outline and one action. A guest within reach can click the door or use the matching dock button. Walking onto the rectangular mat submits the same arrival. This uses the porch's rotated coordinates and keeps an unacknowledged arrival eligible for retry. Only the server marks a guest safe and completes the booking when both have arrived.
+
+Hover remains the usual way to inspect an object. Guests can explicitly enable outlines for available instruments and suitcases with Show interactables. The door at the refuge uses the same mechanism. The first guest can look back from a reserved place on the porch while their partner crosses.
+
+Both roof sockets project onto the ravine-facing elevation, where the suspension rope runs over two exposed sheaves. The falls end at their respective car roofs. Running the sheaves from the same displayed lift height as the cars keeps the wheels, rope and animated brake stroke in sync. The glazed counter-car rides on the existing partner transform with its furnishings and actual suitcase load. The hotel-side desk window and the glazing give the bridge a sightline into both rooms.
+
+### Solo porter crossing the refuge gallery
+
+A solo guest needs to see the porter traverse the same gallery and porch that two human guests share. The browser and porter read the six centreline joints from the same route file. The porter samples each straight run at intervals of at most 0.65 metres and advances after its own accepted action, with 250 milliseconds between live samples. Each bend therefore has an explicit position and facing, and the final arrival uses the ordinary refuge action. Incoming human footsteps leave the porter’s pacing intact. A human pair incurs no porter timer. The fixed centreline makes solo travel predictable and ties both implementations to changes in lodge placement. The concurrent-footstep test exercises all joints with a second moving guest.
+
+### Walking pace in the Counterweight Hotel
+
+Manual and guided travel use a top speed of 3.5 metres per second. Manual input reaches that speed in about 0.22 seconds and stops on release, supporting short movements near instruments. Up to 100 milliseconds of frame time is integrated in collision steps of at most 20 milliseconds so ordinary frame-rate dips preserve walking pace and doorway clearance.
+
+### Counterweight Hotel rescue galleries in the shared shaft frame
+
+The two inboard cabin gates open onto separate timber galleries between the cars, each at its own dock height. East reaches the bridgehead directly. West crosses below East and climbs an exterior switchback, keeping the passage between the moving cars level. The bridgehead, span and lodge are all fixed in the East frame and booked at the East rescue floor. The span runs across the two towers' broadside, and the lookout on the porch aims between the bridgehead and the occupied cars. West's steeper booking climbs sixteen metres, so its guided traversal takes longer and covers visibly more ground.
+
+Both browser navigation and porter samples use role-specific planar joints followed by the common span and porch. The browser derives the West ramp height from its horizontal run and the difference between dock elevations. Each receiver uses the sender's wing to recover deck height where the two approaches overlap in plan. A local camera stays in its own cabin's frame, applying the wing transform to send poses and recover crossing geometry. The vertical separation therefore needs no new network coordinate.
+
+### Two occupied suites on one hotel cable
+
+Each browser places both full cabin assemblies in the East-oriented hotel frame. The West frame is a half-turn at (5.12, 9.42) metres, which brings the two off-centre exchange sockets onto the same line at Floor 2. Changing participant seats changes which car owns the camera and controls. The opposite car has the same shell, service doors, glazed panels, furnishings, brake equipment and baggage rack as its occupied counterpart. Its wing finish, gate position and suitcase count follow that guest’s observation-visible state. The observation includes both wings’ fixed rack counts so the outside view can show the same suitcases as the rooms.
+
+The existing server cable coordinate supplies both heights. A release advances the loaded system one landing under its brake and stop rules. The client interpolates one displacement for the pair, so the room-floor heights sum to sixteen metres throughout travel. The fixed architecture has separate service terraces, shaft gates and rails. A glazed baggage return and open rack frames expose the moving cars to the bridge. Private ledger contents stay in the guest’s own room.
+
+### West hotel pavilion and exchange landings
+
+The West service wing has a masonry envelope with large observation bays at each landing and a pitched roof over the residential side. Its open exchange portal and separate machinery roof preserve hatch, gallery and cable clearance. A fixed masonry landing spans the gap between the shaft fronts at each stop. Each slab carries a compass inlay centered below the two exchange hatches. Every inlay uses one print and the same orientation, with East pointing from the West shaft toward East.
+
+The rescue approaches still use their booked heights and existing walking joints. Their steel dock plates close the gap from each cabin sill to the stone, and the timber decks start at the far edge of the stone. Shared landing dimensions keep these surfaces flush and leave the compass uncovered. The bearing course projects below the plates and stops outside the moving cabin floors.
+
+### Counterweight Hotel bridge gate instruments
+
+The West Room key socket supplies both gate releases after the exchange. Each gate has a circuit, gangway and seal readout in a two-sided instrument over the grille. Its electrical readout changes with the existing seated-key animation and the West contactor. Docking follows lift playback, while each gate takes its own latch and inspection spring reading from the authoritative observation. The observation includes the other gate's spring state so a wrong seal cannot look like an electrical fault or a simultaneous trip of both gates. Neither instrument reveals the correct seal. The controls retain the same rules, and the bridge inspection panel gives equivalent text readings.
+
+### Counterweight Hotel evacuation and room names
+
+East Room and West Room identify persistent guest spaces while lift and cable describe their machinery. A cold radiator carries the night desk’s avalanche bulletin in each room. The on-object paper and inspection view use the same document artwork. Broken steam pipes on the terrace and smoke and firewood at the patrol refuge connect the hotel’s loss of heat to the visible destination. These cues give the evacuation a reason without disclosing the gate solution. The print also opens through the ledger for keyboard players.
+
+The gate readings occupy the lintel directly over each grille. A view from the brake showed the wall sconce obscuring a jamb-mounted prototype.
+
+### Cross-posted rescue bridge inspection signs
+
+Each guest has a single signed route record for the room across the shaft. The wall print, magnified print, accessible description and keyboard control identify the receiving room. The inspection sign also carries the suitcase manifest on supply routes, including the East dispensary pickup. The house bulletin has independent keyboard access. Removing the duplicate desk register and the purely decorative climbing exhibit leaves the wall signs as distinct landmarks.
+ The workshop plate occupies a continuous opaque wall. A separate papered pier carries the route sign between two valley windows.
+
+### Flush compass paving
+The exchange landing is cut around a circular compass. The opaque disk and flagstone surround share perimeter vertices at the walking elevation. The slab supplies only its sides and underside. This removes the rotated quad’s black corners and competing top faces. Sizing the disk from the shorter landing dimension leaves a continuous stone margin at both thresholds.
+
+### Joining the West pavilion to the hotel
+The terrace facade previously stopped just beyond the door jamb, leaving open sky between the gated landings and the pavilion corner. A masonry return with a recessed desk window now closes that bay on every West floor. A fixed, five-storey connecting range joins the shaft houses beside the exchange landings. Its walls and floor slabs use the fixed wing and landing coordinates so the connection stays in place during lift travel. The guest routes still use the original bridge and terrace openings.
+
+### Route-sign wall joinery
+The old full-depth brass jambs overlapped the wallpaper with identical face depths. The replacement divides the wall into a central papered pier and two equally sized sash openings. Stiles and rails meet edge to edge around recessed glass. The header spans the whole assembly and the existing dado carries it below. Both room meshes and their signs share the pier center.
+
+### Bridge doorway running clearance
+The retractable steel plate now spans the actual 130 mm gap from the parquet edge to the landing on either car. Its endpoints use the physical floor geometry and wing transform, independent of the walking guide. The East stringcourse and West lintel below each stop finish 140 mm below the landing, clearing the 100 mm plate. Formerly their top surfaces coincided with the steel and the outer edge of the stone at upper stops.

@@ -1,5 +1,10 @@
 syntax = "proto3";
 
+// The Rust remote-agent adapter and the Python SDK use this interface for one
+// agent instance per assigned seat. CreateAgent returns the ID for subsequent
+// callbacks. Respond distinguishes an omitted action list from an empty one,
+// and an absent response lets the agent yield. Replies carry session log entries
+// back to the caller that owns the session.
 package parlando.agent.v5;
 
 import "google/protobuf/struct.proto";

@@ -1,3 +1,7 @@
+//! Game binaries use the server builder to supply their compiled game, agent factories,
+//! participant assets, and installation options. Serving hands these inputs to the HTTP host,
+//! which loads experiment settings and mounts the participant and administrative routes.
+
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use crate::{

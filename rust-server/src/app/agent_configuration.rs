@@ -1,4 +1,9 @@
 //! Catalogue and validation of registered agent settings.
+//!
+//! The experiment editor reads field descriptions and default secret references from
+//! registered agent definitions. Configuration validation checks the selected factory and
+//! its settings against those definitions. Callers can also require the referenced
+//! secrets to be available before opening intake.
 
 use super::{
     derived_agent_secret_key, AgentDefinition, AgentsMode, Context, ExperimentConfig, Result, Value,

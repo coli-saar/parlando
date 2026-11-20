@@ -1,3 +1,7 @@
+// Projects server status, timing, timeline bundles and deletion previews into labels and
+// markup for the dashboard. The view supplies the selected records and owns requests and
+// mutations.
+
 // Formats one stored or runtime timestamp for the administrator's locale.
 export function fmtTime(value) {
   if (!value) return '-';

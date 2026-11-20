@@ -1,4 +1,9 @@
 //! Creates and shuts down agents and bounds one headless game session.
+//!
+//! A worker receives one resolved plan, constructs its game and role-bound agents, and
+//! delegates play to the decision loop. The session runner turns the loop outcome or a
+//! lifecycle failure into a result. Bounded shutdown covers every constructed agent and
+//! records secondary errors separately.
 
 use super::decisions::drive_session;
 use super::planning::{ResolvedSeat, SessionPlan};

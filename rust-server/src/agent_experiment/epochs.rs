@@ -1,4 +1,9 @@
 //! Advances learner updates at checkpoint boundaries and schedules held-out validation.
+//!
+//! The execution layer supplies the training and validation specifications. At each update
+//! boundary this unit gathers learner steps, reuses a matching durable checkpoint or calls
+//! the learner, and validates the resulting policy. Validation sessions contribute their own
+//! results and counts.
 
 use super::artifacts::RunArtifacts;
 use super::execution::ExecutionCounts;

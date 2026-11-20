@@ -1,4 +1,9 @@
 //! Preview and transactional deletion of participant-linked records.
+//!
+//! The dashboard previews the participant’s affected sessions and partners before requesting
+//! deletion. Deletion recomputes that scope inside the write transaction and rejects
+//! unfinished sessions. Removing a shared history retains the partner’s identity and
+//! unrelated sessions.
 
 use super::SqliteExperimentStore;
 use anyhow::{bail, Result};

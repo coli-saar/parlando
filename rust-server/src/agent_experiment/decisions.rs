@@ -1,4 +1,9 @@
 //! Drives scheduled decisions, action delivery, tracing, and role-safe trajectory capture.
+//!
+//! The session runner supplies initialized agents, game state, and a schedule. The loop
+//! delivers messages and private observations, counts decisions and accepted or rejected
+//! actions, and captures learner steps for training sessions. A move that completes the game
+//! at the action limit yields completion.
 
 use super::planning::SessionPlan;
 use super::results::{SessionResult, SessionStatus};

@@ -1,3 +1,9 @@
+/**
+ * Games import ParticipantApp and its rendering types through this React entry point. The
+ * exported controls and indicators also accept voice status and callbacks from a custom UI.
+ * The participant runtime and audio controller own the connections behind those callbacks.
+ */
+
 import { microphoneMuteButtonLabel } from "./helpers.js";
 import type { VoiceStatus } from "./audio/types.js";
 import { initialVoiceStatus } from "./audio/types.js";

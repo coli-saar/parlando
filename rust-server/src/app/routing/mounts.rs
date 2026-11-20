@@ -1,4 +1,9 @@
 //! Mount retirement and request dispatch across active and draining runtime generations.
+//!
+//! The host routes new intake to the current mount. Existing assignments can continue on
+//! a draining revision, selected using participant or session identity. Selection
+//! identifies the target service. Its authentication middleware and single-use ticket
+//! checks still apply.
 
 use super::*;
 use tower::ServiceExt;

@@ -1,4 +1,9 @@
 //! Reads, validates, and atomically publishes finalized run artifacts.
+//!
+//! Execution checks the run manifest and looks up finalized outcomes by run and plan identity
+//! before scheduling work. Epochs recover a checkpoint only when its number, update ID, and
+//! base match the expected update. Results and checkpoints become visible by renaming a
+//! completed file in the output directory.
 
 use super::results::{SessionResult, SessionStatus};
 use super::spec::EXPERIMENT_SCHEMA;

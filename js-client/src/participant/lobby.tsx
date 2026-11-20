@@ -1,3 +1,10 @@
+/**
+ * The participant runtime supplies startup text, connection state, player presence, and local
+ * voice status to the lobby shell and readiness board. Presence normalization supplies a
+ * consistent shape for each seat. The board displays readiness while the server decides when
+ * the session starts.
+ */
+
 import { type ReactNode } from "react";
 import { type VoiceStatus } from "../audio/types.js";
 import { type Presence } from "../protocol.js";

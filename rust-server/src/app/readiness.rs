@@ -1,4 +1,9 @@
 //! Participant readiness and activation of a fully assembled session.
+//!
+//! Transports and agent startup report seat readiness. Activation applies the session
+//! readiness policy while holding the transition lock and checks for expiry. Once storage
+//! records the start, the live session becomes running and participant snapshots can
+//! announce it.
 
 use super::{
     expire_if_due_locked, json, reserve_agent_delivery, send_role_assignment,

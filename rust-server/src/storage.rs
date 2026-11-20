@@ -1,4 +1,9 @@
 //! SQLite experiment store and stable storage record types.
+//!
+//! Runtime, authentication, and administrator operations share one SQLite pool. The child
+//! modules own the SQL and transaction boundary for each operation. Session transitions
+//! commit ordered events and any terminal result together. Queries and export expose
+//! committed records to the dashboard and corpus projector.
 
 mod export;
 pub(crate) use export::{ExperimentSnapshot, ExportSession};

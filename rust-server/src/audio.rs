@@ -1,3 +1,8 @@
+//! Audio sockets decode canonical PCM frames and register a sender for each connected room
+//! and role. Human frames go to the partner and agent speech fans out to listeners in the
+//! same room. Bounded outbound queues isolate slow receivers, and generation checks keep a
+//! replaced socket from disconnecting its successor.
+
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{bail, Result};

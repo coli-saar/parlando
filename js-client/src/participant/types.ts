@@ -1,3 +1,9 @@
+/**
+ * These types define the boundary between framework-owned session state and a game's React
+ * renderer. Live play supplies one role's GameSnapshot and an action callback. Replay adapts
+ * recorded frames for the selected role to the same renderer with interaction disabled.
+ */
+
 import { type ReactNode } from "react";
 import { type PlayerMessage, type PlayerRole } from "../protocol.js";
 

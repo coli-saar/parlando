@@ -1,3 +1,8 @@
+//! Reads the configurations covered by a privacy request and projects the fields used by
+//! the report. An unknown requested experiment yields an error. For installation scope, an
+//! empty catalogue uses the installation configuration. Historical records can supply facts
+//! without passing current activation checks.
+
 use crate::{
     app::{persistable_config_json, AppError},
     config::ExperimentConfig,

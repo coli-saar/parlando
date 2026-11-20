@@ -1,3 +1,10 @@
+/**
+ * The startup shell accepts a same-origin administrator replay address and passes it to
+ * ReplayApp. Only the current loader may publish a response or error. ReplayPlayer advances
+ * through recorded game times and sends the selected role's read-only frames to the same
+ * renderer used for live play.
+ */
+
 import { useEffect, useState, type ReactNode } from "react";
 import { type PlayerRole } from "../protocol.js";
 import { type GameSnapshot, type SessionReplay } from "./types.js";

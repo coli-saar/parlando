@@ -1,3 +1,7 @@
+// Builds experiment-scoped URLs and applies the dashboard request headers.
+// SelectionRequests coalesces matching pending reads by resource and only delivers a
+// completion to the selection that still owns it.
+
 // Builds one public runtime path without exposing router layout to feature controllers.
 export function experimentRuntimeApi(experiment, path) {
   if (!experiment) throw new Error('No experiment selected.');

@@ -1,4 +1,8 @@
 //! Schema initialization and validation for the SQLite experiment database.
+//!
+//! Opening the SQLite store initializes an empty database in a transaction. For a populated
+//! database it checks the supported schema before normal reads or writes. All other storage
+//! modules rely on the resulting tables and constraints.
 
 use super::{now_iso, SqliteExperimentStore};
 use anyhow::{bail, Result};

@@ -1,3 +1,8 @@
+//! Installation startup and the dashboard use these types to turn stored experiment settings
+//! into a runtime configuration. Structural validation checks the allowed values and their
+//! relationships. Activation checks the additional conditions required to open intake,
+//! including credentials for enabled providers.
+
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{bail, Context, Result};

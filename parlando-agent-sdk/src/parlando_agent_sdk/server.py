@@ -1,4 +1,12 @@
-"""Async gRPC server wrapper for Parlando remote agents."""
+"""Async gRPC server wrapper for Parlando remote agents.
+
+The Rust remote-agent adapter calls this service with protobuf requests. Each created Python
+agent has its own callback lock and session logger. Observations, decisions, and shutdown
+acquire that lock, and successful callback responses carry the drained log entries. A
+yielded decision and a missing list of available actions retain their distinct wire
+meanings. The learner service passes update identity, base checkpoint, and trajectory data
+to Learner.train and returns its checkpoint ID.
+"""
 
 from __future__ import annotations
 

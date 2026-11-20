@@ -1,3 +1,8 @@
+//! Defines the installation's experiment states, their permitted transitions, and the
+//! data purpose associated with intake. Administrative activation changes this state.
+//! Admission consults it before allocating rooms, whose individual lifecycles are owned
+//! by the session module.
+
 use super::*;
 
 /// Participant-availability lifecycle for one experiment hosted by a game process.

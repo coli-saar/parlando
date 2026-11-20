@@ -1,3 +1,7 @@
+//! Describes the research corpus in the privacy report. The report builder supplies the
+//! enabled features. The schema fingerprint comes from the schema embedded by the corpus
+//! projector, which owns the actual export format.
+
 use super::{PrivacyExportFieldStatus, PrivacyExportStatus};
 use crate::app::corpus::CORPUS_EXPORT_SCHEMA_V1;
 use sha2::{Digest, Sha256};

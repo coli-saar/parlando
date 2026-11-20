@@ -1,3 +1,8 @@
+//! The audio socket records the capture position of each frame accepted by the provider
+//! queue. On a final recognition result it translates provider sample offsets back to capture
+//! times, preserving gaps introduced by mute or dropped frames. A replacement stream starts a
+//! fresh mapping.
+
 use std::collections::VecDeque;
 
 use anyhow::{bail, Context, Result};

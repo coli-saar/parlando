@@ -1,3 +1,8 @@
+//! Builds the installation router around the compiled game's factory, shared store, and
+//! registered runtime services. The mount registry selects the experiment revision.
+//! Runtime construction initializes that revision, and the route declarations connect its
+//! participant and administration handlers to Axum.
+
 use super::*;
 use tokio::sync::Semaphore;
 pub(super) mod mount_lock;

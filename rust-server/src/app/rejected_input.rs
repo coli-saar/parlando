@@ -1,4 +1,9 @@
 //! Records and coalesces rejected input without retaining its contents.
+//!
+//! The input dispatcher supplies the rejection reason and optional submitted bytes.
+//! Durable diagnostic records contain bounded evidence such as size, a digest, and
+//! occurrence counts. The game socket flushes outstanding aggregates when its transport
+//! ends.
 
 use super::{json, persist_session_event, AppState, Arc, Digest, Game, RejectionWindow, Sha256};
 

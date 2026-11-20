@@ -1,3 +1,10 @@
+/**
+ * ParticipantClient adapts the experiment's HTTP endpoints and socket messages to typed
+ * participant state. It keeps the issued credential scoped to the experiment base URL and
+ * requests transport-specific tickets. ParticipantConnection uses these operations to
+ * reconcile a seat and lets the runtime render the server's role-specific state.
+ */
+
 interface ParticipantCreateResponse {
   participant_credential: string;
   participant_id: string;

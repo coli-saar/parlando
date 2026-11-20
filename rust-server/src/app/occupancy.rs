@@ -1,4 +1,8 @@
 //! Counts live seats and transcription capacity from the active session cache.
+//!
+//! Admission and monitoring share the same counts for the experiment's live revisions.
+//! Each revision supplies its own session cache and transcription settings, so an older,
+//! draining revision continues to contribute its occupied seats and speech resources.
 
 use super::{
     speechmatics_readiness_required, AppState, Arc, Game, HashSet, MemoryState, SessionLifecycle,

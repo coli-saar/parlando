@@ -1,3 +1,8 @@
+//! Reconstructs a recorded game for the administrator replay viewer. It starts from the
+//! stored initial state, applies accepted actions in event order and asks the game for each
+//! role’s observation and available actions. Frames carry the event index and game clock
+//! used by the browser player.
+
 use crate::app::{
     admin_experiment_id, json, protocol_json, AdminExperimentScope, AppError, AppState, Arc,
     Extension, Game, GameSessionContext, Json, Path, PlayerRole, Result, SessionLogger, State,

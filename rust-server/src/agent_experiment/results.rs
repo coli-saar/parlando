@@ -1,4 +1,8 @@
 //! Serializable status, provenance, and outcomes of a headless session.
+//!
+//! The session runner builds a result from plan provenance, decision counters, completion or
+//! failure, and any captured trace or training steps. Artifact storage serializes it, and
+//! execution classifies its status to count fresh and resumed plans consistently.
 
 use super::training::{CheckpointId, TrajectoryStep};
 use crate::game::PlayerRole;

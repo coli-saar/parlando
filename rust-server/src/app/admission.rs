@@ -1,4 +1,10 @@
 //! Reservation, capacity, and assignment of participants to sessions.
+//!
+//! Intake supplies an authenticated participant and recorded consent. Matchmaking checks
+//! for an existing assignment again after obtaining the admission reservation. The
+//! reservation spans capacity checks and room construction or joining, so concurrent
+//! requests can recover the same assignment. Participant projection supplies the
+//! response.
 
 use super::construction::prepare_agent_construction;
 use super::participant_state::existing_assignment;

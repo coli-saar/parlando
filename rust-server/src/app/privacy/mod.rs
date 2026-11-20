@@ -1,4 +1,8 @@
 //! Privacy reports describe the configured collection, retention, and export of experiment data.
+//!
+//! The routes resolve the requested experiment scope into configuration facts. The report
+//! builder turns those facts into one model for JSON, HTML and Markdown. Storage, speech
+//! services and the corpus projector own the behavior described in the report.
 use serde::Serialize;
 
 mod configuration;

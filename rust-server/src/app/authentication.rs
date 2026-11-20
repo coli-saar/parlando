@@ -1,4 +1,9 @@
 //! Enforces administrator and participant access at the HTTP boundary.
+//!
+//! Routing installs these middleware checks before protected operations. Participant
+//! credentials resolve to a principal passed to handlers. Administrator operations apply
+//! the configured network policy and verify the administrator session, including origin
+//! and CSRF checks where required.
 
 use super::{
     validate_admin_request_origin, AppError, AppState, Arc, ConnectInfo, Extension, Game,

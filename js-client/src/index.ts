@@ -1,3 +1,9 @@
+/**
+ * Game clients import the framework-independent protocol API here. ParticipantClient handles
+ * requests, reduceParticipantState applies server snapshots, and the exported types describe
+ * the participant and voice state visible to callers. The React entry point supplies the UI.
+ */
+
 export {
   ParticipantClient,
   reduceParticipantState,

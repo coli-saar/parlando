@@ -1,4 +1,9 @@
 //! Commitment of typed, transcribed, and agent-authored messages.
+//!
+//! Browser chat, final transcripts, and live agent responses share a commit operation. It
+//! resolves the speaker from room membership, checks interaction under the transition
+//! lock, and reserves delivery to the observing agent when required. The durable message
+//! precedes browser publication and agent observation.
 
 use super::{
     authenticated_participant_id, expire_if_due_locked, json, new_id, now_iso, participant_role,

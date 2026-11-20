@@ -1,3 +1,7 @@
+//! Formats a grouped event bundle for the dashboard. Its title, text, steps and problem
+//! status are derived from the bundle’s events and terminal context. Group membership has
+//! already been decided by the timeline grouper.
+
 use super::{
     grouping::{admin_event_action, admin_event_text_value},
     *,

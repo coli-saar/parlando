@@ -1,4 +1,10 @@
 //! Authenticated audio transport and transcription stream lifecycle.
+//!
+//! A participant obtains an audio plan and presents its room-bound upgrade ticket. The
+//! socket loop relays audio through the session audio registry and passes provider
+//! readiness and final transcripts to the readiness and conversation units. Session
+//! lifecycle controls the interval in which audio may flow, including the farewell
+//! period.
 
 use super::{
     authenticated_participant_id, commit_final_transcript, json, mark_participant_audio_ready,

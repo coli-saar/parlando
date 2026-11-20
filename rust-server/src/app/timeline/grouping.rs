@@ -1,3 +1,7 @@
+//! Groups ordered event summaries into dashboard rows. Action identity, role and utterance
+//! content determine which open bundle can accept a step. Terminal boundaries affect how
+//! later teardown is classified. The display module renders the resulting bundles.
+
 use super::*;
 
 /// Groups durable events into display rows without changing the underlying history.

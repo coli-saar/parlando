@@ -1,4 +1,9 @@
 //! Runs reproducible headless sessions for a compiled game and its registered agents.
+//!
+//! Game binaries register their game, agent factories, schedules, and optional learners with
+//! `ExperimentRunner`. The runner validates a YAML specification, resolves session plans, and
+//! hands them to execution. It returns run-wide counts and writes per-plan outcomes to the
+//! selected artifact directory.
 
 mod artifacts;
 mod decisions;

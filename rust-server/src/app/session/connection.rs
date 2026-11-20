@@ -1,4 +1,9 @@
 //! Connection, reconnect-grace and pause transitions for a live session.
+//!
+//! The game socket applies these membership changes under the session transition lock.
+//! Reconnect clears the returning seat's disconnect timing. Disconnect records the grace
+//! deadline, which the deadline policy can use to terminate the room. Participant
+//! projections expose the resulting pause.
 use super::{Game, LiveSession, SessionLifecycle};
 use crate::{protocol::ParticipantPauseReason, storage::now_iso};
 

@@ -1,4 +1,8 @@
 //! Generation-checked ownership of participant transports.
+//!
+//! Game and audio transports keep separate registries. Registering a replacement signals
+//! the previous owner and returns a generation that teardown must present. Monitoring
+//! reads snapshots and session cleanup retires entries for the selected rooms.
 
 use super::{new_id, ConnectionLiveness, ConnectionLivenessSnapshot};
 use std::{collections::HashMap, sync::Arc};

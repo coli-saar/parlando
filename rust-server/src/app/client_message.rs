@@ -1,4 +1,9 @@
 //! Dispatches decoded browser messages to the live session operations.
+//!
+//! The game socket supplies a decoded message and the authenticated occupant's role.
+//! Ready declarations update the seat, actions go to the action coordinator, and typed
+//! messages go to conversation storage and delivery. The socket counts heartbeats before
+//! dispatch. A heartbeat leaves the room's idle deadline untouched.
 
 use super::{
     action_rejected_message, broadcast, commit_conversation_message, error_message,

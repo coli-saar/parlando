@@ -1,4 +1,9 @@
 //! Serialized live-session changes and role-scoped publication of durable results.
+//!
+//! Departure, expiry, and delivery failure use the room transition lock to order terminal
+//! decisions against gameplay. A terminal write records the event and per-participant
+//! results before closing the live room. Action and conversation commits also use this
+//! unit to reserve agent delivery before accepting input.
 use super::{
     anyhow, broadcast_participant_states, due_live_deadline, json, mpsc, prolific_handoff,
     protocol_json, session_event_record, session_transition_lock, shutdown_session_log,

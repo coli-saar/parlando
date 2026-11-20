@@ -1,4 +1,9 @@
 //! Origin validation, URL generation, and HTTP security headers.
+//!
+//! Routing installs CORS and response headers. Administrator request checks and WebSocket
+//! upgrades reuse the origin rules against the configured origins and request host.
+//! Ticket issuance uses the configured public URL to construct the participant's socket
+//! path.
 
 use super::{
     anyhow, AllowOrigin, AppError, CorsLayer, ExperimentConfig, HeaderMap, HeaderName, HeaderValue,

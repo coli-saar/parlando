@@ -1,4 +1,8 @@
 //! Read-only session history, progress and participant projections.
+//!
+//! Admission can recover the durable terminal state for a returning participant. The
+//! dashboard uses session, member, event, and progress projections, while runtime startup
+//! uses the interrupted-session query to identify rooms requiring reconciliation.
 
 use super::{SqliteExperimentStore, StoredSessionEvent};
 use crate::protocol::{ParticipantResult, SessionEnd};

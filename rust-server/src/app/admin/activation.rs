@@ -1,3 +1,8 @@
+//! Changes the intake state of a mounted experiment. Under the mount lock, the handler
+//! checks the current revision, activation requirements and allowed lifecycle transition.
+//! It persists the new status before exposing it to admission and returning the selected
+//! participant URL to the dashboard.
+
 use crate::app::{
     experiment_activation_issues, hydrated_experiment_config, invalidate_runtime_router, json,
     local_testing_issues_for_config, lock_runtime_router_build, new_id, AdminSession, AppError,

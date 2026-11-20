@@ -1,4 +1,9 @@
 //! In-memory rooms, participant membership, and ordered software-seat delivery.
+//!
+//! Stores the authoritative game state, membership, lifecycle, and clocks for one live
+//! room. Admission constructs the room and assigns seats. Transition coordinators install
+//! committed changes through session operations. Participant projections and monitoring
+//! read the resulting state.
 use super::*;
 use crate::session_log::SessionLogWriter;
 

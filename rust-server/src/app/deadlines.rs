@@ -1,4 +1,9 @@
 //! Deadline precedence and retention policy for live and terminal sessions.
+//!
+//! Input handlers and the maintenance sweep consult session timing with the disconnected
+//! seats' reconnect deadlines. The sweep also uses the cleanup decision to close farewell
+//! audio or release an ended room once its retained human connections and grace periods
+//! permit eviction.
 
 use super::{Game, LiveSession};
 

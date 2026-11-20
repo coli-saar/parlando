@@ -1,4 +1,9 @@
 //! Participant registration, consent declarations, and recruitment handoff.
+//!
+//! Registration verifies the selected recruitment path and issues the participant
+//! identity used by admission. Consent records bind the participant's declarations to the
+//! configured items. Terminal projection uses the recorded participant outcome and
+//! recruitment configuration to select a Prolific handoff.
 
 use super::{
     authenticated_participant_id, consent_configuration_hash, enforce_creation_rate,

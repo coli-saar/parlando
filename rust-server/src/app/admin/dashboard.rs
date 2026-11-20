@@ -1,3 +1,7 @@
+//! Serves the administrator shell and its embedded browser assets. The router exposes each
+//! asset with its media type. The browser loads experiment data through separate
+//! authenticated API endpoints.
+
 use crate::app::{HeaderValue, Html, IntoResponse, Response, CACHE_CONTROL, CONTENT_TYPE};
 
 /// Serves the database-backed experiment/session dashboard.

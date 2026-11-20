@@ -1,3 +1,8 @@
+//! Builds dashboard progress from durable experiment-wide session counts and the configured
+//! or provider-derived target. Prolific supplies participant places, which are converted to
+//! sessions using the experiment’s pairing mode. The refresh operation updates the provider
+//! facts used by the progress view.
+
 use crate::app::{
     admin_experiment_id, hydrated_experiment_config, json,
     run_and_cache_prolific_activation_preflight, AdminExperimentScope, AgentsMode, AppError,

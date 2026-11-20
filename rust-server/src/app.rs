@@ -1,3 +1,8 @@
+//! Composes the live HTTP and WebSocket server for a compiled game. Installation services
+//! share the store, administration, and runtime registry across experiment revisions.
+//! Each mounted revision owns its configuration and live rooms. Routing selects the
+//! owning revision before participant and agent operations access its state.
+
 use std::{
     collections::{HashMap, HashSet},
     future::Future,

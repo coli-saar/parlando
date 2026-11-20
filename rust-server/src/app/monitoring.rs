@@ -1,4 +1,8 @@
 //! Collects installation-wide operational samples.
+//!
+//! The background sampler aggregates occupancy, transport health, and telemetry from
+//! hosted experiment revisions. The administrator load endpoint combines recent samples
+//! with per-room liveness. Request middleware supplies timing and request counts.
 
 use super::{
     build_session_liveness, json, speechmatics_readiness_required, AppError, AppState, Arc,

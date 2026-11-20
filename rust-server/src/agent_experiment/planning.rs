@@ -1,4 +1,9 @@
 //! Expands scenarios into deterministic, secret-safe session plans.
+//!
+//! Execution supplies scenarios, seeds, seat assignments, and registered factories. Each
+//! resolved plan binds the game and agents to their roles, schedule, and limits. Artifact
+//! lookup uses the deterministic plan identity, while session construction receives the
+//! resolved inputs and role-specific seeds.
 
 use super::results::ResultAgent;
 use super::schedule::AgentSchedule;

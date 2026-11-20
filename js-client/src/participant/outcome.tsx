@@ -1,3 +1,10 @@
+/**
+ * The participant runtime passes the terminal result and recruitment handoff into these views.
+ * They render the recipient's outcome, optional game completion, and the server-supplied
+ * return instructions. The farewell notice uses the voice deadline to tell the runtime when to
+ * release the remaining audio connection.
+ */
+
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { type VoiceStatus } from "../audio/types.js";
 import { microphoneMuteButtonLabel } from "../helpers.js";

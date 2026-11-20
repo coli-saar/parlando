@@ -1,3 +1,10 @@
+/**
+ * ParlandoAudioSink connects its microphone stream to this capture processor. The processor
+ * resamples browser render quanta into complete 20 ms frames of 24 kHz signed PCM16 and
+ * transfers them through its message port. The sink adds transport headers before sending the
+ * frames.
+ */
+
 /** Stateful browser-rate to 24 kHz PCM16 frame converter. */
 export class PcmCaptureResampler {
   private samples: number[] = [];

@@ -1,3 +1,9 @@
+//! Handles administrator downloads and participant-data operations for the selected
+//! experiment. The corpus projector formats a storage snapshot. Deletion resolves the
+//! participant’s research identifier within the experiment and delegates the final
+//! affected-session check and transaction to SQLite. A preview describes the impact at the
+//! time of that read.
+
 #[cfg(test)]
 use crate::app::corpus::retain_export_sessions;
 use crate::app::{

@@ -1,4 +1,9 @@
 //! Projection of a durable experiment snapshot into the versioned research corpus.
+//!
+//! The admin export handler supplies a consistent SQLite snapshot. The projector selects
+//! eligible research sessions, preserves game-owned payloads and combines message records
+//! with their speech timings. The versioned schema describes the output consumed by
+//! research tools and cited by privacy reporting.
 use crate::protocol::SessionEndCause;
 use crate::storage::{ExperimentSnapshot, ExportSession, StoredSessionEvent};
 use anyhow::Error;

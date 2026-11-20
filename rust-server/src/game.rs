@@ -1,3 +1,9 @@
+//! Game authors implement the mechanics shared by live sessions, replay, and headless
+//! experiments. A factory constructs a game for a session. The runtime supplies the acting
+//! role and current state to `apply_action`, then asks the game for observations and
+//! available actions separately for each role. The game also defines completion, which both
+//! runtimes use to end play.
+
 use std::{
     collections::{BTreeMap, HashSet},
     fmt,

@@ -1,4 +1,9 @@
 //! Loads revisioned experiment configuration and hydrates installation secrets.
+//!
+//! Storage supplies the experiment definition and installation settings. Hydration
+//! combines them with provider defaults and resolved secrets for the runtime. Editing and
+//! persistence use separate projections so stored secret references and public
+//! configuration can be inspected without revealing credentials.
 
 use super::{
     anyhow, bail, json, AppError, Digest, ExperimentConfig, Game, HashMap, Result, ServerContext,

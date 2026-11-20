@@ -1,4 +1,9 @@
 //! Administrative operations, grouped by the resource they manage.
+//!
+//! The router mounts these handlers behind administrator authentication. Each handler
+//! translates a request for its resource into a store or runtime operation and returns a
+//! dashboard response. Session replay, timeline grouping and privacy reporting each own
+//! their projection rules.
 mod catalogue;
 pub(super) use catalogue::*;
 mod configuration;

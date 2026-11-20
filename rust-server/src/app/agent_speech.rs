@@ -1,4 +1,9 @@
 //! Synthesizes and publishes agent speech with game-clock alignment.
+//!
+//! After the live agent commits a message, speech delivery passes its text to the
+//! synthesis provider and the resulting audio to the session publisher. Recorded word
+//! timings use the server publication anchor. Synthesis and publication failures are
+//! reported as diagnostics for that message.
 
 use super::{
     anyhow, json, now_iso, persist_session_event, session_event_record, AppState, Arc, Context,

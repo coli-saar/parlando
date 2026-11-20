@@ -1,4 +1,9 @@
 //! Session initialization, membership and game-relative clocks.
+//!
+//! Admission allocates a room with its configuration revision, immutable data purpose, and
+//! fixed phase deadlines. Initialization commits the first membership, and starting play
+//! establishes the game clock and rebases existing events. Runtime activity and connection
+//! handlers persist subsequent updates through this unit.
 
 use super::{
     deadline_after_seconds, now_iso, relative_game_time_ms, timestamp_millis, SqliteExperimentStore,

@@ -1,3 +1,10 @@
+/**
+ * This hook adapts a LiveSession and ParticipantClient to the audio controller's session
+ * context. It tracks device selection and permission requests, publishes status for the
+ * participant UI, and ignores obsolete preparation results and device scans. A terminal
+ * session can keep audio only during its permitted farewell window.
+ */
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type LiveSession } from "../participantConnection.js";
 import { AudioSessionController } from "../audio/audioSessionController.js";

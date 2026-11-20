@@ -1,4 +1,8 @@
 //! Projection of durable session events into dashboard rows.
+//!
+//! Session-detail and polling handlers pass stored events in sequence order. This
+//! projection attaches speech timing and attribution to relevant messages, then supplies
+//! typed summaries to the grouping and display code.
 use super::corpus::{attach_speech_timing, collect_speech_timings};
 use serde::Serialize;
 use serde_json::{json, Value};

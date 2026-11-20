@@ -1,3 +1,7 @@
+//! Live agent speech submits message text to a synthesis provider. The provider returns
+//! ordered PCM chunks and spoken tokens with offsets derived from character alignment. The
+//! caller hands the audio to its publisher and anchors token timing to publication.
+
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use base64::Engine;

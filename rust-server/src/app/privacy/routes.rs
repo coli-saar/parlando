@@ -1,3 +1,7 @@
+//! Exposes installation-wide and experiment-specific privacy reports to authenticated
+//! administrators. Each endpoint resolves the same configuration facts and report model
+//! before selecting the HTML, JSON or Markdown representation.
+
 use super::super::{attachment_response, AppError, Game, ServerContext};
 use super::{
     facts, html::render_privacy_status_html, markdown::render_privacy_status_markdown, report,

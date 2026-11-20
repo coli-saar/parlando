@@ -22,6 +22,7 @@
 - When internal work becomes a supported user-facing contract, write a fresh document in `docs/` rather than publishing the internal note verbatim. Move stale design specifications out of `docs/` when they no longer describe a supported public task.
 
 ## Code quality
+- Document each functional unit in its source. Explain the behavior or state it owns, what it receives from neighboring units, and what those units may rely on. Keep existing contracts with the code that enforces them when moving or splitting a unit.
 - Leave comments in your source code that document each function.
 - For public traits/structs/functions, include detailed user-facing comments suitable for public rustdoc documentation.
 - Avoid keeping legacy code around. Our aim is a clean codebase, not the preservation of old code parts. If it can be cut without compromising functionality, cut it.

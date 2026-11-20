@@ -1,3 +1,10 @@
+/**
+ * The participant runtime supplies server timestamps for waiting, reconnect, and idle
+ * deadlines. These notices update the displayed time locally, clamp elapsed countdowns to
+ * zero, and release their timers on unmount. The server determines the resulting session
+ * outcome.
+ */
+
 import { useEffect, useState } from "react";
 
 /** Shared fixed-deadline guidance for an unmatched waiting session. */

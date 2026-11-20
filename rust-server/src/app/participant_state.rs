@@ -1,4 +1,9 @@
 //! Participant lifecycle snapshots, presence, and protocol responses.
+//!
+//! Admission, HTTP state queries, and game sockets obtain the recipient's view of
+//! lifecycle, presence, and game observations here. Repeated admission can recover a
+//! durable terminal result after the live room is released. The action coordinator uses
+//! the same role-specific projection to prepare browser deltas.
 
 use super::{
     abandon_session, authenticated_participant_id, json, protocol_json, session_ready_for_game,

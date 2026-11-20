@@ -1,4 +1,8 @@
 //! HTTP route declarations and middleware for experiment and installation surfaces.
+//!
+//! Runtime construction supplies initialized state for the experiment handlers. Catalogue
+//! routes use installation context directly. The route trees attach authority checks and
+//! shared HTTP limits at the surface where each operation is exposed.
 
 use super::*;
 

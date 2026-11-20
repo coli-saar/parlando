@@ -1,3 +1,8 @@
+//! The audio socket feeds a per-speaker provider session with queued audio and a finish
+//! signal. The provider emits readiness, final utterances with token timings, and failures.
+//! The socket maps timings to the game clock and passes final utterances to the conversation
+//! layer for commitment.
+
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};

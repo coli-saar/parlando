@@ -1,4 +1,9 @@
 //! Durable participant identities, recruitment submissions and consent declarations.
+//!
+//! Intake uses these operations to persist a participant identity and consent declarations
+//! and to resolve returning Prolific submissions. Session membership links that identity to a
+//! particular room and role. Recruitment correlation and research identifiers have distinct
+//! storage fields and uses.
 
 use super::{now_iso, sqlite_unique_constraint_for, SqliteExperimentStore};
 use crate::identity::new_id;

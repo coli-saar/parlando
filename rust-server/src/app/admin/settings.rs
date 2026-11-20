@@ -1,3 +1,8 @@
+//! Manages the installation settings shared by experiments of the compiled game. Updates
+//! carry an expected revision and explicit provider secret changes. After persistence, the
+//! handler refreshes the installation settings used by the host and invalidates inactive
+//! runtime mounts.
+
 use crate::app::{
     invalidate_inactive_runtime_routers, json, AppError, Arc, Deserialize, Game,
     GameSettingsUpdate, HashMap, HeaderValue, IntoResponse, Json, Response, Result, ServerContext,

@@ -5,6 +5,8 @@
 !js-client/package-lock.json
 !space-game/client/package-lock.json
 !games/great-tree/client/package-lock.json
+!games/last-screening/client/web/package-lock.json
+!games/counterweight-hotel/client/web/package-lock.json
 **/.DS_Store
 
 # Rust build and runtime-stress artifacts

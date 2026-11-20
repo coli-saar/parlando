@@ -1,3 +1,8 @@
+//! Interprets scoped configuration facts for the report builder. A single configuration
+//! produces individual setting descriptions. Across configurations, provider identities are
+//! deduplicated separately for transcription and synthesis because those services receive
+//! different participant data.
+
 use std::collections::HashSet;
 
 use super::{facts::PrivacyConfigFacts, PrivacyConfigurationStatus, PrivacyServiceStatus};

@@ -1,3 +1,7 @@
+//! Renders the shared privacy report for the administrator browser. Dynamic configuration
+//! and provider text is escaped when placed into HTML. Decisions about collection and
+//! retention come from the report builder.
+
 use super::{yes_no, PrivacyStatus};
 
 /// Renders the privacy status as a self-contained administrator page without client-side scripts.

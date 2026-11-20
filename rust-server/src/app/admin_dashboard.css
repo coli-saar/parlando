@@ -1,3 +1,6 @@
+/* Styles the dashboard shell and the status, table and editor elements rendered by
+   the dashboard script. The script selects states through the classes used below. */
+
 /* Dashboard information architecture: game navigation, experiment catalogue, and session workspace. */
 :root { --line: #d9dee3; --strong-line: #c6ccd2; --surface: #f4f5f6; --selected: #e5f2fb; --accent: #1687c9; --text: #20262c; --subtle: #68737d; --draft: #e9972d; --testing: #7b61c9; --active: #35b76f; --completed: #3998e8; --archived: #a9afb5; --danger: #cf4c48; --session-completed: #2f9e62; --session-active: #1687c9; --session-explicit-left: #cf4c48; --session-connection-lost: #e67e22; --session-no-partner: #d5a11e; --session-inactivity-timeout: #7f8c8d; --session-duration-limit: #3b82c4; --session-technical-failure: #8e63b6; --catalogue-width: 290px; --session-width: 300px; background: #fff; color: var(--text); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; line-height: 1.35; }
 html { height: 100%; overflow: hidden; }

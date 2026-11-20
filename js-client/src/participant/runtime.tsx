@@ -1,3 +1,10 @@
+/**
+ * ParticipantAppRuntime coordinates live registration, consent, room entry, and terminal views
+ * for ParticipantApp. ParticipantClient handles HTTP, ParticipantConnection reconciles the
+ * role-specific game state, and useParticipantVoice manages audio. The game renderer receives
+ * the current observation and actions through GameSnapshot.
+ */
+
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ParticipantConnection, type LiveSession } from "../participantConnection.js";
 import { AudioSessionController } from "../audio/audioSessionController.js";

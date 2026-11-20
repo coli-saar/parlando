@@ -1,4 +1,8 @@
 //! Strict YAML inputs and validation against the compiled game and registered agents.
+//!
+//! The runner parses the YAML file into these types and validates its game, seats, schedules,
+//! training settings, and limits against the registry. Planning consumes the validated
+//! specification before any session starts.
 
 use super::ExperimentRunner;
 use crate::game::{Game, PlayerRole};

@@ -1,3 +1,7 @@
+//! Builds the shared privacy report from the configurations selected by the route. It
+//! combines contract versions, service disclosures, retention claims and the corpus
+//! description. The renderers receive the completed report and need no database access.
+
 use super::{
     configuration,
     exports::export_status,

@@ -1,0 +1,40 @@
+.hotel-ending {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-end;
+  width: min(100%, 60rem);
+  min-height: min(74svh, 42rem);
+  padding: clamp(1.4rem, 6vw, 4.5rem);
+  box-sizing: border-box;
+  background: #1a2829;
+  border: 1px solid #a89064;
+  color: #fff4dc;
+  text-align: left;
+}
+.hotel-ending-sky {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(10deg, #142021 1%, rgb(20 32 32 / 86%) 16%, transparent 67%),
+              url("./art/refuge-arrival.jpg") 62% center / cover;
+  animation: hotel-dawn 2.8s ease-out both;
+}
+.hotel-ending-copy { max-width: 36rem; }
+.hotel-ending .hotel-ending-place { margin: 0 0 1.1rem; color: #ffe3a4; letter-spacing: .12em; font: 600 .75rem/1.6 system-ui; text-transform: uppercase; }
+.parlando-session-outcome .hotel-ending h2, .hotel-ending h2 { margin: 0; color: inherit; font: 500 clamp(2.6rem, 7vw, 5.6rem)/1 Georgia, serif; text-wrap: balance; }
+.hotel-ending p { max-width: 34rem; margin: 1rem 0 0; color: inherit; font: 1.1rem/1.55 Georgia, serif; }
+@keyframes hotel-dawn { from { opacity: .4; } }
+@media (prefers-reduced-motion: reduce) { .hotel-ending-sky { animation: none; } }
+
+/* Give the game ending the stage while retaining the participant's farewell and return controls. */
+.parlando-session-outcome:has(.hotel-ending) {
+  width: min(60rem, calc(100% - 1.5rem));
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.parlando-session-outcome:has(.hotel-ending) > h1,
+.parlando-session-outcome:has(.hotel-ending) > h1 + p { display: none; }

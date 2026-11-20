@@ -1,4 +1,8 @@
 //! Consistent experiment exports and session detail projections.
+//!
+//! The admin detail handler requests a single session row. Corpus export requests the
+//! experiment and its linked rows from one SQLite read snapshot. Game-owned JSON travels as
+//! structured values. An invalid stored value fails the read.
 
 use super::{
     session_queries::{stored_event_from_sql_row, SessionEventSqlRow},

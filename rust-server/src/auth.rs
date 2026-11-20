@@ -1,4 +1,9 @@
 //! Authentication primitives for the administrator and participant trust planes.
+//!
+//! HTTP handlers use participant credentials to identify a session and administrator sessions
+//! to authorize dashboard requests. A socket upgrade exchanges a scoped ticket for transport
+//! claims exactly once. Administrator credentials and session-token digests use the SQLite
+//! store. Participant credentials and upgrade tickets have runtime-owned lifetimes.
 
 use std::collections::{HashMap, HashSet};
 

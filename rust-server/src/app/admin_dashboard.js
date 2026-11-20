@@ -1,3 +1,8 @@
+// Coordinates the administrator’s selected experiment, session and editing views. Fetch
+// helpers bind reads to their selection and supply CSRF headers for mutations. Accepted
+// responses update shared dashboard state, which the view renders with the formatting
+// helpers.
+
 import { state } from './admin-dashboard-state.js';
 import { isSpeechBundle, sessionTimeline, roleBadge, escapeHtml, experimentDisplayStatus, fmtClockTime, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, participantDeletionPrompt, plannedProgressLayout, sessionEndCauseRows, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
 import { absoluteParticipantUrl, adminFetch, SelectionRequests, experimentRuntimeApi, participantUrlCanOpen } from './admin-dashboard-api.js';

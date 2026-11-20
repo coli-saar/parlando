@@ -1,3 +1,8 @@
+//! Live and headless sessions use the same factory and callback interface for software
+//! players. A factory receives a role, validated settings, and a session-scoped logger. Its
+//! agent receives observations and messages before decisions. A decision may yield, send
+//! text, propose an action, or do both. The runtime submits proposed actions to the game.
+
 use std::sync::Arc;
 
 use anyhow::Result;

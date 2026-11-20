@@ -1,4 +1,9 @@
 //! Execution, observation delivery, and response handling for a live agent.
+//!
+//! Room construction supplies a fresh agent and its assigned role. The agent task
+//! consumes ordered observations from its bounded inbox and requests decisions with that
+//! role's available actions. Agent responses use the same action and conversation commit
+//! paths as other live input.
 
 use super::{
     agent_event_metadata, anyhow, broadcast_participant_states, commit_conversation_message,

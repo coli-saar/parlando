@@ -1,4 +1,9 @@
 //! Executes evaluation and training phases and resumes finalized plans.
+//!
+//! The runner supplies a validated specification. Execution resolves its plans, recovers
+//! matching finalized results, and sends pending plans to the session runner. A fresh result
+//! contributes to counts after publication. Fail-fast execution finalizes the first failure
+//! before stopping subsequent plans.
 
 use super::artifacts::RunArtifacts;
 use super::planning::{hash_serializable, SessionPlan};

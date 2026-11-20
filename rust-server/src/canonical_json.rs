@@ -1,3 +1,7 @@
+//! Agent configuration fingerprinting and headless plan hashing call this function before
+//! serializing their inputs. Recursive key ordering gives equivalent objects the same hash
+//! input while retaining the significance of array order.
+
 use serde_json::Value;
 
 /// Recursively sorts JSON object keys while preserving array order.

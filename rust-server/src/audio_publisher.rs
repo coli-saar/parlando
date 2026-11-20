@@ -1,3 +1,8 @@
+//! Live agent speech supplies synthesized PCM to a publisher for a particular room. The
+//! registry-backed implementation frames and paces that audio for connected listeners and
+//! returns publication measurements to the caller. The speech layer records message timing
+//! and diagnostics separately.
+
 use std::time::Duration;
 
 use anyhow::{bail, Result};

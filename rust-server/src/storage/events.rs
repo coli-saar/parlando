@@ -2,6 +2,10 @@
 //! A terminal result and its event batch become visible together. If an insert
 //! fails, a retry can reuse the uncommitted event indices. A competing terminal
 //! writer observes the existing ending and cannot append another winning transition.
+//!
+//! The live transition coordinator uses the commit outcome to decide whether it may install
+//! the prepared state and publish observations. The session logger also uses the ordered
+//! append operation for attributed entries.
 
 use super::{now_iso, relative_game_time_ms, timestamp_millis, SqliteExperimentStore};
 use crate::protocol::SessionEnd;

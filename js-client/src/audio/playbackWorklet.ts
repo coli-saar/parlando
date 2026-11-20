@@ -1,3 +1,9 @@
+/**
+ * ParlandoAudioSink passes received PCM frames and the session's jitter-buffer target through
+ * this processor's port. The processor buffers 24 kHz samples, renders at the output device's
+ * rate, and reports underruns back to the sink for diagnostics.
+ */
+
 /** Result of rendering one browser audio quantum from buffered PCM samples. */
 export interface PcmRenderResult {
   underrun: boolean;

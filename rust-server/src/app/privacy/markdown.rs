@@ -1,3 +1,7 @@
+//! Turns the shared privacy report into a downloadable Markdown record. Dynamic values used
+//! in tables are escaped here. The route supplies the report and sets the download media
+//! type and filename.
+
 use super::PrivacyStatus;
 
 /// Renders a portable experiment data-processing record for archival with collected data.

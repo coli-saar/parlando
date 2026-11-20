@@ -1,4 +1,8 @@
 //! Administrator sign-in, setup, and session cookies.
+//!
+//! The setup and login routes pass credentials to the installation authenticator. A
+//! successful login issues the session cookie consumed by administrator middleware.
+//! Logout revokes the session and clears the browser cookie.
 
 use super::{
     cookie_value, json, validate_admin_request_origin, AdminLoginResult, AppError, Arc, CspNonce,

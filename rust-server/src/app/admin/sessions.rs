@@ -1,3 +1,8 @@
+//! Answers session-list, detail and event-poll requests in the selected experiment. Detail
+//! combines durable session and participant records with the current room state when
+//! available. The event poll returns rows after its cursor and constructs timeline bundles
+//! from the complete event history so a later step can finish an earlier bundle.
+
 use crate::app::{
     admin_event_bundles, admin_experiment_id, important_admin_events, json, AdminExperimentScope,
     AppError, AppState, Arc, Deserialize, Extension, Game, Json, Path, Query, Result,

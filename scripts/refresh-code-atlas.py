@@ -28,7 +28,7 @@ FILES = {
     "rust-server/src/app/session_transitions.rs": "expire_if_due_locked reserve_agent_delivery expire_live_session_locked depart_session_locked commit_end_locked",
     "rust-server/src/app/action.rs": "prepare_action submit_action",
     "rust-server/src/app/deadlines.rs": "due_live_deadline",
-    "rust-server/src/app/session/timing.rs": "due_deadline",
+    "rust-server/src/app/session/timing.rs": "deadlines due_deadline",
     "rust-server/src/agent_experiment/execution.rs": "execute_plans",
     "rust-server/src/agent_experiment/decisions.rs": "record_trajectory",
     "rust-server/src/agent_experiment.rs": "run_yaml",
