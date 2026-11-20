@@ -259,6 +259,42 @@ p, h1, h2 { margin: 0; }
 .parlando-decline-consent { color: var(--subtle); text-decoration: none; }
 .consent-list, .voice-preflight, .consent-row span { display: grid; gap: .45rem; }
 .consent-list, .voice-preflight, .parlando-partner-reconnect, .parlando-recruitment-handoff { margin-block: .8rem; }
+/* The entry card leads with the game title and groups consent, audio setup and admission. */
+.lobby-panel:has(.lobby-entry-actions) {
+  width: min(100% - 2rem, 38rem);
+  margin-block: clamp(1rem, 6vh, 4rem);
+  padding: clamp(1.25rem, 4vw, 2.6rem);
+  border-top: 3px solid var(--brass);
+  display: grid;
+  gap: 1.4rem;
+  overflow-wrap: anywhere;
+}
+.lobby-panel:has(.lobby-entry-actions) > * { min-width: 0; margin-block: 0; }
+.lobby-panel:has(.lobby-entry-actions) h1 {
+  margin: .65rem 0 0;
+  font-size: clamp(2rem, 5vw, 3rem);
+  line-height: 1.1;
+  text-wrap: balance;
+}
+.lobby-panel:has(.lobby-entry-actions) .consent-list { gap: 1rem; }
+.lobby-panel:has(.lobby-entry-actions) .consent-row > span {
+  gap: .25rem;
+  min-width: 0;
+}
+.lobby-panel:has(.lobby-entry-actions) .consent-row strong,
+.lobby-panel:has(.lobby-entry-actions) .voice-preflight strong { font-weight: 600; }
+.lobby-panel:has(.lobby-entry-actions) .consent-row span > span,
+.lobby-panel:has(.lobby-entry-actions) .voice-preflight > div > span { color: var(--subtle); line-height: 1.55; }
+.lobby-panel:has(.lobby-entry-actions) .voice-preflight {
+  padding-block: 1rem;
+  border-block: 1px solid #54503e;
+  gap: .7rem;
+  justify-items: start;
+}
+.lobby-panel:has(.lobby-entry-actions) .voice-preflight > div:first-child { display: grid; gap: .2rem; }
+.lobby-panel:has(.lobby-entry-actions) .voice-preflight select { max-width: 100%; min-width: 0; }
+.lobby-entry-actions { align-items: baseline; gap: .6rem 1rem; }
+.lobby-entry-actions .parlando-decline-consent { background: transparent; border-color: transparent; }
 /* The timer, guests and optional voice setup are separate parts of the waiting card. */
 .lobby-panel:has(.seat-grid) {
   width: min(100% - 2rem, 38rem);

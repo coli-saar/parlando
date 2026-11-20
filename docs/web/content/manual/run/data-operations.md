@@ -36,14 +36,24 @@ During collection:
 Do not analyze screenshots of the dashboard. The session view is for diagnosis; the structured
 export is the research interface.
 
+## Replay a recorded session
+
+Select **Replay** in the session detail. Use the timeline to step through accepted actions and
+messages, or play them at their recorded pace. Switch between roles to see what each player
+could observe. Replay uses the game's participant view with interaction disabled.
+
+Replay is available for sessions recorded with Parlando 0.6.0 or later when the current game
+build supports the recorded state, action, and rules versions. For older recordings, use the
+session log and corpus export.
+
 ## Understand what Parlando retains
 
 Every live session records its experiment ID, immutable configuration revision, and semantic game
 version. Keep these identifiers attached during analysis: the experiment revision explains the
 administrative condition, while the game version explains the rules that interpreted each action.
 
-Parlando retains participant creation and role assignment, accepted actions, resulting task states,
-structured completion, and limited diagnostic information. Depending on the condition, it also
+Parlando retains participant creation and role assignment, one initial task state, accepted
+actions, structured completion, and limited diagnostic information. Depending on the condition, it also
 retains declaration evidence, typed messages, final transcripts, and agent activity. Invalid input
 is represented by limited diagnostic facts rather than by retaining an arbitrary submitted payload.
 

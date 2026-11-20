@@ -52,7 +52,7 @@ A **session** is one attempt by the two assigned roles to complete the game unde
 It begins with participant entry and pairing, continues through readiness and interaction, and ends
 with completion, departure, timeout, or technical failure.
 
-The session record contains role assignments, accepted actions, resulting task states, and the
+The session record contains role assignments, the initial task state, accepted actions, and the
 structured outcome. Depending on the condition, it also contains consent evidence, typed messages,
 final transcripts, and agent activity. Every session records its game version and experiment
 revision, so the data remain tied to the rules and condition that produced them.

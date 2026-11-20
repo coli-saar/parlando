@@ -298,9 +298,8 @@ export function ParticipantAppRuntime<
 
   return (
     <StartupShell
-      gameName={publicConfig.gameName}
       institution={publicConfig.institution}
-      heading="Join experiment"
+      heading={publicConfig.gameName || "Join experiment"}
       error={error}
     >
       {publicConfig.consents.length > 0 && (
@@ -346,7 +345,7 @@ export function ParticipantAppRuntime<
           />
         </div>
       )}
-      <div className="lobby-actions">
+      <div className="lobby-actions lobby-entry-actions">
         <button disabled={!canEnter} onClick={createDirectRoom} type="button">
           Enter waiting room
         </button>

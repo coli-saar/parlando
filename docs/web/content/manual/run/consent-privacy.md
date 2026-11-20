@@ -74,14 +74,14 @@ inconsistent or confusing.
 
 ## Minimize the data before collection
 
-Every live session stores accepted actions, resulting task states, completion, and limited
+Every live session stores its initial task state, accepted actions, completion, and limited
 diagnostic information. Task authors therefore minimize the core record by keeping `State`,
 `Action`, `Completion`, transition metadata, and game logs no richer than the research purpose
 requires.
 
-Optional modalities add records. Typed messages are stored when players send them. Final transcripts
-and utterance timing are stored when recognition produces them. Omit a typed-message control and
-leave recognition disabled when language is not needed.
+Optional modalities add records. The shared participant app stores typed messages when players
+send them. Final transcripts and utterance timing are stored when recognition produces them.
+Leave recognition disabled when spoken language records are unnecessary.
 
 Parlando does not durably store raw microphone audio, synthesized audio, microphone device IDs or
 labels, user-agent strings, or arbitrary browser error text. When transcription is enabled,

@@ -43,7 +43,7 @@ if [[ "$rebuild" == true || ! -s "$client_dir/dist/index.html" || ! -f "$stamp" 
   echo "Building the hotel browser client with $mode Parlando"
   if [[ "$mode" == local ]]; then
     (cd "$repo_dir/js-client" && npm ci --no-audit --no-fund && npm run build)
-    (cd "$client_dir" && npm install --no-save --package-lock=false --install-links --no-audit --no-fund "$repo_dir/js-client")
+    (cd "$client_dir" && npm install --no-save --no-install-links --no-audit --no-fund "$repo_dir/js-client")
   else
     (cd "$client_dir" && npm ci --no-audit --no-fund)
   fi

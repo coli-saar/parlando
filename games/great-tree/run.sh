@@ -27,7 +27,7 @@ if [[ "$LOCAL" == true ]]; then
   (cd "$PARLANDO_DIR/js-client" && npm --cache "$NPM_CACHE" install && npm --cache "$NPM_CACHE" run build)
 
   echo "==> Installing local Parlando JavaScript client into Great Tree"
-  (cd client && npm --cache "$NPM_CACHE" install --no-save --package-lock=false --install-links "$PARLANDO_DIR/js-client")
+  (cd client && npm --cache "$NPM_CACHE" install --no-save --install-links "$PARLANDO_DIR/js-client")
 else
   echo "==> Installing published client dependencies"
   (cd client && npm --cache "$NPM_CACHE" install)

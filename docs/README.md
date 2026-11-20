@@ -11,7 +11,9 @@ records the experiment revision and game version that produced it.
 
 Choose a path according to the task you need to perform.
 
-The [Design Principles](design-principles.md) are authoritative for public boundaries and terminology. Existing 0.2 games should start with [Migrate a Parlando Game from 0.2 to 0.3](migrating-0.2-to-0.3.md); its steps link to [Migrating Games to the Clean Parlando API](migrating-to-clean-api.md) for the complete symbol and behavior mapping.
+The [Design Principles](design-principles.md) define the public boundaries and terminology.
+If your game uses Parlando 0.5.0, follow the [0.6.0 upgrade guide](migrating-0.5.0-to-0.6.0.md).
+For the older API transition, see [Migrate a Parlando Game from 0.2 to 0.3](migrating-0.2-to-0.3.md).
 
 ## Create a dialogue game
 

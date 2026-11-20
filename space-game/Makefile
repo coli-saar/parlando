@@ -56,7 +56,7 @@ install-client-deps:
 
 # Install published client dependencies, then replace only the SDK in node_modules locally.
 install-client-deps-local: check-client-package
-	cd "$(CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" install --no-save --package-lock=false --install-links "$(LOCAL_CLIENT_PACKAGE)"
+	cd "$(CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" install --no-save --install-links "$(LOCAL_CLIENT_PACKAGE)"
 
 # Build the Space Game browser client.
 build-client: install-client-deps

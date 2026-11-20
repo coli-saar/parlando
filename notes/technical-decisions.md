@@ -4778,3 +4778,39 @@ The blue matches the solid pixels in the supplied UdS-Logo-Leitfarbe-blau-transp
 
 The repository-root `brand/` directory owns the originals so designers and contributors can find them directly. Run `make sync-brand` after editing the originals. It copies both logos and the palette to the Rust crate and Hugo static assets, and the standalone mark to the participant SDK. Local copies keep each subproject independently buildable.
 The participant SDK bundles the same mark alongside the lobby module, so its platform label works in independently hosted game clients.
+
+### Participant entry typography
+On entry, the game name supplies the page heading. The admission button names the action. Hotel entry styles use the entry action group to scope the layout and give the consent text, microphone status and admission controls separate spacing. The shared shell continues to identify the institution, and configuration determines which form sections appear.
+
+The hotel local build symlinks the compiled SDK with npm’s --no-install-links option. An installed packed copy could retain old markup after a same-version source rebuild. The Docker build installs into a fresh stage.
+
+## 2026-11-20 — Prepare the coordinated 0.6.0 release
+
+The replay renderer changes the public React and Rust game contracts. The release therefore uses
+0.6.0 for the runtime and browser SDK. The upgrade guide covers the snapshot interface, state
+deserialization, and the change from per-action snapshots to an initial state and accepted actions.
+
+The examples use compatible package ranges at the coordinated version. Their local builds pass
+the sibling SDK directly to npm with `--no-save`. A clean install verified that npm reused the
+locked versions of other dependencies and left the registry lockfile intact. The hotel links
+the sibling SDK for local rebuilds and installs a packed copy in the fresh Docker stage.
+The Last Screening and Counterweight Hotel use the shared renderer directly. The hotel keeps
+replay versions 6, 4, and 5 for state, actions, and rules in both build modes. Removing the
+local-only feature preserves compatibility with sessions recorded by recent local hotel builds.
+
+The first-party registry npm lockfiles still identify 0.5.0 until 0.6.0 is available on npm.
+Once both packages are published, resolve those lockfiles through npm, build the registry
+consumers, and run the release metadata audit with `--published --require-migration-guide`.
+
+A temporary Last Screening build linked to published 0.5.0 created a session with one accepted
+action. The 0.6.0 build opened a SQLite backup of that database and preserved counts, schema
+version 16, integrity, foreign keys, the historical session detail, and its action state in the
+corpus. That session returned the expected replay-unavailable response. A new session replayed
+an action for both roles and exported a null action state.
+
+Candidate validation passed the metadata audit, `make test`, and all five layers of
+`make test-e2e`, including 13 Chromium lifecycle and 35 Prolific scenarios. The all-features
+release build, Hugo build, package archives, and publication dry runs also passed. Clean
+consumers compiled against the two locally packed artifacts, and the examples built with the
+local SDK. Docker was unavailable because no local daemon was listening. The published build
+paths and registry lockfile audit require the actual 0.6.0 artifacts on both registries.

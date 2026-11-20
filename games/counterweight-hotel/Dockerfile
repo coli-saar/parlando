@@ -16,7 +16,7 @@ RUN npm ci && npm run build
 WORKDIR /app/games/counterweight-hotel/client/web
 COPY games/counterweight-hotel/client/web/ ./
 # Match run.sh --local and resolve the SDK from this checkout.
-RUN npm install --no-save --package-lock=false --install-links --no-audit --no-fund /app/js-client \
+RUN npm install --no-save --install-links --no-audit --no-fund /app/js-client \
     && npm run build
 
 FROM debian:bookworm-slim
