@@ -1,6 +1,8 @@
 //! Uploads Wasm game packages and hosts explicitly pinned participant experiments.
 
+mod accounts;
 pub mod credentials;
+mod dashboard;
 mod package;
 
 use std::{
@@ -62,6 +64,7 @@ struct HostedExperiment {
     selection: ExperimentSelection,
     participant: Router,
     admin: Router,
+    state: Arc<crate::app::AppState>,
 }
 
 struct Host {
@@ -69,6 +72,7 @@ struct Host {
     public_url: String,
     grants: BTreeMap<String, [u8; 32]>,
     admin_token: [u8; 32],
+    dashboard: Option<dashboard::Dashboard>,
     experiments: RwLock<HashMap<String, HostedExperiment>>,
     selection_lock: Mutex<()>,
     uploads: Arc<Semaphore>,
@@ -79,10 +83,31 @@ type HttpResult<T> = std::result::Result<T, (StatusCode, String)>;
 
 /// Runs a deployment host and reloads every pinned experiment before it accepts traffic.
 pub async fn serve(address: SocketAddr, options: HostOptions) -> Result<()> {
+    serve_configured(address, options, None).await
+}
+
+/// Runs a deployment host with named dashboard accounts on a separate web origin.
+///
+/// The administrator hostname must differ from the public participant hostname.
+/// Route both hostnames to this listener and preserve the original HTTP authority.
+pub async fn serve_with_dashboard(
+    address: SocketAddr,
+    options: HostOptions,
+    admin_url: String,
+) -> Result<()> {
+    serve_configured(address, options, Some(admin_url)).await
+}
+
+/// Initializes the host store and its optional browser management surface.
+async fn serve_configured(
+    address: SocketAddr,
+    options: HostOptions,
+    admin_url: Option<String>,
+) -> Result<()> {
     let public_url = checked_origin(&options.public_url)?;
     ensure!(
-        !options.grants.is_empty(),
-        "configure at least one game upload grant"
+        !options.grants.is_empty() || admin_url.is_some(),
+        "configure a game upload grant or an administrator origin"
     );
     validate_token(&options.admin_token)?;
     let admin_token = token_digest(&options.admin_token);
@@ -105,11 +130,16 @@ pub async fn serve(address: SocketAddr, options: HostOptions) -> Result<()> {
         .write(true)
         .open(store.join(".host.lock"))?;
     FileExt::try_lock_exclusive(&lock).context("another deployment host is using this store")?;
+    let dashboard = match admin_url {
+        Some(origin) => Some(dashboard::Dashboard::open(&store, &public_url, &origin).await?),
+        None => None,
+    };
     let mut host = Host {
         store,
         public_url,
         grants,
         admin_token,
+        dashboard,
         experiments: RwLock::new(HashMap::new()),
         selection_lock: Mutex::new(()),
         uploads: Arc::new(Semaphore::new(2)),
@@ -120,6 +150,7 @@ pub async fn serve(address: SocketAddr, options: HostOptions) -> Result<()> {
         .route("/health", get(|| async { Json(json!({"status":"ok"})) }))
         .route("/api/hosting/packages/:game", put(upload))
         .route("/api/hosting/experiments/:id", put(select_experiment))
+        .merge(dashboard::routes())
         .fallback(dispatch)
         .with_state(Arc::new(host));
     let listener = tokio::net::TcpListener::bind(address).await?;
@@ -202,12 +233,13 @@ impl Host {
         config.database.url = format!("sqlite:///{database}");
         config.server.public_base_url = format!("{}/e/{id}", self.public_url);
         config.server.client_dist_path = client_dist;
-        let (participant, admin) =
+        let (participant, admin, state) =
             crate::app::build_deployed_experiment(loaded_game, config, metadata).await?;
         Ok(HostedExperiment {
             selection,
             participant,
             admin,
+            state,
         })
     }
 }
@@ -218,7 +250,25 @@ async fn upload(
     RoutePath(game): RoutePath<String>,
     request: Request,
 ) -> HttpResult<Json<Deployment>> {
-    require_token(request.headers(), host.grants.get(&game))?;
+    let (parts, body) = request.into_parts();
+    let actor = dashboard::authorize(&host, &parts, host.grants.get(&game), || {
+        format!("upload-token:{game}")
+    })
+    .await?;
+    validate_id(&game).map_err(bad_request)?;
+    let request = Request::from_parts(parts, body);
+    dashboard::audited(
+        &host,
+        &actor,
+        "upload",
+        &game,
+        install_upload(&host, &game, request),
+    )
+    .await
+}
+
+/// Bounds the upload body and installs the validated package off the request executor.
+async fn install_upload(host: &Host, game: &str, request: Request) -> HttpResult<Json<Deployment>> {
     let permit = host.uploads.clone().try_acquire_owned().map_err(|_| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -238,6 +288,7 @@ async fn upload(
         )
     })?;
     let dir = host.store.clone();
+    let game = game.to_owned();
     let receipt = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let upload: Upload = serde_json::from_slice(&bytes).context("invalid package envelope")?;
@@ -255,8 +306,27 @@ async fn select_experiment(
     RoutePath(id): RoutePath<String>,
     request: Request,
 ) -> HttpResult<Json<Value>> {
-    require_token(request.headers(), Some(&host.admin_token))?;
+    let (parts, body) = request.into_parts();
+    let actor = dashboard::authorize(&host, &parts, Some(&host.admin_token), || {
+        "host-operator-token".into()
+    })
+    .await?;
     validate_id(&id).map_err(bad_request)?;
+    let request = Request::from_parts(parts, body);
+    let target = id.clone();
+    let audit_host = host.clone();
+    dashboard::audited(
+        &audit_host,
+        &actor,
+        "select",
+        &target,
+        pin_experiment(host, id, request),
+    )
+    .await
+}
+
+/// Validates and persists an experiment's immutable package and configuration pin.
+async fn pin_experiment(host: Arc<Host>, id: String, request: Request) -> HttpResult<Json<Value>> {
     let bytes = tokio::time::timeout(
         Duration::from_secs(15),
         to_bytes(request.into_body(), CONTROL_LIMIT),
@@ -315,8 +385,12 @@ async fn select_experiment(
 
 /// Routes participant and operator requests to the pinned runtime, including WebSocket upgrades.
 async fn dispatch(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Response> {
-    let path = request.uri().path();
+    let (parts, body) = request.into_parts();
+    let path = parts.uri.path();
     let (id, admin) = if let Some(rest) = path.strip_prefix("/e/") {
+        if !dashboard::participant_origin_allowed(&host, &parts) {
+            return Err(not_found());
+        }
         let (id, tail) = rest.split_once('/').unwrap_or((rest, ""));
         if tail == "admin"
             || tail.starts_with("admin/")
@@ -333,10 +407,19 @@ async fn dispatch(State(host): State<Arc<Host>>, request: Request) -> HttpResult
         if !tail.starts_with("admin/") {
             return Err(not_found());
         }
-        require_token(request.headers(), Some(&host.admin_token))?;
         (id, true)
     } else {
         return Err(not_found());
+    };
+    let actor = if admin {
+        Some(
+            dashboard::authorize(&host, &parts, Some(&host.admin_token), || {
+                "host-operator-token".into()
+            })
+            .await?,
+        )
+    } else {
+        None
     };
     let router = {
         let experiments = host.experiments.read().await;
@@ -347,10 +430,32 @@ async fn dispatch(State(host): State<Arc<Host>>, request: Request) -> HttpResult
             experiment.participant.clone()
         }
     };
-    Ok(router
-        .oneshot(request)
-        .await
-        .expect("Axum routers are infallible"))
+    let action = match (actor.as_ref(), parts.method.as_str(), path) {
+        (Some(actor), "GET" | "HEAD", path) if path.ends_with("/admin/export") => {
+            Some((actor, "export"))
+        }
+        (Some(actor), "POST", path) if path.ends_with("/admin/experiment/status") => {
+            Some((actor, "intake"))
+        }
+        (Some(actor), "POST", path) if path.ends_with("/deletion") => {
+            Some((actor, "delete-participant-data"))
+        }
+        _ => None,
+    };
+    let target = id.to_owned();
+    let request = Request::from_parts(parts, body);
+    let response = async {
+        Ok(router
+            .oneshot(request)
+            .await
+            .expect("Axum routers are infallible"))
+    };
+    match action {
+        Some((actor, operation)) => {
+            dashboard::audited_response(&host, actor, operation, &target, response).await
+        }
+        None => response.await,
+    }
 }
 
 /// Writes an operator selection atomically so startup never sees a half-written experiment.

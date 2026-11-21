@@ -2,6 +2,7 @@
 
 use super::*;
 use parlando::deployment::{self, Deployment, ExperimentSelection, HostOptions};
+use reqwest::header::{COOKIE, ORIGIN, SET_COOKIE};
 use reqwest::{Client, Method, Response};
 use tokio::{task::JoinHandle, time::timeout};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -23,25 +24,28 @@ struct TestHost {
 
 impl TestHost {
     /// Starts a deployment host using the same public entry point as the CLI.
-    async fn start(address: SocketAddr, store: &Path) -> Self {
+    async fn start(address: SocketAddr, store: &Path, admin_url: Option<String>) -> Self {
         let origin = format!("http://{address}");
         let client = Client::builder()
             .pool_max_idle_per_host(0)
             .timeout(HOST_OPERATION_TIMEOUT)
             .build()
             .unwrap();
-        let task = tokio::spawn(deployment::serve(
-            address,
-            HostOptions {
-                store: store.into(),
-                public_url: origin.clone(),
-                grants: BTreeMap::from([
-                    ("fixture-a".to_owned(), UPLOAD_A.to_owned()),
-                    ("fixture-b".to_owned(), UPLOAD_B.to_owned()),
-                ]),
-                admin_token: ADMIN.into(),
-            },
-        ));
+        let options = HostOptions {
+            store: store.into(),
+            public_url: origin.clone(),
+            grants: BTreeMap::from([
+                ("fixture-a".to_owned(), UPLOAD_A.to_owned()),
+                ("fixture-b".to_owned(), UPLOAD_B.to_owned()),
+            ]),
+            admin_token: ADMIN.into(),
+        };
+        let task = match admin_url {
+            Some(admin_url) => tokio::spawn(deployment::serve_with_dashboard(
+                address, options, admin_url,
+            )),
+            None => tokio::spawn(deployment::serve(address, options)),
+        };
         timeout(HOST_OPERATION_TIMEOUT, async {
             loop {
                 assert!(!task.is_finished(), "deployment host failed to start");
@@ -221,6 +225,446 @@ fn create_package(path: &Path, game: &str, asset: &str) {
     std::fs::write(path.join("client/favicon.ico"), "fixture icon").unwrap();
 }
 
+/// Signs in on the admin origin and keeps the cookie separate from the session response.
+async fn browser_login(
+    client: &Client,
+    admin_origin: &str,
+    username: &str,
+    password: &str,
+) -> (String, Value) {
+    let response = client
+        .post(format!("{admin_origin}{PATH}/auth/login"))
+        .header(ORIGIN, admin_origin)
+        .json(&json!({"username": username, "password": password}))
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success(), "{}", response.status());
+    let set_cookie = response.headers()[SET_COOKIE].to_str().unwrap();
+    assert!(set_cookie.contains("HttpOnly"));
+    assert!(set_cookie.contains("SameSite=Strict"));
+    assert!(!set_cookie.to_ascii_lowercase().contains("domain="));
+    let cookie = set_cookie.split(';').next().unwrap().to_owned();
+    assert!(!cookie.is_empty());
+    (cookie, check_json(response).await)
+}
+
+/// Exercises browser permissions across games and durable account changes on the admin origin.
+#[tokio::test]
+#[ignore = "requires the component fixture built by make test-components"]
+async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("host");
+    let address = reserve_address().await.unwrap();
+    let admin_origin = format!("http://localhost:{}", address.port());
+    let host = TestHost::start(address, &store, Some(admin_origin.clone())).await;
+    let client = &host.client;
+    let request = |method: Method, suffix: &str| {
+        client.request(method, format!("{admin_origin}{PATH}{suffix}"))
+    };
+    for (origin, status) in [
+        (admin_origin.as_str(), StatusCode::OK),
+        (host.origin.as_str(), StatusCode::NOT_FOUND),
+    ] {
+        assert_eq!(
+            client
+                .get(format!("{origin}/admin"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            status
+        );
+    }
+    let accounts = "/accounts";
+    let password = "initial-experimenter-password";
+    let replacement_password = "replacement-experimenter-password";
+    let login_body = json!({"username":"researcher","password":password});
+    let account = check_json(
+        request(Method::POST, accounts)
+            .bearer_auth(ADMIN)
+            .json(&login_body)
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    let account_id = account["id"].as_i64().unwrap();
+    let account_path = format!("{accounts}/{account_id}");
+    assert_eq!(account["role"], "experimenter");
+
+    let (cookie, session) = browser_login(client, &admin_origin, "researcher", password).await;
+    let csrf = session["csrf_token"].as_str().unwrap();
+    assert_eq!(session["role"], "experimenter");
+    assert_eq!(session["id"], account["id"]);
+    assert_eq!(session["username"], "researcher");
+    assert_eq!(
+        check_json(
+            request(Method::GET, "/auth/session")
+                .header(COOKIE, &cookie)
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await,
+        session
+    );
+    assert_eq!(
+        client
+            .get(format!("{}{PATH}/auth/session", host.origin))
+            .header(COOKIE, &cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(Method::POST, "/auth/login")
+            .header(ORIGIN, &host.origin)
+            .json(&login_body)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    for (method, path) in [(Method::POST, accounts), (Method::GET, "/audit")] {
+        assert_eq!(
+            request(method, path)
+                .header(COOKIE, &cookie)
+                .header(ORIGIN, &admin_origin)
+                .header("x-csrf-token", csrf)
+                .json(&json!({
+                    "username": "unexpected-operator",
+                    "password": password,
+                    "role": "operator",
+                }))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    let cli_package = directory.path().join("fixture-a");
+    create_package(&cli_package, "fixture-a", "CLI game");
+    let cli_deployment = deployment::deploy(&host.origin, &cli_package, UPLOAD_A)
+        .await
+        .unwrap();
+    check_json(
+        host.select("cli-experiment", &cli_deployment, json!({}))
+            .await,
+    )
+    .await;
+    assert_eq!(
+        client
+            .get(format!("{admin_origin}/e/cli-experiment/assets/app.js"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let browser_package = directory.path().join("browser-fixture");
+    create_package(&browser_package, "browser-fixture", "browser game");
+    let files = [
+        "game.yaml",
+        "game.wasm",
+        "client/index.html",
+        "client/assets/app.js",
+        "client/favicon.ico",
+    ]
+    .into_iter()
+    .map(|path| {
+        let contents = std::fs::read(browser_package.join(path)).unwrap();
+        (
+            path,
+            base64::engine::general_purpose::STANDARD.encode(contents),
+        )
+    })
+    .collect::<BTreeMap<_, _>>();
+    let upload = json!({"files": files});
+    let upload_path = "/packages/browser-fixture";
+    for (origin, csrf_token) in [
+        (None, Some(csrf)),
+        (Some(host.origin.as_str()), Some(csrf)),
+        (Some(admin_origin.as_str()), None),
+    ] {
+        let mut rejected = request(Method::PUT, upload_path).header(COOKIE, &cookie);
+        if let Some(origin) = origin {
+            rejected = rejected.header(ORIGIN, origin);
+        }
+        if let Some(csrf_token) = csrf_token {
+            rejected = rejected.header("x-csrf-token", csrf_token);
+        }
+        let response = rejected.json(&json!({})).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+    let browser_deployment = check_json(
+        request(Method::PUT, upload_path)
+            .header(COOKIE, &cookie)
+            .header(ORIGIN, &admin_origin)
+            .header("x-csrf-token", csrf)
+            .json(&upload)
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    check_json(
+        request(Method::PUT, "/experiments/browser-experiment")
+            .header(COOKIE, &cookie)
+            .header(ORIGIN, &admin_origin)
+            .header("x-csrf-token", csrf)
+            .json(&json!({
+                "game": browser_deployment["game"],
+                "revision": browser_deployment["revision"],
+                "config": {},
+            }))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    let dashboard = check_json(
+        request(Method::GET, "/dashboard")
+            .header(COOKIE, &cookie)
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    for (section, expected) in [
+        ("games", ["fixture-a", "browser-fixture"]),
+        ("experiments", ["cli-experiment", "browser-experiment"]),
+    ] {
+        let rows = dashboard[section].as_array().unwrap();
+        for id in expected {
+            assert!(rows.iter().any(|row| row["id"] == id));
+        }
+    }
+    for experiment in ["cli-experiment", "browser-experiment"] {
+        let sessions = check_json(
+            request(
+                Method::GET,
+                &format!("/experiments/{experiment}/admin/sessions"),
+            )
+            .header(COOKIE, &cookie)
+            .send()
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(sessions["experiment_id"], experiment);
+    }
+
+    check_json(
+        request(
+            Method::POST,
+            "/experiments/cli-experiment/admin/experiment/status",
+        )
+        .header(COOKIE, &cookie)
+        .header(ORIGIN, &admin_origin)
+        .header("x-csrf-token", csrf)
+        .json(&json!({"status":"testing"}))
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        request(Method::GET, "/experiments/cli-experiment/admin/export")
+            .header(COOKIE, &cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+
+    let operator_password = "browser-operator-credential";
+    let operator = check_json(
+        request(Method::POST, accounts)
+            .bearer_auth(ADMIN)
+            .json(&json!({
+                "username": "operator",
+                "password": operator_password,
+                "role": "operator"
+            }))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(operator["role"], "operator");
+    let (operator_cookie, operator_session) =
+        browser_login(client, &admin_origin, "operator", operator_password).await;
+    let operator_csrf = operator_session["csrf_token"].as_str().unwrap();
+    let colleague_password = "independent-experimenter-password";
+    let colleague = check_json(
+        request(Method::POST, accounts)
+            .header(COOKIE, &operator_cookie)
+            .header(ORIGIN, &admin_origin)
+            .header("x-csrf-token", operator_csrf)
+            .json(&json!({"username":"colleague","password":colleague_password}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(colleague["role"], "experimenter");
+    let (colleague_cookie, _) =
+        browser_login(client, &admin_origin, "colleague", colleague_password).await;
+    let session_request =
+        |cookie: &str| request(Method::GET, "/auth/session").header(COOKIE, cookie);
+    let (logout_cookie, logout_session) =
+        browser_login(client, &admin_origin, "researcher", password).await;
+    assert!(request(Method::POST, "/auth/logout")
+        .header(COOKIE, &logout_cookie)
+        .header(ORIGIN, &admin_origin)
+        .header(
+            "x-csrf-token",
+            logout_session["csrf_token"].as_str().unwrap()
+        )
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+    assert_eq!(
+        session_request(&logout_cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let (second_cookie, _) = browser_login(client, &admin_origin, "researcher", password).await;
+    let update = |body: Value| {
+        request(Method::PUT, &account_path)
+            .bearer_auth(ADMIN)
+            .json(&body)
+    };
+    assert!(update(json!({"password":replacement_password}))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+    for revoked in [&cookie, &second_cookie] {
+        assert_eq!(
+            session_request(revoked).send().await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        request(Method::POST, "/auth/login")
+            .header(ORIGIN, &admin_origin)
+            .json(&login_body)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let (replacement_cookie, _) =
+        browser_login(client, &admin_origin, "researcher", replacement_password).await;
+    assert!(request(Method::PUT, &account_path)
+        .header(COOKIE, &operator_cookie)
+        .header(ORIGIN, &admin_origin)
+        .header("x-csrf-token", operator_csrf)
+        .json(&json!({"disabled": true}))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+    assert_eq!(
+        session_request(&replacement_cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(Method::POST, "/auth/login")
+            .header(ORIGIN, &admin_origin)
+            .json(&json!({"username":"researcher","password":replacement_password}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let colleague_dashboard = check_json(
+        request(Method::GET, "/dashboard")
+            .header(COOKIE, &colleague_cookie)
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(colleague_dashboard["games"], dashboard["games"]);
+    assert_eq!(
+        request(Method::GET, "/experiments/browser-experiment/admin/export")
+            .header(COOKIE, &colleague_cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let audit = check_json(
+        request(Method::GET, "/audit")
+            .header(COOKIE, &operator_cookie)
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    let events = audit["events"].as_array().unwrap();
+    let researcher = format!("account:{account_id}:researcher");
+    let colleague_id = colleague["id"].as_i64().unwrap();
+    let colleague_actor = format!("account:{colleague_id}:colleague");
+    let operator_id = operator["id"].as_i64().unwrap();
+    let operator_actor = format!("account:{operator_id}:operator");
+    let reset_target = account_id.to_string();
+    for (actor, operation, target) in [
+        (researcher.as_str(), "upload", "browser-fixture"),
+        (researcher.as_str(), "select", "browser-experiment"),
+        (researcher.as_str(), "intake", "cli-experiment"),
+        (researcher.as_str(), "export", "cli-experiment"),
+        (colleague_actor.as_str(), "export", "browser-experiment"),
+        ("upload-token:fixture-a", "upload", "fixture-a"),
+        ("host-operator-token", "reset-password", &reset_target),
+        (operator_actor.as_str(), "create-account", "colleague"),
+        (operator_actor.as_str(), "disable-account", &reset_target),
+    ] {
+        assert!(
+            events.iter().any(|event| event["actor"] == actor
+                && event["operation"] == operation
+                && event["target"] == target
+                && event["outcome"] == "success"),
+            "audit has no successful {actor} entry for {operation} on {target}: {audit}"
+        );
+    }
+    let audit = audit.to_string();
+    for credential in [
+        password,
+        replacement_password,
+        operator_password,
+        colleague_password,
+        ADMIN,
+        csrf,
+    ] {
+        assert!(!audit.contains(credential));
+    }
+    host.stop().await;
+}
+
 /// Checks concurrent publication, strict scope and validation, and durable per-experiment routing.
 #[tokio::test]
 #[ignore = "requires the component fixture built by make test-components"]
@@ -232,7 +676,7 @@ async fn deployment_publishes_immutable_packages_and_routes_sessions_to_their_pi
     create_package(&package_a, "fixture-a", "first revision");
     create_package(&package_b, "fixture-b", "second game");
     let address = reserve_address().await.unwrap();
-    let host = TestHost::start(address, &store).await;
+    let host = TestHost::start(address, &store, None).await;
     let uploads = format!("{PATH}/packages");
     let first_scope = format!("{uploads}/fixture-a");
     let other_scope = format!("{uploads}/fixture-b");
@@ -413,7 +857,7 @@ async fn deployment_publishes_immutable_packages_and_routes_sessions_to_their_pi
     assert_eq!(response.text().await.unwrap(), "fixture icon");
     host.stop().await;
 
-    let restarted = TestHost::start(address, &store).await;
+    let restarted = TestHost::start(address, &store, None).await;
     let config = check_json(
         restarted
             .request(Method::GET, "/e/one/api/config", None, None)

@@ -8,20 +8,18 @@ separately compiled React participant client.
 
 ## Build and play
 
-Use the Parlando checkout that defines `parlando:game@4.0.0`. The crates.io
-`parlando` 0.6.0 package lacks the component host feature. The browser app uses
-the published `@coli-saar/parlando-client` 0.6.0 package.
+Install the Parlando CLI and get the Last Token example files. Building this
+example requires Zig, `wasm-tools`, Node.js, npm, and the C WIT binding generator.
 
-From the repository root, with Rust, Zig, `wasm-tools` and Node/npm installed:
+From the directory containing `experiments/c-last-token`, run:
 
 ```sh
+cargo install --locked parlando --bin parlando
 cargo install --locked --no-default-features --features c wit-bindgen-cli --version 0.57.1
 experiments/c-last-token/build.sh
 npm --prefix experiments/c-last-token/client ci
 npm --prefix experiments/c-last-token/client run build
-cargo build --release --locked --manifest-path rust-server/Cargo.toml \
-  --bin parlando
-rust-server/target/release/parlando \
+parlando \
   serve --manifest experiments/c-last-token/game.yaml \
   --database-url sqlite:///./experiments/c-last-token/build/last-token.sqlite \
   --client-dist experiments/c-last-token/client/dist

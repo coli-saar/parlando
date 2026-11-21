@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Parlando Hosting</title>
+  <link rel="stylesheet" href="/admin/dashboard.css">
+  <script type="module" src="/admin/dashboard.js"></script>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/admin">Parlando <span>Hosting</span></a>
+    <div id="identity" class="toolbar" hidden>
+      <span id="signed-in-as"></span>
+      <button id="logout" type="button">Sign out</button>
+    </div>
+  </header>
+
+  <main>
+    <p id="notice" role="status" hidden></p>
+    <section id="sign-in" class="panel narrow" aria-labelledby="sign-in-title" hidden>
+      <h1 id="sign-in-title">Sign in to hosting</h1>
+      <form method="post" id="login">
+        <label>Username <input name="username" autocomplete="username" required></label>
+        <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+        <button class="primary">Sign in</button>
+      </form>
+    </section>
+
+    <div id="workspace" hidden>
+      <div class="page-title toolbar">
+        <h1 id="dashboard-title">Hosting dashboard</h1>
+        <button id="refresh" type="button">Refresh dashboard</button>
+      </div>
+      <nav aria-label="Dashboard sections">
+        <a href="#experiments">Experiments</a>
+        <a href="#games">Games</a>
+        <a id="operator-nav" href="#operator" hidden>Operator</a>
+      </nav>
+
+      <section id="experiments" class="panel" aria-labelledby="experiments-title">
+        <h2 id="experiments-title">Experiments</h2>
+        <div class="scroll"><table>
+          <thead><tr><th scope="col">Experiment</th><th scope="col">Game</th><th scope="col">Revision</th><th scope="col">Status</th><th scope="col">Manage</th></tr></thead>
+          <tbody id="experiment-rows"></tbody>
+        </table></div>
+        <section id="experiment-detail" class="inset" aria-labelledby="experiment-title" hidden>
+          <h3 id="experiment-title" tabindex="-1"></h3>
+          <p>Intake status <strong id="experiment-status"></strong></p>
+          <div id="experiment-actions" class="toolbar"></div>
+          <details>
+            <summary>Pinned configuration</summary>
+            <pre id="experiment-config"></pre>
+          </details>
+          <div class="toolbar subsection">
+            <h4>Sessions</h4>
+            <button id="load-sessions" type="button">Load sessions</button>
+            <button id="load-more-sessions" type="button" hidden>Load more sessions</button>
+          </div>
+          <div id="session-list" class="scroll" hidden><table>
+            <thead><tr><th scope="col">Dialogue</th><th scope="col">Lifecycle</th><th scope="col">Purpose</th><th scope="col">Started</th><th scope="col">Events</th><th scope="col">View</th></tr></thead>
+            <tbody id="session-rows"></tbody>
+          </table></div>
+          <div id="session-detail" hidden>
+            <div class="toolbar">
+              <h4 id="session-title" tabindex="-1"></h4>
+              <button id="session-summary" type="button">Session record</button>
+              <button id="session-events" type="button">Events</button>
+              <button id="session-replay" type="button">Replay data</button>
+            </div>
+            <pre id="session-data"></pre>
+          </div>
+          <form id="export" class="toolbar subsection">
+            <label>Corpus format
+              <select name="format"><option value="json">JSON</option><option value="yaml">YAML</option><option value="csv">CSV</option></select>
+            </label>
+            <button>Download corpus</button>
+          </form>
+        </section>
+
+        <details id="create-experiment">
+          <summary>Create an experiment</summary>
+          <p>Each experiment ID pins one game revision and configuration. Use a new ID to run a different build or configuration.</p>
+          <form id="experiment-form">
+            <div class="fields">
+              <label>Experiment ID <input name="id" pattern="[a-z0-9][a-z0-9_\-]{0,63}" required></label>
+              <label>Game <select name="game" required></select></label>
+              <label>Package revision <select name="revision" required></select></label>
+            </div>
+            <label>Experiment configuration (JSON)
+              <textarea name="config" spellcheck="false" rows="8" required>{}</textarea>
+            </label>
+            <button class="primary">Create experiment</button>
+          </form>
+        </details>
+      </section>
+
+      <section id="games" class="panel" aria-labelledby="games-title">
+        <h2 id="games-title">Games and builds</h2>
+        <div class="scroll"><table>
+          <thead><tr><th scope="col">Game</th><th scope="col">Version</th><th scope="col">Revision</th><th scope="col">Use build</th></tr></thead>
+          <tbody id="game-rows"></tbody>
+        </table></div>
+
+        <details id="publish-game">
+          <summary>Upload a game build</summary>
+          <p>Choose the <code>dist/parlando</code> directory produced by <code>parlando build</code>, or another prepared package directory. Use the game ID, component path, and optional participant app path from its <code>game.yaml</code>.</p>
+          <form id="publish-form">
+            <div class="fields">
+              <label>Game ID <input name="id" pattern="[a-z0-9][a-z0-9_\-]{0,63}" required></label>
+              <label>Component path <input name="component" value="game.wasm" required></label>
+              <label>Participant app path (optional) <input name="client" placeholder="client"></label>
+            </div>
+            <label>Package directory <input name="directory" type="file" webkitdirectory multiple required></label>
+            <button class="primary">Upload build</button>
+          </form>
+        </details>
+      </section>
+
+      <section id="operator" class="panel" aria-labelledby="operator-title" hidden>
+        <h2 id="operator-title">Operator</h2>
+        <div class="toolbar"><h3>Accounts</h3><button id="load-operator" type="button">Refresh operator data</button></div>
+        <div class="scroll"><table>
+          <thead><tr><th scope="col">Username</th><th scope="col">Role</th><th scope="col">Status</th><th scope="col">Manage</th></tr></thead>
+          <tbody id="account-rows"></tbody>
+        </table></div>
+        <details id="create-account">
+          <summary>Create an account</summary>
+          <form method="post" id="account-form">
+            <div class="fields">
+              <label>Username <input name="username" autocomplete="off" required></label>
+              <label>Initial password <input name="password" type="password" autocomplete="new-password" required></label>
+              <label>Role <select name="role"><option value="experimenter">Experimenter</option><option value="operator">Operator</option></select></label>
+            </div>
+            <button class="primary">Create account</button>
+          </form>
+        </details>
+        <form method="post" id="reset-password" class="inset" hidden>
+          <h4 id="reset-title"></h4>
+          <label>New password <input name="password" type="password" autocomplete="new-password" required></label>
+          <div class="toolbar"><button class="primary">Reset password</button><button id="cancel-reset" type="button">Cancel</button></div>
+        </form>
+        <h3 class="subsection">Audit history</h3>
+        <div class="scroll"><table>
+          <thead><tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Operation</th><th scope="col">Target</th><th scope="col">Outcome</th></tr></thead>
+          <tbody id="audit-rows"></tbody>
+        </table></div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

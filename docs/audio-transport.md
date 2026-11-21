@@ -146,7 +146,7 @@ them. Protocol version 1 fixes `voice.sample_rate_hz` at 24000,
 `voice.frame_duration_ms` at 20, mono PCM, and a TTS output format compatible with
 24 kHz PCM. The normal initial jitter target is 100 ms.
 
-Add Speechmatics and ElevenLabs credentials explicitly under Game settings.
+In the single-game dashboard, add Speechmatics and ElevenLabs credentials under Game settings. The shared host's dashboard has no provider credential editor.
 Parlando has no environment-variable fallback for provider secrets. Configure
 the exact Speechmatics realtime URL, ElevenLabs base URL, recognition behavior,
 and ElevenLabs voice in the experiment revision. Provider keys remain outside

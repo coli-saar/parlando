@@ -181,7 +181,7 @@ pub(crate) async fn build_deployed_experiment(
     loaded_game: LoadedGame,
     config: ExperimentConfig,
     metadata: GameMetadata,
-) -> Result<(Router, Router)> {
+) -> Result<(Router, Router, Arc<AppState>)> {
     let id = config
         .experiment
         .id
@@ -209,7 +209,7 @@ pub(crate) async fn build_deployed_experiment(
     )
     .await?;
     let admin = routes::experiment_admin_routes(&format!("/api/hosting/experiments/{id}/admin"))
-        .with_state(built.state)
+        .with_state(built.state.clone())
         .layer(Extension(AdminExperimentScope(id.clone())))
         .layer(RequestBodyLimitLayer::new(64 * 1024))
         .layer(middleware::from_fn(security_headers));
@@ -220,7 +220,14 @@ pub(crate) async fn build_deployed_experiment(
     } else {
         built.primary
     };
-    Ok((participant, admin))
+    Ok((participant, admin, built.state))
+}
+
+impl AppState {
+    /// Reports the runtime's current intake status for the hosted dashboard.
+    pub(crate) async fn hosted_intake_status(&self) -> &'static str {
+        self.experiment_lifecycle.read().await.as_str()
+    }
 }
 
 /// Builds and runs one game component's multi-experiment HTTP and WebSocket server.

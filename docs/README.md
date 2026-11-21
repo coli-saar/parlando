@@ -1,111 +1,21 @@
-# Parlando Documentation
+# Parlando documentation
 
-Parlando lets researchers build a complete browser-based dialogue game and run
-multiple experiments with it. You design both the participant experience and the
-game mechanics. Parlando supplies reusable setup, communication, administration,
-privacy, and data infrastructure around them.
+The [experimenter manual](web/content/manual/_index.md) is the main guide. It starts with the CLI, then covers building a WASM package, piloting a game, and running experiments on a shared host.
 
-A local server hosts a catalogue of experiments for one Wasm game.
-The shared component host can serve multiple game packages on one origin. An
-experiment pins its package revision and records the configuration that
-produced each session.
+- [Install Parlando and play a game](web/content/manual/start/getting-started.md)
+- [Build a game in Rust or Python](web/content/manual/build/create-game.md)
+- [Package a game for deployment](web/content/manual/build/packages.md)
+- [Deploy to a shared host](web/content/manual/deploy/_index.md)
+- [Operate a shared host](web/content/manual/deploy/host.md)
+- [Configure and run a study](web/content/manual/run/configuration.md)
+- [Monitor sessions and export results](web/content/manual/run/data-operations.md)
 
-Choose a path according to the task you need to perform.
+## Reference
 
-The [Design Principles](design-principles.md) define the public boundaries and terminology.
-If your game uses Parlando 0.5.0, follow the [0.6.0 upgrade guide](migrating-0.5.0-to-0.6.0.md).
-For the older API transition, see [Migrate a Parlando Game from 0.2 to 0.3](migrating-0.2-to-0.3.md).
-
-## Create a dialogue game
-
-1. Use [Building a Game](building-games.md) to design the participant experience,
-   define the game mechanics, and connect the two.
-2. Use [Browser Client Protocol](client-protocol.md) when implementing or
-   debugging the participant client.
-3. Read [Architecture](architecture.md) for the game–experiment–session model and
-   the boundaries between the runtime, game crate, browser, and store.
-4. Add an in-process or remote policy with [Agents](agents.md) when the study has
-   a human–agent condition.
-
-The `space-game/server` and `space-game/client` directories form one complete
-worked example. The `generate-parlando-game` skill can generate the same project
-shape from a game description.
-
-## Configure and run experiments
-
-1. Use [Running and Deployment](running-and-deployment.md) to start the compiled
-   game process, choose its port and database, establish the first administrator,
-   and deploy it with Docker or Render.
-   Use [Cross-compile and package a game for
-   Linux](cross-compiling-for-linux.md) to build an rsync-ready deployment on
-   macOS without Docker.
-   For a complete worked Render deployment, follow [Deploy a Parlando Game on
-   Render](deploying-on-render.md).
-   See [Host and deploy component games](component-hosting.md) to upload a package and pin a live experiment.
-   Use [Create and run a Parlando game](component-games.md) to serve a component
-   or run headless evaluations with the same package.
-2. Open `/admin/experiments` to create, clone, edit, activate, and monitor
-   experiments. Normal configuration is database-backed; an older YAML file is
-   only a reference while its values are transferred through the dashboard.
-3. Use [Data and Monitoring](data-and-monitoring.md) to interpret lifecycle state,
-   configuration revisions, session provenance, exports, and participant-data
-   deletion.
-4. Use [Agent–Agent and Reinforcement-Learning Experiments](agent-agent-and-rl-experiments.md)
-   to run headless policy evaluations, checkpointed training, and held-out
-   validation.
-
-The [cue–choice Qwen study](cue-choice-qwen-rl-paper/main.pdf) is a complete
-worked research example. It explains the task, learning method, Parlando
-configuration, validation protocol, and results of a checkpointed agent–agent
-experiment.
-
-When recruiting through Prolific, follow
-[Run a Parlando experiment through Prolific](using-prolific.md) for the experimenter workflow.
-[Prolific integration reference](prolific-integration.md) documents outcome mappings, provider
-verification, and operational boundaries. Use [Test the Prolific integration](prolific-testing.md)
-to run the standalone provider emulator and binary-level scenario matrix before a live pilot.
-
-For voice studies, read [Audio Transport](audio-transport.md) before deployment.
-It defines the authentication, PCM format, transcription boundary, TTS path,
-buffering behavior, and process-local scaling constraint. Use
-[Audio Testing](audio-testing.md) to test the transport without paid-provider
-credentials and under sustained or impaired workloads.
-
-## Security model
-
-[Security Ground Rules and Threat Model](security-ground-rules.md) is the
-authoritative source for Parlando's security objectives, accepted product choices,
-realistic attackers, and finding-severity rules. In particular, it records
-first-visitor administrator setup as an accepted bootstrap ceremony and treats
-person-level repeat participation in anonymous recruitment as a study-design
-matter rather than a software vulnerability.
-
-## Privacy and institutional review
-
-The [Privacy and data protection](privacy/README.md) section explains how the
-participant materials, institutional assessment, platform mechanisms, and
-operational guidance fit together.
-
-- [Unterlage zur datenschutzrechtlichen Plattformbewertung](privacy/datenschutz-pruefvorlage.md)
-  is the German basis for a reusable DPO assessment of a self-hosted deployment.
-- [Technische Datenschutzfunktionen](privacy/datenschutz-funktionen.md) documents the
-  implemented privacy functions and their technical boundaries.
-- [Participant Information and Privacy Notice v1.0](privacy/participant-information-v1.0.md)
-  is the English participant-facing template.
-- [Consent Items v1.0](privacy/consent-items-v1.0.yaml) contains the corresponding
-  machine-readable consent template.
-
-Together, these materials provide a concrete starting point for institutional
-review: they document the implemented safeguards, expose the effective settings
-of a running installation, and supply reusable participant-information text. The
-deploying institution completes the study-specific decisions, including
-controller, legal basis, retention, provider agreements, and release approval.
-
-## Maintainer reference
-
-[Publishing Packages](publishing-packages.md) covers local package smoke tests and
-publishing for `parlando` and `@coli-saar/parlando-client`.
-
-[Releasing Parlando](releasing-parlando.md) defines the coordinated maintainer release process,
-including lockstep versions, test gates, changelog and migration requirements, registry login, and
-post-publication verification.
+- [WebAssembly component interface](component-games.md)
+- [Participant client protocol](client-protocol.md) and [audio transport](audio-transport.md)
+- [Agent API](agents.md) and [headless evaluation and training](agent-agent-and-rl-experiments.md)
+- [Data and monitoring reference](data-and-monitoring.md)
+- [Prolific integration reference](prolific-integration.md)
+- [Participant materials and institutional privacy review](privacy/README.md)
+- [Release procedure](releasing-parlando.md)

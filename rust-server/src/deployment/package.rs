@@ -159,6 +159,11 @@ impl PackageManifest {
         &self.id
     }
 
+    /// Reports the public version declared by an installed package.
+    pub(super) fn version(&self) -> &semver::Version {
+        &self.version
+    }
+
     /// Reads and validates package metadata from a committed revision.
     pub(super) fn read(directory: &Path) -> Result<Self> {
         let path = directory.join("game.yaml");

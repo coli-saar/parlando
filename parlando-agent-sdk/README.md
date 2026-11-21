@@ -46,7 +46,7 @@ def create_agent(context: Context) -> Agent:
 serve(create_agent, host="127.0.0.1", port=50051)
 ```
 
-See [Agents](../docs/agents.md) for experiment configuration and deployment.
+See [Attach a remote agent](https://coli-saar.github.io/parlando/manual/build/agents-and-voice/) for configuration and deployment.
 
 Run the SDK unit and protocol-drift suite from an environment containing the package dependencies:
 

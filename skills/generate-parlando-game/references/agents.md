@@ -1,55 +1,28 @@
-# Parlando agents reference
+# Agent integration
 
-Agents control A or B with the same observations, actions, and rules as humans. They never receive authoritative state or frontend events.
+Build the requested policy against the action and observation types of the
+game package it will play. An agent occupies one seat and receives that
+seat's view. Keep the policy in its own per-session instance. Use the latest
+observation delivered by `start` or `observe_transition` in `respond`.
+Returned actions go through the game's normal validation.
 
-## Rust
+For a shared host, run the agent as a remote gRPC service and select
+`remote_grpc` in the experiment configuration. Use the public
+`parlando_agent_sdk` Python API for a Python service and follow the
+[remote-agent guide](https://coli-saar.github.io/parlando/manual/build/agents-and-voice/)
+for the endpoint configuration and transport authentication. Model-provider
+secrets stay in the agent process. Keep agent settings compatible with the
+selected game package. Use `Response.action_with_message` to send both a
+move and dialogue in a single Python response.
 
-Implement `parlando::agent::Agent` and `Factory`. `Factory::definition` supplies dashboard metadata. `create(Context { role, seed, settings })` is async and constructs one session-local agent before game delivery. Every factory must implement `identity(settings)` with a non-empty semantic name and stable implementation version; configuration choices belong in settings and the configuration fingerprint.
+For an explicitly requested in-process Rust policy, use the public
+`parlando::agent::Agent` and `Factory` APIs with a custom host that loads
+the same game component. The Rust response constructors are
+`Response::action`, `Response::message`, and
+`Response::action_and_message`. In either integration, return no response
+when the policy declines to act, and release per-session resources in
+`shutdown` as needed.
 
-Implement callbacks as needed:
-
-```rust
-async fn start(&mut self, initial_observation: ComponentValue) -> Result<()>;
-async fn observe_transition(&mut self, actor: PlayerRole, action: ComponentValue,
-                            observation: ComponentValue) -> Result<()>;
-async fn observe_message(&mut self, sender: PlayerRole, text: String) -> Result<()>;
-async fn finish(&mut self, completion: ComponentValue) -> Result<()>;
-async fn respond(&mut self)
-    -> Result<Option<Response>>;
-async fn shutdown(&mut self) -> Result<()>;
-```
-
-Return `Response::action`, `Response::message`, or `Response::action_and_message`. Return `None` to decline. A message communicates only with the other player and does not change state. Returned actions pass normal validation. Use `shutdown` to release per-session resources; it is lifecycle cleanup, not a terminal-result callback.
-
-Register additional in-process factories with `Server::agent`. Every server includes the remote gRPC factory; its endpoint and optional YAML mapping are dashboard-selected settings interpreted by that factory. Keep agent credentials in the remote process rather than transporting them through Parlando.
-
-## Python
-
-```python
-from parlando_agent_sdk import Agent, Context, Response, serve
-
-class MyAgent(Agent):
-    async def start(self, initial_observation):
-        self.observation = initial_observation
-
-    async def observe_transition(self, actor, action, observation):
-        self.observation = observation
-
-    async def observe_message(self, sender, text):
-        self.last_message = (sender, text)
-
-    async def finish(self, completion):
-        self.completion = completion
-
-    async def respond(self, available_actions):
-        if self.observation.get("choices"):
-            return Response.action(self.observation["choices"][0])
-        return None
-
-def create_agent(context: Context) -> Agent:
-    return MyAgent()
-
-serve(create_agent, host="127.0.0.1", port=50051)
-```
-
-Use `Response.action_with_message(action, text)` when a Python agent must combine both outputs. Generate protobuf bindings from the installed SDK. Keep LLM credentials and prompts in the remote process. If dialogue matters, test `observe_message` and a later response. Release resources in `shutdown`. Do not encode readiness as a player message: explicit initialization readiness is deferred runtime work.
+Test the agent against the pinned game interface. Use
+[`parlando run`](https://coli-saar.github.io/parlando/manual/build/agent-agent/)
+for agent-only evaluations when those are requested.

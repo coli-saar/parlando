@@ -8,45 +8,19 @@ record for analysis.
 
 ## Preserve provenance
 
-Every session records three identifiers that should remain attached during
-analysis:
-
-- the experiment id;
-- the experiment configuration revision; and
-- the exact semantic game version.
-
-The configuration revision identifies the settings in force when the session was
-created. Later dashboard edits create another revision rather than rewriting that
-history. The game version identifies the compiled state machine that interpreted
-the actions.
-
-An experiment from an earlier game version remains inspectable and exportable. It
-cannot be activated under a different version. Cloning copies its configuration
-into a new experiment for the current version; it does not alter the historical
-experiment or its sessions.
+Retain the experiment ID, configuration revision, game version, and component
+digest with session records. On a shared host, retain the selected package
+revision as well. It identifies the component and the participant assets.
+A hosted experiment ID always selects the same package and configuration.
+Create a new ID for a changed build or condition. Local configuration changes
+create revisions under the local experiment.
 
 ## Monitor an experiment
 
-Open `/admin/experiments`. The dashboard header identifies the compiled game and
-version, and the catalogue lists every experiment stored for that game process.
-Use pinning for experiments that should remain prominent and obsolete status for
-entries that should be retained but de-emphasized.
-
-After selecting an experiment, the dashboard provides:
-
-- lifecycle control;
-- database-backed configuration and revision history;
-- session status and participant roles;
-- a process-local Load page for capacity, transport liveness, throughput, and storage;
-- a compact event timeline for actions, messages, transcripts, and diagnostics;
-- export controls; and
-- counted participant-data deletion.
-
-![Experiment dashboard identifying the compiled Space Game version and its
-experiment catalogue](images/parlando-dashboard.jpg)
-
-The dashboard is deliberately game-scoped. Different compiled games use different
-processes and dashboards, usually distinguished by port or hostname.
+Open **Manage** for the hosted experiment or **Sessions** in the local
+dashboard. Use the session record, events, and replay to inspect the
+play-through. The local single-game dashboard also includes load history and
+configuration revision views. See the [experimenter workflow](web/content/manual/run/data-operations.md).
 
 ### Interpret load and liveness
 
@@ -77,12 +51,10 @@ participant from a lost browser.
 
 ### Interpret lifecycle state
 
-An experiment is either `inactive` or `active`. `Active` permits new participant
-and room creation. `Inactive` rejects new intake with HTTP 503.
-
-Every process start resets all experiments to `inactive`. Deactivation also leaves
-existing room and WebSocket activity running, so it is suitable for closing
-recruitment without interrupting participants. It is not a session kill switch.
+Inactive experiments reject new intake. Testing opens pilot intake and keeps
+its sessions out of corpus exports. Active opens research intake. Completing
+or archiving an experiment closes intake and preserves its records. The host
+closes intake on restart. Reopen it when the condition is ready.
 
 ### Interpret the timeline
 
@@ -99,16 +71,14 @@ and arbitrary browser error messages. Sustained underruns may justify increasing
 
 ## Understand what is retained
 
-Collection follows the enabled experiment modality. Accepted actions retain their
-resulting state; typed messages and final transcripts are retained when those
-modalities produce them. Raw audio and new voice diagnostics are not retained.
+Collection follows the enabled experiment modality. The host records accepted actions and can recover state through replay or checkpoints. It retains typed messages and final transcripts when those modalities produce them. Raw audio and new voice diagnostics are not retained.
 
 Other durable records can include:
 
 - participant creation and role assignment;
 - consent declarations and participant-information evidence;
 - accepted and rejected actions;
-- accepted transitions, with their action, role-neutral metadata, and resulting state stored once;
+- accepted transitions with their action and role-neutral metadata;
 - typed and final spoken conversation messages, each stored once with modality metadata;
 - agent startup, proposals, messages, and errors; and
 - bounded TTS operational events.
@@ -166,7 +136,7 @@ Use export data for task success, action sequences, utterance counts, timing,
 agent comparisons, transcription diagnostics, and exclusion decisions.
 
 For new recordings, the corpus action event's `state` field is null. Parlando
-records an initial state and replays accepted actions. Component games may
+records initialization inputs and replays accepted actions. Component games may
 record private recovery checkpoints with individual turns. Replay uses these
 checkpoints when present, and corpus exports omit their contents. Open **Replay** from the session detail to inspect either role's
 view when the game build supports the recorded replay versions.

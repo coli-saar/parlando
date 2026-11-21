@@ -70,6 +70,5 @@ The Space Game includes a production [`Dockerfile`](Dockerfile) and a complete
 browser client, attach persistent storage for SQLite, and configure Render's
 database-aware health check.
 
-Follow [Deploy a Parlando Game on
-Render](../docs/deploying-on-render.md#deploy-the-space-game-blueprint) to deploy
-this example or adapt the same two files to another game.
+For the shared deployment service and its package workflow, see
+[Deploy to a shared host](../docs/web/content/manual/deploy/_index.md).

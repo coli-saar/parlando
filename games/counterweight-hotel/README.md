@@ -81,4 +81,4 @@ The hotel Blueprint builds the component, the host with **Hotel porter**, and th
 3. Create an experiment named `porter` with **Human vs agent**, **Hotel porter**, and typed chat. Use `{}` for the game and porter settings. Activate it and open `/e/porter/`. For two guests, create and activate `paired` with **Human vs human**. Use the participant link shown by the dashboard.
 4. For speech, enter provider credentials in **Game settings** and configure voice in the experiment. After a reset, repeat administrator setup and recreate or import your experiments before activating them. Re-enter provider credentials for voice.
 
-The repository’s [Render deployment guide](../../docs/deploying-on-render.md) covers storage, administrator setup, and backups.
+The repository’s [shared host guide](../../docs/web/content/manual/deploy/host.md) covers storage, administrator setup, and backups.

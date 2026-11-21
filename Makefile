@@ -15,6 +15,9 @@ PYTHON_TEST_VENV := $(PARLANDO_DIR)/.local/python-test-venv
 PYTHON_TEST := $(PYTHON_TEST_VENV)/bin/python
 NPM_CACHE ?= $(PARLANDO_DIR)/.local/npm-cache
 PYTHON ?= python3
+RELEASE_CANDIDATES := $(PARLANDO_DIR)/target/release-candidates
+RELEASE_REHEARSAL := $(PARLANDO_DIR)/scripts/test_release_candidate.py
+verified_release = "$(PYTHON)" "$(RELEASE_REHEARSAL)" --verified "$(RELEASE_CANDIDATES)"
 
 .PHONY: all test test-rust test-components test-js-client test-client-server test-browser-e2e test-prolific-e2e test-e2e test-e2e-logging test-python install-local install-js-client package-local package-rust-server-local package-js-client-local
 
@@ -137,7 +140,8 @@ package-js-client-local:
         publish-rust-server publish-js-client publish-rust-server-dry-run publish-js-client-dry-run \
         publish-python-game-sdk publish-python-agent-sdk \
         publish-rust-derive-dry-run publish-rust-sdk-dry-run \
-        publish-python-game-sdk-dry-run publish-python-agent-sdk-dry-run check-release-tools check-release-versions
+        publish-python-game-sdk-dry-run publish-python-agent-sdk-dry-run check-release-tools check-release-versions \
+        test-release-candidate
 publish-dry-run: check-release-versions publish-rust-derive-dry-run publish-rust-sdk-dry-run \
                  publish-rust-server-dry-run publish-js-client-dry-run \
                  publish-python-game-sdk-dry-run publish-python-agent-sdk-dry-run
@@ -155,14 +159,22 @@ publish-js-client-dry-run:
 	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" publish --dry-run
 
 publish-python-game-sdk-dry-run publish-python-agent-sdk-dry-run:
-	bash "$(PARLANDO_DIR)/scripts/release-python-package.sh" "$(PYTHON)" "$(PYTHON_RELEASE_SOURCE)" check
+	bash "$(PARLANDO_DIR)/scripts/release-python-package.sh" "$(PYTHON)" "$(PYTHON_RELEASE_SOURCE)"
+
+# Run the full test matrix before saving a candidate for publication.
+test-release-candidate: check-release-versions check-release-tools
+	$(MAKE) test
+	$(MAKE) test-e2e
+	$(MAKE) test-components
+	npm_config_cache="$(NPM_CACHE)" "$(PYTHON)" "$(RELEASE_REHEARSAL)" --output "$(RELEASE_CANDIDATES)"
 
 # Serial sub-makes preserve publication order and stop on a failed upload even with make -j.
 publish: check-release-versions check-release-tools
-	$(MAKE) publish-rust
-	$(MAKE) publish-js-client
-	$(MAKE) publish-python-game-sdk
-	$(MAKE) publish-python-agent-sdk
+	@set -e; bundle=$$($(verified_release)); \
+	$(MAKE) publish-rust; \
+	$(MAKE) publish-js-client RELEASE_BUNDLE="$$bundle"; \
+	$(MAKE) publish-python-game-sdk RELEASE_BUNDLE="$$bundle"; \
+	$(MAKE) publish-python-agent-sdk RELEASE_BUNDLE="$$bundle"
 
 publish-rust:
 	$(MAKE) publish-rust-derive
@@ -188,11 +200,17 @@ publish-rust-server:
 	cd "$(RUST_SERVER_DIR)" && cargo publish --registry crates-io
 
 publish-js-client:
-	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" publish
+	@set -e; bundle="$(RELEASE_BUNDLE)"; \
+	if [ -z "$$bundle" ]; then bundle=$$($(verified_release)); fi; \
+	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" publish "$$bundle"/coli-saar-parlando-client-*.tgz --access public
 
-# Build from the corresponding source tree for each Python upload or check.
-publish-python-game-sdk publish-python-game-sdk-dry-run: PYTHON_RELEASE_SOURCE := $(PYTHON_GAME_SDK_DIR)
-publish-python-agent-sdk publish-python-agent-sdk-dry-run: PYTHON_RELEASE_SOURCE := $(PYTHON_AGENT_SDK_DIR)
+# Build from the corresponding source tree for each Python dry run.
+publish-python-game-sdk-dry-run: PYTHON_RELEASE_SOURCE := $(PYTHON_GAME_SDK_DIR)
+publish-python-agent-sdk-dry-run: PYTHON_RELEASE_SOURCE := $(PYTHON_AGENT_SDK_DIR)
 
+publish-python-game-sdk: PYTHON_ARTIFACT := parlando_python_sdk
+publish-python-agent-sdk: PYTHON_ARTIFACT := parlando_agent_sdk
 publish-python-game-sdk publish-python-agent-sdk:
-	bash "$(PARLANDO_DIR)/scripts/release-python-package.sh" "$(PYTHON)" "$(PYTHON_RELEASE_SOURCE)" upload
+	@set -e; bundle="$(RELEASE_BUNDLE)"; \
+	if [ -z "$$bundle" ]; then bundle=$$($(verified_release)); fi; \
+	"$(PYTHON)" -m twine upload --repository pypi "$$bundle"/$(PYTHON_ARTIFACT)-*.tar.gz "$$bundle"/$(PYTHON_ARTIFACT)-*.whl

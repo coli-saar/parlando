@@ -32,6 +32,3 @@ notAlternative = true
   [[module.mounts]]
   source = "static"
   target = "static"
-  [[module.mounts]]
-  source = "examples"
-  target = "static/manual/examples"

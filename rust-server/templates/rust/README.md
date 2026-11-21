@@ -1,23 +1,25 @@
 # Beacon Relay
 
-Two players alternate adding one or two ticks of charge. The beacon activates
-when the team reaches the target exactly.
+Two players take turns adding one or two ticks of charge. Reach the target exactly
+to activate the beacon.
 
-Run these commands from this directory with the `wasm32-unknown-unknown` Rust
-target, `wasm-tools`, and Node.js with npm installed.
+Install Node.js with npm, the Rust target, and the WebAssembly packaging tool.
 
 ```sh
-parlando check
+rustup target add wasm32-unknown-unknown
+cargo install --locked wasm-tools
 parlando test
 parlando build
-parlando serve
+parlando serve --manifest dist/parlando/game.yaml
 ```
 
-Open the administration dashboard at http://127.0.0.1:8000/admin. Create an
-experiment for this game, open it for intake, and copy its participant URL.
-Open the URL in two separate browser profiles, enter the room on each, and take
-turns adding charge.
+Open [the local dashboard](http://127.0.0.1:8000/admin). Create an administrator
+and an experiment, then start **Local preview**. Enter from two separate browser
+profiles and play both seats.
 
-Edit the game rules and role views in `src/lib.rs`, the participant interface
-in `client/main.jsx`, and the expected game behavior in `scenarios.yaml`.
-Build again before serving changes.
+Edit the rules and role views in `src/lib.rs`, the participant application in
+`client/main.jsx`, and the scenario in `scenarios.yaml`. Build again before
+serving or uploading a changed package.
+
+See the [experimenter manual](https://coli-saar.github.io/parlando/manual/) for
+package contents, shared-host deployment, and experiment operation.

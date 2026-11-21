@@ -1,220 +1,24 @@
-# Create and run a Parlando game
+# WebAssembly component interface
 
-Implement `Game` for the type that owns one session’s state. The game defines
-its rules and each player’s view. Parlando runs it in live sessions and
-headless evaluations, and owns participant connections, scheduling and records.
+The [experimenter manual](web/content/manual/_index.md) explains how to
+install Parlando, create a Rust or Python game, and deploy its finished
+package. This reference is for authors who need to implement or inspect
+the interface directly.
 
-## Move a native Rust game to the Wasm host
+Parlando loads a binary WebAssembly component that exports the `game`
+world of [`parlando:game@4.0.0`](../rust-server/wit/game.wit). The component
+has no host imports. Each session gets a separate guest instance. The guest
+owns the task state. The host owns connections, scheduling, and the research
+record.
 
-Move the state and rules into a game library and implement the guest SDK’s `Game` trait. The instance owns the mutable state formerly passed to each rule call. Put role-specific output in `view_a` and `view_b`, then export the game with `parlando_game_sdk::export!`. A standard host loads the compiled component. Games with compiled Rust policies can use a thin launcher that passes a `LoadedGame` to `Server::new` and registers its agent factories.
-
-Start a new database or hosted experiment for the port. Keep the original executable and database for replaying historical native sessions. Wasm replay requires the matching component digest, recorded initialization and accepted actions or a compatible checkpoint. A historical native state snapshot alone cannot initialize the Wasm guest.
-
-## Create and play a Rust game
-
-Install the CLI from the repository root. Building Rust games also requires
-the Wasm target and `wasm-tools`. The generated browser project uses Node and npm.
-
-```sh
-cargo install --locked --path rust-server --bin parlando
-rustup target add wasm32-unknown-unknown
-cargo install --locked wasm-tools
-parlando new beacon --lang rust
-cd beacon
-parlando test
-parlando build
-parlando serve
-```
-
-Open the local dashboard at `http://127.0.0.1:8000/admin`, create an experiment,
-open intake and visit the participant URL from two browser profiles. The
-starter game, Beacon Relay, asks the two players to take turns adding charge.
-Edit `src/lib.rs` for the rules and `client/main.jsx` for the participant view.
-
-When the CLI finds its bundled SDK or the source checkout, `new` copies the
-SDK into `vendor/parlando-game-sdk` and records a relative path. The
-project can move or build on another machine together with its vendor directory.
-
-The **Parlando Game SDK** crate is `parlando-game-sdk`. Derive `GameValue`
-on game-specific types exchanged with the host. This supplies the public schema
-and encoder, plus a decoder when the fields support it. A role view can borrow
-a slice from session state.
-
-The Rust game owns one session's state. Implement
-[`parlando_game_sdk::Game`](../parlando-game-sdk/src/game.rs) and
-call `parlando_game_sdk::export!(YourGame)`. The SDK derives the six-part
-schema and exports `describe`, `init`, `step` and `restore`. Each role's view
-can borrow data from the game during encoding. A successful `step` returns
-`Ok(())`. The adapter then reads both views, optional completion and transition
-metadata in the same Wasm call. Reject an action before mutating state or
-advancing the RNG. An encoding failure after mutation traps and the host can
-recover the last committed state. Implement `checkpoint` and `restore` when
-you want snapshots in addition to deterministic replay.
-
-`parlando test` runs the native game tests and checks the expectations in
-`scenarios.yaml` against the compiled Wasm. The starter scenario checks both
-players' views, a rejection, and recovery. Use `parlando check` for a build
-and loader check. The deployable output of `parlando build` lives in
-`dist/parlando/`. Pass the built manifest to `check` to check those exact bytes.
-
-```sh
-parlando check --manifest dist/parlando/game.yaml --json
-```
-
-Project commands default to `game.yaml` in the working directory and accept
-`--manifest`. Add `--json` to read the result on stdout. Exit status 0 means
-success, 1 means an operation failed, and 2 indicates invalid arguments.
-See [Host and deploy component games](component-hosting.md) to upload a built
-package and select its revision for a live experiment.
-
-## Create and play a Python game
-
-Use the same `parlando` CLI with Python 3.10 or later and Node.js. Start with
-the Python version of Beacon Relay. Both players take turns adding one or two
-ticks of charge and activate the beacon by reaching its target exactly.
-
-```sh
-parlando new beacon --lang python
-cd beacon
-python3 -m venv .venv
-.venv/bin/python -m pip install componentize-py==0.25.1
-parlando test
-parlando build
-parlando serve
-```
-
-Open `http://127.0.0.1:8000/admin`, create an experiment, and open intake.
-Use its participant link from two browser profiles. Edit `game.py` for the
-rules, `client/main.jsx` for the participant view, and `scenarios.yaml` for
-the expected behavior of the compiled game. The project includes the Python
-SDK under `vendor/parlando-python-sdk` when you scaffold it with a bundled CLI
-or a CLI built from the source checkout. The project can move with that directory.
-
-In `game.py`, subclass `parlando_game_sdk.Game` with the configuration,
-action, two role views, completion, and metadata types. Declare structured
-payloads with dataclasses and bind the game with `Mechanics = mechanics(Beacon)`
-at module scope. The SDK derives the wire schema from these types, decodes
-the configuration and actions, and encodes the returned views and outcome.
-Raise `Rejection` with a stable code before mutating the game. Checkpoints are
-optional when the seed and accepted moves suffice for replay.
-
-Dataclass fields travel in declaration order. Use `int` for signed 64-bit
-values or `U8` and `U64` for unsigned values with checked bounds. The SDK
-also supports finite floats, strings, booleans, options, lists, tuples,
-string-keyed dictionaries, and unions of dataclasses marked with `@variant`.
-Keep variant order stable because each alternative receives its compact tag
-from its position in the union.
-
-`parlando test` runs Python's `unittest` suite in `tests/` and then uses the
-same Wasm scenario runner as for Rust games. `parlando build` stages the
-component, manifest, and participant assets in `dist/parlando/`. The build
-uses `componentize-py --stub-wasi` and the host checks the result with an
-empty linker. Keep the game rules deterministic and use the seed provided by
-`init` to derive randomness. Import guest dependencies at module scope so
-componentize-py can resolve them during packaging. At runtime, WASI calls
-through the generated stubs trap.
-
-## Package a component from another language
-
-Compile your game as a WebAssembly **component** that exports the `game` world in
-[`parlando:game@4.0.0`](../rust-server/wit/game.wit). The component must have no
-host imports. For a component built against an earlier version of the world, regenerate
-the guest bindings, implement `describe`, and encode values according to the description before deploying to this host.
-Keep the matching host and component together when replaying older sessions.
-Place the component binary beside a game manifest such as `game.yaml`.
-
-```yaml
-id: my-game
-name: My Game
-version: 1.0.0
-component: my-game.wasm
-```
-
-The path in `component` resolves relative to the manifest. The game ID is the
-stable key used by experiment definitions, and the semantic version identifies
-the rules and data contract. Parlando computes a SHA-256 digest of the loaded
-component bytes and exposes it as build provenance. Give a changed component a
-new release version before using it for new live experiments.
-
-Select a component package from a source you trust. The host compiles and checks
-it at startup, before opening the listener or planning sessions. A missing
-component, unresolved import, or incompatible export prevents startup. In local `serve` mode the host loads one package for the life of the process.
-
-Build the host from the repository root.
-
-```sh
-cargo build --release --manifest-path rust-server/Cargo.toml \
-  --bin parlando
-```
-
-## Run a live session
-
-```sh
-rust-server/target/release/parlando serve --manifest game.yaml \
-  --database-url sqlite:///./my-game.sqlite \
-  --client-dist ./client/dist
-```
-
-Open `http://127.0.0.1:8000/admin`, create an administrator on a new database,
-and create an experiment. Use a separate SQLite database per game. The listener
-defaults to localhost and port 8000. Use `--bind` to select another address.
-Complete the first administrator setup locally before exposing the service.
-Supply the compiled participant browser application through `--client-dist`
-when the server should serve those assets. The dashboard also exposes the
-`remote_grpc` agent for human–agent sessions.
-[Running and deployment](running-and-deployment.md)
-
-## Run a headless evaluation
-
-Start a Parlando gRPC agent service that understands your game's action and
-observation objects. Both seats can select the same service. Parlando still
-creates an independent agent instance for each seat.
-
-```yaml
-schema: parlando-agent-experiment/v1
-game:
-  id: my-game
-agents:
-  policy:
-    factory: remote_grpc
-    settings:
-      endpoint: http://127.0.0.1:50051
-sessions:
-  scenarios:
-    - name: baseline
-      config: {}
-      seeds: [7]
-  seats:
-    player_a: policy
-    player_b: policy
-schedule:
-  kind: alternate_every_response
-  first: player_a
-output:
-  directory: results/my-game-baseline
-  trace: decisions
-```
-
-Set `config` to the game configuration your guest expects. Save the experiment as
-`evaluation.yaml` and run it against the same package.
-
-```sh
-rust-server/target/release/parlando run evaluation.yaml --manifest game.yaml
-```
-
-The command prints the runner's summary as JSON when one is available. A runner
-error or a summary reporting any newly failed sessions produces a nonzero exit
-status. The output directory contains `run.json` and
-one JSON result per finalized session. Run the same command to resume. The
-runner checks the loaded component's SHA-256 digest against `run.json` before
-reusing any results. Resuming skips all finalized sessions, including failures.
-Inspect their result files for the original status. For a fresh sample or a
-changed component, select a new output directory.
-
-The stock CLI registers the remote agent factory for policy evaluation.
-Register game-specific rewards and learners in a Rust launcher if you need
-reinforcement learning.
-[Agent–agent and reinforcement-learning experiments](agent-agent-and-rl-experiments.md)
+Build Rust games with the [Rust Game SDK](https://docs.rs/parlando-game-sdk/).
+Its `Game` trait supplies the six payload types and session operations,
+`GameValue` derives the schema and codec for those types, and `export!`
+provides the WIT exports. For Python, the
+[Python Game SDK](https://pypi.org/project/parlando-python-sdk/) supplies
+the same interface through a typed `Game` subclass and its `mechanics` adapter.
+Run `parlando check --manifest dist/parlando/game.yaml` against the staged
+artifact to verify it with the actual host loader.
 
 ## Implement deterministic turns
 

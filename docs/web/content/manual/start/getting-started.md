@@ -1,75 +1,66 @@
 ---
-title: Install and run the example
+title: Install Parlando and play a game
 ---
 
-# Install and run the example
+# Install Parlando and play a game
 
-The quickest way to understand Parlando is to run The Great Tree. It is a cooperative two-player
-game with private role information, typed actions, optional voice, example agents, an administrator
-dashboard, and structured export. Crown controls sunlight in the branches, while Root controls
-water below ground. The players must discover how their controls interact and make three flowers
-bloom.
+You will create Beacon Relay, a cooperative task in which two players take turns adding one or two ticks of charge to a beacon. The game ends when they reach the target exactly. You will run both seats locally before uploading anything.
 
-The Great Tree package supplies Wasm mechanics and a browser application. The example launcher loads the package in the Rust host and registers Great Tree’s bundled agents.
+## Install the tools
 
-## Install the development tools
-
-You need:
-
-- a current stable Rust toolchain, including Cargo;
-- Node.js 20.19 or newer, or Node.js 22.12 or newer;
-- npm; and
-- GNU Make.
-
-On macOS or Linux, verify the tools with:
+Install Rust with [rustup](https://rustup.rs/) and install [Node.js](https://nodejs.org/) with npm. Use Node.js 22 or later for the starter's browser build. Run these commands in a terminal.
 
 ```sh
+cargo install --locked parlando --bin parlando
 rustup target add wasm32-unknown-unknown
 cargo install --locked wasm-tools
-rustc --version
-cargo --version
-node --version
-npm --version
-make --version
+parlando --version
 ```
 
-Clone the repository and enter it:
+If you already have a built game package, install only the `parlando` CLI.
+Run `parlando serve --manifest path/to/game.yaml` with the package's manifest,
+then follow [Play both seats](#play-both-seats). The extra tools compile the
+Rust starter and its browser application. The [Python
+starter](../build/create-game/#start-with-python) uses a Python build tool for mechanics.
+
+## Build and start Beacon Relay
+
+Use a directory where you can create a new `beacon` folder.
 
 ```sh
-git clone https://github.com/coli-saar/parlando.git
-cd parlando
+parlando new beacon --lang rust
+cd beacon
+parlando test
+parlando build
+parlando serve --manifest dist/parlando/game.yaml
 ```
 
-## Start The Great Tree
+`test` checks the game rules and a scenario that runs through the compiled component. `build` writes the deployable package to `dist/parlando/`. `serve` loads that package and listens on loopback by default. Leave the terminal running while you play.
 
-Run The Great Tree against the published Parlando 0.6.0 packages:
+## Play both seats
 
-```sh
-games/great-tree/run.sh
-```
+1. Open [the local dashboard](http://127.0.0.1:8000/admin) and create its administrator account.
+2. Choose **New experiment**, enter an ID such as `beacon-pilot`, and create it. Keep the default direct-entry settings for this walkthrough.
+3. Start **Local preview** and open its participant link in two separate browser profiles. Two ordinary tabs can share one participant identity.
+4. Complete the participant entry screens in both profiles. When they pair, alternate **Add one tick** and **Add two ticks** as appropriate to reach the displayed target exactly.
+5. Return to **Sessions** in the dashboard and inspect the completed play-through. Close intake when you finish.
 
-The first run installs JavaScript dependencies and compiles the browser, Wasm game and Rust host. Leave the process running while you use the game. To serve the same package using the standard host, run `games/great-tree/run.sh --without-bundled-agents`.
+Local preview records testing sessions. Research corpus exports exclude them. Use the session view to check this play-through. See [configure and run a study](../run/configuration/) when you are ready to collect research sessions.
 
-## Create the administrator
+Press Ctrl+C in the terminal to stop. Parlando keeps the local records in `parlando.sqlite` in the directory where you ran `serve`. Start the same command to reopen the dashboard. Reopen intake explicitly when you are ready.
 
-Open [http://127.0.0.1:8080/admin](http://127.0.0.1:8080/admin). A new database has no
-administrator, so the first visit presents an account-creation form. Choose the administrator name
-and a password of at least 12 characters.
+## Find the next command
 
-Complete this step before exposing any new installation to the public internet. First-visitor setup
-remains open until the administrator account exists. The account survives ordinary restarts.
+| Task | Command |
+| --- | --- |
+| Create a project | `parlando new NAME --lang rust` or `--lang python` |
+| Test rules and compiled scenarios | `parlando test` |
+| Produce a package | `parlando build` |
+| Validate a built package | `parlando check --manifest dist/parlando/game.yaml` |
+| Pilot one game locally | `parlando serve --manifest dist/parlando/game.yaml` |
+| Upload a package | `parlando deploy --server ORIGIN --package dist/parlando` |
+| Start a shared service | `parlando host` |
 
-{{< figure src="manual/images/great-tree-dashboard.png" alt="The Great Tree administrator dashboard, showing an inactive pilot and its sessions, export, configuration, and privacy tabs" caption="The dashboard belongs to one compiled game. It lists the experiments and sessions stored for that game." >}}
-
-## Stop and restart safely
-
-Stop the local server with `Ctrl-C`. When you start it again, the administrator account,
-experiments, configuration revisions, and completed sessions remain available. Participant intake
-does not reopen automatically: every experiment returns to the inactive state after a server start.
-
-This distinction is useful in production. A successful health check means that the installation is
-available; it does not mean that recruitment is open.
-
-The installation is now ready, but it has no experiment yet. Continue with
-[games, experiments, and sessions](concepts/) to understand the objects the dashboard will create;
-the following chapter then uses them to run the first two-browser pilot.
+Use `parlando COMMAND --help` for options. Build commands read `game.yaml`
+in the working directory unless you pass `--manifest`. Use `--json` for
+structured results in scripts.

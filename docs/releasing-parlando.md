@@ -15,8 +15,8 @@ release. On crates.io, `parlando-game-derive` must be available before
 On PyPI, `parlando-python-sdk` supplies the game API imported as
 `parlando_game_sdk`, and `parlando-agent-sdk` supplies the remote agent API.
 
-This document is the canonical release procedure. `docs/publishing-packages.md` explains package
-consumption and individual publishing commands, while this page defines the coordinated release.
+This document is the canonical release procedure. `docs/publishing-packages.md` identifies the packages and their
+installation paths, while this page defines the coordinated release.
 
 ## 1. Establish the release version
 
@@ -29,7 +29,7 @@ server and client versions to establish the baseline.
 Unless the maintainer selects another version, add one to the patch component:
 
 ```text
-0.6.0 → 0.6.1
+0.7.0 → 0.7.1
 ```
 
 Confirm that the target version is available for each package on its
@@ -98,32 +98,45 @@ mechanically.
 
 ## 3. Run the release gates
 
-Run all ordinary, package, contract, browser, and Prolific tests:
+Use Python 3.11 or later for the release tools. Install the
+`wasm32-unknown-unknown` Rust target and put `wasm-tools` on `PATH`.
+Then run the release candidate target.
 
 ```bash
-make test
-make test-e2e
+python3 -m venv .local/release-venv
+.local/release-venv/bin/python -m pip install build twine
+make test-release-candidate PYTHON=.local/release-venv/bin/python
 ```
 
-`make test-e2e` installs Playwright's isolated Chromium when necessary and writes the combined
-human-readable report to `target/e2e-report.md`. Read that report and require every layer and
-scenario to pass. A harness failure is still a failed release gate until the harness or product is
-fixed and the affected command is rerun.
+The target runs `make test`, `make test-e2e`, and `make test-components`,
+including the browser and Prolific scenarios, Wasm compatibility, and the
+runtime stress test suite. Read the report at `target/e2e-report.md` and require
+every layer and scenario to pass. The standalone sustained-capacity programs
+in [runtime stress testing](runtime-stress-testing.md) measure performance under
+load and run separately.
 
-The runtime stress programs are deliberately not part of the standard release process. They take
-minutes and primarily measure sustained capacity rather than release correctness. Run them only
-when a change specifically affects performance, resource limits, scheduling, or audio behavior and
-the maintainer requests that evidence.
+The candidate rehearsal snapshots the package inputs, builds all six packages,
+and installs them in temporary consumer projects. Cargo installs the CLI from its extracted `.crate` archive
+and resolves the Rust SDK and derive dependencies from their candidate archives.
+The starter clients install the npm tarball. A fresh virtual environment
+installs both Python SDK wheels and runs their tests. The installed CLI creates,
+tests, and builds the Rust and Python Beacon Relay starters, deploys each to a
+loopback host, and opens intake. Two independent Chromium sessions play each
+game to completion and verify that the outcome survives a reload.
 
-Then verify release builds, documentation, and package contents. Use Python
-3.11 or later for the release tools.
+The rehearsal installs `componentize-py` and Playwright as test dependencies.
+Set `PLAYWRIGHT_BROWSERS_PATH` to reuse a compatible Chromium installation.
+The rehearsal may fetch public dependencies and runs without registry
+credentials. After every test passes, the target saves the candidate artifacts
+and their checksums under `target/release-candidates/`. The output gives the
+exact directory to inspect.
+
+Then verify release builds, documentation, and registry dry runs.
 
 ```bash
 cargo build --release --all-features --manifest-path rust-server/Cargo.toml
 npm --prefix js-client run build
 hugo --source docs/web --panicOnWarning --printPathWarnings
-python3 -m venv .local/release-venv
-.local/release-venv/bin/python -m pip install build twine
 make publish-dry-run PYTHON=.local/release-venv/bin/python
 ```
 
@@ -182,10 +195,13 @@ Configure Twine for PyPI using the maintainer's credentials.
 make publish PYTHON=.local/release-venv/bin/python
 ```
 
-The command checks the shared version before uploading. It publishes the
-Rust derive crate, Rust Game SDK, and server in dependency order, then the
-browser client to npm and both Python SDKs to PyPI. A failed upload stops the
-sequence.
+The command verifies the saved candidate's version, artifact checksums, and
+package inputs before uploading. It publishes the Rust derive crate, Rust
+Game SDK, and server in dependency order, then uploads the exact tested npm
+tarball and Python distributions. Cargo creates fresh crates.io archives from
+the verified inputs and validates their registry dependency resolution. A
+failed upload stops the sequence. Run the candidate target again if the package
+inputs or artifacts change before publication.
 
 If npm requests browser approval, keep the process alive while the
 maintainer follows its link. Verify each exact published version in its
@@ -194,7 +210,7 @@ targets. Use `publish-rust-derive`, `publish-rust-sdk`,
 `publish-rust-server`, `publish-js-client`,
 `publish-python-game-sdk`, or `publish-python-agent-sdk` as appropriate.
 If PyPI accepted only one distribution file, verify it and upload only the
-missing file with Twine.
+missing file from the saved candidate directory with Twine.
 
 ## 6. Verify consumers and finish the release
 

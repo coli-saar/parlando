@@ -39,6 +39,9 @@ pub(super) enum RemoteCommand {
         /// Externally visible origin used to construct participant URLs.
         #[arg(long)]
         public_url: Option<String>,
+        /// HTTPS dashboard origin on a different hostname from the participant site.
+        #[arg(long)]
+        admin_url: Option<String>,
         /// JSON object mapping game IDs to independent bearer tokens.
         #[arg(long)]
         grants: Option<PathBuf>,
@@ -111,30 +114,38 @@ pub(super) async fn execute(command: RemoteCommand) -> Result<Value> {
             bind,
             store,
             public_url,
+            admin_url,
             grants,
         } => {
             let public_url = public_url.unwrap_or_else(|| format!("http://{bind}"));
+            let admin_url = admin_url.or_else(|| env::var("PARLANDO_ADMIN_URL").ok());
             let grants = if let Some(path) = grants {
                 serde_json::from_slice(
                     &std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
                 )
                 .context("expected a JSON object mapping game IDs to deployment tokens")?
-            } else {
+            } else if admin_url.is_none()
+                || env::var_os("PARLANDO_DEPLOY_GAME").is_some()
+                || env::var_os("PARLANDO_DEPLOY_TOKEN").is_some()
+            {
                 BTreeMap::from([(
                     required_env("PARLANDO_DEPLOY_GAME")?,
                     required_env("PARLANDO_DEPLOY_TOKEN")?,
                 )])
+            } else {
+                BTreeMap::new()
             };
-            deployment::serve(
-                bind,
-                HostOptions {
-                    store,
-                    public_url,
-                    grants,
-                    admin_token: required_env("PARLANDO_HOST_ADMIN_TOKEN")?,
-                },
-            )
-            .await?;
+            let options = HostOptions {
+                store,
+                public_url,
+                grants,
+                admin_token: required_env("PARLANDO_HOST_ADMIN_TOKEN")?,
+            };
+            if let Some(admin_url) = admin_url {
+                deployment::serve_with_dashboard(bind, options, admin_url).await?;
+            } else {
+                deployment::serve(bind, options).await?;
+            }
             Ok(json!({"status": "stopped"}))
         }
         RemoteCommand::Select {

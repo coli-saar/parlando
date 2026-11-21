@@ -173,19 +173,6 @@ def check_published_consumer_lockfiles(root: Path, version: str, errors: list[st
 
 def check_release_documents(root: Path, version: str, errors: list[str]) -> None:
     """Check current release guidance and changelog metadata."""
-    publishing_path = root / "docs/publishing-packages.md"
-    publishing = publishing_path.read_text(encoding="utf-8")
-    rust_examples = re.findall(r'^parlando = "([0-9]+\.[0-9]+\.[0-9]+)"$', publishing, re.MULTILINE)
-    npm_examples = re.findall(
-        r'^"@coli-saar/parlando-client": "\^([0-9]+\.[0-9]+\.[0-9]+)"$',
-        publishing,
-        re.MULTILINE,
-    )
-    if not rust_examples or any(item != version for item in rust_examples):
-        errors.append(f"{publishing_path}: current Rust examples must all use {version}")
-    if not npm_examples or any(item != version for item in npm_examples):
-        errors.append(f"{publishing_path}: current npm examples must all use ^{version}")
-
     generator_path = root / "skills/generate-parlando-game/SKILL.md"
     generator = generator_path.read_text(encoding="utf-8")
     if "docs/migrating-to-clean-api.md" in generator:

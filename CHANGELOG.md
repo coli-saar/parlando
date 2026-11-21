@@ -59,7 +59,7 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 - Export a consistent SQLite snapshot and retain setup logs in session history while omitting
   events before gameplay from the corpus.
 
-See [Upgrade from 0.5.0 to 0.6.0](docs/migrating-0.5.0-to-0.6.0.md).
+
 
 ## [0.5.0] - 2026-10-05
 

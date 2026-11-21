@@ -1,7 +1,21 @@
-# Configure and deploy a game
+# Package and deploy a game
 
-Use `game.yaml` for package identity, build inputs, and participant assets. Run `parlando test`, `parlando build` and `parlando check --manifest dist/parlando/game.yaml`. Use `parlando serve` for a local pilot.
+The project `game.yaml` declares game identity and build inputs.
+`parlando build` stages a deployable directory at `dist/parlando/`.
+Its manifest points to the exact component and optional built participant
+assets. Run `parlando check --manifest dist/parlando/game.yaml` before
+handing off or uploading that directory.
 
-Use `parlando host` to operate a persistent installation and `parlando deploy` to upload the package. Select the immutable package revision for each hosted experiment. Follow the CLI help and the checkout's `docs/component-hosting.md` for operator authentication, host storage, and environment variables.
+For a local pilot, run `parlando serve --manifest dist/parlando/game.yaml`
+and open `/admin` on the local listener. Study settings such as pairing,
+consent, intake, communication, and agent selection belong to the experiment.
+Game-owned parameters go in the game's typed configuration. Store secrets
+outside packages, browser assets, and experiment configuration.
 
-Experiment configuration belongs in the dashboard. The game receives its own typed settings. Keep deployment tokens and provider credentials outside manifests, browser code, and game configuration. Give the researcher the dashboard address, participant URL, storage location, and any separate agent process command.
+For an authorized deployment, use the shared dashboard or
+`parlando deploy --server <origin> --package dist/parlando --json`.
+The CLI uses a game-scoped upload credential. Record the returned revision.
+A hosted experiment pins that revision and its configuration. A different
+revision gets a fresh experiment ID. Selection and intake require dashboard
+or operator authority. Follow [Deploy to a shared host](https://coli-saar.github.io/parlando/manual/deploy/)
+for exact credential setup and operator commands.

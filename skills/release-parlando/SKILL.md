@@ -29,7 +29,7 @@ Update the release as one consistent change:
 - Update every first-party game manifest that consumes `parlando` or `@coli-saar/parlando-client`. Refresh affected lockfiles with the package manager; do not hand-edit resolved registry integrity metadata. If the target is not published yet and a registry lockfile cannot be refreshed, defer that lockfile until after publication and record the temporary limitation.
 - Update current examples in `docs/publishing-packages.md`. Preserve old versions in historical changelog entries and older migration guides.
 - Review `skills/generate-parlando-game/SKILL.md` for API and configuration changes. The CLI supplies the shared version when scaffolding projects.
-- Review current user-facing docs for statements that became stale after the manifest update, especially `docs/cross-compiling-for-linux.md`.
+- Review current user-facing docs for statements that became stale after the manifest update, especially `docs/web/content/manual/`.
 - Move the release notes from `Unreleased` into `## [<version>] - YYYY-MM-DD` in `CHANGELOG.md`. Leave a new empty `Unreleased` section above it.
 - Update or create `docs/migrating-<previous>-to-<target>.md` when downstream game developers must change code, configuration, deployment files, or databases. Include coordinated dependency bumps, required data backup/conversion, public Rust and JavaScript API changes, configuration/protocol changes, removed names without compatibility aliases, and an end-to-end validation checklist. Do not create a migration guide when the release requires no downstream action.
 - Record durable release-process choices in `notes/technical-decisions.md`, not in `docs/`.
@@ -50,8 +50,7 @@ Set up the Python release environment described in the canonical release
 procedure. Run these gates in order and report the exact failing command:
 
 ```bash
-make test
-make test-e2e
+make test-release-candidate PYTHON=.local/release-venv/bin/python
 cargo build --release --all-features --manifest-path rust-server/Cargo.toml
 npm --prefix js-client run build
 hugo --source docs/web --panicOnWarning --printPathWarnings
@@ -60,9 +59,14 @@ make publish-dry-run PYTHON=.local/release-venv/bin/python
 
 Require `target/e2e-report.md` to show every browser and Prolific scenario passing. A test-harness
 failure is still a release blocker: diagnose and fix the harness or product, then rerun both the
-affected gate and its own test target. Skip the runtime stress programs in a normal release; run
-them only when a relevant performance, resource-limit, scheduling, or audio change requires that
-evidence and the user requests it.
+affected gate and its own test target. The candidate target includes `make test-components`
+and its runtime stress tests. Run the standalone sustained-capacity programs when the maintainer
+requests performance evidence.
+
+Require the candidate rehearsal to install all six packaged artifacts and play both deployed
+starter games through completion. Inspect the saved candidate before publication. `make publish`
+verifies its checksums and inputs and publishes the saved npm and PyPI distributions. Cargo
+packages the verified Rust inputs during publication.
 
 Inspect the Cargo package and npm dry-run file lists for secrets, private configuration, internal notes, missing declarations, and unexpected generated files. Confirm registry identities before publication with `cargo owner --list parlando` and `npm owner ls @coli-saar/parlando-client` or equivalent read-only identity checks.
 

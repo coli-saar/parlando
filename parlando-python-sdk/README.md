@@ -5,4 +5,4 @@ configuration, actions, role views, and outcomes with dataclasses. Import
 `Game`, `Role`, `Rejection`, and `mechanics` from `parlando_game_sdk`.
 The SDK derives the game schema and handles the component's wire format.
 
-[Create and play a Python game](https://github.com/coli-saar/parlando/blob/main/docs/component-games.md#create-and-play-a-python-game)
+[Create and play a Python game](https://coli-saar.github.io/parlando/manual/build/create-game/#start-with-python)
