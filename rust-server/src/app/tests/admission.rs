@@ -4,7 +4,7 @@ use super::*;
 async fn direct_participant_creation_respects_direct_enabled_flag() {
     let mut config = step_five_config();
     config.direct.enabled = false;
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
 
@@ -22,7 +22,7 @@ async fn direct_participant_creation_respects_direct_enabled_flag() {
 
 #[tokio::test]
 async fn public_participant_creation_rejects_external_identity_sources() {
-    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+    let router = build_router(live_game(), step_five_config(), ServeOptions::default())
         .await
         .unwrap();
     let (status, response) = json_request(
@@ -42,7 +42,7 @@ async fn public_participant_creation_rejects_external_identity_sources() {
 
 #[tokio::test]
 async fn direct_room_creation_requires_consent_then_assigns_role_a() {
-    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+    let router = build_router(live_game(), step_five_config(), ServeOptions::default())
         .await
         .unwrap();
     let participant_session_id = create_direct_participant(router.clone(), "Direct Player").await;
@@ -76,13 +76,9 @@ async fn direct_room_creation_requires_consent_then_assigns_role_a() {
 
 #[tokio::test]
 async fn room_response_uses_null_when_game_does_not_enumerate_actions() {
-    let router = build_router(
-        NoAvailableActionsAdapter,
-        step_five_config(),
-        ServeOptions::default(),
-    )
-    .await
-    .unwrap();
+    let router = build_router(live_game(), step_five_config(), ServeOptions::default())
+        .await
+        .unwrap();
     let participant_session_id = create_direct_participant(router.clone(), "No Actions").await;
     consent_participant(router.clone(), &participant_session_id).await;
 
@@ -101,7 +97,7 @@ async fn room_response_uses_null_when_game_does_not_enumerate_actions() {
 
 #[tokio::test]
 async fn required_consent_must_be_accepted_not_only_declared() {
-    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+    let router = build_router(live_game(), step_five_config(), ServeOptions::default())
         .await
         .unwrap();
     let participant_session_id = create_direct_participant(router.clone(), "Nope").await;
@@ -136,7 +132,7 @@ async fn required_consent_must_be_accepted_not_only_declared() {
 
 #[tokio::test]
 async fn two_independent_waiting_room_entries_pair_into_one_room() {
-    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+    let router = build_router(live_game(), step_five_config(), ServeOptions::default())
         .await
         .unwrap();
     let first = create_direct_participant(router.clone(), "First tab").await;
@@ -204,7 +200,7 @@ async fn two_independent_waiting_room_entries_pair_into_one_room() {
 
 #[tokio::test]
 async fn adversarial_room_routes_reject_caller_controlled_role_fields() {
-    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+    let router = build_router(live_game(), step_five_config(), ServeOptions::default())
         .await
         .unwrap();
     let a = create_direct_participant(router.clone(), "A").await;
@@ -227,7 +223,7 @@ async fn adversarial_room_routes_reject_caller_controlled_role_fields() {
 /// Confirms authenticated APIs reject the removed caller-controlled participant field.
 #[tokio::test]
 async fn authenticated_routes_reject_participant_identity_in_request_bodies() {
-    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+    let router = build_router(live_game(), step_five_config(), ServeOptions::default())
         .await
         .unwrap();
     let participant_session_id = create_direct_participant(router.clone(), "A").await;
@@ -244,7 +240,7 @@ async fn authenticated_routes_reject_participant_identity_in_request_bodies() {
 
 #[tokio::test]
 async fn room_routes_persist_evaluation_session_and_join_events() {
-    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+    let router = build_router(live_game(), step_five_config(), ServeOptions::default())
         .await
         .unwrap();
     let a = create_direct_participant(router.clone(), "A").await;
@@ -318,7 +314,7 @@ async fn room_routes_persist_evaluation_session_and_join_events() {
 
 #[tokio::test]
 async fn websocket_role_assignment_is_targeted_to_one_connection() {
-    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+    let router = build_router(live_game(), step_five_config(), ServeOptions::default())
         .await
         .unwrap();
     let (a, b, public_session_id) = create_joined_room(router.clone()).await;
@@ -346,7 +342,7 @@ async fn websocket_role_assignment_is_targeted_to_one_connection() {
 async fn completed_admission_rejoins_recorded_terminal_session() {
     let mut config = step_five_config();
     config.session.reconnect_grace_seconds = 1;
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
     let (a, b, public_session_id) = create_joined_room(router.clone()).await;

@@ -6,8 +6,8 @@
 
 use super::{
     build_session_liveness, json, speechmatics_readiness_required, AppError, AppState, Arc,
-    CapacitySample, ConnectionLivenessSnapshot, ConnectionSample, Duration, Game, Json, LoadSample,
-    Next, Occupancy, Request, Response, Result, ServerContext, SessionLiveness, State, Value, Weak,
+    CapacitySample, ConnectionLivenessSnapshot, ConnectionSample, Duration, Json, LoadSample, Next,
+    Occupancy, Request, Response, Result, ServerContext, SessionLiveness, State, Value, Weak,
 };
 
 /// Classifies one current game transport from its most recent heartbeat or message.
@@ -26,7 +26,7 @@ pub(super) fn game_connection_health(
 }
 
 /// Takes a short-lock snapshot of current runtime capacity and operational counters.
-async fn build_load_sample<A: Game>(state: &Arc<AppState<A>>) -> LoadSample {
+async fn build_load_sample(state: &Arc<AppState>) -> LoadSample {
     let now = chrono::Utc::now();
     let now_ms = now.timestamp_millis();
     let mut usage = Occupancy::default();
@@ -114,7 +114,7 @@ async fn build_load_sample<A: Game>(state: &Arc<AppState<A>>) -> LoadSample {
 }
 
 /// Returns strong references to every currently hosted experiment runtime.
-async fn hosted_runtime_states<A: Game>(state: &ServerContext<A>) -> Vec<Arc<AppState<A>>> {
+async fn hosted_runtime_states(state: &ServerContext) -> Vec<Arc<AppState>> {
     let mut runtimes = state
         .installation
         .runtime_registry
@@ -129,7 +129,7 @@ async fn hosted_runtime_states<A: Game>(state: &ServerContext<A>) -> Vec<Arc<App
 }
 
 /// Aggregates current capacity and transport use across every hosted experiment runtime.
-async fn build_game_load_sample<A: Game>(state: &ServerContext<A>) -> LoadSample {
+async fn build_game_load_sample(state: &ServerContext) -> LoadSample {
     let runtimes = hosted_runtime_states(state).await;
     let mut runtimes = runtimes.into_iter();
     let Some(first) = runtimes.next() else {
@@ -192,7 +192,7 @@ async fn build_game_load_sample<A: Game>(state: &ServerContext<A>) -> LoadSample
 }
 
 /// Returns liveness for every in-memory session across the hosted game process.
-async fn build_game_session_liveness<A: Game>(state: &ServerContext<A>) -> Vec<SessionLiveness> {
+async fn build_game_session_liveness(state: &ServerContext) -> Vec<SessionLiveness> {
     let mut sessions = Vec::new();
     for runtime in hosted_runtime_states(state).await {
         sessions.extend(build_session_liveness(&runtime).await);
@@ -206,7 +206,7 @@ async fn build_game_session_liveness<A: Game>(state: &ServerContext<A>) -> Vec<S
 }
 
 /// Samples bounded game-process operational history every five seconds.
-pub(super) fn spawn_load_sampler<A: Game>(state: Arc<ServerContext<A>>) {
+pub(super) fn spawn_load_sampler(state: Arc<ServerContext>) {
     let context = Arc::downgrade(&state);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(5));
@@ -222,8 +222,8 @@ pub(super) fn spawn_load_sampler<A: Game>(state: Arc<ServerContext<A>>) {
 }
 
 /// Returns game-wide current load, one-hour history, and runtime session liveness.
-pub(super) async fn admin_load<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(super) async fn admin_load(
+    State(state): State<Arc<ServerContext>>,
 ) -> Result<Json<Value>, AppError> {
     let current = build_game_load_sample(&state).await;
     let history = state.installation.telemetry.history().await;
@@ -238,8 +238,8 @@ pub(super) async fn admin_load<A: Game>(
 }
 
 /// Measures HTTP concurrency, response classes, and latency for the load dashboard.
-pub(super) async fn track_request_load<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(super) async fn track_request_load(
+    State(state): State<Arc<ServerContext>>,
     request: Request,
     next: Next,
 ) -> Response {

@@ -145,7 +145,10 @@ class Agent:
     async def respond(
         self, available_actions: Optional[list[dict[str, Any]]]
     ) -> Optional[Response]:
-        """Optionally chooses a message and/or action after prior observations."""
+        """Optionally acts from the latest observation. Component hosts pass None.
+
+        Older protocol callers may still supply an action catalogue.
+        """
         return None
 
     async def shutdown(self) -> None:

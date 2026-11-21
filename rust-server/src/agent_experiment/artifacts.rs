@@ -7,7 +7,7 @@
 
 use super::results::{SessionResult, SessionStatus};
 use super::spec::EXPERIMENT_SCHEMA;
-use super::training::{CheckpointId, TrajectoryDecoder, TrajectoryStep};
+use super::training::{CheckpointId, TrajectoryStep};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -27,7 +27,7 @@ impl RunArtifacts {
         game_id: &str,
         version: &str,
         spec_hash: &str,
-        component_sha256: Option<&str>,
+        component_sha256: &str,
     ) -> Result<Self> {
         tokio::fs::create_dir_all(directory.join("results")).await?;
         let manifest = load_or_create_manifest(
@@ -45,11 +45,11 @@ impl RunArtifacts {
     }
 
     /// Recovers the status and training steps from this plan's finalized result.
-    pub(super) async fn result<O, A>(
+    pub(super) async fn result(
         &self,
         plan_id: &str,
-        decode_trajectory: Option<TrajectoryDecoder<O, A>>,
-    ) -> Result<Option<(SessionStatus, Vec<TrajectoryStep<O, A>>)>> {
+        load_trajectory: bool,
+    ) -> Result<Option<(SessionStatus, Vec<TrajectoryStep>)>> {
         let path = result_path(&self.directory, plan_id);
         let bytes = match tokio::fs::read(&path).await {
             Ok(bytes) => bytes,
@@ -66,8 +66,8 @@ impl RunArtifacts {
                 path.display()
             );
         }
-        let trajectory = match (decode_trajectory, result.trajectory) {
-            (Some(decode), Some(trajectory)) => decode(trajectory.get())
+        let trajectory = match (load_trajectory, result.trajectory) {
+            (true, Some(trajectory)) => serde_json::from_str(trajectory.get())
                 .with_context(|| format!("invalid finalized trajectory {}", path.display()))?,
             _ => Vec::new(),
         };
@@ -75,10 +75,7 @@ impl RunArtifacts {
     }
 
     /// Publishes all result fields together once the session has shut down.
-    pub(super) async fn finalize_result<C: Serialize, O: Serialize, A: Serialize>(
-        &self,
-        result: &SessionResult<C, O, A>,
-    ) -> Result<()> {
+    pub(super) async fn finalize_result(&self, result: &SessionResult) -> Result<()> {
         write_json_atomic(&result_path(&self.directory, &result.plan_id), result).await
     }
 
@@ -154,7 +151,7 @@ struct RunManifest {
     game_id: String,
     game_version: String,
     spec_hash: String,
-    /// Digest of the loaded game component when this run uses one.
+    /// Digest of the loaded game component. A missing digest cannot match a run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     component_sha256: Option<String>,
 }
@@ -165,7 +162,7 @@ async fn load_or_create_manifest(
     game_id: &str,
     game_version: &str,
     spec_hash: &str,
-    component_sha256: Option<&str>,
+    component_sha256: &str,
 ) -> Result<RunManifest> {
     match tokio::fs::read(path).await {
         Ok(bytes) => {
@@ -181,7 +178,7 @@ async fn load_or_create_manifest(
                     path.parent().unwrap_or_else(|| Path::new(".")).display()
                 );
             }
-            if manifest.component_sha256.as_deref() != component_sha256 {
+            if manifest.component_sha256.as_deref() != Some(component_sha256) {
                 bail!(
                     "run manifest {} belongs to a different game component",
                     path.display()
@@ -196,7 +193,7 @@ async fn load_or_create_manifest(
                 game_id: game_id.to_string(),
                 game_version: game_version.to_string(),
                 spec_hash: spec_hash.to_string(),
-                component_sha256: component_sha256.map(str::to_owned),
+                component_sha256: Some(component_sha256.to_owned()),
             };
             write_json_atomic(path, &manifest).await?;
             Ok(manifest)
@@ -254,11 +251,11 @@ mod tests {
     #[tokio::test]
     async fn resume_result_requires_both_identity_components() {
         let directory = tempdir().unwrap();
-        let artifacts = RunArtifacts::open(directory.path(), "game", "1", "spec", None)
+        let artifacts = RunArtifacts::open(directory.path(), "game", "1", "spec", "component")
             .await
             .unwrap();
         assert!(artifacts
-            .result::<(), ()>("requested", None)
+            .result("requested", false)
             .await
             .unwrap()
             .is_none());
@@ -273,7 +270,7 @@ mod tests {
             )
             .await
             .unwrap();
-            assert!(artifacts.result::<(), ()>("requested", None).await.is_err());
+            assert!(artifacts.result("requested", false).await.is_err());
         }
         write_json_atomic(
             &path,
@@ -283,7 +280,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             artifacts
-                .result::<(), ()>("requested", None)
+                .result("requested", false)
                 .await
                 .unwrap()
                 .unwrap()
@@ -296,7 +293,7 @@ mod tests {
     #[tokio::test]
     async fn checkpoint_resume_validates_the_update_number_id_and_base() {
         let directory = tempdir().unwrap();
-        let artifacts = RunArtifacts::open(directory.path(), "game", "1", "spec", None)
+        let artifacts = RunArtifacts::open(directory.path(), "game", "1", "spec", "component")
             .await
             .unwrap();
         let base = CheckpointId::new("initial").unwrap();
@@ -325,19 +322,28 @@ mod tests {
     async fn component_run_pins_the_loaded_digest() {
         let directory = tempdir().unwrap();
         let path = directory.path();
-        let artifacts = RunArtifacts::open(path, "game", "1", "spec", Some("original"))
+        let artifacts = RunArtifacts::open(path, "game", "1", "spec", "original")
             .await
             .unwrap();
-        let resumed = RunArtifacts::open(path, "game", "1", "spec", Some("original"))
+        let resumed = RunArtifacts::open(path, "game", "1", "spec", "original")
             .await
             .unwrap();
         assert_eq!(resumed.run_id, artifacts.run_id);
-        for replacement in [Some("different"), None] {
-            let error = RunArtifacts::open(path, "game", "1", "spec", replacement)
-                .await
-                .err()
-                .expect("run accepted a different game artifact");
-            assert!(error.to_string().contains("different game component"));
-        }
+        let error = RunArtifacts::open(path, "game", "1", "spec", "different")
+            .await
+            .err()
+            .expect("run accepted a different game artifact");
+        assert!(error.to_string().contains("different game component"));
+
+        let manifest_path = path.join("run.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&tokio::fs::read(&manifest_path).await.unwrap()).unwrap();
+        manifest.as_object_mut().unwrap().remove("component_sha256");
+        write_json_atomic(&manifest_path, &manifest).await.unwrap();
+        let error = RunArtifacts::open(path, "game", "1", "spec", "original")
+            .await
+            .err()
+            .expect("run accepted a manifest without a component digest");
+        assert!(error.to_string().contains("different game component"));
     }
 }

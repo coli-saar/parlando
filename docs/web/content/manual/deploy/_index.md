@@ -36,9 +36,13 @@ the steps above use one process, one database, and one secure origin.
 
 ## Choose the unit of deployment
 
-One server serves one compiled game and the experiment catalogue for that game. A second game uses
-a separate server and data store. This boundary keeps task version, experiment
-configuration, and collected records within one identifiable installation.
+Use `parlando serve` to run a local package with its own database.
+
+The component host can run several WebAssembly games on one listener. With
+the Parlando CLI, `parlando build` produces a package containing the
+game and participant assets, and `parlando deploy` uploads it to a running
+host. An operator uses `parlando select` to pin an experiment to that package
+revision. Each hosted experiment has a separate SQLite database.
 
 Use one live server instance per installation. The included deployment patterns do not support
 horizontal scaling, and multiple replicas can break live sessions.

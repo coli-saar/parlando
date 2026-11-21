@@ -9,13 +9,13 @@ use super::{
     action_rejected_message, broadcast, commit_conversation_message, error_message,
     internal_error_message, json, persist_rejected_action, persist_rejected_input,
     persist_session_event_required, presence_message, submit_action, touch_transport_activity,
-    voice_message, ActionRejection, AppState, Arc, ClientMessage, ConversationOrigin, Game,
-    PlayerRole, ServerMessage, SessionParticipant, SubmissionRejection, TokenBucket, Value,
+    voice_message, ActionRejection, AppState, Arc, ClientMessage, ConversationOrigin, PlayerRole,
+    ServerMessage, SessionParticipant, SubmissionRejection, TokenBucket, Value,
 };
 
 /// Applies a decoded browser message according to session and input policy.
-pub(super) async fn handle_client_message<A: Game>(
-    state: Arc<AppState<A>>,
+pub(super) async fn handle_client_message(
+    state: Arc<AppState>,
     bus: &broadcast::Sender<ServerMessage>,
     public_session_id: &str,
     participant_session_id: &str,

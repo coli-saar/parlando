@@ -7,7 +7,7 @@ struct TinyCheckpointFactory {
 }
 
 #[async_trait]
-impl AgentFactory<TinyGame> for TinyCheckpointFactory {
+impl AgentFactory for TinyCheckpointFactory {
     /// Exposes the same uniform factory ID used by learner YAML.
     fn definition(&self) -> AgentDefinition {
         AgentDefinition {
@@ -28,7 +28,7 @@ impl AgentFactory<TinyGame> for TinyCheckpointFactory {
     }
 
     /// Creates a policy that tries a rejected action before the completing action.
-    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<TinyGame> + Send>> {
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         self.events.lock().unwrap().push(format!(
             "create-rl:{}:{}",
             self.checkpoint.as_str(),
@@ -61,7 +61,7 @@ struct TinyLearner {
 }
 
 #[async_trait]
-impl RLAgent<TinyGame> for TinyLearner {
+impl RLAgent for TinyLearner {
     /// Uses one stable registry ID with no YAML learner discriminator.
     fn factory_id(&self) -> &str {
         "tiny.rl"
@@ -77,7 +77,7 @@ impl RLAgent<TinyGame> for TinyLearner {
     }
 
     /// Produces an ordinary factory bound to one resolved checkpoint.
-    fn factory(&self, checkpoint: &CheckpointId) -> Result<Arc<dyn AgentFactory<TinyGame>>> {
+    fn factory(&self, checkpoint: &CheckpointId) -> Result<Arc<dyn AgentFactory>> {
         Ok(Arc::new(TinyCheckpointFactory {
             checkpoint: checkpoint.clone(),
             events: self.events.clone(),
@@ -89,7 +89,7 @@ impl RLAgent<TinyGame> for TinyLearner {
         &mut self,
         context: &RLTrainingContext,
         base: &CheckpointId,
-        batch: TrainingBatch<TinyObservation, TinyAction>,
+        batch: TrainingBatch,
     ) -> Result<CheckpointId> {
         anyhow::ensure!(
             context.settings["mode"] == "configured",
@@ -100,15 +100,16 @@ impl RLAgent<TinyGame> for TinyLearner {
                 unreachable!("each training plan records exactly two steps");
             };
             assert!(!rejected.accepted);
-            assert_eq!(rejected.action.amount, 0);
+            assert_eq!(rejected.action.decode::<Value>()?["amount"], 0);
             assert!(accepted.accepted);
-            assert_eq!(accepted.action.amount, 1);
+            assert_eq!(accepted.action.decode::<Value>()?["amount"], 1);
             assert_eq!(accepted.rewards.unwrap().player_a, 2.5);
-            assert_eq!(accepted.observation.count, 0);
-            assert_eq!(accepted.next_observation.count, 1);
-            let actions = accepted.available_actions.as_deref().unwrap();
-            assert_eq!(actions.len(), 1);
-            assert_eq!(actions[0].amount, 1);
+            assert_eq!(accepted.observation.decode::<TinyObservation>()?.count, 0);
+            assert_eq!(
+                accepted.next_observation.decode::<TinyObservation>()?.count,
+                1
+            );
+            assert!(accepted.available_actions.is_none());
         }
         let mut updates = self.updates.lock().unwrap();
         updates.push((
@@ -127,7 +128,7 @@ struct TinyReward {
     multiplier: f64,
 }
 
-impl RewardFunction<TinyGame> for TinyReward {
+impl RewardFunction for TinyReward {
     /// Returns the YAML registry key.
     fn id(&self) -> &'static str {
         "count_delta"
@@ -146,12 +147,20 @@ impl RewardFunction<TinyGame> for TinyReward {
     /// Rewards the public counter change symmetrically.
     fn rewards(
         &self,
-        before: &TinyState,
-        after: &TinyState,
+        before: &GameFrame,
+        after: &GameFrame,
         _actor: PlayerRole,
-        _action: &TinyAction,
-        _completion: Option<&TinyCompletion>,
+        _action: &ComponentValue,
+        _completion: Option<&ComponentValue>,
     ) -> RoleRewards {
+        let before = before
+            .observation(PlayerRole::A)
+            .decode::<TinyObservation>()
+            .unwrap();
+        let after = after
+            .observation(PlayerRole::A)
+            .decode::<TinyObservation>()
+            .unwrap();
         let reward = f64::from(after.count.saturating_sub(before.count)) * self.multiplier;
         RoleRewards {
             player_a: reward,
@@ -220,7 +229,7 @@ output:
 fn training_runner(
     events: Arc<Mutex<Vec<String>>>,
     updates: Arc<Mutex<Vec<(String, String, usize)>>>,
-) -> ExperimentRunner<TinyGame> {
+) -> ExperimentRunner {
     test_runner(events.clone())
         .rl_agent(TinyLearner { events, updates })
         .unwrap()
@@ -294,7 +303,7 @@ async fn training_updates_and_validates_without_repeating_updates_on_resume() {
     assert_eq!(accepted["accepted"], true);
     assert_eq!(accepted["terminal"], true);
     assert_eq!(accepted["observation"], json!({"count": 0, "role": "A"}));
-    assert_eq!(accepted["available_actions"], json!([{"amount": 1}]));
+    assert!(accepted["available_actions"].is_null());
     assert_eq!(
         accepted["next_observation"],
         json!({"count": 1, "role": "A"})

@@ -1,0 +1,12 @@
+[package]
+name = "__GAME_ID__"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "beacon_game"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+parlando-game-sdk = __SDK_DEPENDENCY__

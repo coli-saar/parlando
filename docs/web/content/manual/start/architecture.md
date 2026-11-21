@@ -10,14 +10,14 @@ records consent, assigns the two player seats, carries actions and observations,
 limits, and preserves the resulting study record. It does not define the task itself. Each game adds
 the rules and interface that give those general operations a particular meaning.
 
-To build a game, an experimenter supplies two components: a Rust server crate that defines the task
+To build a game, an experimenter supplies two components: a Wasm game that defines the task
 and a browser application that presents it. The two components agree on the shapes of actions,
 observations, and completion. Parlando supplies the live-study shell around them; game authors do
 not reimplement participant entry, pairing, consent, storage, or communication infrastructure.
 
 The system consequently crosses a deployment boundary. One Rust process runs on the server, while
 one JavaScript application runs in each human participant's browser. Game-specific code exists on
-both sides of that boundary: Rust code governs the task, and a React interface presents one role's
+both sides of that boundary: the Wasm guest governs the task, and a React interface presents one role's
 view of it.
 
 {{< figure class="architecture-figure" src="manual/images/parlando-system-architecture.svg" alt="Parlando architecture with a Rust server, two participant browsers, game-specific server and client components, and an optional external agent" caption="Teal components belong to Parlando; gold components belong to the game. All interaction passes through the authoritative Rust server. An external agent can occupy a player seat without receiving hidden server state." >}}
@@ -29,20 +29,11 @@ responsibilities do not.
 
 ```text
 my-game/
-├── server/                    Rust crate and executable
-│   ├── Cargo.toml             depends on parlando
-│   ├── src/
-│   │   ├── game/              types, pure mechanics, Game and GameFactory
-│   │   ├── agents.rs          optional compiled agents
-│   │   └── main.rs            metadata, database, browser assets, server start
-│   └── tests/                 mechanics and server-boundary tests
-├── client/                    browser application
-│   ├── package.json           depends on @coli-saar/parlando-client
-│   └── web/src/
-│       ├── game/              matching TypeScript types and role-specific views
-│       ├── App.tsx            ParticipantApp and the active game screen
-│       └── *.test.tsx         interface and interaction tests
-└── deployment files          optional container or hosting configuration
+├── game.yaml                  package manifest
+├── Cargo.toml                 Rust game crate, depending on parlando-game-sdk
+├── src/lib.rs                 state, rules, role views and game export
+├── scenarios.yaml             host-level test cases
+└── client/                    participant application
 ```
 
 The client build produces static files. The Rust executable serves those files and one compiled
@@ -69,7 +60,7 @@ the other role's private information and merely hide it visually.
 
 ## The Rust server is authoritative
 
-The server combines Parlando with the selected game's Rust module. Parlando handles participant
+The server combines Parlando with the selected game's Wasm component. Parlando handles participant
 entry, declarations, pairing, readiness, timeouts, communication, monitoring, export, and storage.
 When a player proposes an action, Parlando passes it to the game module.
 

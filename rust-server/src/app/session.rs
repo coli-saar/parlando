@@ -112,7 +112,7 @@ impl SessionParticipant {
 }
 
 /// Runtime session record parameterized by a concrete game state type.
-pub(super) struct LiveSession<G: Game> {
+pub(super) struct LiveSession {
     pub id: String,
     pub experiment_id: String,
     pub session_id: i64,
@@ -120,9 +120,9 @@ pub(super) struct LiveSession<G: Game> {
     /// Immutable data-use purpose shared by every participant in this session.
     pub purpose: String,
     /// Session-local behavior object retaining session-scoped capabilities.
-    pub game: G,
+    pub game: GameSession,
     /// Authoritative serializable mechanics state.
-    state: G::State,
+    state: GameFrame,
     /// Base game-scoped handle for this session's log.
     pub logger: SessionLogger,
     /// Owned writer task drained when the session log is closed.
@@ -132,7 +132,7 @@ pub(super) struct LiveSession<G: Game> {
     /// Temporary interaction pause while a required role may reconnect.
     pause: Option<crate::protocol::ParticipantPauseReason>,
     /// Bounded, ordered delivery to the one reserved software seat, when started.
-    pub agent_inbox: Option<mpsc::Sender<AgentObservation<G>>>,
+    pub agent_inbox: Option<mpsc::Sender<AgentObservation>>,
     /// Serializes membership, lifecycle, and publication of committed game input.
     pub transition_lock: Arc<Mutex<()>>,
     /// Releases submitting callers when storage cannot yet prove the current turn's outcome.
@@ -141,7 +141,7 @@ pub(super) struct LiveSession<G: Game> {
     timing: LiveSessionTiming,
 }
 
-impl<G: Game> LiveSession<G> {
+impl LiveSession {
     /// Borrows the current session timestamps for participant views and monitoring.
     pub(super) fn timing(&self) -> &LiveSessionTiming {
         &self.timing
@@ -177,7 +177,7 @@ impl<G: Game> LiveSession<G> {
     }
 
     /// Borrows the latest committed mechanics state for observations and transition preparation.
-    pub(super) fn state(&self) -> &G::State {
+    pub(super) fn state(&self) -> &GameFrame {
         &self.state
     }
 
@@ -192,7 +192,7 @@ impl<G: Game> LiveSession<G> {
     /// Installs an already committed action and closes agent delivery on game completion.
     pub(super) fn install_action(
         &mut self,
-        after: G::State,
+        after: GameFrame,
         end: Option<SessionEnd>,
         farewell: Option<chrono::Duration>,
     ) {
@@ -247,12 +247,12 @@ impl SessionLifecycle {
 }
 
 /// In-memory active-session cache used for live WebSocket and game execution state.
-pub(super) struct MemoryState<G: Game> {
+pub(super) struct MemoryState {
     pub participants: HashMap<String, ParticipantSession>,
-    pub sessions: HashMap<String, LiveSession<G>>,
+    pub sessions: HashMap<String, LiveSession>,
 }
 
-impl<G: Game> Default for MemoryState<G> {
+impl Default for MemoryState {
     fn default() -> Self {
         Self {
             participants: HashMap::new(),
@@ -261,7 +261,7 @@ impl<G: Game> Default for MemoryState<G> {
     }
 }
 
-impl<G: Game> MemoryState<G> {
+impl MemoryState {
     /// Creates and stores an active participant session after durable identity creation.
     pub fn create_participant(
         &mut self,
@@ -304,15 +304,15 @@ impl<G: Game> MemoryState<G> {
 }
 
 /// Event delivered to one started agent instance.
-pub(super) enum AgentObservation<A: Game> {
+pub(super) enum AgentObservation {
     /// Starts decision processing after the session's activation has been committed.
     Activated,
     /// Accepted action plus role-specific state snapshot after the action.
     Action {
         actor: PlayerRole,
-        action: A::Action,
-        resulting_observation: A::Observation,
-        completion: Option<A::Completion>,
+        action: ComponentValue,
+        resulting_observation: ComponentValue,
+        completion: Option<ComponentValue>,
     },
     /// Conversation message with its sender role.
     Message { speaker: PlayerRole, text: String },

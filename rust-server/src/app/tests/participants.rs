@@ -90,7 +90,7 @@ pub(super) fn synthetic_prolific_config() -> ExperimentConfig {
 /// Builds a local-testing router that exercises Prolific admission without an external provider.
 pub(super) async fn build_prolific_testing_router() -> TestRouter {
     let config = synthetic_prolific_config();
-    let router = crate::app::build_router(TinyAdapter, config, ServeOptions::default())
+    let router = crate::app::build_router(live_game(), config, ServeOptions::default())
         .await
         .map(TestRouter::new)
         .unwrap();

@@ -41,6 +41,7 @@ export interface PlayerState {
 
 /** Exact role-specific observation produced by the authoritative Rust game. */
 export interface StationObservation {
+  actions: GameAction[];
   players: Record<PlayerId, PlayerState>;
   fuses: Record<FuseColor, boolean>;
   breakers: Record<BreakerId, boolean>;

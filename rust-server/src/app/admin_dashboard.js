@@ -1301,14 +1301,14 @@ function renderConfigurationForm(config, gameYaml = '{}\n') {
     </section>`).join('');
   configForm.innerHTML = `${activationWarning}${sections}
     <section class="config-group">
-      <header class="config-group-copy"><h3>Game configuration</h3><p class="muted small">Game-owned options. YAML is parsed and validated by the compiled game before it can be saved.</p></header>
+      <header class="config-group-copy"><h3>Game configuration</h3><p class="muted small">Game-owned options. The server checks the YAML against the game component’s configuration schema before saving it.</p></header>
       <div class="config-fields">
         <label class="config-field"><span>Game options</span><textarea id="gameYaml" class="game-yaml" spellcheck="false">${escapeHtml(gameYaml)}</textarea></label>
         <div class="validation-row"><button class="secondary" id="validateGameYaml" type="button">${icon('check')}Validate YAML</button><span id="gameYamlValidation" class="validation-result small"></span></div>
       </div>
     </section>
     <section class="config-group">
-      <header class="config-group-copy"><h3>Game secrets</h3><p class="muted small">Named credentials available to game startup code. Values are omitted from revisions and exports.</p></header>
+      <header class="config-group-copy"><h3>Game secrets</h3><p class="muted small">Named credentials for agents and server-side providers. Values are omitted from revisions and exports.</p></header>
       <div class="config-fields"><div id="gameSecretList" class="game-secret-list"></div><div class="add-secret-row"><label class="config-field"><span>New secret name</span><input id="newGameSecretName" placeholder="service_api_key"></label><button class="secondary" id="addGameSecret" type="button">${icon('plus')}Add secret</button></div></div>
     </section>`;
   document.getElementById('validateGameYaml').addEventListener('click', validateGameYaml);
@@ -1672,7 +1672,7 @@ function configurationFromForm() {
   return config;
 }
 
-// Asks the compiled game to parse and validate the current YAML without saving it.
+// Checks the current YAML against the game component’s schema without saving it.
 async function validateGameYaml() {
   const result = document.getElementById('gameYamlValidation');
   result.className = 'validation-result small';
@@ -1767,7 +1767,7 @@ async function revealSecret(key, button) {
   button.textContent = 'Hide';
 }
 
-// Creates an inactive experiment from the compiled game's current defaults.
+// Creates an inactive experiment from the installation’s current defaults.
 async function createExperiment(experimentId, notes) {
   const response = await adminFetch(state, '/api/admin/experiments', {
     method: 'POST',

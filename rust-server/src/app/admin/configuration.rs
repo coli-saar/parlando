@@ -10,8 +10,8 @@ use crate::app::{
     local_testing_issues_for_config, lock_runtime_router_build, parse_game_config,
     persistable_config_json, prolific_configuration_complete,
     run_and_cache_prolific_activation_preflight, validate_game_config_contains_no_secrets,
-    AppError, Arc, Deserialize, Game, HashMap, HeaderValue, IntoResponse, Json, Path, Response,
-    Result, ServerContext, State, StatusCode, Value, CACHE_CONTROL,
+    AppError, Arc, Deserialize, HashMap, HeaderValue, IntoResponse, Json, Path, Response, Result,
+    ServerContext, State, StatusCode, Value, CACHE_CONTROL,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -41,8 +41,8 @@ pub(in crate::app) struct AdminValidateGameConfigRequest {
 }
 
 /// Returns the current normalized configuration for one catalogue experiment.
-pub(in crate::app) async fn admin_experiment_config<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(in crate::app) async fn admin_experiment_config(
+    State(state): State<Arc<ServerContext>>,
     Path(experiment_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let mut experiment = state
@@ -157,8 +157,8 @@ fn validate_secret_update(key: &str, value: Option<&str>) -> Result<(), AppError
 }
 
 /// Reveals one explicitly requested secret to an authenticated administrator.
-pub(in crate::app) async fn admin_reveal_experiment_secret<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(in crate::app) async fn admin_reveal_experiment_secret(
+    State(state): State<Arc<ServerContext>>,
     Path(experiment_id): Path<String>,
     Json(request): Json<AdminRevealExperimentSecretRequest>,
 ) -> Result<Response, AppError> {
@@ -190,8 +190,8 @@ pub(in crate::app) async fn admin_reveal_experiment_secret<A: Game>(
 }
 
 /// Parses and validates game-owned YAML without saving a configuration revision.
-pub(in crate::app) async fn admin_validate_game_config<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(in crate::app) async fn admin_validate_game_config(
+    State(state): State<Arc<ServerContext>>,
     Path(experiment_id): Path<String>,
     Json(request): Json<AdminValidateGameConfigRequest>,
 ) -> Result<Json<Value>, AppError> {
@@ -205,14 +205,14 @@ pub(in crate::app) async fn admin_validate_game_config<A: Game>(
         .map_err(|error| AppError::bad_request(format!("Invalid game YAML: {error}")))?;
     validate_game_config_contains_no_secrets(&game)
         .map_err(|error| AppError::bad_request(error.to_string()))?;
-    parse_game_config(state.installation.game_factory.as_ref(), &game)
+    parse_game_config(&state.installation.loaded_game, &game)
         .map_err(|error| AppError::bad_request(format!("Invalid game configuration: {error}")))?;
     Ok(Json(json!({"valid": true})))
 }
 
 /// Saves a structurally valid configuration revision before checking provider readiness.
-pub(in crate::app) async fn admin_save_experiment_config<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(in crate::app) async fn admin_save_experiment_config(
+    State(state): State<Arc<ServerContext>>,
     Path(experiment_id): Path<String>,
     Json(request): Json<AdminSaveExperimentConfigRequest>,
 ) -> Result<Json<Value>, AppError> {
@@ -275,7 +275,7 @@ pub(in crate::app) async fn admin_save_experiment_config<A: Game>(
         .map_err(|error| AppError::bad_request(error.to_string()))?;
     validate_game_config_contains_no_secrets(&config.game)
         .map_err(|error| AppError::bad_request(error.to_string()))?;
-    parse_game_config(state.installation.game_factory.as_ref(), &config.game)
+    parse_game_config(&state.installation.loaded_game, &config.game)
         .map_err(|error| AppError::bad_request(format!("Invalid game configuration: {error}")))?;
     let revision = state
         .installation
@@ -312,8 +312,8 @@ pub(in crate::app) async fn admin_save_experiment_config<A: Game>(
 }
 
 /// Lists immutable configuration revisions for one experiment.
-pub(in crate::app) async fn admin_experiment_revisions<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(in crate::app) async fn admin_experiment_revisions(
+    State(state): State<Arc<ServerContext>>,
     Path(experiment_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     Ok(Json(json!({

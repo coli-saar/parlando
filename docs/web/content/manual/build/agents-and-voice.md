@@ -96,9 +96,10 @@ class Policy(Agent):
     async def observe_transition(self, actor, action, observation):
         self.observation = observation
 
-    async def respond(self, available_actions):
-        if available_actions:
-            return Response.action(available_actions[0])
+    async def respond(self, _available_actions):
+        legal_actions = self.observation.get("available_actions", [])
+        if legal_actions:
+            return Response.action(legal_actions[0])
         return None
 
 def create_agent(context: Context) -> Agent:
@@ -136,8 +137,7 @@ failure before play usually means that the Python service cannot be reached. A f
 observation belongs to policy execution; inspect the Python terminal and the recorded agent event.
 
 Once this check passes, replace the included policy body with the model or decision procedure you
-need. Keep the lifecycle methods and typed `Response` values. A policy must derive an action from its
-observation when the game does not enumerate `available_actions`.
+need. Keep the lifecycle methods and typed `Response` values. A policy derives actions from its observation. A game can include legal moves in the view to simplify that policy.
 
 ## Move the Python service off the game host
 

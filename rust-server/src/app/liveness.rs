@@ -6,7 +6,7 @@
 //! and maintenance units.
 
 use super::{
-    game_connection_health, session_lifecycle_is_ended, AppState, Arc, Game, ParticipantLiveness,
+    game_connection_health, session_lifecycle_is_ended, AppState, Arc, ParticipantLiveness,
     PlayerRole, SessionLiveness,
 };
 
@@ -29,9 +29,7 @@ struct SessionOperationalSnapshot {
 }
 
 /// Builds participant and lifecycle liveness without writing heartbeat data to storage.
-pub(super) async fn build_session_liveness<A: Game>(
-    state: &Arc<AppState<A>>,
-) -> Vec<SessionLiveness> {
+pub(super) async fn build_session_liveness(state: &Arc<AppState>) -> Vec<SessionLiveness> {
     let sessions = {
         let memory = state.memory.read().await;
         memory

@@ -1,18 +1,16 @@
 //! Reconstructs a recorded game for the administrator replay viewer. It starts from the
 //! stored initial state, applies accepted actions in event order and asks the game for each
-//! role’s observation and available actions. Frames carry the event index and game clock
+//! role’s observation. Frames carry the event index and game clock
 //! used by the browser player.
 
 use crate::app::{
     admin_experiment_id, json, protocol_json, AdminExperimentScope, AppError, AppState, Arc,
-    Extension, Game, GameSessionContext, Json, Path, PlayerRole, Result, SessionLogger, State,
-    StatusCode, Value,
+    ComponentValue, Extension, GameFrame, Json, Path, PlayerRole, Result, State, StatusCode, Value,
 };
 
 /// Builds one role-specific replay frame from an authoritative reconstructed state.
-fn replay_frame<A: Game>(
-    game: &A,
-    state: &A::State,
+fn replay_frame(
+    state: &GameFrame,
     role: PlayerRole,
     event_index: i64,
     game_time_ms: i64,
@@ -22,21 +20,17 @@ fn replay_frame<A: Game>(
     Ok(json!({
         "event_index": event_index,
         "game_time_ms": game_time_ms,
-        "observation": protocol_json(&game.observation(state, role))?,
-        "available_actions": game
-            .available_actions(state, role)
-            .as_ref()
-            .map(protocol_json)
-            .transpose()?,
+        "observation": protocol_json(&state.observation(role))?,
+        "available_actions": Value::Null,
         "transition": transition,
         "conversation": conversation,
-        "completion": game.completion(state).as_ref().map(protocol_json).transpose()?,
+        "completion": state.completion().as_ref().map(protocol_json).transpose()?,
     }))
 }
 
 /// Reconstructs a recorded session by applying accepted actions to its one stored initial state.
-pub(in crate::app) async fn admin_session_replay<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(in crate::app) async fn admin_session_replay(
+    State(state): State<Arc<AppState>>,
     scope: Option<Extension<AdminExperimentScope>>,
     Path(session_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
@@ -58,9 +52,9 @@ pub(in crate::app) async fn admin_session_replay<A: Game>(
         )
     })?;
     let expected = json!({
-        "state": A::STATE_REPRESENTATION_VERSION,
-        "action": A::ACTION_REPRESENTATION_VERSION,
-        "rules": A::RULES_VERSION,
+        "state": "1",
+        "action": "1",
+        "rules": "1",
     });
     if recorded != &expected {
         return Err(AppError::new(
@@ -77,30 +71,17 @@ pub(in crate::app) async fn admin_session_replay<A: Game>(
             "The recorded session has no initial authoritative state.",
         )
     })?;
-    let mut game_state: A::State = serde_json::from_value(initial_state).map_err(|error| {
+    let mut game_state: GameFrame = serde_json::from_value(initial_state).map_err(|error| {
         AppError::new(
             StatusCode::CONFLICT,
             format!("The recorded initial state is incompatible: {error}"),
         )
     })?;
-    let game = state
-        .context
-        .installation
-        .game_factory
-        .create(GameSessionContext {
-            logger: SessionLogger::headless(),
-        })
-        .map_err(|error| {
-            AppError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Could not construct the game for replay: {error}"),
-            )
-        })?;
+    let game = state.context.installation.loaded_game.session();
     game.validate_replay_state(&game_state)
         .map_err(|error| AppError::new(StatusCode::CONFLICT, error.to_string()))?;
     let mut conversation = Vec::<Value>::new();
     let mut role_a = vec![replay_frame(
-        &game,
         &game_state,
         PlayerRole::A,
         created.event_index,
@@ -109,7 +90,6 @@ pub(in crate::app) async fn admin_session_replay<A: Game>(
         &conversation,
     )?];
     let mut role_b = vec![replay_frame(
-        &game,
         &game_state,
         PlayerRole::B,
         created.event_index,
@@ -146,7 +126,6 @@ pub(in crate::app) async fn admin_session_replay<A: Game>(
                 "createdAt": "",
             }));
             role_a.push(replay_frame(
-                &game,
                 &game_state,
                 PlayerRole::A,
                 event.event_index,
@@ -155,7 +134,6 @@ pub(in crate::app) async fn admin_session_replay<A: Game>(
                 &conversation,
             )?);
             role_b.push(replay_frame(
-                &game,
                 &game_state,
                 PlayerRole::B,
                 event.event_index,
@@ -187,15 +165,16 @@ pub(in crate::app) async fn admin_session_replay<A: Game>(
                 ),
             )
         })?;
-        let action: A::Action = serde_json::from_value(action_value.clone()).map_err(|error| {
-            AppError::new(
-                StatusCode::CONFLICT,
-                format!(
-                    "Accepted action #{} is incompatible: {error}",
-                    event.event_index
-                ),
-            )
-        })?;
+        let action: ComponentValue =
+            serde_json::from_value(action_value.clone()).map_err(|error| {
+                AppError::new(
+                    StatusCode::CONFLICT,
+                    format!(
+                        "Accepted action #{} is incompatible: {error}",
+                        event.event_index
+                    ),
+                )
+            })?;
         game_state = if event.payload["recovery_checkpoint"] == true {
             let checkpoint = event.game_state.as_ref().ok_or_else(|| {
                 AppError::new(
@@ -206,7 +185,7 @@ pub(in crate::app) async fn admin_session_replay<A: Game>(
                     ),
                 )
             })?;
-            let restored: A::State =
+            let restored: GameFrame =
                 serde_json::from_value(checkpoint.clone()).map_err(|error| {
                     AppError::new(
                         StatusCode::CONFLICT,
@@ -242,7 +221,6 @@ pub(in crate::app) async fn admin_session_replay<A: Game>(
         };
         let transition = Some(json!({"actor": actor.as_str(), "action": action_value}));
         role_a.push(replay_frame(
-            &game,
             &game_state,
             PlayerRole::A,
             event.event_index,
@@ -251,7 +229,6 @@ pub(in crate::app) async fn admin_session_replay<A: Game>(
             &conversation,
         )?);
         role_b.push(replay_frame(
-            &game,
             &game_state,
             PlayerRole::B,
             event.event_index,

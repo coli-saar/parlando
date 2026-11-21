@@ -1,7 +1,4 @@
-//! Parlando runs a compiled two-player game in a participant-facing server or a headless
-//! experiment. Game authors supply a `GameFactory` and session-local `Game`. Agent authors
-//! register factories through `agent`. Both runtimes use the game to validate moves and
-//! compute each role’s observation.
+//! Runs packaged WebAssembly games in live sessions and headless experiments.
 
 mod agent_experiment;
 mod agents;
@@ -10,9 +7,9 @@ mod audio;
 mod audio_publisher;
 mod auth;
 mod canonical_json;
-#[cfg(feature = "component-games")]
 pub mod component;
 mod config;
+pub mod deployment;
 mod game;
 mod identity;
 mod prolific;
@@ -33,10 +30,7 @@ pub use agent_experiment::{
     ExperimentRunSummary, ExperimentRunner, RLAgent, RLTrainingContext, ResultAgent,
     RewardFunction, RoleRewards, SessionResult, SessionStatus, TrainingBatch, TrajectoryStep,
 };
-pub use game::{
-    ActionRejection, Game, GameFactory, GameInitializationContext, GameMetadata,
-    GameSessionContext, PlayerRole, SecretValues,
-};
+pub use game::{ActionRejection, GameMetadata, PlayerRole, SecretValues};
 pub use runtime_limits::{bundled_runtime_limits, ParticipantCreationLimit, RuntimeLimits};
 pub use server::Server;
 pub use session_log::{

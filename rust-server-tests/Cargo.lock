@@ -2155,13 +2155,14 @@ dependencies = [
  "hyper",
  "ipnet",
  "jsonwebtoken",
- "parlando-component-sdk",
+ "parlando-game-sdk",
  "prost",
  "prost-types",
  "protoc-bin-vendored",
  "rand 0.8.7",
  "ratatui",
  "reqwest",
+ "security-framework",
  "semver",
  "serde",
  "serde_json",
@@ -2169,6 +2170,7 @@ dependencies = [
  "sha2",
  "sqlx",
  "subtle",
+ "tempfile",
  "tokio",
  "tokio-tungstenite",
  "tonic",
@@ -2181,8 +2183,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "parlando-component-derive"
-version = "0.1.0"
+name = "parlando-game-derive"
+version = "0.6.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2190,15 +2192,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "parlando-component-sdk"
-version = "0.1.0"
+name = "parlando-game-sdk"
+version = "0.6.0"
 dependencies = [
  "anyhow",
- "parlando-component-derive",
+ "parlando-game-derive",
  "rmp",
  "rmp-serde",
  "serde",
  "serde_json",
+ "wit-bindgen",
 ]
 
 [[package]]
@@ -2238,7 +2241,7 @@ dependencies = [
 name = "parlando-stress-fixture"
 version = "0.0.0"
 dependencies = [
- "parlando-component-sdk",
+ "parlando-game-sdk",
  "serde",
  "serde_json",
  "wit-bindgen",

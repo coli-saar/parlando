@@ -218,7 +218,7 @@ async fn catalogue_readiness_includes_global_prolific_prerequisites() {
         .completion_paths
         .technical_failure = "TECHFAIL".to_string();
     config.recruitment.prolific.completion_paths.no_consent = "NOCONSENT".to_string();
-    let router = crate::app::build_router(TinyAdapter, config, ServeOptions::default())
+    let router = crate::app::build_router(live_game(), config, ServeOptions::default())
         .await
         .map(TestRouter::new)
         .expect("an incomplete inactive Prolific draft still builds");
@@ -396,7 +396,7 @@ async fn prolific_run_readiness_verifies_the_linked_study_before_start() {
             }),
         );
     let (provider_url, provider_task) = spawn_test_server(TestRouter::new(provider)).await;
-    let router = crate::app::build_router(TinyAdapter, config, ServeOptions::default())
+    let router = crate::app::build_router(live_game(), config, ServeOptions::default())
         .await
         .map(TestRouter::new)
         .unwrap();
@@ -810,7 +810,7 @@ fn prolific_places_are_normalized_to_planned_sessions() {
 async fn configured_progress_target_is_returned_for_an_empty_experiment() {
     let (mut config, _temp) = sqlite_config();
     config.progress.planned_sessions = Some(6);
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
     authenticate_test_admin(router.clone()).await.unwrap();

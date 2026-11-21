@@ -17,8 +17,8 @@ pub(in crate::app) fn mount_lock_slot(experiment_id: &str) -> usize {
 pub(in crate::app) const MOUNT_LOCK_COUNT: usize = 64;
 
 /// Serializes mounting and configuration invalidation for the same experiment.
-pub(in crate::app) async fn lock_runtime_router_build<A: Game>(
-    state: &ServerContext<A>,
+pub(in crate::app) async fn lock_runtime_router_build(
+    state: &ServerContext,
     experiment_id: &str,
 ) -> tokio::sync::OwnedMutexGuard<()> {
     state.installation.runtime_router_build_locks[mount_lock_slot(experiment_id)]
@@ -28,10 +28,7 @@ pub(in crate::app) async fn lock_runtime_router_build<A: Game>(
 }
 
 /// Removes one mounted runtime after a durable change makes its captured state stale.
-pub(in crate::app) async fn invalidate_runtime_router<A: Game>(
-    state: &ServerContext<A>,
-    experiment_id: &str,
-) {
+pub(in crate::app) async fn invalidate_runtime_router(state: &ServerContext, experiment_id: &str) {
     if let Some(cache) = state.installation.runtime_router_cache.upgrade() {
         if let Some(mounts) = cache.write().await.get_mut(experiment_id) {
             mounts.retire();
@@ -40,7 +37,7 @@ pub(in crate::app) async fn invalidate_runtime_router<A: Game>(
 }
 
 /// Evicts cached inactive runtimes after installation-wide provider settings change.
-pub(in crate::app) async fn invalidate_inactive_runtime_routers<A: Game>(state: &ServerContext<A>) {
+pub(in crate::app) async fn invalidate_inactive_runtime_routers(state: &ServerContext) {
     let Some(cache) = state.installation.runtime_router_cache.upgrade() else {
         return;
     };

@@ -10,12 +10,11 @@ use super::execution::ExecutionCounts;
 use super::spec::{ExperimentFile, TrainingSpec};
 use super::training::{RLTrainingContext, RewardFunction, TrainingBatch, TrainingCapture};
 use super::ExperimentRunner;
-use crate::game::Game;
 use anyhow::{bail, Result};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-impl<G: Game> ExperimentRunner<G> {
+impl ExperimentRunner {
     /// Accumulates learner steps until a checkpoint boundary, then trains or restores
     /// that update. A restored checkpoint skips the learner callback. Validation
     /// uses the resulting policy and its steps never enter the next training batch.
@@ -23,7 +22,7 @@ impl<G: Game> ExperimentRunner<G> {
         &mut self,
         spec: &ExperimentFile,
         training: &TrainingSpec,
-        reward: Arc<dyn RewardFunction<G>>,
+        reward: Arc<dyn RewardFunction>,
         artifacts: &RunArtifacts,
         totals: &mut ExecutionCounts,
     ) -> Result<u64> {

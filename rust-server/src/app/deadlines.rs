@@ -5,7 +5,7 @@
 //! audio or release an ended room once its retained human connections and grace periods
 //! permit eviction.
 
-use super::{Game, LiveSession};
+use super::LiveSession;
 
 /// Work due for one room during a lifecycle sweep.
 pub(super) enum RoomCleanup {
@@ -18,8 +18,8 @@ pub(super) enum RoomCleanup {
 }
 
 /// Determines whether an active room has reached an authoritative deadline.
-pub(super) fn due_live_deadline<A: Game>(
-    session: &LiveSession<A>,
+pub(super) fn due_live_deadline(
+    session: &LiveSession,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<&'static str> {
     let reconnect_deadlines = session
@@ -34,8 +34,8 @@ pub(super) fn due_live_deadline<A: Game>(
 
 /// Keeps terminal rooms for farewell audio, connected browsers, and each human's grace.
 /// A human who never opened a socket starts their retention period at the terminal commit.
-pub(super) fn room_cleanup<A: Game>(
-    session: &LiveSession<A>,
+pub(super) fn room_cleanup(
+    session: &LiveSession,
     now: chrono::DateTime<chrono::Utc>,
     grace: chrono::Duration,
 ) -> Option<RoomCleanup> {

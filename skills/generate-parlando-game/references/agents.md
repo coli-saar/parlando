@@ -4,18 +4,18 @@ Agents control A or B with the same observations, actions, and rules as humans. 
 
 ## Rust
 
-Implement `parlando::agent::Agent<G>` and `Factory<G>`. `Factory::definition` supplies dashboard metadata. `create(Context { role, seed, settings })` is async and constructs one session-local agent before game delivery. Every factory must implement `identity(settings)` with a non-empty semantic name and stable implementation version; configuration choices belong in settings and the configuration fingerprint.
+Implement `parlando::agent::Agent` and `Factory`. `Factory::definition` supplies dashboard metadata. `create(Context { role, seed, settings })` is async and constructs one session-local agent before game delivery. Every factory must implement `identity(settings)` with a non-empty semantic name and stable implementation version; configuration choices belong in settings and the configuration fingerprint.
 
 Implement callbacks as needed:
 
 ```rust
-async fn start(&mut self, initial_observation: Observation) -> Result<()>;
-async fn observe_transition(&mut self, actor: PlayerRole, action: Action,
-                            observation: Observation) -> Result<()>;
+async fn start(&mut self, initial_observation: ComponentValue) -> Result<()>;
+async fn observe_transition(&mut self, actor: PlayerRole, action: ComponentValue,
+                            observation: ComponentValue) -> Result<()>;
 async fn observe_message(&mut self, sender: PlayerRole, text: String) -> Result<()>;
-async fn finish(&mut self, completion: Completion) -> Result<()>;
-async fn respond(&mut self, available_actions: Option<Vec<Action>>)
-    -> Result<Option<Response<Action>>>;
+async fn finish(&mut self, completion: ComponentValue) -> Result<()>;
+async fn respond(&mut self)
+    -> Result<Option<Response>>;
 async fn shutdown(&mut self) -> Result<()>;
 ```
 
@@ -42,8 +42,8 @@ class MyAgent(Agent):
         self.completion = completion
 
     async def respond(self, available_actions):
-        if available_actions:
-            return Response.action(available_actions[0])
+        if self.observation.get("choices"):
+            return Response.action(self.observation["choices"][0])
         return None
 
 def create_agent(context: Context) -> Agent:

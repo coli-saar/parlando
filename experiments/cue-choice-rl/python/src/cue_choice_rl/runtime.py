@@ -113,10 +113,11 @@ class LearnerRuntime:
 
 
 def canonical_prompt(observation: dict[str, Any]) -> str:
-    """Encodes a role-safe observation in a stable, game-specific text format."""
+    """Encodes the cue and phase while action selection uses the separate legal set."""
+    features = {key: value for key, value in observation.items() if key != "available_actions"}
     return (
         "Choose the correct cue-choice action. Observation: "
-        + json.dumps(observation, sort_keys=True, separators=(",", ":"))
+        + json.dumps(features, sort_keys=True, separators=(",", ":"))
     )
 
 

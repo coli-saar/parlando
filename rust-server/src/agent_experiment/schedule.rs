@@ -5,12 +5,12 @@
 //! session when neither role will act.
 
 use crate::agents::AgentResponse;
-use crate::game::{ActionRejection, Game, PlayerRole};
+use crate::game::{ActionRejection, PlayerRole};
 use anyhow::{bail, Result};
 use serde_json::Value;
 
 /// Chooses which software agent receives each headless decision opportunity.
-pub trait AgentSchedule<G: Game>: Send {
+pub trait AgentSchedule: Send {
     /// Returns the role selected for the first call to `respond`.
     fn first(&mut self) -> PlayerRole;
 
@@ -18,7 +18,7 @@ pub trait AgentSchedule<G: Game>: Send {
     fn next(
         &mut self,
         previous: PlayerRole,
-        response: Option<&AgentResponse<G::Action>>,
+        response: Option<&AgentResponse>,
         rejection: Option<&ActionRejection>,
     ) -> Option<PlayerRole>;
 }
@@ -39,7 +39,7 @@ impl AlternateEveryResponse {
     }
 }
 
-impl<G: Game> AgentSchedule<G> for AlternateEveryResponse {
+impl AgentSchedule for AlternateEveryResponse {
     /// Returns the configured first role.
     fn first(&mut self) -> PlayerRole {
         self.first
@@ -49,7 +49,7 @@ impl<G: Game> AgentSchedule<G> for AlternateEveryResponse {
     fn next(
         &mut self,
         previous: PlayerRole,
-        response: Option<&AgentResponse<G::Action>>,
+        response: Option<&AgentResponse>,
         _rejection: Option<&ActionRejection>,
     ) -> Option<PlayerRole> {
         if response.is_none() {
@@ -80,7 +80,7 @@ impl AlternateAfterAction {
     }
 }
 
-impl<G: Game> AgentSchedule<G> for AlternateAfterAction {
+impl AgentSchedule for AlternateAfterAction {
     /// Returns the configured first role.
     fn first(&mut self) -> PlayerRole {
         self.first
@@ -90,7 +90,7 @@ impl<G: Game> AgentSchedule<G> for AlternateAfterAction {
     fn next(
         &mut self,
         previous: PlayerRole,
-        response: Option<&AgentResponse<G::Action>>,
+        response: Option<&AgentResponse>,
         rejection: Option<&ActionRejection>,
     ) -> Option<PlayerRole> {
         match response {

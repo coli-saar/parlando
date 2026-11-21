@@ -142,7 +142,7 @@ async fn generated_and_recognized_speech_keep_audio_clock_timings_end_to_end() {
         None,
     )]]));
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         config,
         ServeOptions {
             agent_factory: Some(factory),

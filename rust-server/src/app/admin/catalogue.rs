@@ -1,6 +1,6 @@
 //! Manages the dashboard catalogue of experiment definitions. Listing combines stored
 //! revisions with game and provider readiness information. Creation and cloning produce
-//! inactive experiments for the compiled game version. Activation belongs to the mounted
+//! inactive experiments for the loaded game version. Activation belongs to the mounted
 //! experiment.
 
 use crate::app::{
@@ -9,8 +9,8 @@ use crate::app::{
     hydrated_experiment_config, invalidate_runtime_router, json, local_testing_issues_for_config,
     lock_runtime_router_build, parse_game_config, persistable_config_json,
     prolific_local_activation_issues, prolific_setup_url, validate_agent_configuration,
-    AdminSession, AppError, Arc, Deserialize, ExperimentRecord, Extension, Game, Json, Path,
-    Result, ServerContext, State, StatusCode, Value, Weak,
+    AdminSession, AppError, Arc, Deserialize, ExperimentRecord, Extension, Json, Path, Result,
+    ServerContext, State, StatusCode, Value, Weak,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -34,9 +34,9 @@ pub(in crate::app) struct AdminCatalogueRequest {
     notes: Option<String>,
 }
 
-/// Returns the catalogue of experiments owned by this compiled game process.
-pub(in crate::app) async fn admin_experiments<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+/// Returns the catalogue of experiments owned by this game installation.
+pub(in crate::app) async fn admin_experiments(
+    State(state): State<Arc<ServerContext>>,
     Extension(admin_session): Extension<AdminSession>,
 ) -> Result<Json<Value>, AppError> {
     let experiments = state.installation.store.list_experiments(1_000).await?;
@@ -126,8 +126,8 @@ struct ExperimentCatalogueReadiness {
 }
 
 /// Assesses structural validity and intake readiness without constructing a runtime router.
-async fn experiment_catalogue_readiness<A: Game>(
-    state: &ServerContext<A>,
+async fn experiment_catalogue_readiness(
+    state: &ServerContext,
     experiment_id: &str,
     game_version: &str,
 ) -> ExperimentCatalogueReadiness {
@@ -150,7 +150,7 @@ async fn experiment_catalogue_readiness<A: Game>(
             prolific_issues: Vec::new(),
         };
     }
-    if let Err(error) = parse_game_config(state.installation.game_factory.as_ref(), &config.game) {
+    if let Err(error) = parse_game_config(&state.installation.loaded_game, &config.game) {
         return ExperimentCatalogueReadiness {
             configuration_valid: false,
             configuration_error: Some(error.to_string()),
@@ -193,9 +193,9 @@ async fn experiment_catalogue_readiness<A: Game>(
     }
 }
 
-/// Creates one inactive experiment for the exact game version compiled into this process.
-pub(in crate::app) async fn admin_create_experiment<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+/// Creates one inactive experiment for the exact installed game version.
+pub(in crate::app) async fn admin_create_experiment(
+    State(state): State<Arc<ServerContext>>,
     Json(request): Json<AdminCreateExperimentRequest>,
 ) -> Result<Json<Value>, AppError> {
     validate_new_experiment_id(&request.experiment_id)?;
@@ -240,8 +240,8 @@ pub(in crate::app) async fn admin_create_experiment<A: Game>(
 }
 
 /// Clones a historical configuration into a new current-version inactive experiment.
-pub(in crate::app) async fn admin_clone_experiment<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(in crate::app) async fn admin_clone_experiment(
+    State(state): State<Arc<ServerContext>>,
     Path(source_experiment_id): Path<String>,
     Json(request): Json<AdminCloneExperimentRequest>,
 ) -> Result<Json<Value>, AppError> {
@@ -287,8 +287,8 @@ pub(in crate::app) async fn admin_clone_experiment<A: Game>(
 }
 
 /// Updates pinning, obsolescence, and notes without changing runtime configuration.
-pub(in crate::app) async fn admin_update_experiment_catalogue<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(in crate::app) async fn admin_update_experiment_catalogue(
+    State(state): State<Arc<ServerContext>>,
     Path(experiment_id): Path<String>,
     Json(request): Json<AdminCatalogueRequest>,
 ) -> Result<Json<Value>, AppError> {
@@ -302,8 +302,8 @@ pub(in crate::app) async fn admin_update_experiment_catalogue<A: Game>(
 }
 
 /// Archives catalogue state without constructing the selected experiment's runtime.
-pub(in crate::app) async fn admin_archive_experiment<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(in crate::app) async fn admin_archive_experiment(
+    State(state): State<Arc<ServerContext>>,
     Path(experiment_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let runtime_guard = lock_runtime_router_build(&state, &experiment_id).await;

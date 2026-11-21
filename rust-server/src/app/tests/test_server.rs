@@ -50,10 +50,10 @@ pub(super) struct AdminTestSession {
 }
 
 /// Builds an active test router so unrelated protocol tests retain their narrow setup.
-pub(super) async fn build_router<G: Game, F: crate::GameFactory<Game = G>>(
-    adapter: F,
+pub(super) async fn build_router(
+    adapter: LoadedGame,
     config: ExperimentConfig,
-    options: ServeOptions<G>,
+    options: ServeOptions,
 ) -> Result<TestRouter> {
     let router = crate::app::build_router(adapter, config, options)
         .await

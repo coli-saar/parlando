@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-use parlando::{agent::grpc::RemoteAgent, ExperimentRunner, GameMetadata};
-use parlando_cue_choice_rl::{CorrectnessReward, CueChoiceFactory, DealerAgentFactory};
+use parlando::{agent::grpc::RemoteAgent, component::LoadedGame, ExperimentRunner, GameMetadata};
+use parlando_cue_choice_rl::{CorrectnessReward, DealerAgentFactory};
 
 /// Command-line input for one cue-choice headless experiment.
 #[derive(Debug, Parser)]
@@ -11,6 +11,9 @@ use parlando_cue_choice_rl::{CorrectnessReward, CueChoiceFactory, DealerAgentFac
 struct Cli {
     /// Versioned Parlando agent-experiment YAML file.
     experiment: PathBuf,
+    /// Built Cue Choice WebAssembly component.
+    #[arg(long)]
+    component: PathBuf,
 }
 
 /// Registers the compiled game, dealer, reward, and Python learner before execution.
@@ -26,7 +29,7 @@ async fn main() -> Result<()> {
             "version": env!("CARGO_PKG_VERSION"),
         }),
     };
-    let summary = ExperimentRunner::new(metadata, CueChoiceFactory)?
+    let summary = ExperimentRunner::new(metadata, LoadedGame::load(&cli.component)?)?
         .agent(DealerAgentFactory)?
         .rl_agent(RemoteAgent::new())?
         .reward(CorrectnessReward)?

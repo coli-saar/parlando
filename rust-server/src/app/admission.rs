@@ -13,7 +13,7 @@ use super::{
     experiment_occupancy, json, participant_state_response, persist_session_event,
     refresh_prolific_progress, require_consent, require_open_experiment, session_transition_lock,
     speechmatics_readiness_required, AgentsMode, AppError, AppState, Arc, CreateSessionRequest,
-    CreateSessionResponse, Extension, Game, HashSet, Json, LiveSession, MemoryState,
+    CreateSessionResponse, Extension, HashSet, Json, LiveSession, MemoryState,
     ParticipantPrincipal, PlayerRole, Result, SessionLifecycle, SessionParticipant, State,
     StatusCode,
 };
@@ -37,8 +37,8 @@ impl AdmissionQueue {
 }
 
 /// Reuses or admits a participant using the experiment's matchmaking policy.
-pub(super) async fn create_session<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(super) async fn create_session(
+    State(state): State<Arc<AppState>>,
     principal: Option<Extension<ParticipantPrincipal>>,
     Json(_request): Json<CreateSessionRequest>,
 ) -> Result<Json<CreateSessionResponse>, AppError> {
@@ -49,8 +49,8 @@ pub(super) async fn create_session<A: Game>(
 }
 
 /// Completes admission independently of the lifetime of the requesting HTTP connection.
-async fn admit_session<A: Game>(
-    state: Arc<AppState<A>>,
+async fn admit_session(
+    state: Arc<AppState>,
     participant_session_id: String,
 ) -> Result<Json<CreateSessionResponse>, AppError> {
     if let Some(snapshot) = existing_assignment(&state, &participant_session_id).await? {
@@ -162,9 +162,7 @@ async fn admit_session<A: Game>(
 }
 
 /// Pauses only new session admission before SQLite exhausts its filesystem.
-async fn require_session_storage_reserve<A: Game>(
-    state: &Arc<AppState<A>>,
-) -> Result<(), AppError> {
+async fn require_session_storage_reserve(state: &Arc<AppState>) -> Result<(), AppError> {
     let Some(capacity) = state.context.installation.store.storage_capacity().await? else {
         return Ok(());
     };
@@ -193,8 +191,8 @@ enum SessionAdmission {
 }
 
 /// Reserves session and ASR capacity before any durable session is created.
-async fn ensure_session_capacity<G: Game>(
-    state: &Arc<AppState<G>>,
+async fn ensure_session_capacity(
+    state: &Arc<AppState>,
     admission: SessionAdmission,
     transcription_streams_to_add: usize,
 ) -> Result<(), AppError> {
@@ -228,8 +226,8 @@ async fn ensure_session_capacity<G: Game>(
 }
 
 /// Finds an existing human-human waiting session that can accept one more human.
-fn open_human_session_for_pairing<G: Game>(
-    memory: &MemoryState<G>,
+fn open_human_session_for_pairing(
+    memory: &MemoryState,
     mode: &str,
     purpose: &str,
 ) -> Option<String> {
@@ -251,9 +249,9 @@ fn open_human_session_for_pairing<G: Game>(
 
 /// Commits the second human seat while the admission guard reserves capacity and the
 /// session guard excludes concurrent expiry, leave, and activation.
-async fn join_existing_room<A: Game>(
+async fn join_existing_room(
     _reservation: &AdmissionReservation,
-    state: &Arc<AppState<A>>,
+    state: &Arc<AppState>,
     public_session_id: &str,
     participant_session_id: &str,
 ) -> Result<PlayerRole, AppError> {
@@ -305,7 +303,7 @@ async fn join_existing_room<A: Game>(
 }
 
 /// Finds the first unassigned role in a two-player session.
-fn next_role<G: Game>(session: &LiveSession<G>) -> Option<PlayerRole> {
+fn next_role(session: &LiveSession) -> Option<PlayerRole> {
     let roles = session
         .participants
         .values()

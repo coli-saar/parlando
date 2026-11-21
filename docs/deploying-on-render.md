@@ -1,14 +1,13 @@
 # Deploy a Parlando Game on Render
 
 A Parlando game can run on Render as one Docker web service with one persistent
-disk. The web service runs the game server and serves the compiled participant
+disk. The web service runs the shared host with a WebAssembly game and serves the compiled participant
 client from the same origin. The disk stores the SQLite catalogue, experiment
 configuration, administrator credential, and session data across deploys.
 
 The Space Game provides a complete example:
 
-- [`space-game/Dockerfile`](../space-game/Dockerfile) builds the Rust server and
-  browser client into one production image; and
+- [`space-game/Dockerfile`](../space-game/Dockerfile) builds the WebAssembly component, host with the authored agent, and browser client into one image.
 - [`space-game/render.yaml`](../space-game/render.yaml) defines the Render web
   service, health check, persistent disk, and non-secret environment variables.
 
@@ -19,7 +18,7 @@ Blueprint describes the Render resources that keep it available and persistent.
 
 You need a Git repository that Render can access and a game that builds from the
 repository root. The Space Game Docker build uses files from `rust-server`,
-`js-client`, and `space-game`, so its Docker context must be the repository root.
+`parlando-game-sdk`, and `space-game`, so its Docker context must be the repository root.
 
 Use one Render instance. Parlando currently owns live rooms, credentials, and
 audio tickets in process memory. Multiple instances require a shared state layer
@@ -80,7 +79,7 @@ services:
     healthCheckPath: /health
     envVars:
       - key: PARLANDO_DATABASE_URL
-        value: sqlite:////data/parlando.sqlite
+        value: sqlite:////data/space-game-component.sqlite
       - key: PARLANDO_CLIENT_DIST
         value: /app/client-dist
     disk:
@@ -92,7 +91,7 @@ services:
 `dockerContext: .` is necessary because the Dockerfile copies the shared
 Parlando crates and packages as well as the Space Game. `mountPath: /data` and
 the database URL refer to the same directory; four slashes after `sqlite:`
-denote the absolute path `/data/parlando.sqlite`. The client path names the
+denote the absolute path `/data/space-game-component.sqlite`. The client path names the
 compiled browser assets copied into the runtime image.
 
 Render supplies `PORT`; the Docker image defaults to port 8000 when the variable
@@ -106,23 +105,17 @@ also establishes that the mounted database is present and writable.
 
 ## Adapt the example to another game
 
-Copy the two Space Game files into the new game's directory, then change only
-the game-specific build inputs:
+Use the Space Game files as a template for a separate service. Compile your game
+for `wasm32-unknown-unknown` and wrap the resulting module with
+`wasm-tools component new`. Copy the component and its browser bundle into the
+runtime image. Use the shared `parlando serve` command with the built manifest
+to load the package. The Space Game uses an agent-enabled launcher to register
+its **Back and forth** agent with that same host.
 
-1. In the Dockerfile, replace `space-game/server`, `space-game/client`, and the
-   final binary name with the corresponding paths and binary for the new game.
-2. In the Blueprint, change the service name and `dockerfilePath`.
-3. Keep the repository-root Docker context if the game consumes this monorepo's
-   shared Rust crate or JavaScript client.
-4. Keep the `/data` disk and absolute SQLite URL unless you deliberately choose
-   another persistent mount.
-5. Keep one service instance unless the deployment supplies sticky routing and
-   shared authentication and room state.
-
-Do not add an experiment YAML file or a `--config` argument. Process bootstrap
-contains only listener, database, client-path, logging, and provider-secret
-settings. Create and revise experiments through `/admin`; each successful edit
-becomes an immutable configuration revision in SQLite.
+Change the Blueprint service name and Dockerfile path. Keep the repository-root
+Docker context when the image needs the shared SDK or host source. Use a
+database URL inside the persistent mount, then create experiments through
+`/admin`.
 
 ## Deploy without a persistent disk
 
@@ -181,13 +174,13 @@ For production, also:
 
 ## Diagnose common failures
 
-**The Docker build cannot find `rust-server` or `js-client`.** The build context
+**The Docker build cannot find `rust-server` or `parlando-game-sdk`.** The build context
 is probably the game subdirectory. Set `dockerContext: .` and keep
 `dockerfilePath` relative to the repository root.
 
 **The health check never passes.** Confirm that the disk is mounted at `/data`,
 that `PARLANDO_DATABASE_URL` is exactly
-`sqlite:////data/parlando.sqlite`, and that the process log shows a listener on
+`sqlite:////data/space-game-component.sqlite`, and that the process log shows a listener on
 Render's `PORT`.
 
 **Experiments or the administrator disappear after a deploy.** The database was

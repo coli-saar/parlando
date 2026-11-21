@@ -10,9 +10,7 @@ dashboard, and structured export. Crown controls sunlight in the branches, while
 water below ground. The players must discover how their controls interact and make three flowers
 bloom.
 
-Parlando is a library rather than a standalone server that can run without a game. A real deployment
-always combines the Parlando packages with a particular game's Rust server and browser application.
-The repository contains that complete combination for The Great Tree.
+The Great Tree package supplies Wasm mechanics and a browser application. The example launcher loads the package in the Rust host and registers Great Tree’s bundled agents.
 
 ## Install the development tools
 
@@ -26,6 +24,8 @@ You need:
 On macOS or Linux, verify the tools with:
 
 ```sh
+rustup target add wasm32-unknown-unknown
+cargo install --locked wasm-tools
 rustc --version
 cargo --version
 node --version
@@ -48,12 +48,7 @@ Run The Great Tree against the published Parlando 0.6.0 packages:
 games/great-tree/run.sh
 ```
 
-The first run installs JavaScript dependencies and compiles the browser application and Rust
-server. Compilation may take several minutes. Leave the process running while you use the game.
-
-If you are developing Parlando itself, use `games/great-tree/run.sh --local` instead. That command
-temporarily uses the sibling `rust-server` and `js-client` checkouts without changing Great Tree's
-published dependency declarations. Most game authors should omit `--local`.
+The first run installs JavaScript dependencies and compiles the browser, Wasm game and Rust host. Leave the process running while you use the game. To serve the same package using the standard host, run `games/great-tree/run.sh --without-bundled-agents`.
 
 ## Create the administrator
 

@@ -6,9 +6,7 @@
 //! at the action limit yields completion.
 
 use super::planning::SessionPlan;
-use super::results::{
-    DecisionInput, DecisionTrace, SessionResult, SessionStatus, TraceInput, TraceResponse,
-};
+use super::results::{DecisionTrace, SessionResult, SessionStatus, TraceInput, TraceResponse};
 use super::session::{
     callback_failure, callback_timeout_failure, deliver_message, finish_agents, limit_outcome,
     role_index, SessionFailure, SessionOutcome,
@@ -16,7 +14,8 @@ use super::session::{
 use super::spec::TraceLevel;
 use super::training::TrajectoryStep;
 use crate::agents::{Agent, AgentResponse};
-use crate::game::{ActionRejection, Game, PlayerRole};
+use crate::component::{ComponentValue, GameFrame, GameSession};
+use crate::game::{ActionRejection, PlayerRole};
 use anyhow::anyhow;
 use std::time::Instant;
 use tokio::time::timeout;
@@ -25,15 +24,15 @@ use tokio::time::timeout;
 /// per decision. Completion on the last permitted move wins over the action limit.
 /// Reaching a limit records its own terminal status. Two yields under the default
 /// alternating schedule end the run as quiescent, without a game completion.
-pub(super) async fn drive_session<G: Game>(
-    game: &G,
-    mut state: G::State,
-    agents: &mut [Box<dyn Agent<G> + Send>; 2],
-    plan: &SessionPlan<G>,
-    result: &mut SessionResult<G::Completion, G::Observation, G::Action>,
-) -> std::result::Result<SessionOutcome<G::Completion>, SessionFailure> {
+pub(super) async fn drive_session(
+    game: &GameSession,
+    mut state: GameFrame,
+    agents: &mut [Box<dyn Agent + Send>; 2],
+    plan: &SessionPlan,
+    result: &mut SessionResult,
+) -> std::result::Result<SessionOutcome, SessionFailure> {
     for role in [PlayerRole::A, PlayerRole::B] {
-        let observation = game.observation(&state, role);
+        let observation = state.observation(role);
         timeout(
             plan.limits.callback_timeout(),
             agents[role_index(role)].start(observation),
@@ -43,7 +42,7 @@ pub(super) async fn drive_session<G: Game>(
         .map_err(|error| callback_failure("start", role, error))?;
     }
 
-    if let Some(completion) = game.completion(&state) {
+    if let Some(completion) = state.completion() {
         finish_agents(agents, &completion, plan.limits.callback_timeout()).await?;
         return Ok(SessionOutcome {
             status: SessionStatus::Completed,
@@ -70,16 +69,12 @@ pub(super) async fn drive_session<G: Game>(
             return Ok(limit_outcome(SessionStatus::DecisionLimit));
         }
         result.decisions += 1;
-        let affordances = game.available_actions(&state, role);
         let capture_training = plan
             .training_capture
             .as_ref()
             .is_some_and(|capture| capture.learner == plan.seats[role_index(role)].name);
         let full_trace = plan.trace == TraceLevel::Full;
-        let input = (capture_training || full_trace).then(|| DecisionInput {
-            observation: game.observation(&state, role),
-            available_actions: affordances.clone(),
-        });
+        let input = (capture_training || full_trace).then(|| state.observation(role));
         let (learner_input, trace_input) = if capture_training {
             let index = result.captures.trajectory.len();
             (input, full_trace.then_some(TraceInput::Trajectory(index)))
@@ -88,7 +83,7 @@ pub(super) async fn drive_session<G: Game>(
         };
         let response = timeout(
             plan.limits.callback_timeout(),
-            agents[role_index(role)].respond(affordances),
+            agents[role_index(role)].respond(),
         )
         .await
         .map_err(|_| callback_timeout_failure("respond", role))?
@@ -133,7 +128,7 @@ pub(super) async fn drive_session<G: Game>(
                 result.messages += 1;
             }
         }
-        record_trace::<G>(
+        record_trace(
             result,
             role,
             response.as_ref(),
@@ -165,29 +160,29 @@ pub(super) async fn drive_session<G: Game>(
 }
 
 /// Result of applying one syntactically valid agent action.
-enum ActionAttempt<C> {
-    Accepted(Option<C>),
+enum ActionAttempt {
+    Accepted(Option<ComponentValue>),
     Rejected(ActionRejection),
 }
 
 /// Private context shared by one decision's runner operations.
-struct DecisionExecution<'a, G: Game> {
-    game: &'a G,
-    agents: &'a mut [Box<dyn Agent<G> + Send>; 2],
-    plan: &'a SessionPlan<G>,
-    result: &'a mut SessionResult<G::Completion, G::Observation, G::Action>,
+struct DecisionExecution<'a> {
+    game: &'a GameSession,
+    agents: &'a mut [Box<dyn Agent + Send>; 2],
+    plan: &'a SessionPlan,
+    result: &'a mut SessionResult,
 }
 
-impl<G: Game> DecisionExecution<'_, G> {
+impl DecisionExecution<'_> {
     /// Attempts one game step and delivers its accepted transition and optional message.
     async fn attempt_action(
         &mut self,
-        state: &mut G::State,
+        state: &mut GameFrame,
         actor: PlayerRole,
-        action: &G::Action,
+        action: &ComponentValue,
         message: Option<&str>,
-        learner_input: Option<DecisionInput<G::Observation, G::Action>>,
-    ) -> std::result::Result<ActionAttempt<G::Completion>, SessionFailure> {
+        learner_input: Option<ComponentValue>,
+    ) -> std::result::Result<ActionAttempt, SessionFailure> {
         let next = match self
             .game
             .step(state, action, actor)
@@ -211,7 +206,7 @@ impl<G: Game> DecisionExecution<'_, G> {
         };
         self.result.accepted_actions += 1;
         for role in [PlayerRole::A, PlayerRole::B] {
-            let observation = self.game.observation(&next, role);
+            let observation = next.observation(role);
             timeout(
                 self.plan.limits.callback_timeout(),
                 self.agents[role_index(role)].observe_transition(
@@ -224,7 +219,7 @@ impl<G: Game> DecisionExecution<'_, G> {
             .map_err(|_| callback_timeout_failure("observe_transition", role))?
             .map_err(|error| callback_failure("observe_transition", role, error))?;
         }
-        let completion = self.game.completion(&next);
+        let completion = next.completion();
         self.record_trajectory(
             &next,
             actor,
@@ -253,25 +248,26 @@ impl<G: Game> DecisionExecution<'_, G> {
 }
 
 /// Accepted or rejected transition data needed by trajectory capture.
-enum TrajectoryOutcome<'a, G: Game> {
+enum TrajectoryOutcome<'a> {
     Accepted {
-        before: &'a G::State,
-        completion: Option<&'a G::Completion>,
+        before: &'a GameFrame,
+        completion: Option<&'a ComponentValue>,
     },
     Rejected(ActionRejection),
 }
 
-impl<G: Game> DecisionExecution<'_, G> {
+impl DecisionExecution<'_> {
     /// Records one learner transition using only role-safe observations and numeric rewards.
     fn record_trajectory(
         &mut self,
-        next_state: &G::State,
+        next_state: &GameFrame,
         actor: PlayerRole,
-        action: &G::Action,
-        learner_input: Option<DecisionInput<G::Observation, G::Action>>,
-        outcome: TrajectoryOutcome<'_, G>,
+        action: &ComponentValue,
+        learner_input: Option<ComponentValue>,
+        outcome: TrajectoryOutcome<'_>,
     ) {
-        let (Some(input), Some(capture)) = (learner_input, self.plan.training_capture.as_ref())
+        let (Some(observation), Some(capture)) =
+            (learner_input, self.plan.training_capture.as_ref())
         else {
             return;
         };
@@ -298,25 +294,25 @@ impl<G: Game> DecisionExecution<'_, G> {
             checkpoint: capture.checkpoint.clone(),
             reward: capture.reward_kind.clone(),
             reward_version: capture.reward_version.clone(),
-            observation: input.observation,
-            available_actions: input.available_actions,
+            observation,
+            available_actions: None,
             action: action.clone(),
             accepted,
             rejection,
             rewards,
-            next_observation: self.game.observation(next_state, actor),
+            next_observation: next_state.observation(actor),
             terminal: completion.is_some(),
         });
     }
 }
 
 /// Adds one structured response entry when tracing is enabled.
-fn record_trace<G: Game>(
-    result: &mut SessionResult<G::Completion, G::Observation, G::Action>,
+fn record_trace(
+    result: &mut SessionResult,
     role: PlayerRole,
-    response: Option<&AgentResponse<G::Action>>,
+    response: Option<&AgentResponse>,
     rejection: Option<&ActionRejection>,
-    input: Option<TraceInput<G::Observation, G::Action>>,
+    input: Option<TraceInput>,
 ) {
     let Some(trace) = result.captures.trace.as_mut() else {
         return;

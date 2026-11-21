@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: parlando-host
+    runtime: docker
+    plan: starter
+    numInstances: 1
+    dockerfilePath: ./deploy/component-host/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    disk:
+      name: parlando-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: PARLANDO_HOST_ADMIN_TOKEN
+        generateValue: true
+      - key: PARLANDO_DEPLOY_GAME
+        sync: false
+      - key: PARLANDO_DEPLOY_TOKEN
+        generateValue: true

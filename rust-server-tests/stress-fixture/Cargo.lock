@@ -110,8 +110,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "parlando-component-derive"
-version = "0.1.0"
+name = "parlando-game-derive"
+version = "0.6.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -119,22 +119,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "parlando-component-sdk"
-version = "0.1.0"
+name = "parlando-game-sdk"
+version = "0.6.0"
 dependencies = [
  "anyhow",
- "parlando-component-derive",
+ "parlando-game-derive",
  "rmp",
  "rmp-serde",
  "serde",
  "serde_json",
+ "wit-bindgen",
 ]
 
 [[package]]
 name = "parlando-stress-fixture"
 version = "0.0.0"
 dependencies = [
- "parlando-component-sdk",
+ "parlando-game-sdk",
  "serde",
  "serde_json",
  "wit-bindgen",

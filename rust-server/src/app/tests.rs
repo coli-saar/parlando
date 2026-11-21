@@ -8,7 +8,7 @@ use futures_util::{SinkExt as _, StreamExt as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::VecDeque,
     fs,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -25,9 +25,7 @@ use crate::config::{
     AgentsConfig, AgentsMode, ConsentItemConfig, DatabaseConfig, DirectConfig,
     ExperimentIdentityConfig,
 };
-use crate::game::{
-    ActionRejection, AgentConfigField, AgentConfigValue, AgentDefinition, PlayerRole, SecretPurpose,
-};
+use crate::game::{AgentConfigField, AgentConfigValue, AgentDefinition, PlayerRole, SecretPurpose};
 
 use super::*;
 

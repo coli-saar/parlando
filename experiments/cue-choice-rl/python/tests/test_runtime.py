@@ -60,8 +60,10 @@ async def test_update_id_rejects_different_payload() -> None:
 
 
 def test_prompt_is_canonical() -> None:
-    """Observation key order cannot change the Qwen input text."""
-    assert canonical_prompt({"b": 2, "a": 1}) == canonical_prompt({"a": 1, "b": 2})
+    """Only model features affect the Qwen input text, in canonical key order."""
+    assert canonical_prompt({"b": 2, "available_actions": [], "a": 1}) == canonical_prompt(
+        {"a": 1, "b": 2}
+    )
 
 
 @pytest.mark.parametrize(

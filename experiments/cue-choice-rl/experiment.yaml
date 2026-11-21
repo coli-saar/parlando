@@ -18,7 +18,7 @@ agents:
         ppo_epochs: 4
         minibatch_size: 32
         save_every_checkpoints: 3
-        checkpoint_directory: experiments/cue-choice-rl/artifacts/checkpoints
+        checkpoint_directory: experiments/cue-choice-rl/artifacts/component-checkpoints
   dealer:
     factory: cue_choice.dealer
 
@@ -84,5 +84,5 @@ execution:
   fail_fast: false
 
 output:
-  directory: experiments/cue-choice-rl/artifacts/qwen-uniform-run
+  directory: experiments/cue-choice-rl/artifacts/qwen-component-run
   trace: decisions

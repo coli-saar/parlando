@@ -42,12 +42,14 @@ class CueChoiceAgent(Agent):
         self, available_actions: list[dict[str, Any]] | None
     ) -> Response | None:
         """Returns one legal action when the runner activates this agent."""
-        if available_actions is None or not available_actions:
+        del available_actions
+        legal_actions = self._observation.get("available_actions")
+        if not legal_actions:
             return None
         action = await self._runtime.choose(
             self._checkpoint,
             self._observation,
-            available_actions,
+            legal_actions,
             self._seed,
             self._temperature,
         )

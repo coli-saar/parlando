@@ -9,13 +9,13 @@ use super::*;
 use tower::ServiceExt;
 
 /// A mounted experiment has one intake owner and may have previous owners draining existing rooms.
-pub(in crate::app) struct ExperimentMounts<A: Game> {
-    current: Option<Arc<BuiltRouters<A>>>,
-    draining: HashMap<u64, Arc<BuiltRouters<A>>>,
+pub(in crate::app) struct ExperimentMounts {
+    current: Option<Arc<BuiltRouters>>,
+    draining: HashMap<u64, Arc<BuiltRouters>>,
     identity: MountIdentity,
 }
 
-impl<A: Game> ExperimentMounts<A> {
+impl ExperimentMounts {
     /// Closes admission on the previous owner while retaining its room and participant services.
     pub(in crate::app) fn retire(&mut self) {
         if let Some(owner) = self.current.take() {
@@ -28,7 +28,7 @@ impl<A: Game> ExperimentMounts<A> {
     }
 
     /// Returns owners of existing rooms for repeat Prolific admission.
-    pub(in crate::app) fn draining_states(&self) -> Vec<Arc<AppState<A>>> {
+    pub(in crate::app) fn draining_states(&self) -> Vec<Arc<AppState>> {
         self.draining
             .values()
             .map(|owner| owner.state.clone())
@@ -48,9 +48,9 @@ enum RuntimeSurface {
     Admin,
 }
 
-impl<A: Game> GameHost<A> {
+impl GameHost {
     /// Returns the admission owner for the current configuration, mounting it once if necessary.
-    async fn experiment_router(&self, experiment_id: &str) -> Result<Arc<BuiltRouters<A>>> {
+    async fn experiment_router(&self, experiment_id: &str) -> Result<Arc<BuiltRouters>> {
         if let Some(router) = self
             .routers
             .read()
@@ -106,10 +106,10 @@ impl<A: Game> GameHost<A> {
     /// Keeps assigned rooms on their original owner. Reopened direct intake can adopt a
     /// still-unassigned registration under the current purpose and consent configuration.
     async fn participant_owner(
-        old: &Arc<BuiltRouters<A>>,
-        current: Option<&Arc<BuiltRouters<A>>>,
+        old: &Arc<BuiltRouters>,
+        current: Option<&Arc<BuiltRouters>>,
         participant: &str,
-    ) -> Arc<BuiltRouters<A>> {
+    ) -> Arc<BuiltRouters> {
         let Some(current) = current else {
             return old.clone();
         };
@@ -171,7 +171,7 @@ impl<A: Game> GameHost<A> {
         surface: RuntimeSurface,
         suffix: &str,
         headers: &HeaderMap,
-    ) -> Option<Arc<BuiltRouters<A>>> {
+    ) -> Option<Arc<BuiltRouters>> {
         let (current, participants, draining) = {
             let entries = self.routers.read().await;
             let entry = entries.get(experiment)?;
@@ -240,10 +240,7 @@ impl<A: Game> GameHost<A> {
 }
 
 /// Resolves one experiment namespace from an unmatched host URI without rewriting it.
-pub(super) async fn dispatch_experiment_service<A: Game>(
-    host: Arc<GameHost<A>>,
-    request: Request,
-) -> Response {
+pub(super) async fn dispatch_experiment_service(host: Arc<GameHost>, request: Request) -> Response {
     let path = request.uri().path();
     let (surface, relative_path) = if let Some(path) = path.strip_prefix("/e/") {
         (RuntimeSurface::Participant, path)

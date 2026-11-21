@@ -14,7 +14,7 @@ async fn agent_tts_records_diagnostics_for_agent_messages() {
         calls: AtomicUsize::new(0),
     });
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(factory),
@@ -117,7 +117,7 @@ async fn agent_tts_continues_after_provider_failure() {
         fail_first: true,
     });
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(factory),

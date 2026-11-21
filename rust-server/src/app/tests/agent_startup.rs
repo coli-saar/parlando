@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn human_vs_agent_direct_room_eventually_supplies_agent_role_b() {
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(Arc::new(NoopAgentFactory)),
@@ -64,7 +64,7 @@ async fn human_enters_waiting_room_before_agent_construction_finishes() {
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(Arc::new(GatedAgentFactory {
@@ -97,7 +97,7 @@ async fn human_enters_waiting_room_before_agent_construction_finishes() {
 #[tokio::test]
 async fn failed_agent_construction_ends_the_waiting_session_as_technical_failure() {
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(Arc::new(FailingAgentFactory)),
@@ -148,7 +148,7 @@ async fn agent_readiness_activation_waits_for_start_and_delivers_first_input() {
     let release = Arc::new(Notify::new());
     let (events, mut callbacks) = mpsc::unbounded_channel();
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(Arc::new(ReadinessAgentFactory {
@@ -247,7 +247,7 @@ async fn failed_agent_start_ends_the_session_and_shuts_the_agent_down() {
     let shutdowns = Arc::new(AtomicUsize::new(0));
     let stopped = Arc::new(Notify::new());
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(Arc::new(StartFailingAgentFactory {
@@ -287,16 +287,11 @@ async fn failed_agent_start_ends_the_session_and_shuts_the_agent_down() {
 
 #[tokio::test]
 async fn agent_construction_runs_after_the_human_waiting_session_exists() {
-    let events = Arc::new(Mutex::new(Vec::new()));
     let router = build_router(
-        LifecycleOrderGameFactory {
-            events: events.clone(),
-        },
+        live_game(),
         human_vs_agent_config(),
         ServeOptions {
-            agent_factory: Some(Arc::new(LifecycleOrderFactory {
-                events: events.clone(),
-            })),
+            agent_factory: Some(Arc::new(LifecycleOrderFactory)),
             ..ServeOptions::default()
         },
     )
@@ -315,7 +310,7 @@ async fn agent_construction_runs_after_the_human_waiting_session_exists() {
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    let mut logs = Vec::new();
+    let mut events = Vec::new();
     for _ in 0..20 {
         let (export_status, export) = admin_json_request(
             router.clone(),
@@ -325,47 +320,31 @@ async fn agent_construction_runs_after_the_human_waiting_session_exists() {
         )
         .await;
         assert_eq!(export_status, StatusCode::OK);
-        logs = export["session_events"]
+        events = export["session_events"]
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|event| event["event_type"] == "log")
             .cloned()
             .collect();
-        if logs.len() == 2 {
+        if events.iter().any(|event| event["event_type"] == "log") {
             break;
         }
         tokio::task::yield_now().await;
     }
-    let game_log = logs
+    let created = events
         .iter()
-        .find(|event| event["payload"]["source"] == "game")
-        .expect("game log was persisted");
-    assert_eq!(game_log["payload"]["source"], "game");
-    assert_eq!(
-        game_log["payload"]["text"],
-        "initial state constructed by game code"
-    );
-    let agent_log = logs
+        .find(|event| event["event_type"] == "session_created")
+        .expect("stored initial frame");
+    let agent_log = events
         .iter()
-        .find(|event| event["payload"]["source"] == "agent")
+        .find(|event| event["event_type"] == "log" && event["payload"]["source"] == "agent")
         .expect("agent constructor log was persisted");
+    assert!(created["event_index"].as_i64().unwrap() < agent_log["event_index"].as_i64().unwrap());
     assert_eq!(agent_log["actor_role"], "B");
     assert!(agent_log["actor_participant_id"].as_i64().is_some());
     assert_eq!(agent_log["payload"]["text"], "agent constructor log");
-    assert_eq!(
-        events.lock().unwrap().as_slice(),
-        &["initial_state", "agent_created"]
-    );
-    // Guarantee both setup records predate gameplay at the database clock's millisecond resolution.
-    let last_setup_ms = logs
-        .iter()
-        .map(|row| row["game_time_ms"].as_i64().unwrap())
-        .max()
-        .unwrap();
-    while chrono::Utc::now().timestamp_millis() <= last_setup_ms {
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
+    // Allow the database clock to move past the constructor log before starting the game.
+    tokio::time::sleep(Duration::from_millis(2)).await;
     let room = joined["participant_state"]["public_session_id"]
         .as_str()
         .unwrap();
@@ -385,7 +364,7 @@ async fn assert_agent_readiness_cancellation(gate_construction: bool) {
     let release = Arc::new(Notify::new());
     let (events, mut callbacks) = mpsc::unbounded_channel();
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(Arc::new(ReadinessAgentFactory {
@@ -452,102 +431,32 @@ async fn assert_agent_readiness_cancellation(gate_construction: bool) {
     }
 }
 
-#[derive(Clone)]
-struct LifecycleOrderGame {
-    events: Arc<Mutex<Vec<&'static str>>>,
-    logger: crate::SessionLogger,
-}
-
-#[derive(Clone)]
-struct LifecycleOrderGameFactory {
-    events: Arc<Mutex<Vec<&'static str>>>,
-}
-
-impl crate::GameFactory for LifecycleOrderGameFactory {
-    type Game = LifecycleOrderGame;
-
-    /// Creates a session-local lifecycle recorder which shares the test event sink.
-    fn create(&self, context: crate::GameSessionContext) -> Result<LifecycleOrderGame> {
-        Ok(LifecycleOrderGame {
-            events: self.events.clone(),
-            logger: context.logger,
-        })
-    }
-}
-
 struct LifecycleOrderAgent;
 
 #[async_trait]
-impl Agent<LifecycleOrderGame> for LifecycleOrderAgent {
+impl Agent for LifecycleOrderAgent {
     /// Declines to act; this agent exists only to verify initialization order.
-    async fn respond(
-        &mut self,
-        _available_actions: Option<Vec<TinyAction>>,
-    ) -> Result<Option<AgentResponse<TinyAction>>> {
+    async fn respond(&mut self) -> Result<Option<AgentResponse>> {
         Ok(None)
     }
 }
 
-struct LifecycleOrderFactory {
-    events: Arc<Mutex<Vec<&'static str>>>,
-}
+struct LifecycleOrderFactory;
 
 #[async_trait]
-impl AgentFactory<LifecycleOrderGame> for LifecycleOrderFactory {
+impl AgentFactory for LifecycleOrderFactory {
     /// Describes the lifecycle-order test factory.
     fn definition(&self) -> AgentDefinition {
         test_agent_definition()
     }
 
     /// Records that agent construction completed before returning the instance.
-    async fn create(
-        &self,
-        context: AgentContext,
-    ) -> Result<Box<dyn Agent<LifecycleOrderGame> + Send>> {
-        self.events.lock().unwrap().push("agent_created");
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         context.logger.log("agent constructor log")?;
         Ok(Box::new(LifecycleOrderAgent))
     }
 
     fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
         test_agent_identity()
-    }
-}
-
-impl Game for LifecycleOrderGame {
-    type Config = Value;
-    type State = TinyState;
-    type Action = TinyAction;
-    type Observation = TinyObservation;
-    type Completion = TinySummary;
-
-    /// Records initial-state construction after the agent factory has completed.
-    fn initial_state(
-        &self,
-        _context: GameInitializationContext<'_, Self::Config>,
-    ) -> Result<Self::State> {
-        self.events.lock().unwrap().push("initial_state");
-        let _ = self.logger.log("initial state constructed by game code");
-        Ok(TinyState { done: false })
-    }
-
-    /// Applies the tiny test transition.
-    fn apply_action(
-        &self,
-        state: &Self::State,
-        action: &Self::Action,
-        actor: PlayerRole,
-    ) -> std::result::Result<Self::State, ActionRejection> {
-        TinyAdapter.apply_action(state, action, actor)
-    }
-
-    /// Projects the tiny role-specific observation.
-    fn observation(&self, state: &Self::State, role: PlayerRole) -> Self::Observation {
-        TinyAdapter.observation(state, role)
-    }
-
-    /// Returns no terminal result for the lifecycle-order setup path.
-    fn completion(&self, state: &Self::State) -> Option<Self::Completion> {
-        TinyAdapter.completion(state)
     }
 }

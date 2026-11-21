@@ -4,8 +4,7 @@ title: Deploy with Docker on Render
 
 # Deploy with Docker on Render
 
-Render can host one Parlando game as one Docker web service. The image contains the Rust server and
-compiled participant application; a persistent disk contains SQLite. Render terminates HTTPS,
+Render can host one Parlando game as one Docker web service. The image contains the WebAssembly component, shared host, and compiled participant application. A persistent disk stores SQLite. Render terminates HTTPS,
 supplies the public port, and checks `/health`.
 
 This division follows the general deployment model: replaceable code and assets belong in the image,
@@ -72,7 +71,7 @@ To exercise the example, create a Render Blueprint for the repository and set it
 `games/great-tree/render.yaml`. Wait for the build and `/health`, then immediately open
 `https://<service-name>.onrender.com/admin` and create the administrator.
 
-For a real study, adapt the service name, Dockerfile path, binary, and game client; retain the
+For a real study, adapt the service name, Dockerfile path, component, and browser client. Then retain the
 repository-root context, one replica, persistent absolute SQLite path, and health check. Create
 experiments through `/admin` rather than adding an experiment YAML or `--config` argument to the
 container.

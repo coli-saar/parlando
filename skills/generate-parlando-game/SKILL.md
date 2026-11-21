@@ -1,17 +1,11 @@
 ---
 name: generate-parlando-game
-description: Generate Parlando dialogue games using the published parlando runtime and @coli-saar/parlando-client React participant application. Use when creating, porting, or iterating on a Parlando game.
+description: Generate Parlando dialogue games using the Parlando Game SDK and @coli-saar/parlando-client React participant application. Use when creating, porting, or iterating on a Parlando game.
 ---
 
 # Generate Parlando Game
 
-Current coordinated release: `0.6.0`.
-
-Generate a complete two-player game using published registry packages. Read `references/server-adapter.md` and `references/browser-client.md`; read `references/config-deployment.md` for deployment or dashboard work and `references/agents.md` when agents are requested. These references are authoritative for generation; do not search for a different Parlando API.
-
-## Discover versions
-
-Query crates.io for `parlando` and npm for `@coli-saar/parlando-client`. Use the newest exact version available from both registries, and never mix different coordinated Parlando versions. Only when the user explicitly requests work on an unpublished future release, use the repository's matching manifest versions for release preparation and disclose that external registry builds remain blocked until both packages are published.
+Use the Parlando CLI from this checkout to generate a Wasm game package. Start with `parlando new <name> --lang rust`. Keep the generated manifest, SDK dependency and scenario format together. Read `docs/component-games.md` in the checkout for the build and deployment workflow and `references/browser-client.md` for the participant UI. For a project pinned to registry packages, use the documentation for its installed release.
 
 ## Clarify only domain choices
 
@@ -20,7 +14,7 @@ Ask only when missing information changes mechanics: game goal and terminal outc
 ## Non-negotiable boundaries
 
 - Exactly two roles exist: `PlayerRole::A` and `PlayerRole::B`. Either can be human or an agent.
-- The Rust runtime alone owns authoritative `State`.
+- The Wasm game instance owns authoritative session state.
 - Human and automated players receive the same accepted actions and shared `Completion`, together with role-specific `Observation`.
 - Actions alone change state; messages only communicate between players.
 - Games and agents use structured domain data and make no human-presentation assumptions.
@@ -30,19 +24,15 @@ Ask only when missing information changes mechanics: game goal and terminal outc
 
 ## Output
 
-Generate a Rust server/game crate, a participant application, pure mechanics tests, build/run files, and optional agents. Keep mechanics in pure functions behind a thin `Game` implementation. Use registry dependencies, not local Parlando paths.
+Generate a game package, participant application, deterministic mechanics tests, executable Wasm scenarios and any requested agents.
 
 ## Rust
 
-Implement a session-owned `Game` with `Config`, `State`, `Action`, `Observation`, and `Completion`; implement seeded `initial_state`, actor-aware `apply_action`, `observation`, optional `available_actions`, optional role-neutral `transition_metadata`, and `completion`. Implement a separate process-owned `GameFactory` that validates configuration and constructs a fresh game from `GameSessionContext` for every session.
-
-`apply_action` performs authorization and validation atomically and returns stable `ActionRejection` codes for expected failures. `observation` is the complete player-visible domain model and must filter private data. `transition_metadata` is analysis data for runtime-owned logs, never participant prose.
-
-Start with `Server::new(game_factory, metadata)`, set database and optional participant assets, register optional agent factories with `.agent(...)`, and call `.serve(address)`. Do not construct `ExperimentConfig`, `ServeOptions`, providers, or routers.
+Implement the session-owned `parlando_game_sdk::Game` trait and call `parlando_game_sdk::export!(YourGame)`. Derive `GameValue` for exchanged domain types. Implement seeded `init`, actor-aware `step`, role-specific `view_a` and `view_b`, and shared `completion`. Supply optional analysis `metadata` and paired checkpoint/restore methods when needed. Reject an illegal action before changing state. Include actionable choices in the relevant observation if the task discloses them.
 
 ## Agents
 
-Implement `agent::Agent<G>` and `agent::Factory<G>`. Factory creation receives role, seed, and agent-owned settings before game delivery. Store the first observation in `start`; observe later accepted actions in `observe_transition`; observe other-player text in `observe_message`; receive the shared terminal result in `finish`; and decide in `respond`.
+Read `docs/agents.md` for the current policy interface. Persist the role observation delivered in `start` and `observe_transition`. Use it in `respond` to choose an action or message.
 
 Return a non-empty `Response::action`, `Response::message`, or `Response::action_and_message`. A message does not change game state. Release per-session resources in `shutdown`. The server includes the remote gRPC factory by default; configure its endpoint and optional YAML settings in the dashboard, and use the Python `Agent`, `Context`, `Response`, and `serve` API for remote implementations. Keep agent credentials in the remote process. Python combines outputs with `Response.action_with_message`.
 

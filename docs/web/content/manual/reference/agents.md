@@ -8,58 +8,56 @@ An agent controls `PlayerRole::A` or `PlayerRole::B` under exactly the same game
 
 ## Rust agents
 
-Implement `agent::Agent<G>` and create session-local instances with `agent::Factory<G>`:
+Implement `agent::Agent` for each session-local policy and `agent::Factory`
+for the constructor. The host passes observations, actions, and completion as
+`ComponentValue`. Decode an incoming value to match the component’s schema.
+Use `ComponentValue::from_typed` to encode outgoing actions.
+
+For a game whose view lists available actions in an `available_actions` field,
+this policy selects the first action:
 
 ```rust
 use anyhow::Result;
 use async_trait::async_trait;
-use parlando::{
-    agent::{Agent, Response},
-    PlayerRole,
-};
+use parlando::{agent::{Agent, Response}, component::ComponentValue, PlayerRole};
+use serde::Deserialize;
 
-struct MyAgent {
-    observation: Option<MyObservation>,
-    completion: Option<MyCompletion>,
+#[derive(Deserialize)]
+struct Observation {
+    #[serde(default)]
+    available_actions: Vec<serde_json::Value>,
+}
+
+#[derive(Default)]
+struct FirstActionAgent {
+    next_action: Option<serde_json::Value>,
 }
 
 #[async_trait]
-impl Agent<MyGame> for MyAgent {
-    async fn start(&mut self, initial_observation: MyObservation) -> Result<()> {
-        self.observation = Some(initial_observation);
+impl Agent for FirstActionAgent {
+    async fn start(&mut self, observation: ComponentValue) -> Result<()> {
+        self.next_action = observation.decode::<Observation>()?.available_actions.into_iter().next();
         Ok(())
     }
 
     async fn observe_transition(
         &mut self,
         _actor: PlayerRole,
-        _action: MyAction,
-        observation: MyObservation,
+        _action: ComponentValue,
+        observation: ComponentValue,
     ) -> Result<()> {
-        self.observation = Some(observation);
-        Ok(())
+        self.start(observation).await
     }
 
-    async fn observe_message(&mut self, sender: PlayerRole, text: String) -> Result<()> {
-        remember_message(sender, text);
-        Ok(())
-    }
-
-    async fn finish(&mut self, completion: MyCompletion) -> Result<()> {
-        self.completion = Some(completion);
-        Ok(())
-    }
-
-    async fn respond(
-        &mut self,
-        available_actions: Option<Vec<MyAction>>,
-    ) -> Result<Option<Response<MyAction>>> {
-        Ok(available_actions
-            .and_then(|actions| actions.into_iter().next())
-            .map(Response::action))
+    async fn respond(&mut self) -> Result<Option<Response>> {
+        self.next_action
+            .take()
+            .map(|action| ComponentValue::from_typed(&action).map(Response::action))
+            .transpose()
     }
 }
 ```
+
 
 A `Response` contains an action, a message, or both. `None` means that the agent has nothing to do
 until another event arrives. Messages communicate with the other player; actions are always checked
@@ -84,7 +82,9 @@ python3 -m venv .venv-agent
 The manual's [Great Tree Python agent](../examples/great_tree_python_agent.py) is a runnable example
 that attaches to both a live human–agent experiment and the headless runner.
 
-The supported Python authoring API mirrors Rust:
+The Python SDK delivers the same role-specific values as dictionaries. Its
+`respond` callback keeps the optional action argument for protocol compatibility.
+Read legal moves from the view if the game publishes them.
 
 ```python
 from parlando_agent_sdk import Agent, Response, serve
@@ -102,12 +102,13 @@ class FirstActionAgent(Agent):
     async def finish(self, completion):
         self.completion = completion
 
-    async def respond(self, available_actions):
-        if available_actions:
-            return Response.action(available_actions[0])
+    async def respond(self, _available_actions):
+        legal_actions = self.observation.get("available_actions", [])
+        if legal_actions:
+            return Response.action(legal_actions[0])
         return None
 
-serve(FirstActionAgent, host="127.0.0.1", port=50051)
+serve(lambda context: FirstActionAgent(), host="127.0.0.1", port=50051)
 ```
 
 Every `Server` includes the remote Python option in the dashboard. Configure its endpoint and

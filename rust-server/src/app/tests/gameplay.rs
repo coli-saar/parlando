@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn websocket_rejects_actions_until_both_players_are_connected() {
-    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+    let router = build_router(live_game(), step_five_config(), ServeOptions::default())
         .await
         .unwrap();
     let (a, _b, public_session_id) = create_joined_room(router.clone()).await;
@@ -42,7 +42,7 @@ async fn websocket_rejects_actions_until_both_players_are_connected() {
 /// Rejected oversized actions retain bounded analytical metadata, not attacker input.
 #[tokio::test]
 async fn oversized_action_rejection_is_bounded_and_analyzable() {
-    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+    let router = build_router(live_game(), step_five_config(), ServeOptions::default())
         .await
         .unwrap();
     let (a, b, public_session_id) = create_joined_room(router.clone()).await;
@@ -94,7 +94,9 @@ async fn oversized_action_rejection_is_bounded_and_analyzable() {
 /// Replays store one initial state and reconstruct every later frame from accepted actions.
 #[tokio::test]
 async fn recorded_session_reconstructs_without_per_action_states() {
-    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+    let (config, _directory) = sqlite_config();
+    let database_url = config.database.url.clone();
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
     let (a, b, public_session_id) = create_joined_room(router.clone()).await;
@@ -153,7 +155,7 @@ async fn recorded_session_reconstructs_without_per_action_states() {
         .unwrap();
     assert!(accepted["game_state"].is_null());
     let (replay_status, replay) = admin_json_request(
-        router,
+        router.clone(),
         http::Method::GET,
         &format!("/api/admin/sessions/{session_id}/replay"),
         Value::Null,
@@ -169,12 +171,33 @@ async fn recorded_session_reconstructs_without_per_action_states() {
     );
     assert_eq!(replay["roles"]["A"][2]["observation"]["done"], true);
     assert_eq!(replay["roles"]["A"][2]["transition"]["actor"], "A");
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    sqlx::query(
+        "update session_events set game_state_json = ?
+         where session_id = ? and event_type = 'session_created'",
+    )
+    .bind(r#"{"done":false}"#)
+    .bind(session_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (status, error) = admin_json_request(
+        router,
+        http::Method::GET,
+        &format!("/api/admin/sessions/{session_id}/replay"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(error
+        .to_string()
+        .contains("recorded initial state is incompatible"));
     server.abort();
 }
 
 #[tokio::test]
 async fn human_human_game_accepts_actions_after_second_human_connects() {
-    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+    let router = build_router(live_game(), step_five_config(), ServeOptions::default())
         .await
         .unwrap();
     let (a, b, public_session_id) = create_joined_room(router.clone()).await;
@@ -211,7 +234,7 @@ async fn human_human_game_accepts_actions_after_second_human_connects() {
 
 #[tokio::test]
 async fn websocket_accepts_actions_chat_completion_and_persists_state_changes() {
-    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+    let router = build_router(live_game(), step_five_config(), ServeOptions::default())
         .await
         .unwrap();
     let (a, b, public_session_id) = create_joined_room(router.clone()).await;
@@ -290,13 +313,11 @@ async fn websocket_accepts_actions_chat_completion_and_persists_state_changes() 
 
 #[tokio::test]
 async fn loss_completion_is_broadcast_and_exported() {
-    let router = build_router(
-        LossSummaryAdapter,
-        step_five_config(),
-        ServeOptions::default(),
-    )
-    .await
-    .unwrap();
+    let mut config = step_five_config();
+    config.game = json!({"loss": true});
+    let router = build_router(live_game(), config, ServeOptions::default())
+        .await
+        .unwrap();
     let (a, b, public_session_id) = create_joined_room(router.clone()).await;
     let (base_url, server) = spawn_test_server(router.clone()).await;
     let (mut socket_a, _) =
@@ -349,7 +370,7 @@ async fn loss_completion_is_broadcast_and_exported() {
 
 #[tokio::test]
 async fn completed_rooms_reject_late_game_channel_input() {
-    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+    let router = build_router(live_game(), step_five_config(), ServeOptions::default())
         .await
         .unwrap();
     let (a, b, public_session_id) = create_joined_room(router.clone()).await;

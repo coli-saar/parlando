@@ -5,8 +5,8 @@
 
 use crate::app::{
     admin_event_bundles, admin_experiment_id, important_admin_events, json, AdminExperimentScope,
-    AppError, AppState, Arc, Deserialize, Extension, Game, Json, Path, Query, Result,
-    SessionLifecycle, State, Value,
+    AppError, AppState, Arc, Deserialize, Extension, Json, Path, Query, Result, SessionLifecycle,
+    State, Value,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -21,8 +21,8 @@ pub(in crate::app) struct AdminEventsQuery {
 }
 
 /// Returns recent database sessions for the experiment dashboard.
-pub(in crate::app) async fn admin_sessions<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(in crate::app) async fn admin_sessions(
+    State(state): State<Arc<AppState>>,
     scope: Option<Extension<AdminExperimentScope>>,
     Query(query): Query<AdminSessionsQuery>,
 ) -> Result<Json<Value>, AppError> {
@@ -58,8 +58,8 @@ pub(in crate::app) async fn admin_sessions<A: Game>(
 }
 
 /// Returns one database session's metadata and important event timeline.
-pub(in crate::app) async fn admin_session_detail<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(in crate::app) async fn admin_session_detail(
+    State(state): State<Arc<AppState>>,
     scope: Option<Extension<AdminExperimentScope>>,
     Path(session_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
@@ -170,8 +170,8 @@ pub(in crate::app) async fn admin_session_detail<A: Game>(
 }
 
 /// Returns important database events after an optional event index.
-pub(in crate::app) async fn admin_session_events<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(in crate::app) async fn admin_session_events(
+    State(state): State<Arc<AppState>>,
     scope: Option<Extension<AdminExperimentScope>>,
     Path(session_id): Path<i64>,
     Query(query): Query<AdminEventsQuery>,

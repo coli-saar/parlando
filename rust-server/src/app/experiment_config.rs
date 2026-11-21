@@ -6,8 +6,8 @@
 //! configuration can be inspected without revealing credentials.
 
 use super::{
-    anyhow, bail, json, AppError, Digest, ExperimentConfig, Game, HashMap, Result, ServerContext,
-    Sha256, StoredExperimentConfig, StoredGameSettings, Value,
+    anyhow, bail, json, AppError, Digest, ExperimentConfig, HashMap, Result, ServerContext, Sha256,
+    StoredExperimentConfig, StoredGameSettings, Value,
 };
 
 /// Produces the only configuration representation allowed to enter durable storage.
@@ -169,8 +169,8 @@ pub(super) fn apply_provider_endpoint_defaults(
 }
 
 /// Loads one stored revision with process bootstrap settings and effective credentials applied.
-pub(super) async fn hydrated_experiment_config<A: Game>(
-    state: &ServerContext<A>,
+pub(super) async fn hydrated_experiment_config(
+    state: &ServerContext,
     experiment_id: &str,
 ) -> Result<ExperimentConfig, AppError> {
     let experiment = state

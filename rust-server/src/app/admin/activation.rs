@@ -6,8 +6,8 @@
 use crate::app::{
     experiment_activation_issues, hydrated_experiment_config, invalidate_runtime_router, json,
     local_testing_issues_for_config, lock_runtime_router_build, new_id, AdminSession, AppError,
-    AppState, Arc, Deserialize, ExperimentConfig, ExperimentLifecycle, Extension, Game, Json,
-    Result, RunningParticipantUrl, State, StatusCode, Value,
+    AppState, Arc, Deserialize, ExperimentConfig, ExperimentLifecycle, Extension, Json, Result,
+    RunningParticipantUrl, State, StatusCode, Value,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -62,8 +62,8 @@ fn running_participant_url(
 }
 
 /// Returns the process-owned experiment with dashboard aggregates.
-pub(in crate::app) async fn admin_experiment<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(in crate::app) async fn admin_experiment(
+    State(state): State<Arc<AppState>>,
     Extension(admin_session): Extension<AdminSession>,
 ) -> Result<Json<Value>, AppError> {
     let experiment = state
@@ -83,8 +83,8 @@ pub(in crate::app) async fn admin_experiment<A: Game>(
 }
 
 /// Updates a durable experiment lifecycle status.
-pub(in crate::app) async fn admin_update_experiment_status<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(in crate::app) async fn admin_update_experiment_status(
+    State(state): State<Arc<AppState>>,
     Json(request): Json<AdminUpdateExperimentStatusRequest>,
 ) -> Result<Json<Value>, AppError> {
     let _mount_guard = lock_runtime_router_build(&state.context, &state.experiment_id).await;

@@ -39,11 +39,12 @@ use parlando::{
         Identity as AgentIdentity, Response as AgentResponse,
     },
     bundled_runtime_limits,
+    component::{ComponentValue, LoadedGame},
     test_support::{
         run_dashboard, AudioFrame, DashboardHealth, DashboardMetric, DashboardPanel,
         DashboardSeries, DashboardSnapshot, DashboardTile,
     },
-    Game, GameFactory, GameMetadata, PlayerRole, Server,
+    GameMetadata, PlayerRole, Server,
 };
 use parlando_stress_fixture::StressAction;
 use serde::{Deserialize, Serialize};
@@ -56,10 +57,6 @@ use tokio::{
     time,
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-
-#[path = "runtime_stress/backend.rs"]
-mod backend;
-use backend::{GameBackend, StressGame, StressGameFactory};
 
 const HARNESS_REVISION: u32 = 6;
 const PROFILE: &str = "resident-capacity-v1";
@@ -83,10 +80,7 @@ struct Args {
     /// Participant composition used for every session.
     #[arg(long, value_enum, default_value_t = Pairing::HumanAgent)]
     pairing: Pairing,
-    /// Fixture execution backend.
-    #[arg(long, value_enum, default_value_t = GameBackend::Native)]
-    game_backend: GameBackend,
-    /// Compiled fixture component, required for the Wasm backend.
+    /// Override the bundled stress game with a locally built Wasm component.
     #[arg(long)]
     wasm_module: Option<PathBuf>,
     /// Disable the terminal dashboard without changing the workload.
@@ -119,51 +113,27 @@ struct StressAgent {
     reply_tag: String,
 }
 
-/// Adapts the fixture agent's typed action and observation inputs to each backend.
-trait StressAgentGame: Game {
-    /// Adapts a typed action to the chosen backend.
-    fn agent_action(action: StressAction) -> Result<Self::Action>;
-
-    /// Reads the last accepted sequence for the agent's own role.
-    fn observed_sequence(observation: &Self::Observation, role: PlayerRole) -> Result<u64>;
+/// Encodes a policy decision for the stress game.
+fn agent_action(action: StressAction) -> Result<ComponentValue> {
+    ComponentValue::from_typed(&action)
 }
 
-impl StressAgentGame for StressGame {
-    /// Native mechanics consume the typed action directly.
-    fn agent_action(action: StressAction) -> Result<StressAction> {
-        Ok(action)
+/// Decodes just the typed field needed by the local policy.
+fn observed_sequence(observation: &ComponentValue, role: PlayerRole) -> Result<u64> {
+    #[derive(Deserialize)]
+    struct Sequences {
+        last_sequence: [u64; 2],
     }
 
-    /// Reads the sequence directly from the native role view.
-    fn observed_sequence(observation: &Self::Observation, role: PlayerRole) -> Result<u64> {
-        Ok(observation.last_sequence()[usize::from(role == PlayerRole::B)])
-    }
-}
-
-#[cfg(feature = "stress-wasm")]
-impl StressAgentGame for parlando::component::ComponentGame {
-    /// Encodes the fixture action directly to the component contract.
-    fn agent_action(action: StressAction) -> Result<Self::Action> {
-        Ok(Self::Action::from_typed(&action)?)
-    }
-
-    /// Decodes just the typed field needed by the local policy.
-    fn observed_sequence(observation: &Self::Observation, role: PlayerRole) -> Result<u64> {
-        #[derive(Deserialize)]
-        struct Sequences {
-            last_sequence: [u64; 2],
-        }
-
-        let view: Sequences = observation.decode()?;
-        Ok(view.last_sequence[usize::from(role == PlayerRole::B)])
-    }
+    let view: Sequences = observation.decode()?;
+    Ok(view.last_sequence[usize::from(role == PlayerRole::B)])
 }
 
 #[async_trait]
-impl<G: StressAgentGame> Agent<G> for StressAgent {
+impl Agent for StressAgent {
     /// Schedules the initial agent turn.
-    async fn start(&mut self, observation: G::Observation) -> Result<()> {
-        self.sequence = G::observed_sequence(&observation, self.role)?;
+    async fn start(&mut self, observation: ComponentValue) -> Result<()> {
+        self.sequence = observed_sequence(&observation, self.role)?;
         self.pending = true;
         self.reply_tag = "initial".into();
         Ok(())
@@ -172,10 +142,10 @@ impl<G: StressAgentGame> Agent<G> for StressAgent {
     async fn observe_transition(
         &mut self,
         _actor: PlayerRole,
-        _: G::Action,
-        observation: G::Observation,
+        _: ComponentValue,
+        observation: ComponentValue,
     ) -> Result<()> {
-        self.sequence = G::observed_sequence(&observation, self.role)?;
+        self.sequence = observed_sequence(&observation, self.role)?;
         self.pending = false;
         Ok(())
     }
@@ -188,17 +158,14 @@ impl<G: StressAgentGame> Agent<G> for StressAgent {
         Ok(())
     }
     /// Emits one deterministic action and TTS-triggering message.
-    async fn respond(
-        &mut self,
-        _: Option<Vec<G::Action>>,
-    ) -> Result<Option<AgentResponse<G::Action>>> {
+    async fn respond(&mut self) -> Result<Option<AgentResponse>> {
         if !self.pending {
             return Ok(None);
         }
         self.pending = false;
         self.sequence += 1;
         Ok(Some(AgentResponse::action_and_message(
-            G::agent_action(StressAction::Mark {
+            agent_action(StressAction::Mark {
                 sequence: self.sequence,
                 finish: false,
             })?,
@@ -211,7 +178,7 @@ impl<G: StressAgentGame> Agent<G> for StressAgent {
 struct StressAgentFactory;
 
 #[async_trait]
-impl<G: StressAgentGame> AgentFactory<G> for StressAgentFactory {
+impl AgentFactory for StressAgentFactory {
     /// Describes the compiled fixture agent for experiment selection.
     fn definition(&self) -> AgentDefinition {
         AgentDefinition {
@@ -222,7 +189,7 @@ impl<G: StressAgentGame> AgentFactory<G> for StressAgentFactory {
         }
     }
     /// Creates isolated state for one session.
-    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<G> + Send>> {
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         Ok(Box::new(StressAgent {
             role: context.role,
             sequence: 0,
@@ -463,7 +430,7 @@ struct Report {
     sessions: usize,
     seconds: u64,
     pairing: Pairing,
-    game_backend: GameBackend,
+    game_backend: &'static str,
     experiment_id: &'static str,
     config_revision: Option<i64>,
     provider: ProviderReady,
@@ -507,7 +474,9 @@ async fn supervise(args: Args) -> Result<()> {
     if args.seconds < 10 {
         bail!("--seconds must be at least 10");
     }
-    args.game_backend.validate(args.wasm_module.as_deref())?;
+    if let Some(path) = &args.wasm_module {
+        anyhow::ensure!(path.is_file(), "missing Wasm component {}", path.display());
+    }
     let wasm_module_arg = args
         .wasm_module
         .as_deref()
@@ -543,12 +512,7 @@ async fn supervise(args: Args) -> Result<()> {
     let address = reserve_address().await?;
     let address_arg = address.to_string();
     let database_arg = database.display().to_string();
-    let mut server_args = vec![
-        "__server",
-        &address_arg,
-        &database_arg,
-        args.game_backend.as_str(),
-    ];
+    let mut server_args = vec!["__server", &address_arg, &database_arg];
     if let Some(path) = wasm_module_arg {
         server_args.push(path);
     }
@@ -627,7 +591,7 @@ async fn supervise(args: Args) -> Result<()> {
         sessions: args.sessions,
         seconds: args.seconds,
         pairing: args.pairing,
-        game_backend: args.game_backend,
+        game_backend: "wasm",
         experiment_id: "runtime-stress",
         config_revision: admin.as_ref().map(|auth| auth.config_revision),
         provider,
@@ -767,33 +731,12 @@ async fn server_child(arguments: &[String]) -> Result<()> {
         .context("missing server address")?
         .parse()?;
     let database = PathBuf::from(arguments.get(1).context("missing database path")?);
-    let backend = GameBackend::from_str(arguments.get(2).context("missing game backend")?, false)
-        .map_err(anyhow::Error::msg)?;
-    let wasm_module = arguments.get(3).map(Path::new);
-    backend.validate(wasm_module)?;
-    match backend {
-        GameBackend::Native => serve_fixture(StressGameFactory, address, &database).await,
-        #[cfg(feature = "stress-wasm")]
-        GameBackend::Wasm => {
-            let factory = parlando::component::ComponentGameFactory::load(
-                wasm_module.context("missing Wasm component path")?,
-            )?;
-            serve_fixture(factory, address, &database).await
+    let factory = match arguments.get(2) {
+        Some(path) => LoadedGame::load(Path::new(path))?,
+        None => {
+            LoadedGame::from_bytes(include_bytes!("../../stress-fixture/embedded/stress.wasm"))?
         }
-        #[cfg(not(feature = "stress-wasm"))]
-        GameBackend::Wasm => bail!("runtime-stress was built without Wasm support"),
-    }
-}
-
-/// Serves the same network workload using either production game factory.
-async fn serve_fixture<F: GameFactory>(
-    factory: F,
-    address: SocketAddr,
-    database: &Path,
-) -> Result<()>
-where
-    F::Game: StressAgentGame,
-{
+    };
     let metadata = GameMetadata {
         id: "runtime-stress".into(),
         name: "Runtime Stress Fixture".into(),
@@ -1953,9 +1896,7 @@ fn print_report_summary(report: &Report, path: &Path) {
     eprintln!();
     eprintln!(
         "Parlando runtime stress: {outcome} — {}, {pairing}, {} {session_noun} for {}s",
-        report.game_backend.as_str(),
-        report.sessions,
-        report.seconds
+        report.game_backend, report.sessions, report.seconds
     );
     if report.success {
         eprintln!(
@@ -2043,21 +1984,7 @@ fn print_report_summary(report: &Report, path: &Path) {
     }
     eprintln!("  Artifacts: {}", run_directory.display());
     eprintln!("  JSON report: {}", path.display());
-    if report.game_backend == GameBackend::Wasm {
-        eprintln!("  Repeat with the same Wasm module, seed and workload to compare runs.");
-    } else if report.success {
-        let increased =
-            (report.sessions.saturating_mul(5).saturating_add(3) / 4).max(report.sessions + 1);
-        eprintln!("  Next: repeat this exact run three times to establish consistency:");
-        eprintln!("        cargo stress --sessions {} --seconds {} --pairing {pairing} --seed {} --headless", report.sessions, report.seconds, report.seed);
-        eprintln!("        Then probe higher: cargo stress --sessions {increased} --seconds {} --pairing {pairing} --seed {} --headless", report.seconds.max(120), report.seed);
-    } else {
-        eprintln!(
-            "  Next: inspect {}/server.stderr.log and retry the same seed headlessly:",
-            run_directory.display()
-        );
-        eprintln!("        cargo stress --sessions {} --seconds {} --pairing {pairing} --seed {} --headless --keep", report.sessions, report.seconds, report.seed);
-    }
+    eprintln!("  Repeat with the same Wasm module, seed and workload to compare runs.");
 }
 
 /// Opens the stopped SQLite database, checkpoints WAL, and verifies durable invariants.
@@ -2631,6 +2558,10 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "stress-wasm"))]
+#[cfg(test)]
 #[path = "runtime_stress/component_tests.rs"]
 mod component_tests;
+
+#[cfg(test)]
+#[path = "runtime_stress/deployment_tests.rs"]
+mod deployment_tests;

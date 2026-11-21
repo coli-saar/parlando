@@ -7,13 +7,12 @@
 
 use super::{
     broadcast_participant_states, expire_live_session_locked, prolific_handoff, room_cleanup,
-    session_transition_lock, AppState, Arc, Duration, Game, HashMap, HashSet,
-    ParticipantOutcomeKind, ParticipantResult, Result, RoomCleanup, SessionEnd, SessionEndCause,
-    SessionEventRecord,
+    session_transition_lock, AppState, Arc, Duration, HashMap, HashSet, ParticipantOutcomeKind,
+    ParticipantResult, Result, RoomCleanup, SessionEnd, SessionEndCause, SessionEventRecord,
 };
 
 /// Runs bounded periodic cleanup for transient credentials, sessions, and tickets.
-pub(super) fn spawn_security_cleanup<A: Game>(state: Arc<AppState<A>>, clean_admin_sessions: bool) {
+pub(super) fn spawn_security_cleanup(state: Arc<AppState>, clean_admin_sessions: bool) {
     tokio::spawn(async move {
         let mut lifecycle_interval = tokio::time::interval(Duration::from_secs(1));
         lifecycle_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -70,8 +69,8 @@ pub(super) fn spawn_security_cleanup<A: Game>(state: Arc<AppState<A>>, clean_adm
 }
 
 /// Removes expired unattached credentials without disturbing participants retained in rooms.
-async fn cleanup_expired_participants<A: Game>(
-    state: &Arc<AppState<A>>,
+async fn cleanup_expired_participants(
+    state: &Arc<AppState>,
     expired_participants: HashSet<String>,
 ) {
     let _admission = state.session_admission.reserve().await;
@@ -147,7 +146,7 @@ pub(super) fn session_lifecycle_is_ended(lifecycle: &str) -> bool {
 }
 
 /// Removes or expires transient sessions after configured waiting, idle, and lifetime bounds.
-async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
+async fn cleanup_transient_rooms(state: &Arc<AppState>) {
     let now = chrono::Utc::now();
     let grace = chrono::Duration::seconds(state.context.config.session.reconnect_grace_seconds);
     let candidates = {
@@ -243,7 +242,7 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
 }
 
 /// Finalizes sessions left nonterminal by an earlier process before opening new intake.
-pub(super) async fn finalize_interrupted_sessions<A: Game>(state: &Arc<AppState<A>>) -> Result<()> {
+pub(super) async fn finalize_interrupted_sessions(state: &Arc<AppState>) -> Result<()> {
     let sessions = state
         .context
         .installation

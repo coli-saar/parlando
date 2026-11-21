@@ -1,0 +1,308 @@
+:root {
+  color-scheme: dark;
+  color: #f0e0c7;
+  background: #100c0a;
+  font: 15px/1.5 system-ui, sans-serif;
+  --paper: #f0e0c7;
+  --muted: #bca791;
+  --gold: #daa86b;
+  --edge: #56402d;
+  --surface: #1d1510;
+  --serif: Georgia, "Times New Roman", serif;
+  --parlando-tools-background: #1b140f;
+  --parlando-tools-border: var(--edge);
+  --parlando-tools-radius: 2px;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-width: 300px;
+  min-height: 100vh;
+  background: radial-gradient(ellipse at 50% 0%, #281a14 0%, #140e0c 46%, #0d0b09 100%);
+}
+button, input, select { font: inherit; }
+button, .parlando-decline-consent, .parlando-recruitment-handoff a {
+  border: 1px solid var(--edge);
+  border-radius: 2px;
+  background: #241a13;
+  color: var(--paper);
+  padding: .55rem .8rem;
+  cursor: pointer;
+}
+button:hover:enabled, .parlando-decline-consent:hover, .parlando-recruitment-handoff a:hover {
+  border-color: var(--gold);
+  background: #3a2719;
+}
+button:disabled { opacity: .45; cursor: default; }
+button[aria-pressed="true"] { border-color: #b47c49; color: #ffdda4; background: #50311e; }
+button[aria-pressed="true"]:disabled { opacity: 1; }
+:focus-visible { outline: 2px solid #f9c789; outline-offset: 3px; }
+input:not([type="checkbox"]), select {
+  border: 1px solid var(--edge);
+  border-radius: 2px;
+  color: var(--paper);
+  background: #100c0a;
+  padding: .55rem .65rem;
+}
+a { color: #ecc28c; }
+p, h1, h2 { margin: 0; }
+#root { min-height: 100vh; padding: 0 clamp(.75rem, 3vw, 3rem) 1.5rem; }
+.screening, #root > .parlando-session-tools, #root > .online-error,
+#root > .parlando-partner-reconnect, #root > .parlando-idle-deadline {
+  width: min(100%, 1440px);
+  margin-inline: auto;
+}
+.masthead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 5.1rem;
+}
+.masthead h1 {
+  color: #f1c894;
+  font: normal clamp(1.5rem, 3vw, 2.8rem)/1.05 var(--serif);
+  letter-spacing: -.035em;
+}
+.role-plate, .eyebrow {
+  color: #e5bc81;
+  font-size: .67rem;
+  letter-spacing: .19em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+.role-plate {
+  flex: none;
+  padding: .35rem .6rem;
+  border: 1px solid #6e4b2d;
+  background: #221710;
+}
+.cinema-frame {
+  position: relative;
+  background: #060504;
+  border: 1px solid #8c6141;
+  padding: 3px;
+  box-shadow: 0 0 0 4px #19100c, 0 16px 44px #0604037f;
+}
+.cinema-frame canvas {
+  display: block;
+  width: 100%;
+  height: clamp(290px, 61dvh, 810px);
+  touch-action: none;
+  outline-offset: -3px;
+}
+.scene-fallback, .scene-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  text-align: center;
+}
+.control-deck {
+  display: grid;
+  grid-template-columns: minmax(13rem, 1fr) minmax(31rem, 1.25fr);
+  background: #1b140f;
+  border: 1px solid var(--edge);
+  border-top: 0;
+}
+.cue-card, .equipment { padding: 1rem clamp(.8rem, 1.5vw, 1.5rem); }
+.cue-card { background: linear-gradient(90deg, #2a1c12, #221811); }
+.cue-card h2 { font: normal clamp(1.2rem, 2vw, 1.55rem)/1.1 var(--serif); margin: .15rem 0 .45rem; }
+.cue-card > p:not(.eyebrow) { font-size: .85rem; }
+.cue-card .screen-reading, .station-hint { margin-top: .5rem; color: var(--muted); font-size: .78rem; }
+.equipment { border-left: 1px solid var(--edge); }
+.station-controls, .slide-controls { display: flex; gap: .35rem; flex-wrap: wrap; }
+.station-controls button, .slide-controls button { font-size: .82rem; }
+.station-controls kbd, .exit-button kbd {
+  padding: .08rem .27rem;
+  margin-left: .3rem;
+  border: 1px solid #af875774;
+  color: #e4bd8c;
+  font: .72rem/1.15 ui-monospace, monospace;
+}
+.station-adjustments { display: grid; gap: .5rem; margin-top: .55rem; }
+.control-row { display: flex; gap: .5rem; align-items: center; }
+.row-label { min-width: 2.85rem; font-size: .75rem; color: var(--muted); }
+.detents { display: flex; gap: .3rem; }
+.detents button { min-width: 2.2rem; min-height: 2.2rem; padding: .3rem; font-variant-numeric: tabular-nums; }
+.slide-controls button { padding: .34rem .6rem; }
+.exit-control p { margin-top: .5rem; color: var(--muted); }
+.exit-button { background: #4d2f19; border-color: #bd8f56; }
+
+#root > .parlando-session-tools {
+  margin-top: .65rem;
+  padding: .45rem .65rem;
+  gap: .4rem;
+  font-size: .75rem;
+}
+.parlando-session-tools-header > span { color: var(--muted); overflow-wrap: anywhere; }
+.parlando-session-tools-header > span strong { font-weight: 500; }
+.parlando-session-tools .parlando-leave-session { flex: none; padding: .25rem .5rem; }
+.parlando-session-tools-conversation:has(> .parlando-session-tools-empty) { display: none; }
+.parlando-session-tools-conversation { font-size: .85rem; }
+.parlando-session-tools-form input, .parlando-session-tools-form button { padding: .32rem .5rem; }
+
+.lobby-panel, .parlando-session-outcome {
+  width: min(100%, 40rem);
+  margin: max(5vh, 1.25rem) auto 1.25rem;
+  padding: clamp(1rem, 5vw, 2.7rem);
+  border: 1px solid var(--edge);
+  background: var(--surface);
+  box-shadow: 0 12px 30px #0005;
+}
+.lobby-panel h1, .parlando-session-outcome h1,
+.parlando-session-outcome h2 { margin: .5rem 0; color: #edc491; font: normal 2rem/1.12 var(--serif); }
+.lobby-actions { display: flex; flex-wrap: wrap; gap: .55rem; margin-top: 1rem; }
+.lobby-actions > button:first-child { background: #4d2f19; border-color: #bd8f56; }
+.parlando-decline-consent { display: inline-flex; color: var(--muted); text-decoration: none; }
+.consent-list, .voice-preflight, .consent-row span { display: grid; gap: .4rem; }
+.consent-list, .voice-preflight, .parlando-partner-reconnect, .parlando-recruitment-handoff { margin-block: .8rem; }
+.consent-row { display: grid; grid-template-columns: auto 1fr; align-items: start; gap: .65rem; }
+.consent-row input { margin-top: .35rem; }
+.parlando-partner-reconnect { padding: .65rem; background: #322117; border: 1px solid var(--edge); }
+.parlando-recruitment-handoff { padding: .8rem; border-top: 1px solid var(--edge); }
+.parlando-recruitment-handoff a { display: inline-block; margin-top: .4rem; }
+.parlando-completion-code-row { display: flex; align-items: center; gap: .5rem; margin-block: .65rem; }
+.parlando-completion-code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: .35rem .5rem;
+  color: #ffdba5;
+  background: #100c0a;
+  border: 1px solid var(--edge);
+}
+.parlando-copy-completion-code { flex: none; }
+.parlando-copy-status { color: var(--muted); }
+.online-error, .voice-error { color: #ffae93; }
+.microphone-mute-button.live { border-color: #708962; color: #d8e9c0; }
+.microphone-mute-button.muted { border-color: #a66852; color: #ffcdb6; }
+.mic-meter-track > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-origin: left;
+  background: #98b584;
+}
+.preview-angles {
+  width: min(100%, 1440px);
+  margin: .75rem auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+}
+.preview-angles a { padding: .28rem .45rem; font-size: .75rem; }
+@media (max-width: 830px) {
+  .control-deck { grid-template-columns: 1fr; }
+  .equipment { border-left: 0; border-top: 1px solid var(--edge); }
+  .cinema-frame canvas { height: clamp(265px, 45dvh, 600px); }
+}
+@media (max-width: 420px) {
+  .masthead { min-height: 3.9rem; gap: .5rem; }
+  .station-controls button { padding-inline: .45rem; }
+  .detents { gap: .2rem; }
+  .detents button { min-width: 1.8rem; }
+  .row-label { min-width: 2.4rem; }
+}
+
+.lobby-heading .platform-label { color: var(--muted); font-size: .75rem; }
+.lobby-heading .game-name { color: var(--gold); font: normal 1.15rem var(--serif); margin-top: .2rem; }
+.mic-meter-track { height: .35rem; overflow: hidden; background: #100c0a; }
+.mic-meter.muted .mic-meter-track > span { background: #a66852; }
+.screening-ending {
+  min-height: 13rem;
+  padding: 4rem 1rem 1rem;
+  background: linear-gradient(0deg, #1d1510 5%, #1d151055), url("./art/bell-rock.jpg") center 42% / cover;
+  border: 1px solid var(--edge);
+}
+.screening-ending h2 { text-shadow: 0 2px 15px #100c0a; }
+.sr-only {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.cue-picture {
+  width: min(100%, 19.5rem);
+  margin-top: .5rem;
+  padding: .25rem .48rem .15rem;
+  border: 1px solid #6b4a32;
+  border-radius: 2px;
+  background: #160f0c;
+}
+.cue-figures, .cue-scale {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  justify-items: center;
+  align-items: end;
+}
+.cue-figures { height: 1.75rem; }
+.cue-scale { border-top: 1px solid #715338; color: #bca58a; font: .64rem/1.8 ui-monospace, monospace; }
+.cue-scale span { position: relative; }
+.cue-scale span::before {
+  content: "";
+  position: absolute;
+  inset: 0 50% auto;
+  height: .2rem;
+  border-left: 1px solid #715338;
+}
+.cue-scale .cue-mark { color: #ffe3ab; }
+.cue-window, .cue-tower { grid-row: 1; }
+.cue-window {
+  width: .96rem;
+  height: 1.42rem;
+  margin-bottom: .09rem;
+  border: 1px solid #cf9a58;
+  border-radius: 50% 50% 0 0;
+  display: grid;
+  place-items: center;
+  z-index: 1;
+}
+.cue-window > span { width: .55rem; height: .55rem; border-radius: 50%; background: #ffe6b5; }
+.cue-window.lit > span { background: #f4b75e; box-shadow: 0 0 8px #e79643; }
+.cue-tower {
+  width: .9rem;
+  height: 1.64rem;
+  border: 1px solid #79694e;
+  background: #53402b;
+  clip-path: polygon(50% 0, 97% 30%, 88% 30%, 100% 100%, 0 100%, 12% 30%, 3% 30%);
+}
+.cue-ship-path {
+  position: absolute;
+  inset: auto 6% .36rem;
+  height: 1px;
+  border-top: 1px dashed #ba8c53;
+}
+.cue-ship-path::after {
+  content: "";
+  position: absolute;
+  inset: -.2rem 0 auto auto;
+  width: .35rem;
+  height: .35rem;
+  border: solid #ba8c53;
+  border-width: 1px 1px 0 0;
+  transform: rotate(45deg);
+}
+.cue-mark-note { color: #e9c08a; margin-top: .2rem; }
+.lobby-heading {
+  margin: calc(-1 * clamp(1rem, 5vw, 2.7rem)) calc(-1 * clamp(1rem, 5vw, 2.7rem)) 1rem;
+  padding: clamp(1rem, 5vw, 2.7rem);
+  background: linear-gradient(95deg, #17110cf2 9%, #251a11b5 70%, #25211377), url("./art/bell-rock.jpg") center 41% / cover;
+  border-bottom: 1px solid var(--edge);
+}
+
+.scene-loading { color: var(--muted); font-family: var(--serif); pointer-events: none; }
+.scene-fallback {
+  background: linear-gradient(#130e0bdd, #130e0be5), url("./art/bell-rock.jpg") center / cover;
+}
+.parlando-game-completion { margin-top: 1rem; }
+.parlando-session-tools-message p { overflow-wrap: anywhere; min-width: 0; }
+@media (min-width: 831px) {
+  #root > .parlando-session-tools { grid-template-columns: minmax(16rem, 24rem) minmax(0, 1fr); column-gap: .8rem; }
+  .parlando-session-tools-header { grid-area: 1 / 1; }
+  .parlando-session-tools-form { grid-area: 1 / 2; }
+  .parlando-session-tools-conversation, .parlando-session-tools-voice { grid-column: 1 / -1; }
+}

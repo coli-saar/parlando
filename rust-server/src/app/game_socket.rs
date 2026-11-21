@@ -13,15 +13,15 @@ use super::{
     persist_event, persist_rejected_input, persist_session_event, presence_message,
     session_has_started, session_transition_lock, validate_websocket_origin, voice_message,
     websocket_path, AppError, AppState, Arc, ClientMessage, ConnectionLiveness, Duration,
-    Extension, FuturesStreamExt, Game, GameSessionPlanResponse, HashMap, HeaderMap, Json, Message,
+    Extension, FuturesStreamExt, GameSessionPlanResponse, HashMap, HeaderMap, Json, Message,
     ParticipantPrincipal, Path, PlayerRole, Query, Response, Result, ServerMessage, ServerPayload,
     SinkExt, State, TokenBucket, UpgradePurpose, UpgradeTicketClaims, Value, WebSocket,
     WebSocketUpgrade,
 };
 
 /// Mints a purpose-bound, one-use game WebSocket upgrade ticket.
-pub(super) async fn game_session<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(super) async fn game_session(
+    State(state): State<Arc<AppState>>,
     Path(public_session_id): Path<String>,
     Extension(principal): Extension<ParticipantPrincipal>,
 ) -> Result<Json<GameSessionPlanResponse>, AppError> {
@@ -52,8 +52,8 @@ pub(super) async fn game_session<A: Game>(
 }
 
 /// Authenticates a single-use game ticket and upgrades its connection.
-pub(super) async fn game_socket<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(super) async fn game_socket(
+    State(state): State<Arc<AppState>>,
     Path(public_session_id): Path<String>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
@@ -106,8 +106,8 @@ pub(super) async fn game_socket<A: Game>(
 }
 
 /// Registers a game socket and owns its input, publication, and disconnection lifecycle.
-async fn websocket_loop<A: Game>(
-    state: Arc<AppState<A>>,
+async fn websocket_loop(
+    state: Arc<AppState>,
     socket: WebSocket,
     public_session_id: String,
     participant_session_id: String,

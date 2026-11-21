@@ -8,12 +8,12 @@
 use super::{
     expire_if_due_locked, json, reserve_agent_delivery, send_role_assignment,
     session_ready_for_game, session_transition_lock, voice_message, AgentObservation, AppState,
-    Arc, Game, SessionLifecycle, SessionParticipant,
+    Arc, SessionLifecycle, SessionParticipant,
 };
 
 /// Marks one participant's session-local audio/STT setup as complete.
-pub(super) async fn mark_participant_audio_ready<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn mark_participant_audio_ready(
+    state: &Arc<AppState>,
     public_session_id: &str,
     participant_session_id: &str,
 ) {
@@ -31,8 +31,8 @@ pub(super) async fn mark_participant_audio_ready<A: Game>(
 }
 
 /// Publishes whether this participant's audio can currently enter game transcription.
-pub(super) async fn publish_transcription_readiness<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn publish_transcription_readiness(
+    state: &Arc<AppState>,
     public_session_id: &str,
     role: &str,
 ) {
@@ -68,7 +68,7 @@ pub(super) async fn publish_transcription_readiness<A: Game>(
 }
 
 /// Starts a session once all humans/agents and required audio setup are ready.
-pub(super) async fn maybe_start_game<A: Game>(state: Arc<AppState<A>>, public_session_id: &str) {
+pub(super) async fn maybe_start_game(state: Arc<AppState>, public_session_id: &str) {
     let Some(transition_lock) = session_transition_lock(&state, public_session_id).await else {
         return;
     };
@@ -85,7 +85,7 @@ pub(super) async fn maybe_start_game<A: Game>(state: Arc<AppState<A>>, public_se
         let memory = state.memory.read().await;
         memory.sessions.get(public_session_id).and_then(|session| {
             (session.lifecycle() == &SessionLifecycle::Forming
-                && session_ready_for_game::<A>(&state.context.config, session))
+                && session_ready_for_game(&state.context.config, session))
             .then(|| (session.experiment_id.clone(), session.session_id))
         })
     };

@@ -7,12 +7,12 @@
 use super::*;
 
 /// Wires participant and admin HTTP surfaces around an initialized experiment.
-pub(super) fn experiment_routes<A: Game>(
-    state: Arc<AppState<A>>,
+pub(super) fn experiment_routes(
+    state: Arc<AppState>,
     mounted_runtime: bool,
     cors: CorsLayer,
     client_dist: Option<PathBuf>,
-) -> BuiltRouters<A> {
+) -> BuiltRouters {
     let context = state.context.clone();
     let participant_prefix = if mounted_runtime {
         format!("/e/{}", state.experiment_id)
@@ -26,66 +26,63 @@ pub(super) fn experiment_routes<A: Game>(
     };
     let participant_path = |path: &str| format!("{participant_prefix}{path}");
     let public_routes = Router::new()
-        .route(&participant_path("/health"), get(health::<A>))
-        .route(&participant_path("/api/config"), get(public_config::<A>))
+        .route(&participant_path("/health"), get(health))
+        .route(&participant_path("/api/config"), get(public_config))
         .route(
             &participant_path("/api/participants"),
-            post(create_participant::<A>),
+            post(create_participant),
         );
     let participant_routes = Router::new()
-        .route(&participant_path("/api/consent"), post(consent::<A>))
+        .route(&participant_path("/api/consent"), post(consent))
         .route(
             &participant_path("/api/participant-state"),
-            get(get_participant_state::<A>),
+            get(get_participant_state),
         )
-        .route(
-            &participant_path("/api/sessions"),
-            post(create_session::<A>),
-        )
+        .route(&participant_path("/api/sessions"), post(create_session))
         .route(
             &participant_path("/api/sessions/:public_session_id/leave"),
-            post(leave_session::<A>),
+            post(leave_session),
         )
         .route(
             &participant_path("/api/sessions/:public_session_id/game-session"),
-            post(game_session::<A>),
+            post(game_session),
         )
         .route(
             &participant_path("/api/sessions/:public_session_id/audio-session"),
-            post(audio_session::<A>),
+            post(audio_session),
         )
         .route(
             &participant_path("/api/sessions/:public_session_id/voice-diagnostics"),
-            post(add_voice_diagnostic::<A>),
+            post(add_voice_diagnostic),
         )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
-            require_participant_auth::<A>,
+            require_participant_auth,
         ));
     let websocket_routes = Router::new()
         .route(
             &participant_path("/ws/game/:public_session_id"),
-            get(game_socket::<A>),
+            get(game_socket),
         )
         .route(
             &participant_path("/ws/audio/:public_session_id"),
-            get(audio_socket::<A>),
+            get(audio_socket),
         );
     let experiment_admin = Router::new()
         .route(
             &participant_path("/api/admin/experiment"),
-            get(admin_experiment::<A>),
+            get(admin_experiment),
         )
         .merge(experiment_admin_routes(&format!(
             "{participant_prefix}/api/admin"
         )))
         .route_layer(middleware::from_fn_with_state(
             context.clone(),
-            require_admin_auth::<A>,
+            require_admin_auth,
         ))
         .route_layer(middleware::from_fn_with_state(
             context.clone(),
-            require_admin_network::<A>,
+            require_admin_network,
         ));
     let api = Router::new()
         .merge(public_routes)
@@ -114,17 +111,17 @@ pub(super) fn experiment_routes<A: Game>(
         experiment_admin_routes(&runtime_admin_prefix)
             .route_layer(middleware::from_fn_with_state(
                 context.clone(),
-                require_admin_auth::<A>,
+                require_admin_auth,
             ))
             .route_layer(middleware::from_fn_with_state(
                 context.clone(),
-                require_admin_network::<A>,
+                require_admin_network,
             ))
             .layer(RequestBodyLimitLayer::new(64 * 1024))
             .layer(middleware::from_fn(security_headers))
             .layer(middleware::from_fn_with_state(
                 context.clone(),
-                track_request_load::<A>,
+                track_request_load,
             ))
             .with_state(state.clone())
     };
@@ -136,39 +133,36 @@ pub(super) fn experiment_routes<A: Game>(
 }
 
 /// Defines the live experiment operations served under both administrator URL prefixes.
-pub(super) fn experiment_admin_routes<A: Game>(prefix: &str) -> Router<Arc<AppState<A>>> {
+pub(super) fn experiment_admin_routes(prefix: &str) -> Router<Arc<AppState>> {
     let path = |suffix: &str| format!("{prefix}{suffix}");
     Router::new()
         .route(
             &path("/experiment/status"),
-            post(admin_update_experiment_status::<A>),
+            post(admin_update_experiment_status),
         )
-        .route(&path("/sessions"), get(admin_sessions::<A>))
+        .route(&path("/sessions"), get(admin_sessions))
         .route(
             &path("/progress"),
-            get(admin_progress::<A>).post(admin_refresh_progress::<A>),
+            get(admin_progress).post(admin_refresh_progress),
         )
-        .route(
-            &path("/sessions/:session_id"),
-            get(admin_session_detail::<A>),
-        )
+        .route(&path("/sessions/:session_id"), get(admin_session_detail))
         .route(
             &path("/sessions/:session_id/events"),
-            get(admin_session_events::<A>),
+            get(admin_session_events),
         )
         .route(
             &path("/sessions/:session_id/replay"),
-            get(admin_session_replay::<A>),
+            get(admin_session_replay),
         )
-        .route(&path("/export"), get(admin_export::<A>))
+        .route(&path("/export"), get(admin_export))
         .route(
             &path("/participants/:research_id/deletion"),
-            get(admin_participant_deletion_preview::<A>).post(admin_delete_participant_data::<A>),
+            get(admin_participant_deletion_preview).post(admin_delete_participant_data),
         )
 }
 
 /// Mounts catalogue and installation routes without allocating a live experiment.
-pub(super) fn dashboard_routes<A: Game>(state: &Arc<ServerContext<A>>, prefix: &str) -> Router {
+pub(super) fn dashboard_routes(state: &Arc<ServerContext>, prefix: &str) -> Router {
     let participant_path = |path: &str| format!("{prefix}{path}");
     let public_admin_routes = Router::new()
         .route(
@@ -185,28 +179,19 @@ pub(super) fn dashboard_routes<A: Game>(state: &Arc<ServerContext<A>>, prefix: &
         )
         .route(&participant_path("/admin"), get(admin_entry))
         .route(&participant_path("/admin/"), get(admin_entry))
-        .route(
-            &participant_path("/admin/login"),
-            get(admin_login_page::<A>),
-        )
-        .route(
-            &participant_path("/api/admin/setup"),
-            post(admin_setup::<A>),
-        )
-        .route(
-            &participant_path("/api/admin/login"),
-            post(admin_login::<A>),
-        )
+        .route(&participant_path("/admin/login"), get(admin_login_page))
+        .route(&participant_path("/api/admin/setup"), post(admin_setup))
+        .route(&participant_path("/api/admin/login"), post(admin_login))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
-            require_admin_network::<A>,
+            require_admin_network,
         ));
     let admin_routes = Router::new()
         .route(
             &participant_path("/api/admin/export-schema"),
             get(admin_corpus_export_schema),
         )
-        .route(&participant_path("/api/admin/load"), get(admin_load::<A>))
+        .route(&participant_path("/api/admin/load"), get(admin_load))
         .route(
             &participant_path("/admin/experiments"),
             get(admin_experiments_page),
@@ -231,85 +216,79 @@ pub(super) fn dashboard_routes<A: Game>(state: &Arc<ServerContext<A>>, prefix: &
             &participant_path("/admin/assets/admin-dashboard-api.js"),
             get(admin_dashboard_api_javascript),
         )
-        .route(
-            &participant_path("/admin/privacy"),
-            get(admin_privacy_page::<A>),
-        )
+        .route(&participant_path("/admin/privacy"), get(admin_privacy_page))
         .route(
             &participant_path("/api/admin/privacy"),
-            get(admin_privacy_json::<A>),
+            get(admin_privacy_json),
         )
         .route(
             &participant_path("/api/admin/privacy.json"),
-            get(admin_privacy_json_download::<A>),
+            get(admin_privacy_json_download),
         )
         .route(
             &participant_path("/api/admin/privacy.md"),
-            get(admin_privacy_markdown_download::<A>),
+            get(admin_privacy_markdown_download),
         )
         .route(
             &participant_path("/api/admin/experiments"),
-            get(admin_experiments::<A>).post(admin_create_experiment::<A>),
+            get(admin_experiments).post(admin_create_experiment),
         )
         .route(
             &participant_path("/api/admin/experiments/:experiment_id/clone"),
-            post(admin_clone_experiment::<A>),
+            post(admin_clone_experiment),
         )
         .route(
             &participant_path("/api/admin/experiments/:experiment_id/config"),
-            get(admin_experiment_config::<A>).post(admin_save_experiment_config::<A>),
+            get(admin_experiment_config).post(admin_save_experiment_config),
         )
         .route(
             &participant_path("/api/admin/experiments/:experiment_id/privacy"),
-            get(admin_experiment_privacy_json::<A>),
+            get(admin_experiment_privacy_json),
         )
         .route(
             &participant_path("/api/admin/experiments/:experiment_id/privacy.json"),
-            get(admin_experiment_privacy_json_download::<A>),
+            get(admin_experiment_privacy_json_download),
         )
         .route(
             &participant_path("/api/admin/experiments/:experiment_id/privacy.md"),
-            get(admin_experiment_privacy_markdown_download::<A>),
+            get(admin_experiment_privacy_markdown_download),
         )
         .route(
             &participant_path("/api/admin/experiments/:experiment_id/secrets/reveal"),
-            post(admin_reveal_experiment_secret::<A>),
+            post(admin_reveal_experiment_secret),
         )
         .route(
             &participant_path("/api/admin/experiments/:experiment_id/config/validate"),
-            post(admin_validate_game_config::<A>),
+            post(admin_validate_game_config),
         )
         .route(
             &participant_path("/api/admin/experiments/:experiment_id/revisions"),
-            get(admin_experiment_revisions::<A>),
+            get(admin_experiment_revisions),
         )
         .route(
             &participant_path("/api/admin/experiments/:experiment_id/catalogue"),
-            post(admin_update_experiment_catalogue::<A>),
+            post(admin_update_experiment_catalogue),
         )
         .route(
             &participant_path("/api/admin/experiments/:experiment_id/archive"),
-            post(admin_archive_experiment::<A>),
+            post(admin_archive_experiment),
         )
         .route(
             &participant_path("/api/admin/game/settings"),
-            get(admin_game_settings::<A>).post(admin_update_game_settings::<A>),
+            get(admin_game_settings).post(admin_update_game_settings),
         )
         .route(
             &participant_path("/api/admin/game/secrets/reveal"),
-            post(admin_reveal_game_secret::<A>),
+            post(admin_reveal_game_secret),
         )
-        .route(
-            &participant_path("/api/admin/logout"),
-            post(admin_logout::<A>),
-        )
+        .route(&participant_path("/api/admin/logout"), post(admin_logout))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
-            require_admin_auth::<A>,
+            require_admin_auth,
         ))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
-            require_admin_network::<A>,
+            require_admin_network,
         ));
     public_admin_routes
         .merge(admin_routes)
@@ -317,11 +296,7 @@ pub(super) fn dashboard_routes<A: Game>(state: &Arc<ServerContext<A>>, prefix: &
 }
 
 /// Applies the same HTTP limits and response policy to installation and experiment routes.
-pub(super) fn http_layers<A: Game>(
-    api: Router,
-    state: &Arc<ServerContext<A>>,
-    cors: CorsLayer,
-) -> Router {
+pub(super) fn http_layers(api: Router, state: &Arc<ServerContext>, cors: CorsLayer) -> Router {
     api.layer(RequestBodyLimitLayer::new(64 * 1024))
         .layer(ConcurrencyLimitLayer::new(256))
         .layer(TimeoutLayer::with_status_code(
@@ -331,7 +306,7 @@ pub(super) fn http_layers<A: Game>(
         .layer(middleware::from_fn(security_headers))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            track_request_load::<A>,
+            track_request_load,
         ))
         .layer(cors)
 }

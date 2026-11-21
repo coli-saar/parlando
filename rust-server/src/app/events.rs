@@ -5,7 +5,7 @@
 //! atomic batch, callers that depend on an append can propagate its failure, and
 //! diagnostic paths can log an unsuccessful write.
 
-use super::{anyhow, AppState, Arc, Future, Game, Result, SessionEventRecord, Value};
+use super::{anyhow, AppState, Arc, Future, Result, SessionEventRecord, Value};
 
 /// Logs storage failures while preserving the current active-session request behavior.
 pub(super) async fn persist_event<F, T>(event_name: &'static str, record: F)
@@ -18,8 +18,8 @@ where
 }
 
 /// Appends a session event after resolving the session and optional actor from the active cache.
-pub(super) async fn persist_session_event<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn persist_session_event(
+    state: &Arc<AppState>,
     public_session_id: &str,
     participant_session_id: Option<&str>,
     event_type: &'static str,
@@ -50,8 +50,8 @@ pub(super) async fn persist_session_event<A: Game>(
 }
 
 /// Appends a session event and propagates any persistence failure to the caller.
-pub(super) async fn persist_session_event_required<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn persist_session_event_required(
+    state: &Arc<AppState>,
     public_session_id: &str,
     participant_session_id: Option<&str>,
     event_type: &'static str,
@@ -77,8 +77,8 @@ pub(super) async fn persist_session_event_required<A: Game>(
 }
 
 /// Resolves one session event record without writing it, for atomic transition batches.
-pub(super) async fn session_event_record<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn session_event_record(
+    state: &Arc<AppState>,
     public_session_id: &str,
     participant_session_id: Option<&str>,
     event_type: &'static str,

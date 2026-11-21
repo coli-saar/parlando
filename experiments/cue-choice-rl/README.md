@@ -41,9 +41,9 @@ cd experiments/cue-choice-rl/python
 python3 -m venv .venv
 source .venv/bin/activate
 export HF_HOME="$PWD/.hf-cache"
-python -m pip install -e ../../../rust-server/python/parlando-agent-sdk
+python -m pip install -e ../../../parlando-agent-sdk
 python -m pip install -e '.[qwen,test]'
-python -m cue_choice_rl.generate_protos
+python -m parlando_agent_sdk.generate_protos
 ```
 
 Start the preloaded learner in one terminal. Automatic device selection prefers
@@ -55,12 +55,23 @@ backend:
 cue-choice-learner --backend qwen --device auto
 ```
 
-Then run the Rust coordinator from the repository root:
+Build the game with the Rust `wasm32-unknown-unknown` target and `wasm-tools`.
+From the repository root, wrap the compiled game and pass the component to the
+coordinator:
 
 ```bash
+cargo build --manifest-path experiments/cue-choice-rl/server/Cargo.toml \
+  --release --lib --target wasm32-unknown-unknown
+wasm-tools component new \
+  experiments/cue-choice-rl/server/target/wasm32-unknown-unknown/release/parlando_cue_choice_rl.wasm \
+  -o /tmp/cue-choice.wasm
 cargo run --manifest-path experiments/cue-choice-rl/server/Cargo.toml -- \
-  experiments/cue-choice-rl/experiment.yaml
+  --component /tmp/cue-choice.wasm experiments/cue-choice-rl/experiment.yaml
 ```
+
+This specification writes to `artifacts/qwen-component-run` and saves models
+under `artifacts/component-checkpoints` within the experiment directory.
+Earlier native runs and their saved models can stay in their original directories.
 
 For a quick protocol test without PyTorch or a model download, install only
 `-e '.[test]'`, start `cue-choice-learner --backend random`, and use the same
@@ -68,37 +79,13 @@ Rust command. The random backend exercises sessions, trajectories, update
 idempotency, checkpoints, validation, and resume, but deliberately does not
 learn.
 
-## Required runner correction
+## Learner configuration
 
-The former `RLAgent::train(base, batch)` contract did not receive the named
-learner's normalized YAML settings or resolved factory secrets. That is enough
-for the in-process mock, but not for this experiment: the training method needs
-the Python endpoint, hyperparameters, checkpoint directory, and optional
-transport credential from the same agent definition used for inference.
-
-The runner now supplies one small context parameter:
-
-```rust,ignore
-pub struct RLTrainingContext {
-    pub settings: serde_json::Value,
-    pub factory_secrets: SecretValues,
-}
-
-async fn train(
-    &mut self,
-    context: &RLTrainingContext,
-    base: &CheckpointId,
-    batch: TrainingBatch,
-) -> Result<CheckpointId>;
-```
-
-`ExperimentRunner` already normalizes settings and resolves factory secrets
-while it resolves the learner's ordinary factory. It should retain those values
-once and pass them to every update. Do not make `AgentFactory::identity` or
-`create` mutate shared learner configuration as a side effect; that would make
-training depend on whether and in what order sessions happened to construct
-agents. Agent-instance secrets are unnecessary for training and should not be
-included in this context.
+The runner supplies the normalized learner settings and resolved factory
+secrets to each training update through `RLTrainingContext`. Inference and
+training use the endpoint and settings from the same YAML agent definition.
+The remote learner uses those settings for hyperparameters and checkpoint
+storage. Agent-instance secrets stay scoped to session agents.
 
 ## The game
 
@@ -132,14 +119,14 @@ AwaitingDeal -- Deal by B --> Choosing -- Choose by A --> Complete
 ```
 
 Actions submitted in the wrong phase or by the wrong role are rejected. The
-learner always receives the four typed choices as `available_actions`; the
-dealer receives only `Deal`. The schedule starts with player B and alternates
-after each accepted action. Because the learner's action completes the game,
+learner receives four choices in the cue view’s `available_actions` field. The
+dealer submits `Deal` when its view is `ReadyToDeal`. The schedule starts with
+player B and alternates the active role after each response. Because the learner's action completes the game,
 neither agent needs to yield or send messages.
 
 ## Reward
 
-Register `cue_choice.correctness` as a `RewardFunction<CueChoiceGame>`:
+Register `cue_choice.correctness` as a `RewardFunction`:
 
 ```text
 dealer Deal:       player A =  0, player B = 0

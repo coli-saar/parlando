@@ -5,10 +5,10 @@
 //! execution classifies its status to count fresh and resumed plans consistently.
 
 use super::training::{CheckpointId, TrajectoryStep};
+use crate::component::ComponentValue;
 use crate::game::{ActionRejection, PlayerRole};
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Deserialize, Serialize, Serializer};
-use serde_json::Value;
 
 /// Stable terminal classification stored with every headless session result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -41,7 +41,7 @@ impl SessionStatus {
 
 /// Compact immutable output from one planned headless session.
 #[derive(Debug, Serialize)]
-pub struct SessionResult<C: Serialize, O = Value, A = Value> {
+pub struct SessionResult {
     /// Identity of the experiment execution.
     pub run_id: String,
     /// Deterministic identity of the expanded plan.
@@ -67,7 +67,7 @@ pub struct SessionResult<C: Serialize, O = Value, A = Value> {
     /// Stable terminal status.
     pub status: SessionStatus,
     /// Shared game completion for normal completion.
-    pub completion: Option<C>,
+    pub completion: Option<ComponentValue>,
     /// Stable lifecycle phase for a failure, when applicable.
     pub failure_phase: Option<String>,
     /// Responsible role for a role-specific failure.
@@ -85,27 +85,27 @@ pub struct SessionResult<C: Serialize, O = Value, A = Value> {
     /// Total wall-clock execution time in milliseconds.
     pub elapsed_ms: u64,
     #[serde(flatten)]
-    pub(super) captures: SessionCaptures<O, A>,
+    pub(super) captures: SessionCaptures,
     /// Non-primary errors or timeouts encountered during unconditional shutdown.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub cleanup_diagnostics: Vec<String>,
 }
 
-impl<C: Serialize, O, A> SessionResult<C, O, A> {
+impl SessionResult {
     /// Returns the role-safe learner transitions captured during this session.
-    pub fn trajectory(&self) -> &[TrajectoryStep<O, A>] {
+    pub fn trajectory(&self) -> &[TrajectoryStep] {
         &self.captures.trajectory
     }
 }
 
 /// Keeps typed training and trace entries together so shared inputs serialize from one owner.
 #[derive(Debug)]
-pub(super) struct SessionCaptures<O, A> {
-    pub(super) trace: Option<Vec<DecisionTrace<O, A>>>,
-    pub(super) trajectory: Vec<TrajectoryStep<O, A>>,
+pub(super) struct SessionCaptures {
+    pub(super) trace: Option<Vec<DecisionTrace>>,
+    pub(super) trajectory: Vec<TrajectoryStep>,
 }
 
-impl<O: Serialize, A: Serialize> Serialize for SessionCaptures<O, A> {
+impl Serialize for SessionCaptures {
     /// Publishes only the captures requested for the session, in the stable result shape.
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut fields = serializer.serialize_map(None)?;
@@ -125,56 +125,56 @@ impl<O: Serialize, A: Serialize> Serialize for SessionCaptures<O, A> {
     }
 }
 
-/// One typed decision input retained by either the trace or the learner trajectory.
-#[derive(Debug)]
-pub(super) struct DecisionInput<O, A> {
-    pub(super) observation: O,
-    pub(super) available_actions: Option<Vec<A>>,
-}
-
 /// Locates a full trace input in its owning decision or training step.
 #[derive(Debug)]
-pub(super) enum TraceInput<O, A> {
-    Decision(DecisionInput<O, A>),
+pub(super) enum TraceInput {
+    Decision(ComponentValue),
     Trajectory(usize),
 }
 
 /// One recorded headless decision with optional full input.
 #[derive(Debug)]
-pub(super) struct DecisionTrace<O, A> {
+pub(super) struct DecisionTrace {
     pub(super) decision: u64,
     pub(super) role: PlayerRole,
-    pub(super) response: TraceResponse<A>,
+    pub(super) response: TraceResponse,
     pub(super) rejection: Option<ActionRejection>,
-    pub(super) input: Option<TraceInput<O, A>>,
+    pub(super) input: Option<TraceInput>,
 }
 
 /// Response variants and JSON tags used in headless result files.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(super) enum TraceResponse<A> {
+pub(super) enum TraceResponse {
     Yield,
-    Action { action: A },
-    Message { message: String },
-    ActionAndMessage { action: A, message: String },
+    Action {
+        action: ComponentValue,
+    },
+    Message {
+        message: String,
+    },
+    ActionAndMessage {
+        action: ComponentValue,
+        message: String,
+    },
 }
 
 /// Borrows trace rows and resolves any inputs shared with learner trajectory steps.
-struct TraceEntries<'a, O, A> {
-    trace: &'a [DecisionTrace<O, A>],
-    trajectory: &'a [TrajectoryStep<O, A>],
+struct TraceEntries<'a> {
+    trace: &'a [DecisionTrace],
+    trajectory: &'a [TrajectoryStep],
 }
 
-impl<O: Serialize, A: Serialize> Serialize for TraceEntries<'_, O, A> {
+impl Serialize for TraceEntries<'_> {
     /// Writes one result-file row for each recorded decision.
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut rows = serializer.serialize_seq(Some(self.trace.len()))?;
         for row in self.trace {
             let input = match row.input.as_ref() {
                 None => None,
-                Some(TraceInput::Decision(input)) => Some(TraceInputRef {
-                    observation: &input.observation,
-                    available_actions: &input.available_actions,
+                Some(TraceInput::Decision(observation)) => Some(TraceInputRef {
+                    observation,
+                    available_actions: None,
                 }),
                 Some(TraceInput::Trajectory(index)) => {
                     let step = self.trajectory.get(*index).ok_or_else(|| {
@@ -182,7 +182,7 @@ impl<O: Serialize, A: Serialize> Serialize for TraceEntries<'_, O, A> {
                     })?;
                     Some(TraceInputRef {
                         observation: &step.observation,
-                        available_actions: &step.available_actions,
+                        available_actions: None,
                     })
                 }
             };
@@ -200,20 +200,20 @@ impl<O: Serialize, A: Serialize> Serialize for TraceEntries<'_, O, A> {
 
 /// Stable artifact record derived from one typed trace row.
 #[derive(Serialize)]
-struct TraceRow<'a, O, A> {
+struct TraceRow<'a> {
     decision: u64,
     role: PlayerRole,
-    response: &'a TraceResponse<A>,
+    response: &'a TraceResponse,
     rejection: &'a Option<ActionRejection>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    input: Option<TraceInputRef<'a, O, A>>,
+    input: Option<TraceInputRef<'a>>,
 }
 
 /// Role-safe observation and optional action catalogue formatted in a full trace.
 #[derive(Serialize)]
-struct TraceInputRef<'a, O, A> {
-    observation: &'a O,
-    available_actions: &'a Option<Vec<A>>,
+struct TraceInputRef<'a> {
+    observation: &'a ComponentValue,
+    available_actions: Option<()>,
 }
 
 /// Secret-free provenance for one resolved agent seat.

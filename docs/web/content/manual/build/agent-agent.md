@@ -23,11 +23,13 @@ Complete the Python SDK installation in [Attach an automated player](agents-and-
    .venv-agent/bin/python docs/web/examples/great_tree_python_agent.py
    ```
 
-2. In a second terminal, run the checked-in Great Tree comparison:
+2. In a second terminal, build the Great Tree component and run the checked-in comparison:
 
    ```sh
+   (cd games/great-tree && ./run.sh --build-only)
    cargo run --manifest-path games/great-tree/server/Cargo.toml \
-     --bin agent_experiment -- \
+     --features bundled-agents --bin agent_experiment -- \
+     --component games/great-tree/dist/parlando/game.wasm \
      docs/web/examples/great-tree-python-vs-root-bot.yaml
    ```
 
@@ -144,7 +146,7 @@ still contain sensitive task or model content, so `full` is not a privacy guaran
 
 The output directory contains `run.json` and one JSON file per planned session. Repeating the same
 specification resumes the run and skips every finalized result, including failures. Use a new empty
-directory for a fresh statistical sample. A changed game identity, game version, or specification
+directory for a fresh statistical sample. A changed game identity, game version, component digest, or specification
 is rejected rather than silently combined with earlier results.
 
 ## Attach external policies without changing the design
@@ -173,8 +175,10 @@ Start the manual's Python service, then run its three-session Great Tree compari
 ```
 
 ```sh
+(cd games/great-tree && ./run.sh --build-only)
 cargo run --manifest-path games/great-tree/server/Cargo.toml \
-  --bin agent_experiment -- \
+  --features bundled-agents --bin agent_experiment -- \
+  --component games/great-tree/dist/parlando/game.wasm \
   docs/web/examples/great-tree-python-vs-root-bot.yaml
 ```
 

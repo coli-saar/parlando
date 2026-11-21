@@ -2,115 +2,37 @@
 
 A Parlando game has three independent parts: typed Rust mechanics, a participant application, and optional agents. The runtime owns authoritative state and experiment policy. Start with [the design principles](design-principles.md); use [the migration guide](migrating-to-clean-api.md) for a 0.2 game.
 
-## Implement `Game`
+## Build and run the package
 
-Define serializable `Config`, `State`, `Action`, `Observation`, and `Completion` types, then implement `parlando::Game`. `Action` and `Completion` must also implement `Clone` because the runtime delivers each accepted action and terminal result to both controllers.
+From a checkout, install the host and Rust build tools, then create a game:
 
-```rust
-use anyhow::Result;
-use parlando::{ActionRejection, Game, GameInitializationContext, PlayerRole};
-
-#[derive(Clone)]
-pub struct MyGame;
-
-impl Game for MyGame {
-    type Config = MyConfig;
-    type State = MyState;
-    type Action = MyAction;
-    type Observation = MyObservation;
-    type Completion = MyCompletion;
-
-    const STATE_REPRESENTATION_VERSION: &'static str = "my-game-state-v1";
-    const ACTION_REPRESENTATION_VERSION: &'static str = "my-game-action-v1";
-    const RULES_VERSION: &'static str = "my-game-rules-v1";
-
-    fn validate_config(&self, config: &Self::Config) -> Result<()> {
-        validate_config(config)
-    }
-
-    fn initial_state(&self, context: GameInitializationContext<'_, Self::Config>) -> Result<Self::State> {
-        // Trusted compiled game code can read only experiment-owned game secrets.
-        let optional_token = context.secrets.get("provider_token");
-        initial_state(context.config, context.seed)
-    }
-
-    fn apply_action(
-        &self,
-        state: &Self::State,
-        action: &Self::Action,
-        actor: PlayerRole,
-    ) -> std::result::Result<Self::State, ActionRejection> {
-        apply_action(state, action, actor)
-    }
-
-    fn observation(&self, state: &Self::State, role: PlayerRole) -> Self::Observation {
-        observation(state, role)
-    }
-
-    fn available_actions(
-        &self,
-        state: &Self::State,
-        role: PlayerRole,
-    ) -> Option<Vec<Self::Action>> {
-        available_actions(state, role)
-    }
-
-    fn completion(&self, state: &Self::State) -> Option<Self::Completion> {
-        completion(state)
-    }
-}
+```sh
+cargo install --locked --path rust-server --bin parlando
+rustup target add wasm32-unknown-unknown
+cargo install --locked wasm-tools
+parlando new my-game --lang rust
+cd my-game
+parlando test
+parlando build
+parlando serve
 ```
 
-`GameInitializationContext` keeps the typed configuration, seed, and secrets separate. Secret values have no serialization implementation and redact their debug output. The secret keys omit the stored `game.` prefix.
+Edit `src/lib.rs` for mechanics, `client/` for the participant interface, and `scenarios.yaml` for host-level examples. The CLI reads `game.yaml` and packages the component with its participant assets. Open `/admin` on the local server to configure an experiment. A shared host accepts the same package via `parlando deploy`.
 
-`State` is authoritative and private to the runtime. `Observation` is the complete ongoing domain information visible to one role. After an accepted action, human players and agents both receive the actor, the shared typed action, and their own resulting observation. Test both observation projections for private-information leaks. If the cause of a transition must remain hidden, use a non-revealing action value such as a `SecretAction` variant and put only permitted consequences in each observation.
+## Implement the session in Rust
 
-`Completion` is the shared structured terminal payload sent to both roles and stored for dashboards and exports. It may contain public facts such as winner and scores. Put role-private terminal facts in the final role-specific observation instead.
+The type implementing `parlando_game_sdk::Game` owns the private state of one session. Derive `GameValue` for the domain values that cross the boundary, then call `parlando_game_sdk::export!(MyGame)` in the game crate. The generated adapter describes the game's schema and encodes the results of each call. The host compiles the module once and creates a separate instance for each session.
 
-`apply_action` must check the actor and every state-dependent rule before returning a new state. Use a stable `ActionRejection` code for an expected rejection. The method should be deterministic and perform no I/O. Put semantic configuration validation on `GameFactory::validate_config`.
+| SDK method | Game responsibility |
+| --- | --- |
+| `init(config, seed)` | Validate game-specific settings and create a reproducible initial state. |
+| `step(&mut self, actor, action)` | Check the actor and rules before mutating state. Return a stable rejection code on an illegal action. |
+| `view_a(&self)`, `view_b(&self)` | Project only what each seat may see. The associated view types can differ and can borrow from the state. |
+| `completion(&self)` | Return a shared terminal result when the session ends. |
+| `metadata(&self)` | Supply optional role-neutral analysis data for an accepted transition. |
+| `checkpoint(&self)`, `restore(bytes)` | Optionally save and restore private session state. With deterministic initialization and actions the host can also recover by replay. |
 
-Parlando records one serialized initial `State` and each accepted `Action`. The three replay constants decide whether the current game build may reconstruct that recording. Change the state or action version only when the corresponding stored representation becomes incompatible; change the rules version when the same state and action would acquire different transition semantics. Do not change these constants for an ordinary package release, frontend-only change, or compatible additive change. `State` must therefore implement both `Serialize` and `Deserialize`.
-
-`available_actions` is optional. `None` means the action space is not enumerated; `Some(vec![])` means it is enumerated and currently empty. It never replaces `apply_action` validation.
-
-When the dashboard or exported log needs game-specific analysis fields, implement `transition_metadata`. Return only structured, role-neutral domain data. Participant prose and animation belong in the participant application.
-
-## Run the server
-
-```rust
-use parlando::{GameFactory, GameMetadata, GameSessionContext, Server};
-
-#[derive(Clone, Copy)]
-struct MyGameFactory;
-
-impl GameFactory for MyGameFactory {
-    type Game = MyGame;
-
-    fn create(&self, context: GameSessionContext) -> anyhow::Result<MyGame> {
-        Ok(MyGame::new(context.logger))
-    }
-}
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let metadata = GameMetadata {
-        id: "my-game".into(),
-        name: "My Game".into(),
-        version: env!("CARGO_PKG_VERSION").parse()?,
-        build_manifest: serde_json::json!({}),
-    };
-
-    Server::new(MyGameFactory, metadata)?
-        .database_url("sqlite:///./my-game.sqlite")
-        .participant_app("../client/dist")
-        .serve("127.0.0.1:3000".parse()?)
-        .await
-}
-```
-
-Register optional factories with `.agent(factory)?`. The server builder deliberately does not expose pairing, consent, privacy, session limits, transcription, TTS, or participant information and consent copy. Administrators configure those per experiment in the dashboard.
-
-Serving participant assets is optional. The HTTP/JSON/WebSocket protocol does not depend on React or on the JavaScript package, so a custom frontend can use the same server. Today, browser deployments use same-origin assets or place the frontend and server behind one reverse-proxy origin. A focused cross-origin allowlist on `Server` is deferred work; the protocol itself does not require co-hosting.
+Initialization and every accepted step return both observations in one frame. Live players and learning agents consume these same observations. If controls need a list of available choices, include it in the appropriate role's view. The game still checks every submitted action.
 
 ## Build a React participant application
 
@@ -131,7 +53,7 @@ export default function App() {
 }
 ```
 
-The game screen receives only its role-specific observation, optional accepted `transition`, optional `availableActions`, interaction status, and the `act` function. `transition` identifies the most recent accepted actor and action; a frontend that only needs the resulting observation can ignore it. Parlando owns connection status, conversation, microphone controls, leaving, and replay controls. The game can style those widgets through their `parlando-*` classes and CSS custom properties, but it does not implement their behavior.
+The game screen receives only its role-specific observation, optional accepted `transition`, interaction status, and the `act` function. `transition` identifies the most recent accepted actor and action; a frontend that only needs the resulting observation can ignore it. Parlando owns connection status, conversation, microphone controls, leaving, and replay controls. The game can style those widgets through their `parlando-*` classes and CSS custom properties, but it does not implement their behavior.
 
 The same renderer is used for live play and replay. In replay, `interactionEnabled` is false and `act` has no effect. Parlando replaces snapshots from the live channel with snapshots reconstructed from the recorded initial state and accepted actions.
 

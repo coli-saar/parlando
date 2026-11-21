@@ -7,14 +7,14 @@
 use super::{
     anyhow, broadcast_participant_states, due_live_deadline, json, mpsc, prolific_handoff,
     protocol_json, session_event_record, session_transition_lock, shutdown_session_log,
-    AgentObservation, AgentsMode, AppState, Arc, Game, HashMap, ParticipantOutcomeKind,
+    AgentObservation, AgentsMode, AppState, Arc, HashMap, ParticipantOutcomeKind,
     ParticipantResult, Result, SessionEnd, SessionEndCause, SessionEventRecord, SessionLifecycle,
     SubmissionRejection,
 };
 
 /// Ends one timed-out live session with a shared cause and per-participant results.
-pub(super) async fn expire_live_session<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn expire_live_session(
+    state: &Arc<AppState>,
     public_session_id: &str,
     reason: &str,
 ) -> Result<bool> {
@@ -26,8 +26,8 @@ pub(super) async fn expire_live_session<A: Game>(
 }
 
 /// Persists and projects expiry while the caller owns the session transition lock.
-pub(super) async fn expire_live_session_locked<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn expire_live_session_locked(
+    state: &Arc<AppState>,
     public_session_id: &str,
     reason: &str,
 ) -> Result<bool> {
@@ -105,7 +105,7 @@ pub(super) async fn expire_live_session_locked<A: Game>(
                         reason: reason.to_string(),
                         completion: None,
                         final_observation: Some(protocol_json(
-                            &session.game.observation(session.state(), participant.role),
+                            &session.state().observation(participant.role),
                         )?),
                     },
                 ))
@@ -131,8 +131,8 @@ pub(super) async fn expire_live_session_locked<A: Game>(
 }
 
 /// Commits a terminal event before closing the room and its agent delivery channel.
-async fn commit_end_locked<A: Game>(
-    state: &Arc<AppState<A>>,
+async fn commit_end_locked(
+    state: &Arc<AppState>,
     public_session_id: &str,
     event: SessionEventRecord,
     session_end: SessionEnd,
@@ -164,8 +164,8 @@ async fn commit_end_locked<A: Game>(
 
 /// Resolves an elapsed active deadline before allowing the next input to renew it.
 /// All callers hold the room guard, including the deadline checker and reconnect path.
-pub(super) async fn expire_if_due_locked<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn expire_if_due_locked(
+    state: &Arc<AppState>,
     public_session_id: &str,
 ) -> Result<bool> {
     let reason = state
@@ -185,8 +185,8 @@ pub(super) async fn expire_if_due_locked<A: Game>(
 }
 
 /// Atomically records an intentional departure and closes the session to further game input.
-pub(super) async fn abandon_session<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn abandon_session(
+    state: &Arc<AppState>,
     public_session_id: &str,
     participant_session_id: &str,
     reason: &str,
@@ -199,8 +199,8 @@ pub(super) async fn abandon_session<A: Game>(
 }
 
 /// Commits the identified participant's departure, including a zero-length reconnect grace.
-pub(super) async fn depart_session_locked<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn depart_session_locked(
+    state: &Arc<AppState>,
     public_session_id: &str,
     participant_session_id: &str,
     reason: &str,
@@ -252,7 +252,7 @@ pub(super) async fn depart_session_locked<A: Game>(
                         reason: reason.to_string(),
                         completion: None,
                         final_observation: Some(protocol_json(
-                            &session.game.observation(session.state(), participant.role),
+                            &session.state().observation(participant.role),
                         )?),
                     },
                 ))
@@ -293,11 +293,11 @@ pub(super) async fn depart_session_locked<A: Game>(
 /// Reserves delivery before a commit without blocking the session on its own agent.
 /// If a callback cannot keep up, end the room before accepting an undeliverable input.
 /// The caller holds the transition lock so accepted actions and messages retain order.
-pub(super) async fn reserve_agent_delivery<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn reserve_agent_delivery(
+    state: &Arc<AppState>,
     public_session_id: &str,
-    sender: mpsc::Sender<AgentObservation<A>>,
-) -> Result<mpsc::OwnedPermit<AgentObservation<A>>> {
+    sender: mpsc::Sender<AgentObservation>,
+) -> Result<mpsc::OwnedPermit<AgentObservation>> {
     match sender.try_reserve_owned() {
         Ok(permit) => Ok(permit),
         Err(_) => {

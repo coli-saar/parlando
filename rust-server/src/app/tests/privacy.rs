@@ -4,7 +4,7 @@ use super::*;
 #[tokio::test]
 async fn admin_privacy_status_renders_and_downloads_current_facts() {
     let (config, _tmp) = sqlite_config();
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
     authenticate_test_admin(router.clone()).await.unwrap();
@@ -181,7 +181,7 @@ async fn experiment_privacy_reports_only_the_enabled_speech_path() {
     config.voice.enabled = true;
     config.transcription.enabled = true;
     config.speechmatics.api_key = "test-key".to_string();
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
     authenticate_test_admin(router.clone()).await.unwrap();

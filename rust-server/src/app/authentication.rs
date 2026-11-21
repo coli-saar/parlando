@@ -6,14 +6,14 @@
 //! and CSRF checks where required.
 
 use super::{
-    validate_admin_request_origin, AppError, AppState, Arc, ConnectInfo, Extension, Game,
-    HeaderMap, IntoResponse, IpAddr, Method, Next, ParticipantPrincipal, Redirect, Request,
-    Response, Result, ServerContext, SocketAddr, State, StatusCode, AUTHORIZATION, COOKIE,
+    validate_admin_request_origin, AppError, AppState, Arc, ConnectInfo, Extension, HeaderMap,
+    IntoResponse, IpAddr, Method, Next, ParticipantPrincipal, Redirect, Request, Response, Result,
+    ServerContext, SocketAddr, State, StatusCode, AUTHORIZATION, COOKIE,
 };
 
 /// Authenticates participant API requests and attaches the resolved principal.
-pub(super) async fn require_participant_auth<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(super) async fn require_participant_auth(
+    State(state): State<Arc<AppState>>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, AppError> {
@@ -29,8 +29,8 @@ pub(super) async fn require_participant_auth<A: Game>(
 }
 
 /// Restricts all administrator surfaces to configured direct-peer CIDR ranges.
-pub(super) async fn require_admin_network<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(super) async fn require_admin_network(
+    State(state): State<Arc<ServerContext>>,
     request: Request,
     next: Next,
 ) -> Result<Response, AppError> {
@@ -72,8 +72,8 @@ pub(super) fn admin_network_allows(ranges: &[String], client_ip: Option<IpAddr>)
 }
 
 /// Authenticates every administrator route and enforces role and CSRF on mutations.
-pub(super) async fn require_admin_auth<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(super) async fn require_admin_auth(
+    State(state): State<Arc<ServerContext>>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, AppError> {

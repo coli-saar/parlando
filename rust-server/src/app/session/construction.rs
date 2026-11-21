@@ -10,20 +10,19 @@ use crate::app::{
     agent_event_metadata, broadcast_participant_states, configuration_fingerprint,
     expire_live_session, json, new_id, persist_session_event, protocol_json, session_code,
     session_transition_lock, shutdown_session_log, start_agent_task, AgentContext, AgentTaskInput,
-    AppError, AppState, Arc, Duration, Game, GameInitializationContext, GameSessionContext,
-    HashMap, LiveSession, Mutex, ParticipantRecord, PlayerRole, Result, SecretValues,
-    SessionEventRecord, SessionLifecycle, SessionLogger, SessionParticipant, SessionRecord,
-    SharedAgentFactory, StatusCode, Value,
+    AppError, AppState, Arc, Duration, HashMap, LiveSession, Mutex, ParticipantRecord, PlayerRole,
+    Result, SecretValues, SessionEventRecord, SessionLifecycle, SessionLogger, SessionParticipant,
+    SessionRecord, SharedAgentFactory, StatusCode, Value,
 };
 
 /// Validated inputs retained until a live session can supply an agent-scoped logger.
-pub(in crate::app) struct PreparedAgentConstruction<A: Game> {
+pub(in crate::app) struct PreparedAgentConstruction {
     pub(in crate::app) session_seed: u64,
     agent_seed: u64,
     settings: Value,
     factory_secrets: SecretValues,
     agent_instance_secrets: SecretValues,
-    factory: SharedAgentFactory<A>,
+    factory: SharedAgentFactory,
     timeout: f64,
     invalid_action_limit: usize,
     metadata: Value,
@@ -31,9 +30,9 @@ pub(in crate::app) struct PreparedAgentConstruction<A: Game> {
 }
 
 /// Validates an agent's factory settings and identity before admission reserves a session.
-pub(in crate::app) fn prepare_agent_construction<A: Game>(
-    state: &AppState<A>,
-) -> Result<PreparedAgentConstruction<A>, AppError> {
+pub(in crate::app) fn prepare_agent_construction(
+    state: &AppState,
+) -> Result<PreparedAgentConstruction, AppError> {
     let agent_config = state
         .context
         .config
@@ -94,9 +93,9 @@ pub(in crate::app) fn prepare_agent_construction<A: Game>(
 }
 
 /// Constructs a durable session and publishes it only after its first membership commits.
-pub(in crate::app) async fn create_live_session_locked<A: Game>(
+pub(in crate::app) async fn create_live_session_locked(
     _reservation: &AdmissionReservation,
-    state: &AppState<A>,
+    state: &AppState,
     participant_session_id: String,
     mode: String,
     role: PlayerRole,
@@ -147,31 +146,11 @@ pub(in crate::app) async fn create_live_session_locked<A: Game>(
         session_id,
     );
     let membership = SessionParticipant::human(&participant, role, &state.context.config);
-    let mut failure_reason = "game_construction_failed";
+    let mut failure_reason = "game_state_initialization_failed";
     let initialization: Result<_, AppError> = async {
-        let game = state
-            .context
-            .installation
-            .game_factory
-            .create(GameSessionContext {
-                logger: logger.clone(),
-            })
-            .map_err(|error| AppError::bad_request(error.to_string()))?;
-        failure_reason = "game_state_initialization_failed";
+        let game = state.context.installation.loaded_game.session();
         let game_state = game
-            .initial_state(GameInitializationContext {
-                config: &state.game_config,
-                seed,
-                secrets: &SecretValues::new(
-                    state
-                        .context
-                        .config
-                        .game_secrets
-                        .clone()
-                        .into_iter()
-                        .collect(),
-                ),
-            })
+            .init(&state.game_config, seed)
             .map_err(|error| AppError::bad_request(error.to_string()))?;
         failure_reason = "session_event_persistence_failed";
         let initial_state_json = protocol_json(&game_state)?;
@@ -186,8 +165,8 @@ pub(in crate::app) async fn create_live_session_locked<A: Game>(
                 actor_participant_id: None,
                 actor_role: None,
                 payload: json!({"public_session_id": public_session_id, "seed": seed,
-                "replay_compatibility": {"state": A::STATE_REPRESENTATION_VERSION,
-                    "action": A::ACTION_REPRESENTATION_VERSION, "rules": A::RULES_VERSION}}),
+                "replay_compatibility": {"state": "1",
+                    "action": "1", "rules": "1"}}),
                 game_state: Some(initial_state_json),
             })
             .await?;
@@ -260,10 +239,10 @@ pub(in crate::app) async fn create_live_session_locked<A: Game>(
 }
 
 /// Constructs the reserved software participant and admits it through the normal session boundary.
-pub(in crate::app) async fn construct_and_join_agent<A: Game>(
-    state: Arc<AppState<A>>,
+pub(in crate::app) async fn construct_and_join_agent(
+    state: Arc<AppState>,
     public_session_id: String,
-    prepared: PreparedAgentConstruction<A>,
+    prepared: PreparedAgentConstruction,
 ) {
     if let Err(error) = try_construct_and_join_agent(&state, &public_session_id, prepared).await {
         tracing::error!(message = %error.message, %public_session_id, "software agent could not join its reserved session");
@@ -274,10 +253,10 @@ pub(in crate::app) async fn construct_and_join_agent<A: Game>(
 }
 
 /// Performs fallible agent construction before atomically attaching the resulting participant.
-async fn try_construct_and_join_agent<A: Game>(
-    state: &Arc<AppState<A>>,
+async fn try_construct_and_join_agent(
+    state: &Arc<AppState>,
     public_session_id: &str,
-    prepared: PreparedAgentConstruction<A>,
+    prepared: PreparedAgentConstruction,
 ) -> Result<(), AppError> {
     let (purpose, logger) = {
         let memory = state.memory.read().await;

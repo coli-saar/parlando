@@ -11,7 +11,6 @@ use parlando::{
 };
 use parlando_client_server_contract_tests::{
     contract_config, enable_browser_fixture, enable_voice, run_browser_driver, spawn_server,
-    ContractGame,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -21,14 +20,14 @@ use serde_json::Value;
 struct Scenario {
     name: &'static str,
     configure: fn(&mut ExperimentConfig),
-    options: fn() -> ServeOptions<ContractGame>,
+    options: fn() -> ServeOptions,
 }
 
 /// Agent factory whose asynchronous construction failure exercises infrastructure termination.
 struct FailingAgentFactory;
 
 #[async_trait]
-impl AgentFactory<ContractGame> for FailingAgentFactory {
+impl AgentFactory for FailingAgentFactory {
     /// Identifies the test-only factory selected by the scenario configuration.
     fn definition(&self) -> AgentDefinition {
         AgentDefinition {
@@ -43,7 +42,7 @@ impl AgentFactory<ContractGame> for FailingAgentFactory {
     async fn create(
         &self,
         _context: AgentContext,
-    ) -> Result<Box<dyn parlando::agent::Agent<ContractGame> + Send>> {
+    ) -> Result<Box<dyn parlando::agent::Agent + Send>> {
         anyhow::bail!("intentional browser end-to-end agent construction failure")
     }
 
@@ -187,12 +186,12 @@ fn failing_agent(config: &mut ExperimentConfig) {
 }
 
 /// Returns ordinary server dependencies for human-human browser scenarios.
-fn ordinary_options() -> ServeOptions<ContractGame> {
+fn ordinary_options() -> ServeOptions {
     ServeOptions::default()
 }
 
 /// Installs the test-only failing agent factory for technical-failure coverage.
-fn failing_agent_options() -> ServeOptions<ContractGame> {
+fn failing_agent_options() -> ServeOptions {
     ServeOptions {
         agent_factory: Some(Arc::new(FailingAgentFactory)),
         ..ServeOptions::default()

@@ -93,7 +93,7 @@ async fn mounted_router(config: ExperimentConfig) -> TestRouter {
         build_manifest: json!({}),
     };
     let router = TestRouter::new(
-        build_game_router(TinyAdapter, config, descriptor, |_| {
+        build_game_router(live_game(), config, descriptor, |_| {
             Ok(ServeOptions::default())
         })
         .await

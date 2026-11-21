@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn transcript_endpoints_are_private_and_diagnostics_are_not_persisted() {
     let (config, _temp) = sqlite_config();
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
     let (a, _b, public_session_id) = create_joined_room(router.clone()).await;

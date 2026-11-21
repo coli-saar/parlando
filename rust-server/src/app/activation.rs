@@ -7,13 +7,13 @@
 
 use super::{
     hydrated_experiment_config, now_iso, prolific_setup_url, validate_agent_configuration,
-    AppError, AppState, Arc, Digest, Duration, ExperimentConfig, Game, HashMap, HashSet, Instant,
+    AppError, AppState, Arc, Digest, Duration, ExperimentConfig, HashMap, HashSet, Instant,
     ProlificPreflightCacheEntry, Result, ServerContext, Sha256, VerifiedProlificStudy,
 };
 
 /// Computes intake blockers while honoring providers injected by an embedding application.
-pub(super) async fn experiment_activation_issues<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn experiment_activation_issues(
+    state: &Arc<AppState>,
     experiment_id: &str,
 ) -> Result<Vec<String>, AppError> {
     let mut config = hydrated_experiment_config(&state.context, experiment_id).await?;
@@ -53,8 +53,8 @@ pub(super) async fn experiment_activation_issues<A: Game>(
 }
 
 /// Reuses a recent provider check when its complete local input contract is unchanged.
-pub(super) async fn cached_prolific_activation_preflight<A: Game>(
-    state: &ServerContext<A>,
+pub(super) async fn cached_prolific_activation_preflight(
+    state: &ServerContext,
     experiment_id: &str,
     config: &ExperimentConfig,
     prolific_api_base_url: &str,
@@ -79,8 +79,8 @@ pub(super) async fn cached_prolific_activation_preflight<A: Game>(
 }
 
 /// Performs a fresh provider check and publishes its result for badges and Start.
-pub(super) async fn run_and_cache_prolific_activation_preflight<A: Game>(
-    state: &ServerContext<A>,
+pub(super) async fn run_and_cache_prolific_activation_preflight(
+    state: &ServerContext,
     experiment_id: &str,
     config: &ExperimentConfig,
     prolific_api_base_url: &str,
@@ -236,18 +236,15 @@ async fn prolific_activation_preflight(
 }
 
 /// Computes every runtime-readiness blocker from one hydrated configuration.
-fn activation_issues_for_config<A: Game>(
-    state: &AppState<A>,
-    config: &mut ExperimentConfig,
-) -> Vec<String> {
+fn activation_issues_for_config(state: &AppState, config: &mut ExperimentConfig) -> Vec<String> {
     let mut issues = local_testing_issues_for_config(&state.context, config);
     issues.extend(prolific_local_activation_issues(config));
     issues
 }
 
 /// Computes readiness blockers shared by direct intake and synthetic local previews.
-pub(super) fn local_testing_issues_for_config<A: Game>(
-    state: &ServerContext<A>,
+pub(super) fn local_testing_issues_for_config(
+    state: &ServerContext,
     config: &mut ExperimentConfig,
 ) -> Vec<String> {
     if state.has_transcription_provider {

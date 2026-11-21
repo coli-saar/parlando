@@ -3,7 +3,7 @@ use super::*;
 /// Confirms the protected dashboard shell and its separately embedded assets are servable.
 #[tokio::test]
 async fn admin_dashboard_serves_html_css_and_javascript_assets() {
-    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+    let router = build_router(live_game(), step_five_config(), ServeOptions::default())
         .await
         .unwrap();
     authenticate_test_admin(router.clone()).await.unwrap();
@@ -70,7 +70,7 @@ async fn admin_dashboard_serves_html_css_and_javascript_assets() {
 #[tokio::test]
 async fn admin_load_exposes_capacity_counters_and_liveness_policy() {
     let (config, _tmp) = sqlite_config();
-    let router = crate::app::build_router(TinyAdapter, config, ServeOptions::default())
+    let router = crate::app::build_router(live_game(), config, ServeOptions::default())
         .await
         .map(TestRouter::new)
         .unwrap();
@@ -92,7 +92,7 @@ async fn admin_load_exposes_capacity_counters_and_liveness_policy() {
 #[tokio::test]
 async fn admin_sessions_api_reads_actions_from_database() {
     let (config, _temp) = sqlite_config();
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
     let (a, b, public_session_id) = create_joined_room(router.clone()).await;

@@ -1,35 +1,21 @@
 //! Execution, observation delivery, and response handling for a live agent.
 //!
 //! Room construction supplies a fresh agent and its assigned role. The agent task
-//! consumes ordered observations from its bounded inbox and requests decisions with that
-//! role's available actions. Agent responses use the same action and conversation commit
+//! consumes ordered role-specific observations from its bounded inbox before requesting each
+//! decision. Agent responses use the same action and conversation commit
 //! paths as other live input.
 
 use super::{
-    agent_event_metadata, anyhow, broadcast_participant_states, commit_conversation_message,
+    agent_event_metadata, broadcast_participant_states, commit_conversation_message,
     expire_live_session, json, maybe_start_game, mpsc, persist_session_event, protocol_json,
     session_transition_lock, shutdown_session_log, speak_agent_message, submit_action,
     ActionRejection, Agent, AgentObservation, AgentResponse, AgentTaskInput, AppState, Arc,
-    ConversationOrigin, Duration, Game, PlayerRole, Result, SessionLifecycle,
+    ConversationOrigin, Duration, PlayerRole, Result, SessionLifecycle,
 };
 
 /// Builds the stable map key used for one session-local agent instance.
 fn agent_key(public_session_id: &str, participant_session_id: &str) -> String {
     format!("{public_session_id}:{participant_session_id}")
-}
-
-/// Returns the currently available actions for an agent role in a session.
-async fn agent_available_actions<A: Game>(
-    state: &Arc<AppState<A>>,
-    public_session_id: &str,
-    role: PlayerRole,
-) -> Result<Option<Vec<A::Action>>> {
-    let memory = state.memory.read().await;
-    let session = memory
-        .sessions
-        .get(public_session_id)
-        .ok_or_else(|| anyhow!("Session not found."))?;
-    Ok(session.game.available_actions(session.state(), role))
 }
 
 /// Converts an agent timeout result into a normal anyhow result.
@@ -44,12 +30,12 @@ fn flatten_agent_timeout<T>(
 }
 
 /// Persists and applies one validated agent response.
-async fn handle_agent_response<A: Game>(
-    state: Arc<AppState<A>>,
+async fn handle_agent_response(
+    state: Arc<AppState>,
     public_session_id: &str,
     participant_session_id: &str,
     role: PlayerRole,
-    response: AgentResponse<A::Action>,
+    response: AgentResponse,
 ) -> Result<()> {
     let (action, message) = response.into_parts();
     if let Some(action) = action {
@@ -91,20 +77,15 @@ async fn handle_agent_response<A: Game>(
 }
 
 /// Asks one agent for an optional response and applies it when present.
-async fn request_agent_decision<A: Game>(
-    state: Arc<AppState<A>>,
-    agent: &mut dyn Agent<A>,
+async fn request_agent_decision(
+    state: Arc<AppState>,
+    agent: &mut dyn Agent,
     public_session_id: &str,
     participant_session_id: &str,
     role: PlayerRole,
     timeout: f64,
 ) -> Result<()> {
-    let available_actions = agent_available_actions(&state, public_session_id, role).await?;
-    let result = tokio::time::timeout(
-        Duration::from_secs_f64(timeout),
-        agent.respond(available_actions),
-    )
-    .await;
+    let result = tokio::time::timeout(Duration::from_secs_f64(timeout), agent.respond()).await;
     let Some(response) = flatten_agent_timeout(result, "agent respond timeout")? else {
         return Ok(());
     };
@@ -119,12 +100,12 @@ async fn request_agent_decision<A: Game>(
 }
 
 /// Owns initialization and execution of one attached agent, disposing of it on every exit.
-pub(super) async fn start_agent_task<A: Game>(
-    state: Arc<AppState<A>>,
+pub(super) async fn start_agent_task(
+    state: Arc<AppState>,
     public_session_id: String,
     participant_session_id: String,
     role: PlayerRole,
-    mut pending: AgentTaskInput<A>,
+    mut pending: AgentTaskInput,
 ) {
     let key = agent_key(&public_session_id, &participant_session_id);
     {
@@ -147,7 +128,7 @@ pub(super) async fn start_agent_task<A: Game>(
                     .sessions
                     .get(&public_session_id)
                     .filter(|session| session.lifecycle() == &SessionLifecycle::Forming)
-                    .map(|session| session.game.observation(session.state(), role))
+                    .map(|session| session.state().observation(role))
             };
             let Some(initial_observation) = initial_observation else {
                 return;

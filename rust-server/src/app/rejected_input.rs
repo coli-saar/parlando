@@ -5,11 +5,11 @@
 //! occurrence counts. The game socket flushes outstanding aggregates when its transport
 //! ends.
 
-use super::{json, persist_session_event, AppState, Arc, Digest, Game, RejectionWindow, Sha256};
+use super::{json, persist_session_event, AppState, Arc, Digest, RejectionWindow, Sha256};
 
 /// Persists one analyzable, size-bounded rejected-action event.
-pub(super) async fn persist_rejected_action<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn persist_rejected_action(
+    state: &Arc<AppState>,
     public_session_id: &str,
     participant_session_id: &str,
     reason_code: &str,
@@ -29,8 +29,8 @@ pub(super) async fn persist_rejected_action<A: Game>(
 }
 
 /// Persists the first and then one periodic aggregate for repeated rejected inputs.
-pub(super) async fn persist_rejected_input<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn persist_rejected_input(
+    state: &Arc<AppState>,
     public_session_id: &str,
     participant_session_id: &str,
     event_type: &'static str,
@@ -101,8 +101,8 @@ pub(super) async fn persist_rejected_input<A: Game>(
 }
 
 /// Flushes suppressed rejection counts when the participant's current game transport ends.
-pub(super) async fn flush_rejected_input_aggregates<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn flush_rejected_input_aggregates(
+    state: &Arc<AppState>,
     public_session_id: &str,
     participant_session_id: &str,
 ) {

@@ -1,4 +1,4 @@
-//! Composes the live HTTP and WebSocket server for a compiled game. Installation services
+//! Composes the live HTTP and WebSocket server for a loaded game component. Installation services
 //! share the store, administration, and runtime registry across experiment revisions.
 //! Each mounted revision owns its configuration and live rooms. Routing selects the
 //! owning revision before participant and agent operations access its state.
@@ -58,10 +58,10 @@ use crate::{
         ParticipantPrincipal, UpgradePurpose, UpgradeTicketClaims, UpgradeTicketStore,
         ADMIN_ABSOLUTE_SECONDS,
     },
+    component::{ComponentValue, GameFrame, GameSession, LoadedGame},
     config::{AgentsMode, ExperimentConfig, StoredExperimentConfig},
     game::{
-        parse_game_config, ActionRejection, AgentDefinition, Game, GameFactory,
-        GameInitializationContext, GameMetadata, GameSessionContext, PlayerRole, SecretValues,
+        parse_game_config, ActionRejection, AgentDefinition, GameMetadata, PlayerRole, SecretValues,
     },
     identity::{new_id, session_code},
     protocol::*,
@@ -81,21 +81,21 @@ use crate::{
 };
 
 /// A constructed agent and the validated settings needed by its runtime task.
-struct AgentTaskInput<A: Game> {
-    agent: Box<dyn Agent<A> + Send>,
+struct AgentTaskInput {
+    agent: Box<dyn Agent + Send>,
     timeout: f64,
     invalid_action_limit: usize,
     metadata: Value,
 }
 
-/// Optional runtime components supplied by the game-specific binary.
+/// Optional runtime services supplied when mounting an experiment.
 #[derive(Clone)]
-pub struct ServeOptions<A: Game> {
-    /// Identity of the one game implementation compiled into this server process.
+pub struct ServeOptions {
+    /// Display identity and build provenance of the loaded game component.
     #[cfg(any(test, feature = "internal-tools"))]
     pub game_descriptor: Option<GameMetadata>,
     /// Factory used to create one fresh agent per agent participant.
-    pub agent_factory: Option<Arc<dyn AgentFactory<A>>>,
+    pub agent_factory: Option<Arc<dyn AgentFactory>>,
     /// Dashboard definitions for every agent factory registered with this server.
     pub agent_definitions: Vec<AgentDefinition>,
     /// Streaming TTS provider used for agent-origin conversation messages.
@@ -106,7 +106,7 @@ pub struct ServeOptions<A: Game> {
     pub transcription_provider: Option<Arc<dyn TranscriptionProvider>>,
 }
 
-impl<A: Game> Default for ServeOptions<A> {
+impl Default for ServeOptions {
     /// Creates serve options with no agent factory configured.
     fn default() -> Self {
         Self {
@@ -134,7 +134,7 @@ fn consent_configuration_hash(config: &ExperimentConfig) -> Result<String, AppEr
 }
 
 /// Applies the experiment-wide safety ceiling to unauthenticated participant creation bursts.
-async fn enforce_creation_rate<A: Game>(state: &Arc<AppState<A>>) -> Result<(), AppError> {
+async fn enforce_creation_rate(state: &Arc<AppState>) -> Result<(), AppError> {
     let now = chrono::Utc::now().timestamp();
     let mut attempts = state.participant_creation_window.write().await;
     attempts.record(now).then_some(()).ok_or_else(|| {
@@ -146,27 +146,27 @@ async fn enforce_creation_rate<A: Game>(state: &Arc<AppState<A>>) -> Result<(), 
 }
 
 /// Router cache contains entries only for real experiments that have mounted successfully.
-type ExperimentMountCache<A> = RwLock<HashMap<String, routing::ExperimentMounts<A>>>;
+type ExperimentMountCache = RwLock<HashMap<String, routing::ExperimentMounts>>;
 
 /// Process-wide resources shared by catalogue administration and mounted experiments.
-struct Installation<A: Game> {
-    game_factory: Arc<dyn GameFactory<Game = A>>,
+struct Installation {
+    loaded_game: LoadedGame,
     game_descriptor: GameMetadata,
     version_manifest: Value,
     store: SharedExperimentStore,
     admin_auth: Arc<AdminAuthenticator>,
     game_settings: RwLock<StoredGameSettings>,
     telemetry: Arc<RuntimeTelemetry>,
-    runtime_registry: RwLock<HashMap<String, Vec<Weak<AppState<A>>>>>,
+    runtime_registry: RwLock<HashMap<String, Vec<Weak<AppState>>>>,
     prolific_preflight_cache: RwLock<HashMap<String, ProlificPreflightCacheEntry>>,
     // The dispatcher owns the routers. Keeping this link weak avoids a router/state cycle.
-    runtime_router_cache: Weak<ExperimentMountCache<A>>,
+    runtime_router_cache: Weak<ExperimentMountCache>,
     runtime_router_build_locks: [Arc<Mutex<()>>; MOUNT_LOCK_COUNT],
 }
 
 /// Configuration and administrative capabilities independent of live session resources.
-struct ServerContext<A: Game> {
-    installation: Arc<Installation<A>>,
+struct ServerContext {
+    installation: Arc<Installation>,
     config: ExperimentConfig,
     agent_definitions: Vec<AgentDefinition>,
     has_transcription_provider: bool,
@@ -174,21 +174,21 @@ struct ServerContext<A: Game> {
 }
 
 /// Shared server state used by HTTP handlers, WebSocket tasks, and background agents.
-pub(crate) struct AppState<A: Game> {
-    context: Arc<ServerContext<A>>,
+pub(crate) struct AppState {
+    context: Arc<ServerContext>,
     /// Typed game-owned configuration validated when this experiment runtime is built.
-    pub game_config: A::Config,
+    pub game_config: ComponentValue,
     pub experiment_id: String,
     /// Immutable configuration revision used for newly created sessions.
     pub config_revision: i64,
     experiment_lifecycle: RwLock<ExperimentLifecycle>,
     /// Participant URL selected when the current intake run started.
     participant_url: RwLock<Option<RunningParticipantUrl>>,
-    memory: RwLock<MemoryState<A>>,
+    memory: RwLock<MemoryState>,
     /// Serializes matchmaking reservations without blocking live-session state access.
     session_admission: AdmissionQueue,
     pub session_buses: RwLock<HashMap<String, broadcast::Sender<ServerMessage>>>,
-    pub agent_factory: Option<SharedAgentFactory<A>>,
+    pub agent_factory: Option<SharedAgentFactory>,
     pub started_agents: RwLock<HashSet<String>>,
     pub tts_provider: Option<Arc<dyn StreamingTtsProvider>>,
     pub audio_publisher: Option<Arc<dyn AgentAudioPublisher>>,
@@ -240,8 +240,8 @@ struct ProlificPreflightCacheEntry {
 struct AdminExperimentScope(String);
 
 /// Returns the explicitly routed experiment or the runtime's own experiment.
-fn admin_experiment_id<A: Game>(
-    state: &AppState<A>,
+fn admin_experiment_id(
+    state: &AppState,
     scope: Option<&Extension<AdminExperimentScope>>,
 ) -> String {
     scope
@@ -463,7 +463,7 @@ use telemetry::{
     ParticipantLiveness, RuntimeTelemetry, SessionLiveness,
 };
 
-impl<A: Game> AppState<A> {
+impl AppState {
     /// Returns the shared broadcast channel for one session.
     async fn session_bus(&self, public_session_id: &str) -> broadcast::Sender<ServerMessage> {
         let mut buses = self.session_buses.write().await;
@@ -522,11 +522,12 @@ impl IntoResponse for AppError {
 
 mod routing;
 pub use routing::serve_game;
+pub(crate) use routing::{build_deployed_experiment, termination_signal, validate_hosted_config};
 #[cfg(any(test, feature = "internal-tools"))]
 pub use routing::{build_game_router, build_router};
 
 /// Checks that the experiment store is accepting read-write transactions.
-async fn health<A: Game>(State(state): State<Arc<AppState<A>>>) -> Result<Json<Value>, AppError> {
+async fn health(State(state): State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
     tokio::time::timeout(
         Duration::from_secs(2),
         state.context.installation.store.health_check(),
@@ -541,9 +542,7 @@ async fn health<A: Game>(State(state): State<Arc<AppState<A>>>) -> Result<Json<V
 }
 
 /// Returns the public configuration used by the participant client.
-async fn public_config<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
-) -> Json<PublicConfigResponse> {
+async fn public_config(State(state): State<Arc<AppState>>) -> Json<PublicConfigResponse> {
     let config = &state.context.config;
     let game_settings = state
         .context

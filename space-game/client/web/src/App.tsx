@@ -36,7 +36,7 @@ function ActiveSpaceGame({ snapshot }: { snapshot: SpaceGameSnapshot }) {
   const [preview, setPreview] = useState<ActionPreview | null>(null);
   const state = snapshot.observation;
   const systems = state.systems;
-  const serverAvailableActions = snapshot.availableActions ?? [];
+  const serverAvailableActions = state.actions;
   const assignedRole = snapshot.role;
   const onlineReady = snapshot.interactionEnabled;
   const dispatch = useCallback(
@@ -60,7 +60,7 @@ function ActiveSpaceGame({ snapshot }: { snapshot: SpaceGameSnapshot }) {
       }
 
       if (key === "enter" && assignedRole) {
-        const firstAction = snapshot.availableActions?.[0];
+        const firstAction = serverAvailableActions[0];
         if (firstAction) {
           event.preventDefault();
           dispatch(firstAction);
@@ -69,7 +69,7 @@ function ActiveSpaceGame({ snapshot }: { snapshot: SpaceGameSnapshot }) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [assignedRole, dispatch, onlineReady, snapshot.availableActions]);
+  }, [assignedRole, dispatch, onlineReady, serverAvailableActions]);
 
   return (
     <>

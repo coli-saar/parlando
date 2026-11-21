@@ -5,9 +5,10 @@ multiple experiments with it. You design both the participant experience and the
 game mechanics. Parlando supplies reusable setup, communication, administration,
 privacy, and data infrastructure around them.
 
-One process runs one compiled game version—browser client and Rust mechanics—and
-hosts a database-backed catalogue of experiments for that game. Each session
-records the experiment revision and game version that produced it.
+A local server hosts a catalogue of experiments for one Wasm game.
+The shared component host can serve multiple game packages on one origin. An
+experiment pins its package revision and records the configuration that
+produced each session.
 
 Choose a path according to the task you need to perform.
 
@@ -40,7 +41,8 @@ shape from a game description.
    macOS without Docker.
    For a complete worked Render deployment, follow [Deploy a Parlando Game on
    Render](deploying-on-render.md).
-   Use [Run a WebAssembly Component Game](component-games.md) to serve a component
+   See [Host and deploy component games](component-hosting.md) to upload a package and pin a live experiment.
+   Use [Create and run a Parlando game](component-games.md) to serve a component
    or run headless evaluations with the same package.
 2. Open `/admin/experiments` to create, clone, edit, activate, and monitor
    experiments. Normal configuration is database-backed; an older YAML file is

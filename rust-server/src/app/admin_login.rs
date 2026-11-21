@@ -6,8 +6,8 @@
 
 use super::{
     cookie_value, json, validate_admin_request_origin, AdminLoginResult, AppError, Arc, CspNonce,
-    Deserialize, ExperimentConfig, Extension, Game, HeaderMap, HeaderValue, Html, IntoResponse,
-    Json, Redirect, Response, Result, ServerContext, State, StatusCode, ADMIN_ABSOLUTE_SECONDS,
+    Deserialize, ExperimentConfig, Extension, HeaderMap, HeaderValue, Html, IntoResponse, Json,
+    Redirect, Response, Result, ServerContext, State, StatusCode, ADMIN_ABSOLUTE_SECONDS,
     SET_COOKIE,
 };
 
@@ -17,8 +17,8 @@ pub(super) async fn admin_entry() -> Redirect {
 }
 
 /// Renders first-run administrator setup or the normal login form.
-pub(super) async fn admin_login_page<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(super) async fn admin_login_page(
+    State(state): State<Arc<ServerContext>>,
     Extension(nonce): Extension<CspNonce>,
 ) -> Html<String> {
     let setup = !state.installation.admin_auth.is_configured().await;
@@ -161,8 +161,8 @@ pub(super) struct AdminLoginRequest {
 }
 
 /// Persists the first administrator credential and signs that administrator in.
-pub(super) async fn admin_setup<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(super) async fn admin_setup(
+    State(state): State<Arc<ServerContext>>,
     headers: HeaderMap,
     Json(request): Json<AdminLoginRequest>,
 ) -> Result<Response, AppError> {
@@ -184,8 +184,8 @@ pub(super) async fn admin_setup<A: Game>(
 }
 
 /// Verifies the built-in administrator credential and issues a secure session cookie.
-pub(super) async fn admin_login<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(super) async fn admin_login(
+    State(state): State<Arc<ServerContext>>,
     headers: HeaderMap,
     Json(request): Json<AdminLoginRequest>,
 ) -> Result<Response, AppError> {
@@ -194,8 +194,8 @@ pub(super) async fn admin_login<A: Game>(
 }
 
 /// Verifies a credential and builds the secure browser-session response.
-async fn admin_login_response<A: Game>(
-    state: &ServerContext<A>,
+async fn admin_login_response(
+    state: &ServerContext,
     username: &str,
     password: &str,
 ) -> Result<Response, AppError> {
@@ -237,8 +237,8 @@ async fn admin_login_response<A: Game>(
 }
 
 /// Revokes the current administrator session and expires its cookie.
-pub(super) async fn admin_logout<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(super) async fn admin_logout(
+    State(state): State<Arc<ServerContext>>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     if let Some(token) = cookie_value(&headers, "parlando_admin") {

@@ -18,7 +18,7 @@ fn experiment_lifecycle_rejects_ambiguous_shortcuts() {
 async fn experiment_starts_inactive_and_admin_controls_intake() {
     let (mut config, _tmp) = sqlite_config();
     config.experiment.id = Some("bootstrap".to_string());
-    let router = crate::app::build_router(TinyAdapter, config.clone(), ServeOptions::default())
+    let router = crate::app::build_router(live_game(), config.clone(), ServeOptions::default())
         .await
         .map(TestRouter::new)
         .unwrap();
@@ -122,7 +122,7 @@ async fn experiment_starts_inactive_and_admin_controls_intake() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(archived["status"], "archived");
 
-    let restarted = crate::app::build_router(TinyAdapter, config, ServeOptions::default())
+    let restarted = crate::app::build_router(live_game(), config, ServeOptions::default())
         .await
         .map(TestRouter::new)
         .unwrap();
@@ -144,7 +144,7 @@ async fn hosted_voice_services_without_credentials_block_experiment_start() {
     let (mut config, _tmp) = sqlite_config();
     config.transcription.enabled = true;
     config.speechmatics.api_key.clear();
-    let router = crate::app::build_router(TinyAdapter, config, ServeOptions::default())
+    let router = crate::app::build_router(live_game(), config, ServeOptions::default())
         .await
         .map(TestRouter::new)
         .expect("an incomplete inactive draft still builds");
@@ -207,7 +207,7 @@ async fn catalogue_readiness_includes_missing_agent_secret_references() {
         }),
     };
     let router = crate::app::build_router(
-        TinyAdapter,
+        live_game(),
         config,
         ServeOptions {
             agent_factory: Some(Arc::new(SecretAgentFactory)),

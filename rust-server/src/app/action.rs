@@ -12,28 +12,28 @@ use super::{
     anyhow, broadcast_participant_states, expire_if_due_locked, json, mpsc, prolific_handoff,
     protocol_json, reserve_agent_delivery, session_event_record, session_ready_for_game,
     shutdown_session_log, speechmatics_readiness_required, touch_session_activity,
-    AgentObservation, AgentsMode, AppState, Arc, ExperimentConfig, Game, HashMap, LiveSession,
-    ParticipantOutcomeKind, ParticipantResult, PlayerRole, Result, ServerMessage, SessionEnd,
-    SessionEndCause, SubmissionRejection, TransitionCommit, Value,
+    AgentObservation, AgentsMode, AppState, Arc, ComponentValue, ExperimentConfig, GameFrame,
+    HashMap, LiveSession, ParticipantOutcomeKind, ParticipantResult, PlayerRole, Result,
+    ServerMessage, SessionEnd, SessionEndCause, SubmissionRejection, TransitionCommit, Value,
 };
 
 /// All effects derived from a single call to the game transition before the database write.
-struct PreparedAction<G: Game> {
-    after: G::State,
+struct PreparedAction {
+    after: GameFrame,
     checkpoint: Option<Value>,
     end: Option<SessionEnd>,
     event: Value,
     participants: Vec<ServerMessage>,
-    agent: Option<(mpsc::Sender<AgentObservation<G>>, AgentObservation<G>)>,
+    agent: Option<(mpsc::Sender<AgentObservation>, AgentObservation)>,
 }
 
 /// Derives every recipient's view, terminal result, and event from the same revision.
-fn prepare_action<G: Game>(
+fn prepare_action(
     config: &ExperimentConfig,
-    session: &LiveSession<G>,
+    session: &LiveSession,
     actor: PlayerRole,
-    action: G::Action,
-) -> Result<PreparedAction<G>> {
+    action: ComponentValue,
+) -> Result<PreparedAction> {
     if session.lifecycle().is_ended() {
         return Err(anyhow!(SubmissionRejection("session_complete")));
     }
@@ -49,8 +49,8 @@ fn prepare_action<G: Game>(
         return Err(anyhow!(SubmissionRejection(reason)));
     }
     let after = session.game.step(session.state(), &action, actor)??;
-    let checkpoint = session.game.turn_checkpoint(&after)?;
-    let completion = session.game.completion(&after);
+    let checkpoint = after.turn_checkpoint()?;
+    let completion = after.completion();
     let mut end = completion
         .as_ref()
         .map(protocol_json)
@@ -61,11 +61,11 @@ fn prepare_action<G: Game>(
             participant_results: HashMap::new(),
         });
     let action_json = protocol_json(&action)?;
-    let event = json!({"action": action_json, "metadata": session.game.transition_metadata(session.state(), &after, &action, actor)});
+    let event = json!({"action": action_json, "metadata": after.transition_metadata()});
     let mut participants = Vec::new();
     let mut agent = None;
     for participant in session.participants.values() {
-        let observation = session.game.observation(&after, participant.role);
+        let observation = after.observation(participant.role);
         if participant.source == "agent" {
             agent = session.agent_inbox.clone().map(|sender| {
                 (
@@ -98,12 +98,11 @@ fn prepare_action<G: Game>(
         }
         participants.push(super::participant_state::action_message(
             session,
-            &after,
             participant,
             actor,
             &action_json,
             observation,
-        )?);
+        ));
     }
     Ok(PreparedAction {
         after,
@@ -120,12 +119,12 @@ fn prepare_action<G: Game>(
 /// Human and agent callers share the room lock with leave and expiry. Prepare both
 /// role views from one transition and reserve agent delivery before writing. Only
 /// the winner of the durable commit may install that state and publish acceptance.
-pub(super) async fn submit_action<A: Game>(
-    state: Arc<AppState<A>>,
+pub(super) async fn submit_action(
+    state: Arc<AppState>,
     public_session_id: &str,
     participant_session_id: &str,
     role: PlayerRole,
-    action: A::Action,
+    action: ComponentValue,
 ) -> Result<()> {
     let (transition_lock, pending_sender) = {
         let memory = state.memory.read().await;
@@ -174,12 +173,12 @@ pub(super) async fn submit_action<A: Game>(
 }
 
 /// Owns one room transition from validation through durable publication.
-async fn commit_action<A: Game>(
-    state: Arc<AppState<A>>,
+async fn commit_action(
+    state: Arc<AppState>,
     public_session_id: &str,
     participant_session_id: &str,
     role: PlayerRole,
-    action: A::Action,
+    action: ComponentValue,
     pending: &tokio::sync::watch::Sender<bool>,
 ) -> Result<()> {
     if expire_if_due_locked(&state, public_session_id).await? {

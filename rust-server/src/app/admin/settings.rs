@@ -1,12 +1,12 @@
-//! Manages the installation settings shared by experiments of the compiled game. Updates
+//! Manages the installation settings shared by experiments of the installed game. Updates
 //! carry an expected revision and explicit provider secret changes. After persistence, the
 //! handler refreshes the installation settings used by the host and invalidates inactive
 //! runtime mounts.
 
 use crate::app::{
-    invalidate_inactive_runtime_routers, json, AppError, Arc, Deserialize, Game,
-    GameSettingsUpdate, HashMap, HeaderValue, IntoResponse, Json, Response, Result, ServerContext,
-    State, StatusCode, StoredGameSettings, Value, CACHE_CONTROL,
+    invalidate_inactive_runtime_routers, json, AppError, Arc, Deserialize, GameSettingsUpdate,
+    HashMap, HeaderValue, IntoResponse, Json, Response, Result, ServerContext, State, StatusCode,
+    StoredGameSettings, Value, CACHE_CONTROL,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -30,16 +30,16 @@ pub(in crate::app) struct AdminRevealGameSecretRequest {
     key: String,
 }
 
-/// Returns settings shared by every experiment of the compiled game.
-pub(in crate::app) async fn admin_game_settings<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+/// Returns settings shared by every experiment of the installed game.
+pub(in crate::app) async fn admin_game_settings(
+    State(state): State<Arc<ServerContext>>,
 ) -> Json<StoredGameSettings> {
     Json(state.installation.game_settings.read().await.clone())
 }
 
 /// Updates the shared institution with optimistic concurrency.
-pub(in crate::app) async fn admin_update_game_settings<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(in crate::app) async fn admin_update_game_settings(
+    State(state): State<Arc<ServerContext>>,
     Json(request): Json<AdminGameSettingsRequest>,
 ) -> Result<Json<Value>, AppError> {
     let institution = request.institution.trim().to_string();
@@ -148,8 +148,8 @@ fn validate_game_provider_secret(key: &str, value: Option<&str>) -> Result<(), A
 }
 
 /// Reveals one game-wide provider credential after an explicit administrator action.
-pub(in crate::app) async fn admin_reveal_game_secret<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(in crate::app) async fn admin_reveal_game_secret(
+    State(state): State<Arc<ServerContext>>,
     Json(request): Json<AdminRevealGameSecretRequest>,
 ) -> Result<Response, AppError> {
     validate_game_provider_secret(&request.key, None)?;

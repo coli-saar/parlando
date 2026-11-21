@@ -1,5 +1,5 @@
-use parlando::{Game, GameFactory, GameSessionContext, PlayerRole, SessionLogger};
-use parlando_great_tree::GreatTreeFactory;
+use parlando_game_sdk::{Game, Role};
+use parlando_great_tree::GreatTree;
 use serde_json::{json, Value};
 
 /// Round-trips an action through JSON, exactly as the wire protocol would, so this test only
@@ -14,30 +14,18 @@ fn set_flow_json(root: &str, open: bool) -> Value {
 
 #[test]
 fn a_full_play_through_reaches_completion() {
-    let game = GreatTreeFactory
-        .create(GameSessionContext {
-            logger: SessionLogger::testing(),
-        })
-        .unwrap();
     let config = serde_json::from_value(json!({})).unwrap();
-    let secrets = parlando::SecretValues::default();
-    let mut state = game
-        .initial_state(parlando::GameInitializationContext {
-            config: &config,
-            seed: 123,
-            secrets: &secrets,
-        })
-        .unwrap();
+    let mut game = GreatTree::init(config, 123).unwrap();
 
-    let crown_view = serde_json::to_value(game.observation(&state, PlayerRole::A)).unwrap();
-    let root_view = serde_json::to_value(game.observation(&state, PlayerRole::B)).unwrap();
+    let crown_view = serde_json::to_value(game.view_a()).unwrap();
+    let root_view = serde_json::to_value(game.view_b()).unwrap();
     assert_eq!(crown_view["role"], "crown");
     assert_eq!(root_view["role"], "root");
     assert!(crown_view.get("roots").is_none());
     assert!(root_view.get("limbs").is_none());
 
     assert!(
-        game.completion(&state).is_none(),
+        game.completion().is_none(),
         "one starting bloom is not a win yet"
     );
 
@@ -51,20 +39,13 @@ fn a_full_play_through_reaches_completion() {
     'outer: for &limb in &limb_ids {
         let action: parlando_great_tree::Action =
             serde_json::from_value(set_sun_json(limb, true)).unwrap();
-        state = game.apply_action(&state, &action, PlayerRole::A).unwrap();
+        game.step(Role::A, action).unwrap();
 
         for &root in &root_ids {
             let flow_action: parlando_great_tree::Action =
                 serde_json::from_value(set_flow_json(root, true)).unwrap();
-            if game
-                .apply_action(&state, &flow_action, PlayerRole::B)
-                .is_ok()
-            {
-                state = game
-                    .apply_action(&state, &flow_action, PlayerRole::B)
-                    .unwrap();
-            }
-            if let Some(completion) = game.completion(&state) {
+            let _ = game.step(Role::B, flow_action);
+            if let Some(completion) = game.completion() {
                 assert!(completion.flowered_limbs.len() >= 3);
                 break 'outer;
             }
@@ -72,7 +53,7 @@ fn a_full_play_through_reaches_completion() {
     }
 
     assert!(
-        game.completion(&state).is_some(),
+        game.completion().is_some(),
         "brute-forcing every pair must eventually win"
     );
 }

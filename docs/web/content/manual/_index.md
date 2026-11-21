@@ -63,11 +63,12 @@ implementing a specific step.
 
 ## Current boundaries
 
-Parlando 0.6.0 implements two active seats, `A` and `B`. Live studies may be human–human or
-human–agent. Headless studies may place agents in both seats. One live server hosts one compiled game
-and a catalogue of experiments for that game; different games use separate processes and databases.
+Parlando implements two active seats, `A` and `B`. Live studies may be human–human or
+human–agent. Headless studies may place agents in both seats. A local server hosts one Wasm package
+and its experiment catalogue. The shared component host can run several games
+and pins each experiment to one package revision.
 
-Live studies require persistent storage and one running Parlando server per game. The participant
+Live studies require persistent storage and a running Parlando server. The participant
 client supports typed communication, but each game must supply the React controls that expose it.
 Human–human speech uses Speechmatics transcription. Human–agent speech transcribes the human and
 synthesizes the agent's stored reply through ElevenLabs. Parlando does not store raw microphone

@@ -2,7 +2,7 @@
 //! administrators. Each endpoint resolves the same configuration facts and report model
 //! before selecting the HTML, JSON or Markdown representation.
 
-use super::super::{attachment_response, AppError, Game, ServerContext};
+use super::super::{attachment_response, AppError, ServerContext};
 use super::{
     facts, html::render_privacy_status_html, markdown::render_privacy_status_markdown, report,
     PrivacyStatus,
@@ -16,8 +16,8 @@ use axum::{
 use std::sync::Arc;
 
 /// Serves the installation-wide privacy status inside the protected administrator area.
-pub(in crate::app) async fn admin_privacy_page<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(in crate::app) async fn admin_privacy_page(
+    State(state): State<Arc<ServerContext>>,
 ) -> Result<Html<String>, AppError> {
     Ok(Html(render_privacy_status_html(
         &privacy_status(&state, None).await?,
@@ -25,15 +25,15 @@ pub(in crate::app) async fn admin_privacy_page<A: Game>(
 }
 
 /// Returns the installation-wide privacy status as structured JSON for administrative tooling.
-pub(in crate::app) async fn admin_privacy_json<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(in crate::app) async fn admin_privacy_json(
+    State(state): State<Arc<ServerContext>>,
 ) -> Result<Json<PrivacyStatus>, AppError> {
     Ok(Json(privacy_status(&state, None).await?))
 }
 
 /// Downloads the installation-wide privacy status as a pretty-printed JSON attachment.
-pub(in crate::app) async fn admin_privacy_json_download<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(in crate::app) async fn admin_privacy_json_download(
+    State(state): State<Arc<ServerContext>>,
 ) -> Result<Response, AppError> {
     let body = serde_json::to_string_pretty(&privacy_status(&state, None).await?)
         .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
@@ -45,8 +45,8 @@ pub(in crate::app) async fn admin_privacy_json_download<A: Game>(
 }
 
 /// Downloads the installation-wide privacy status as a Markdown attachment for review records.
-pub(in crate::app) async fn admin_privacy_markdown_download<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(in crate::app) async fn admin_privacy_markdown_download(
+    State(state): State<Arc<ServerContext>>,
 ) -> Result<Response, AppError> {
     Ok(attachment_response(
         render_privacy_status_markdown(&privacy_status(&state, None).await?),
@@ -55,16 +55,16 @@ pub(in crate::app) async fn admin_privacy_markdown_download<A: Game>(
     ))
 }
 /// Returns the privacy status for one experiment selected in the dashboard workspace.
-pub(in crate::app) async fn admin_experiment_privacy_json<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(in crate::app) async fn admin_experiment_privacy_json(
+    State(state): State<Arc<ServerContext>>,
     Path(experiment_id): Path<String>,
 ) -> Result<Json<PrivacyStatus>, AppError> {
     Ok(Json(privacy_status(&state, Some(&experiment_id)).await?))
 }
 
 /// Downloads one experiment's privacy status as a pretty-printed JSON attachment.
-pub(in crate::app) async fn admin_experiment_privacy_json_download<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(in crate::app) async fn admin_experiment_privacy_json_download(
+    State(state): State<Arc<ServerContext>>,
     Path(experiment_id): Path<String>,
 ) -> Result<Response, AppError> {
     let body =
@@ -78,8 +78,8 @@ pub(in crate::app) async fn admin_experiment_privacy_json_download<A: Game>(
 }
 
 /// Downloads one experiment's privacy status as Markdown for review records.
-pub(in crate::app) async fn admin_experiment_privacy_markdown_download<A: Game>(
-    State(state): State<Arc<ServerContext<A>>>,
+pub(in crate::app) async fn admin_experiment_privacy_markdown_download(
+    State(state): State<Arc<ServerContext>>,
     Path(experiment_id): Path<String>,
 ) -> Result<Response, AppError> {
     Ok(attachment_response(
@@ -90,8 +90,8 @@ pub(in crate::app) async fn admin_experiment_privacy_markdown_download<A: Game>(
 }
 
 /// Resolves the requested scope before passing its facts to the report builder.
-async fn privacy_status<A: Game>(
-    state: &ServerContext<A>,
+async fn privacy_status(
+    state: &ServerContext,
     experiment_id: Option<&str>,
 ) -> Result<PrivacyStatus, AppError> {
     let facts = facts::load(&state.installation.store, &state.config, experiment_id).await?;

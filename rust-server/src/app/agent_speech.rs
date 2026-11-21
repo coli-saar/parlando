@@ -7,12 +7,12 @@
 
 use super::{
     anyhow, json, now_iso, persist_session_event, session_event_record, AppState, Arc, Context,
-    ConversationMessageResponse, Duration, Game, Result, Value,
+    ConversationMessageResponse, Duration, Result, Value,
 };
 
 /// Converts one trusted agent message to speech with a network timeout but no application quota.
-pub(super) async fn speak_agent_message<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn speak_agent_message(
+    state: &Arc<AppState>,
     public_session_id: &str,
     message: &ConversationMessageResponse,
 ) {
@@ -154,8 +154,8 @@ pub(super) async fn speak_agent_message<A: Game>(
 /// Records published agent speech on the game clock without duplicating conversation text.
 /// The server publication anchor estimates playback onset; browser/network buffering
 /// may shift what the listener hears. Word offsets come from the TTS alignment.
-async fn record_agent_speech_timing<A: Game>(
-    state: &Arc<AppState<A>>,
+async fn record_agent_speech_timing(
+    state: &Arc<AppState>,
     public_session_id: &str,
     message: &ConversationMessageResponse,
     publication_started_at: &str,
@@ -215,8 +215,8 @@ async fn record_agent_speech_timing<A: Game>(
 
 // Persists one TTS diagnostic event into the evaluation event stream.
 /// Records bounded operational metadata for speech synthesis.
-async fn persist_tts_diagnostic<A: Game>(
-    state: &Arc<AppState<A>>,
+async fn persist_tts_diagnostic(
+    state: &Arc<AppState>,
     public_session_id: &str,
     event: &str,
     metadata: Value,

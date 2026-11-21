@@ -85,7 +85,7 @@ async fn administrator_can_store_and_explicitly_reveal_experiment_secrets() {
         version: semver::Version::parse("0.4.0").unwrap(),
         build_manifest: json!({}),
     };
-    let router = super::build_game_router(TinyAdapter, config, descriptor, |_| {
+    let router = super::build_game_router(live_game(), config, descriptor, |_| {
         Ok(ServeOptions::default())
     })
     .await
@@ -212,7 +212,7 @@ async fn experiment_provider_endpoints_are_revisioned_and_override_game_defaults
         version: semver::Version::parse("0.4.0").unwrap(),
         build_manifest: json!({}),
     };
-    let router = super::build_game_router(TinyAdapter, config, descriptor, |_| {
+    let router = super::build_game_router(live_game(), config, descriptor, |_| {
         Ok(ServeOptions::default())
     })
     .await
@@ -342,7 +342,7 @@ async fn new_experiment_populates_default_provider_endpoints() {
         version: semver::Version::parse("0.4.0").unwrap(),
         build_manifest: json!({}),
     };
-    let router = super::build_game_router(TinyAdapter, config, descriptor, |_| {
+    let router = super::build_game_router(live_game(), config, descriptor, |_| {
         Ok(ServeOptions::default())
     })
     .await

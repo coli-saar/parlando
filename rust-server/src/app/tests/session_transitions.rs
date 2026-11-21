@@ -5,7 +5,7 @@ use super::*;
 #[tokio::test]
 async fn concurrent_agent_room_joins_reserve_one_session() {
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(Arc::new(NoopAgentFactory)),
@@ -47,7 +47,7 @@ async fn concurrent_agent_room_joins_reserve_one_session() {
 #[tokio::test]
 async fn failed_first_membership_can_retry_without_reusing_a_partial_room() {
     let (config, directory) = sqlite_config();
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
     let pool = sqlx::SqlitePool::connect(
@@ -115,7 +115,7 @@ async fn failed_first_membership_can_retry_without_reusing_a_partial_room() {
 async fn already_ended_storage_never_publishes_an_accepted_action() {
     let (config, _directory) = sqlite_config();
     let url = config.database.url.clone();
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
     let (a, b, room) = create_joined_room(router.clone()).await;
@@ -177,79 +177,18 @@ async fn already_ended_storage_never_publishes_an_accepted_action() {
 }
 
 /// A game whose observations and affordances identify the exact action revision.
-#[derive(Default)]
-struct CounterGame {
-    steps: Arc<AtomicUsize>,
-    checkpointed: bool,
-}
-
-impl crate::GameFactory for CounterGame {
-    type Game = Self;
-    /// Creates one independent counter per session and replay.
-    fn create(&self, _: GameSessionContext) -> Result<Self> {
-        Ok(Self {
-            steps: self.steps.clone(),
-            checkpointed: self.checkpointed,
-        })
-    }
-}
-
-impl Game for CounterGame {
-    type State = u32;
-    type Action = u32;
-    type Observation = Value;
-    type Completion = Value;
-    type Config = Value;
-    /// Starts the counter at zero.
-    fn initial_state(&self, _: GameInitializationContext<'_, Value>) -> Result<u32> {
-        Ok(0)
-    }
-    /// Adds the supplied increment to the previous revision.
-    fn apply_action(
-        &self,
-        state: &u32,
-        action: &u32,
-        _: PlayerRole,
-    ) -> std::result::Result<u32, ActionRejection> {
-        Ok(state + action)
-    }
-    /// Uses a process-local sequence when checkpointed turns cannot be reexecuted.
-    fn step(
-        &self,
-        state: &u32,
-        action: &u32,
-        actor: PlayerRole,
-    ) -> Result<std::result::Result<u32, ActionRejection>> {
-        let attempt = self.steps.fetch_add(1, Ordering::Relaxed);
-        if self.checkpointed {
-            return Ok(Ok(state + action + attempt as u32 + 1));
-        }
-        Ok(self.apply_action(state, action, actor))
-    }
-    /// Shares the recorded state with administrative replay when this fixture requires a checkpoint.
-    fn turn_checkpoint(&self, after: &u32) -> Result<Option<Value>> {
-        Ok(self.checkpointed.then(|| json!(after)))
-    }
-    /// Identifies the private recipient as well as the resulting total.
-    fn observation(&self, state: &u32, role: PlayerRole) -> Value {
-        json!({"total":state,"role":role.as_str()})
-    }
-    /// Supplies an affordance that also depends on the accepted revision.
-    fn available_actions(&self, state: &u32, _: PlayerRole) -> Option<Vec<u32>> {
-        Some(vec![state + 1])
-    }
-    /// Allows all of the concurrent submissions to progress.
-    fn completion(&self, _: &u32) -> Option<Value> {
-        None
-    }
+/// Enables counter mechanics on the shared Wasm fixture.
+fn counter_config(mut config: ExperimentConfig, checkpointed: bool) -> ExperimentConfig {
+    config.game = json!({"counter": true, "checkpointed": checkpointed});
+    config
 }
 
 /// Compares both clients' independently targeted transitions against durable replay.
 #[tokio::test]
 async fn simultaneous_actions_publish_role_private_snapshots_in_replay_order() {
     let router = build_router(
-        CounterGame::default(),
-        step_five_config(),
+        live_game(),
+        counter_config(step_five_config(), false),
         ServeOptions::default(),
     )
     .await
@@ -310,11 +249,13 @@ async fn simultaneous_actions_publish_role_private_snapshots_in_replay_order() {
 async fn failed_action_write_keeps_the_committed_checkpoint_for_reconnect_and_recovery() {
     let (config, _directory) = sqlite_config();
     let database_url = config.database.url.clone();
-    let game = CounterGame::default();
-    let steps = game.steps.clone();
-    let router = build_router(game, config, ServeOptions::default())
-        .await
-        .unwrap();
+    let router = build_router(
+        live_game(),
+        counter_config(config, false),
+        ServeOptions::default(),
+    )
+    .await
+    .unwrap();
     let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
     let (a, b, room) = create_joined_room(router.clone()).await;
     let (base, server) = spawn_test_server(router.clone()).await;
@@ -338,7 +279,6 @@ async fn failed_action_write_keeps_the_committed_checkpoint_for_reconnect_and_re
         read_ws_type(&mut first, "error").await["code"],
         "internal_error"
     );
-    assert_eq!(steps.load(std::sync::atomic::Ordering::Relaxed), 1);
     assert_no_ws_type(&mut second, "transition").await;
     let accepted_count = sqlx::query_scalar::<_, i64>(
         "select count(*) from session_events where event_type = 'game_action_accepted'",
@@ -352,7 +292,7 @@ async fn failed_action_write_keeps_the_committed_checkpoint_for_reconnect_and_re
         .unwrap();
     let snapshot = read_participant_state(&mut replacement, "active").await;
     assert_eq!(snapshot["observation"]["total"], 0);
-    assert_eq!(snapshot["available_actions"], json!([1]));
+    assert!(snapshot["available_actions"].is_null());
 
     sqlx::query("drop trigger refuse_action")
         .execute(&pool)
@@ -365,25 +305,23 @@ async fn failed_action_write_keeps_the_committed_checkpoint_for_reconnect_and_re
     );
     for transition in [first_transition, second_transition] {
         assert_eq!(transition["observation"]["total"], 4);
-        assert_eq!(transition["available_actions"], json!([5]));
+        assert!(transition["available_actions"].is_null());
     }
-    assert_eq!(steps.load(std::sync::atomic::Ordering::Relaxed), 2);
     server.abort();
 }
 
-/// Replays a recorded nondeterministic turn and fails closed if its checkpoint disappears.
+/// Replays a recorded checkpoint and fails closed if the checkpoint disappears.
 #[tokio::test]
 async fn checkpointed_turn_replays_without_reexecution_or_corpus_disclosure() {
     let (config, _directory) = sqlite_config();
     let database_url = config.database.url.clone();
-    let game = CounterGame {
-        checkpointed: true,
-        ..CounterGame::default()
-    };
-    let steps = game.steps.clone();
-    let router = build_router(game, config, ServeOptions::default())
-        .await
-        .unwrap();
+    let router = build_router(
+        live_game(),
+        counter_config(config, true),
+        ServeOptions::default(),
+    )
+    .await
+    .unwrap();
     let (a, b, room) = create_joined_room(router.clone()).await;
     let (base, server) = spawn_test_server(router.clone()).await;
     let (mut first, _) = connect_async(game_socket_url(&router, &base, &room, &a).await)
@@ -396,7 +334,7 @@ async fn checkpointed_turn_replays_without_reexecution_or_corpus_disclosure() {
     read_participant_state(&mut second, "active").await;
     send_ws_json(&mut first, json!({"type":"action","action":4})).await;
     let transition = read_ws_type(&mut first, "transition").await;
-    assert_eq!(transition["observation"]["total"], 5);
+    assert_eq!(transition["observation"]["total"], 4);
 
     let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
     let (session_id, checkpoint, required): (i64, String, bool) = sqlx::query_as(
@@ -407,18 +345,10 @@ async fn checkpointed_turn_replays_without_reexecution_or_corpus_disclosure() {
     .await
     .unwrap();
     assert!(required);
-    assert_eq!(serde_json::from_str::<Value>(&checkpoint).unwrap(), 5);
-    let replay_url = format!("/api/admin/sessions/{session_id}/replay");
-    let (status, replay) =
-        admin_json_request(router.clone(), http::Method::GET, &replay_url, Value::Null).await;
-    assert_eq!(status, StatusCode::OK);
-    for role in ["A", "B"] {
-        let frame = &replay["roles"][role][1];
-        assert_eq!(frame["observation"], json!({"total": 5, "role": role}));
-        assert_eq!(frame["available_actions"], json!([6]));
-    }
-    assert_eq!(steps.load(Ordering::Relaxed), 1);
-
+    assert_eq!(
+        serde_json::from_str::<Value>(&checkpoint).unwrap()["views"][0]["total"],
+        4
+    );
     let corpus = assert_corpus_session(router.clone(), "playing").await;
     let events = corpus["experiment"]["sessions"][0]["events"]
         .as_array()
@@ -429,6 +359,26 @@ async fn checkpointed_turn_replays_without_reexecution_or_corpus_disclosure() {
         .unwrap();
     assert_eq!(action["action"], 4);
     assert_eq!(action.get("state"), Some(&Value::Null));
+
+    // A checkpoint must supply the views without asking the game to replay this action.
+    sqlx::query(
+        "update session_events set payload_json = json_set(payload_json, '$.action', 'invalid')
+         where session_id = ? and event_type = 'game_action_accepted'",
+    )
+    .bind(session_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let replay_url = format!("/api/admin/sessions/{session_id}/replay");
+    let (status, replay) =
+        admin_json_request(router.clone(), http::Method::GET, &replay_url, Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    for role in ["A", "B"] {
+        let frame = &replay["roles"][role][1];
+        assert_eq!(frame["observation"]["total"], 4);
+        assert_eq!(frame["observation"]["role"], role);
+        assert!(frame["available_actions"].is_null());
+    }
 
     sqlx::query(
         "update session_events set game_state_json = null
@@ -442,18 +392,18 @@ async fn checkpointed_turn_replays_without_reexecution_or_corpus_disclosure() {
         admin_json_request(router, http::Method::GET, &replay_url, Value::Null).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert!(error.to_string().contains("Missing recovery checkpoint"));
-    assert_eq!(steps.load(Ordering::Relaxed), 1);
     server.abort();
 }
 
 /// Cancels the submitter after COMMIT and confirms the lost acknowledgment from durable storage.
 #[tokio::test]
 async fn ambiguous_commit_survives_cancellation_and_publishes_once() {
-    let game = CounterGame::default();
-    let steps = game.steps.clone();
-    let (service, state) = super::super::routing::build_router_with_state(game, step_five_config())
-        .await
-        .unwrap();
+    let (service, state) = super::super::routing::build_router_with_state(
+        live_game(),
+        counter_config(step_five_config(), false),
+    )
+    .await
+    .unwrap();
     let router = TestRouter::new(service);
     authenticate_test_admin(router.clone()).await.unwrap();
     let (status, _) = admin_json_request(
@@ -488,19 +438,44 @@ async fn ambiguous_commit_survives_cancellation_and_publishes_once() {
         .store(true, Ordering::Relaxed);
     let submitter = tokio::spawn({
         let (state, room, a) = (state.clone(), room.clone(), a.clone());
-        async move { super::super::action::submit_action(state, &room, &a, PlayerRole::A, 4).await }
+        async move {
+            super::super::action::submit_action(
+                state,
+                &room,
+                &a,
+                PlayerRole::A,
+                ComponentValue::from_typed(&4u32).unwrap(),
+            )
+            .await
+        }
     });
     tokio::time::timeout(Duration::from_secs(3), commit_ack)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(state.memory.read().await.sessions[&room].state(), &0);
+    assert_eq!(
+        state.memory.read().await.sessions[&room]
+            .state()
+            .observation(PlayerRole::A)
+            .decode::<Value>()
+            .unwrap()["total"],
+        0
+    );
     submitter.abort();
     assert!(submitter.await.unwrap_err().is_cancelled());
 
     let queued = tokio::spawn({
         let (state, room, b) = (state.clone(), room.clone(), b.clone());
-        async move { super::super::action::submit_action(state, &room, &b, PlayerRole::B, 9).await }
+        async move {
+            super::super::action::submit_action(
+                state,
+                &room,
+                &b,
+                PlayerRole::B,
+                ComponentValue::from_typed(&9u32).unwrap(),
+            )
+            .await
+        }
     });
     release.send(()).unwrap();
     let queue_error = tokio::time::timeout(Duration::from_secs(3), queued)
@@ -511,8 +486,14 @@ async fn ambiguous_commit_survives_cancellation_and_publishes_once() {
     assert!(queue_error
         .to_string()
         .contains("awaiting storage confirmation"));
-    assert_eq!(state.memory.read().await.sessions[&room].state(), &0);
-    assert_eq!(steps.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        state.memory.read().await.sessions[&room]
+            .state()
+            .observation(PlayerRole::A)
+            .decode::<Value>()
+            .unwrap()["total"],
+        0
+    );
 
     let (first_transition, second_transition) =
         tokio::time::timeout(Duration::from_secs(8), async {
@@ -527,8 +508,14 @@ async fn ambiguous_commit_survives_cancellation_and_publishes_once() {
         assert_eq!(transition["observation"]["total"], 4);
     }
     assert_no_ws_type(&mut second, "transition").await;
-    assert_eq!(state.memory.read().await.sessions[&room].state(), &4);
-    assert_eq!(steps.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        state.memory.read().await.sessions[&room]
+            .state()
+            .observation(PlayerRole::A)
+            .decode::<Value>()
+            .unwrap()["total"],
+        4
+    );
     let events = store
         .session_events("step5", session_id, None)
         .await
@@ -558,13 +545,13 @@ struct BlockedDecision {
 }
 
 #[async_trait]
-impl AgentFactory<TinyAdapter> for SlowFirstFactory {
+impl AgentFactory for SlowFirstFactory {
     /// Shares the supported agent settings used by the active experiment.
     fn definition(&self) -> AgentDefinition {
         test_agent_definition()
     }
     /// Creates an independently responsive agent for the second room.
-    async fn create(&self, _: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
+    async fn create(&self, _: AgentContext) -> Result<Box<dyn Agent + Send>> {
         if self.created.fetch_add(1, Ordering::SeqCst) == 0 {
             Ok(Box::new(BlockedDecision {
                 entered: self.entered.clone(),
@@ -582,26 +569,23 @@ impl AgentFactory<TinyAdapter> for SlowFirstFactory {
 }
 
 #[async_trait]
-impl Agent<TinyAdapter> for BlockedDecision {
+impl Agent for BlockedDecision {
     /// Holds the callback while the participant continues to make legal moves.
-    async fn respond(
-        &mut self,
-        _: Option<Vec<TinyAction>>,
-    ) -> Result<Option<AgentResponse<TinyAction>>> {
+    async fn respond(&mut self) -> Result<Option<AgentResponse>> {
         self.entered.notify_one();
         self.release.notified().await;
-        Ok(Some(AgentResponse::action(TinyAction {
+        Ok(Some(AgentResponse::action(tiny_action(&TinyAction {
             finish: true,
             invalid: false,
-        })))
+        }))))
     }
 
     /// Reports each accepted transition delivered after the held callback returns.
     async fn observe_transition(
         &mut self,
         _: PlayerRole,
-        _: TinyAction,
-        _: TinyObservation,
+        _: ComponentValue,
+        _: ComponentValue,
     ) -> Result<()> {
         self.events.send("observed")?;
         Ok(())
@@ -628,7 +612,7 @@ async fn slow_agent_never_blocks_another_room_or_loses_an_accepted_action() {
         .unwrap()
         .act_timeout_seconds = 30.0;
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         config,
         ServeOptions {
             agent_factory: Some(Arc::new(SlowFirstFactory {
@@ -693,7 +677,7 @@ async fn slow_agent_never_blocks_another_room_or_loses_an_accepted_action() {
 async fn second_disconnect_receives_its_own_grace_period() {
     let mut config = step_five_config();
     config.session.reconnect_grace_seconds = 2;
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
     let (a, b, room) = create_joined_room(router.clone()).await;
@@ -761,7 +745,7 @@ async fn terminal_agent_room_retains_only_human_game_connections_and_grace() {
     let mut config = human_vs_agent_config();
     config.session.reconnect_grace_seconds = 1;
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         config,
         ServeOptions {
             agent_factory: Some(Arc::new(NoopAgentFactory)),
@@ -814,7 +798,7 @@ async fn terminal_agent_room_retains_only_human_game_connections_and_grace() {
 async fn terminal_waiting_room_with_no_game_socket_expires_after_grace() {
     let mut config = step_five_config();
     config.session.reconnect_grace_seconds = 1;
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
     let human = create_direct_participant(router.clone(), "human").await;
@@ -863,7 +847,7 @@ async fn reconnect_within_grace_after_idle_deadline_returns_ended_room() {
     let mut config = step_five_config();
     config.session.session_idle_timeout_seconds = 2;
     config.session.reconnect_grace_seconds = 60;
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
     let (a, b, room) = create_joined_room(router.clone()).await;

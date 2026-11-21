@@ -5,7 +5,7 @@
 //! specification before any session starts.
 
 use super::{ExperimentRunner, RewardFunction};
-use crate::game::{Game, PlayerRole};
+use crate::game::{parse_game_config, PlayerRole};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -267,12 +267,12 @@ fn one_repetition() -> u32 {
     1
 }
 
-impl<G: Game> ExperimentRunner<G> {
+impl ExperimentRunner {
     /// Checks cross-field constraints and prepares the selected training reward.
     pub(super) fn validate_spec(
         &self,
         spec: &ExperimentFile,
-    ) -> Result<Option<Arc<dyn RewardFunction<G>>>> {
+    ) -> Result<Option<Arc<dyn RewardFunction>>> {
         if spec.schema != EXPERIMENT_SCHEMA {
             bail!(
                 "unsupported agent experiment schema {:?}; expected {EXPERIMENT_SCHEMA:?}",
@@ -405,11 +405,9 @@ impl<G: Game> ExperimentRunner<G> {
             {
                 bail!("{label} scenario names, seeds, and repetitions must be non-empty");
             }
-            let config: G::Config =
-                serde_json::from_value(scenario.config.clone()).with_context(|| {
-                    format!("invalid config for {label} scenario {:?}", scenario.name)
-                })?;
-            self.game_factory.validate_config(&config)?;
+            parse_game_config(&self.loaded_game, &scenario.config).with_context(|| {
+                format!("invalid config for {label} scenario {:?}", scenario.name)
+            })?;
         }
         Ok(())
     }

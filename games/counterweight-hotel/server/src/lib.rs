@@ -1,15 +1,15 @@
 //! Cooperative hotel lifts sharing one cable and a single brake key for their fixed levers.
-pub mod porter;
 use anyhow::Result;
-use parlando::{
-    ActionRejection, Game, GameFactory, GameInitializationContext, GameSessionContext, PlayerRole,
-};
+use parlando_game_sdk::{Rejection as ActionRejection, Role as PlayerRole};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::{json, Value};
 
 /// Engraving required by a landing door. The opposite guest has the porter’s entry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, parlando_game_sdk::GameValue,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Seal {
     Stag,
@@ -22,7 +22,7 @@ const CABIN_CAPACITY: u8 = 3;
 const RACK_CAPACITY: u8 = 6;
 
 /// A guest’s horizontal position and facing on the shared rescue crossing.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, parlando_game_sdk::GameValue)]
 #[serde(deny_unknown_fields)]
 pub struct BridgePose {
     /// East–west coordinate in metres in the common crossing frame.
@@ -43,7 +43,7 @@ impl BridgePose {
 }
 
 /// One guest’s physical operation on their car or the shared mechanism.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, parlando_game_sdk::GameValue)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
     /// Take one suitcase aboard from the current landing, or request it from the nearest stocked rack.
@@ -87,7 +87,9 @@ struct Itinerary {
     freight: Option<FreightOrder>,
 }
 /// The rescue objective selected when a session is configured.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, parlando_game_sdk::GameValue,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Route {
     /// Reach the rescue bridges and unlock both doors.
@@ -355,26 +357,23 @@ impl State {
 }
 
 /// Configures the route for one session. Parlando supplies the session seed.
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize, parlando_game_sdk::GameValue)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Escape objective. Omit it to use the introductory bridge escape.
-    #[serde(default)]
-    pub route: Route,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<Route>,
 }
-/// Constructs an independent hotel adapter for each session.
-pub struct HotelFactory;
-/// Implements the Parlando boundary around the two lift itineraries.
-pub struct Hotel;
-impl GameFactory for HotelFactory {
-    type Game = Hotel;
-    /// Creates a stateless adapter. All durable mechanics live in State.
-    fn create(&self, _: GameSessionContext) -> Result<Hotel> {
-        Ok(Hotel)
-    }
+/// Owns the state and last accepted event for one Hotel session.
+pub struct Hotel {
+    state: State,
+    metadata: Option<HotelEvent>,
 }
+
 /// Role-visible wing identity used by both the participant and the porter.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, parlando_game_sdk::GameValue,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Wing {
     East,
@@ -382,7 +381,9 @@ pub enum Wing {
 }
 
 /// Readiness of the marked suitcase on the supply itinerary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, parlando_game_sdk::GameValue,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum FreightStatus {
     AwaitingPickup,
@@ -392,7 +393,7 @@ pub enum FreightStatus {
 
 /// A role's complete view of the coupled lifts. Partner fields contain only
 /// information visible from this wing and the entry on its private ledger.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, parlando_game_sdk::GameValue)]
 pub struct Observation {
     pub wing: Wing,
     pub route: Route,
@@ -426,38 +427,30 @@ pub struct Observation {
 }
 
 /// Shared escape outcome recorded when both guests reach safety.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, parlando_game_sdk::GameValue)]
 pub struct Completion {
     pub escaped: bool,
     pub route: Route,
 }
 
-impl Game for Hotel {
-    /// Replay state can record the latest guest pose for each side of the crossing.
-    const STATE_REPRESENTATION_VERSION: &'static str = "6";
-    /// Bridge pose actions carry the latest position or clear it on reentry.
-    const ACTION_REPRESENTATION_VERSION: &'static str = "4";
-    /// Rescue freight is staged at a dedicated dock and a wrong seal trips the local lock.
-    const RULES_VERSION: &'static str = "5";
+/// Public state recorded after accepted mechanical operations.
+#[derive(Clone, Copy, Serialize, parlando_game_sdk::GameValue)]
+pub struct HotelEvent {
+    route: Route,
+    east_floor: u8,
+    handed_over: bool,
+}
 
-    type Config = Config;
-    type State = State;
-    type Action = Action;
-    type Observation = Observation;
-    type Completion = Completion;
-    /// Starts the configured itinerary from the runtime’s replay seed.
-    fn initial_state(&self, c: GameInitializationContext<'_, Config>) -> Result<State> {
-        Ok(State::deal(c.seed, c.config.route))
-    }
-    /// Applies precisely one operation on the actor’s car.
-    fn apply_action(&self, s: &State, a: &Action, r: PlayerRole) -> Result<State, ActionRejection> {
+impl Hotel {
+    /// Applies precisely one authorized operation.
+    fn apply_action(s: &State, a: &Action, r: PlayerRole) -> Result<State, ActionRejection> {
         s.step(*a, usize::from(r == PlayerRole::B))
     }
     /// Reports the visible mechanism and the porter’s routing entry for the other guest.
     /// Inventory and transfer floors use the viewer’s local floor numbers. Transfer
     /// floors describe rack selection independently of whether the action is available.
     /// Freight readiness tracks the manifest independently of bridge docking and lock state.
-    fn observation(&self, s: &State, r: PlayerRole) -> Observation {
+    fn observation(s: &State, r: PlayerRole) -> Observation {
         let seat = usize::from(r == PlayerRole::B);
         let peer = 1 - seat;
         let wings = [Wing::East, Wing::West];
@@ -515,31 +508,71 @@ impl Game for Hotel {
             actions: s.controls(seat),
         }
     }
-    /// Provides the same physical control choices as the participant view.
-    fn available_actions(&self, s: &State, r: PlayerRole) -> Option<Vec<Action>> {
-        Some(s.controls(usize::from(r == PlayerRole::B)))
-    }
     /// Records the public cable position and key ownership after the operation.
-    fn transition_metadata(
-        &self,
-        _: &State,
-        s: &State,
-        action: &Action,
-        _: PlayerRole,
-    ) -> Option<Value> {
+    fn transition_metadata(s: &State, action: &Action) -> Option<HotelEvent> {
         if matches!(action, Action::BridgePose { .. }) {
             return None;
         }
-        Some(json!({"route":s.route,"east_floor":s.east,"handed_over":s.passed}))
+        Some(HotelEvent {
+            route: s.route,
+            east_floor: s.east,
+            handed_over: s.passed,
+        })
     }
     /// Both guests must reach safety to finish the hotel session.
-    fn completion(&self, s: &State) -> Option<Completion> {
+    fn outcome(s: &State) -> Option<Completion> {
         (s.exited == [true; 2]).then_some(Completion {
             escaped: true,
             route: s.route,
         })
     }
 }
+
+impl parlando_game_sdk::Game for Hotel {
+    type Config = Config;
+    type Action = Action;
+    type ViewA<'a> = Observation;
+    type ViewB<'a> = Observation;
+    type Completion<'a> = Completion;
+    type Metadata<'a> = HotelEvent;
+
+    /// Deals deterministic state and initializes the session-local projections.
+    fn init(config: Self::Config, seed: u64) -> Result<Self, String> {
+        Ok(Self {
+            state: State::deal(seed, config.route.unwrap_or_default()),
+            metadata: None,
+        })
+    }
+
+    /// Validates and applies one operation before emitting new observations.
+    fn step(&mut self, actor: PlayerRole, action: Self::Action) -> Result<(), ActionRejection> {
+        self.state = Self::apply_action(&self.state, &action, actor)?;
+        self.metadata = Self::transition_metadata(&self.state, &action);
+        Ok(())
+    }
+
+    /// Projects information visible to the first seat.
+    fn view_a(&self) -> Self::ViewA<'_> {
+        Self::observation(&self.state, PlayerRole::A)
+    }
+
+    /// Projects information visible to the second seat.
+    fn view_b(&self) -> Self::ViewB<'_> {
+        Self::observation(&self.state, PlayerRole::B)
+    }
+
+    /// Reports the game-defined success outcome when reached.
+    fn completion(&self) -> Option<Self::Completion<'_>> {
+        Self::outcome(&self.state)
+    }
+
+    /// Exposes only public event information from the last accepted action.
+    fn metadata(&self) -> Option<Self::Metadata<'_>> {
+        self.metadata
+    }
+}
+
+parlando_game_sdk::export!(Hotel);
 
 #[cfg(test)]
 mod tests {
@@ -559,7 +592,7 @@ mod tests {
 
     /// Projects through the same serializer as the participant and stored record.
     fn wire_observation(state: &State, role: PlayerRole) -> Value {
-        serde_json::to_value(Hotel.observation(state, role)).unwrap()
+        serde_json::to_value(Hotel::observation(state, role)).unwrap()
     }
 
     /// Crossing reports affect only the authenticated role’s pose and leave the mechanics intact.
@@ -572,11 +605,11 @@ mod tests {
         };
         let report = Action::BridgePose { pose: Some(pose) };
         let mut hotel = State::deal(0, Route::Escape);
-        assert!(Hotel.apply_action(&hotel, &report, PlayerRole::A).is_err());
+        assert!(Hotel::apply_action(&hotel, &report, PlayerRole::A).is_err());
         hotel.gate_open[0] = true;
-        assert!(Hotel.apply_action(&hotel, &report, PlayerRole::B).is_err());
+        assert!(Hotel::apply_action(&hotel, &report, PlayerRole::B).is_err());
 
-        let sample = Hotel.apply_action(&hotel, &report, PlayerRole::A).unwrap();
+        let sample = Hotel::apply_action(&hotel, &report, PlayerRole::A).unwrap();
         assert_eq!(sample.bridge_poses, [Some(pose), None]);
         assert_eq!(
             wire_observation(&sample, PlayerRole::B)["partner_bridge_pose"],
@@ -592,20 +625,14 @@ mod tests {
                 ..pose
             }),
         };
-        assert!(Hotel
-            .apply_action(&sample, &invalid, PlayerRole::A)
-            .is_err());
-        let cleared = Hotel
-            .apply_action(&sample, &Action::BridgePose { pose: None }, PlayerRole::A)
-            .unwrap();
+        assert!(Hotel::apply_action(&sample, &invalid, PlayerRole::A).is_err());
+        let cleared =
+            Hotel::apply_action(&sample, &Action::BridgePose { pose: None }, PlayerRole::A)
+                .unwrap();
         assert_eq!(cleared, hotel);
-        let arrived = Hotel
-            .apply_action(&sample, &Action::ReachRefuge, PlayerRole::A)
-            .unwrap();
+        let arrived = Hotel::apply_action(&sample, &Action::ReachRefuge, PlayerRole::A).unwrap();
         assert_eq!(arrived.bridge_poses, [None; 2]);
-        assert!(Hotel
-            .apply_action(&arrived, &report, PlayerRole::A)
-            .is_err());
+        assert!(Hotel::apply_action(&arrived, &report, PlayerRole::A).is_err());
     }
 
     /// Drives with public load and brake operations and records an exact replay.
@@ -632,8 +659,8 @@ mod tests {
         } else {
             PlayerRole::B
         };
-        assert!(Hotel.available_actions(s, r).unwrap().contains(&a));
-        let next = Hotel.apply_action(s, &a, r).unwrap();
+        assert!(Hotel::observation(s, r).actions.contains(&a));
+        let next = Hotel::apply_action(s, &a, r).unwrap();
         assert_eq!(next.route, s.route);
         for wing in 0..2 {
             let total = |state: &State| {
@@ -646,7 +673,7 @@ mod tests {
             assert_eq!(total(&next), total(s));
         }
         assert_eq!(
-            Hotel.transition_metadata(s, &next, &a, r).unwrap()["east_floor"],
+            Hotel::transition_metadata(&next, &a).unwrap().east_floor,
             next.east
         );
         *s = next;
@@ -661,19 +688,23 @@ mod tests {
             (json!({}), "escape", false),
             (json!({"route": "rescue_supplies"}), "rescue_supplies", true),
         ] {
-            let config: Config = serde_json::from_value(config).unwrap();
-            let secrets = Default::default();
+            let value = parlando_game_sdk::ComponentValue::from_typed(&config).unwrap();
+            let bytes = value
+                .to_schema_messagepack(&<Config as parlando_game_sdk::GameValue>::schema())
+                .unwrap();
+            let config: Config = parlando_game_sdk::decode_declared(&bytes).unwrap();
             let mut destinations = std::collections::HashSet::new();
             for seed in 0..128 {
-                let mut s = Hotel
-                    .initial_state(GameInitializationContext {
-                        config: &config,
-                        seed,
-                        secrets: &secrets,
-                    })
-                    .unwrap();
+                let mut s = <Hotel as parlando_game_sdk::Game>::init(
+                    Config {
+                        route: config.route,
+                    },
+                    seed,
+                )
+                .unwrap()
+                .state;
                 let mut log = Vec::new();
-                assert!(Hotel.completion(&s).is_none());
+                assert!(Hotel::outcome(&s).is_none());
                 let east = wire_observation(&s, PlayerRole::A);
                 let west = wire_observation(&s, PlayerRole::B);
                 assert_eq!(east["route"], route_name);
@@ -712,21 +743,21 @@ mod tests {
                 perform(&mut s, 1, Action::Exit { seal: peer }, &mut log);
                 assert_eq!(s.controls(1), [Action::ReachRefuge]);
                 assert!(!s.exited[1]);
-                assert!(Hotel.completion(&s).is_none());
+                assert!(Hotel::outcome(&s).is_none());
                 perform(&mut s, 1, Action::ReachRefuge, &mut log);
-                assert!(Hotel.completion(&s).is_none());
+                assert!(Hotel::outcome(&s).is_none());
                 perform(&mut s, 0, Action::Exit { seal: own }, &mut log);
-                assert!(Hotel.completion(&s).is_none());
+                assert!(Hotel::outcome(&s).is_none());
                 perform(&mut s, 0, Action::ReachRefuge, &mut log);
                 assert_eq!(
-                    Hotel.completion(&s),
+                    Hotel::outcome(&s),
                     Some(Completion {
                         escaped: true,
-                        route: config.route
+                        route: config.route.unwrap_or_default()
                     })
                 );
                 assert!(s.controls(0).is_empty() && s.controls(1).is_empty());
-                let mut replay = State::deal(seed, config.route);
+                let mut replay = State::deal(seed, config.route.unwrap_or_default());
                 for (seat, a) in log {
                     replay = replay.step(a, seat).unwrap();
                 }
@@ -863,7 +894,7 @@ mod tests {
             perform(&mut s, seat, Action::Exit { seal }, &mut log);
             perform(&mut s, seat, Action::ReachRefuge, &mut log);
         }
-        assert!(Hotel.completion(&s).is_some());
+        assert!(Hotel::outcome(&s).is_some());
     }
 
     /// The marked shipment occupies a cabin slot and gates require freight plus docking.
@@ -1027,13 +1058,13 @@ mod tests {
         let west_exit = Action::Exit { seal: west_seal };
         assert!(state.step(west_exit, 1).is_err());
         let open = state.step(Action::Exit { seal: east_seal }, 0).unwrap();
-        assert!(Hotel.completion(&open).is_none());
+        assert!(Hotel::outcome(&open).is_none());
         assert_eq!(
             wire_observation(&open, PlayerRole::B)["partner_gate_open"],
             true
         );
         let crossed = open.step(Action::ReachRefuge, 0).unwrap();
-        assert!(Hotel.completion(&crossed).is_none());
+        assert!(Hotel::outcome(&crossed).is_none());
         assert!(crossed.controls(0).is_empty());
         let aboard = crossed.step(Action::BoardLift, 1).unwrap();
         assert!(aboard.step(Action::Release, 1).is_err());
@@ -1049,7 +1080,7 @@ mod tests {
             .unwrap()
             .step(Action::ReachRefuge, 1)
             .unwrap();
-        assert!(Hotel.completion(&finished).is_some());
+        assert!(Hotel::outcome(&finished).is_some());
     }
 
     /// Keeps the wire names aligned with the controls used by the client.
@@ -1070,3 +1101,11 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(feature = "bundled-agents", not(target_arch = "wasm32")))]
+#[path = "../../../support/agent_response.rs"]
+mod agent_response;
+#[cfg(all(feature = "bundled-agents", not(target_arch = "wasm32")))]
+mod porter;
+#[cfg(all(feature = "bundled-agents", not(target_arch = "wasm32")))]
+pub use porter::PorterFactory;

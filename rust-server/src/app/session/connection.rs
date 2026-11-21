@@ -4,10 +4,10 @@
 //! Reconnect clears the returning seat's disconnect timing. Disconnect records the grace
 //! deadline, which the deadline policy can use to terminate the room. Participant
 //! projections expose the resulting pause.
-use super::{Game, LiveSession, SessionLifecycle};
+use super::{LiveSession, SessionLifecycle};
 use crate::{protocol::ParticipantPauseReason, storage::now_iso};
 
-impl<G: Game> LiveSession<G> {
+impl LiveSession {
     /// Clears the seat's reconnect deadline and resumes when all seats are connected.
     pub(in crate::app) fn reconnect(&mut self, participant_session_id: &str) {
         if let Some(participant) = self.participants.get_mut(participant_session_id) {

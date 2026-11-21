@@ -6,7 +6,7 @@ description: Specify a two-player task, create its Rust mechanics and React inte
 # Build a dialogue game
 
 The previous chapters ran a compiled game. This chapter constructs one. A finished Parlando game
-has two build products: a Rust executable that owns the task and a set of browser assets that present
+packages a Wasm component that owns the task and browser assets that present
 one player's view. They share the same action and observation shapes, while Parlando supplies participant entry,
 pairing, sessions, administration, persistence, and export.
 
@@ -35,194 +35,39 @@ Keep administration out of this contract. Recruitment, consent, timeouts, human 
 voice, and Prolific belong to an experiment configured after the game runs. They do not belong in
 the mechanics.
 
-## 2. Create the project
+## Build and run the package
 
-For a new game, use the repository's `generate-parlando-game` skill. Describe the task contract,
-not server internals. For example:
+From a checkout, install the host and Rust build tools, then create a game:
 
-```text
-Use $generate-parlando-game to create a two-player tree-tending task.
-Crown sees five limbs and controls sunlight. Root sees five roots and controls
-water. A hidden one-to-one mapping connects roots to limbs. Both roles must
-coordinate to make three limbs flower. Reject controls used by the wrong role.
-Include typed communication and deterministic mechanics tests.
+```sh
+cargo install --locked --path rust-server --bin parlando
+rustup target add wasm32-unknown-unknown
+cargo install --locked wasm-tools
+parlando new my-game --lang rust
+cd my-game
+parlando test
+parlando build
+parlando serve
 ```
 
-The generated project contains the same responsibilities as this conceptual layout:
+Edit `src/lib.rs` for mechanics, `client/` for the participant interface, and `scenarios.yaml` for host-level examples. The CLI reads `game.yaml` and packages the component with its participant assets. Open `/admin` on the local server to configure an experiment. A shared host accepts the same package via `parlando deploy`.
 
-```text
-my-game/
-├── server/
-│   ├── Cargo.toml
-│   ├── src/
-│   │   ├── game/       Rust domain types, mechanics, Game, and GameFactory
-│   │   └── main.rs     game metadata and Parlando server startup
-│   └── tests/
-├── client/
-│   ├── package.json
-│   └── web/src/
-│       ├── game/       TypeScript game types and role views
-│       └── App.tsx     ParticipantApp and the active game screen
-└── deployment files
-```
+## Implement the session in Rust
 
-The exact file names may differ. The division of responsibility must not: Rust owns task truth;
-React owns presentation. The Rust crate depends on `parlando = "0.6.0"`, and the participant
-application depends on `@coli-saar/parlando-client` 0.4 and React 19. Keep the Parlando minor
-versions aligned.
+The type implementing `parlando_game_sdk::Game` owns the private state of one session. Derive `GameValue` for the domain values that cross the boundary, then call `parlando_game_sdk::export!(MyGame)` in the game crate. The generated adapter describes the game's schema and encodes the results of each call. The host compiles the module once and creates a separate instance for each session.
 
-## 3. Define the Rust domain types
-
-The game exposes five serializable types:
-
-| Type | Purpose |
+| SDK method | Game responsibility |
 | --- | --- |
-| `Config` | Game variation chosen for an experiment, such as which seat controls Crown |
-| `State` | Complete authoritative situation, including private facts |
-| `Action` | A player's structured proposal |
-| `Observation` | Everything safe to send to one role |
-| `Completion` | The shared structured terminal result |
+| `init(config, seed)` | Validate game-specific settings and create a reproducible initial state. |
+| `step(&mut self, actor, action)` | Check the actor and rules before mutating state. Return a stable rejection code on an illegal action. |
+| `view_a(&self)`, `view_b(&self)` | Project only what each seat may see. The associated view types can differ and can borrow from the state. |
+| `completion(&self)` | Return a shared terminal result when the session ends. |
+| `metadata(&self)` | Supply optional role-neutral analysis data for an accepted transition. |
+| `checkpoint(&self)`, `restore(bytes)` | Optionally save and restore private session state. With deterministic initialization and actions the host can also recover by replay. |
 
-Define the types before writing the mechanics or interface. In Great Tree, `State` contains the hidden
-root-to-limb mapping. `Observation` is an enum with separate Crown and Root variants, so a Crown
-observation cannot accidentally contain a root field. `Action` is a tagged enum whose serialized
-forms resemble:
+Initialization and every accepted step return both observations in one frame. Live players and learning agents consume these same observations. If controls need a list of available choices, include it in the appropriate role's view. The game still checks every submitted action.
 
-```json
-{ "type": "setSun", "limb": "spire", "lit": true }
-{ "type": "setFlow", "root": "hand", "open": true }
-```
-
-Use stable domain names in these values. Do not encode button positions, CSS classes, animation
-commands, or participant-facing prose as actions. A different interface or an agent must be able to
-use the same contract.
-
-## 4. Implement the mechanics and `Game`
-
-Keep state transitions in pure functions where possible, then expose them through `parlando::Game`:
-
-```rust
-use anyhow::Result;
-use parlando::{ActionRejection, Game, GameInitializationContext, PlayerRole};
-
-impl Game for MyGame {
-    type Config = MyConfig;
-    type State = MyState;
-    type Action = MyAction;
-    type Observation = MyObservation;
-    type Completion = MyCompletion;
-
-    const STATE_REPRESENTATION_VERSION: &'static str = "my-game-state-v1";
-    const ACTION_REPRESENTATION_VERSION: &'static str = "my-game-action-v1";
-    const RULES_VERSION: &'static str = "my-game-rules-v1";
-
-    fn initial_state(
-        &self,
-        context: GameInitializationContext<'_, Self::Config>,
-    ) -> Result<Self::State> {
-        initial_state(context.config, context.seed)
-    }
-
-    fn apply_action(
-        &self,
-        state: &Self::State,
-        action: &Self::Action,
-        actor: PlayerRole,
-    ) -> std::result::Result<Self::State, ActionRejection> {
-        apply_action(state, action, actor)
-    }
-
-    fn observation(&self, state: &Self::State, role: PlayerRole) -> Self::Observation {
-        observation(state, role)
-    }
-
-    fn completion(&self, state: &Self::State) -> Option<Self::Completion> {
-        completion(state)
-    }
-}
-```
-
-`initial_state` receives the experiment's typed game configuration and a recorded seed. Derive all
-randomized initial facts from that seed and retain the results in `State`. The same configuration,
-seed, and accepted action sequence should reproduce the same trajectory.
-
-The replay compatibility constants belong to the game's stored representations and mechanics, not
-to its package release. Keep each value stable while old initial states and actions retain the same
-meaning. Change the corresponding value only when deserialization or transition semantics becomes
-incompatible. Derive both `Serialize` and `Deserialize` for `State`; Parlando stores it once when the
-session is created and reconstructs later states from accepted actions.
-
-`apply_action` must check the actor and every state-dependent rule before returning a new state. An
-expected refusal returns an `ActionRejection` with a stable code such as `wrong_role` or
-`root_frozen`. The browser may disable an illegal control, but server validation remains necessary
-because browsers and agents are not authorities.
-
-`observation` is the information boundary. Return a value that may safely be serialized and sent in
-full. Never send the complete state and rely on React to hide private fields. Recompute the
-observation for each role after every accepted action.
-
-`completion` returns `None` while play continues and a shared value when the task ends. Put private
-terminal information in the final role observation, not in completion.
-
-## 5. Construct one game for each session
-
-Implement `GameFactory` to validate the typed configuration and construct a session-local game:
-
-```rust
-use anyhow::Result;
-use parlando::{GameFactory, GameSessionContext};
-
-#[derive(Clone, Copy)]
-struct MyGameFactory;
-
-impl GameFactory for MyGameFactory {
-    type Game = MyGame;
-
-    fn create(&self, context: GameSessionContext) -> Result<MyGame> {
-        Ok(MyGame::new(context.logger))
-    }
-
-    fn validate_config(&self, config: &MyConfig) -> Result<()> {
-        validate_config(config)
-    }
-}
-```
-
-The factory creates a separate game value for each session. Validation runs when an administrator
-checks or saves the experiment's game YAML, so reject impossible configurations there rather than
-waiting for a participant to enter.
-
-## 6. Start the Parlando server
-
-The executable identifies the compiled game, selects persistent storage and the participant
-application, registers optional compiled agents, and starts the server:
-
-```rust
-let metadata = parlando::GameMetadata {
-    id: "my-game".into(),
-    name: "My Game".into(),
-    version: env!("CARGO_PKG_VERSION").parse()?,
-    build_manifest: serde_json::json!({
-        "name": env!("CARGO_PKG_NAME"),
-        "version": env!("CARGO_PKG_VERSION")
-    }),
-};
-
-parlando::Server::new(MyGameFactory, metadata)?
-    .database_url("sqlite:///./my-game.sqlite")
-    .participant_app("../client/dist")
-    .serve("127.0.0.1:8080".parse()?)
-    .await?;
-```
-
-Do not construct experiments, consent, pairing, speech providers, or routes in this executable.
-Once `/admin` opens, those settings belong to the dashboard and its versioned records.
-
-Increase the Cargo package version when rules, action meaning, information structure, or completion
-semantics change. Existing experiments remain attached to the game version that interpreted their
-sessions.
-
-## 7. Build the participant application
+## Build the participant application
 
 Mirror the serialized Rust `Observation`, `Action`, and `Completion` shapes in TypeScript. The
 browser never receives `State` or provider credentials. Render the active game inside
@@ -269,28 +114,7 @@ conversation, microphone, connection, and leave controls surrounding the game su
 Great Tree switches between `CrownView` and `RootView` on the observation's `role` tag. Crown buttons
 send `setSun`; Root buttons send `setFlow`. Neither view knows the hidden mapping.
 
-## 8. Build and run the two components
-
-For the layout above, build the browser assets first and then start the server:
-
-```sh
-cd my-game/client
-npm install
-npm test
-npm run build
-
-cd ../server
-cargo fmt --check
-cargo test
-cargo run -- --port 8080 --client-dist ../client/dist
-```
-
-Use the exact run command emitted by the generation skill when its layout differs. A successful
-start leaves the Rust process running and makes `/admin` available. Create the administrator, then
-follow [Run a local pilot](../start/first-experiment/) with this game. Enter game-specific YAML under
-**Configuration → Game configuration** before saving the experiment revision.
-
-## 9. Verify the public boundary
+## Verify the public boundary
 
 Mechanics tests should establish deterministic initialization, every legal transition, expected
 rejection codes, both observation projections, and completion boundaries. Serialize both

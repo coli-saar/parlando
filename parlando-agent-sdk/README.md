@@ -1,13 +1,14 @@
 # Parlando Agent SDK for Python
 
 This package lets a Python policy participate in a Parlando game through the
-remote-agent gRPC interface. The policy receives the same role-specific
-observations and available actions as other agent implementations, while the SDK
-handles request dispatch and response conversion.
+remote-agent gRPC interface. The policy receives the same role-specific views as
+other agent implementations. The SDK dispatches requests and converts responses.
 
 Agent authors implement async observation callbacks such as `start`,
 `observe_transition`, `observe_message`, and `finish`, then respond from
-`respond(available_actions)`. A factory may receive a small immutable `Context`
+`respond(available_actions)`. Parlando component hosts pass `None` for that
+protocol argument. Read legal moves from the observation when the game includes
+them. A factory may receive a small immutable `Context`
 containing the player's role, deterministic seed, normalized agent settings, and
 the session logger.
 It receives no room identity, transport details, frontend data, or initial game
@@ -25,9 +26,16 @@ Minimal agent:
 from parlando_agent_sdk import Agent, Context, Response, serve
 
 class FirstActionAgent(Agent):
-    async def respond(self, available_actions):
-        if available_actions:
-            return Response.action(available_actions[0])
+    async def start(self, observation):
+        self.observation = observation
+
+    async def observe_transition(self, actor, action, observation):
+        self.observation = observation
+
+    async def respond(self, _available_actions):
+        legal_actions = self.observation.get("available_actions", [])
+        if legal_actions:
+            return Response.action(legal_actions[0])
         return None
 
 def create_agent(context: Context) -> Agent:

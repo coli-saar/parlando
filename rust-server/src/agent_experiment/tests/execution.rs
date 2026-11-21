@@ -16,7 +16,7 @@ async fn callback_timeout_is_bounded_finalized_and_skipped_on_resume() {
                 version: semver::Version::new(1, 0, 0),
                 build_manifest: json!({"test": true}),
             },
-            TinyGameFactory::default(),
+            tiny_game(),
         )
         .unwrap()
         .agent(HangingStartFactory)
@@ -83,9 +83,9 @@ async fn result_artifacts_exclude_authoritative_config_and_secrets() {
     assert_eq!(results[0]["agents"][1]["role"], "B");
 }
 
-/// Session planning asks the reusable game factory for one fresh value per expanded plan.
+/// Independent Wasm sessions each initialize a fresh counter for every expanded plan.
 #[tokio::test]
-async fn game_factory_creates_exactly_one_instance_per_planned_session() {
+async fn each_planned_session_starts_from_a_fresh_counter() {
     let temporary = TempDir::new().unwrap();
     let output = temporary.path().join("factory-output");
     let yaml_path = temporary.path().join("factory.yaml");
@@ -95,10 +95,6 @@ async fn game_factory_creates_exactly_one_instance_per_planned_session() {
     )
     .await
     .unwrap();
-    let creations = Arc::new(AtomicUsize::new(0));
-    let factory = TinyGameFactory {
-        creations: creations.clone(),
-    };
     let runner = ExperimentRunner::new(
         GameMetadata {
             id: "tiny".to_string(),
@@ -106,7 +102,7 @@ async fn game_factory_creates_exactly_one_instance_per_planned_session() {
             version: semver::Version::new(1, 0, 0),
             build_manifest: json!({"test": true}),
         },
-        factory,
+        tiny_game(),
     )
     .unwrap()
     .agent(TinyAgentFactory {
@@ -118,7 +114,7 @@ async fn game_factory_creates_exactly_one_instance_per_planned_session() {
 
     let summary = runner.run_yaml(&yaml_path).await.unwrap();
     assert_eq!(summary.planned, 2);
-    assert_eq!(creations.load(Ordering::Acquire), 2);
+    assert_eq!(summary.completed, 2);
 }
 
 /// Fail-fast finalizes the first failure before returning and starts no later plan.
@@ -220,7 +216,7 @@ async fn game_step_rejections_and_faults_have_distinct_session_effects() {
     assert_eq!(result["status"], "failed");
     assert_eq!(result["failure_phase"], "step");
     assert_eq!(result["failure_role"], "A");
-    assert_eq!(result["diagnostic"], "guest step failed");
+    assert!(result["diagnostic"].as_str().unwrap().contains("wasm trap"));
     assert_eq!(result["decisions"], 5);
     assert_eq!(result["accepted_actions"], 1);
     assert_eq!(result["rejected_actions"], 1);
@@ -239,14 +235,8 @@ async fn game_step_rejections_and_faults_have_distinct_session_effects() {
         trace[3]["input"]["observation"],
         json!({"count": 1, "role": "B"})
     );
-    assert_eq!(
-        trace[1]["input"]["available_actions"],
-        json!([{"amount": 2}])
-    );
-    assert_eq!(
-        trace[3]["input"]["available_actions"],
-        json!([{"amount": 3}])
-    );
+    assert_eq!(trace[1]["input"]["available_actions"], Value::Null);
+    assert_eq!(trace[3]["input"]["available_actions"], Value::Null);
     assert_eq!(
         events.lock().unwrap().as_slice(),
         [

@@ -6,7 +6,8 @@
 //! policy factory.
 
 use crate::agents::AgentFactory;
-use crate::game::{ActionRejection, Game, PlayerRole, SecretValues};
+use crate::component::{ComponentValue, GameFrame};
+use crate::game::{ActionRejection, PlayerRole, SecretValues};
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -70,10 +71,10 @@ impl RoleRewards {
 
 /// Game-specific reward calculation kept outside the base interactive game contract.
 ///
-/// Rewards may inspect authoritative pre- and post-action states, but only their numeric
-/// output enters a learner trajectory. Ordinary human and evaluation sessions need not
-/// define rewards at all.
-pub trait RewardFunction<G: Game>: Send + Sync + 'static {
+/// Rewards may inspect both role views in the pre- and post-action game frames.
+/// Only their numeric output enters learner trajectories. Evaluation sessions
+/// and sessions with human participants can run without a reward function.
+pub trait RewardFunction: Send + Sync + 'static {
     /// Returns the stable registry key selected by experiment YAML.
     fn id(&self) -> &'static str;
 
@@ -92,20 +93,17 @@ pub trait RewardFunction<G: Game>: Send + Sync + 'static {
     /// Computes both role rewards after an accepted action.
     fn rewards(
         &self,
-        before: &G::State,
-        after: &G::State,
+        before: &GameFrame,
+        after: &GameFrame,
         actor: PlayerRole,
-        action: &G::Action,
-        completion: Option<&G::Completion>,
+        action: &ComponentValue,
+        completion: Option<&ComponentValue>,
     ) -> RoleRewards;
 }
 
-/// Reads persisted learner steps using the same game types used during live capture.
-pub(super) type TrajectoryDecoder<O, A> = fn(&str) -> serde_json::Result<Vec<TrajectoryStep<O, A>>>;
-
 /// One role-safe learner action transition captured by a training session.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct TrajectoryStep<O, A> {
+pub struct TrajectoryStep {
     /// Experiment execution owning this step.
     pub run_id: String,
     /// Deterministic session plan which produced this step.
@@ -125,11 +123,12 @@ pub struct TrajectoryStep<O, A> {
     /// Semantic reward implementation version.
     pub reward_version: String,
     /// Role-safe game observation before the action.
-    pub observation: O,
-    /// Optional discrete action affordance supplied to the agent.
-    pub available_actions: Option<Vec<A>>,
+    pub observation: ComponentValue,
+    /// Reserved action catalogue field retained in the v1 artifact and transport.
+    /// Component games can provide legal moves in their views.
+    pub available_actions: Option<Vec<ComponentValue>>,
     /// Action selected by the learner.
-    pub action: A,
+    pub action: ComponentValue,
     /// Whether the game accepted the selected action.
     pub accepted: bool,
     /// Stable rejection information for an invalid action.
@@ -139,20 +138,20 @@ pub struct TrajectoryStep<O, A> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rewards: Option<RoleRewards>,
     /// Role-safe observation following this action or rejection.
-    pub next_observation: O,
+    pub next_observation: ComponentValue,
     /// Whether the accepted action completed the game.
     pub terminal: bool,
 }
 
 /// Immutable set of role-safe transitions supplied to one learner update.
 #[derive(Clone, Debug)]
-pub struct TrainingBatch<O, A> {
+pub struct TrainingBatch {
     /// Stable idempotency key for the update within one experiment run.
     pub update_id: String,
     /// Completed training epochs represented by this update.
     pub completed_epochs: u64,
     /// Ordered learner transitions collected since the previous checkpoint.
-    pub steps: Vec<TrajectoryStep<O, A>>,
+    pub steps: Vec<TrajectoryStep>,
 }
 
 /// Normalized learner configuration supplied consistently to every training update.
@@ -170,7 +169,7 @@ pub struct RLTrainingContext {
 
 /// Trainable agent capability layered over ordinary checkpoint-specific factories.
 #[async_trait]
-pub trait RLAgent<G: Game>: Send + 'static {
+pub trait RLAgent: Send + 'static {
     /// Returns the stable factory ID used by every YAML agent definition for this learner.
     fn factory_id(&self) -> &str;
 
@@ -178,7 +177,7 @@ pub trait RLAgent<G: Game>: Send + 'static {
     fn resolve_checkpoint(&self, reference: &Value) -> Result<CheckpointId>;
 
     /// Exposes one checkpoint as the ordinary factory used by session execution.
-    fn factory(&self, checkpoint: &CheckpointId) -> Result<Arc<dyn AgentFactory<G>>>;
+    fn factory(&self, checkpoint: &CheckpointId) -> Result<Arc<dyn AgentFactory>>;
 
     /// Updates the learner and returns the new immutable checkpoint identity.
     ///
@@ -189,20 +188,20 @@ pub trait RLAgent<G: Game>: Send + 'static {
         &mut self,
         context: &RLTrainingContext,
         base: &CheckpointId,
-        batch: TrainingBatch<G::Observation, G::Action>,
+        batch: TrainingBatch,
     ) -> Result<CheckpointId>;
 }
 
 /// Session-local instructions for capturing one named learner's action transitions.
-pub(super) struct TrainingCapture<G: Game> {
+pub(super) struct TrainingCapture {
     pub(super) learner: String,
     pub(super) checkpoint: CheckpointId,
-    pub(super) reward: Arc<dyn RewardFunction<G>>,
+    pub(super) reward: Arc<dyn RewardFunction>,
     pub(super) reward_kind: String,
     pub(super) reward_version: String,
 }
 
-impl<G: Game> Clone for TrainingCapture<G> {
+impl Clone for TrainingCapture {
     /// Clones immutable capture configuration for another expanded session.
     fn clone(&self) -> Self {
         Self {

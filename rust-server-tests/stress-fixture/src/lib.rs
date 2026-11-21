@@ -44,13 +44,7 @@ pub struct StressState {
 }
 
 /// Action issued by either a participant or the stress agent.
-#[cfg_attr(
-    target_arch = "wasm32",
-    derive(
-        parlando_component_sdk::ComponentWire,
-        parlando_component_sdk::ComponentDecode
-    )
-)]
+#[cfg_attr(target_arch = "wasm32", derive(parlando_game_sdk::GameValue))]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum StressAction {
@@ -84,7 +78,7 @@ pub enum StressAction {
 }
 
 /// Role-specific projection carrying the fields used to verify reconnect snapshots.
-#[cfg_attr(target_arch = "wasm32", derive(parlando_component_sdk::ComponentWire))]
+#[cfg_attr(target_arch = "wasm32", derive(parlando_game_sdk::GameValue))]
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct StressObservation {
     role: String,
@@ -103,7 +97,7 @@ impl StressObservation {
 }
 
 /// Terminal result carrying the combined action count for both roles.
-#[cfg_attr(target_arch = "wasm32", derive(parlando_component_sdk::ComponentWire))]
+#[cfg_attr(target_arch = "wasm32", derive(parlando_game_sdk::GameValue))]
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct StressCompletion {
     /// Number of accepted actions from both players.

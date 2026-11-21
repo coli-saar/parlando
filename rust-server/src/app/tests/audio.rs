@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn audio_session_is_disabled_when_voice_is_disabled() {
-    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+    let router = build_router(live_game(), step_five_config(), ServeOptions::default())
         .await
         .unwrap();
     let (a, _b, public_session_id) = create_joined_room(router.clone()).await;
@@ -22,7 +22,7 @@ async fn audio_session_is_disabled_when_voice_is_disabled() {
 
 #[tokio::test]
 async fn enabled_audio_session_returns_parlando_websocket_contract() {
-    let router = build_router(TinyAdapter, voice_enabled_config(), ServeOptions::default())
+    let router = build_router(live_game(), voice_enabled_config(), ServeOptions::default())
         .await
         .unwrap();
     let (a, _b, public_session_id) = create_joined_room(router.clone()).await;
@@ -57,7 +57,7 @@ async fn audio_readiness_first_active_frame_is_transcribed() {
     config.transcription.enabled = true;
     config.speechmatics.api_key = "readiness-test-key".into();
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         config,
         ServeOptions {
             transcription_provider: Some(Arc::new(ReadinessTranscriptionProvider { finished })),
@@ -165,7 +165,7 @@ async fn audio_websocket_relays_pcm_and_commits_one_final_utterance() {
     config.transcription.enabled = true;
     config.speechmatics.api_key = "server-only-test-key".to_string();
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         config,
         ServeOptions {
             transcription_provider: Some(Arc::new(DuplicateFinalTranscriptionProvider)),
@@ -306,7 +306,7 @@ async fn completed_human_session_keeps_audio_relay_during_farewell_period() {
     config.transcription.enabled = true;
     config.speechmatics.api_key = "server-only-test-key".to_string();
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         config,
         ServeOptions {
             transcription_provider: Some(Arc::new(DuplicateFinalTranscriptionProvider)),
@@ -416,7 +416,7 @@ async fn completed_human_session_keeps_audio_relay_during_farewell_period() {
 /// Proves that two simultaneous player pairs receive audio only inside their own rooms.
 #[tokio::test]
 async fn audio_websockets_isolate_two_simultaneous_player_pairs() {
-    let router = build_router(TinyAdapter, voice_enabled_config(), ServeOptions::default())
+    let router = build_router(live_game(), voice_enabled_config(), ServeOptions::default())
         .await
         .unwrap();
     let (a_one, b_one, room_one) = create_joined_room(router.clone()).await;
@@ -483,7 +483,7 @@ async fn audio_websockets_isolate_two_simultaneous_player_pairs() {
 /// Ensures a replacement connection cannot leave an older socket injecting room audio.
 #[tokio::test]
 async fn replacement_audio_connection_revokes_the_older_socket_generation() {
-    let router = build_router(TinyAdapter, voice_enabled_config(), ServeOptions::default())
+    let router = build_router(live_game(), voice_enabled_config(), ServeOptions::default())
         .await
         .unwrap();
     let (a, b, public_session_id) = create_joined_room(router.clone()).await;
@@ -542,7 +542,7 @@ async fn replacement_audio_connection_revokes_the_older_socket_generation() {
 /// Verifies that audio credentials are single-use and cannot cross room boundaries.
 #[tokio::test]
 async fn audio_tokens_are_single_use_and_room_bound() {
-    let router = build_router(TinyAdapter, voice_enabled_config(), ServeOptions::default())
+    let router = build_router(live_game(), voice_enabled_config(), ServeOptions::default())
         .await
         .unwrap();
     let (a_one, _b_one, room_one) = create_joined_room(router.clone()).await;

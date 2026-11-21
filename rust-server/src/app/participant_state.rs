@@ -7,14 +7,14 @@
 
 use super::{
     abandon_session, authenticated_participant_id, json, protocol_json, session_ready_for_game,
-    AppError, AppState, Arc, Extension, Game, HashSet, Json, LiveSession, ParticipantPrincipal,
+    AppError, AppState, Arc, Extension, HashSet, Json, LiveSession, ParticipantPrincipal,
     ParticipantState, ParticipantStateResponse, Path, PlayerRole, Result, ServerMessage,
     ServerPayload, SessionLifecycle, SessionParticipant, State, StatusCode, Value,
 };
 
 /// Returns the authoritative lifecycle snapshot for the authenticated participant.
-pub(super) async fn get_participant_state<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(super) async fn get_participant_state(
+    State(state): State<Arc<AppState>>,
     principal: Option<Extension<ParticipantPrincipal>>,
 ) -> Result<Json<ParticipantStateResponse>, AppError> {
     let participant_session_id = authenticated_participant_id(principal)?;
@@ -28,8 +28,8 @@ pub(super) async fn get_participant_state<A: Game>(
 }
 
 /// Reuses the participant's published assignment or their durable terminal result.
-pub(super) async fn existing_assignment<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn existing_assignment(
+    state: &Arc<AppState>,
     participant_session_id: &str,
 ) -> Result<Option<ParticipantStateResponse>, AppError> {
     let existing = {
@@ -66,8 +66,8 @@ pub(super) async fn existing_assignment<A: Game>(
 }
 
 /// Idempotently records an explicit participant leave and returns the terminal snapshot.
-pub(super) async fn leave_session<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(super) async fn leave_session(
+    State(state): State<Arc<AppState>>,
     principal: Option<Extension<ParticipantPrincipal>>,
     Path(public_session_id): Path<String>,
 ) -> Result<Json<ParticipantStateResponse>, AppError> {
@@ -115,12 +115,11 @@ pub(super) async fn leave_session<A: Game>(
 struct ParticipantView {
     presence: Value,
     observation: Option<Value>,
-    available_actions: Option<Vec<Value>>,
 }
 
 /// Computes a participant view from the same session snapshot as its lifecycle.
-fn participant_view_from_session<A: Game>(
-    session: &LiveSession<A>,
+fn participant_view_from_session(
+    session: &LiveSession,
     role: PlayerRole,
 ) -> Result<ParticipantView, AppError> {
     let presence = session_presence(session);
@@ -128,21 +127,17 @@ fn participant_view_from_session<A: Game>(
         return Ok(ParticipantView {
             presence,
             observation: None,
-            available_actions: None,
         });
     }
     Ok(ParticipantView {
         presence,
-        observation: Some(protocol_json(
-            &session.game.observation(session.state(), role),
-        )?),
-        available_actions: available_actions(&session.game, session.state(), role)?,
+        observation: Some(protocol_json(&session.state().observation(role))?),
     })
 }
 
 /// Builds the canonical participant lifecycle snapshot from authoritative live-session facts.
-pub(super) async fn participant_state_response<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn participant_state_response(
+    state: &Arc<AppState>,
     public_session_id: &str,
     role: PlayerRole,
 ) -> Result<ParticipantStateResponse, AppError> {
@@ -172,7 +167,7 @@ pub(super) async fn participant_state_response<A: Game>(
                         "Running session has no observation",
                     )
                 })?,
-                available_actions: view.available_actions,
+                available_actions: None,
                 presence,
                 idle_deadline_at: session.timing().idle_deadline_at.clone().ok_or_else(|| {
                     AppError::new(
@@ -190,7 +185,7 @@ pub(super) async fn participant_state_response<A: Game>(
                         "Running session has no observation",
                     )
                 })?,
-                available_actions: view.available_actions,
+                available_actions: None,
                 presence,
                 idle_deadline_at: session.timing().idle_deadline_at.clone().ok_or_else(|| {
                     AppError::new(
@@ -223,10 +218,7 @@ pub(super) async fn participant_state_response<A: Game>(
 }
 
 /// Broadcasts one authoritative lifecycle snapshot targeted to each human participant.
-pub(super) async fn broadcast_participant_states<A: Game>(
-    state: &Arc<AppState<A>>,
-    public_session_id: &str,
-) {
+pub(super) async fn broadcast_participant_states(state: &Arc<AppState>, public_session_id: &str) {
     let recipients = state
         .memory
         .read()
@@ -256,8 +248,8 @@ pub(super) async fn broadcast_participant_states<A: Game>(
 }
 
 /// Sends the targeted authoritative snapshot after a participant becomes active.
-pub(super) async fn send_role_assignment<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn send_role_assignment(
+    state: &Arc<AppState>,
     public_session_id: &str,
     participant_session_id: &str,
     role: PlayerRole,
@@ -274,8 +266,8 @@ pub(super) async fn send_role_assignment<A: Game>(
 }
 
 /// Builds the current presence update for a live session.
-pub(super) async fn presence_message<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn presence_message(
+    state: &Arc<AppState>,
     public_session_id: &str,
 ) -> Option<ServerMessage> {
     let memory = state.memory.read().await;
@@ -287,7 +279,7 @@ pub(super) async fn presence_message<A: Game>(
 }
 
 /// Projects the session's occupied roles and connection status.
-fn session_presence<G: Game>(session: &LiveSession<G>) -> Value {
+fn session_presence(session: &LiveSession) -> Value {
     json!(session
         .participants
         .values()
@@ -304,10 +296,7 @@ fn session_presence<G: Game>(session: &LiveSession<G>) -> Value {
 }
 
 /// Builds the session's current voice availability and readiness update.
-pub(super) async fn voice_message<A: Game>(
-    state: &Arc<AppState<A>>,
-    public_session_id: &str,
-) -> ServerMessage {
+pub(super) async fn voice_message(state: &Arc<AppState>, public_session_id: &str) -> ServerMessage {
     let (audio_ready, game_ready) = state
         .memory
         .read()
@@ -324,7 +313,7 @@ pub(super) async fn voice_message<A: Game>(
             (
                 connected_roles == HashSet::from([PlayerRole::A, PlayerRole::B]),
                 session.accepts_interaction()
-                    && session_ready_for_game::<A>(&state.context.config, session),
+                    && session_ready_for_game(&state.context.config, session),
             )
         })
         .unwrap_or((false, false));
@@ -382,34 +371,22 @@ pub(super) fn internal_error_message(recipient: &str, public_session_id: &str) -
     error_message(recipient, public_session_id, "internal_error", true)
 }
 
-/// Serializes the game-defined action catalogue for a role at one revision.
-fn available_actions<G: Game>(
-    game: &G,
-    state: &G::State,
-    role: PlayerRole,
-) -> Result<Option<Vec<Value>>> {
-    game.available_actions(state, role)
-        .map(|actions| actions.iter().map(protocol_json).collect())
-        .transpose()
-}
-
 /// Constructs the browser delta for a prepared revision before the transition is committed.
-pub(super) fn action_message<G: Game>(
-    session: &LiveSession<G>,
-    after: &G::State,
+pub(super) fn action_message(
+    session: &LiveSession,
     participant: &SessionParticipant,
     actor: PlayerRole,
     action: &Value,
     observation: Value,
-) -> Result<ServerMessage> {
-    Ok(ServerMessage::targeted(
+) -> ServerMessage {
+    ServerMessage::targeted(
         participant.participant_session_id.clone(),
         ServerPayload::Transition {
             public_session_id: session.id.clone(),
             actor: actor.as_str().to_string(),
             action: action.clone(),
             observation,
-            available_actions: available_actions(&session.game, after, participant.role)?,
+            available_actions: None,
         },
-    ))
+    )
 }

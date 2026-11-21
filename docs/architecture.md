@@ -1,22 +1,14 @@
 # Architecture
 
-Parlando combines a custom browser experience and game-specific mechanics with
-reusable experiment infrastructure. Together, the browser client and game crate
-form one compiled game. A running process can host several experiments that use
-that game. The standard Rust server links native game code. The component host
-loads a versioned WebAssembly game package at startup. Both expose the same
-live and headless turn semantics. [Run a component game](component-games.md)
+Parlando runs game mechanics in WebAssembly. A package contains the compiled game, its manifest and its participant assets. The host owns connections, experiments and durable records. Both live sessions and headless experiments instantiate the same game and advance it through the same interface.
 
-The compilation boundary gives game authors full control over presentation and
-task semantics while keeping experiment creation lightweight. A new condition is
-a dashboard configuration rather than a new process; a different game runs in its own process with its own client, database,
-and port. The same component host executable can start different game packages.
+`parlando serve` opens one local package. `parlando host` serves several packages on one listener. Each hosted experiment selects an immutable package revision and uses its own database. [Run a game](component-games.md) or [deploy to a shared host](component-hosting.md).
 
 ```mermaid
 flowchart LR
     subgraph game["Compiled game"]
         client["Browser client<br/>participant experience"]
-        mechanics["Rust game crate<br/>task mechanics"]
+        mechanics["Wasm game instance<br/>task mechanics"]
     end
 
     subgraph platform["Reusable Parlando infrastructure"]
@@ -80,17 +72,17 @@ The browser client defines the participant experience. Game authors can choose
 the layout, visual world, controls, instructions, animations, sounds, and
 completion presentation. The client renders observations for the assigned role
 and turns participant interaction into typed actions. It can also derive display
-state and provide immediate ergonomic feedback; the Rust game crate performs the
+state and provide immediate ergonomic feedback; the Wasm game performs the
 final validation shared by browsers and agents.
 
 The game crate defines the game semantics:
 
-- state and action types shared by humans and agents;
+- private session state and the actions players may submit;
 - role-specific observations and private-information boundaries;
 - action validation and state transitions;
-- available-action hints, when useful;
-- role-neutral transition metadata and a shared structured completion; and
-- factories for game-specific agents.
+- role-neutral transition metadata and a shared structured completion.
+
+Game-specific agent factories run in the host or in a separate agent process.
 
 The reusable Parlando runtime supplies mechanisms that should behave consistently
 across experiments:

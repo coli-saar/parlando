@@ -29,44 +29,42 @@ pub use training::{
 use self::schedule::require_empty_parameters;
 use self::spec::ExperimentFile;
 use crate::agents::AgentFactory;
-use crate::game::{Game, GameFactory, GameMetadata, PlayerRole};
+use crate::component::LoadedGame;
+use crate::game::{GameMetadata, PlayerRole};
 use anyhow::{bail, Context, Result};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Builds a typed reward for the selected YAML parameters during run validation.
-type RewardFactory<G> = Box<dyn Fn(&Value) -> Result<Arc<dyn RewardFunction<G>>> + Send + Sync>;
+type RewardFactory = Box<dyn Fn(&Value) -> Result<Arc<dyn RewardFunction>> + Send + Sync>;
 
 /// Runs versioned YAML agent-agent experiments for one compiled game.
 ///
 /// The registry contains reusable factories. Every planned session receives a fresh
 /// game and two fresh agents, and no headless state is inserted into the live database.
-pub struct ExperimentRunner<G: Game> {
+pub struct ExperimentRunner {
     game: GameMetadata,
-    game_factory: Arc<dyn GameFactory<Game = G>>,
-    agent_factories: BTreeMap<String, Arc<dyn AgentFactory<G>>>,
-    rl_agents: BTreeMap<String, Box<dyn RLAgent<G>>>,
-    trajectory_decoder: Option<self::training::TrajectoryDecoder<G::Observation, G::Action>>,
-    reward_functions: BTreeMap<String, RewardFactory<G>>,
-    schedule_factories: BTreeMap<String, ScheduleFactory<G>>,
+    loaded_game: LoadedGame,
+    agent_factories: BTreeMap<String, Arc<dyn AgentFactory>>,
+    rl_agents: BTreeMap<String, Box<dyn RLAgent>>,
+    reward_functions: BTreeMap<String, RewardFactory>,
+    schedule_factories: BTreeMap<String, ScheduleFactory>,
     secrets: HashMap<String, String>,
 }
 
 /// Constructor for one fresh activation schedule from validated YAML parameters.
-type ScheduleFactory<G> =
-    Arc<dyn Fn(PlayerRole, &Value) -> Result<Box<dyn AgentSchedule<G>>> + Send + Sync>;
+type ScheduleFactory =
+    Arc<dyn Fn(PlayerRole, &Value) -> Result<Box<dyn AgentSchedule>> + Send + Sync>;
 
-impl<G: Game> ExperimentRunner<G> {
-    /// Creates an empty runner registry for one stable game ID and factory.
-    pub fn new<F>(game: GameMetadata, game_factory: F) -> Result<Self>
-    where
-        F: GameFactory<Game = G>,
-    {
+impl ExperimentRunner {
+    /// Creates a runner for one compiled component and pins its digest in the game metadata.
+    pub fn new(mut game: GameMetadata, loaded_game: LoadedGame) -> Result<Self> {
         game.validate()?;
-        let mut schedule_factories = BTreeMap::<String, ScheduleFactory<G>>::new();
+        game.pin_component(&loaded_game)?;
+        let mut schedule_factories = BTreeMap::<String, ScheduleFactory>::new();
         schedule_factories.insert(
             "alternate_every_response".to_string(),
             Arc::new(|first, parameters| {
@@ -83,10 +81,9 @@ impl<G: Game> ExperimentRunner<G> {
         );
         Ok(Self {
             game,
-            game_factory: Arc::new(game_factory),
+            loaded_game,
             agent_factories: BTreeMap::new(),
             rl_agents: BTreeMap::new(),
-            trajectory_decoder: None,
             reward_functions: BTreeMap::new(),
             schedule_factories,
             secrets: HashMap::new(),
@@ -97,12 +94,10 @@ impl<G: Game> ExperimentRunner<G> {
     ///
     /// The learner resolves opaque checkpoints and exposes each checkpoint as a normal
     /// [`AgentFactory`]. Consequently session execution does not know whether an agent is
-    /// trainable, local, remote, in memory, or loaded from disk. The game observation
-    /// must support deserialization so a resumed run can recover finalized steps.
+    /// trainable, local, remote, in memory, or loaded from disk. Finalized trajectories are loaded from the run artifacts on resume.
     pub fn rl_agent<L>(mut self, learner: L) -> Result<Self>
     where
-        L: RLAgent<G>,
-        G::Observation: DeserializeOwned,
+        L: RLAgent,
     {
         let id = learner.factory_id().to_string();
         if id.trim().is_empty() {
@@ -112,14 +107,13 @@ impl<G: Game> ExperimentRunner<G> {
             bail!("agent factory {id:?} is registered more than once");
         }
         self.rl_agents.insert(id, Box::new(learner));
-        self.trajectory_decoder = Some(|json| serde_json::from_str(json));
         Ok(self)
     }
 
     /// Registers one game-specific reward calculation for training experiments.
     pub fn reward<R>(mut self, reward: R) -> Result<Self>
     where
-        R: RewardFunction<G>,
+        R: RewardFunction,
     {
         let id = reward.id().to_string();
         if id.trim().is_empty() || reward.version().trim().is_empty() {
@@ -141,9 +135,9 @@ impl<G: Game> ExperimentRunner<G> {
     /// Registers one agent factory under its existing stable definition ID.
     pub fn agent<F>(mut self, factory: F) -> Result<Self>
     where
-        F: AgentFactory<G>,
+        F: AgentFactory,
     {
-        let factory: Arc<dyn AgentFactory<G>> = Arc::new(factory);
+        let factory: Arc<dyn AgentFactory> = Arc::new(factory);
         let definition = factory.definition();
         definition.validate()?;
         if self.rl_agents.contains_key(&definition.id) {
@@ -178,7 +172,7 @@ impl<G: Game> ExperimentRunner<G> {
     /// Registers one compiled activation policy under a stable YAML name.
     pub fn schedule<F>(mut self, kind: impl Into<String>, factory: F) -> Result<Self>
     where
-        F: Fn(PlayerRole, &Value) -> Result<Box<dyn AgentSchedule<G>>> + Send + Sync + 'static,
+        F: Fn(PlayerRole, &Value) -> Result<Box<dyn AgentSchedule>> + Send + Sync + 'static,
     {
         let kind = kind.into();
         if kind.trim().is_empty() {

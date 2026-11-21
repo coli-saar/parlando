@@ -4,7 +4,7 @@ use super::*;
 async fn agent_runtime_creates_one_fresh_agent_per_room() {
     let factory = Arc::new(ScriptedAgentFactory::new(vec![vec![], vec![]]));
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(factory.clone()),
@@ -39,55 +39,10 @@ async fn agent_runtime_creates_one_fresh_agent_per_room() {
 }
 
 #[tokio::test]
-async fn agent_runtime_receives_same_available_action_affordance_as_ui() {
-    let seen_actions = Arc::new(Mutex::new(Vec::new()));
-    let router = build_router(
-        TinyAdapter,
-        human_vs_agent_config(),
-        ServeOptions {
-            agent_factory: Some(Arc::new(RecordingActionsAgentFactory {
-                seen_actions: seen_actions.clone(),
-            })),
-            ..ServeOptions::default()
-        },
-    )
-    .await
-    .unwrap();
-    let (human, public_session_id) = create_human_vs_agent_room(router.clone(), "Human").await;
-    let (base_url, server) = spawn_test_server(router.clone()).await;
-    let (mut socket, _) =
-        connect_async(game_socket_url(&router, &base_url, &public_session_id, &human).await)
-            .await
-            .unwrap();
-    let assigned = read_participant_state(&mut socket, "active").await;
-    let ui_available_actions = assigned["available_actions"].as_array().unwrap();
-    assert_eq!(ui_available_actions.len(), 1);
-    assert_eq!(ui_available_actions[0]["finish"], true);
-
-    for _ in 0..20 {
-        let captured = seen_actions.lock().unwrap().clone();
-        if let Some(first_turn_actions) = captured.first() {
-            assert_eq!(
-                first_turn_actions,
-                &Some(vec![TinyAction {
-                    finish: true,
-                    invalid: false,
-                }])
-            );
-            server.abort();
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    server.abort();
-    panic!("expected agent to receive available actions");
-}
-
-#[tokio::test]
 async fn agent_runtime_observes_messages_with_speaker_and_modality() {
     let observations = Arc::new(Mutex::new(Vec::new()));
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(Arc::new(RecordingObservationsAgentFactory {
@@ -146,7 +101,7 @@ async fn agent_runtime_observes_messages_with_speaker_and_modality() {
 async fn agent_runtime_observes_actions_with_resulting_observation() {
     let observations = Arc::new(Mutex::new(Vec::new()));
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(Arc::new(RecordingObservationsAgentFactory {
@@ -223,7 +178,7 @@ async fn agent_runtime_persists_messages_and_validated_actions() {
         ),
     ]]));
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(factory),
@@ -269,7 +224,7 @@ async fn agent_runtime_persists_messages_and_validated_actions() {
 async fn agent_runtime_observes_accepted_action_before_next_decision() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(Arc::new(SequencedDecisionAgentFactory { log: log.clone() })),
@@ -328,7 +283,7 @@ async fn agent_runtime_stops_invalid_agents_cleanly() {
         ),
     ]]));
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(factory),

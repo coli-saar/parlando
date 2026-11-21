@@ -64,7 +64,7 @@ fn administrator_cookie_matches_transport_security() {
 #[tokio::test]
 async fn admin_setup_page_creates_one_persistent_credential() {
     let (config, _tmp) = sqlite_config();
-    let router = crate::app::build_router(TinyAdapter, config.clone(), ServeOptions::default())
+    let router = crate::app::build_router(live_game(), config.clone(), ServeOptions::default())
         .await
         .map(TestRouter::new)
         .unwrap();
@@ -128,7 +128,7 @@ async fn admin_setup_page_creates_one_persistent_credential() {
     .await;
     assert_eq!(second_status, StatusCode::CONFLICT);
 
-    let restarted = crate::app::build_router(TinyAdapter, config, ServeOptions::default())
+    let restarted = crate::app::build_router(live_game(), config, ServeOptions::default())
         .await
         .map(TestRouter::new)
         .unwrap();

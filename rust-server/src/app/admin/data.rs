@@ -9,7 +9,7 @@ use crate::app::corpus::retain_export_sessions;
 use crate::app::{
     admin_experiment_id, corpus_experiment_export, export_csv, json, redact_secret_fields,
     AdminExperimentScope, AppError, AppState, Arc, Deserialize, ExperimentSnapshot, Extension,
-    Game, HeaderValue, IntoResponse, Json, Path, Query, Response, Result, State, StatusCode, Value,
+    HeaderValue, IntoResponse, Json, Path, Query, Response, Result, State, StatusCode, Value,
     CONTENT_DISPOSITION, CONTENT_TYPE, CORPUS_EXPORT_SCHEMA_V1,
 };
 
@@ -47,8 +47,8 @@ pub(in crate::app) fn attachment_response(
 }
 
 /// Exports the selected experiment snapshot in the requested representation.
-pub(in crate::app) async fn admin_export<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(in crate::app) async fn admin_export(
+    State(state): State<Arc<AppState>>,
     scope: Option<Extension<AdminExperimentScope>>,
     Query(query): Query<AdminExportQuery>,
 ) -> Result<Response, AppError> {
@@ -132,8 +132,8 @@ pub(in crate::app) async fn admin_export<A: Game>(
 }
 
 /// Previews the bounded records affected by manual participant-data deletion.
-pub(in crate::app) async fn admin_participant_deletion_preview<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(in crate::app) async fn admin_participant_deletion_preview(
+    State(state): State<Arc<AppState>>,
     scope: Option<Extension<AdminExperimentScope>>,
     Path(requested): Path<String>,
 ) -> Result<Json<Value>, AppError> {
@@ -155,8 +155,8 @@ pub(in crate::app) async fn admin_participant_deletion_preview<A: Game>(
 }
 
 /// Executes confirmed participant-data deletion and returns its audit counts.
-pub(in crate::app) async fn admin_delete_participant_data<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(in crate::app) async fn admin_delete_participant_data(
+    State(state): State<Arc<AppState>>,
     scope: Option<Extension<AdminExperimentScope>>,
     Path(requested): Path<String>,
 ) -> Result<Json<Value>, AppError> {
@@ -205,8 +205,8 @@ pub(in crate::app) async fn admin_delete_participant_data<A: Game>(
 }
 
 /// Loads the administrator export and checks its lifecycle at the same snapshot.
-async fn load_export<A: Game>(
-    state: &Arc<AppState<A>>,
+async fn load_export(
+    state: &Arc<AppState>,
     experiment_id: &str,
 ) -> Result<ExperimentSnapshot, AppError> {
     let snapshot = state

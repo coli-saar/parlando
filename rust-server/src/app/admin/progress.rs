@@ -6,7 +6,7 @@
 use crate::app::{
     admin_experiment_id, hydrated_experiment_config, json,
     run_and_cache_prolific_activation_preflight, AdminExperimentScope, AgentsMode, AppError,
-    AppState, Arc, ExperimentConfig, Extension, Game, Json, Result, State, StatusCode, Value,
+    AppState, Arc, ExperimentConfig, Extension, Json, Result, State, StatusCode, Value,
     VerifiedProlificStudy,
 };
 
@@ -33,8 +33,8 @@ pub(in crate::app) fn prolific_planned_sessions(
 }
 
 /// Refreshes the provider-owned study facts used by the progress target.
-pub(in crate::app) async fn refresh_prolific_progress<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(in crate::app) async fn refresh_prolific_progress(
+    state: &Arc<AppState>,
     experiment_id: &str,
 ) -> Result<VerifiedProlificStudy, AppError> {
     let config = hydrated_experiment_config(&state.context, experiment_id).await?;
@@ -72,8 +72,8 @@ pub(in crate::app) async fn refresh_prolific_progress<A: Game>(
 }
 
 /// Adds the configured or provider-derived target to durable progress data.
-async fn admin_progress_value<A: Game>(
-    state: &Arc<AppState<A>>,
+async fn admin_progress_value(
+    state: &Arc<AppState>,
     experiment_id: &str,
 ) -> Result<Value, AppError> {
     let progress = state
@@ -125,8 +125,8 @@ async fn admin_progress_value<A: Game>(
 }
 
 /// Returns complete experiment-wide session counts and the chronological session log.
-pub(in crate::app) async fn admin_progress<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(in crate::app) async fn admin_progress(
+    State(state): State<Arc<AppState>>,
     scope: Option<Extension<AdminExperimentScope>>,
 ) -> Result<Json<Value>, AppError> {
     let experiment_id = admin_experiment_id(&state, scope.as_ref());
@@ -138,8 +138,8 @@ pub(in crate::app) async fn admin_progress<A: Game>(
 }
 
 /// Performs an explicit Prolific refresh and returns the updated progress projection.
-pub(in crate::app) async fn admin_refresh_progress<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(in crate::app) async fn admin_refresh_progress(
+    State(state): State<Arc<AppState>>,
     scope: Option<Extension<AdminExperimentScope>>,
 ) -> Result<Json<Value>, AppError> {
     let experiment_id = admin_experiment_id(&state, scope.as_ref());

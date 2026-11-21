@@ -1,66 +1,67 @@
 # Releasing Parlando
 
-Parlando publishes two packages as one coordinated release:
+`make publish` covers six Parlando packages across crates.io, npm, and PyPI.
 
-- the Rust crate `parlando` from `rust-server`;
-- the JavaScript package `@coli-saar/parlando-client` from `js-client`.
+| Registry | Packages |
+| --- | --- |
+| crates.io | `parlando-game-derive`, `parlando-game-sdk`, `parlando` |
+| npm | `@coli-saar/parlando-client` |
+| PyPI | `parlando-python-sdk`, `parlando-agent-sdk` |
 
-Both packages use the same version. A normal release increments the current version by `0.0.1`; for
-example, `0.4.2` becomes `0.4.3`. Use another version only when the maintainer explicitly requests
-it. Do not intentionally publish only one package except when recovering from a partial release in
-which the other package is already present on its registry.
-
-The optional `component-games` feature depends on the Rust crate
-`parlando-component-sdk`. Cargo uses its sibling directory during workspace
-development. For a registry release, the SDK version required by
-`rust-server/Cargo.toml` must already exist on crates.io. If that version is
-new, its matching `parlando-component-derive` dependency must be published first.
-Include each new crate in the maintainer’s explicit release authorization
-before packaging the coordinated pair.
+All six packages use one release version. Publish every package at that
+version, including SDKs whose source code has no changes since the previous
+release. On crates.io, `parlando-game-derive` must be available before
+`parlando-game-sdk`, which in turn must be available before `parlando`.
+On PyPI, `parlando-python-sdk` supplies the game API imported as
+`parlando_game_sdk`, and `parlando-agent-sdk` supplies the remote agent API.
 
 This document is the canonical release procedure. `docs/publishing-packages.md` explains package
 consumption and individual publishing commands, while this page defines the coordinated release.
 
 ## 1. Establish the release version
 
-Read the versions in `rust-server/Cargo.toml`, `js-client/package.json`, and
-`js-client/package-lock.json`. They must agree. Check crates.io and npm as well: the latest stable
-versions of `parlando` and `@coli-saar/parlando-client` must agree with each other and with the
-repository before preparing the next release.
+Run `make check-release-versions` to verify that the six manifests, the Rust
+SDK dependency pins and the npm lockfile agree. Check the latest published
+versions on crates.io, npm, and PyPI. When moving from an earlier
+server-and-client release to the first six-package release, use the existing
+server and client versions to establish the baseline.
 
-Unless the maintainer selected another target, add one to the patch component:
+Unless the maintainer selects another version, add one to the patch component:
 
 ```text
-0.4.2 → 0.4.3
+0.6.0 → 0.6.1
 ```
 
-Before editing, confirm that the target version does not already exist on either registry. Registry
-versions are immutable, so a collision requires a new version rather than an overwrite.
+Confirm that the target version is available for each package on its
+registry before preparing the release. If some packages already carry that
+version as part of the same release, follow the partial release procedure.
 
 ## 2. Prepare one coordinated candidate
 
-Update the version in both publishable packages:
+Set the shared version in the six package manifests:
 
-- `rust-server/Cargo.toml`;
-- `js-client/package.json` and the root entries in `js-client/package-lock.json`.
+- `rust-server/Cargo.toml`, `parlando-game-sdk/Cargo.toml`, and
+  `parlando-game-sdk/derive/Cargo.toml`;
+- `js-client/package.json` and the root entries in `js-client/package-lock.json`;
+- `parlando-python-sdk/pyproject.toml` and `parlando-agent-sdk/pyproject.toml`.
 
-Update every first-party game manifest that declares either package. Rust and JavaScript
-dependencies must continue to identify the same Parlando release. Refresh lockfiles with Cargo or
-npm rather than hand-editing resolved package checksums. An npm consumer lockfile may have to wait
-until the new package exists on npm; record that as a deferred post-publication step.
+Keep the server's dependency on `parlando-game-sdk` and the SDK's dependency
+on `parlando-game-derive` pinned to the exact shared version. Update first-party
+consumer manifests that declare released Parlando packages. Refresh lockfiles
+with the package manager. If an npm consumer lockfile requires the new
+version to exist on npm, record that as a deferred post-publication step.
 
 Update the following release-facing material in the same candidate:
 
 - move the entries under `Unreleased` in the repository-root `CHANGELOG.md` into a dated
   `## [<version>] - YYYY-MM-DD` section, then leave a new empty `Unreleased` section above it;
-- change the current coordinated release in `skills/generate-parlando-game/SKILL.md` and review its
-  references for API or configuration changes;
+- review `skills/generate-parlando-game/SKILL.md` and its references for API or configuration changes;
 - update current version examples and behavioral descriptions in the README and `docs/`, including
   the Hugo manual under `docs/web/content`;
 - rebuild or validate generated documentation where the repository's documentation workflow
   requires it.
 
-`CHANGELOG.md` is the centralized history for both packages. Do not maintain separate Rust and
+`CHANGELOG.md` is the centralized history for all six packages. Do not maintain separate Rust and
 JavaScript release notes, and do not rewrite historical changelog sections or historical migration
 guides merely because the current version changed.
 
@@ -114,17 +115,24 @@ minutes and primarily measure sustained capacity rather than release correctness
 when a change specifically affects performance, resource limits, scheduling, or audio behavior and
 the maintainer requests that evidence.
 
-Then verify release builds, documentation, and package contents:
+Then verify release builds, documentation, and package contents. Use Python
+3.11 or later for the release tools.
 
 ```bash
 cargo build --release --all-features --manifest-path rust-server/Cargo.toml
 npm --prefix js-client run build
 hugo --source docs/web --panicOnWarning --printPathWarnings
-make package-local
-make publish-dry-run
+python3 -m venv .local/release-venv
+.local/release-venv/bin/python -m pip install build twine
+make publish-dry-run PYTHON=.local/release-venv/bin/python
 ```
 
-Inspect the Cargo package and npm dry-run file lists. They must not contain credentials, private
+The dry run checks both Python source distributions and wheels. When a
+new Rust dependency is still absent from crates.io, it lists the dependent
+crate's package contents. Run that crate's clean-source Cargo dry run after
+the dependency becomes available.
+
+Inspect the Cargo, npm and Python package contents. They must not contain credentials, private
 configuration, internal notes, or unexpected generated files, and they must contain every public
 declaration required by consumers.
 
@@ -164,38 +172,29 @@ cargo owner --list parlando
 
 Stop before publication if the authenticated accounts are not package owners.
 
-## 5. Publish both packages
+## 5. Publish the release
 
-Actual publication is irreversible and requires an explicit request from the maintainer. Immediately
-before publishing, rerun the clean-source Rust dry run and confirm that the target is still absent
-from both registries:
-
-```bash
-cd rust-server
-cargo publish --dry-run
-cd ..
-```
-
-Publish Rust first:
+Actual publication requires an explicit request from the maintainer.
+Recheck target versions and registry access immediately before uploading.
+Configure Twine for PyPI using the maintainer's credentials.
 
 ```bash
-make publish-rust-server
+make publish PYTHON=.local/release-venv/bin/python
 ```
 
-Wait until crates.io exposes the exact version. Then publish JavaScript in an interactive terminal:
+The command checks the shared version before uploading. It publishes the
+Rust derive crate, Rust Game SDK, and server in dependency order, then the
+browser client to npm and both Python SDKs to PyPI. A failed upload stops the
+sequence.
 
-```bash
-make publish-js-client
-```
-
-The npm publish itself may also print an approval link and wait for confirmation on npm's website.
-Show the link to the maintainer, keep the same process alive, and wait. Do not start another publish
-while approval is pending. After npm reports success, poll the registry until the exact version is
-visible and npm's `latest` tag points to it; the upload message can precede registry visibility.
-
-If Rust succeeds and JavaScript fails, report a partial release prominently. Retry only the
-unpublished JavaScript version after correcting authentication or approval. Never attempt to
-republish the already published Rust version.
+If npm requests browser approval, keep the process alive while the
+maintainer follows its link. Verify each exact published version in its
+registry. After a partial release, retry only the failed and pending
+targets. Use `publish-rust-derive`, `publish-rust-sdk`,
+`publish-rust-server`, `publish-js-client`,
+`publish-python-game-sdk`, or `publish-python-agent-sdk` as appropriate.
+If PyPI accepted only one distribution file, verify it and upload only the
+missing file with Twine.
 
 ## 6. Verify consumers and finish the release
 
@@ -212,9 +211,13 @@ python3 skills/release-parlando/scripts/check_release.py <version> --published
 
 If the release requires a migration guide, include `--require-migration-guide` as well.
 
-Tag only after both registries and the clean-consumer checks succeed. When registry-derived lockfiles
+For each Python SDK version included in the release, install it from PyPI
+in a clean environment and verify its metadata and import
+(`parlando_game_sdk` or `parlando_agent_sdk`).
+
+Tag only after the registry and clean-consumer checks succeed. When registry-derived lockfiles
 could not be created before publication, use a release-candidate commit for the published artifacts
-and a release-completion commit for those lockfiles; the publishable Rust and JavaScript package
+and a release-completion commit for those lockfiles; the six publishable package
 trees must be identical in both commits. Tag the completion commit.
 
 Ask the maintainer to create and push the annotated release tag. Substitute the actual released
@@ -242,7 +245,7 @@ The final release report should record:
 - the changelog and migration-guide status;
 - every test, build, documentation, package, and dry-run result;
 - the reviewed package contents and any warnings;
-- both registry URLs and clean-consumer results;
+- published package URLs and clean-consumer results;
 - deferred lockfile resolution;
 - the artifact-provenance and tag commits;
 - any Git, tag, push, or GitHub Release commands still owned by the maintainer.

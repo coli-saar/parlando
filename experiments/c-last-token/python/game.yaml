@@ -1,0 +1,4 @@
+id: python-last-token
+name: Last Token
+version: 1.0.0
+component: ../build/last-token-python.wasm

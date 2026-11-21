@@ -9,14 +9,14 @@ use super::{
     authenticated_participant_id, expire_if_due_locked, json, new_id, now_iso, participant_role,
     persist_session_event_required, require_session, reserve_agent_delivery,
     session_transition_lock, touch_session_activity, AgentObservation, AppError, AppState, Arc,
-    ConversationMessageResponse, Extension, FinalTranscriptUtterance, Game, Json,
-    ParticipantPrincipal, Path, Result, ServerMessage, ServerPayload, State, StatusCode,
-    SubmissionRejection, Value, VoiceDiagnosticIn,
+    ConversationMessageResponse, Extension, FinalTranscriptUtterance, Json, ParticipantPrincipal,
+    Path, Result, ServerMessage, ServerPayload, State, StatusCode, SubmissionRejection, Value,
+    VoiceDiagnosticIn,
 };
 
 /// Commits one final provider utterance to storage, conversation, and agents.
-pub(super) async fn commit_final_transcript<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn commit_final_transcript(
+    state: &Arc<AppState>,
     public_session_id: &str,
     participant_session_id: &str,
     stream_started_at: &str,
@@ -141,8 +141,8 @@ fn conversation_message_event_payload(message: &ConversationMessageResponse) -> 
 }
 
 /// Accepts a bounded operational voice metric without retaining it in research storage.
-pub(super) async fn add_voice_diagnostic<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(super) async fn add_voice_diagnostic(
+    State(state): State<Arc<AppState>>,
     Path(public_session_id): Path<String>,
     principal: Option<Extension<ParticipantPrincipal>>,
     Json(diagnostic): Json<VoiceDiagnosticIn>,
@@ -208,8 +208,8 @@ impl ConversationOrigin {
 }
 
 /// Commits and publishes one already-attributed player message through a single pipeline.
-pub(super) async fn commit_conversation_message<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn commit_conversation_message(
+    state: &Arc<AppState>,
     public_session_id: &str,
     sender_participant_session_id: &str,
     origin: ConversationOrigin,
@@ -307,8 +307,8 @@ pub(super) async fn commit_conversation_message<A: Game>(
 }
 
 /// Rejects meaningful participant input unless the projected lifecycle is exactly `Active`.
-async fn ensure_participant_interaction_active<A: Game>(
-    state: &Arc<AppState<A>>,
+async fn ensure_participant_interaction_active(
+    state: &Arc<AppState>,
     public_session_id: &str,
 ) -> Result<(), AppError> {
     let active = {

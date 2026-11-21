@@ -6,7 +6,7 @@ use super::level::{
 };
 
 /// Typed Space Game action accepted by the reusable Parlando server boundary.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, parlando_game_sdk::GameValue)]
 #[serde(tag = "type")]
 pub enum SpaceAction {
     #[serde(rename = "moveStep")]
@@ -88,7 +88,7 @@ pub struct SpaceGameState {
 }
 
 /// Session-local player states keyed by Space Game role.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, parlando_game_sdk::GameValue)]
 pub struct Players {
     #[serde(rename = "A")]
     pub a: PlayerState,
@@ -97,7 +97,7 @@ pub struct Players {
 }
 
 /// Per-player position and room occupancy.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, parlando_game_sdk::GameValue)]
 pub struct PlayerState {
     pub room: String,
     pub position: Position,
@@ -106,7 +106,7 @@ pub struct PlayerState {
 }
 
 /// Fuse board state in the power room.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, parlando_game_sdk::GameValue)]
 pub struct Fuses {
     pub blue: bool,
     pub yellow: bool,
@@ -114,14 +114,14 @@ pub struct Fuses {
 }
 
 /// Breaker state in the power room.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, parlando_game_sdk::GameValue)]
 pub struct Breakers {
     pub main: bool,
     pub aux: bool,
 }
 
 /// Valve state in the valve room.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, parlando_game_sdk::GameValue)]
 pub struct Valves {
     #[serde(rename = "A")]
     pub a: bool,
@@ -131,7 +131,7 @@ pub struct Valves {
 }
 
 /// Battery sled state across charger and signal-array locations.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, parlando_game_sdk::GameValue)]
 pub struct Battery {
     pub location: String,
     pub charged: bool,
@@ -148,7 +148,7 @@ pub struct Knowledge {
 }
 
 /// Observation knowledge with the other player's private facts filtered out.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, parlando_game_sdk::GameValue)]
 pub struct FilteredKnowledge {
     #[serde(rename = "A")]
     pub a: Vec<String>,
@@ -157,7 +157,7 @@ pub struct FilteredKnowledge {
 }
 
 /// Derived system booleans shown by the client and used for launch prerequisites.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, parlando_game_sdk::GameValue)]
 #[serde(rename_all = "camelCase")]
 pub struct Systems {
     pub pump_powered: bool,
@@ -172,8 +172,10 @@ pub struct Systems {
 }
 
 /// Player-specific observation sent to one participant.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, parlando_game_sdk::GameValue)]
 pub struct SpaceObservation {
+    /// Operations currently open to the observing seat.
+    pub actions: Vec<SpaceAction>,
     pub players: Players,
     pub fuses: Fuses,
     pub breakers: Breakers,
@@ -199,7 +201,7 @@ pub struct SpaceObservation {
 }
 
 /// Shared game-specific result persisted and sent when the beacon launches.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, parlando_game_sdk::GameValue)]
 pub struct SpaceCompletion {
     #[serde(rename = "beaconLaunched")]
     pub beacon_launched: bool,
@@ -740,7 +742,7 @@ fn player_state_mut<'a>(state: &'a mut SpaceGameState, player: &str) -> &'a mut 
 
 #[cfg(test)]
 mod tests {
-    use parlando::{Game, PlayerRole};
+    use parlando_game_sdk::Role as PlayerRole;
     use serde_json::json;
 
     use crate::game::adapter::SpaceGame;
@@ -856,10 +858,9 @@ mod tests {
 
     #[test]
     fn observation_filters_other_player_knowledge() {
-        let adapter = SpaceGame::testing();
         let state = initial_state();
-        let observation_a = adapter.observation(&state, PlayerRole::A);
-        let observation_b = adapter.observation(&state, PlayerRole::B);
+        let observation_a = SpaceGame::observation(&state, PlayerRole::A);
+        let observation_b = SpaceGame::observation(&state, PlayerRole::B);
         assert_eq!(observation_a.private_knowledge, state.knowledge.a);
         assert!(observation_a.knowledge.b.is_empty());
         assert_eq!(observation_b.private_knowledge, state.knowledge.b);
@@ -868,10 +869,9 @@ mod tests {
 
     #[test]
     fn adapter_exposes_typed_available_actions_with_client_json_shape() {
-        let adapter = SpaceGame::testing();
         let mut state = initial_state();
         state.players.a.position = Position { x: 1, y: 1 };
-        let actions = adapter.available_actions(&state, PlayerRole::A).unwrap();
+        let actions = SpaceGame::observation(&state, PlayerRole::A).actions;
         let expected = SpaceAction::ToggleFuse {
             player: "A".to_string(),
             color: "blue".to_string(),
@@ -919,10 +919,9 @@ mod tests {
 
     #[test]
     fn completion_serializes_with_client_shape() {
-        let adapter = SpaceGame::testing();
         let mut state = initial_state();
         state.beacon_launched = true;
-        let completion = adapter.completion(&state).unwrap();
+        let completion = SpaceGame::outcome(&state).unwrap();
         let value = serde_json::to_value(completion).unwrap();
 
         assert_eq!(value["beaconLaunched"], true);

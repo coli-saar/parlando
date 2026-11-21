@@ -3,7 +3,7 @@ use super::*;
 // Verifies that explicit departure terminates both participant views and all later input.
 #[tokio::test]
 async fn explicit_leave_abandons_session_and_notifies_partner() {
-    let router = build_router(TinyAdapter, step_five_config(), ServeOptions::default())
+    let router = build_router(live_game(), step_five_config(), ServeOptions::default())
         .await
         .unwrap();
     let (a, b, public_session_id) = create_joined_room(router.clone()).await;
@@ -89,7 +89,7 @@ async fn explicit_leave_abandons_session_and_notifies_partner() {
 async fn explicit_leave_shuts_down_the_session_agent() {
     let shutdowns = Arc::new(AtomicUsize::new(0));
     let router = build_router(
-        TinyAdapter,
+        live_game(),
         human_vs_agent_config(),
         ServeOptions {
             agent_factory: Some(Arc::new(ShutdownRecordingAgentFactory {
@@ -138,7 +138,7 @@ async fn explicit_leave_shuts_down_the_session_agent() {
 async fn brief_disconnect_pauses_partner_and_reconnect_preserves_session() {
     let mut config = step_five_config();
     config.session.reconnect_grace_seconds = 2;
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
     let (a, b, public_session_id) = create_joined_room(router.clone()).await;
@@ -252,7 +252,7 @@ async fn brief_disconnect_pauses_partner_and_reconnect_preserves_session() {
 async fn disconnect_past_grace_gives_partner_a_terminal_outcome() {
     let mut config = step_five_config();
     config.session.reconnect_grace_seconds = 1;
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
     let (a, b, public_session_id) = create_joined_room(router.clone()).await;
@@ -311,7 +311,7 @@ async fn disconnect_past_grace_gives_partner_a_terminal_outcome() {
 async fn two_disconnects_past_grace_give_both_connection_lost() {
     let mut config = step_five_config();
     config.session.reconnect_grace_seconds = 1;
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
     let (a, b, public_session_id) = create_joined_room(router.clone()).await;

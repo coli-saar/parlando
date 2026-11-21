@@ -6,8 +6,22 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## Unreleased
 
+### Added
+
+- Author stateful component games with the Rust SDK and `parlando new`. Build,
+  test, and serve the same package locally or upload it to a persistent Parlando
+  host. Each hosted experiment pins an immutable package revision.
+
 ### Changed
 
+- Live play, replay and headless experiments now execute Wasm games. Custom Rust hosts load components with `LoadedGame`. The game-authoring trait lives in `parlando-game-sdk`.
+
+- Rename the Rust SDK crate from `parlando-component-sdk` to `parlando-game-sdk`.
+  Update Rust imports to `parlando_game_sdk` and replace `ComponentWire` and
+  `ComponentDecode` derives with one `GameValue` derive. Existing compiled
+  game components remain compatible with the host.
+- The local component runner is now `parlando`. Pass a package manifest after
+  the subcommand, for example `parlando serve --manifest game.yaml`.
 - Component games use the v4 WIT world. The host reads the guest's schema once
   at load time. Configuration, actions, observations, completion and metadata
   cross the game boundary as MessagePack values. Build guests with the v4

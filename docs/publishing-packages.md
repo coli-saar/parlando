@@ -6,10 +6,14 @@ For a coordinated Parlando release, follow [Releasing Parlando](releasing-parlan
 defines version selection, changelog and migration requirements, complete test gates, interactive
 registry authentication, publication, and post-publication verification.
 
-Parlando has two reusable packages:
+Parlando publishes reusable packages across three registries:
 
 - `parlando`: Rust library crate under `rust-server`, published to crates.io.
+- `parlando-game-derive` and `parlando-game-sdk`: the Rust Game SDK and its derive macro, published to crates.io.
 - `@coli-saar/parlando-client`: browser SDK under `js-client`, published to npm.
+- `parlando-python-sdk` and `parlando-agent-sdk`: the Python game and remote agent SDKs, published to PyPI.
+
+All six packages carry the same version in each coordinated release.
 
 The intended dependency model is deliberately simple:
 
@@ -127,52 +131,20 @@ make package-js-client-local
 
 ## Online Dry Run
 
-Use this immediately before publishing:
+Set up the Python release environment, then run:
 
 ```bash
-git status --short
-make publish-dry-run
+make publish-dry-run PYTHON=.local/release-venv/bin/python
 ```
 
-This runs:
-
-```bash
-cd rust-server && cargo publish --dry-run --allow-dirty
-cd js-client && npm publish --dry-run
-```
-
-The dry run catches missing manifest metadata, excluded files, package build failures, and registry assumptions before uploading real versions.
-
-For only one package:
-
-```bash
-make publish-rust-server-dry-run
-make publish-js-client-dry-run
-```
+The dry run checks Cargo and npm packaging and builds and checks both
+Python distributions. [Release tools and prerequisites](releasing-parlando.md#3-run-the-release-gates)
 
 ## Publish Online
 
-Rust goes to crates.io:
-
-```bash
-cargo login
-make publish-rust-server
-```
-
-The JavaScript client goes to npm:
-
-```bash
-cd js-client
-npm login
-cd ..
-make publish-js-client
-```
-
-If publishing to a registry other than npmjs.com, set npm's registry before the dry run and real publish:
-
-```bash
-npm config set registry https://registry.npmjs.org/
-```
+Use `make publish` for the coordinated release with the configured registry
+credentials. Individual package targets are available for recovering a
+partial release. [Release procedure](releasing-parlando.md#5-publish-the-release)
 
 ## Switching Back From Local Paths
 

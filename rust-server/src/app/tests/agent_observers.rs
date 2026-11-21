@@ -1,27 +1,24 @@
 use super::*;
 
 pub(super) struct ScriptedAgent {
-    pub(super) script: VecDeque<Option<AgentResponse<TinyAction>>>,
+    pub(super) script: VecDeque<Option<AgentResponse>>,
 }
 
 #[async_trait]
-impl Agent<TinyAdapter> for ScriptedAgent {
-    async fn respond(
-        &mut self,
-        _available_actions: Option<Vec<TinyAction>>,
-    ) -> Result<Option<AgentResponse<TinyAction>>> {
+impl Agent for ScriptedAgent {
+    async fn respond(&mut self) -> Result<Option<AgentResponse>> {
         Ok(self.script.pop_front().unwrap_or(None))
     }
 }
 
 pub(super) struct ScriptedAgentFactory {
     pub(super) created: AtomicUsize,
-    pub(super) scripts: Mutex<VecDeque<Vec<Option<AgentResponse<TinyAction>>>>>,
+    pub(super) scripts: Mutex<VecDeque<Vec<Option<AgentResponse>>>>,
 }
 
 impl ScriptedAgentFactory {
     // Creates a factory that hands one script to each fresh agent instance.
-    pub(super) fn new(scripts: Vec<Vec<Option<AgentResponse<TinyAction>>>>) -> Self {
+    pub(super) fn new(scripts: Vec<Vec<Option<AgentResponse>>>) -> Self {
         Self {
             created: AtomicUsize::new(0),
             scripts: Mutex::new(scripts.into()),
@@ -38,8 +35,8 @@ impl ScriptedAgentFactory {
 pub(super) fn scripted_response(
     message: Option<&str>,
     action: Option<TinyAction>,
-) -> Option<AgentResponse<TinyAction>> {
-    match (message, action) {
+) -> Option<AgentResponse> {
+    match (message, action.as_ref().map(tiny_action)) {
         (Some(message), Some(action)) => Some(AgentResponse::action_and_message(action, message)),
         (Some(message), None) => Some(AgentResponse::message(message)),
         (None, Some(action)) => Some(AgentResponse::action(action)),
@@ -48,52 +45,16 @@ pub(super) fn scripted_response(
 }
 
 #[async_trait]
-impl AgentFactory<TinyAdapter> for ScriptedAgentFactory {
+impl AgentFactory for ScriptedAgentFactory {
     fn definition(&self) -> AgentDefinition {
         test_agent_definition()
     }
 
-    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         self.created.fetch_add(1, Ordering::SeqCst);
         let script = self.scripts.lock().unwrap().pop_front().unwrap_or_default();
         Ok(Box::new(ScriptedAgent {
             script: script.into(),
-        }))
-    }
-
-    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
-        test_agent_identity()
-    }
-}
-
-pub(super) struct RecordingActionsAgent {
-    pub(super) seen_actions: Arc<Mutex<Vec<Option<Vec<TinyAction>>>>>,
-}
-
-#[async_trait]
-impl Agent<TinyAdapter> for RecordingActionsAgent {
-    async fn respond(
-        &mut self,
-        available_actions: Option<Vec<TinyAction>>,
-    ) -> Result<Option<AgentResponse<TinyAction>>> {
-        self.seen_actions.lock().unwrap().push(available_actions);
-        Ok(None)
-    }
-}
-
-pub(super) struct RecordingActionsAgentFactory {
-    pub(super) seen_actions: Arc<Mutex<Vec<Option<Vec<TinyAction>>>>>,
-}
-
-#[async_trait]
-impl AgentFactory<TinyAdapter> for RecordingActionsAgentFactory {
-    fn definition(&self) -> AgentDefinition {
-        test_agent_definition()
-    }
-
-    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
-        Ok(Box::new(RecordingActionsAgent {
-            seen_actions: self.seen_actions.clone(),
         }))
     }
 
@@ -107,8 +68,9 @@ pub(super) struct RecordingObservationsAgent {
 }
 
 #[async_trait]
-impl Agent<TinyAdapter> for RecordingObservationsAgent {
-    async fn start(&mut self, current_observation: TinyObservation) -> Result<()> {
+impl Agent for RecordingObservationsAgent {
+    async fn start(&mut self, current_observation: ComponentValue) -> Result<()> {
+        let current_observation: TinyObservation = current_observation.decode()?;
         self.observations.lock().unwrap().push(format!(
             "state:{}:{}",
             current_observation.role, current_observation.done
@@ -119,9 +81,11 @@ impl Agent<TinyAdapter> for RecordingObservationsAgent {
     async fn observe_transition(
         &mut self,
         actor: PlayerRole,
-        action: TinyAction,
-        resulting_observation: TinyObservation,
+        action: ComponentValue,
+        resulting_observation: ComponentValue,
     ) -> Result<()> {
+        let action: TinyAction = action.decode()?;
+        let resulting_observation: TinyObservation = resulting_observation.decode()?;
         self.observations.lock().unwrap().push(format!(
             "action:{}:{}:{}",
             actor.as_str(),
@@ -139,7 +103,8 @@ impl Agent<TinyAdapter> for RecordingObservationsAgent {
         Ok(())
     }
 
-    async fn finish(&mut self, completion: TinySummary) -> Result<()> {
+    async fn finish(&mut self, completion: ComponentValue) -> Result<()> {
+        let completion: TinySummary = completion.decode()?;
         self.observations.lock().unwrap().push(format!(
             "finish:{}:{}",
             completion.outcome, completion.dyad_score
@@ -147,10 +112,7 @@ impl Agent<TinyAdapter> for RecordingObservationsAgent {
         Ok(())
     }
 
-    async fn respond(
-        &mut self,
-        _available_actions: Option<Vec<TinyAction>>,
-    ) -> Result<Option<AgentResponse<TinyAction>>> {
+    async fn respond(&mut self) -> Result<Option<AgentResponse>> {
         Ok(None)
     }
 }
@@ -160,12 +122,12 @@ pub(super) struct RecordingObservationsAgentFactory {
 }
 
 #[async_trait]
-impl AgentFactory<TinyAdapter> for RecordingObservationsAgentFactory {
+impl AgentFactory for RecordingObservationsAgentFactory {
     fn definition(&self) -> AgentDefinition {
         test_agent_definition()
     }
 
-    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         Ok(Box::new(RecordingObservationsAgent {
             observations: self.observations.clone(),
         }))
@@ -182,12 +144,12 @@ pub(super) struct SequencedDecisionAgent {
 }
 
 #[async_trait]
-impl Agent<TinyAdapter> for SequencedDecisionAgent {
+impl Agent for SequencedDecisionAgent {
     async fn observe_transition(
         &mut self,
         actor: PlayerRole,
-        _action: TinyAction,
-        _resulting_observation: TinyObservation,
+        _action: ComponentValue,
+        _resulting_observation: ComponentValue,
     ) -> Result<()> {
         self.log
             .lock()
@@ -196,10 +158,7 @@ impl Agent<TinyAdapter> for SequencedDecisionAgent {
         Ok(())
     }
 
-    async fn respond(
-        &mut self,
-        _available_actions: Option<Vec<TinyAction>>,
-    ) -> Result<Option<AgentResponse<TinyAction>>> {
+    async fn respond(&mut self) -> Result<Option<AgentResponse>> {
         self.decisions += 1;
         self.log
             .lock()
@@ -223,12 +182,12 @@ pub(super) struct SequencedDecisionAgentFactory {
 }
 
 #[async_trait]
-impl AgentFactory<TinyAdapter> for SequencedDecisionAgentFactory {
+impl AgentFactory for SequencedDecisionAgentFactory {
     fn definition(&self) -> AgentDefinition {
         test_agent_definition()
     }
 
-    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         Ok(Box::new(SequencedDecisionAgent {
             log: self.log.clone(),
             decisions: 0,

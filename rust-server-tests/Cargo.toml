@@ -6,7 +6,6 @@ publish = false
 
 [features]
 stress-tui = ["parlando/stress-tui", "dep:ratatui", "dep:parlando-stress-fixture", "dep:mach2"]
-stress-wasm = ["stress-tui", "parlando/component-games"]
 
 [dependencies]
 anyhow = "1"

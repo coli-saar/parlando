@@ -11,25 +11,21 @@ use super::results::{SessionCaptures, SessionResult, SessionStatus};
 use super::schedule::other_role;
 use super::spec::TraceLevel;
 use crate::agents::{Agent, AgentContext};
-use crate::game::{Game, GameFactory, GameInitializationContext, GameSessionContext, PlayerRole};
+use crate::component::{ComponentValue, LoadedGame};
+use crate::game::PlayerRole;
 use crate::SessionLogger;
 use anyhow::{anyhow, Context, Result};
-use serde::Serialize;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
 
 /// Single-session driver shared by batch evaluation workers.
-pub(super) struct SessionRunner<G: Game> {
-    pub(super) game_factory: Arc<dyn GameFactory<Game = G>>,
+pub(super) struct SessionRunner {
+    pub(super) loaded_game: LoadedGame,
 }
 
-impl<G: Game> SessionRunner<G> {
+impl SessionRunner {
     /// Constructs, drives, cleans up, and summarizes one session exactly once.
-    pub(super) async fn run(
-        &self,
-        plan: SessionPlan<G>,
-    ) -> SessionResult<G::Completion, G::Observation, G::Action> {
+    pub(super) async fn run(&self, plan: SessionPlan) -> SessionResult {
         let started = Instant::now();
         let mut result = SessionResult {
             run_id: plan.run_id.clone(),
@@ -64,16 +60,7 @@ impl<G: Game> SessionRunner<G> {
             cleanup_diagnostics: Vec::new(),
         };
         let logger = SessionLogger::headless();
-        let game = match self.game_factory.create(GameSessionContext {
-            logger: logger.clone(),
-        }) {
-            Ok(game) => game,
-            Err(error) => {
-                record_failure(&mut result, "game_factory", None, error);
-                result.elapsed_ms = elapsed_ms(started);
-                return result;
-            }
-        };
+        let game = self.loaded_game.session();
 
         let mut first = match create_agent(
             &plan.seats[0],
@@ -105,11 +92,7 @@ impl<G: Game> SessionRunner<G> {
             };
         let mut agents = [first, second];
 
-        let state = match game.initial_state(GameInitializationContext {
-            config: &plan.game_config,
-            seed: plan.game_seed,
-            secrets: &plan.game_secrets,
-        }) {
+        let state = match game.init(&plan.game_config, plan.game_seed) {
             Ok(state) => state,
             Err(error) => {
                 record_failure(&mut result, "initial_state", None, error);
@@ -136,9 +119,9 @@ impl<G: Game> SessionRunner<G> {
 }
 
 /// Successful exit from the decision loop.
-pub(super) struct SessionOutcome<C> {
+pub(super) struct SessionOutcome {
     pub(super) status: SessionStatus,
-    pub(super) completion: Option<C>,
+    pub(super) completion: Option<ComponentValue>,
 }
 
 /// Structured internal failure preserving lifecycle attribution.
@@ -149,8 +132,8 @@ pub(super) struct SessionFailure {
 }
 
 /// Delivers one player message only to the opposite role.
-pub(super) async fn deliver_message<G: Game>(
-    agents: &mut [Box<dyn Agent<G> + Send>; 2],
+pub(super) async fn deliver_message(
+    agents: &mut [Box<dyn Agent + Send>; 2],
     sender: PlayerRole,
     message: &str,
     callback_timeout: Duration,
@@ -166,9 +149,9 @@ pub(super) async fn deliver_message<G: Game>(
 }
 
 /// Delivers normal completion to both agents in stable role order.
-pub(super) async fn finish_agents<G: Game>(
-    agents: &mut [Box<dyn Agent<G> + Send>; 2],
-    completion: &G::Completion,
+pub(super) async fn finish_agents(
+    agents: &mut [Box<dyn Agent + Send>; 2],
+    completion: &ComponentValue,
     callback_timeout: Duration,
 ) -> std::result::Result<(), SessionFailure> {
     for role in [PlayerRole::A, PlayerRole::B] {
@@ -184,8 +167,8 @@ pub(super) async fn finish_agents<G: Game>(
 }
 
 /// Shuts down both successfully constructed agents without replacing the primary result.
-async fn shutdown_agents<G: Game>(
-    agents: &mut [Box<dyn Agent<G> + Send>; 2],
+async fn shutdown_agents(
+    agents: &mut [Box<dyn Agent + Send>; 2],
     shutdown_timeout: Duration,
 ) -> Vec<String> {
     let mut diagnostics = Vec::new();
@@ -199,7 +182,7 @@ async fn shutdown_agents<G: Game>(
 }
 
 /// Applies the bounded best-effort shutdown contract to one agent.
-async fn shutdown_agent<G: Game>(agent: &mut dyn Agent<G>, duration: Duration) -> Option<String> {
+async fn shutdown_agent(agent: &mut dyn Agent, duration: Duration) -> Option<String> {
     match timeout(duration, agent.shutdown()).await {
         Ok(Ok(())) => None,
         Ok(Err(error)) => Some(format!("shutdown failed: {error:#}")),
@@ -208,11 +191,11 @@ async fn shutdown_agent<G: Game>(agent: &mut dyn Agent<G>, duration: Duration) -
 }
 
 /// Creates one role-bound agent using its resolved settings and secrets.
-async fn create_agent<G: Game>(
-    seat: &ResolvedSeat<G>,
+async fn create_agent(
+    seat: &ResolvedSeat,
     logger: SessionLogger,
     callback_timeout: Duration,
-) -> Result<Box<dyn Agent<G> + Send>> {
+) -> Result<Box<dyn Agent + Send>> {
     timeout(
         callback_timeout,
         seat.factory.create(AgentContext {
@@ -229,8 +212,8 @@ async fn create_agent<G: Game>(
 }
 
 /// Converts one lifecycle error into the compact public result fields.
-fn record_failure<C: Serialize, O, A>(
-    result: &mut SessionResult<C, O, A>,
+fn record_failure(
+    result: &mut SessionResult,
     phase: &str,
     role: Option<PlayerRole>,
     error: impl Into<anyhow::Error>,
@@ -243,7 +226,7 @@ fn record_failure<C: Serialize, O, A>(
 }
 
 /// Constructs a successful non-completion loop exit.
-pub(super) fn limit_outcome<C>(status: SessionStatus) -> SessionOutcome<C> {
+pub(super) fn limit_outcome(status: SessionStatus) -> SessionOutcome {
     SessionOutcome {
         status,
         completion: None,

@@ -1,10 +1,15 @@
 //! The hotel porter plays either car using role-visible controls and chatted entries.
-use crate::{Action, BridgePose, Hotel, Seal, CABIN_CAPACITY};
+
+use crate::agent_response::Response;
+#[cfg(test)]
+use crate::Hotel;
+use crate::{Action, BridgePose, Seal, CABIN_CAPACITY};
 use crate::{FreightStatus, Observation as View};
 use anyhow::Result;
 use async_trait::async_trait;
+use parlando::component::ComponentValue;
 use parlando::{
-    agent::{Agent, Context, Definition, Factory, Identity, Response},
+    agent::{Agent, Context, Definition, Factory, Identity},
     PlayerRole,
 };
 use serde::Deserialize;
@@ -15,7 +20,7 @@ use tokio::time::Instant;
 /// Offers a cooperative porter in the dashboard for either player seat.
 pub struct PorterFactory;
 #[async_trait]
-impl Factory<Hotel> for PorterFactory {
+impl Factory for PorterFactory {
     /// Describes the porter’s role and empty settings schema.
     fn definition(&self) -> Definition {
         Definition {
@@ -33,7 +38,7 @@ impl Factory<Hotel> for PorterFactory {
         })
     }
     /// Creates private dispatch memory for the assigned guest.
-    async fn create(&self, c: Context) -> Result<Box<dyn Agent<Hotel> + Send>> {
+    async fn create(&self, c: Context) -> Result<Box<dyn Agent + Send>> {
         Ok(Box::new(Porter::new(c.role, Pacing::LIVE)))
     }
 }
@@ -554,8 +559,7 @@ impl Porter {
     }
 }
 
-#[async_trait]
-impl Agent<Hotel> for Porter {
+impl Porter {
     /// Receives the initial view for this guest.
     async fn start(&mut self, v: View) -> Result<()> {
         self.update(v);
@@ -689,19 +693,12 @@ impl Agent<Hotel> for Porter {
         Ok(())
     }
     /// Pairs mechanical receipts with their actions so rejected operations never enter chat.
-    async fn respond(
-        &mut self,
-        available_actions: Option<Vec<Action>>,
-    ) -> Result<Option<Response<Action>>> {
+    async fn respond(&mut self) -> Result<Option<Response<Action>>> {
         if std::mem::take(&mut self.ignore_pose_response) {
             return Ok(None);
         }
         let Some(v) = &self.view else { return Ok(None) };
-        let decision = self.choose(v).filter(|(action, _)| {
-            available_actions
-                .as_ref()
-                .is_none_or(|actions| actions.contains(action))
-        });
+        let decision = self.choose(v);
         let decision = if matches!(decision, Some((Action::ReachRefuge, _))) {
             if let Some(deadline) = self.next_footstep {
                 tokio::time::sleep_until(deadline).await;
@@ -754,12 +751,49 @@ impl Agent<Hotel> for Porter {
         })
     }
 }
+#[async_trait]
+impl Agent for Porter {
+    /// Delivers the decoded starting view to the policy.
+    async fn start(&mut self, view: ComponentValue) -> Result<()> {
+        Self::start(self, view.decode()?).await
+    }
+
+    /// Delivers the accepted action and this seat's decoded view.
+    async fn observe_transition(
+        &mut self,
+        actor: PlayerRole,
+        action: ComponentValue,
+        view: ComponentValue,
+    ) -> Result<()> {
+        Self::observe_transition(self, actor, action.decode()?, view.decode()?).await
+    }
+
+    /// Delivers chat without modifying game state.
+    async fn observe_message(&mut self, actor: PlayerRole, text: String) -> Result<()> {
+        Self::observe_message(self, actor, text).await
+    }
+
+    /// Encodes a typed policy decision for the shared component host.
+    async fn respond(&mut self) -> Result<Option<parlando::agent::Response>> {
+        Self::respond(self)
+            .await?
+            .map(Response::into_wire)
+            .transpose()
+    }
+}
 
 #[cfg(test)]
 mod tests {
+    /// Maps the transport seat to a component rules seat.
+    fn guest_role(role: PlayerRole) -> parlando_game_sdk::Role {
+        match role {
+            PlayerRole::A => parlando_game_sdk::Role::A,
+            PlayerRole::B => parlando_game_sdk::Role::B,
+        }
+    }
+
     use super::*;
     use crate::{Route, State};
-    use parlando::Game;
 
     /// A human footstep queued behind every porter observation cannot stall or accelerate the walk.
     #[tokio::test]
@@ -768,19 +802,18 @@ mod tests {
         state.east = state.destination;
         state.passed = true;
         for (seat, role) in [PlayerRole::A, PlayerRole::B].into_iter().enumerate() {
-            state = Hotel
-                .apply_action(
-                    &state,
-                    &Action::Exit {
-                        seal: state.seals[seat],
-                    },
-                    role,
-                )
-                .unwrap();
+            state = Hotel::apply_action(
+                &state,
+                &Action::Exit {
+                    seal: state.seals[seat],
+                },
+                guest_role(role),
+            )
+            .unwrap();
         }
         let mut porter = Porter::new(PlayerRole::B, Pacing::INSTANT);
         porter
-            .start(Hotel.observation(&state, PlayerRole::B))
+            .start(Hotel::observation(&state, guest_role(PlayerRole::B)))
             .await
             .unwrap();
         let east = crossing_for(PlayerRole::A);
@@ -791,19 +824,16 @@ mod tests {
             let peer = Action::BridgePose {
                 pose: Some(peer_sample),
             };
-            state = Hotel.apply_action(&state, &peer, PlayerRole::A).unwrap();
+            state = Hotel::apply_action(&state, &peer, guest_role(PlayerRole::A)).unwrap();
             porter
                 .observe_transition(
                     PlayerRole::A,
                     peer,
-                    Hotel.observation(&state, PlayerRole::B),
+                    Hotel::observation(&state, guest_role(PlayerRole::B)),
                 )
                 .await
                 .unwrap();
-            let response = porter
-                .respond(Hotel.available_actions(&state, PlayerRole::B))
-                .await
-                .unwrap();
+            let response = porter.respond().await.unwrap();
             let action = match response {
                 Some(Response::Action(action) | Response::ActionAndMessage { action, .. }) => {
                     action
@@ -811,22 +841,22 @@ mod tests {
                 _ => panic!("human pose interrupted the crossing"),
             };
             assert_eq!(action, Action::BridgePose { pose: Some(sample) });
-            state = Hotel.apply_action(&state, &action, PlayerRole::B).unwrap();
+            state = Hotel::apply_action(&state, &action, guest_role(PlayerRole::B)).unwrap();
             assert_eq!(
-                Hotel.observation(&state, PlayerRole::A).partner_bridge_pose,
+                Hotel::observation(&state, guest_role(PlayerRole::A)).partner_bridge_pose,
                 Some(sample)
             );
             porter
                 .observe_transition(
                     PlayerRole::B,
                     action,
-                    Hotel.observation(&state, PlayerRole::B),
+                    Hotel::observation(&state, guest_role(PlayerRole::B)),
                 )
                 .await
                 .unwrap();
         }
         assert!(matches!(
-            porter.respond(None).await.unwrap(),
+            porter.respond().await.unwrap(),
             Some(Response::Action(Action::ReachRefuge))
         ));
     }
@@ -840,15 +870,13 @@ mod tests {
             ..State::deal(17, Route::Escape)
         };
         let step_out = Action::StepOntoLanding;
-        let outside = Hotel
-            .apply_action(&state, &step_out, PlayerRole::B)
-            .unwrap();
+        let outside = Hotel::apply_action(&state, &step_out, guest_role(PlayerRole::B)).unwrap();
         let mut porter = Porter::new(PlayerRole::A, Pacing::INSTANT);
         porter
-            .start(Hotel.observation(&outside, PlayerRole::A))
+            .start(Hotel::observation(&outside, guest_role(PlayerRole::A)))
             .await
             .unwrap();
-        let Some(Response::Message(reply)) = porter.respond(None).await.unwrap() else {
+        let Some(Response::Message(reply)) = porter.respond().await.unwrap() else {
             panic!("expected the initial ledger entry");
         };
         assert_eq!(
@@ -859,22 +887,22 @@ mod tests {
                 Porter::KEY_REASON
             )
         );
-        assert!(porter.respond(None).await.unwrap().is_none());
+        assert!(porter.respond().await.unwrap().is_none());
 
         let board = Action::BoardLift;
-        let aboard = Hotel.apply_action(&outside, &board, PlayerRole::B).unwrap();
+        let aboard = Hotel::apply_action(&outside, &board, guest_role(PlayerRole::B)).unwrap();
         porter
             .observe_transition(
                 PlayerRole::B,
                 board,
-                Hotel.observation(&aboard, PlayerRole::A),
+                Hotel::observation(&aboard, guest_role(PlayerRole::A)),
             )
             .await
             .unwrap();
         let Some(Response::ActionAndMessage {
             action: Action::Release,
             message,
-        }) = porter.respond(None).await.unwrap()
+        }) = porter.respond().await.unwrap()
         else {
             panic!("expected a brake release with its receipt");
         };
@@ -893,11 +921,11 @@ mod tests {
         state.on_landing[1] = true;
         let mut porter = Porter::new(PlayerRole::A, Pacing::INSTANT);
         porter
-            .start(Hotel.observation(&state, PlayerRole::A))
+            .start(Hotel::observation(&state, guest_role(PlayerRole::A)))
             .await
             .unwrap();
         assert!(matches!(
-            porter.respond(None).await.unwrap(),
+            porter.respond().await.unwrap(),
             Some(Response::Message(_))
         ));
         let wrong = format!("Floor {}, stag", state.east);
@@ -907,44 +935,40 @@ mod tests {
             .unwrap();
         let Some(Response::ActionAndMessage {
             action: wrong_exit, ..
-        }) = porter.respond(None).await.unwrap()
+        }) = porter.respond().await.unwrap()
         else {
             panic!("expected exit attempt")
         };
-        state = Hotel
-            .apply_action(&state, &wrong_exit, PlayerRole::A)
-            .unwrap();
+        state = Hotel::apply_action(&state, &wrong_exit, guest_role(PlayerRole::A)).unwrap();
         porter
             .observe_transition(
                 PlayerRole::A,
                 wrong_exit,
-                Hotel.observation(&state, PlayerRole::A),
+                Hotel::observation(&state, guest_role(PlayerRole::A)),
             )
             .await
             .unwrap();
         let Some(Response::ActionAndMessage {
             action: Action::ResetLock,
             message,
-        }) = porter.respond(None).await.unwrap()
+        }) = porter.respond().await.unwrap()
         else {
             panic!("expected the porter to rearm the lock");
         };
         assert!(message.contains("reset it at the brake pedestal"));
-        state = Hotel
-            .apply_action(&state, &Action::ResetLock, PlayerRole::A)
-            .unwrap();
+        state = Hotel::apply_action(&state, &Action::ResetLock, guest_role(PlayerRole::A)).unwrap();
         porter
             .observe_transition(
                 PlayerRole::A,
                 Action::ResetLock,
-                Hotel.observation(&state, PlayerRole::A),
+                Hotel::observation(&state, guest_role(PlayerRole::A)),
             )
             .await
             .unwrap();
-        assert!(porter.respond(None).await.unwrap().is_none());
+        assert!(porter.respond().await.unwrap().is_none());
         porter.observe_message(PlayerRole::B, wrong).await.unwrap();
         assert!(matches!(
-            porter.respond(None).await.unwrap(),
+            porter.respond().await.unwrap(),
             Some(Response::Message(_))
         ));
         porter
@@ -952,40 +976,39 @@ mod tests {
             .await
             .unwrap();
         let Some(Response::ActionAndMessage { action: retry, .. }) =
-            porter.respond(None).await.unwrap()
+            porter.respond().await.unwrap()
         else {
             panic!("expected corrected exit")
         };
-        let next = Hotel.apply_action(&state, &retry, PlayerRole::A).unwrap();
+        let next = Hotel::apply_action(&state, &retry, guest_role(PlayerRole::A)).unwrap();
         porter
             .observe_transition(
                 PlayerRole::A,
                 retry,
-                Hotel.observation(&next, PlayerRole::A),
+                Hotel::observation(&next, guest_role(PlayerRole::A)),
             )
             .await
             .unwrap();
         assert!(matches!(
-            porter.respond(None).await.unwrap(),
+            porter.respond().await.unwrap(),
             Some(Response::Action(Action::BridgePose { pose: Some(_) }))
         ));
-        let crossed = Hotel
-            .apply_action(&next, &Action::ReachRefuge, PlayerRole::A)
-            .unwrap();
+        let crossed =
+            Hotel::apply_action(&next, &Action::ReachRefuge, guest_role(PlayerRole::A)).unwrap();
         porter
             .observe_transition(
                 PlayerRole::A,
                 Action::ReachRefuge,
-                Hotel.observation(&crossed, PlayerRole::A),
+                Hotel::observation(&crossed, guest_role(PlayerRole::A)),
             )
             .await
             .unwrap();
-        assert!(porter.respond(None).await.unwrap().is_none());
+        assert!(porter.respond().await.unwrap().is_none());
         porter
             .observe_message(PlayerRole::B, "What was my bridge entry?".into())
             .await
             .unwrap();
-        let Some(Response::Message(repeated)) = porter.respond(None).await.unwrap() else {
+        let Some(Response::Message(repeated)) = porter.respond().await.unwrap() else {
             panic!("porter should repeat the remaining guest’s bridge entry after crossing");
         };
         assert_eq!(repeated, Porter::message(porter.view.as_ref().unwrap()));
@@ -999,20 +1022,20 @@ mod tests {
         state.destination = 4;
         let mut porter = Porter::new(PlayerRole::B, Pacing::INSTANT);
         porter
-            .start(Hotel.observation(&state, PlayerRole::B))
+            .start(Hotel::observation(&state, guest_role(PlayerRole::B)))
             .await
             .unwrap();
-        porter.respond(None).await.unwrap();
+        porter.respond().await.unwrap();
         for _ in 0..2 {
             porter
                 .observe_message(PlayerRole::A, "Ground floor, stag seal".into())
                 .await
                 .unwrap();
-            let Some(Response::Message(reply)) = porter.respond(None).await.unwrap() else {
+            let Some(Response::Message(reply)) = porter.respond().await.unwrap() else {
                 panic!("the waiting porter must reply");
             };
             assert_eq!(reply, "My bridge entry is Ground, stag seal. Thank you.");
-            assert!(porter.respond(None).await.unwrap().is_none());
+            assert!(porter.respond().await.unwrap().is_none());
         }
     }
 
@@ -1044,11 +1067,11 @@ mod tests {
         state.passed = true;
         let mut porter = Porter::new(PlayerRole::B, Pacing::INSTANT);
         porter
-            .start(Hotel.observation(&state, PlayerRole::B))
+            .start(Hotel::observation(&state, guest_role(PlayerRole::B)))
             .await
             .unwrap();
         assert!(matches!(
-            porter.respond(None).await.unwrap(),
+            porter.respond().await.unwrap(),
             Some(Response::Message(message)) if message.contains("I’m missing my bridge floor, seal, and suitcase count.")
         ));
         for (report, missing) in [
@@ -1066,21 +1089,21 @@ mod tests {
                 .observe_message(PlayerRole::A, report.into())
                 .await
                 .unwrap();
-            match porter.respond(None).await.unwrap() {
+            match porter.respond().await.unwrap() {
                 Some(Response::Message(message)) => assert!(message.contains(missing)),
                 None if report == "You have the brake key." => {
                     assert!(porter.report.seal.is_none())
                 }
                 response => panic!("unexpected dispatch response: {response:?}"),
             }
-            assert!(porter.respond(None).await.unwrap().is_none());
+            assert!(porter.respond().await.unwrap().is_none());
         }
         porter
             .observe_message(PlayerRole::A, "No cases for your lift.".into())
             .await
             .unwrap();
         assert!(matches!(
-            porter.respond(None).await.unwrap(),
+            porter.respond().await.unwrap(),
             Some(Response::ActionAndMessage { action: Action::Release, message })
                 if message.contains("Floor 1, key seal, 0 suitcases")
         ));
@@ -1094,11 +1117,11 @@ mod tests {
         state.destination = 4;
         let mut porter = Porter::new(PlayerRole::B, Pacing::INSTANT);
         porter
-            .start(Hotel.observation(&state, PlayerRole::B))
+            .start(Hotel::observation(&state, guest_role(PlayerRole::B)))
             .await
             .unwrap();
         assert!(matches!(
-            porter.respond(None).await.unwrap(),
+            porter.respond().await.unwrap(),
             Some(Response::Message(_))
         ));
         let ledger = Porter::message(porter.view.as_ref().unwrap());
@@ -1126,17 +1149,17 @@ mod tests {
                 .observe_message(PlayerRole::A, prompt.into())
                 .await
                 .unwrap();
-            let Some(Response::Message(reply)) = porter.respond(None).await.unwrap() else {
+            let Some(Response::Message(reply)) = porter.respond().await.unwrap() else {
                 panic!("expected a factual reply to {prompt}");
             };
             assert_eq!(reply, expected, "{prompt}");
-            assert!(porter.respond(None).await.unwrap().is_none());
+            assert!(porter.respond().await.unwrap().is_none());
         }
         porter
             .observe_message(PlayerRole::A, "Floor 1, stag seal".into())
             .await
             .unwrap();
-        let Some(Response::Message(reply)) = porter.respond(None).await.unwrap() else {
+        let Some(Response::Message(reply)) = porter.respond().await.unwrap() else {
             panic!("expected a receipt for a mismatched entry");
         };
         assert_eq!(reply, "That floor does not match my bridge entry.");
@@ -1168,32 +1191,39 @@ mod tests {
             state.cargo = [0, cargo];
             state.landing_loads[1][usize::from(4 - east)] = local_rack;
             let mut porter = Porter::new(role, Pacing::INSTANT);
-            porter.start(Hotel.observation(&state, role)).await.unwrap();
+            let mut view = Hotel::observation(&state, guest_role(role));
+            view.actions.clear();
+            porter.start(view).await.unwrap();
             assert!(matches!(
-                porter.respond(Some(Vec::new())).await.unwrap(),
+                porter.respond().await.unwrap(),
                 Some(Response::Message(message)) if message.starts_with("Your rescue bridge:")
             ));
-            assert!(porter.respond(Some(Vec::new())).await.unwrap().is_none());
+            assert!(porter.respond().await.unwrap().is_none());
+            porter.view.as_mut().unwrap().actions.push(action);
             assert!(matches!(
-                porter.respond(Some(vec![action])).await.unwrap(),
+                porter.respond().await.unwrap(),
                 Some(Response::ActionAndMessage { action: actual, message })
                     if actual == action && message == expected
             ));
+            porter.view.as_mut().unwrap().actions.clear();
             porter
                 .observe_message(PlayerRole::A, "Why are you moving a suitcase?".into())
                 .await
                 .unwrap();
             assert!(matches!(
-                porter.respond(Some(Vec::new())).await.unwrap(),
+                porter.respond().await.unwrap(),
                 Some(Response::Message(message)) if message.contains("the heavier lift goes down")
             ));
             assert!(porter.report.cases.is_none());
 
-            let after = Hotel.apply_action(&state, &action, role).unwrap();
+            let after = Hotel::apply_action(&state, &action, guest_role(role)).unwrap();
+            // Restore the received view before delivering the confirmed transfer.
+            porter.view = Some(Hotel::observation(&state, guest_role(role)));
             porter
-                .observe_transition(role, action, Hotel.observation(&after, role))
+                .observe_transition(role, action, Hotel::observation(&after, guest_role(role)))
                 .await
                 .unwrap();
+            porter.view.as_mut().unwrap().actions.clear();
             for prompt in [
                 "Why do you keep loading and unloading suitcases?",
                 "How come you moved a suitcase",
@@ -1203,12 +1233,12 @@ mod tests {
                     .await
                     .unwrap();
                 assert!(matches!(
-                    porter.respond(Some(Vec::new())).await.unwrap(),
+                    porter.respond().await.unwrap(),
                     Some(Response::Message(message)) if expected.ends_with(&message)
                 ));
                 assert!(porter.report.cases.is_none());
             }
-            assert!(porter.respond(Some(Vec::new())).await.unwrap().is_none());
+            assert!(porter.respond().await.unwrap().is_none());
         }
     }
 
@@ -1226,7 +1256,7 @@ mod tests {
         let mut west = Porter::new(PlayerRole::B, Pacing::INSTANT);
         for porter in [&mut east, &mut west] {
             porter
-                .start(Hotel.observation(&state, porter.role))
+                .start(Hotel::observation(&state, guest_role(porter.role)))
                 .await
                 .unwrap();
             let other = if porter.role == PlayerRole::A {
@@ -1234,7 +1264,7 @@ mod tests {
             } else {
                 PlayerRole::A
             };
-            let view = Hotel.observation(&state, other);
+            let view = Hotel::observation(&state, guest_role(other));
             porter
                 .observe_message(other, Porter::message(&view))
                 .await
@@ -1254,22 +1284,22 @@ mod tests {
         );
         state = state.step(Action::StepOntoLanding, 1).unwrap();
         state = state.step(Action::Unload, 0).unwrap();
-        east.update(Hotel.observation(&state, PlayerRole::A));
+        east.update(Hotel::observation(&state, guest_role(PlayerRole::A)));
         assert_eq!(
             east.choose(east.view.as_ref().unwrap())
                 .map(|(action, _)| action),
             None
         );
         state = state.step(Action::BoardLift, 1).unwrap();
-        east.update(Hotel.observation(&state, PlayerRole::A));
+        east.update(Hotel::observation(&state, guest_role(PlayerRole::A)));
         assert_eq!(
             east.choose(east.view.as_ref().unwrap())
                 .map(|(action, _)| action),
             Some(Action::CollectRescueCase)
         );
         state = state.step(Action::CollectRescueCase, 0).unwrap();
-        east.update(Hotel.observation(&state, PlayerRole::A));
-        west.update(Hotel.observation(&state, PlayerRole::B));
+        east.update(Hotel::observation(&state, guest_role(PlayerRole::A)));
+        west.update(Hotel::observation(&state, guest_role(PlayerRole::B)));
         assert_eq!(
             east.choose(east.view.as_ref().unwrap())
                 .map(|(action, _)| action),
@@ -1284,7 +1314,7 @@ mod tests {
         state = state.step(Action::Unload, 0).unwrap();
         state = state.step(Action::Load, 1).unwrap();
         state = state.step(Action::Unload, 0).unwrap();
-        west.update(Hotel.observation(&state, PlayerRole::B));
+        west.update(Hotel::observation(&state, guest_role(PlayerRole::B)));
         assert_eq!(
             west.choose(west.view.as_ref().unwrap())
                 .map(|(action, _)| action),
@@ -1301,10 +1331,10 @@ mod tests {
                 let roles = [PlayerRole::A, PlayerRole::B];
                 let participants = roles.map(|role| Porter::new(role, Pacing::INSTANT));
                 let [mut east, mut west] = participants;
-                east.start(Hotel.observation(&state, PlayerRole::A))
+                east.start(Hotel::observation(&state, guest_role(PlayerRole::A)))
                     .await
                     .unwrap();
-                west.start(Hotel.observation(&state, PlayerRole::B))
+                west.start(Hotel::observation(&state, guest_role(PlayerRole::B)))
                     .await
                     .unwrap();
                 let mut deferred_entry = None;
@@ -1320,7 +1350,7 @@ mod tests {
                     } else {
                         (PlayerRole::B, &mut west, &mut east)
                     };
-                    let (action, message) = match actor.respond(None).await.unwrap() {
+                    let (action, message) = match actor.respond().await.unwrap() {
                         Some(Response::Action(action)) => (Some(action), None),
                         Some(Response::Message(message)) => (None, Some(message)),
                         Some(Response::ActionAndMessage { action, message }) => {
@@ -1352,15 +1382,23 @@ mod tests {
                         }
                     }
                     if let Some(action) = action {
-                        state = Hotel.apply_action(&state, &action, role).unwrap();
+                        state = Hotel::apply_action(&state, &action, guest_role(role)).unwrap();
                         actor
-                            .observe_transition(role, action, Hotel.observation(&state, role))
+                            .observe_transition(
+                                role,
+                                action,
+                                Hotel::observation(&state, guest_role(role)),
+                            )
                             .await
                             .unwrap();
-                        peer.observe_transition(role, action, Hotel.observation(&state, peer.role))
-                            .await
-                            .unwrap();
-                        if Hotel.completion(&state).is_some() {
+                        peer.observe_transition(
+                            role,
+                            action,
+                            Hotel::observation(&state, guest_role(peer.role)),
+                        )
+                        .await
+                        .unwrap();
+                        if Hotel::outcome(&state).is_some() {
                             break;
                         }
                     }
@@ -1371,7 +1409,7 @@ mod tests {
                         "seed {seed} reached handoff after the deferral"
                     );
                 }
-                assert!(Hotel.completion(&state).is_some(), "{state:?}");
+                assert!(Hotel::outcome(&state).is_some(), "{state:?}");
             }
         }
     }

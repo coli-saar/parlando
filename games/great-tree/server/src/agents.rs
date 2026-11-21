@@ -1,3 +1,5 @@
+use crate::agent_response::Response;
+use parlando::component::ComponentValue;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context as _, Result};
@@ -6,7 +8,6 @@ use parlando::{
     agent::{
         Agent, ConfigField as AgentConfigField, Context as AgentContext,
         Definition as AgentDefinition, Factory as AgentFactory, Identity as AgentIdentity,
-        Response,
     },
     PlayerRole, SessionLogger,
 };
@@ -14,7 +15,7 @@ use serde_json::{json, Value};
 
 use crate::game::ids::RootId;
 use crate::game::types::{GreatTreeObservation, RootView};
-use crate::{Action, GreatTree};
+use crate::Action;
 
 /// An agent that connects and does nothing: it never proposes an action or sends a message.
 /// Useful for exercising pairing, observation delivery, and the participant client against a
@@ -22,11 +23,9 @@ use crate::{Action, GreatTree};
 pub struct IdleAgent;
 
 #[async_trait]
-impl Agent<GreatTree> for IdleAgent {
-    async fn respond(
-        &mut self,
-        _available_actions: Option<Vec<Action>>,
-    ) -> Result<Option<Response<Action>>> {
+impl Agent for IdleAgent {
+    /// Yields without interacting with the game.
+    async fn respond(&mut self) -> Result<Option<parlando::agent::Response>> {
         Ok(None)
     }
 }
@@ -34,7 +33,7 @@ impl Agent<GreatTree> for IdleAgent {
 pub struct IdleAgentFactory;
 
 #[async_trait]
-impl AgentFactory<GreatTree> for IdleAgentFactory {
+impl AgentFactory for IdleAgentFactory {
     fn definition(&self) -> AgentDefinition {
         AgentDefinition {
             id: "great_tree.idle".to_string(),
@@ -44,7 +43,7 @@ impl AgentFactory<GreatTree> for IdleAgentFactory {
         }
     }
 
-    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<GreatTree> + Send>> {
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         Ok(Box::new(IdleAgent))
     }
 
@@ -162,8 +161,7 @@ impl RootBotAgent {
     }
 }
 
-#[async_trait]
-impl Agent<GreatTree> for RootBotAgent {
+impl RootBotAgent {
     async fn start(&mut self, initial_observation: GreatTreeObservation) -> Result<()> {
         self.log("RootBot started and queued its orientation message");
         self.pending_message = Some(ROOT_BOT_ORIENTATION.to_string());
@@ -200,10 +198,7 @@ impl Agent<GreatTree> for RootBotAgent {
         Ok(())
     }
 
-    async fn respond(
-        &mut self,
-        _available_actions: Option<Vec<Action>>,
-    ) -> Result<Option<Response<Action>>> {
+    async fn respond(&mut self) -> Result<Option<Response<Action>>> {
         let action = self.pending_action.take();
         let message = self.pending_message.take();
         self.log(format!(
@@ -219,11 +214,41 @@ impl Agent<GreatTree> for RootBotAgent {
         })
     }
 }
+#[async_trait]
+impl Agent for RootBotAgent {
+    /// Delivers the decoded starting view to the policy.
+    async fn start(&mut self, view: ComponentValue) -> Result<()> {
+        Self::start(self, view.decode()?).await
+    }
+
+    /// Delivers the accepted action and this seat's decoded view.
+    async fn observe_transition(
+        &mut self,
+        actor: PlayerRole,
+        action: ComponentValue,
+        view: ComponentValue,
+    ) -> Result<()> {
+        Self::observe_transition(self, actor, action.decode()?, view.decode()?).await
+    }
+
+    /// Delivers chat without modifying game state.
+    async fn observe_message(&mut self, actor: PlayerRole, text: String) -> Result<()> {
+        Self::observe_message(self, actor, text).await
+    }
+
+    /// Encodes a typed policy decision for the shared component host.
+    async fn respond(&mut self) -> Result<Option<parlando::agent::Response>> {
+        Self::respond(self)
+            .await?
+            .map(Response::into_wire)
+            .transpose()
+    }
+}
 
 pub struct RootBotAgentFactory;
 
 #[async_trait]
-impl AgentFactory<GreatTree> for RootBotAgentFactory {
+impl AgentFactory for RootBotAgentFactory {
     fn definition(&self) -> AgentDefinition {
         AgentDefinition {
             id: "great_tree.root_bot".to_string(),
@@ -237,7 +262,7 @@ impl AgentFactory<GreatTree> for RootBotAgentFactory {
         }
     }
 
-    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<GreatTree> + Send>> {
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         let _ = context.logger.log(format!(
             "RootBot constructed for role {} with seed {}",
             context.role.as_str(),
@@ -495,8 +520,7 @@ and every chat message either of you has sent. Decide what to do next."
     }
 }
 
-#[async_trait]
-impl Agent<GreatTree> for LlmAgent {
+impl LlmAgent {
     async fn start(&mut self, initial_observation: GreatTreeObservation) -> Result<()> {
         self.game_role = Some(match &initial_observation {
             GreatTreeObservation::Crown { .. } => GameRole::Crown,
@@ -540,10 +564,7 @@ impl Agent<GreatTree> for LlmAgent {
         Ok(())
     }
 
-    async fn respond(
-        &mut self,
-        _available_actions: Option<Vec<Action>>,
-    ) -> Result<Option<Response<Action>>> {
+    async fn respond(&mut self) -> Result<Option<Response<Action>>> {
         if !self.should_consider {
             return Ok(None);
         }
@@ -569,11 +590,41 @@ impl Agent<GreatTree> for LlmAgent {
         self.build_response(&raw)
     }
 }
+#[async_trait]
+impl Agent for LlmAgent {
+    /// Delivers the decoded starting view to the policy.
+    async fn start(&mut self, view: ComponentValue) -> Result<()> {
+        Self::start(self, view.decode()?).await
+    }
+
+    /// Delivers the accepted action and this seat's decoded view.
+    async fn observe_transition(
+        &mut self,
+        actor: PlayerRole,
+        action: ComponentValue,
+        view: ComponentValue,
+    ) -> Result<()> {
+        Self::observe_transition(self, actor, action.decode()?, view.decode()?).await
+    }
+
+    /// Delivers chat without modifying game state.
+    async fn observe_message(&mut self, actor: PlayerRole, text: String) -> Result<()> {
+        Self::observe_message(self, actor, text).await
+    }
+
+    /// Encodes a typed policy decision for the shared component host.
+    async fn respond(&mut self) -> Result<Option<parlando::agent::Response>> {
+        Self::respond(self)
+            .await?
+            .map(Response::into_wire)
+            .transpose()
+    }
+}
 
 pub struct LlmAgentFactory;
 
 #[async_trait]
-impl AgentFactory<GreatTree> for LlmAgentFactory {
+impl AgentFactory for LlmAgentFactory {
     fn definition(&self) -> AgentDefinition {
         AgentDefinition {
             id: "great_tree.llm".to_string(),
@@ -609,7 +660,7 @@ impl AgentFactory<GreatTree> for LlmAgentFactory {
         }
     }
 
-    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<GreatTree> + Send>> {
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         let api_key = context
             .factory_secrets
             .get("config.openai_api_key")
@@ -673,7 +724,7 @@ mod root_bot_tests {
     }
 
     async fn take_response(agent: &mut RootBotAgent) -> Option<Response<Action>> {
-        agent.respond(None).await.unwrap()
+        agent.respond().await.unwrap()
     }
 
     #[tokio::test]

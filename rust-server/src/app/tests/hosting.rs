@@ -12,7 +12,7 @@ async fn game_host_requires_an_origin_only_public_url() {
         build_manifest: json!({}),
     };
 
-    let result = super::build_game_router(TinyAdapter, config, descriptor, |_| {
+    let result = super::build_game_router(live_game(), config, descriptor, |_| {
         Ok(ServeOptions::default())
     })
     .await;
@@ -48,7 +48,7 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         version: semver::Version::parse("0.4.0").unwrap(),
         build_manifest: json!({"name": "tiny-game", "version": "0.4.0"}),
     };
-    let router = build_game_router(TinyAdapter, config.clone(), descriptor.clone(), |_config| {
+    let router = build_game_router(live_game(), config.clone(), descriptor.clone(), |_config| {
         Ok(ServeOptions::default())
     })
     .await
@@ -394,7 +394,7 @@ async fn compiled_game_router_hosts_multiple_experiments() {
     .await;
     assert!(privacy.get("experiment_count").is_none());
 
-    let restarted = build_game_router(TinyAdapter, config, descriptor, |_config| {
+    let restarted = build_game_router(live_game(), config, descriptor, |_config| {
         Ok(ServeOptions::default())
     })
     .await
@@ -443,7 +443,7 @@ async fn compiled_game_router_requires_exact_version_and_clones_forward() {
         version: semver::Version::parse("0.4.0").unwrap(),
         build_manifest: json!({"name": "tiny-game", "version": "0.4.0"}),
     };
-    let router = build_game_router(TinyAdapter, config.clone(), descriptor.clone(), |_config| {
+    let router = build_game_router(live_game(), config.clone(), descriptor.clone(), |_config| {
         Ok(ServeOptions::default())
     })
     .await
@@ -478,7 +478,7 @@ async fn compiled_game_router_requires_exact_version_and_clones_forward() {
     .await;
     assert_eq!(activation_status, StatusCode::OK);
 
-    let restarted = build_game_router(TinyAdapter, config, descriptor, |_config| {
+    let restarted = build_game_router(live_game(), config, descriptor, |_config| {
         Ok(ServeOptions::default())
     })
     .await
@@ -516,7 +516,7 @@ async fn reusable_router_builds_with_typed_adapter() {
     let mut config = ExperimentConfig::default();
     config.database.url = "sqlite:///:memory:".to_string();
     let _router = build_router(
-        TinyAdapter,
+        live_game(),
         config,
         ServeOptions {
             agent_factory: None,
@@ -557,7 +557,7 @@ async fn health_and_public_config_expose_client_bootstrap_shape() {
         .completion_paths
         .technical_failure = "SILVERHERON".to_string();
     config.recruitment.prolific.completion_paths.no_consent = "NOCONSENT".to_string();
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
 
@@ -593,7 +593,7 @@ async fn static_serving_exposes_only_the_shell_assets_and_named_api_routes() {
 
     let mut config = step_five_config();
     config.server.client_dist_path = Some(dist.display().to_string());
-    let router = build_router(TinyAdapter, config, ServeOptions::default())
+    let router = build_router(live_game(), config, ServeOptions::default())
         .await
         .unwrap();
 

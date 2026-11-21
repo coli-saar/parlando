@@ -77,8 +77,8 @@ impl ExperimentLifecycle {
 }
 
 /// Rejects new intake unless the experiment is collecting test or research sessions.
-pub(super) async fn require_open_experiment<A: Game>(
-    state: &AppState<A>,
+pub(super) async fn require_open_experiment(
+    state: &AppState,
 ) -> Result<tokio::sync::RwLockReadGuard<'_, ExperimentLifecycle>, AppError> {
     let lifecycle = state.experiment_lifecycle.read().await;
     if lifecycle.allows_intake() {

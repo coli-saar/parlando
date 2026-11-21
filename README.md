@@ -13,9 +13,17 @@ Maintaining Parlando itself? Open the [internals atlas](developer/code-atlas/ind
 
 The [brand directory](brand/) contains the official Parlando logos and screen palette. After editing them, run `make sync-brand` to refresh the subproject copies.
 
+## Build a component game
+
+The `parlando` CLI creates a playable Rust game, tests its compiled WebAssembly
+component, and packages its browser client. A shared Parlando host can run
+experiments pinned to different packages. Start with [Create and play a Rust
+game](docs/component-games.md#create-and-play-a-rust-game) or [Host and deploy
+component games](docs/component-hosting.md).
+
 ## Run the Great Tree example
 
-Install stable Rust, Node.js 20.19 or newer (or 22.12 or newer), npm, and GNU Make. Then run:
+Install stable Rust, the `wasm32-unknown-unknown` target, `wasm-tools`, Node.js 20.19 or newer (or 22.12 or newer), npm, and GNU Make. Then run:
 
 ```sh
 games/great-tree/run.sh
@@ -25,26 +33,9 @@ Open <http://127.0.0.1:8080/admin>, create the first administrator, create an ex
 its participant link in two isolated browser contexts. See
 [Install and run the example](docs/web/content/manual/start/getting-started.md) for the complete walkthrough.
 
-## Use the released packages
+## Author a game
 
-Games use the coordinated Rust and JavaScript releases:
-
-```toml
-[dependencies]
-parlando = "0.6.0"
-```
-
-```json
-{
-  "dependencies": {
-    "@coli-saar/parlando-client": "^0.6.0"
-  }
-}
-```
-
-The repository's `generate-parlando-game` skill can generate a complete Rust server, React
-participant application, tests, and deployment files from a task description. The
-[Create a game](docs/web/content/manual/build/create-game.md) chapter explains the workflow.
+Run `parlando new` to generate a Rust game using the Parlando Game SDK. The generated project includes its Wasm export, browser application, package manifest, and executable scenarios. The repository's `generate-parlando-game` skill can adapt this project to a task description. See [Create a game](docs/web/content/manual/build/create-game.md).
 
 ## Preview the manual locally
 
@@ -65,9 +56,8 @@ without introducing a second site generator or publishing the older technical do
 
 ## Current scope
 
-Parlando 0.6.0 supports roles `A` and `B`, live human–human and human–agent sessions, headless
+Parlando supports roles `A` and `B`, live human–human and human–agent sessions, headless
 agent–agent evaluation, SQLite persistence, typed communication, optional live voice and
-transcription, and single-process live session state. Different compiled games run as separate
-processes with separate databases.
+transcription, and single-process live session state. The shared host serves multiple Wasm games in one process. Each hosted experiment has its own database and pins its game package revision.
 
 Parlando is distributed under the terms in [LICENSE](LICENSE).

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Runs the Great Tree component package through the shared launcher.
+set -euo pipefail
+exec "$(dirname "${BASH_SOURCE[0]}")/run.sh" "$@"

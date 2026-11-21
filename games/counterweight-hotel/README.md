@@ -53,9 +53,20 @@ A route combines a starting position, bridge locations, initial ballast and an o
 
 ## Build and storage
 
-The launcher uses the sibling Rust runtime and JavaScript SDK by default. Use `--published` for the matching crates.io and npm packages at version 0.6.0. `--build-only` builds without serving. Unchanged launches reuse the browser bundle. Changing sources or package mode rebuilds it; `--rebuild` forces a fresh browser build.
+Install Rust's `wasm32-unknown-unknown` target, `wasm-tools`, and Node.js.
+The launcher builds the component and its browser application, then starts the
+shared host with **Hotel porter** available. Add `--build-only` to build
+`dist/parlando` without serving it. The portable package can also run with
+`parlando serve --manifest dist/parlando/game.yaml` for human pairs and remote
+agents.
 
-The default port is `8081`, the database is `.local/hotel.sqlite`, and the compiled participant client is `client/web/dist/`. Override the port with `PORT` or the SQLite location with `PARLANDO_DATABASE_URL`. Run `cargo test --manifest-path games/counterweight-hotel/server/Cargo.toml` from the repository root to exercise seeded routes, recovery from detours, private observations, and porter play.
+The default port is `8081` and the database is `.local/component.sqlite`.
+Override them with `PORT` and `PARLANDO_DATABASE_URL`. To exercise the seeded
+routes and porter policy from the repository root, run:
+
+```sh
+cargo test --manifest-path games/counterweight-hotel/server/Cargo.toml --features bundled-agents
+```
 
 ## Landscape credits
 
@@ -63,7 +74,7 @@ The Alpine skyline wraps the original alpenglow mountain artwork around the hote
 
 ## Deploy on Render
 
-The hotel Blueprint builds the server and participant client against the Parlando source in this repository. One Free web service serves both. Its local SQLite database lives in the container user’s home directory. Render discards local files on spin-down, restart, or redeploy, including the administrator account, experiments, and session records.
+The hotel Blueprint builds the component, the host with **Hotel porter**, and the participant client. One Free web service serves both. Its local SQLite database lives in the container user’s home directory. Render discards local files on spin-down, restart, or redeploy, including the administrator account, experiments, and session records.
 
 1. Push the hotel and its build inputs to a branch Render can access. In the Render dashboard choose **New → Blueprint**, connect the repository, select that branch, and enter `games/counterweight-hotel/render.yaml` as the Blueprint path. The Docker context is the repository root.
 2. Confirm the service shows Free compute and deploy. Once `/health` passes, open the service URL followed by `/admin` and create the first administrator before sharing the URL.

@@ -5,8 +5,7 @@
 //! draining revision continues to contribute its occupied seats and speech resources.
 
 use super::{
-    speechmatics_readiness_required, AppState, Arc, Game, HashSet, MemoryState, SessionLifecycle,
-    Weak,
+    speechmatics_readiness_required, AppState, Arc, HashSet, MemoryState, SessionLifecycle, Weak,
 };
 
 /// Runtime occupancy used by both admission checks and dashboard reporting.
@@ -26,11 +25,7 @@ impl Occupancy {
     /// assigned it consumes active capacity even before play starts. Ended rooms
     /// contribute only to retention. Speech capacity counts non-agent seats in
     /// unfinished rooms on revisions that require transcription.
-    pub(super) fn include<G: Game>(
-        &mut self,
-        memory: &MemoryState<G>,
-        transcription_enabled: bool,
-    ) {
+    pub(super) fn include(&mut self, memory: &MemoryState, transcription_enabled: bool) {
         let mut attached = HashSet::new();
         for session in memory.sessions.values() {
             match session.lifecycle() {
@@ -56,7 +51,7 @@ impl Occupancy {
 }
 
 /// Counts occupied resources across all live revisions of this experiment.
-pub(super) async fn experiment_occupancy<G: Game>(state: &Arc<AppState<G>>) -> Occupancy {
+pub(super) async fn experiment_occupancy(state: &Arc<AppState>) -> Occupancy {
     let owners = state
         .context
         .installation

@@ -2,7 +2,7 @@
 
 use super::{apply_action_and_project, completion, initial_state, observation};
 use super::{StressAction, StressCompletion, StressObservation, StressRole, StressState};
-use parlando_component_sdk::{decode_declared, encode_compact, ComponentWire, GameSchema, Schema};
+use parlando_game_sdk::{decode_declared, encode_compact, GameSchema, GameValue, Schema};
 use std::cell::RefCell;
 
 wit_bindgen::generate!({

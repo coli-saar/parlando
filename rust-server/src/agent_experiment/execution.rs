@@ -11,14 +11,13 @@ use super::session::SessionRunner;
 use super::spec::{ExecutionSpec, ExperimentFile};
 use super::training::TrajectoryStep;
 use super::{ExperimentRunSummary, ExperimentRunner};
-use crate::game::Game;
 use anyhow::{bail, Result};
 use futures_util::{stream, StreamExt};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-impl<G: Game> ExperimentRunner<G> {
+impl ExperimentRunner {
     /// Validates and executes an already parsed experiment specification.
     pub(super) async fn run(mut self, spec: ExperimentFile) -> Result<ExperimentRunSummary> {
         let reward = self.validate_spec(&spec)?;
@@ -30,7 +29,7 @@ impl<G: Game> ExperimentRunner<G> {
             &self.game.id,
             &self.game.version.to_string(),
             &spec_hash,
-            self.game.build_manifest["component_sha256"].as_str(),
+            self.loaded_game.digest(),
         )
         .await?;
         let mut totals = ExecutionCounts::default();
@@ -82,10 +81,10 @@ impl<G: Game> ExperimentRunner<G> {
     /// runs pending plans sequentially and returns after finalizing the first failure.
     pub(super) async fn execute_plans(
         &self,
-        plans: Vec<SessionPlan<G>>,
+        plans: Vec<SessionPlan>,
         execution: &ExecutionSpec,
         artifacts: &RunArtifacts,
-    ) -> Result<ExecutionBatch<G>> {
+    ) -> Result<ExecutionBatch> {
         let mut batch = ExecutionBatch {
             counts: ExecutionCounts::default(),
             steps: Vec::new(),
@@ -94,12 +93,9 @@ impl<G: Game> ExperimentRunner<G> {
         batch.counts.planned = plans.len();
         let mut pending = Vec::new();
         for plan in plans {
-            let decode_trajectory = plan
-                .training_capture
-                .as_ref()
-                .map(|_| self.trajectory_decoder.expect("validated learner"));
-            if let Some((status, trajectory)) =
-                artifacts.result(&plan.plan_id, decode_trajectory).await?
+            if let Some((status, trajectory)) = artifacts
+                .result(&plan.plan_id, plan.training_capture.is_some())
+                .await?
             {
                 batch.counts.skipped += 1;
                 batch.steps.extend(trajectory);
@@ -114,7 +110,7 @@ impl<G: Game> ExperimentRunner<G> {
             execution.concurrency
         };
         let session_runner = Arc::new(SessionRunner {
-            game_factory: self.game_factory.clone(),
+            loaded_game: self.loaded_game.clone(),
         });
         let executions = stream::iter(pending.into_iter().map(|plan| {
             let session_runner = session_runner.clone();
@@ -144,9 +140,9 @@ impl<G: Game> ExperimentRunner<G> {
 }
 
 /// Training data and outcomes for a single execution phase.
-pub(super) struct ExecutionBatch<G: Game> {
+pub(super) struct ExecutionBatch {
     pub(super) counts: ExecutionCounts,
-    pub(super) steps: Vec<TrajectoryStep<G::Observation, G::Action>>,
+    pub(super) steps: Vec<TrajectoryStep>,
     pub(super) has_failure: bool,
 }
 

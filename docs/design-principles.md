@@ -16,11 +16,11 @@ A session has exactly two player roles: `PlayerRole::A` and `PlayerRole::B`. A r
 
 ## One authoritative state, role-safe observations
 
-The Rust runtime exclusively owns authoritative `Game::State`. It is stored and logged according to runtime privacy policy and is never sent to a participant application or agent.
+Each Wasm instance owns the authoritative state of one game session. The host retains the information needed to recover the last committed frame. Participants and agents receive role-specific projections.
 
-`Game::Observation` is the complete domain information available to one role at a moment in the game. Human and automated players receive the same kind of role-specific observation. Frontends must not fall back to state, and agents must not receive privileged state merely because they run on the server.
+A role observation is the complete domain information available to one role at a moment in the game. Human and automated players receive the same kind of role-specific observation. Frontends must not fall back to state, and agents must not receive privileged state merely because they run on the server.
 
-Games must make information boundaries explicit in `observation(state, role)`. Tests should treat absence of private information as a security property.
+Games must make information boundaries explicit in `view_a` and `view_b`. Tests should treat absence of private information as a security property.
 
 Human players and agents receive the same domain information. After an accepted action, both receive the actor, the accepted `Action`, and their own role-specific resulting `Observation`. At normal game completion, both receive the same shared `Completion`. A frontend may ignore the action and render only the observation; delivery does not dictate presentation. An accepted `Action` is therefore observable to both roles. A game that needs to conceal how a state change was produced must make the shared action value non-revealing, for example with a `SecretAction` variant, and expose permitted consequences through each role's observation.
 
@@ -28,11 +28,11 @@ The shared `Game::Completion` sent at termination carries the game-specific publ
 
 ## Actions change state; messages communicate
 
-A player action is a typed proposal to change game state. Every action, whether submitted by a human or agent, passes through `Game::apply_action(state, action, actor)`. That operation combines authorization, rule validation, and transition so they cannot drift.
+A player action is a typed proposal to change game state. Every action, whether submitted by a human or agent, passes through the guest’s `step(actor, action)`. That operation combines authorization, rule validation, and transition so they cannot drift.
 
 A message is text sent from one player to the other. It does not invoke game mechanics and cannot change state by itself. An agent may use a received message when choosing a later action, just as a human may, but the state changes only when that action is accepted.
 
-Expected rule failures use stable `ActionRejection` codes. They are distinct from runtime failures. Codes are machine-readable domain identifiers, not localized presentation strings or diagnostic channels.
+Expected rule failures use stable rejection codes. They are distinct from runtime failures. Codes are machine-readable domain identifiers, not localized presentation strings or diagnostic channels.
 
 ## Games and agents are presentation-agnostic
 
@@ -79,16 +79,16 @@ ordering and runs inbox removal and `shutdown` on terminal exit paths.
 
 Given the same typed game configuration, recorded seed, initial state, and accepted action sequence, a game should produce the same states, observations, transition metadata, and completion. Randomness must be derived from the supplied seed and represented sufficiently in state for replay and diagnosis.
 
-Game mechanics should be pure and must not perform I/O in `apply_action`. External model calls and services belong to agents or runtime facilities, not game transitions.
+Game mechanics should be pure and must not perform I/O in `step`. External model calls and services belong to agents or runtime facilities, not game transitions.
 
 ## Dashboard and durable logs are legitimate extension points
 
 Minimizing the public API does not mean preventing a game or compiled agent from contributing useful administration and analysis data. Supported extension points are narrow:
 
 - `GameMetadata` identifies the compiled game and build.
-- `Game::Config` and `validate_config` let the dashboard edit and validate game-owned settings.
+- The game schema describes game-owned settings. Seeded initialization checks their semantics.
 - `agent::Definition` and `agent::ConfigField` describe compiled agent choices and their settings.
-- `Game::transition_metadata` contributes optional role-neutral structured data to a runtime-owned accepted-transition record.
+- `Game::metadata` contributes optional role-neutral structured data to a runtime-owned accepted-transition record.
 - `Game::Completion` contributes the structured terminal result.
 
 Parlando owns event ordering, timestamps, actor/action recording, persistence, privacy enforcement, dashboard transport, and export. Games must not receive storage handles or dashboard internals to bypass those policies.

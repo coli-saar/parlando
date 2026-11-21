@@ -2,7 +2,7 @@
 //!
 //! Each session has one isolated instance with no host imports. A successful
 //! step returns role-private views and can optionally include a recovery checkpoint.
-//! The factory loads the guest's wire schema before creating any sessions.
+//! The host loads the guest's wire schema before creating any sessions.
 //! Reads use the host's explicitly selected frame, including during SQLite writes.
 
 use std::{
@@ -19,11 +19,9 @@ use wasmtime::{
     Config, Engine, Store, StoreLimits, StoreLimitsBuilder,
 };
 
-use crate::{
-    ActionRejection, Game, GameFactory, GameInitializationContext, GameSessionContext, PlayerRole,
-};
+use crate::{ActionRejection, PlayerRole};
 
-pub use parlando_component_sdk::{
+pub use parlando_game_sdk::{
     ComponentValue, GameSchema, ProjectedValue, Projection, Schema, Selection,
 };
 
@@ -37,24 +35,29 @@ const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 const CALL_FUEL: u64 = 50_000_000;
 
 /// Precompiled, import-free game implementing the `parlando:game@4.0.0` WIT world.
-/// Clone the factory to share compilation across otherwise independent sessions.
+/// Clone this handle to share compilation across otherwise independent sessions.
 #[derive(Clone)]
-pub struct ComponentGameFactory {
+pub struct LoadedGame {
     compiled: Arc<InstancePre<StoreLimits>>,
     digest: String,
     schema: Arc<GameSchema>,
 }
 
-impl ComponentGameFactory {
+impl LoadedGame {
     /// Compiles a local component, verifies its interface and pins the SHA-256 of
     /// its bytes. Loads and checks the wire schema once using a separate guest
     /// with the same fuel and memory limits as session instances.
     pub fn load(path: &Path) -> Result<Self> {
         let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        Self::from_bytes(&bytes).with_context(|| format!("loading game from {}", path.display()))
+    }
+
+    /// Compiles a package already read into memory, validating its imports, exports and schema.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let mut config = Config::new();
         config.consume_fuel(true);
         let engine = Engine::new(&config)?;
-        let component = Component::from_binary(&engine, &bytes)?;
+        let component = Component::from_binary(&engine, bytes)?;
         let compiled = Linker::new(&engine).instantiate_pre(&component)?;
         let mut guest = Guest::instantiate(&compiled)?;
         guest.store.set_fuel(CALL_FUEL)?;
@@ -67,40 +70,44 @@ impl ComponentGameFactory {
             .context("validating component schema")?;
         Ok(Self {
             compiled: Arc::new(compiled),
-            digest: format!("{:x}", Sha256::digest(&bytes)),
+            digest: format!("{:x}", Sha256::digest(bytes)),
             schema: Arc::new(schema),
         })
     }
 
-    /// Identifies the exact executable used by this factory for provenance.
+    /// Identifies the exact executable loaded by this handle for provenance.
     pub fn digest(&self) -> &str {
         &self.digest
     }
 
-    /// Returns the checked schema shared by this factory's sessions. A local
+    /// Returns the checked schema shared by all sessions using this game. A local
     /// policy can use it to exchange compact values directly with those sessions.
     pub fn schema(&self) -> &GameSchema {
         &self.schema
     }
-}
 
-impl GameFactory for ComponentGameFactory {
-    type Game = ComponentGame;
+    /// Checks that the configured value conforms to the component's declared input schema.
+    pub fn validate_config(&self, config: &ComponentValue) -> Result<()> {
+        config
+            .to_schema_messagepack(&self.schema.config)
+            .context("encoding component configuration")?;
+        Ok(())
+    }
 
     /// Creates the session's execution cache. Initialization or recovery supplies
     /// the first actual state before the first action.
-    fn create(&self, _: GameSessionContext) -> Result<ComponentGame> {
-        Ok(ComponentGame {
-            factory: self.clone(),
+    pub fn session(&self) -> GameSession {
+        GameSession {
+            loaded_game: self.clone(),
             current: Mutex::new(None),
-        })
+        }
     }
 }
 
 /// Last selected game frame. The recovery recipe can rebuild
 /// the guest, while the role views are safe to read without executing guest code.
 #[derive(Clone, Serialize, Deserialize)]
-pub struct ComponentState {
+pub struct GameFrame {
     component: String,
     recovery: Recovery,
     views: [ComponentValue; 2],
@@ -112,16 +119,16 @@ pub struct ComponentState {
     identity: Arc<()>,
 }
 
-impl ComponentState {
+impl GameFrame {
     /// Keeps codec-produced views, completion, and metadata in shared MessagePack buffers.
     fn from_frame(
         frame: Frame,
-        factory: &ComponentGameFactory,
+        loaded_game: &LoadedGame,
         recovery: impl FnOnce() -> Recovery,
     ) -> Result<Self> {
-        let schema = factory.schema();
+        let schema = loaded_game.schema();
         Ok(Self {
-            component: factory.digest().to_owned(),
+            component: loaded_game.digest().to_owned(),
             recovery: frame
                 .checkpoint
                 .map(Recovery::checkpoint)
@@ -337,8 +344,8 @@ fn guest_role(role: PlayerRole) -> Role {
 
 /// A single live or headless session. Only the most recently executed guest is
 /// cached. Its state is private until the host installs its returned frame.
-pub struct ComponentGame {
-    factory: ComponentGameFactory,
+pub struct GameSession {
+    loaded_game: LoadedGame,
     current: Mutex<Option<(Arc<()>, Guest)>>,
 }
 
@@ -356,7 +363,8 @@ impl Guest {
             .table_elements(65_536)
             .memories(4)
             .tables(8)
-            .instances(16)
+            // Language runtimes can bundle several core Wasm modules per session.
+            .instances(64)
             .build();
         let mut store = Store::new(compiled.engine(), limits);
         store.limiter(|limits| limits);
@@ -367,37 +375,27 @@ impl Guest {
     }
 }
 
-impl Game for ComponentGame {
-    type Config = ComponentValue;
-    type State = ComponentState;
-    type Observation = ComponentValue;
-    type Action = ComponentValue;
-    type Completion = ComponentValue;
-
+impl GameSession {
     /// Initializes the guest from public configuration and the recorded seed.
-    fn initial_state(
-        &self,
-        context: GameInitializationContext<'_, ComponentValue>,
-    ) -> Result<ComponentState> {
-        let config = context
-            .config
-            .to_schema_messagepack(&self.factory.schema().config)
+    pub fn init(&self, config: &ComponentValue, seed: u64) -> Result<GameFrame> {
+        let config_bytes = config
+            .to_schema_messagepack(&self.loaded_game.schema().config)
             .context("encoding component configuration")?;
         let mut current = self
             .current
             .lock()
             .map_err(|_| anyhow!("component lock poisoned"))?;
-        let mut guest = Guest::instantiate(&self.factory.compiled)?;
+        let mut guest = Guest::instantiate(&self.loaded_game.compiled)?;
         guest.store.set_fuel(CALL_FUEL)?;
         let frame = guest
             .game
             .parlando_game_mechanics()
-            .call_init(&mut guest.store, config.as_ref(), context.seed)?
+            .call_init(&mut guest.store, config_bytes.as_ref(), seed)?
             .map_err(|error| anyhow!("component initialization: {error}"))?;
-        let state = ComponentState::from_frame(frame, &self.factory, || Recovery {
+        let state = GameFrame::from_frame(frame, &self.loaded_game, || Recovery {
             origin: Arc::new(Origin::Seed {
-                config: context.config.clone(),
-                seed: context.seed,
+                config: config.clone(),
+                seed,
             }),
             turns: History::default(),
         })?;
@@ -405,32 +403,20 @@ impl Game for ComponentGame {
         Ok(state)
     }
 
-    /// Legacy rules-only interface. Runners use `step`, which preserves execution
-    /// errors separately from game-defined rejections.
-    fn apply_action(
-        &self,
-        state: &ComponentState,
-        action: &ComponentValue,
-        actor: PlayerRole,
-    ) -> std::result::Result<ComponentState, ActionRejection> {
-        self.step(state, action, actor)
-            .unwrap_or_else(|_| Err(ActionRejection::new("component_execution_failed")))
-    }
-
     /// Encodes the action for this game's schema before touching the guest.
     /// Reconstructs an uncached committed frame in a fresh instance. A trap or
     /// payload size error drops the potentially mutated instance.
-    fn step(
+    pub fn step(
         &self,
-        state: &ComponentState,
+        state: &GameFrame,
         action: &ComponentValue,
         actor: PlayerRole,
-    ) -> Result<std::result::Result<ComponentState, ActionRejection>> {
+    ) -> Result<std::result::Result<GameFrame, ActionRejection>> {
         ensure!(
-            state.component == self.factory.digest,
+            state.component == self.loaded_game.digest,
             "checkpoint belongs to a different game build"
         );
-        let schema = self.factory.schema();
+        let schema = self.loaded_game.schema();
         let action_bytes = match action.to_schema_messagepack(&schema.action) {
             Ok(bytes) => bytes,
             Err(_) => return Ok(Err(ActionRejection::new("invalid_component_action"))),
@@ -442,7 +428,7 @@ impl Game for ComponentGame {
         let mut guest = match current.take() {
             Some((id, guest)) if Arc::ptr_eq(&id, &state.identity) => guest,
             _ => {
-                let mut guest = Guest::instantiate(&self.factory.compiled)?;
+                let mut guest = Guest::instantiate(&self.loaded_game.compiled)?;
                 state.recovery.restore(&mut guest, schema)?;
                 guest
             }
@@ -455,7 +441,7 @@ impl Game for ComponentGame {
             action_bytes.as_ref(),
         )? {
             Ok(frame) => {
-                let next = ComponentState::from_frame(frame, &self.factory, || {
+                let next = GameFrame::from_frame(frame, &self.loaded_game, || {
                     state.recovery.advance(actor, action.clone())
                 })?;
                 *current = Some((next.identity.clone(), guest));
@@ -468,41 +454,36 @@ impl Game for ComponentGame {
         }
     }
 
+    /// Checks the pinned component identity and the persisted named payloads before replay.
+    pub fn validate_replay_state(&self, state: &GameFrame) -> Result<()> {
+        ensure!(
+            state.component == self.loaded_game.digest,
+            "checkpoint belongs to a different game build"
+        );
+        state.validate_replay_payloads(self.loaded_game.schema())
+    }
+}
+
+impl GameFrame {
     /// Persists only frames whose guest explicitly supplied a complete checkpoint.
-    fn turn_checkpoint(&self, after: &ComponentState) -> Result<Option<Value>> {
-        if after.recovery.turns.0.is_none()
-            && matches!(*after.recovery.origin, Origin::Checkpoint(_))
+    pub fn turn_checkpoint(&self) -> Result<Option<Value>> {
+        if self.recovery.turns.0.is_none() && matches!(*self.recovery.origin, Origin::Checkpoint(_))
         {
-            Ok(Some(serde_json::to_value(after)?))
+            Ok(Some(serde_json::to_value(self)?))
         } else {
             Ok(None)
         }
     }
 
-    /// Checks the pinned component identity and the persisted named payloads before replay.
-    fn validate_replay_state(&self, state: &ComponentState) -> Result<()> {
-        ensure!(
-            state.component == self.factory.digest,
-            "checkpoint belongs to a different game build"
-        );
-        state.validate_replay_payloads(self.factory.schema())
-    }
-
     /// Shares the requested role's cached, JSON-serializable view of the supplied frame.
-    fn observation(&self, state: &ComponentState, role: PlayerRole) -> ComponentValue {
-        state.views[usize::from(role == PlayerRole::B)].clone()
+    pub fn observation(&self, role: PlayerRole) -> ComponentValue {
+        self.views[usize::from(role == PlayerRole::B)].clone()
     }
 
     /// Materializes neutral event metadata when the runtime logs the transition.
     /// Logs invalid output from a nonconforming codec and omits that metadata.
-    fn transition_metadata(
-        &self,
-        _: &ComponentState,
-        after: &ComponentState,
-        _: &ComponentValue,
-        _: PlayerRole,
-    ) -> Option<Value> {
-        let metadata = after.metadata.as_ref()?;
+    pub fn transition_metadata(&self) -> Option<Value> {
+        let metadata = self.metadata.as_ref()?;
         match serde_json::to_value(metadata) {
             Ok(value) => Some(value),
             Err(error) => {
@@ -513,15 +494,15 @@ impl Game for ComponentGame {
     }
 
     /// Returns the terminal result from the same step as both role views.
-    fn completion(&self, state: &ComponentState) -> Option<ComponentValue> {
-        state.completion.clone()
+    pub fn completion(&self) -> Option<ComponentValue> {
+        self.completion.clone()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parlando_component_sdk::Field;
+    use parlando_game_sdk::Field;
     use serde_json::json;
 
     /// Verifies each named snapshot payload against its own schema before replay.
@@ -547,13 +528,13 @@ mod tests {
             "completion": "won",
             "metadata": null,
         });
-        let state: ComponentState = serde_json::from_value(named.clone()).unwrap();
+        let state: GameFrame = serde_json::from_value(named.clone()).unwrap();
         state.validate_replay_payloads(&schema).unwrap();
         assert_eq!(serde_json::to_value(state).unwrap(), named);
 
         let mut invalid = named;
         invalid["views"][1] = json!({"score": 7});
-        let state: ComponentState = serde_json::from_value(invalid).unwrap();
+        let state: GameFrame = serde_json::from_value(invalid).unwrap();
         let error = state.validate_replay_payloads(&schema).unwrap_err();
         assert!(error.to_string().contains("checkpoint role B observation"));
     }

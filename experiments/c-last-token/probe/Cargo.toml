@@ -1,0 +1,9 @@
+[package]
+name = "last-token-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+parlando = { path = "../../../rust-server" }
+serde_json = "1"

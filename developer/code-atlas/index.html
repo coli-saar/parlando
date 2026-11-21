@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#102b2a" />
+    <title>Parlando • Developer reference</title>
+    <link rel="stylesheet" href="atlas.css" />
+    <script defer src="sources.js"></script>
+    <script defer src="run.js"></script>
+    <script defer src="model.js"></script>
+    <script defer src="guide.js"></script>
+    <script defer src="reading.js"></script>
+    <script defer src="atlas.js"></script>
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="#guide"
+        >Parlando <i>/</i> <b>Developer reference</b></a
+      ><button id="find" type="button">Find symbol <kbd>/</kbd></button>
+    </header>
+    <div class="layout">
+      <aside>
+        <nav aria-label="Atlas views" id="nav"></nav>
+        <nav class="indexes" aria-label="Indexes">
+          <a href="#guide/components">Subsystem index</a
+          ><a href="#guide/files">File index</a>
+        </nav>
+      </aside>
+      <main id="main"></main>
+    </div>
+    <dialog id="reader">
+      <div class="dialogHead">
+        <strong id="dialogTitle"></strong
+        ><button id="close" aria-label="Close dialog">Close</button>
+      </div>
+      <div id="dialogBody"></div>
+    </dialog>
+  </body>
+</html>

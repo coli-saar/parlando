@@ -3,11 +3,8 @@ use super::*;
 pub(super) struct NoopAgent;
 
 #[async_trait]
-impl Agent<TinyAdapter> for NoopAgent {
-    async fn respond(
-        &mut self,
-        _available_actions: Option<Vec<TinyAction>>,
-    ) -> Result<Option<AgentResponse<TinyAction>>> {
+impl Agent for NoopAgent {
+    async fn respond(&mut self) -> Result<Option<AgentResponse>> {
         Ok(None)
     }
 }
@@ -29,17 +26,14 @@ pub(super) struct StartFailingAgent {
 }
 
 #[async_trait]
-impl Agent<TinyAdapter> for StartFailingAgent {
+impl Agent for StartFailingAgent {
     /// Fails after construction so the runner must execute its cleanup path.
-    async fn start(&mut self, _initial_observation: TinyObservation) -> Result<()> {
+    async fn start(&mut self, _initial_observation: ComponentValue) -> Result<()> {
         anyhow::bail!("intentional agent start failure")
     }
 
     /// Cannot be reached after the deliberate start failure.
-    async fn respond(
-        &mut self,
-        _available_actions: Option<Vec<TinyAction>>,
-    ) -> Result<Option<AgentResponse<TinyAction>>> {
+    async fn respond(&mut self) -> Result<Option<AgentResponse>> {
         unreachable!("respond must not follow a failed start")
     }
 
@@ -73,14 +67,14 @@ pub(super) struct ReadinessAgent {
 }
 
 #[async_trait]
-impl AgentFactory<TinyAdapter> for ReadinessAgentFactory {
+impl AgentFactory for ReadinessAgentFactory {
     /// Uses the same public agent definition as the other lifecycle fixtures.
     fn definition(&self) -> AgentDefinition {
         test_agent_definition()
     }
 
     /// Optionally blocks construction before returning the owned agent.
-    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         if self.gate_construction {
             self.entered.notify_one();
             self.release.notified().await;
@@ -100,9 +94,9 @@ impl AgentFactory<TinyAdapter> for ReadinessAgentFactory {
 }
 
 #[async_trait]
-impl Agent<TinyAdapter> for ReadinessAgent {
+impl Agent for ReadinessAgent {
     /// Holds initialization open until the test explicitly releases it.
-    async fn start(&mut self, _observation: TinyObservation) -> Result<()> {
+    async fn start(&mut self, _observation: ComponentValue) -> Result<()> {
         if self.gate_start {
             self.entered.notify_one();
             self.release.notified().await;
@@ -115,9 +109,10 @@ impl Agent<TinyAdapter> for ReadinessAgent {
     async fn observe_transition(
         &mut self,
         actor: PlayerRole,
-        action: TinyAction,
-        _observation: TinyObservation,
+        action: ComponentValue,
+        _observation: ComponentValue,
     ) -> Result<()> {
+        let action: TinyAction = action.decode()?;
         let _ = self
             .events
             .send(format!("action:{}:{}", actor.as_str(), action.finish));
@@ -133,10 +128,7 @@ impl Agent<TinyAdapter> for ReadinessAgent {
     }
 
     /// Waits for external input without changing the game.
-    async fn respond(
-        &mut self,
-        _actions: Option<Vec<TinyAction>>,
-    ) -> Result<Option<AgentResponse<TinyAction>>> {
+    async fn respond(&mut self) -> Result<Option<AgentResponse>> {
         Ok(None)
     }
 
@@ -163,14 +155,14 @@ pub(super) async fn readiness_event(events: &mut mpsc::UnboundedReceiver<String>
 }
 
 #[async_trait]
-impl AgentFactory<TinyAdapter> for StartFailingAgentFactory {
+impl AgentFactory for StartFailingAgentFactory {
     /// Describes the start-failure cleanup fixture.
     fn definition(&self) -> AgentDefinition {
         test_agent_definition()
     }
 
     /// Creates an agent that fails only when the runner starts it.
-    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         Ok(Box::new(StartFailingAgent {
             shutdowns: self.shutdowns.clone(),
             stopped: self.stopped.clone(),
@@ -188,12 +180,9 @@ pub(super) struct ShutdownRecordingAgent {
 }
 
 #[async_trait]
-impl Agent<TinyAdapter> for ShutdownRecordingAgent {
+impl Agent for ShutdownRecordingAgent {
     /// Waits for observations without producing autonomous game activity.
-    async fn respond(
-        &mut self,
-        _available_actions: Option<Vec<TinyAction>>,
-    ) -> Result<Option<AgentResponse<TinyAction>>> {
+    async fn respond(&mut self) -> Result<Option<AgentResponse>> {
         Ok(None)
     }
 
@@ -209,14 +198,14 @@ pub(super) struct ShutdownRecordingAgentFactory {
 }
 
 #[async_trait]
-impl AgentFactory<TinyAdapter> for ShutdownRecordingAgentFactory {
+impl AgentFactory for ShutdownRecordingAgentFactory {
     /// Describes the runtime-only shutdown test agent.
     fn definition(&self) -> AgentDefinition {
         test_agent_definition()
     }
 
     /// Creates one agent that reports its clean shutdown.
-    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         Ok(Box::new(ShutdownRecordingAgent {
             shutdowns: self.shutdowns.clone(),
         }))
@@ -237,7 +226,7 @@ pub(super) fn test_agent_identity() -> Result<AgentIdentity> {
 }
 
 #[async_trait]
-impl AgentFactory<TinyAdapter> for SecretAgentFactory {
+impl AgentFactory for SecretAgentFactory {
     /// Declares one required factory-purpose credential for readiness tests.
     fn definition(&self) -> AgentDefinition {
         AgentDefinition {
@@ -258,7 +247,7 @@ impl AgentFactory<TinyAdapter> for SecretAgentFactory {
     }
 
     /// Creates the existing no-op agent; readiness is tested before construction.
-    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         Ok(Box::new(NoopAgent))
     }
 
@@ -278,12 +267,12 @@ pub(super) fn test_agent_definition() -> AgentDefinition {
 }
 
 #[async_trait]
-impl AgentFactory<TinyAdapter> for NoopAgentFactory {
+impl AgentFactory for NoopAgentFactory {
     fn definition(&self) -> AgentDefinition {
         test_agent_definition()
     }
 
-    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         Ok(Box::new(NoopAgent))
     }
 
@@ -293,14 +282,14 @@ impl AgentFactory<TinyAdapter> for NoopAgentFactory {
 }
 
 #[async_trait]
-impl AgentFactory<TinyAdapter> for GatedAgentFactory {
+impl AgentFactory for GatedAgentFactory {
     /// Describes the agent used to hold construction open during admission tests.
     fn definition(&self) -> AgentDefinition {
         test_agent_definition()
     }
 
     /// Waits for the test to prove the human has already entered the waiting room.
-    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         self.entered.notify_one();
         self.release.notified().await;
         Ok(Box::new(NoopAgent))
@@ -313,14 +302,14 @@ impl AgentFactory<TinyAdapter> for GatedAgentFactory {
 }
 
 #[async_trait]
-impl AgentFactory<TinyAdapter> for FailingAgentFactory {
+impl AgentFactory for FailingAgentFactory {
     /// Describes the agent used to exercise asynchronous construction failure.
     fn definition(&self) -> AgentDefinition {
         test_agent_definition()
     }
 
     /// Fails construction after the human has already received a waiting session.
-    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<TinyAdapter> + Send>> {
+    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         anyhow::bail!("intentional agent construction failure")
     }
 

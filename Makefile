@@ -8,13 +8,15 @@ COMPONENT_TEST_DIR := $(PARLANDO_DIR)/target/component-tests
 STRESS_FIXTURE_DIR := $(RUST_SERVER_TESTS_DIR)/stress-fixture
 CLIENT_SERVER_TESTS_DIR := $(PARLANDO_DIR)/client-server-tests
 JS_CLIENT_DIR := $(PARLANDO_DIR)/js-client
+RUST_GAME_SDK_DIR := $(PARLANDO_DIR)/parlando-game-sdk
+PYTHON_GAME_SDK_DIR := $(PARLANDO_DIR)/parlando-python-sdk
 PYTHON_AGENT_SDK_DIR := $(PARLANDO_DIR)/parlando-agent-sdk
 PYTHON_TEST_VENV := $(PARLANDO_DIR)/.local/python-test-venv
 PYTHON_TEST := $(PYTHON_TEST_VENV)/bin/python
 NPM_CACHE ?= $(PARLANDO_DIR)/.local/npm-cache
 PYTHON ?= python3
 
-.PHONY: all test test-rust test-components test-js-client test-client-server test-browser-e2e test-prolific-e2e test-e2e test-e2e-logging test-python install-local install-js-client package-local package-rust-server-local package-js-client-local publish-dry-run publish-rust-server-dry-run publish-js-client-dry-run publish-rust-server publish-js-client
+.PHONY: all test test-rust test-components test-js-client test-client-server test-browser-e2e test-prolific-e2e test-e2e test-e2e-logging test-python install-local install-js-client package-local package-rust-server-local package-js-client-local
 
 # Default workflow: prepare the reusable JavaScript client for local development.
 all: install-local
@@ -34,24 +36,27 @@ test-rust:
 	cd "$(RUST_SERVER_DIR)" && cargo test --all-features
 	cd "$(RUST_SERVER_TESTS_DIR)" && cargo test
 
-# Builds two independent guest implementations and runs the component compatibility suite.
+# Builds the guest fixtures and runs the component compatibility suite.
 test-components:
 	cargo test --locked --manifest-path "$(STRESS_FIXTURE_DIR)/Cargo.toml"
-	cargo test --locked --manifest-path "$(PARLANDO_DIR)/parlando-component-sdk/Cargo.toml"
+	cargo test --locked --manifest-path "$(PARLANDO_DIR)/parlando-game-sdk/Cargo.toml"
 	mkdir -p "$(COMPONENT_TEST_DIR)"
 	cargo build --locked --release --manifest-path "$(STRESS_FIXTURE_DIR)/Cargo.toml" \
-	  --target wasm32-unknown-unknown --target-dir "$(COMPONENT_TEST_DIR)/cargo" --features test-traps
+	  --target wasm32-unknown-unknown --target-dir "$(COMPONENT_TEST_DIR)/cargo" --features test-traps --lib --example sdk-encoding-trap
 	wasm-tools component new "$(COMPONENT_TEST_DIR)/cargo/wasm32-unknown-unknown/release/parlando_stress_fixture.wasm" \
 	  -o "$(COMPONENT_TEST_DIR)/stress.wasm"
+	wasm-tools component new "$(COMPONENT_TEST_DIR)/cargo/wasm32-unknown-unknown/release/examples/sdk_encoding_trap.wasm" \
+	  -o "$(COMPONENT_TEST_DIR)/sdk-encoding-trap.wasm"
 	wasm-tools component embed --world game "$(RUST_SERVER_DIR)/wit" "$(STRESS_FIXTURE_DIR)/independent.wat" \
 	  -o "$(COMPONENT_TEST_DIR)/independent-core.wasm"
 	wasm-tools component new "$(COMPONENT_TEST_DIR)/independent-core.wasm" -o "$(COMPONENT_TEST_DIR)/independent.wasm"
 	cargo test --locked --manifest-path "$(RUST_SERVER_DIR)/Cargo.toml" \
-	  --features component-games --lib --bin parlando-component
+	  --lib --bin parlando
 	PARLANDO_TEST_COMPONENT="$(COMPONENT_TEST_DIR)/stress.wasm" \
 	  PARLANDO_TEST_WAT_COMPONENT="$(COMPONENT_TEST_DIR)/independent.wasm" \
+	  PARLANDO_TEST_SDK_COMPONENT="$(COMPONENT_TEST_DIR)/sdk-encoding-trap.wasm" \
 	  cargo test --locked --manifest-path "$(RUST_SERVER_TESTS_DIR)/Cargo.toml" \
-	  --features stress-wasm --bin runtime-stress -- --include-ignored
+	  --features stress-tui --bin runtime-stress -- --include-ignored
 
 # Runs participant and dashboard tests, type compilation, and the coverage regression gate.
 test-js-client:
@@ -127,23 +132,67 @@ package-rust-server-local:
 package-js-client-local:
 	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" pack --dry-run
 
-# Run publishing checks without uploading packages.
-publish-dry-run: publish-rust-server-dry-run publish-js-client-dry-run
+# Check every registry artifact before publication.
+.PHONY: publish publish-dry-run publish-rust publish-rust-derive publish-rust-sdk \
+        publish-rust-server publish-js-client publish-rust-server-dry-run publish-js-client-dry-run \
+        publish-python-game-sdk publish-python-agent-sdk \
+        publish-rust-derive-dry-run publish-rust-sdk-dry-run \
+        publish-python-game-sdk-dry-run publish-python-agent-sdk-dry-run check-release-tools check-release-versions
+publish-dry-run: check-release-versions publish-rust-derive-dry-run publish-rust-sdk-dry-run \
+                 publish-rust-server-dry-run publish-js-client-dry-run \
+                 publish-python-game-sdk-dry-run publish-python-agent-sdk-dry-run
 
-# Validate the Rust server crate against Cargo's publish checks without uploading it.
+publish-rust-derive-dry-run:
+	"$(PYTHON)" "$(PARLANDO_DIR)/scripts/release_crate.py" "$(RUST_GAME_SDK_DIR)/derive/Cargo.toml"
+
+publish-rust-sdk-dry-run:
+	"$(PYTHON)" "$(PARLANDO_DIR)/scripts/release_crate.py" "$(RUST_GAME_SDK_DIR)/Cargo.toml"
+
 publish-rust-server-dry-run:
-	cd "$(RUST_SERVER_DIR)" && cargo publish --dry-run --allow-dirty
+	"$(PYTHON)" "$(PARLANDO_DIR)/scripts/release_crate.py" "$(RUST_SERVER_DIR)/Cargo.toml"
 
-# Validate the JavaScript client package against npm's publish checks without uploading it.
 publish-js-client-dry-run:
 	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" publish --dry-run
 
-publish: publish-rust-server publish-js-client
+publish-python-game-sdk-dry-run publish-python-agent-sdk-dry-run:
+	bash "$(PARLANDO_DIR)/scripts/release-python-package.sh" "$(PYTHON)" "$(PYTHON_RELEASE_SOURCE)" check
 
-# Publish the Rust server crate to the configured Cargo registry.
+# Serial sub-makes preserve publication order and stop on a failed upload even with make -j.
+publish: check-release-versions check-release-tools
+	$(MAKE) publish-rust
+	$(MAKE) publish-js-client
+	$(MAKE) publish-python-game-sdk
+	$(MAKE) publish-python-agent-sdk
+
+publish-rust:
+	$(MAKE) publish-rust-derive
+	$(MAKE) publish-rust-sdk
+	$(MAKE) publish-rust-server
+
+# Require every package to carry the coordinated release version.
+check-release-versions:
+	"$(PYTHON)" "$(PARLANDO_DIR)/skills/release-parlando/scripts/check_release.py" --packages-only
+
+# Check the Python upload tools before starting uploads to any registry.
+check-release-tools:
+	"$(PYTHON)" -m build --version
+	"$(PYTHON)" -m twine --version
+
+publish-rust-derive:
+	cd "$(RUST_GAME_SDK_DIR)/derive" && cargo publish --registry crates-io
+
+publish-rust-sdk:
+	cd "$(RUST_GAME_SDK_DIR)" && cargo publish --registry crates-io
+
 publish-rust-server:
-	cd "$(RUST_SERVER_DIR)" && cargo publish
+	cd "$(RUST_SERVER_DIR)" && cargo publish --registry crates-io
 
-# Publish the JavaScript client package to the configured npm registry.
 publish-js-client:
 	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" publish
+
+# Build from the corresponding source tree for each Python upload or check.
+publish-python-game-sdk publish-python-game-sdk-dry-run: PYTHON_RELEASE_SOURCE := $(PYTHON_GAME_SDK_DIR)
+publish-python-agent-sdk publish-python-agent-sdk-dry-run: PYTHON_RELEASE_SOURCE := $(PYTHON_AGENT_SDK_DIR)
+
+publish-python-game-sdk publish-python-agent-sdk:
+	bash "$(PARLANDO_DIR)/scripts/release-python-package.sh" "$(PYTHON)" "$(PYTHON_RELEASE_SOURCE)" upload

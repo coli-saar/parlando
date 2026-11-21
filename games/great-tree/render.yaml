@@ -11,6 +11,6 @@ services:
       - key: RUST_LOG
         value: info
       - key: PARLANDO_DATABASE_URL
-        value: sqlite:////home/parlando/parlando.sqlite
+        value: sqlite:////home/parlando/great-tree-component.sqlite
       - key: PARLANDO_CLIENT_DIST
         value: /app/client-dist

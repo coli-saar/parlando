@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, parlando_game_sdk::GameValue,
+)]
 pub struct Position {
     pub x: i64,
     pub y: i64,

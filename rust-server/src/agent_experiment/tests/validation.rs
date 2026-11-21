@@ -16,7 +16,7 @@ fn yaml_rejects_obsolete_agent_kind_discriminator() {
 fn alternate_after_action_uses_the_original_agent_response() {
     let mut schedule = AlternateAfterAction::new(PlayerRole::A);
     assert_eq!(
-        <AlternateAfterAction as AgentSchedule<TinyGame>>::next(
+        <AlternateAfterAction as AgentSchedule>::next(
             &mut schedule,
             PlayerRole::A,
             Some(&AgentResponse::message("hello")),
@@ -24,9 +24,9 @@ fn alternate_after_action_uses_the_original_agent_response() {
         ),
         Some(PlayerRole::A)
     );
-    let action = AgentResponse::action(TinyAction { amount: 1 });
+    let action = AgentResponse::action(increment(1));
     assert_eq!(
-        <AlternateAfterAction as AgentSchedule<TinyGame>>::next(
+        <AlternateAfterAction as AgentSchedule>::next(
             &mut schedule,
             PlayerRole::A,
             Some(&action),
@@ -35,7 +35,7 @@ fn alternate_after_action_uses_the_original_agent_response() {
         Some(PlayerRole::A)
     );
     assert_eq!(
-        <AlternateAfterAction as AgentSchedule<TinyGame>>::next(
+        <AlternateAfterAction as AgentSchedule>::next(
             &mut schedule,
             PlayerRole::A,
             Some(&action),
@@ -44,21 +44,11 @@ fn alternate_after_action_uses_the_original_agent_response() {
         Some(PlayerRole::B)
     );
     assert_eq!(
-        <AlternateAfterAction as AgentSchedule<TinyGame>>::next(
-            &mut schedule,
-            PlayerRole::A,
-            None,
-            None,
-        ),
+        <AlternateAfterAction as AgentSchedule>::next(&mut schedule, PlayerRole::A, None, None,),
         Some(PlayerRole::B)
     );
     assert_eq!(
-        <AlternateAfterAction as AgentSchedule<TinyGame>>::next(
-            &mut schedule,
-            PlayerRole::B,
-            None,
-            None,
-        ),
+        <AlternateAfterAction as AgentSchedule>::next(&mut schedule, PlayerRole::B, None, None,),
         None
     );
 }
@@ -81,12 +71,12 @@ fn canonical_value_hashes_object_order_stably() {
 fn alternate_every_response_has_deterministic_handoffs() {
     let mut schedule = AlternateEveryResponse::new(PlayerRole::B);
     assert_eq!(
-        <AlternateEveryResponse as AgentSchedule<TinyGame>>::first(&mut schedule),
+        <AlternateEveryResponse as AgentSchedule>::first(&mut schedule),
         PlayerRole::B
     );
     let message = AgentResponse::message("hello");
     assert_eq!(
-        <AlternateEveryResponse as AgentSchedule<TinyGame>>::next(
+        <AlternateEveryResponse as AgentSchedule>::next(
             &mut schedule,
             PlayerRole::B,
             Some(&message),
@@ -95,21 +85,11 @@ fn alternate_every_response_has_deterministic_handoffs() {
         Some(PlayerRole::A)
     );
     assert_eq!(
-        <AlternateEveryResponse as AgentSchedule<TinyGame>>::next(
-            &mut schedule,
-            PlayerRole::A,
-            None,
-            None
-        ),
+        <AlternateEveryResponse as AgentSchedule>::next(&mut schedule, PlayerRole::A, None, None),
         Some(PlayerRole::B)
     );
     assert_eq!(
-        <AlternateEveryResponse as AgentSchedule<TinyGame>>::next(
-            &mut schedule,
-            PlayerRole::B,
-            None,
-            None
-        ),
+        <AlternateEveryResponse as AgentSchedule>::next(&mut schedule, PlayerRole::B, None, None),
         None
     );
 }

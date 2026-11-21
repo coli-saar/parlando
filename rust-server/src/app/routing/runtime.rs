@@ -1,23 +1,23 @@
 //! Initializes the resources and shared state of a mounted experiment.
 //!
 //! The mount registry supplies installation services, an experiment configuration, and
-//! factories for the compiled game. Construction prepares the session cache, transport
+//! factories for the loaded game. Construction prepares the session cache, transport
 //! registries, providers, and background tasks, then gives initialized state to the route
 //! builder.
 
 use super::*;
 
 /// Constructs resources for one real experiment. Mounted experiments use namespaced routes.
-pub(super) async fn build_experiment_router<A: Game>(
-    installation: Arc<Installation<A>>,
+pub(super) async fn build_experiment_router(
+    installation: Arc<Installation>,
     config: ExperimentConfig,
-    options: ServeOptions<A>,
+    options: ServeOptions,
     mounted_runtime: bool,
     identity: MountIdentity,
-) -> Result<BuiltRouters<A>> {
+) -> Result<BuiltRouters> {
     config.validate()?;
     validate_game_config_contains_no_secrets(&config.game)?;
-    let game_config = parse_game_config(installation.game_factory.as_ref(), &config.game)?;
+    let game_config = parse_game_config(&installation.loaded_game, &config.game)?;
     let agent_definitions = registered_agent_definitions(&options)?;
     let experiment_id = config
         .experiment

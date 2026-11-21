@@ -9,7 +9,7 @@ use super::{
     authenticated_participant_id, consent_configuration_hash, enforce_creation_rate,
     experiment_occupancy, json, nonempty_string, now_iso, require_open_experiment, AppError,
     AppState, Arc, ConsentDeclarationRecord, ConsentRequest, ExperimentConfig, ExperimentLifecycle,
-    Extension, Game, HashMap, Json, ParticipantCreateRequest, ParticipantCreateResponse,
+    Extension, HashMap, Json, ParticipantCreateRequest, ParticipantCreateResponse,
     ParticipantOutcomeKind, ParticipantPrincipal, ParticipantRecord, ProlificParticipantRequest,
     ProlificSubmissionRecord, RecruitmentHandoff, Result, RunningParticipantUrl, State, StatusCode,
     Value,
@@ -38,8 +38,8 @@ fn prolific_completion_url(code: &str) -> String {
 }
 
 /// Registers a participant using the configured recruitment policy.
-pub(super) async fn create_participant<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(super) async fn create_participant(
+    State(state): State<Arc<AppState>>,
     Json(request): Json<ParticipantCreateRequest>,
 ) -> Result<Json<ParticipantCreateResponse>, AppError> {
     create_participant_inner(state, request).await.map(Json)
@@ -65,8 +65,8 @@ fn is_synthetic_prolific_testing_launch(
 }
 
 /// Validates intake and publishes a new or recovered participant credential.
-async fn create_participant_inner<A: Game>(
-    state: Arc<AppState<A>>,
+async fn create_participant_inner(
+    state: Arc<AppState>,
     request: ParticipantCreateRequest,
 ) -> Result<ParticipantCreateResponse, AppError> {
     let intake_guard = require_open_experiment(&state).await?;
@@ -270,8 +270,8 @@ async fn create_participant_inner<A: Game>(
 }
 
 /// Persists the participant's consent declarations and resulting eligibility.
-pub(super) async fn consent<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(super) async fn consent(
+    State(state): State<Arc<AppState>>,
     principal: Option<Extension<ParticipantPrincipal>>,
     Json(request): Json<ConsentRequest>,
 ) -> Result<Json<Value>, AppError> {
@@ -373,8 +373,8 @@ pub(super) async fn consent<A: Game>(
 }
 
 /// Checks required declarations before a participant can acquire a seat.
-pub(super) async fn require_consent<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn require_consent(
+    state: &Arc<AppState>,
     participant_session_id: &str,
 ) -> Result<(), AppError> {
     let memory = state.memory.read().await;

@@ -28,3 +28,13 @@
 !games/counterweight-hotel/client/web/vite.config.ts
 !games/counterweight-hotel/client/web/src/
 !games/counterweight-hotel/client/web/src/**
+!rust-server/brand/
+!rust-server/brand/**
+!rust-server/Cargo.lock
+!rust-server/wit/
+!rust-server/wit/**
+!games/support/
+!games/support/**
+!parlando-game-sdk/
+!parlando-game-sdk/**
+**/target

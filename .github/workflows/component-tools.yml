@@ -1,0 +1,71 @@
+name: Build Parlando CLI and host image
+on: workflow_dispatch
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x86_64
+          - runner: macos-15
+            platform: macos-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build CLI with the component host
+        run: cargo build --locked --release --manifest-path rust-server/Cargo.toml --bin parlando
+      - name: Package binary and checksum
+        run: scripts/package-component-cli.sh rust-server/target/release/parlando ${{ matrix.platform }} .
+      - name: Verify the extracted CLI and SDK in a new project
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install --locked wasm-tools
+          mkdir -p "$RUNNER_TEMP/parlando-bin"
+          tar -xf parlando-*.tar.gz -C "$RUNNER_TEMP/parlando-bin"
+          cd "$RUNNER_TEMP"
+          ./parlando-bin/parlando new pilot
+          cd pilot
+          ../parlando-bin/parlando test --json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify the extracted CLI and SDK with a Python game
+        run: |
+          cd "$RUNNER_TEMP"
+          ./parlando-bin/parlando new python-pilot --lang python
+          cd python-pilot
+          python3 -m venv .venv
+          .venv/bin/python -m pip install componentize-py==0.25.1
+          ../parlando-bin/parlando test --json
+          ../parlando-bin/parlando build --json
+          ../parlando-bin/parlando check --manifest dist/parlando/game.yaml --json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parlando-${{ matrix.platform }}
+          path: parlando-*.tar.gz*
+
+  host:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and identify runtime image
+        run: |
+          docker build -t parlando-host:build -f deploy/component-host/Dockerfile .
+          version=$(docker run --rm parlando-host:build --version | awk '{print $2}')
+          docker tag parlando-host:build "parlando-host:$version"
+          docker save "parlando-host:$version" | gzip > "parlando-host-$version-linux-x86_64.tar.gz"
+      - name: Start container with a persistent volume
+        run: |
+          export PARLANDO_HOST_ADMIN_TOKEN=$(openssl rand -hex 32)
+          export PARLANDO_DEPLOY_TOKEN=$(openssl rand -hex 32)
+          docker run -d --name parlando-test -p 127.0.0.1:8000:8000 -v parlando-data:/data \
+            -e PARLANDO_HOST_ADMIN_TOKEN -e PARLANDO_DEPLOY_TOKEN -e PARLANDO_DEPLOY_GAME=sample \
+            -e PARLANDO_PUBLIC_URL=http://127.0.0.1:8000 parlando-host:build
+          curl --fail --retry 15 --retry-connrefused http://127.0.0.1:8000/health
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parlando-host-linux-x86_64
+          path: parlando-host-*.tar.gz

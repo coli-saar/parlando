@@ -7,12 +7,12 @@
 
 use super::{
     broadcast_participant_states, expire_if_due_locked, persist_event, AppError, AppState, Arc,
-    Game, Mutex, PlayerRole, Result, SessionLifecycle,
+    Mutex, PlayerRole, Result, SessionLifecycle,
 };
 
 /// Returns the serialization lock that orders durable transitions for one session.
-pub(super) async fn session_transition_lock<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn session_transition_lock(
+    state: &Arc<AppState>,
     public_session_id: &str,
 ) -> Option<Arc<Mutex<()>>> {
     state
@@ -25,10 +25,7 @@ pub(super) async fn session_transition_lock<A: Game>(
 }
 
 /// Refreshes activity reported by a transport if the room is still running.
-pub(super) async fn touch_transport_activity<A: Game>(
-    state: &Arc<AppState<A>>,
-    public_session_id: &str,
-) {
+pub(super) async fn touch_transport_activity(state: &Arc<AppState>, public_session_id: &str) {
     let Some(lock) = session_transition_lock(state, public_session_id).await else {
         return;
     };
@@ -43,10 +40,7 @@ pub(super) async fn touch_transport_activity<A: Game>(
 }
 
 /// Refreshes a session's meaningful-activity timestamp without treating heartbeats as activity.
-pub(super) async fn touch_session_activity<A: Game>(
-    state: &Arc<AppState<A>>,
-    public_session_id: &str,
-) {
+pub(super) async fn touch_session_activity(state: &Arc<AppState>, public_session_id: &str) {
     let activity_at = chrono::Utc::now();
     let idle_deadline_at = activity_at
         + chrono::Duration::seconds(state.context.config.session.session_idle_timeout_seconds);
@@ -75,10 +69,7 @@ pub(super) async fn touch_session_activity<A: Game>(
 }
 
 /// Closes and drains the log writer owned by one terminal live session.
-pub(super) async fn shutdown_session_log<A: Game>(
-    state: &Arc<AppState<A>>,
-    public_session_id: &str,
-) {
+pub(super) async fn shutdown_session_log(state: &Arc<AppState>, public_session_id: &str) {
     let writer = state
         .memory
         .write()
@@ -92,8 +83,8 @@ pub(super) async fn shutdown_session_log<A: Game>(
 }
 
 /// Verifies that a participant belongs to the requested session.
-pub(super) async fn require_session<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn require_session(
+    state: &Arc<AppState>,
     public_session_id: &str,
 ) -> Result<(), AppError> {
     if state
@@ -110,8 +101,8 @@ pub(super) async fn require_session<A: Game>(
 }
 
 /// Looks up the participant's role in the active session.
-pub(super) async fn participant_role<A: Game>(
-    state: &Arc<AppState<A>>,
+pub(super) async fn participant_role(
+    state: &Arc<AppState>,
     public_session_id: &str,
     participant_session_id: &str,
 ) -> Result<PlayerRole, AppError> {
@@ -128,10 +119,7 @@ pub(super) async fn participant_role<A: Game>(
 }
 
 /// Returns whether a session has already left the waiting-session phase.
-pub(super) async fn session_has_started<A: Game>(
-    state: &Arc<AppState<A>>,
-    public_session_id: &str,
-) -> bool {
+pub(super) async fn session_has_started(state: &Arc<AppState>, public_session_id: &str) -> bool {
     let memory = state.memory.read().await;
     memory
         .sessions
@@ -140,10 +128,7 @@ pub(super) async fn session_has_started<A: Game>(
 }
 
 /// Returns whether meaningful participant input, including transcription, is currently active.
-pub(super) async fn session_is_active<A: Game>(
-    state: &Arc<AppState<A>>,
-    public_session_id: &str,
-) -> bool {
+pub(super) async fn session_is_active(state: &Arc<AppState>, public_session_id: &str) -> bool {
     let memory = state.memory.read().await;
     memory
         .sessions
@@ -152,10 +137,7 @@ pub(super) async fn session_is_active<A: Game>(
 }
 
 /// Allows ordinary voice relay and the bounded post-completion farewell period.
-pub(super) async fn session_accepts_audio<A: Game>(
-    state: &Arc<AppState<A>>,
-    public_session_id: &str,
-) -> bool {
+pub(super) async fn session_accepts_audio(state: &Arc<AppState>, public_session_id: &str) -> bool {
     let now = chrono::Utc::now();
     let memory = state.memory.read().await;
     memory

@@ -1,8 +1,9 @@
 # Running and Deployment
 
-A Parlando process runs one compiled game and the experiments stored for that
-game. Starting another experiment of the same game is a dashboard operation;
-starting a different game requires another binary, database, and port.
+This guide runs a local Wasm game server with a dashboard and a catalogue of
+experiments for its compiled game. To run several games on one server, deploy
+WebAssembly packages to the shared host and select a revision per experiment.
+See [Host and deploy component games](component-hosting.md).
 
 Give each compiled game its own SQLite database. This keeps the catalogue,
 configuration revisions, and recorded game version within one clearly identified
@@ -22,18 +23,6 @@ the example game:
 ```sh
 make -C space-game run
 ```
-
-To run an already built client and server directly from the repository root, use:
-
-```sh
-cargo run --manifest-path space-game/server/Cargo.toml -- \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --client-dist space-game/client/dist
-```
-
-The port is required. This makes simultaneous local game processes explicit:
-for example, one game can use port 8000 and another port 8001.
 
 Open `http://127.0.0.1:8000/admin`. On a new database, create the first
 administrator and then create an experiment with its permanent experiment ID.
@@ -162,125 +151,9 @@ hosted client must either proxy the complete `/e/{experiment_id}/` route tree to
 Parlando or use an explicitly allowed browser origin. Do not construct participant
 WebSocket URLs from a configured public hostname.
 
-## Package a game for Linux without Docker
+## Package and deploy a game
 
-The repository-level packaging script cross-compiles one game server and combines
-it with that game's browser assets in a directory suitable for `rsync`. For
-prerequisites, dependency modes, package verification, target selection, and
-failure diagnosis, read [Cross-compile and package a game for
-Linux](cross-compiling-for-linux.md).
-
-Run the script from the game root so it can use the conventional
-`server/Cargo.toml` and `client/package.json` paths:
-
-```sh
-cd space-game
-../scripts/package-linux.sh
-```
-
-The default target is static 64-bit x86 Linux. The resulting directory is:
-
-```text
-space-game/.local/package/parlando-space-game-x86_64-linux/
-```
-
-It contains `bin/parlando-space-game`, `client-dist`, a relocatable `run`
-launcher, build information, and SHA-256 checksums. By default the game uses the
-published Rust and JavaScript dependencies recorded by its manifests and lockfiles.
-Pass `--local` to build both dependencies from the sibling `rust-server` and
-`js-client` checkouts instead:
-
-```sh
-../scripts/package-linux.sh --local
-```
-
-The script runs the game server and browser tests before packaging; in local mode
-it also runs the sibling browser SDK tests. Use `--skip-tests` only when those
-checks have already passed for the same source and dependency mode.
-
-Install the build prerequisites once on macOS:
-
-```sh
-brew install zig
-cargo install cargo-zigbuild
-rustup target add x86_64-unknown-linux-musl
-```
-
-For an ARM64 Linux host, install that target and select it explicitly:
-
-```sh
-rustup target add aarch64-unknown-linux-musl
-../scripts/package-linux.sh --target aarch64-unknown-linux-musl
-```
-
-Copy the stable package directory while the remote service is stopped, then
-restart it so the server cannot observe a mixture of old and new browser assets:
-
-```sh
-rsync -a --delete \
-  .local/package/parlando-space-game-x86_64-linux/ \
-  server:/opt/parlando/parlando-space-game-x86_64-linux/
-```
-
-Keep SQLite data and provider credentials outside this directory. For example,
-the remote service can run:
-
-```sh
-PARLANDO_DATABASE_URL=sqlite:////var/lib/parlando/parlando.sqlite \
-  /opt/parlando/parlando-space-game-x86_64-linux/run \
-  --host 0.0.0.0 \
-  --port 8000
-```
-
-The target host needs its ordinary CA-certificate bundle for outbound TLS. It
-does not need Docker, Node.js, Rust, Zig, or a separately installed SQLite
-library.
-
-## Deploy with Docker and Render
-
-For a complete first deployment, including a field-by-field Blueprint
-explanation and failure diagnosis, follow [Deploy a Parlando Game on
-Render](deploying-on-render.md). This section records the shorter operational
-contract.
-
-The example production image in `space-game/Dockerfile` builds the Rust binary and
-browser client, runs as uid 10001, and reads these defaults:
-
-```text
-PORT=8000
-PARLANDO_DATABASE_URL=sqlite:////data/parlando.sqlite
-PARLANDO_CLIENT_DIST=/app/client-dist
-```
-
-For Render:
-
-1. Create a Docker web service using `space-game/Dockerfile` or
-   `space-game/render.yaml`.
-2. Mount a persistent disk at `/data`.
-3. Set `PARLANDO_DATABASE_URL=sqlite:////data/parlando.sqlite`.
-4. Let the platform supply `PORT`, or retain `8000` where fixed ports are
-   supported.
-5. Deploy, complete administrator setup, and add provider credentials under Game
-   settings only when the corresponding experiment features are enabled.
-6. Configure an experiment and activate it
-   before distributing its participant URL.
-7. Configure the administrator network range in the dashboard or at the trusted
-   ingress proxy.
-8. Set a disk-usage alert and arrange an encrypted off-service SQLite backup.
-9. Deploy a reviewed clean Git commit and record the resulting image digest with
-   the study materials.
-
-Provider secrets remain in the process environment. The browser receives only
-public capability metadata, its participant credential, and distinct one-use
-game and audio tickets.
-
-The Render blueprint checks `/health`, which acquires a SQLite write transaction
-and performs a read before reporting success. A live-process response therefore
-does not hide a missing, locked, or read-only experiment database.
-
-Parlando emits HSTS on every application response. Browsers honor it only when
-the response arrives over HTTPS, so local HTTP development is unaffected while a
-TLS-terminating production proxy can pass the policy through unchanged.
+Run `parlando build` in the game project. It produces a portable package under `dist/parlando/`. Install the shared host once and upload game packages with `parlando deploy`. Each experiment pins its package revision. Keep the host data directory on a persistent volume and supply deployment credentials only to the operator. See [Host and deploy games](component-hosting.md) for the Render and Railway workflows.
 
 ## Back up collected data
 

@@ -2,15 +2,15 @@
 
 use super::*;
 use parlando::{
-    component::{ComponentGameFactory, ComponentState, ComponentValue},
-    ExperimentRunner, GameInitializationContext, GameSessionContext, SecretValues, SessionLogger,
+    component::{ComponentValue, GameFrame, LoadedGame},
+    ExperimentRunner,
 };
 
 /// Loads the independently built fixture component specified by the test command.
-fn component_factory() -> ComponentGameFactory {
+fn component_factory() -> LoadedGame {
     let path = std::env::var_os("PARLANDO_TEST_COMPONENT")
         .expect("set PARLANDO_TEST_COMPONENT to the locally built fixture component");
-    ComponentGameFactory::load(Path::new(&path)).expect("load fixture component")
+    LoadedGame::load(Path::new(&path)).expect("load fixture component")
 }
 
 /// Encodes a typed test input with the same wire codec as local policies.
@@ -54,17 +54,9 @@ fn failure(kind: &str) -> ComponentValue {
 #[ignore = "requires a locally built fixture component with test-traps"]
 fn component_recovers_the_caller_checkpoint_after_an_abandoned_step_and_trap() {
     let factory = component_factory();
-    let game = factory
-        .create(GameSessionContext {
-            logger: SessionLogger::testing(),
-        })
-        .unwrap();
+    let game = factory.session();
     let initial = game
-        .initial_state(GameInitializationContext {
-            config: &payload(&BTreeMap::<String, ()>::new()),
-            seed: 7,
-            secrets: &SecretValues::default(),
-        })
+        .init(&payload(&BTreeMap::<String, ()>::new()), 7)
         .unwrap();
     let mark_a = mark(4, false);
     let mark_b = mark(1, true);
@@ -74,38 +66,32 @@ fn component_recovers_the_caller_checkpoint_after_an_abandoned_step_and_trap() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        json_view(game.observation(&abandoned, PlayerRole::A))["counts"],
+        json_view(abandoned.observation(PlayerRole::A))["counts"],
         json!([1, 0])
     );
 
     assert_eq!(
-        json_view(game.observation(&initial, PlayerRole::A))["counts"],
+        json_view(initial.observation(PlayerRole::A))["counts"],
         json!([0, 0])
     );
     assert_eq!(
-        json_view(game.observation(&initial, PlayerRole::B))["counts"],
+        json_view(initial.observation(PlayerRole::B))["counts"],
         json!([0, 0])
     );
-    assert!(game.completion(&initial).is_none());
+    assert!(initial.completion().is_none());
 
     let recovered = game
         .step(&initial, &mark_a, PlayerRole::A)
         .unwrap()
         .unwrap();
+    assert_eq!(json_view(recovered.observation(PlayerRole::A))["role"], "A");
+    assert_eq!(json_view(recovered.observation(PlayerRole::B))["role"], "B");
     assert_eq!(
-        json_view(game.observation(&recovered, PlayerRole::A))["role"],
-        "A"
-    );
-    assert_eq!(
-        json_view(game.observation(&recovered, PlayerRole::B))["role"],
-        "B"
-    );
-    assert_eq!(
-        json_view(game.observation(&recovered, PlayerRole::A))["own_history"],
+        json_view(recovered.observation(PlayerRole::A))["own_history"],
         json!([4])
     );
     assert_eq!(
-        json_view(game.observation(&recovered, PlayerRole::B))["own_history"],
+        json_view(recovered.observation(PlayerRole::B))["own_history"],
         json!([])
     );
     assert_eq!(
@@ -130,7 +116,7 @@ fn component_recovers_the_caller_checkpoint_after_an_abandoned_step_and_trap() {
         .step(&recovered, &failure("malformed_view"), PlayerRole::B)
         .unwrap()
         .unwrap();
-    assert!(serde_json::to_value(game.observation(&malformed, PlayerRole::B)).is_err());
+    assert!(serde_json::to_value(malformed.observation(PlayerRole::B)).is_err());
 
     // Metadata is also lazy. An invalid value from a nonconforming guest
     // is omitted when read through the infallible Game interface.
@@ -139,10 +125,7 @@ fn component_recovers_the_caller_checkpoint_after_an_abandoned_step_and_trap() {
         .step(&recovered, &action, PlayerRole::B)
         .unwrap()
         .unwrap();
-    assert_eq!(
-        game.transition_metadata(&recovered, &malformed, &action, PlayerRole::B),
-        None
-    );
+    assert_eq!(malformed.transition_metadata(), None);
 
     // Fuel exhaustion must invalidate the partially mutated instance just like
     // a guest trap. The following terminal move proves reconstruction succeeds.
@@ -156,17 +139,13 @@ fn component_recovers_the_caller_checkpoint_after_an_abandoned_step_and_trap() {
         .step(&recovered, &mark_b, PlayerRole::B)
         .unwrap()
         .unwrap();
-    assert_eq!(total_actions(game.completion(&terminal)), Some(2));
+    assert_eq!(total_actions(terminal.completion()), Some(2));
     assert_eq!(
-        json_view(game.observation(&terminal, PlayerRole::B))["last_sequence"],
+        json_view(terminal.observation(PlayerRole::B))["last_sequence"],
         json!([4, 1])
     );
 
-    let new_game = factory
-        .create(GameSessionContext {
-            logger: SessionLogger::testing(),
-        })
-        .unwrap();
+    let new_game = factory.session();
     let persisted = serde_json::to_value(&recovered).unwrap();
     assert_eq!(persisted["recovery"]["turns"].as_array().unwrap().len(), 1);
     let original_config = persisted["recovery"]["origin"]["Seed"]["config"]
@@ -183,18 +162,18 @@ fn component_recovers_the_caller_checkpoint_after_an_abandoned_step_and_trap() {
         original_action,
         r#"{"finish":false,"sequence":4,"type":"mark"}"#
     );
-    let checkpoint: ComponentState = serde_json::from_value(persisted).unwrap();
+    let checkpoint: GameFrame = serde_json::from_value(persisted).unwrap();
     let rebuilt = new_game
         .step(&checkpoint, &mark_b, PlayerRole::B)
         .unwrap()
         .unwrap();
     assert_eq!(
-        total_actions(new_game.completion(&rebuilt)),
-        total_actions(game.completion(&terminal))
+        total_actions(rebuilt.completion()),
+        total_actions(terminal.completion())
     );
     assert_eq!(
-        json_view(new_game.observation(&rebuilt, PlayerRole::A)),
-        json_view(game.observation(&terminal, PlayerRole::A))
+        json_view(rebuilt.observation(PlayerRole::A)),
+        json_view(terminal.observation(PlayerRole::A))
     );
 }
 
@@ -208,10 +187,10 @@ struct SingleMark {
 }
 
 #[async_trait]
-impl<G: StressAgentGame> Agent<G> for SingleMark {
+impl Agent for SingleMark {
     /// Reads the admitted seat's sequence through its typed observation.
-    async fn start(&mut self, initial: G::Observation) -> Result<()> {
-        self.sequence = G::observed_sequence(&initial, self.role)?;
+    async fn start(&mut self, initial: ComponentValue) -> Result<()> {
+        self.sequence = observed_sequence(&initial, self.role)?;
         anyhow::ensure!(self.sequence == 0);
         Ok(())
     }
@@ -220,21 +199,18 @@ impl<G: StressAgentGame> Agent<G> for SingleMark {
     async fn observe_transition(
         &mut self,
         actor: PlayerRole,
-        _: G::Action,
-        observation: G::Observation,
+        _: ComponentValue,
+        observation: ComponentValue,
     ) -> Result<()> {
-        let observed = G::observed_sequence(&observation, self.role)?;
+        let observed = observed_sequence(&observation, self.role)?;
         anyhow::ensure!(observed == self.sequence + u64::from(actor == self.role));
         self.sequence = observed;
         Ok(())
     }
 
     /// Supplies the fixture's single scheduled action.
-    async fn respond(
-        &mut self,
-        _: Option<Vec<G::Action>>,
-    ) -> Result<Option<AgentResponse<G::Action>>> {
-        let action = G::agent_action(StressAction::Mark {
+    async fn respond(&mut self) -> Result<Option<AgentResponse>> {
+        let action = agent_action(StressAction::Mark {
             sequence: self.sequence + 1,
             finish: self.role == PlayerRole::B,
         })?;
@@ -243,7 +219,7 @@ impl<G: StressAgentGame> Agent<G> for SingleMark {
 }
 
 #[async_trait]
-impl<G: StressAgentGame> AgentFactory<G> for SingleMarkFactory {
+impl AgentFactory for SingleMarkFactory {
     /// Registers the deterministic policy for the parity experiment.
     fn definition(&self) -> AgentDefinition {
         AgentDefinition {
@@ -255,7 +231,7 @@ impl<G: StressAgentGame> AgentFactory<G> for SingleMarkFactory {
     }
 
     /// Builds the scripted policy for its assigned seat.
-    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<G> + Send>> {
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         Ok(Box::new(SingleMark {
             role: context.role,
             sequence: 0,
@@ -272,10 +248,7 @@ impl<G: StressAgentGame> AgentFactory<G> for SingleMarkFactory {
 }
 
 /// Runs a two-action experiment and reads its structured parity evidence.
-async fn run_headless<F: GameFactory>(factory: F) -> Result<Value>
-where
-    F::Game: StressAgentGame,
-{
+async fn run_headless(factory: LoadedGame) -> Result<Value> {
     let directory = tempfile::tempdir()?;
     let output = directory.path().join("output");
     let yaml = directory.path().join("fixture.yaml");
@@ -334,24 +307,14 @@ output:
     Ok(serde_json::from_slice(&std::fs::read(artifact)?)?)
 }
 
-/// Compares the complete role-safe headless trace on both backends.
+/// Verifies headless play delivers the accepted moves and the guest's terminal outcome.
 #[tokio::test]
 #[ignore = "requires a locally built fixture component"]
-async fn component_matches_native_headless_results() -> Result<()> {
-    let native = run_headless(StressGameFactory).await?;
-    let component = run_headless(component_factory()).await?;
-    assert_eq!(native["status"], "completed");
-    assert_eq!(native["accepted_actions"], 2);
-    assert_eq!(native["completion"], json!({"total_actions": 2}));
-    for field in [
-        "status",
-        "accepted_actions",
-        "rejected_actions",
-        "completion",
-        "trace",
-    ] {
-        assert_eq!(component[field], native[field], "parity field {field}");
-    }
+async fn component_completes_headless_run() -> Result<()> {
+    let result = run_headless(component_factory()).await?;
+    assert_eq!(result["status"], "completed");
+    assert_eq!(result["accepted_actions"], 2);
+    assert_eq!(result["completion"], json!({"total_actions": 2}));
     Ok(())
 }
 
@@ -360,16 +323,9 @@ async fn component_matches_native_headless_results() -> Result<()> {
 #[ignore = "requires a locally built fixture component"]
 fn component_restores_a_periodic_guest_checkpoint() {
     let factory = component_factory();
-    let context = || GameSessionContext {
-        logger: SessionLogger::testing(),
-    };
-    let game = factory.create(context()).unwrap();
+    let game = factory.session();
     let mut selected = game
-        .initial_state(GameInitializationContext {
-            config: &payload(&BTreeMap::<String, ()>::new()),
-            seed: 7,
-            secrets: &SecretValues::default(),
-        })
+        .init(&payload(&BTreeMap::<String, ()>::new()), 7)
         .unwrap();
     for sequence in 1..=32 {
         selected = game
@@ -395,26 +351,26 @@ fn component_restores_a_periodic_guest_checkpoint() {
         previous_checkpoint.into_bytes()
     );
     assert_eq!(persisted["recovery"]["turns"], json!([]));
-    let restored: ComponentState = serde_json::from_value(persisted).unwrap();
-    let replacement = factory.create(context()).unwrap();
+    let restored: GameFrame = serde_json::from_value(persisted).unwrap();
+    let replacement = factory.session();
     for role in [PlayerRole::A, PlayerRole::B] {
         assert_eq!(
-            json_view(replacement.observation(&restored, role)),
-            json_view(game.observation(&selected, role))
+            json_view(restored.observation(role)),
+            json_view(selected.observation(role))
         );
     }
     let terminal = replacement
         .step(&restored, &mark(1, true), PlayerRole::B)
         .unwrap()
         .unwrap();
-    let a = json_view(replacement.observation(&terminal, PlayerRole::A));
-    let b = json_view(replacement.observation(&terminal, PlayerRole::B));
+    let a = json_view(terminal.observation(PlayerRole::A));
+    let b = json_view(terminal.observation(PlayerRole::B));
     assert_eq!(a["role"], "A");
     assert_eq!(b["role"], "B");
     // The terminal action evicts A's first move from the 32-action history.
     assert_eq!(a["own_history"], json!((2..=32).collect::<Vec<_>>()));
     assert_eq!(b["own_history"], json!([1]));
-    assert_eq!(total_actions(replacement.completion(&terminal)), Some(33));
+    assert_eq!(total_actions(terminal.completion()), Some(33));
 }
 
 /// Exercises an independently written guest and interleaves two sessions against one factory.
@@ -423,23 +379,14 @@ fn component_restores_a_periodic_guest_checkpoint() {
 fn component_canonical_abi_supports_an_independent_guest() {
     let path = std::env::var_os("PARLANDO_TEST_WAT_COMPONENT")
         .expect("set PARLANDO_TEST_WAT_COMPONENT to the locally built WAT component");
-    let factory = ComponentGameFactory::load(Path::new(&path)).unwrap();
-    let context = || GameSessionContext {
-        logger: SessionLogger::testing(),
-    };
-    let secrets = SecretValues::default();
+    let factory = LoadedGame::load(Path::new(&path)).unwrap();
     let config = payload(&());
-    let inputs = || GameInitializationContext {
-        config: &config,
-        seed: 7,
-        secrets: &secrets,
-    };
-    let first = factory.create(context()).unwrap();
-    let second = factory.create(context()).unwrap();
-    let initial_first = first.initial_state(inputs()).unwrap();
-    let initial_second = second.initial_state(inputs()).unwrap();
-    let view_a = first.observation(&initial_first, PlayerRole::A);
-    let view_b = first.observation(&initial_first, PlayerRole::B);
+    let first = factory.session();
+    let second = factory.session();
+    let initial_first = first.init(&config, 7).unwrap();
+    let initial_second = second.init(&config, 7).unwrap();
+    let view_a = initial_first.observation(PlayerRole::A);
+    let view_b = initial_first.observation(PlayerRole::B);
     use parlando::component::{ProjectedValue, Projection, Selection};
     let a = Projection::resolve(
         factory.schema().view_a.clone(),
@@ -469,15 +416,16 @@ fn component_canonical_abi_supports_an_independent_guest() {
     assert_eq!(view_b.decode::<BTreeMap<String, u64>>().unwrap()["B"], 0);
     assert_eq!(
         view_a.as_messagepack().as_ptr(),
-        first
-            .observation(&initial_first, PlayerRole::A)
+        initial_first
+            .observation(PlayerRole::A)
             .as_messagepack()
             .as_ptr()
     );
     assert_eq!(
         view_b.as_messagepack().as_ptr(),
-        first
-            .observation(&initial_first.clone(), PlayerRole::B)
+        initial_first
+            .clone()
+            .observation(PlayerRole::B)
             .as_messagepack()
             .as_ptr()
     );
@@ -487,58 +435,49 @@ fn component_canonical_abi_supports_an_independent_guest() {
         .step(&initial_first, &action, PlayerRole::A)
         .unwrap()
         .unwrap();
-    assert_eq!(
-        read(&a, &first.observation(&terminal_first, PlayerRole::A)),
-        [1]
-    );
-    assert_eq!(
-        read(&b, &first.observation(&terminal_first, PlayerRole::B)),
-        [1]
-    );
+    assert_eq!(read(&a, &terminal_first.observation(PlayerRole::A)), [1]);
+    assert_eq!(read(&b, &terminal_first.observation(PlayerRole::B)), [1]);
     assert_eq!(read(&a, &view_a), [0]);
     assert_eq!(read(&b, &view_b), [0]);
     assert_eq!(
-        json_view(first.observation(&terminal_first, PlayerRole::A)),
+        json_view(terminal_first.observation(PlayerRole::A)),
         json!({"A":1})
     );
     assert_eq!(
-        json_view(first.observation(&terminal_first, PlayerRole::B)),
+        json_view(terminal_first.observation(PlayerRole::B)),
         json!({"B":1})
     );
-    assert!(first
-        .completion(&terminal_first)
+    assert!(terminal_first
+        .completion()
         .unwrap()
         .decode::<bool>()
         .unwrap());
     assert_eq!(
-        json_view(second.observation(&initial_second, PlayerRole::B)),
+        json_view(initial_second.observation(PlayerRole::B)),
         json!({"B":0})
     );
 
     assert_eq!(
-        first.transition_metadata(&initial_first, &terminal_first, &action, PlayerRole::A),
+        terminal_first.transition_metadata(),
         Some(json!({"sum": 1}))
     );
 
     let recorded = serde_json::to_value(&terminal_first).unwrap();
     assert_eq!(recorded["metadata"], json!({"sum": 1}));
-    let reloaded: ComponentState = serde_json::from_value(recorded).unwrap();
-    assert_eq!(
-        first.transition_metadata(&initial_first, &reloaded, &action, PlayerRole::A),
-        Some(json!({"sum": 1}))
-    );
+    let reloaded: GameFrame = serde_json::from_value(recorded).unwrap();
+    assert_eq!(reloaded.transition_metadata(), Some(json!({"sum": 1})));
 
     let terminal_second = second
         .step(&initial_second, &action, PlayerRole::B)
         .unwrap()
         .unwrap();
-    assert!(second
-        .completion(&terminal_second)
+    assert!(terminal_second
+        .completion()
         .unwrap()
         .decode::<bool>()
         .unwrap());
 
-    let recovered = factory.create(context()).unwrap();
+    let recovered = factory.session();
     let result = recovered
         .step(&terminal_first, &action, PlayerRole::A)
         .unwrap();
@@ -551,12 +490,8 @@ fn component_canonical_abi_supports_an_independent_guest() {
 fn one_host_runs_distinct_game_schemas() {
     let stress = component_factory();
     let path = std::env::var_os("PARLANDO_TEST_WAT_COMPONENT").unwrap();
-    let independent = ComponentGameFactory::load(Path::new(&path)).unwrap();
+    let independent = LoadedGame::load(Path::new(&path)).unwrap();
     assert_ne!(stress.schema(), independent.schema());
-    let context = || GameSessionContext {
-        logger: SessionLogger::testing(),
-    };
-    let secrets = SecretValues::default();
     for (factory, config, action, field) in [
         (&stress, payload(&json!({})), mark(1, true), "counts"),
         (
@@ -566,26 +501,20 @@ fn one_host_runs_distinct_game_schemas() {
             "A",
         ),
     ] {
-        let game = factory.create(context()).unwrap();
-        let initial = game
-            .initial_state(GameInitializationContext {
-                config: &config,
-                seed: 7,
-                secrets: &secrets,
-            })
-            .unwrap();
+        let game = factory.session();
+        let initial = game.init(&config, 7).unwrap();
         let state = game
             .step(&initial, &action, PlayerRole::A)
             .unwrap()
             .unwrap();
-        let observation = game.observation(&state, PlayerRole::A);
+        let observation = state.observation(PlayerRole::A);
         let public = serde_json::to_value(&observation).unwrap();
         assert!(public.get(field).is_some());
-        assert!(game.completion(&state).is_some());
-        let persisted: ComponentState =
+        assert!(state.completion().is_some());
+        let persisted: GameFrame =
             serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
         assert_eq!(
-            serde_json::to_value(game.observation(&persisted, PlayerRole::A)).unwrap(),
+            serde_json::to_value(persisted.observation(PlayerRole::A)).unwrap(),
             public
         );
     }
@@ -606,6 +535,32 @@ fn invalid_guest_declaration_fails_during_load() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("invalid-schema.wasm");
     std::fs::write(&path, bytes).unwrap();
-    let err = ComponentGameFactory::load(&path).err().unwrap();
+    let err = LoadedGame::load(&path).err().unwrap();
     assert!(format!("{err:#}").contains("schema"), "{err:#}");
+}
+
+/// Verifies that an SDK encoding trap discards the accepted mutation before replay.
+#[test]
+#[ignore = "requires the locally built SDK encoding-trap component"]
+fn sdk_encoding_trap_recovers_the_last_accepted_state() {
+    let path = std::env::var_os("PARLANDO_TEST_SDK_COMPONENT")
+        .expect("set PARLANDO_TEST_SDK_COMPONENT to the locally built SDK component");
+    let factory = LoadedGame::load(Path::new(&path)).unwrap();
+    let game = factory.session();
+    let initial = game.init(&payload(&()), 7).unwrap();
+    let increment = payload(&"increment");
+    let accepted = game
+        .step(&initial, &increment, PlayerRole::B)
+        .unwrap()
+        .unwrap();
+    assert_eq!(json_view(accepted.observation(PlayerRole::B)), 8);
+
+    let broken = payload(&"invalid_view");
+    assert!(game.step(&accepted, &broken, PlayerRole::A).is_err());
+
+    let recovered = game
+        .step(&accepted, &increment, PlayerRole::B)
+        .unwrap()
+        .unwrap();
+    assert_eq!(json_view(recovered.observation(PlayerRole::B)), 9);
 }

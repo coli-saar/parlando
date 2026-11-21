@@ -5,33 +5,41 @@ use parlando::{
         Agent, Context as AgentContext, Definition as AgentDefinition, Factory as AgentFactory,
         Identity as AgentIdentity, Response,
     },
+    component::{ComponentValue, GameFrame},
     PlayerRole, RewardFunction, RoleRewards,
 };
 use serde_json::Value;
 
-use crate::game::{CueChoiceAction, CueChoiceCompletion, CueChoiceGame, CueChoiceState};
+use crate::game::{CueChoiceAction, CueChoiceCompletion, CueChoiceObservation};
 
 /// Scripted player-B agent which submits `Deal` exactly once when offered.
 pub struct DealerAgent {
-    dealt: bool,
+    ready: bool,
 }
 
 #[async_trait]
-impl Agent<CueChoiceGame> for DealerAgent {
-    /// Selects the typed dealer action and otherwise declines to respond.
-    async fn respond(
+impl Agent for DealerAgent {
+    /// Reads the initial dealer view to determine whether a cue can be dealt.
+    async fn start(&mut self, observation: ComponentValue) -> Result<()> {
+        self.ready = matches!(observation.decode()?, CueChoiceObservation::ReadyToDeal);
+        Ok(())
+    }
+
+    /// Updates dealer readiness from the current dealer view.
+    async fn observe_transition(
         &mut self,
-        available_actions: Option<Vec<CueChoiceAction>>,
-    ) -> Result<Option<Response<CueChoiceAction>>> {
-        if self.dealt {
-            return Ok(None);
-        }
-        let deal = available_actions
-            .unwrap_or_default()
-            .into_iter()
-            .find(|action| matches!(action, CueChoiceAction::Deal));
-        self.dealt = deal.is_some();
-        Ok(deal.map(Response::action))
+        _actor: PlayerRole,
+        _action: ComponentValue,
+        observation: ComponentValue,
+    ) -> Result<()> {
+        self.start(observation).await
+    }
+
+    /// Submits a deal only during the game phase that allows it.
+    async fn respond(&mut self) -> Result<Option<Response>> {
+        self.ready
+            .then(|| ComponentValue::from_typed(&CueChoiceAction::Deal).map(Response::action))
+            .transpose()
     }
 }
 
@@ -39,7 +47,7 @@ impl Agent<CueChoiceGame> for DealerAgent {
 pub struct DealerAgentFactory;
 
 #[async_trait]
-impl AgentFactory<CueChoiceGame> for DealerAgentFactory {
+impl AgentFactory for DealerAgentFactory {
     /// Describes the settings-free dealer implementation.
     fn definition(&self) -> AgentDefinition {
         AgentDefinition {
@@ -51,12 +59,12 @@ impl AgentFactory<CueChoiceGame> for DealerAgentFactory {
     }
 
     /// Creates one session-local dealer and enforces its semantic role.
-    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<CueChoiceGame> + Send>> {
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         anyhow::ensure!(
             context.role == PlayerRole::B,
             "cue-choice dealer must occupy player B"
         );
-        Ok(Box::new(DealerAgent { dealt: false }))
+        Ok(Box::new(DealerAgent { ready: false }))
     }
 
     /// Returns stable implementation provenance independent of session state.
@@ -71,7 +79,7 @@ impl AgentFactory<CueChoiceGame> for DealerAgentFactory {
 /// Game-specific correctness reward selected by training YAML.
 pub struct CorrectnessReward;
 
-impl RewardFunction<CueChoiceGame> for CorrectnessReward {
+impl RewardFunction for CorrectnessReward {
     /// Returns the stable registry key used by experiment YAML.
     fn id(&self) -> &'static str {
         "cue_choice.correctness"
@@ -96,15 +104,18 @@ impl RewardFunction<CueChoiceGame> for CorrectnessReward {
     /// Rewards only the learner and only for its terminal choice.
     fn rewards(
         &self,
-        _before: &CueChoiceState,
-        _after: &CueChoiceState,
+        _before: &GameFrame,
+        _after: &GameFrame,
         actor: PlayerRole,
-        action: &CueChoiceAction,
-        completion: Option<&CueChoiceCompletion>,
+        _action: &ComponentValue,
+        completion: Option<&ComponentValue>,
     ) -> RoleRewards {
-        let player_a = match (actor, action, completion) {
-            (PlayerRole::A, CueChoiceAction::Choose { .. }, Some(result)) if result.correct => 1.0,
-            (PlayerRole::A, CueChoiceAction::Choose { .. }, Some(_)) => -1.0,
+        let player_a = match (
+            actor,
+            completion.and_then(|value| value.decode::<CueChoiceCompletion>().ok()),
+        ) {
+            (PlayerRole::A, Some(result)) if result.correct => 1.0,
+            (PlayerRole::A, Some(_)) => -1.0,
             _ => 0.0,
         };
         RoleRewards {

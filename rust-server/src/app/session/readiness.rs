@@ -55,9 +55,9 @@ pub(in crate::app) fn speechmatics_readiness_required(config: &ExperimentConfig)
 }
 
 /// Returns whether both player roles are connected and past required audio setup.
-pub(in crate::app) fn session_ready_for_game<A: Game>(
+pub(in crate::app) fn session_ready_for_game(
     config: &ExperimentConfig,
-    session: &LiveSession<A>,
+    session: &LiveSession,
 ) -> bool {
     let ready_roles = session
         .participants

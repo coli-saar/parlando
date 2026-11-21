@@ -11,7 +11,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::canonical_json::canonical_value;
-use crate::game::{AgentDefinition, Game, PlayerRole, SecretValues};
+use crate::component::ComponentValue;
+use crate::game::{AgentDefinition, PlayerRole, SecretValues};
 use crate::SessionLogger;
 
 /// Stable semantic identity recorded for participants created by an agent factory.
@@ -67,19 +68,22 @@ pub fn configuration_fingerprint(factory_id: &str, settings: &Value) -> Result<S
 ///
 /// Messages are communication between the two players and do not change game
 /// state. Actions pass through the same game-rule validation as human actions.
-#[derive(Clone, Debug, PartialEq)]
-pub enum AgentResponse<Action> {
+#[derive(Clone, Debug)]
+pub enum AgentResponse {
     /// Proposes one game action without sending a player message.
-    Action(Action),
+    Action(ComponentValue),
     /// Sends one player message without proposing a game action.
     Message(String),
     /// Proposes an action and sends a message after that action is accepted.
-    ActionAndMessage { action: Action, message: String },
+    ActionAndMessage {
+        action: ComponentValue,
+        message: String,
+    },
 }
 
-impl<Action> AgentResponse<Action> {
+impl AgentResponse {
     /// Creates an action-only response.
-    pub fn action(action: Action) -> Self {
+    pub fn action(action: ComponentValue) -> Self {
         Self::Action(action)
     }
 
@@ -89,7 +93,7 @@ impl<Action> AgentResponse<Action> {
     }
 
     /// Creates a response whose message is sent only after its action is accepted.
-    pub fn action_and_message(action: Action, message: impl Into<String>) -> Self {
+    pub fn action_and_message(action: ComponentValue, message: impl Into<String>) -> Self {
         Self::ActionAndMessage {
             action,
             message: message.into(),
@@ -97,7 +101,7 @@ impl<Action> AgentResponse<Action> {
     }
 
     /// Separates the response into the runtime's ordered action and message operations.
-    pub(crate) fn into_parts(self) -> (Option<Action>, Option<String>) {
+    pub(crate) fn into_parts(self) -> (Option<ComponentValue>, Option<String>) {
         match self {
             Self::Action(action) => (Some(action), None),
             Self::Message(message) => (None, Some(message)),
@@ -108,13 +112,13 @@ impl<Action> AgentResponse<Action> {
 
 /// Mutable agent instance controlling one player role in one game session.
 #[async_trait]
-pub trait Agent<G: Game>: Send {
+pub trait Agent: Send {
     /// Starts play by delivering the first complete observation for this role.
     ///
     /// The runtime calls this only after the factory has finished constructing
     /// the agent, so implementations may load models or establish remote resources
     /// before they receive game information.
-    async fn start(&mut self, _initial_observation: G::Observation) -> Result<()> {
+    async fn start(&mut self, _initial_observation: ComponentValue) -> Result<()> {
         Ok(())
     }
 
@@ -122,8 +126,8 @@ pub trait Agent<G: Game>: Send {
     async fn observe_transition(
         &mut self,
         _actor: PlayerRole,
-        _action: G::Action,
-        _observation: G::Observation,
+        _action: ComponentValue,
+        _observation: ComponentValue,
     ) -> Result<()> {
         Ok(())
     }
@@ -134,19 +138,15 @@ pub trait Agent<G: Game>: Send {
     }
 
     /// Receives the same shared terminal result delivered to both human players.
-    async fn finish(&mut self, _completion: G::Completion) -> Result<()> {
+    async fn finish(&mut self, _completion: ComponentValue) -> Result<()> {
         Ok(())
     }
 
-    /// Optionally produces one non-empty action, message, or combined response.
+    /// Optionally produces one action, message, or combined response.
     ///
-    /// `available_actions` is an optional affordance rather than an authorization
-    /// guarantee. Every returned action is checked by the game before it changes
-    /// state. `None` means that the agent chooses not to respond now.
-    async fn respond(
-        &mut self,
-        available_actions: Option<Vec<G::Action>>,
-    ) -> Result<Option<AgentResponse<G::Action>>>;
+    /// Use the latest observation to decide whether to act. Every action is
+    /// checked by the game before it changes state.
+    async fn respond(&mut self) -> Result<Option<AgentResponse>>;
 
     /// Releases remote or per-session resources before the runtime drops the agent.
     async fn shutdown(&mut self) -> Result<()> {
@@ -156,19 +156,19 @@ pub trait Agent<G: Game>: Send {
 
 /// Registers one compiled agent implementation and creates its session instances.
 #[async_trait]
-pub trait AgentFactory<G: Game>: Send + Sync + 'static {
+pub trait AgentFactory: Send + Sync + 'static {
     /// Returns the stable dashboard definition for this factory.
     fn definition(&self) -> AgentDefinition;
 
     /// Instantiates one mutable agent before game-state delivery begins.
-    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<G> + Send>>;
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>>;
 
     /// Returns the required semantic identity stored for participants created by this factory.
     fn identity(&self, settings: &Value) -> Result<AgentIdentity>;
 }
 
 /// Internal shared ownership used by experiment runtimes.
-pub(crate) type SharedAgentFactory<G> = Arc<dyn AgentFactory<G>>;
+pub(crate) type SharedAgentFactory = Arc<dyn AgentFactory>;
 
 #[cfg(test)]
 mod tests {
@@ -178,15 +178,16 @@ mod tests {
     /// Confirms every response variant represents at least one runtime operation.
     #[test]
     fn response_variants_have_no_empty_state() {
-        assert_eq!(AgentResponse::action(3).into_parts(), (Some(3), None));
-        assert_eq!(
-            AgentResponse::<u8>::message("hello").into_parts(),
-            (None, Some("hello".to_string()))
-        );
-        assert_eq!(
-            AgentResponse::action_and_message(4, "moving").into_parts(),
-            (Some(4), Some("moving".to_string()))
-        );
+        let action = serde_json::from_value::<super::ComponentValue>(json!(3)).unwrap();
+        let (selected, message) = AgentResponse::action(action.clone()).into_parts();
+        assert_eq!(selected.unwrap().decode::<u8>().unwrap(), 3);
+        assert!(message.is_none());
+        let (selected, message) = AgentResponse::message("hello").into_parts();
+        assert!(selected.is_none());
+        assert_eq!(message.as_deref(), Some("hello"));
+        let (selected, message) = AgentResponse::action_and_message(action, "moving").into_parts();
+        assert_eq!(selected.unwrap().decode::<u8>().unwrap(), 3);
+        assert_eq!(message.as_deref(), Some("moving"));
     }
 
     /// Canonical object ordering is stable while semantic changes remain distinct.

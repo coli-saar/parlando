@@ -12,7 +12,7 @@ use super::{
     session_accepts_audio, session_is_active, touch_transport_activity, validate_websocket_origin,
     voice_message, websocket_path, AppError, AppState, Arc, AudioFrame, AudioOutbound,
     AudioSessionPlanResponse, AudioSessionRequest, ConnectionLiveness, Deserialize, Duration,
-    Extension, FuturesStreamExt, Game, HeaderMap, Instant, Json, Message, Mutex, OnceLock,
+    Extension, FuturesStreamExt, HeaderMap, Instant, Json, Message, Mutex, OnceLock,
     ParticipantPrincipal, Path, Query, Response, Result, SinkExt, State, TranscriptionEvent,
     TranscriptionInput, TranscriptionSessionContext, UpgradePurpose, UpgradeTicketClaims,
     WebSocket, WebSocketUpgrade, AUDIO_CHANNELS, AUDIO_FRAME_DURATION_MS, AUDIO_PROTOCOL_VERSION,
@@ -20,8 +20,8 @@ use super::{
 };
 
 /// Issues the participant's audio connection plan for this session.
-pub(super) async fn audio_session<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(super) async fn audio_session(
+    State(state): State<Arc<AppState>>,
     Path(public_session_id): Path<String>,
     principal: Option<Extension<ParticipantPrincipal>>,
     Json(_request): Json<AudioSessionRequest>,
@@ -64,8 +64,8 @@ pub(super) struct AudioSocketQuery {
 }
 
 /// Authenticates and upgrades one participant-owned audio transport.
-pub(super) async fn audio_socket<A: Game>(
-    State(state): State<Arc<AppState<A>>>,
+pub(super) async fn audio_socket(
+    State(state): State<Arc<AppState>>,
     Path(public_session_id): Path<String>,
     Query(query): Query<AudioSocketQuery>,
     headers: HeaderMap,
@@ -104,8 +104,8 @@ pub(super) async fn audio_socket<A: Game>(
 }
 
 /// Relays browser PCM and consumes normalized server-side transcription events.
-async fn audio_websocket_loop<A: Game>(
-    state: Arc<AppState<A>>,
+async fn audio_websocket_loop(
+    state: Arc<AppState>,
     socket: WebSocket,
     claims: UpgradeTicketClaims,
 ) {
