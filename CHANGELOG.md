@@ -6,6 +6,18 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## Unreleased
 
+### Changed
+
+- Component games use the v4 WIT world. The host reads the guest's schema once
+  at load time. Configuration, actions, observations, completion and metadata
+  cross the game boundary as MessagePack values. Build guests with the v4
+  bindings and retain matching host and guest builds for historical replay. Local Rust policies
+  receive `ComponentValue` handles and training batches carry game types.
+  Participant messages and stored experiment, trace and replay formats retain
+  their existing fields.
+- Configure Rust `RewardFunction` implementations once per run via `configure`.
+  Accepted turns use the configured reward without passing YAML parameters again.
+
 ## [0.6.0] - 2026-11-20
 
 ### Added

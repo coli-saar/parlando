@@ -96,6 +96,8 @@ pub(in crate::app) async fn admin_session_replay<A: Game>(
                 format!("Could not construct the game for replay: {error}"),
             )
         })?;
+    game.validate_replay_state(&game_state)
+        .map_err(|error| AppError::new(StatusCode::CONFLICT, error.to_string()))?;
     let mut conversation = Vec::<Value>::new();
     let mut role_a = vec![replay_frame(
         &game,
@@ -194,17 +196,50 @@ pub(in crate::app) async fn admin_session_replay<A: Game>(
                 ),
             )
         })?;
-        game_state = game
-            .apply_action(&game_state, &action, actor)
-            .map_err(|rejection| {
+        game_state = if event.payload["recovery_checkpoint"] == true {
+            let checkpoint = event.game_state.as_ref().ok_or_else(|| {
                 AppError::new(
                     StatusCode::CONFLICT,
                     format!(
-                        "Accepted action #{} no longer reconstructs: {}",
-                        event.event_index, rejection.code
+                        "Missing recovery checkpoint at action #{}",
+                        event.event_index
                     ),
                 )
             })?;
+            let restored: A::State =
+                serde_json::from_value(checkpoint.clone()).map_err(|error| {
+                    AppError::new(
+                        StatusCode::CONFLICT,
+                        format!(
+                            "Invalid checkpoint at action #{}: {error}",
+                            event.event_index
+                        ),
+                    )
+                })?;
+            game.validate_replay_state(&restored)
+                .map_err(|error| AppError::new(StatusCode::CONFLICT, error.to_string()))?;
+            restored
+        } else {
+            game.step(&game_state, &action, actor)
+                .map_err(|error| {
+                    AppError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!(
+                            "Game failed while reconstructing action #{}: {error}",
+                            event.event_index
+                        ),
+                    )
+                })?
+                .map_err(|rejection| {
+                    AppError::new(
+                        StatusCode::CONFLICT,
+                        format!(
+                            "Accepted action #{} no longer reconstructs: {}",
+                            event.event_index, rejection.code
+                        ),
+                    )
+                })?
+        };
         let transition = Some(json!({"actor": actor.as_str(), "action": action_value}));
         role_a.push(replay_frame(
             &game,

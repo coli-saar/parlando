@@ -218,6 +218,18 @@ pub async fn build_router<A: Game, GF: GameFactory<Game = A>>(
 ) -> Result<Router>
 where
 {
+    Ok(build_standalone_router(game_factory, config, options)
+        .await?
+        .primary)
+}
+
+/// Builds the single-experiment runtime before exposing its participant routes.
+#[cfg(any(test, feature = "internal-tools"))]
+async fn build_standalone_router<A: Game, GF: GameFactory<Game = A>>(
+    game_factory: GF,
+    config: ExperimentConfig,
+    options: ServeOptions<A>,
+) -> Result<BuiltRouters<A>> {
     let descriptor = options
         .game_descriptor
         .clone()
@@ -235,15 +247,24 @@ where
         Weak::new(),
     )
     .await?;
-    Ok(build_experiment_router(
+    build_experiment_router(
         installation,
         config,
         options,
         false,
         MountIdentity::default(),
     )
-    .await?
-    .primary)
+    .await
+}
+
+/// Gives transition tests access to the live coordinator and its real backing store.
+#[cfg(test)]
+pub(super) async fn build_router_with_state<A: Game, GF: GameFactory<Game = A>>(
+    game_factory: GF,
+    config: ExperimentConfig,
+) -> Result<(Router, Arc<AppState<A>>)> {
+    let built = build_standalone_router(game_factory, config, ServeOptions::default()).await?;
+    Ok((built.primary, built.state))
 }
 
 /// Opens installation services shared by the catalogue and all experiment revisions.

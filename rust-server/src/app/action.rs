@@ -6,18 +6,21 @@
 //! installation and publication. A failed commit or an already-ended room leaves the
 //! proposed move unpublished.
 
+use crate::storage::{SessionEventRecord, SqliteExperimentStore, TransitionCommitUnknown};
+
 use super::{
     anyhow, broadcast_participant_states, expire_if_due_locked, json, mpsc, prolific_handoff,
     protocol_json, reserve_agent_delivery, session_event_record, session_ready_for_game,
-    session_transition_lock, shutdown_session_log, speechmatics_readiness_required,
-    touch_session_activity, AgentObservation, AgentsMode, AppState, Arc, ExperimentConfig, Game,
-    HashMap, LiveSession, ParticipantOutcomeKind, ParticipantResult, PlayerRole, Result,
-    ServerMessage, SessionEnd, SessionEndCause, SubmissionRejection, TransitionCommit, Value,
+    shutdown_session_log, speechmatics_readiness_required, touch_session_activity,
+    AgentObservation, AgentsMode, AppState, Arc, ExperimentConfig, Game, HashMap, LiveSession,
+    ParticipantOutcomeKind, ParticipantResult, PlayerRole, Result, ServerMessage, SessionEnd,
+    SessionEndCause, SubmissionRejection, TransitionCommit, Value,
 };
 
 /// All effects derived from a single call to the game transition before the database write.
 struct PreparedAction<G: Game> {
     after: G::State,
+    checkpoint: Option<Value>,
     end: Option<SessionEnd>,
     event: Value,
     participants: Vec<ServerMessage>,
@@ -45,7 +48,8 @@ fn prepare_action<G: Game>(
         };
         return Err(anyhow!(SubmissionRejection(reason)));
     }
-    let after = session.game.apply_action(session.state(), &action, actor)?;
+    let after = session.game.step(session.state(), &action, actor)??;
+    let checkpoint = session.game.turn_checkpoint(&after)?;
     let completion = session.game.completion(&after);
     let mut end = completion
         .as_ref()
@@ -103,6 +107,7 @@ fn prepare_action<G: Game>(
     }
     Ok(PreparedAction {
         after,
+        checkpoint,
         end,
         event,
         participants,
@@ -122,17 +127,69 @@ pub(super) async fn submit_action<A: Game>(
     role: PlayerRole,
     action: A::Action,
 ) -> Result<()> {
-    let Some(transition_lock) = session_transition_lock(&state, public_session_id).await else {
-        return Err(anyhow!(SubmissionRejection("session_complete")));
+    let (transition_lock, pending_sender) = {
+        let memory = state.memory.read().await;
+        let session = memory
+            .sessions
+            .get(public_session_id)
+            .ok_or_else(|| anyhow!(SubmissionRejection("session_complete")))?;
+        (
+            session.transition_lock.clone(),
+            session.action_commit_pending.clone(),
+        )
     };
-    let _transition_guard = transition_lock.lock().await;
+    let mut pending = pending_sender.subscribe();
+    let transition_guard = tokio::select! {
+        biased;
+        Ok(_) = pending.wait_for(|pending| *pending) => {
+            return Err(anyhow!("Action commit is awaiting storage confirmation."));
+        }
+        guard = transition_lock.lock_owned() => guard,
+    };
+    let public_session_id = public_session_id.to_owned();
+    let participant_session_id = participant_session_id.to_owned();
+    // The submitting connection may disappear while the database is committing.
+    // Keep ownership of the room lock and publication in a task that survives it.
+    let task = tokio::spawn(async move {
+        let _transition_guard = transition_guard;
+        let result = commit_action(
+            state,
+            &public_session_id,
+            &participant_session_id,
+            role,
+            action,
+            &pending_sender,
+        )
+        .await;
+        pending_sender.send_replace(false);
+        result
+    });
+    tokio::select! {
+        biased;
+        result = task => result?,
+        Ok(_) = pending.wait_for(|pending| *pending) => {
+            Err(anyhow!("Action commit is awaiting storage confirmation."))
+        }
+    }
+}
+
+/// Owns one room transition from validation through durable publication.
+async fn commit_action<A: Game>(
+    state: Arc<AppState<A>>,
+    public_session_id: &str,
+    participant_session_id: &str,
+    role: PlayerRole,
+    action: A::Action,
+    pending: &tokio::sync::watch::Sender<bool>,
+) -> Result<()> {
     if expire_if_due_locked(&state, public_session_id).await? {
         return Err(anyhow!(SubmissionRejection("session_complete")));
     }
     let PreparedAction {
         after,
+        checkpoint,
         end: session_end,
-        event: accepted_payload,
+        event: mut accepted_payload,
         participants: browser_messages,
         agent,
     } = {
@@ -151,6 +208,11 @@ pub(super) async fn submit_action<A: Game>(
         )),
         None => None,
     };
+    let turn_id = uuid::Uuid::new_v4().to_string();
+    accepted_payload["turn_id"] = json!(turn_id);
+    if checkpoint.is_some() {
+        accepted_payload["recovery_checkpoint"] = json!(true);
+    }
     let mut durable_events = vec![
         session_event_record(
             &state,
@@ -158,7 +220,7 @@ pub(super) async fn submit_action<A: Game>(
             Some(participant_session_id),
             "game_action_accepted",
             accepted_payload,
-            None,
+            checkpoint,
         )
         .await?,
     ];
@@ -175,12 +237,14 @@ pub(super) async fn submit_action<A: Game>(
             .await?,
         );
     }
-    match state
-        .context
-        .installation
-        .store
-        .commit_session_transition(durable_events, session_end.clone())
-        .await
+    match persist_prepared_action(
+        &state.context.installation.store,
+        &durable_events,
+        session_end.as_ref(),
+        &turn_id,
+        pending,
+    )
+    .await
     {
         Ok(TransitionCommit::Committed) => {}
         Ok(TransitionCommit::AlreadyEnded) => {
@@ -234,4 +298,57 @@ pub(super) async fn submit_action<A: Game>(
         shutdown_session_log(&state, public_session_id).await;
     }
     Ok(())
+}
+
+/// Retries identical records and resolves an uncertain COMMIT while the room is locked.
+///
+/// Until SQLite can prove the outcome, the room cannot advance or run another guest
+/// action against an unconfirmed checkpoint. A proven rollback leaves the original
+/// checkpoint in the room, so the next step can restore from it.
+async fn persist_prepared_action(
+    store: &SqliteExperimentStore,
+    events: &[SessionEventRecord],
+    end: Option<&SessionEnd>,
+    turn_id: &str,
+    pending: &tokio::sync::watch::Sender<bool>,
+) -> Result<TransitionCommit> {
+    let first = &events[0];
+    let mut retries_remaining = 2;
+    loop {
+        match store
+            .commit_session_transition(events.to_vec(), end.cloned())
+            .await
+        {
+            Ok(outcome) => return Ok(outcome),
+            Err(error) => {
+                if error.is::<TransitionCommitUnknown>() {
+                    tracing::warn!(%error, turn_id, "checking uncertain game transition commit");
+                    loop {
+                        match store
+                            .session_transition_committed(
+                                &first.experiment_id,
+                                first.session_id,
+                                turn_id,
+                            )
+                            .await
+                        {
+                            Ok(true) => return Ok(TransitionCommit::Committed),
+                            Ok(false) => break,
+                            Err(error) => {
+                                if !pending.send_replace(true) {
+                                    tracing::warn!(%error, turn_id, "game transition commit remains unconfirmed");
+                                }
+                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            }
+                        }
+                    }
+                }
+                if retries_remaining == 0 {
+                    return Err(error);
+                }
+                retries_remaining -= 1;
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+    }
 }

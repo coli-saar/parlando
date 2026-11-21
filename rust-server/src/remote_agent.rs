@@ -261,7 +261,7 @@ impl<G: Game> RLAgent<G> for RemoteAgent {
         &mut self,
         context: &RLTrainingContext,
         base: &CheckpointId,
-        batch: TrainingBatch,
+        batch: TrainingBatch<G::Observation, G::Action>,
     ) -> Result<CheckpointId> {
         let config = remote_config_from_settings(&context.settings)?;
         validate_remote_endpoint(&config.endpoint, config.auth_token.is_some())?;
@@ -647,7 +647,9 @@ fn prost_to_json(value: ProstValue) -> Value {
 }
 
 /// Converts one public trajectory step into the remote learner protocol.
-fn trajectory_to_proto(step: TrajectoryStep) -> Result<learner_pb::TrajectoryStep> {
+fn trajectory_to_proto<O: Serialize, A: Serialize>(
+    step: TrajectoryStep<O, A>,
+) -> Result<learner_pb::TrajectoryStep> {
     Ok(learner_pb::TrajectoryStep {
         run_id: step.run_id,
         plan_id: step.plan_id,
@@ -658,9 +660,11 @@ fn trajectory_to_proto(step: TrajectoryStep) -> Result<learner_pb::TrajectorySte
         checkpoint_id: step.checkpoint.as_str().to_string(),
         reward: step.reward,
         reward_version: step.reward_version,
-        observation: Some(json_to_prost(step.observation)?),
-        available_actions: Some(json_to_prost(step.available_actions)?),
-        action: Some(json_to_prost(step.action)?),
+        observation: Some(json_to_prost(serde_json::to_value(step.observation)?)?),
+        available_actions: Some(json_to_prost(serde_json::to_value(
+            step.available_actions,
+        )?)?),
+        action: Some(json_to_prost(serde_json::to_value(step.action)?)?),
         accepted: step.accepted,
         rejection: step
             .rejection
@@ -670,7 +674,7 @@ fn trajectory_to_proto(step: TrajectoryStep) -> Result<learner_pb::TrajectorySte
             player_a: value.player_a,
             player_b: value.player_b,
         }),
-        next_observation: Some(json_to_prost(step.next_observation)?),
+        next_observation: Some(json_to_prost(serde_json::to_value(step.next_observation)?)?),
         terminal: step.terminal,
     })
 }

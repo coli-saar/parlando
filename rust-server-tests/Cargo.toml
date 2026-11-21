@@ -5,7 +5,8 @@ edition = "2021"
 publish = false
 
 [features]
-stress-tui = ["parlando/stress-tui", "dep:ratatui"]
+stress-tui = ["parlando/stress-tui", "dep:ratatui", "dep:parlando-stress-fixture", "dep:mach2"]
+stress-wasm = ["stress-tui", "parlando/component-games"]
 
 [dependencies]
 anyhow = "1"
@@ -16,6 +17,7 @@ base64 = "0.22"
 chrono = "0.4"
 libc = "0.2"
 parlando = { path = "../rust-server", features = ["internal-tools"] }
+parlando-stress-fixture = { path = "stress-fixture", optional = true }
 clap = { version = "4", features = ["derive"] }
 jsonwebtoken = "9"
 prost-types = "0.13"
@@ -33,6 +35,9 @@ tokio-stream = { version = "0.1", features = ["net", "sync"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 tonic = { version = "0.13.1", features = ["transport", "tls-native-roots", "tls-ring"] }
 ratatui = { version = "0.30.2", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mach2 = { version = "0.4", optional = true }
 
 [[bin]]
 name = "runtime-stress"

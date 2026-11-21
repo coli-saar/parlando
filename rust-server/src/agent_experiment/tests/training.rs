@@ -27,7 +27,7 @@ impl AgentFactory<TinyGame> for TinyCheckpointFactory {
         }
     }
 
-    /// Creates the same deterministic action policy for each mock checkpoint.
+    /// Creates a policy that tries a rejected action before the completing action.
     async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<TinyGame> + Send>> {
         self.events.lock().unwrap().push(format!(
             "create-rl:{}:{}",
@@ -36,7 +36,11 @@ impl AgentFactory<TinyGame> for TinyCheckpointFactory {
         ));
         Ok(Box::new(TinyAgent {
             role: context.role,
-            acted: false,
+            increments: if context.role == PlayerRole::A {
+                VecDeque::from([0, 1])
+            } else {
+                VecDeque::new()
+            },
             events: self.events.clone(),
         }))
     }
@@ -85,24 +89,43 @@ impl RLAgent<TinyGame> for TinyLearner {
         &mut self,
         context: &RLTrainingContext,
         base: &CheckpointId,
-        batch: TrainingBatch,
+        batch: TrainingBatch<TinyObservation, TinyAction>,
     ) -> Result<CheckpointId> {
         anyhow::ensure!(
             context.settings["mode"] == "configured",
             "runner did not deliver normalized learner settings"
         );
+        for pair in batch.steps.chunks_exact(2) {
+            let [rejected, accepted] = pair else {
+                unreachable!("each training plan records exactly two steps");
+            };
+            assert!(!rejected.accepted);
+            assert_eq!(rejected.action.amount, 0);
+            assert!(accepted.accepted);
+            assert_eq!(accepted.action.amount, 1);
+            assert_eq!(accepted.rewards.unwrap().player_a, 2.5);
+            assert_eq!(accepted.observation.count, 0);
+            assert_eq!(accepted.next_observation.count, 1);
+            let actions = accepted.available_actions.as_deref().unwrap();
+            assert_eq!(actions.len(), 1);
+            assert_eq!(actions[0].amount, 1);
+        }
         let mut updates = self.updates.lock().unwrap();
         updates.push((
             batch.update_id,
             base.as_str().to_string(),
             batch.steps.len(),
         ));
-        CheckpointId::new(format!("checkpoint-{}", updates.len()))
+        CheckpointId::new(format!("checkpoint-{}", batch.completed_epochs))
     }
 }
 
 /// Dense test reward equal to the accepted counter increment for both roles.
-struct TinyReward;
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TinyReward {
+    multiplier: f64,
+}
 
 impl RewardFunction<TinyGame> for TinyReward {
     /// Returns the YAML registry key.
@@ -115,9 +138,9 @@ impl RewardFunction<TinyGame> for TinyReward {
         "1"
     }
 
-    /// Accepts no reward parameters.
-    fn validate_parameters(&self, parameters: &Value) -> Result<()> {
-        require_empty_parameters(parameters)
+    /// Reads the configured counter multiplier before planning the run.
+    fn configure(&self, parameters: &Value) -> Result<Self> {
+        Ok(serde_json::from_value(parameters.clone())?)
     }
 
     /// Rewards the public counter change symmetrically.
@@ -128,9 +151,8 @@ impl RewardFunction<TinyGame> for TinyReward {
         _actor: PlayerRole,
         _action: &TinyAction,
         _completion: Option<&TinyCompletion>,
-        _parameters: &Value,
     ) -> RoleRewards {
-        let reward = f64::from(after.count.saturating_sub(before.count));
+        let reward = f64::from(after.count.saturating_sub(before.count)) * self.multiplier;
         RoleRewards {
             player_a: reward,
             player_b: reward,
@@ -165,6 +187,7 @@ training:
   checkpoint_every_epochs: 1
   reward:
     kind: count_delta
+    parameters: {{ multiplier: 2.5 }}
 validation:
   scenarios:
     - name: held-out
@@ -187,6 +210,7 @@ limits:
   rejected_actions: 2
 output:
   directory: '{}'
+  trace: full
 "#,
         output.display()
     )
@@ -200,8 +224,27 @@ fn training_runner(
     test_runner(events.clone())
         .rl_agent(TinyLearner { events, updates })
         .unwrap()
-        .reward(TinyReward)
+        .reward(TinyReward { multiplier: 1.0 })
         .unwrap()
+}
+
+/// Rejects invalid reward parameters before opening artifacts or starting sessions.
+#[tokio::test]
+async fn reward_configuration_is_validated_before_planning() {
+    let temporary = TempDir::new().unwrap();
+    let output = temporary.path().join("training-output");
+    let yaml_path = temporary.path().join("training.yaml");
+    let yaml = training_yaml(&output).replace("multiplier: 2.5", "multiplier: incorrect");
+    tokio::fs::write(&yaml_path, yaml).await.unwrap();
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let result = training_runner(events.clone(), Arc::new(Mutex::new(Vec::new())))
+        .run_yaml(&yaml_path)
+        .await;
+    let error = result.err().expect("invalid reward parameters");
+    assert!(format!("{error:#}").contains("invalid parameters for reward \"count_delta\""));
+    assert!(!output.exists());
+    assert!(events.lock().unwrap().is_empty());
 }
 
 /// Exercises training, opaque checkpoints, validation cadence, trajectories, and resume.
@@ -229,7 +272,7 @@ async fn training_updates_and_validates_without_repeating_updates_on_resume() {
             .iter()
             .map(|(_, base, steps)| (base.as_str(), *steps))
             .collect::<Vec<_>>(),
-        [("initial", 1), ("checkpoint-1", 1)]
+        [("initial", 2), ("checkpoint-1", 2)]
     );
 
     let training_result = std::fs::read_dir(output.join("results"))
@@ -239,9 +282,42 @@ async fn training_updates_and_validates_without_repeating_updates_on_resume() {
         .map(|bytes| serde_json::from_slice::<Value>(&bytes).unwrap())
         .find(|value| value["phase"] == "training")
         .unwrap();
-    assert_eq!(training_result["trajectory"][0]["rewards"]["player_a"], 1.0);
-    assert_eq!(training_result["trajectory"][0]["accepted"], true);
-    assert_eq!(training_result["trajectory"][0]["observation"]["role"], "A");
+    let rejected = &training_result["trajectory"][0];
+    assert_eq!(rejected["accepted"], false);
+    assert_eq!(rejected["rejection"]["code"], "zero_increment");
+    assert_eq!(rejected["next_observation"], rejected["observation"]);
+    assert!(rejected["rewards"].is_null());
+    assert_eq!(rejected["terminal"], false);
+
+    let accepted = &training_result["trajectory"][1];
+    assert_eq!(accepted["rewards"]["player_a"], 2.5);
+    assert_eq!(accepted["accepted"], true);
+    assert_eq!(accepted["terminal"], true);
+    assert_eq!(accepted["observation"], json!({"count": 0, "role": "A"}));
+    assert_eq!(accepted["available_actions"], json!([{"amount": 1}]));
+    assert_eq!(
+        accepted["next_observation"],
+        json!({"count": 1, "role": "A"})
+    );
+    let trace = training_result["trace"].as_array().unwrap();
+    for step in [rejected, accepted] {
+        let row = trace
+            .iter()
+            .find(|row| row["decision"] == step["decision"])
+            .unwrap();
+        assert_eq!(
+            row["input"],
+            json!({
+                "observation": step["observation"],
+                "available_actions": step["available_actions"],
+            })
+        );
+        assert_eq!(
+            row["response"],
+            json!({"type": "action", "action": step["action"]})
+        );
+        assert_eq!(row.get("rejection"), Some(&step["rejection"]));
+    }
 
     let resumed_updates = Arc::new(Mutex::new(Vec::new()));
     let second = training_runner(Arc::new(Mutex::new(Vec::new())), resumed_updates.clone())
@@ -251,6 +327,20 @@ async fn training_updates_and_validates_without_repeating_updates_on_resume() {
     assert_eq!(second.run_id, first.run_id);
     assert_eq!(second.skipped, 4);
     assert!(resumed_updates.lock().unwrap().is_empty());
+
+    // Keep finalized game results but simulate a crash before persisting the last
+    // training update. The learner should receive the original typed steps again.
+    std::fs::remove_file(output.join("checkpoints/00000002.json")).unwrap();
+    let recovered = training_runner(Arc::new(Mutex::new(Vec::new())), resumed_updates.clone())
+        .run_yaml(&yaml_path)
+        .await
+        .unwrap();
+    assert_eq!(recovered.skipped, 4);
+    assert_eq!(recovered.checkpoints, 2);
+    assert_eq!(
+        resumed_updates.lock().unwrap()[..],
+        [updates.lock().unwrap()[1].clone()]
+    );
 }
 
 /// Checkpoint identities reject empty semantic values and preserve opaque content.

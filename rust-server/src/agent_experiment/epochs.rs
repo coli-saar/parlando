@@ -8,11 +8,12 @@
 use super::artifacts::RunArtifacts;
 use super::execution::ExecutionCounts;
 use super::spec::{ExperimentFile, TrainingSpec};
-use super::training::{RLTrainingContext, TrainingBatch, TrainingCapture};
+use super::training::{RLTrainingContext, RewardFunction, TrainingBatch, TrainingCapture};
 use super::ExperimentRunner;
 use crate::game::Game;
 use anyhow::{bail, Result};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 impl<G: Game> ExperimentRunner<G> {
     /// Accumulates learner steps until a checkpoint boundary, then trains or restores
@@ -22,6 +23,7 @@ impl<G: Game> ExperimentRunner<G> {
         &mut self,
         spec: &ExperimentFile,
         training: &TrainingSpec,
+        reward: Arc<dyn RewardFunction<G>>,
         artifacts: &RunArtifacts,
         totals: &mut ExecutionCounts,
     ) -> Result<u64> {
@@ -50,11 +52,6 @@ impl<G: Game> ExperimentRunner<G> {
             settings: learner_settings,
             factory_secrets: learner_factory_secrets,
         };
-        let reward = self
-            .reward_functions
-            .get(&training.reward.kind)
-            .expect("validated reward")
-            .clone();
         let mut pending_steps = Vec::new();
 
         for epoch in 1..=training.epochs {
@@ -65,7 +62,6 @@ impl<G: Game> ExperimentRunner<G> {
                 reward: reward.clone(),
                 reward_kind: training.reward.kind.clone(),
                 reward_version: reward.version().to_string(),
-                parameters: training.reward.parameters.clone(),
             };
             let plans = self.plan_set(
                 spec,

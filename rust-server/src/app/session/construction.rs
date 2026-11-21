@@ -245,6 +245,7 @@ pub(in crate::app) async fn create_live_session_locked<A: Game>(
             log_writer: Some(log_writer),
             agent_inbox: None,
             transition_lock: Arc::new(Mutex::new(())),
+            action_commit_pending: tokio::sync::watch::channel(false).0,
             lifecycle: SessionLifecycle::Forming,
             pause: None,
             participants,

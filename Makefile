@@ -4,6 +4,8 @@ PARLANDO_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
 RUST_SERVER_DIR := $(PARLANDO_DIR)/rust-server
 RUST_SERVER_TESTS_DIR := $(PARLANDO_DIR)/rust-server-tests
+COMPONENT_TEST_DIR := $(PARLANDO_DIR)/target/component-tests
+STRESS_FIXTURE_DIR := $(RUST_SERVER_TESTS_DIR)/stress-fixture
 CLIENT_SERVER_TESTS_DIR := $(PARLANDO_DIR)/client-server-tests
 JS_CLIENT_DIR := $(PARLANDO_DIR)/js-client
 PYTHON_AGENT_SDK_DIR := $(PARLANDO_DIR)/parlando-agent-sdk
@@ -12,7 +14,7 @@ PYTHON_TEST := $(PYTHON_TEST_VENV)/bin/python
 NPM_CACHE ?= $(PARLANDO_DIR)/.local/npm-cache
 PYTHON ?= python3
 
-.PHONY: all test test-rust test-js-client test-client-server test-browser-e2e test-prolific-e2e test-e2e test-e2e-logging test-python install-local install-js-client package-local package-rust-server-local package-js-client-local publish-dry-run publish-rust-server-dry-run publish-js-client-dry-run publish-rust-server publish-js-client
+.PHONY: all test test-rust test-components test-js-client test-client-server test-browser-e2e test-prolific-e2e test-e2e test-e2e-logging test-python install-local install-js-client package-local package-rust-server-local package-js-client-local publish-dry-run publish-rust-server-dry-run publish-js-client-dry-run publish-rust-server publish-js-client
 
 # Default workflow: prepare the reusable JavaScript client for local development.
 all: install-local
@@ -31,6 +33,25 @@ test: test-rust test-client-server test-python
 test-rust:
 	cd "$(RUST_SERVER_DIR)" && cargo test --all-features
 	cd "$(RUST_SERVER_TESTS_DIR)" && cargo test
+
+# Builds two independent guest implementations and runs the component compatibility suite.
+test-components:
+	cargo test --locked --manifest-path "$(STRESS_FIXTURE_DIR)/Cargo.toml"
+	cargo test --locked --manifest-path "$(PARLANDO_DIR)/parlando-component-sdk/Cargo.toml"
+	mkdir -p "$(COMPONENT_TEST_DIR)"
+	cargo build --locked --release --manifest-path "$(STRESS_FIXTURE_DIR)/Cargo.toml" \
+	  --target wasm32-unknown-unknown --target-dir "$(COMPONENT_TEST_DIR)/cargo" --features test-traps
+	wasm-tools component new "$(COMPONENT_TEST_DIR)/cargo/wasm32-unknown-unknown/release/parlando_stress_fixture.wasm" \
+	  -o "$(COMPONENT_TEST_DIR)/stress.wasm"
+	wasm-tools component embed --world game "$(RUST_SERVER_DIR)/wit" "$(STRESS_FIXTURE_DIR)/independent.wat" \
+	  -o "$(COMPONENT_TEST_DIR)/independent-core.wasm"
+	wasm-tools component new "$(COMPONENT_TEST_DIR)/independent-core.wasm" -o "$(COMPONENT_TEST_DIR)/independent.wasm"
+	cargo test --locked --manifest-path "$(RUST_SERVER_DIR)/Cargo.toml" \
+	  --features component-games --lib --bin parlando-component
+	PARLANDO_TEST_COMPONENT="$(COMPONENT_TEST_DIR)/stress.wasm" \
+	  PARLANDO_TEST_WAT_COMPONENT="$(COMPONENT_TEST_DIR)/independent.wasm" \
+	  cargo test --locked --manifest-path "$(RUST_SERVER_TESTS_DIR)/Cargo.toml" \
+	  --features stress-wasm --bin runtime-stress -- --include-ignored
 
 # Runs participant and dashboard tests, type compilation, and the coverage regression gate.
 test-js-client:

@@ -10,6 +10,14 @@ example, `0.4.2` becomes `0.4.3`. Use another version only when the maintainer e
 it. Do not intentionally publish only one package except when recovering from a partial release in
 which the other package is already present on its registry.
 
+The optional `component-games` feature depends on the Rust crate
+`parlando-component-sdk`. Cargo uses its sibling directory during workspace
+development. For a registry release, the SDK version required by
+`rust-server/Cargo.toml` must already exist on crates.io. If that version is
+new, its matching `parlando-component-derive` dependency must be published first.
+Include each new crate in the maintainer’s explicit release authorization
+before packaging the coordinated pair.
+
 This document is the canonical release procedure. `docs/publishing-packages.md` explains package
 consumption and individual publishing commands, while this page defines the coordinated release.
 

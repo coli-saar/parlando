@@ -7,9 +7,10 @@
 
 use super::results::{SessionResult, SessionStatus};
 use super::spec::EXPERIMENT_SCHEMA;
-use super::training::{CheckpointId, TrajectoryStep};
+use super::training::{CheckpointId, TrajectoryDecoder, TrajectoryStep};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -26,11 +27,17 @@ impl RunArtifacts {
         game_id: &str,
         version: &str,
         spec_hash: &str,
+        component_sha256: Option<&str>,
     ) -> Result<Self> {
         tokio::fs::create_dir_all(directory.join("results")).await?;
-        let manifest =
-            load_or_create_manifest(&directory.join("run.json"), game_id, version, spec_hash)
-                .await?;
+        let manifest = load_or_create_manifest(
+            &directory.join("run.json"),
+            game_id,
+            version,
+            spec_hash,
+            component_sha256,
+        )
+        .await?;
         Ok(Self {
             directory: directory.to_owned(),
             run_id: manifest.run_id,
@@ -38,7 +45,11 @@ impl RunArtifacts {
     }
 
     /// Recovers the status and training steps from this plan's finalized result.
-    pub(super) async fn result(&self, plan_id: &str) -> Result<Option<FinalizedResult>> {
+    pub(super) async fn result<O, A>(
+        &self,
+        plan_id: &str,
+        decode_trajectory: Option<TrajectoryDecoder<O, A>>,
+    ) -> Result<Option<(SessionStatus, Vec<TrajectoryStep<O, A>>)>> {
         let path = result_path(&self.directory, plan_id);
         let bytes = match tokio::fs::read(&path).await {
             Ok(bytes) => bytes,
@@ -47,7 +58,7 @@ impl RunArtifacts {
                 return Err(error).with_context(|| format!("failed to read {}", path.display()))
             }
         };
-        let result: FinalizedResult = serde_json::from_slice(&bytes)
+        let result: FinalizedResult<'_> = serde_json::from_slice(&bytes)
             .with_context(|| format!("invalid finalized result {}", path.display()))?;
         if result.run_id != self.run_id || result.plan_id != plan_id {
             bail!(
@@ -55,13 +66,18 @@ impl RunArtifacts {
                 path.display()
             );
         }
-        Ok(Some(result))
+        let trajectory = match (decode_trajectory, result.trajectory) {
+            (Some(decode), Some(trajectory)) => decode(trajectory.get())
+                .with_context(|| format!("invalid finalized trajectory {}", path.display()))?,
+            _ => Vec::new(),
+        };
+        Ok(Some((result.status, trajectory)))
     }
 
     /// Publishes all result fields together once the session has shut down.
-    pub(super) async fn finalize_result<C: Serialize>(
+    pub(super) async fn finalize_result<C: Serialize, O: Serialize, A: Serialize>(
         &self,
-        result: &SessionResult<C>,
+        result: &SessionResult<C, O, A>,
     ) -> Result<()> {
         write_json_atomic(&result_path(&self.directory, &result.plan_id), result).await
     }
@@ -138,6 +154,9 @@ struct RunManifest {
     game_id: String,
     game_version: String,
     spec_hash: String,
+    /// Digest of the loaded game component when this run uses one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    component_sha256: Option<String>,
 }
 
 /// Loads the existing run manifest or atomically creates a new run identity.
@@ -146,6 +165,7 @@ async fn load_or_create_manifest(
     game_id: &str,
     game_version: &str,
     spec_hash: &str,
+    component_sha256: Option<&str>,
 ) -> Result<RunManifest> {
     match tokio::fs::read(path).await {
         Ok(bytes) => {
@@ -161,6 +181,12 @@ async fn load_or_create_manifest(
                     path.parent().unwrap_or_else(|| Path::new(".")).display()
                 );
             }
+            if manifest.component_sha256.as_deref() != component_sha256 {
+                bail!(
+                    "run manifest {} belongs to a different game component",
+                    path.display()
+                );
+            }
             Ok(manifest)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -170,6 +196,7 @@ async fn load_or_create_manifest(
                 game_id: game_id.to_string(),
                 game_version: game_version.to_string(),
                 spec_hash: spec_hash.to_string(),
+                component_sha256: component_sha256.map(str::to_owned),
             };
             write_json_atomic(path, &manifest).await?;
             Ok(manifest)
@@ -192,12 +219,12 @@ fn checkpoint_path(output: &Path, checkpoint_number: u64) -> PathBuf {
 
 /// Projection of the durable session fields needed to resume a plan.
 #[derive(Deserialize)]
-pub(super) struct FinalizedResult {
+struct FinalizedResult<'a> {
     run_id: String,
     plan_id: String,
-    pub(super) status: SessionStatus,
-    #[serde(default)]
-    pub(super) trajectory: Vec<TrajectoryStep>,
+    status: SessionStatus,
+    #[serde(borrow)]
+    trajectory: Option<&'a RawValue>,
 }
 
 /// Writes one JSON file through an adjacent temporary path and atomic rename.
@@ -227,10 +254,14 @@ mod tests {
     #[tokio::test]
     async fn resume_result_requires_both_identity_components() {
         let directory = tempdir().unwrap();
-        let artifacts = RunArtifacts::open(directory.path(), "game", "1", "spec")
+        let artifacts = RunArtifacts::open(directory.path(), "game", "1", "spec", None)
             .await
             .unwrap();
-        assert!(artifacts.result("requested").await.unwrap().is_none());
+        assert!(artifacts
+            .result::<(), ()>("requested", None)
+            .await
+            .unwrap()
+            .is_none());
         let path = result_path(directory.path(), "requested");
         for (run, plan) in [
             ("other-run", "requested"),
@@ -242,7 +273,7 @@ mod tests {
             )
             .await
             .unwrap();
-            assert!(artifacts.result("requested").await.is_err());
+            assert!(artifacts.result::<(), ()>("requested", None).await.is_err());
         }
         write_json_atomic(
             &path,
@@ -251,7 +282,12 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            artifacts.result("requested").await.unwrap().unwrap().status,
+            artifacts
+                .result::<(), ()>("requested", None)
+                .await
+                .unwrap()
+                .unwrap()
+                .0,
             SessionStatus::Quiescent
         );
     }
@@ -260,7 +296,7 @@ mod tests {
     #[tokio::test]
     async fn checkpoint_resume_validates_the_update_number_id_and_base() {
         let directory = tempdir().unwrap();
-        let artifacts = RunArtifacts::open(directory.path(), "game", "1", "spec")
+        let artifacts = RunArtifacts::open(directory.path(), "game", "1", "spec", None)
             .await
             .unwrap();
         let base = CheckpointId::new("initial").unwrap();
@@ -282,5 +318,26 @@ mod tests {
         .await
         .unwrap();
         assert!(artifacts.checkpoint(2, "update", &base).await.is_err());
+    }
+
+    /// A resumed component run must use the exact executable that created it.
+    #[tokio::test]
+    async fn component_run_pins_the_loaded_digest() {
+        let directory = tempdir().unwrap();
+        let path = directory.path();
+        let artifacts = RunArtifacts::open(path, "game", "1", "spec", Some("original"))
+            .await
+            .unwrap();
+        let resumed = RunArtifacts::open(path, "game", "1", "spec", Some("original"))
+            .await
+            .unwrap();
+        assert_eq!(resumed.run_id, artifacts.run_id);
+        for replacement in [Some("different"), None] {
+            let error = RunArtifacts::open(path, "game", "1", "spec", replacement)
+                .await
+                .err()
+                .expect("run accepted a different game artifact");
+            assert!(error.to_string().contains("different game component"));
+        }
     }
 }

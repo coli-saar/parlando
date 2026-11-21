@@ -166,8 +166,9 @@ Use export data for task success, action sequences, utterance counts, timing,
 agent comparisons, transcription diagnostics, and exclusion decisions.
 
 For new recordings, the corpus action event's `state` field is null. Parlando
-records one initial state for the session and replays accepted actions in the
-game renderer. Open **Replay** from the session detail to inspect either role's
+records an initial state and replays accepted actions. Component games may
+record private recovery checkpoints with individual turns. Replay uses these
+checkpoints when present, and corpus exports omit their contents. Open **Replay** from the session detail to inspect either role's
 view when the game build supports the recorded replay versions.
 
 ### Inspect speech and export tokens

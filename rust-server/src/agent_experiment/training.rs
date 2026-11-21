@@ -80,8 +80,14 @@ pub trait RewardFunction<G: Game>: Send + Sync + 'static {
     /// Returns a semantic version recorded with every trajectory.
     fn version(&self) -> &'static str;
 
-    /// Validates reward-specific YAML parameters before any session starts.
-    fn validate_parameters(&self, parameters: &Value) -> Result<()>;
+    /// Builds the configured reward before the runner plans any sessions.
+    ///
+    /// Parse and validate the YAML parameters here, retaining settings as typed
+    /// fields on the returned reward. Preserve the registered ID and version.
+    /// All training sessions in this run share the configured instance.
+    fn configure(&self, parameters: &Value) -> Result<Self>
+    where
+        Self: Sized;
 
     /// Computes both role rewards after an accepted action.
     fn rewards(
@@ -91,13 +97,15 @@ pub trait RewardFunction<G: Game>: Send + Sync + 'static {
         actor: PlayerRole,
         action: &G::Action,
         completion: Option<&G::Completion>,
-        parameters: &Value,
     ) -> RoleRewards;
 }
 
+/// Reads persisted learner steps using the same game types used during live capture.
+pub(super) type TrajectoryDecoder<O, A> = fn(&str) -> serde_json::Result<Vec<TrajectoryStep<O, A>>>;
+
 /// One role-safe learner action transition captured by a training session.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct TrajectoryStep {
+pub struct TrajectoryStep<O, A> {
     /// Experiment execution owning this step.
     pub run_id: String,
     /// Deterministic session plan which produced this step.
@@ -117,11 +125,11 @@ pub struct TrajectoryStep {
     /// Semantic reward implementation version.
     pub reward_version: String,
     /// Role-safe game observation before the action.
-    pub observation: Value,
+    pub observation: O,
     /// Optional discrete action affordance supplied to the agent.
-    pub available_actions: Value,
+    pub available_actions: Option<Vec<A>>,
     /// Action selected by the learner.
-    pub action: Value,
+    pub action: A,
     /// Whether the game accepted the selected action.
     pub accepted: bool,
     /// Stable rejection information for an invalid action.
@@ -131,20 +139,20 @@ pub struct TrajectoryStep {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rewards: Option<RoleRewards>,
     /// Role-safe observation following this action or rejection.
-    pub next_observation: Value,
+    pub next_observation: O,
     /// Whether the accepted action completed the game.
     pub terminal: bool,
 }
 
 /// Immutable set of role-safe transitions supplied to one learner update.
 #[derive(Clone, Debug)]
-pub struct TrainingBatch {
+pub struct TrainingBatch<O, A> {
     /// Stable idempotency key for the update within one experiment run.
     pub update_id: String,
     /// Completed training epochs represented by this update.
     pub completed_epochs: u64,
     /// Ordered learner transitions collected since the previous checkpoint.
-    pub steps: Vec<TrajectoryStep>,
+    pub steps: Vec<TrajectoryStep<O, A>>,
 }
 
 /// Normalized learner configuration supplied consistently to every training update.
@@ -181,7 +189,7 @@ pub trait RLAgent<G: Game>: Send + 'static {
         &mut self,
         context: &RLTrainingContext,
         base: &CheckpointId,
-        batch: TrainingBatch,
+        batch: TrainingBatch<G::Observation, G::Action>,
     ) -> Result<CheckpointId>;
 }
 
@@ -192,7 +200,6 @@ pub(super) struct TrainingCapture<G: Game> {
     pub(super) reward: Arc<dyn RewardFunction<G>>,
     pub(super) reward_kind: String,
     pub(super) reward_version: String,
-    pub(super) parameters: Value,
 }
 
 impl<G: Game> Clone for TrainingCapture<G> {
@@ -204,7 +211,6 @@ impl<G: Game> Clone for TrainingCapture<G> {
             reward: self.reward.clone(),
             reward_kind: self.reward_kind.clone(),
             reward_version: self.reward_version.clone(),
-            parameters: self.parameters.clone(),
         }
     }
 }

@@ -149,6 +149,26 @@ fn corpus_export_is_nested_informative_and_structurally_minimized() {
         1
     );
 
+    // A component checkpoint is infrastructure data, even when the guest puts
+    // private observations in its snapshot alongside the authoritative state.
+    let mut checkpoint_export = full.clone();
+    checkpoint_export["session_events"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "session_id": 3, "event_id": 8, "event_index": 8, "experiment_id": "study",
+            "event_type": "game_action_accepted", "actor_participant_id": 7,
+            "actor_role": "A", "game_time_ms": 4300,
+            "payload": { "action": "move", "recovery_checkpoint": true },
+            "game_state": { "private": "excluded_checkpoint_contents" }
+        }));
+    let exported =
+        corpus_experiment_export(serde_json::from_value(checkpoint_export).unwrap(), "2").unwrap();
+    assert!(!exported
+        .to_string()
+        .contains("excluded_checkpoint_contents"));
+    assert!(exported["experiment"]["sessions"][0]["events"][4]["state"].is_null());
+
     let mut invalid_assignments = full.clone();
     invalid_assignments["session_participants"]
         .as_array_mut()

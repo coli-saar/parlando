@@ -1,10 +1,11 @@
 //! The hotel porter plays either car using role-visible controls and chatted entries.
-use crate::{Action, BridgePose, CABIN_CAPACITY, Hotel, Seal};
+use crate::{Action, BridgePose, Hotel, Seal, CABIN_CAPACITY};
+use crate::{FreightStatus, Observation as View};
 use anyhow::Result;
 use async_trait::async_trait;
 use parlando::{
-    PlayerRole,
     agent::{Agent, Context, Definition, Factory, Identity, Response},
+    PlayerRole,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -35,35 +36,6 @@ impl Factory<Hotel> for PorterFactory {
     async fn create(&self, c: Context) -> Result<Box<dyn Agent<Hotel> + Send>> {
         Ok(Box::new(Porter::new(c.role, Pacing::LIVE)))
     }
-}
-
-/// Role-filtered facts used to plan, with no access to the server’s private state.
-#[derive(Deserialize)]
-struct View {
-    floor: u8,
-    cargo: u8,
-    load_floor: u8,
-    unload_floor: u8,
-    partner_cargo: u8,
-    gate_open: bool,
-    lock_tripped: bool,
-    handed_over: bool,
-    partner_seal: Seal,
-    partner_destination: u8,
-    partner_delivery: Option<u8>,
-    freight_floor: Option<u8>,
-    freight_status: Option<FreightStatus>,
-    exited: bool,
-    actions: Vec<Action>,
-}
-
-/// Freight information visible from the cable controls.
-#[derive(Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum FreightStatus {
-    AwaitingPickup,
-    Aboard,
-    Ready,
 }
 
 /// Facts the guest has shared so far, possibly across separate messages.
@@ -397,8 +369,7 @@ impl Porter {
         }
     }
     /// Replaces the current observation and schedules the first bridge report.
-    fn update(&mut self, data: Value) -> Result<()> {
-        let view: View = serde_json::from_value(data)?;
+    fn update(&mut self, view: View) {
         if self.view.is_none() {
             self.announce = true;
         }
@@ -406,7 +377,6 @@ impl Porter {
             self.ask_at_handoff = true;
         }
         self.view = Some(view);
-        Ok(())
     }
     /// Reads out the facts recorded for the other wing on the porter’s ledger.
     fn message(view: &View) -> String {
@@ -587,15 +557,16 @@ impl Porter {
 #[async_trait]
 impl Agent<Hotel> for Porter {
     /// Receives the initial view for this guest.
-    async fn start(&mut self, v: Value) -> Result<()> {
-        self.update(v)
+    async fn start(&mut self, v: View) -> Result<()> {
+        self.update(v);
+        Ok(())
     }
     /// Lets each lift stroke and the porter’s confirmed transfers register before acting again.
     async fn observe_transition(
         &mut self,
         actor: PlayerRole,
         action: Action,
-        v: Value,
+        v: View,
     ) -> Result<()> {
         self.ignore_pose_response = false;
         if let Action::BridgePose { pose } = action {
@@ -625,7 +596,7 @@ impl Agent<Hotel> for Porter {
             .and_then(|previous| self.choose(previous))
             .filter(|(planned, _)| *planned == action)
             .and_then(|(_, motive)| motive);
-        self.update(v)?;
+        self.update(v);
         if own_transfer {
             self.last_transfer_motive = transfer_motive;
         }
@@ -842,8 +813,8 @@ mod tests {
             assert_eq!(action, Action::BridgePose { pose: Some(sample) });
             state = Hotel.apply_action(&state, &action, PlayerRole::B).unwrap();
             assert_eq!(
-                Hotel.observation(&state, PlayerRole::A)["partner_bridge_pose"],
-                serde_json::json!(sample)
+                Hotel.observation(&state, PlayerRole::A).partner_bridge_pose,
+                Some(sample)
             );
             porter
                 .observe_transition(
@@ -1058,11 +1029,9 @@ mod tests {
             assert_eq!(entry.floor, floor);
             assert_eq!(entry.cases, Some(0));
         }
-        assert!(
-            EntryReport::parse("Ground floor, stag seal", true)
-                .complete(true)
-                .is_none()
-        );
+        assert!(EntryReport::parse("Ground floor, stag seal", true)
+            .complete(true)
+            .is_none());
     }
 
     /// A multi-message entry keeps the brake parked until every required fact arrives.
@@ -1265,8 +1234,7 @@ mod tests {
             } else {
                 PlayerRole::A
             };
-            let entry = Hotel.observation(&state, other);
-            let view = serde_json::from_value(entry).unwrap();
+            let view = Hotel.observation(&state, other);
             porter
                 .observe_message(other, Porter::message(&view))
                 .await
@@ -1286,26 +1254,22 @@ mod tests {
         );
         state = state.step(Action::StepOntoLanding, 1).unwrap();
         state = state.step(Action::Unload, 0).unwrap();
-        east.update(Hotel.observation(&state, PlayerRole::A))
-            .unwrap();
+        east.update(Hotel.observation(&state, PlayerRole::A));
         assert_eq!(
             east.choose(east.view.as_ref().unwrap())
                 .map(|(action, _)| action),
             None
         );
         state = state.step(Action::BoardLift, 1).unwrap();
-        east.update(Hotel.observation(&state, PlayerRole::A))
-            .unwrap();
+        east.update(Hotel.observation(&state, PlayerRole::A));
         assert_eq!(
             east.choose(east.view.as_ref().unwrap())
                 .map(|(action, _)| action),
             Some(Action::CollectRescueCase)
         );
         state = state.step(Action::CollectRescueCase, 0).unwrap();
-        east.update(Hotel.observation(&state, PlayerRole::A))
-            .unwrap();
-        west.update(Hotel.observation(&state, PlayerRole::B))
-            .unwrap();
+        east.update(Hotel.observation(&state, PlayerRole::A));
+        west.update(Hotel.observation(&state, PlayerRole::B));
         assert_eq!(
             east.choose(east.view.as_ref().unwrap())
                 .map(|(action, _)| action),
@@ -1320,8 +1284,7 @@ mod tests {
         state = state.step(Action::Unload, 0).unwrap();
         state = state.step(Action::Load, 1).unwrap();
         state = state.step(Action::Unload, 0).unwrap();
-        west.update(Hotel.observation(&state, PlayerRole::B))
-            .unwrap();
+        west.update(Hotel.observation(&state, PlayerRole::B));
         assert_eq!(
             west.choose(west.view.as_ref().unwrap())
                 .map(|(action, _)| action),

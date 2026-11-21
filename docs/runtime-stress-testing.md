@@ -48,7 +48,7 @@ views. Use `--keep` to preserve the temporary directory for SQLite inspection;
 failed runs preserve it automatically. Use `--output PATH` to select the stable
 artifact root. Each run creates a timestamped directory under that root and
 writes a JSON report containing the resolved workload, correctness counters,
-reconnects, ASR/TTS counts, admission latency, audio scheduler misses, SQLite row
+reconnects, ASR/TTS counts, steady-phase action latency, SQLite row
 counts, pre-checkpoint main/WAL/SHM bytes, checkpointed bytes per game, and the
 healthy concurrency lower bound established by that run.
 
@@ -61,3 +61,54 @@ healthy result with operational headroom. External proxy/TLS, browser, actual
 game logic, model/provider quotas, and regional latency require a separate
 authorized deployment calibration; the embedded run intentionally cannot
 claim to measure them.
+
+## Compare native and WebAssembly game logic
+
+Both backends run the same stress fixture. The native backend calls Rust functions
+directly. The Wasm backend uses Parlando's component host to compile the fixture
+once at startup and create a stateful instance for each session. One guest step
+applies an action and returns the role views and any completion. SQLite,
+WebSockets, and audio run in the native Parlando server in both modes.
+
+Build both artifacts from the repository root. The fixture requires the Rust
+`wasm32-unknown-unknown` target and `wasm-tools`, which wraps the compiled Rust
+module as a WebAssembly component.
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo build --locked --release --target wasm32-unknown-unknown \
+  --manifest-path rust-server-tests/stress-fixture/Cargo.toml
+mkdir -p target
+core=rust-server-tests/stress-fixture/target/wasm32-unknown-unknown/release/parlando_stress_fixture.wasm
+wasm-tools component new "$core" -o target/parlando-stress-component.wasm
+cargo build --locked --release --features stress-wasm \
+  --manifest-path rust-server-tests/Cargo.toml --bin runtime-stress
+```
+
+Run each backend sequentially on the same machine using the same release binary.
+These paths assume Cargo's default target directory for each manifest.
+
+```sh
+stress=rust-server-tests/target/release/runtime-stress
+guest=target/parlando-stress-component.wasm
+"$stress" --headless --pairing human-human --sessions 12 --seconds 120 \
+  --seed 101 --game-backend native --output target/stress-native
+"$stress" --headless --pairing human-human --sessions 12 --seconds 120 \
+  --seed 101 --game-backend wasm --wasm-module "$guest" --output target/stress-wasm
+```
+
+Use the locally built fixture for this benchmark. The fixture has cheap game
+rules, a bounded history, and 2 KiB of padding in each checkpoint and role view.
+The component leaves state in guest memory on ordinary turns and emits a
+checkpoint every 32 accepted actions.
+
+Check that both runs admitted and completed the requested sessions, accepted a
+comparable number of actions, and verified audio frames at similar rates. During steady traffic,
+participant A times each nonterminal action from the start of its send until
+it reads its matching transition on the game WebSocket. The
+`steady_action_to_observation` report gives the matched sample count, unmatched
+count, and nearest-rank p50 and p95 in milliseconds. Actions still outstanding
+at the end of steady count as unmatched. This elapsed time includes SQLite,
+transport, and client scheduling. The server CPU field accumulates time from
+startup through cleanup. RSS is sampled after the rooms drain. Repeat paired
+runs, alternate their order, and compare differences within each pair.

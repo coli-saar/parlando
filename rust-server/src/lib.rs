@@ -10,6 +10,8 @@ mod audio;
 mod audio_publisher;
 mod auth;
 mod canonical_json;
+#[cfg(feature = "component-games")]
+pub mod component;
 mod config;
 mod game;
 mod identity;

@@ -373,6 +373,65 @@ impl GameFactory for HotelFactory {
         Ok(Hotel)
     }
 }
+/// Role-visible wing identity used by both the participant and the porter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Wing {
+    East,
+    West,
+}
+
+/// Readiness of the marked suitcase on the supply itinerary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FreightStatus {
+    AwaitingPickup,
+    Aboard,
+    Ready,
+}
+
+/// A role's complete view of the coupled lifts. Partner fields contain only
+/// information visible from this wing and the entry on its private ledger.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Observation {
+    pub wing: Wing,
+    pub route: Route,
+    pub route_title: std::borrow::Cow<'static, str>,
+    pub floor: u8,
+    pub partner_floor: u8,
+    pub release_floor: Option<u8>,
+    pub cargo: u8,
+    pub landing_loads: [u8; 5],
+    pub partner_landing_loads: [u8; 5],
+    pub load_floor: u8,
+    pub unload_floor: u8,
+    pub partner_cargo: u8,
+    pub handle: Wing,
+    pub handed_over: bool,
+    pub on_landing: bool,
+    pub partner_on_landing: bool,
+    pub gate_open: bool,
+    pub partner_gate_open: bool,
+    pub lock_tripped: bool,
+    pub partner_lock_tripped: bool,
+    pub exited: bool,
+    pub partner_exited: bool,
+    pub partner_bridge_pose: Option<BridgePose>,
+    pub partner_destination: u8,
+    pub partner_delivery: Option<u8>,
+    pub partner_seal: Seal,
+    pub freight_floor: Option<u8>,
+    pub freight_status: Option<FreightStatus>,
+    pub actions: Vec<Action>,
+}
+
+/// Shared escape outcome recorded when both guests reach safety.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Completion {
+    pub escaped: bool,
+    pub route: Route,
+}
+
 impl Game for Hotel {
     /// Replay state can record the latest guest pose for each side of the crossing.
     const STATE_REPRESENTATION_VERSION: &'static str = "6";
@@ -384,8 +443,8 @@ impl Game for Hotel {
     type Config = Config;
     type State = State;
     type Action = Action;
-    type Observation = Value;
-    type Completion = Value;
+    type Observation = Observation;
+    type Completion = Completion;
     /// Starts the configured itinerary from the runtime’s replay seed.
     fn initial_state(&self, c: GameInitializationContext<'_, Config>) -> Result<State> {
         Ok(State::deal(c.seed, c.config.route))
@@ -398,10 +457,10 @@ impl Game for Hotel {
     /// Inventory and transfer floors use the viewer’s local floor numbers. Transfer
     /// floors describe rack selection independently of whether the action is available.
     /// Freight readiness tracks the manifest independently of bridge docking and lock state.
-    fn observation(&self, s: &State, r: PlayerRole) -> Value {
+    fn observation(&self, s: &State, r: PlayerRole) -> Observation {
         let seat = usize::from(r == PlayerRole::B);
         let peer = 1 - seat;
-        let wings = ["east", "west"];
+        let wings = [Wing::East, Wing::West];
         let freight_floor = s.route.itinerary().freight.map(|order| {
             if seat == 0 {
                 order.stores_floor_east
@@ -411,44 +470,50 @@ impl Game for Hotel {
         });
         let freight_status = s.manifest.map(|_| {
             if s.freight_ready() {
-                "ready"
+                FreightStatus::Ready
             } else if s.rescue_case_aboard {
-                "aboard"
+                FreightStatus::Aboard
             } else {
-                "awaiting_pickup"
+                FreightStatus::AwaitingPickup
             }
         });
-        json!({
-            "wing": wings[seat],
-            "route": s.route,
-            "route_title": s.route.itinerary().title,
-            "floor": s.floor(seat),
-            "partner_floor": s.floor(peer),
-            "release_floor": s.next_floor().map(|east| if seat == 0 { east } else { 4 - east }),
-            "cargo": s.cargo[seat],
-            "landing_loads": s.landing_loads[seat],
-            "partner_landing_loads": s.landing_loads[peer],
-            "load_floor": s.transfer_floor(seat, true),
-            "unload_floor": s.transfer_floor(seat, false),
-            "partner_cargo": s.cargo[peer],
-            "handle": wings[usize::from(s.passed)],
-            "handed_over": s.passed,
-            "on_landing": s.on_landing[seat],
-            "partner_on_landing": s.on_landing[peer],
-            "gate_open": s.gate_open[seat],
-            "partner_gate_open": s.gate_open[peer],
-            "lock_tripped": s.lock_tripped[seat],
-            "partner_lock_tripped": s.lock_tripped[peer],
-            "exited": s.exited[seat],
-            "partner_exited": s.exited[peer],
-            "partner_bridge_pose": s.bridge_poses[peer],
-            "partner_destination": if peer == 0 {s.destination} else {4 - s.destination},
-            "partner_delivery": s.manifest.map(|manifest| manifest[peer]),
-            "partner_seal": s.seals[peer],
-            "freight_floor": freight_floor,
-            "freight_status": freight_status,
-            "actions": s.controls(seat)
-        })
+        Observation {
+            wing: wings[seat],
+            route: s.route,
+            route_title: s.route.itinerary().title.into(),
+            floor: s.floor(seat),
+            partner_floor: s.floor(peer),
+            release_floor: s
+                .next_floor()
+                .map(|east| if seat == 0 { east } else { 4 - east }),
+            cargo: s.cargo[seat],
+            landing_loads: s.landing_loads[seat],
+            partner_landing_loads: s.landing_loads[peer],
+            load_floor: s.transfer_floor(seat, true) as u8,
+            unload_floor: s.transfer_floor(seat, false) as u8,
+            partner_cargo: s.cargo[peer],
+            handle: wings[usize::from(s.passed)],
+            handed_over: s.passed,
+            on_landing: s.on_landing[seat],
+            partner_on_landing: s.on_landing[peer],
+            gate_open: s.gate_open[seat],
+            partner_gate_open: s.gate_open[peer],
+            lock_tripped: s.lock_tripped[seat],
+            partner_lock_tripped: s.lock_tripped[peer],
+            exited: s.exited[seat],
+            partner_exited: s.exited[peer],
+            partner_bridge_pose: s.bridge_poses[peer],
+            partner_destination: if peer == 0 {
+                s.destination
+            } else {
+                4 - s.destination
+            },
+            partner_delivery: s.manifest.map(|manifest| manifest[peer]),
+            partner_seal: s.seals[peer],
+            freight_floor,
+            freight_status,
+            actions: s.controls(seat),
+        }
     }
     /// Provides the same physical control choices as the participant view.
     fn available_actions(&self, s: &State, r: PlayerRole) -> Option<Vec<Action>> {
@@ -468,14 +533,34 @@ impl Game for Hotel {
         Some(json!({"route":s.route,"east_floor":s.east,"handed_over":s.passed}))
     }
     /// Both guests must reach safety to finish the hotel session.
-    fn completion(&self, s: &State) -> Option<Value> {
-        (s.exited == [true; 2]).then(|| json!({"escaped":true,"route":s.route}))
+    fn completion(&self, s: &State) -> Option<Completion> {
+        (s.exited == [true; 2]).then_some(Completion {
+            escaped: true,
+            route: s.route,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pins both role records to the opening views produced before typed delivery.
+    #[test]
+    fn typed_opening_views_preserve_the_participant_and_record_formats() {
+        let previous: [Value; 2] = serde_json::from_str(include_str!(
+            "../tests/fixtures/rescue-supplies-seed-7.json"
+        ))
+        .unwrap();
+        let state = State::deal(7, Route::RescueSupplies);
+        let views = [PlayerRole::A, PlayerRole::B].map(|role| wire_observation(&state, role));
+        assert_eq!(views, previous);
+    }
+
+    /// Projects through the same serializer as the participant and stored record.
+    fn wire_observation(state: &State, role: PlayerRole) -> Value {
+        serde_json::to_value(Hotel.observation(state, role)).unwrap()
+    }
 
     /// Crossing reports affect only the authenticated role’s pose and leave the mechanics intact.
     #[test]
@@ -494,10 +579,10 @@ mod tests {
         let sample = Hotel.apply_action(&hotel, &report, PlayerRole::A).unwrap();
         assert_eq!(sample.bridge_poses, [Some(pose), None]);
         assert_eq!(
-            Hotel.observation(&sample, PlayerRole::B)["partner_bridge_pose"],
+            wire_observation(&sample, PlayerRole::B)["partner_bridge_pose"],
             json!(pose)
         );
-        assert!(Hotel.observation(&sample, PlayerRole::A)["partner_bridge_pose"].is_null());
+        assert!(wire_observation(&sample, PlayerRole::A)["partner_bridge_pose"].is_null());
         assert_eq!(sample.controls(0), vec![Action::ReachRefuge]);
         assert_eq!(sample.controls(1), hotel.controls(1));
 
@@ -589,8 +674,8 @@ mod tests {
                     .unwrap();
                 let mut log = Vec::new();
                 assert!(Hotel.completion(&s).is_none());
-                let east = Hotel.observation(&s, PlayerRole::A);
-                let west = Hotel.observation(&s, PlayerRole::B);
+                let east = wire_observation(&s, PlayerRole::A);
+                let west = wire_observation(&s, PlayerRole::B);
                 assert_eq!(east["route"], route_name);
                 assert_eq!(east["partner_delivery"].is_number(), requires_supplies);
                 assert_eq!(west["partner_delivery"].is_number(), requires_supplies);
@@ -635,7 +720,10 @@ mod tests {
                 perform(&mut s, 0, Action::ReachRefuge, &mut log);
                 assert_eq!(
                     Hotel.completion(&s),
-                    Some(json!({"escaped": true, "route": route_name}))
+                    Some(Completion {
+                        escaped: true,
+                        route: config.route
+                    })
                 );
                 assert!(s.controls(0).is_empty() && s.controls(1).is_empty());
                 let mut replay = State::deal(seed, config.route);
@@ -667,7 +755,7 @@ mod tests {
                         for (seat, role) in [PlayerRole::A, PlayerRole::B].into_iter().enumerate() {
                             let local = expected.map(|n| if seat == 0 { n } else { 4 - n });
                             assert_eq!(
-                                Hotel.observation(&state, role)["release_floor"],
+                                wire_observation(&state, role)["release_floor"],
                                 json!(local)
                             );
                             let release = state.step(Action::Release, seat);
@@ -712,11 +800,11 @@ mod tests {
         perform(&mut s, 0, Action::Release, &mut log);
         assert_eq!(s.east, 2);
         assert_eq!(
-            Hotel.observation(&s, PlayerRole::A)["landing_loads"],
+            wire_observation(&s, PlayerRole::A)["landing_loads"],
             json!([3, 4, 0, 3, 3])
         );
         assert_eq!(
-            Hotel.observation(&s, PlayerRole::B)["landing_loads"],
+            wire_observation(&s, PlayerRole::B)["landing_loads"],
             json!([3, 3, 3, 0, 3])
         );
         assert!(s.step(Action::LoadRack { floor: 2 }, 0).is_err());
@@ -762,11 +850,11 @@ mod tests {
         };
         let mut log = Vec::new();
         assert!(!s.controls(1).contains(&Action::Release));
-        assert_eq!(Hotel.observation(&s, PlayerRole::A)["load_floor"], 3);
+        assert_eq!(wire_observation(&s, PlayerRole::A)["load_floor"], 3);
         perform(&mut s, 0, Action::Load, &mut log);
         perform(&mut s, 1, Action::Release, &mut log);
-        assert_eq!(Hotel.observation(&s, PlayerRole::B)["load_floor"], 1);
-        assert_eq!(Hotel.observation(&s, PlayerRole::B)["unload_floor"], 0);
+        assert_eq!(wire_observation(&s, PlayerRole::B)["load_floor"], 1);
+        assert_eq!(wire_observation(&s, PlayerRole::B)["unload_floor"], 0);
         perform(&mut s, 1, Action::Unload, &mut log);
         assert_eq!(s.landing_loads[1][1], RACK_CAPACITY);
         assert_eq!(s.landing_loads[1][0], 1);
@@ -803,10 +891,10 @@ mod tests {
             seal: state.seals[0]
         }));
         assert_eq!(
-            Hotel.observation(&state, PlayerRole::A)["freight_status"],
+            wire_observation(&state, PlayerRole::A)["freight_status"],
             "awaiting_pickup"
         );
-        assert_eq!(Hotel.observation(&state, PlayerRole::B)["freight_floor"], 3);
+        assert_eq!(wire_observation(&state, PlayerRole::B)["freight_floor"], 3);
         let mut freight_incomplete = state.clone();
         freight_incomplete.east = state.destination;
         freight_incomplete.cargo[0] = 2;
@@ -819,7 +907,7 @@ mod tests {
         assert_eq!(loaded.landing_loads, state.landing_loads);
         assert_eq!(loaded.cargo, [2, 0]);
         assert_eq!(
-            Hotel.observation(&loaded, PlayerRole::B)["freight_status"],
+            wire_observation(&loaded, PlayerRole::B)["freight_status"],
             "ready"
         );
         assert!(!loaded.controls(0).contains(&Action::Exit {
@@ -828,7 +916,7 @@ mod tests {
         let lightened = loaded.step(Action::Unload, 0).unwrap();
         assert_eq!(lightened.cargo, [1, 0]);
         assert_eq!(
-            Hotel.observation(&lightened, PlayerRole::A)["freight_status"],
+            wire_observation(&lightened, PlayerRole::A)["freight_status"],
             "aboard"
         );
         assert!(!lightened.controls(0).contains(&Action::Unload));
@@ -873,21 +961,21 @@ mod tests {
         assert!(tripped.on_landing[1]);
         assert_eq!(tripped.cargo, s.cargo);
         assert_eq!(
-            Hotel.observation(&tripped, PlayerRole::A)["lock_tripped"],
+            wire_observation(&tripped, PlayerRole::A)["lock_tripped"],
             true
         );
         assert_eq!(
-            Hotel.observation(&tripped, PlayerRole::B)["lock_tripped"],
+            wire_observation(&tripped, PlayerRole::B)["lock_tripped"],
             false
         );
         assert!(tripped.step(Action::Exit { seal: Seal::Stag }, 0).is_err());
         assert!(tripped.step(Action::ReachRefuge, 0).is_err());
         assert_eq!(tripped.step(Action::ResetLock, 0).unwrap(), outside);
-        let observed = Hotel.observation(&s, PlayerRole::A);
+        let observed = wire_observation(&s, PlayerRole::A);
         assert_eq!(observed["partner_seal"], "rose");
         s.seals[0] = Seal::Key;
-        assert_eq!(Hotel.observation(&s, PlayerRole::A), observed);
-        assert_eq!(Hotel.observation(&s, PlayerRole::B)["partner_seal"], "key");
+        assert_eq!(wire_observation(&s, PlayerRole::A), observed);
+        assert_eq!(wire_observation(&s, PlayerRole::B)["partner_seal"], "key");
     }
 
     /// Parks both cars until each explorer has returned, regardless of key ownership.
@@ -930,8 +1018,8 @@ mod tests {
         state.passed = true;
         let [east_seal, west_seal] = state.seals;
         let state = state.step(Action::StepOntoLanding, 1).unwrap();
-        let east_view = Hotel.observation(&state, PlayerRole::A);
-        let west_view = Hotel.observation(&state, PlayerRole::B);
+        let east_view = wire_observation(&state, PlayerRole::A);
+        let west_view = wire_observation(&state, PlayerRole::B);
         assert_eq!(east_view["on_landing"], false);
         assert_eq!(east_view["partner_on_landing"], true);
         assert_eq!(west_view["on_landing"], true);
@@ -941,7 +1029,7 @@ mod tests {
         let open = state.step(Action::Exit { seal: east_seal }, 0).unwrap();
         assert!(Hotel.completion(&open).is_none());
         assert_eq!(
-            Hotel.observation(&open, PlayerRole::B)["partner_gate_open"],
+            wire_observation(&open, PlayerRole::B)["partner_gate_open"],
             true
         );
         let crossed = open.step(Action::ReachRefuge, 0).unwrap();

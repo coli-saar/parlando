@@ -562,6 +562,37 @@ pub trait Game: Send + Sync + 'static {
         actor: PlayerRole,
     ) -> std::result::Result<Self::State, ActionRejection>;
 
+    /// Executes one turn attempt against the last committed state.
+    ///
+    /// The inner result represents a legal transition or a rule rejection. The outer
+    /// error reports an execution failure, such as a guest trap. Live and headless
+    /// runners both use this entry point. Native games inherit their typed transition.
+    /// Stateful adapters may advance private execution state, but all projections must
+    /// depend only on the supplied state. They must be able to step again from an older
+    /// committed state if a proposed transition was never installed.
+    fn step(
+        &self,
+        state: &Self::State,
+        action: &Self::Action,
+        actor: PlayerRole,
+    ) -> Result<std::result::Result<Self::State, ActionRejection>> {
+        Ok(self.apply_action(state, action, actor))
+    }
+
+    /// Supplies an optional full recovery frame to persist atomically with this turn.
+    /// Deterministic native games replay the recorded actions from the initial state.
+    /// Components may choose their checkpoint cadence; any transition that cannot
+    /// be reproduced must supply a checkpoint.
+    fn turn_checkpoint(&self, _after: &Self::State) -> Result<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Verifies that a persisted frame belongs to this game before exposing its views.
+    /// Native builds use the runtime's existing representation and rules version checks.
+    fn validate_replay_state(&self, _state: &Self::State) -> Result<()> {
+        Ok(())
+    }
+
     /// Returns the complete role-specific information state for one player role.
     fn observation(&self, state: &Self::State, role: PlayerRole) -> Self::Observation;
 

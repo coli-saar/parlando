@@ -4,12 +4,13 @@
 //! training settings, and limits against the registry. Planning consumes the validated
 //! specification before any session starts.
 
-use super::ExperimentRunner;
+use super::{ExperimentRunner, RewardFunction};
 use crate::game::{Game, PlayerRole};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub(super) const EXPERIMENT_SCHEMA: &str = "parlando-agent-experiment/v1";
@@ -267,8 +268,11 @@ fn one_repetition() -> u32 {
 }
 
 impl<G: Game> ExperimentRunner<G> {
-    /// Checks cross-field constraints which serde cannot express.
-    pub(super) fn validate_spec(&self, spec: &ExperimentFile) -> Result<()> {
+    /// Checks cross-field constraints and prepares the selected training reward.
+    pub(super) fn validate_spec(
+        &self,
+        spec: &ExperimentFile,
+    ) -> Result<Option<Arc<dyn RewardFunction<G>>>> {
         if spec.schema != EXPERIMENT_SCHEMA {
             bail!(
                 "unsupported agent experiment schema {:?}; expected {EXPERIMENT_SCHEMA:?}",
@@ -322,7 +326,7 @@ impl<G: Game> ExperimentRunner<G> {
                 &spec.agents,
             )?;
         }
-        if let Some(training) = &spec.training {
+        let reward = if let Some(training) = &spec.training {
             if training.epochs == 0 || training.checkpoint_every_epochs == 0 {
                 bail!("training epochs and checkpoint cadence must be positive");
             }
@@ -353,8 +357,12 @@ impl<G: Game> ExperimentRunner<G> {
                 .reward_functions
                 .get(&training.reward.kind)
                 .with_context(|| format!("unknown reward function {:?}", training.reward.kind))?;
-            reward.validate_parameters(&training.reward.parameters)?;
-        }
+            Some(reward(&training.reward.parameters).with_context(|| {
+                format!("invalid parameters for reward {:?}", training.reward.kind)
+            })?)
+        } else {
+            None
+        };
         if let Some(validation) = &spec.validation {
             if validation.every_checkpoints == 0 {
                 bail!("validation.every_checkpoints must be positive");
@@ -371,7 +379,7 @@ impl<G: Game> ExperimentRunner<G> {
             }
         }
         self.resolve_schedule(&spec.schedule)?;
-        Ok(())
+        Ok(reward)
     }
 
     /// Validates named seats and all scenarios in one evaluation, training, or validation set.

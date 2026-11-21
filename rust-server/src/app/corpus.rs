@@ -361,7 +361,8 @@ fn corpus_events(
                         "role": row.actor_role,
                         "action": payload.get("action"),
                         "transition_metadata": payload.get("metadata"),
-                        "state": row.game_state,
+                        // Guest recovery frames can contain private data for both roles.
+                        "state": if payload["recovery_checkpoint"] == true { None } else { row.game_state.as_ref() },
                     }))
                 }
                 "conversation_message" => {

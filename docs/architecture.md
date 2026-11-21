@@ -1,14 +1,16 @@
 # Architecture
 
-Parlando combines a custom browser experience and custom Rust game mechanics with
+Parlando combines a custom browser experience and game-specific mechanics with
 reusable experiment infrastructure. Together, the browser client and game crate
 form one compiled game. A running process can host several experiments that use
-that game.
+that game. The standard Rust server links native game code. The component host
+loads a versioned WebAssembly game package at startup. Both expose the same
+live and headless turn semantics. [Run a component game](component-games.md)
 
 The compilation boundary gives game authors full control over presentation and
 task semantics while keeping experiment creation lightweight. A new condition is
-a dashboard configuration rather than a new process; a genuinely different game
-is a separate binary with its own client, database, and port.
+a dashboard configuration rather than a new process; a different game runs in its own process with its own client, database,
+and port. The same component host executable can start different game packages.
 
 ```mermaid
 flowchart LR

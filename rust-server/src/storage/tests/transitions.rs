@@ -498,3 +498,73 @@ async fn failed_event_batch_rolls_back_every_event_and_terminal_state() {
     let retried = experiment_rows(&store, experiment_id).await;
     assert_eq!(retried["session_events"][0]["event_index"], 1);
 }
+
+/// Resolves a failed COMMIT and retries the same terminal batch without duplicating it.
+#[tokio::test]
+async fn prepared_turn_identity_disambiguates_terminal_commit_and_retry() {
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+    let experiment_id = "turn-identity";
+    let session_id = running_test_session(&store, experiment_id).await;
+    for sql in [
+        "create table test_parent (id integer primary key)",
+        "create table test_child (id integer references test_parent(id)
+         deferrable initially deferred)",
+        "create trigger fail_commit after insert on session_events
+         when new.event_type = 'game_action_accepted'
+         begin insert into test_child values (123); end",
+    ] {
+        sqlx::query(sql).execute(&store.pool).await.unwrap();
+    }
+    let turn_id = "test-turn";
+    let accepted = SessionEventRecord {
+        experiment_id: experiment_id.to_owned(),
+        session_id,
+        event_type: "game_action_accepted".to_owned(),
+        actor_participant_id: None,
+        actor_role: None,
+        payload: json!({"turn_id": turn_id, "action": 1}),
+        game_state: None,
+    };
+    let completed = SessionEventRecord {
+        event_type: "session_completed".to_owned(),
+        payload: json!({}),
+        ..accepted.clone()
+    };
+    let events = vec![accepted, completed];
+    let end = Some(test_session_end(
+        SessionEndCause::GameCompleted,
+        Some(json!({})),
+    ));
+    let error = store
+        .commit_session_transition(events.clone(), end.clone())
+        .await
+        .unwrap_err();
+    assert!(error.is::<crate::storage::TransitionCommitUnknown>());
+    assert!(!store
+        .session_transition_committed(experiment_id, session_id, turn_id)
+        .await
+        .unwrap());
+    sqlx::query("drop trigger fail_commit")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    for _ in 0..2 {
+        assert_eq!(
+            store
+                .commit_session_transition(events.clone(), end.clone())
+                .await
+                .unwrap(),
+            TransitionCommit::Committed
+        );
+        assert!(store
+            .session_transition_committed(experiment_id, session_id, turn_id)
+            .await
+            .unwrap());
+    }
+    let snapshot = experiment_rows(&store, experiment_id).await;
+    assert_eq!(snapshot["sessions"][0]["lifecycle"], "ended");
+    assert_eq!(snapshot["session_events"].as_array().unwrap().len(), 2);
+}

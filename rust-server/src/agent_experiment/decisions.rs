@@ -6,7 +6,9 @@
 //! at the action limit yields completion.
 
 use super::planning::SessionPlan;
-use super::results::{SessionResult, SessionStatus};
+use super::results::{
+    DecisionInput, DecisionTrace, SessionResult, SessionStatus, TraceInput, TraceResponse,
+};
 use super::session::{
     callback_failure, callback_timeout_failure, deliver_message, finish_agents, limit_outcome,
     role_index, SessionFailure, SessionOutcome,
@@ -16,7 +18,6 @@ use super::training::TrajectoryStep;
 use crate::agents::{Agent, AgentResponse};
 use crate::game::{ActionRejection, Game, PlayerRole};
 use anyhow::anyhow;
-use serde_json::{json, Value};
 use std::time::Instant;
 use tokio::time::timeout;
 
@@ -29,7 +30,7 @@ pub(super) async fn drive_session<G: Game>(
     mut state: G::State,
     agents: &mut [Box<dyn Agent<G> + Send>; 2],
     plan: &SessionPlan<G>,
-    result: &mut SessionResult<G::Completion>,
+    result: &mut SessionResult<G::Completion, G::Observation, G::Action>,
 ) -> std::result::Result<SessionOutcome<G::Completion>, SessionFailure> {
     for role in [PlayerRole::A, PlayerRole::B] {
         let observation = game.observation(&state, role);
@@ -74,45 +75,17 @@ pub(super) async fn drive_session<G: Game>(
             .training_capture
             .as_ref()
             .is_some_and(|capture| capture.learner == plan.seats[role_index(role)].name);
-        let decision_input = if capture_training || plan.trace == TraceLevel::Full {
-            let phase = if capture_training {
-                "trajectory"
-            } else {
-                "trace"
-            };
-            Some(DecisionInput {
-                observation: serde_json::to_value(game.observation(&state, role)).map_err(
-                    |error| SessionFailure {
-                        phase,
-                        role: Some(role),
-                        error: error.into(),
-                    },
-                )?,
-                available_actions: serde_json::to_value(&affordances).map_err(|error| {
-                    SessionFailure {
-                        phase,
-                        role: Some(role),
-                        error: error.into(),
-                    }
-                })?,
-            })
+        let full_trace = plan.trace == TraceLevel::Full;
+        let input = (capture_training || full_trace).then(|| DecisionInput {
+            observation: game.observation(&state, role),
+            available_actions: affordances.clone(),
+        });
+        let (learner_input, trace_input) = if capture_training {
+            let index = result.captures.trajectory.len();
+            (input, full_trace.then_some(TraceInput::Trajectory(index)))
         } else {
-            None
+            (None, input.map(TraceInput::Decision))
         };
-        let learner_input = capture_training.then(|| {
-            decision_input
-                .as_ref()
-                .expect("training capture constructs a decision input")
-        });
-        let trace_context = (plan.trace == TraceLevel::Full).then(|| {
-            let input = decision_input
-                .as_ref()
-                .expect("full tracing constructs a decision input");
-            json!({
-                "observation": &input.observation,
-                "available_actions": &input.available_actions,
-            })
-        });
         let response = timeout(
             plan.limits.callback_timeout(),
             agents[role_index(role)].respond(affordances),
@@ -149,7 +122,7 @@ pub(super) async fn drive_session<G: Game>(
                     result,
                 };
                 match execution
-                    .apply_action(&mut state, role, action, message, learner_input)
+                    .attempt_action(&mut state, role, action, message, learner_input)
                     .await?
                 {
                     ActionAttempt::Accepted(completion) => completed = completion,
@@ -165,7 +138,7 @@ pub(super) async fn drive_session<G: Game>(
             role,
             response.as_ref(),
             rejection.as_ref(),
-            trace_context,
+            trace_input,
         );
 
         if let Some(completion) = completed {
@@ -191,12 +164,6 @@ pub(super) async fn drive_session<G: Game>(
     }
 }
 
-/// Serialized decision input shared by tracing and trajectory capture.
-struct DecisionInput {
-    observation: Value,
-    available_actions: Value,
-}
-
 /// Result of applying one syntactically valid agent action.
 enum ActionAttempt<C> {
     Accepted(Option<C>),
@@ -208,20 +175,27 @@ struct DecisionExecution<'a, G: Game> {
     game: &'a G,
     agents: &'a mut [Box<dyn Agent<G> + Send>; 2],
     plan: &'a SessionPlan<G>,
-    result: &'a mut SessionResult<G::Completion>,
+    result: &'a mut SessionResult<G::Completion, G::Observation, G::Action>,
 }
 
 impl<G: Game> DecisionExecution<'_, G> {
-    /// Applies one action and delivers its accepted transition and optional message.
-    async fn apply_action(
+    /// Attempts one game step and delivers its accepted transition and optional message.
+    async fn attempt_action(
         &mut self,
         state: &mut G::State,
         actor: PlayerRole,
         action: &G::Action,
         message: Option<&str>,
-        learner_input: Option<&DecisionInput>,
+        learner_input: Option<DecisionInput<G::Observation, G::Action>>,
     ) -> std::result::Result<ActionAttempt<G::Completion>, SessionFailure> {
-        let next = match self.game.apply_action(state, action, actor) {
+        let next = match self
+            .game
+            .step(state, action, actor)
+            .map_err(|error| SessionFailure {
+                phase: "step",
+                role: Some(actor),
+                error,
+            })? {
             Ok(next) => next,
             Err(error) => {
                 self.result.rejected_actions += 1;
@@ -231,7 +205,7 @@ impl<G: Game> DecisionExecution<'_, G> {
                     action,
                     learner_input,
                     TrajectoryOutcome::Rejected(error.clone()),
-                )?;
+                );
                 return Ok(ActionAttempt::Rejected(error));
             }
         };
@@ -260,7 +234,7 @@ impl<G: Game> DecisionExecution<'_, G> {
                 before: state,
                 completion: completion.as_ref(),
             },
-        )?;
+        );
         *state = next;
         if completion.is_none() {
             if let Some(message) = message {
@@ -294,41 +268,27 @@ impl<G: Game> DecisionExecution<'_, G> {
         next_state: &G::State,
         actor: PlayerRole,
         action: &G::Action,
-        learner_input: Option<&DecisionInput>,
+        learner_input: Option<DecisionInput<G::Observation, G::Action>>,
         outcome: TrajectoryOutcome<'_, G>,
-    ) -> std::result::Result<(), SessionFailure> {
+    ) {
         let (Some(input), Some(capture)) = (learner_input, self.plan.training_capture.as_ref())
         else {
-            return Ok(());
+            return;
         };
         let (accepted, rejection, completion, rewards) = match outcome {
             TrajectoryOutcome::Accepted { before, completion } => (
                 true,
                 None,
                 completion,
-                Some(capture.reward.rewards(
-                    before,
-                    next_state,
-                    actor,
-                    action,
-                    completion,
-                    &capture.parameters,
-                )),
+                Some(
+                    capture
+                        .reward
+                        .rewards(before, next_state, actor, action, completion),
+                ),
             ),
             TrajectoryOutcome::Rejected(error) => (false, Some(error), None, None),
         };
-        let next_observation = serde_json::to_value(self.game.observation(next_state, actor))
-            .map_err(|error| SessionFailure {
-                phase: "trajectory",
-                role: Some(actor),
-                error: error.into(),
-            })?;
-        let action = serde_json::to_value(action).map_err(|error| SessionFailure {
-            phase: "trajectory",
-            role: Some(actor),
-            error: error.into(),
-        })?;
-        self.result.trajectory.push(TrajectoryStep {
+        self.result.captures.trajectory.push(TrajectoryStep {
             run_id: self.plan.run_id.clone(),
             plan_id: self.plan.plan_id.clone(),
             decision: self.result.decisions,
@@ -338,46 +298,49 @@ impl<G: Game> DecisionExecution<'_, G> {
             checkpoint: capture.checkpoint.clone(),
             reward: capture.reward_kind.clone(),
             reward_version: capture.reward_version.clone(),
-            observation: input.observation.clone(),
-            available_actions: input.available_actions.clone(),
-            action,
+            observation: input.observation,
+            available_actions: input.available_actions,
+            action: action.clone(),
             accepted,
             rejection,
             rewards,
-            next_observation,
+            next_observation: self.game.observation(next_state, actor),
             terminal: completion.is_some(),
         });
-        Ok(())
     }
 }
 
 /// Adds one structured response entry when tracing is enabled.
 fn record_trace<G: Game>(
-    result: &mut SessionResult<G::Completion>,
+    result: &mut SessionResult<G::Completion, G::Observation, G::Action>,
     role: PlayerRole,
     response: Option<&AgentResponse<G::Action>>,
     rejection: Option<&ActionRejection>,
-    context: Option<Value>,
+    input: Option<TraceInput<G::Observation, G::Action>>,
 ) {
-    let Some(trace) = result.trace.as_mut() else {
+    let Some(trace) = result.captures.trace.as_mut() else {
         return;
     };
     let response = match response {
-        None => json!({"type": "yield"}),
-        Some(AgentResponse::Action(action)) => json!({"type": "action", "action": action}),
-        Some(AgentResponse::Message(message)) => json!({"type": "message", "message": message}),
+        None => TraceResponse::Yield,
+        Some(AgentResponse::Action(action)) => TraceResponse::Action {
+            action: action.clone(),
+        },
+        Some(AgentResponse::Message(message)) => TraceResponse::Message {
+            message: message.clone(),
+        },
         Some(AgentResponse::ActionAndMessage { action, message }) => {
-            json!({"type": "action_and_message", "action": action, "message": message})
+            TraceResponse::ActionAndMessage {
+                action: action.clone(),
+                message: message.clone(),
+            }
         }
     };
-    let mut entry = json!({
-        "decision": result.decisions,
-        "role": role,
-        "response": response,
-        "rejection": rejection,
+    trace.push(DecisionTrace {
+        decision: result.decisions,
+        role,
+        response,
+        rejection: rejection.cloned(),
+        input,
     });
-    if let (Some(entry), Some(context)) = (entry.as_object_mut(), context) {
-        entry.insert("input".to_string(), context);
-    }
-    trace.push(entry);
 }

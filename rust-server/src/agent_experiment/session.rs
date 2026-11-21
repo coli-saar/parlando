@@ -7,7 +7,7 @@
 
 use super::decisions::drive_session;
 use super::planning::{ResolvedSeat, SessionPlan};
-use super::results::{SessionResult, SessionStatus};
+use super::results::{SessionCaptures, SessionResult, SessionStatus};
 use super::schedule::other_role;
 use super::spec::TraceLevel;
 use crate::agents::{Agent, AgentContext};
@@ -26,7 +26,10 @@ pub(super) struct SessionRunner<G: Game> {
 
 impl<G: Game> SessionRunner<G> {
     /// Constructs, drives, cleans up, and summarizes one session exactly once.
-    pub(super) async fn run(&self, plan: SessionPlan<G>) -> SessionResult<G::Completion> {
+    pub(super) async fn run(
+        &self,
+        plan: SessionPlan<G>,
+    ) -> SessionResult<G::Completion, G::Observation, G::Action> {
         let started = Instant::now();
         let mut result = SessionResult {
             run_id: plan.run_id.clone(),
@@ -54,8 +57,10 @@ impl<G: Game> SessionRunner<G> {
             rejected_actions: 0,
             messages: 0,
             elapsed_ms: 0,
-            trace: (plan.trace != TraceLevel::Results).then(Vec::new),
-            trajectory: Vec::new(),
+            captures: SessionCaptures {
+                trace: (plan.trace != TraceLevel::Results).then(Vec::new),
+                trajectory: Vec::new(),
+            },
             cleanup_diagnostics: Vec::new(),
         };
         let logger = SessionLogger::headless();
@@ -224,8 +229,8 @@ async fn create_agent<G: Game>(
 }
 
 /// Converts one lifecycle error into the compact public result fields.
-fn record_failure<C: Serialize>(
-    result: &mut SessionResult<C>,
+fn record_failure<C: Serialize, O, A>(
+    result: &mut SessionResult<C, O, A>,
     phase: &str,
     role: Option<PlayerRole>,
     error: impl Into<anyhow::Error>,

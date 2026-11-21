@@ -21,7 +21,7 @@ use std::sync::Arc;
 impl<G: Game> ExperimentRunner<G> {
     /// Validates and executes an already parsed experiment specification.
     pub(super) async fn run(mut self, spec: ExperimentFile) -> Result<ExperimentRunSummary> {
-        self.validate_spec(&spec)?;
+        let reward = self.validate_spec(&spec)?;
         let output = PathBuf::from(&spec.output.directory);
 
         let spec_hash = hash_serializable(&spec)?;
@@ -30,6 +30,7 @@ impl<G: Game> ExperimentRunner<G> {
             &self.game.id,
             &self.game.version.to_string(),
             &spec_hash,
+            self.game.build_manifest["component_sha256"].as_str(),
         )
         .await?;
         let mut totals = ExecutionCounts::default();
@@ -53,8 +54,14 @@ impl<G: Game> ExperimentRunner<G> {
         }
         let checkpoints = match &spec.training {
             Some(training) => {
-                self.train_epochs(&spec, training, &artifacts, &mut totals)
-                    .await?
+                self.train_epochs(
+                    &spec,
+                    training,
+                    reward.expect("validated training reward"),
+                    &artifacts,
+                    &mut totals,
+                )
+                .await?
             }
             None => 0,
         };
@@ -78,15 +85,25 @@ impl<G: Game> ExperimentRunner<G> {
         plans: Vec<SessionPlan<G>>,
         execution: &ExecutionSpec,
         artifacts: &RunArtifacts,
-    ) -> Result<ExecutionBatch> {
-        let mut batch = ExecutionBatch::default();
+    ) -> Result<ExecutionBatch<G>> {
+        let mut batch = ExecutionBatch {
+            counts: ExecutionCounts::default(),
+            steps: Vec::new(),
+            has_failure: false,
+        };
         batch.counts.planned = plans.len();
         let mut pending = Vec::new();
         for plan in plans {
-            if let Some(result) = artifacts.result(&plan.plan_id).await? {
+            let decode_trajectory = plan
+                .training_capture
+                .as_ref()
+                .map(|_| self.trajectory_decoder.expect("validated learner"));
+            if let Some((status, trajectory)) =
+                artifacts.result(&plan.plan_id, decode_trajectory).await?
+            {
                 batch.counts.skipped += 1;
-                batch.steps.extend(result.trajectory);
-                batch.has_failure |= !result.status.is_success();
+                batch.steps.extend(trajectory);
+                batch.has_failure |= !status.is_success();
             } else {
                 pending.push(plan);
             }
@@ -104,7 +121,7 @@ impl<G: Game> ExperimentRunner<G> {
             async move {
                 let result = session_runner.run(plan).await;
                 artifacts.finalize_result(&result).await?;
-                Ok::<_, anyhow::Error>((result.status.is_success(), result.trajectory))
+                Ok::<_, anyhow::Error>((result.status.is_success(), result.captures.trajectory))
             }
         }))
         .buffer_unordered(concurrency);
@@ -127,10 +144,9 @@ impl<G: Game> ExperimentRunner<G> {
 }
 
 /// Training data and outcomes for a single execution phase.
-#[derive(Default)]
-pub(super) struct ExecutionBatch {
+pub(super) struct ExecutionBatch<G: Game> {
     pub(super) counts: ExecutionCounts,
-    pub(super) steps: Vec<TrajectoryStep>,
+    pub(super) steps: Vec<TrajectoryStep<G::Observation, G::Action>>,
     pub(super) has_failure: bool,
 }
 

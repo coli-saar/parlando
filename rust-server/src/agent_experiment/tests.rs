@@ -5,6 +5,7 @@ mod resume;
 mod training;
 mod validation;
 
+use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
@@ -15,7 +16,6 @@ use serde::Deserialize;
 use tempfile::TempDir;
 
 use super::planning::hash_value;
-use super::schedule::require_empty_parameters;
 use super::spec::{ExperimentFile, EXPERIMENT_SCHEMA};
 use super::*;
 use crate::game::AgentDefinition;
@@ -57,7 +57,7 @@ struct TinyAction {
 }
 
 /// Role-safe observation for the tiny game.
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct TinyObservation {
     count: u8,
     role: PlayerRole,
@@ -87,20 +87,33 @@ impl Game for TinyGame {
         })
     }
 
-    /// Applies positive increments and rejects zero increments.
+    /// Detects callers that bypass the fixture's step implementation.
     fn apply_action(
+        &self,
+        _state: &Self::State,
+        _action: &Self::Action,
+        _actor: PlayerRole,
+    ) -> std::result::Result<Self::State, ActionRejection> {
+        panic!("headless actions must use Game::step")
+    }
+
+    /// Applies a positive increment, rejects zero, or simulates a guest fault.
+    fn step(
         &self,
         state: &Self::State,
         action: &Self::Action,
         _actor: PlayerRole,
-    ) -> std::result::Result<Self::State, ActionRejection> {
-        if action.amount == 0 {
-            return Err(ActionRejection::new("zero_increment"));
+    ) -> Result<std::result::Result<Self::State, ActionRejection>> {
+        if action.amount == u8::MAX {
+            bail!("guest step failed");
         }
-        Ok(TinyState {
+        if action.amount == 0 {
+            return Ok(Err(ActionRejection::new("zero_increment")));
+        }
+        Ok(Ok(TinyState {
             count: state.count.saturating_add(action.amount),
             target: state.target,
-        })
+        }))
     }
 
     /// Reveals the public count and the viewer's own role.
@@ -109,6 +122,14 @@ impl Game for TinyGame {
             count: state.count,
             role,
         }
+    }
+
+    /// Provides one fixture affordance encoding the current count and viewer's role.
+    fn available_actions(&self, state: &Self::State, role: PlayerRole) -> Option<Vec<TinyAction>> {
+        let offset = if role == PlayerRole::A { 1 } else { 2 };
+        Some(vec![TinyAction {
+            amount: state.count.saturating_add(offset),
+        }])
     }
 
     /// Returns completion once the configured target is reached.
@@ -131,12 +152,13 @@ impl GameFactory for TinyGameFactory {
 struct TinyAgentFactory {
     events: Arc<Mutex<Vec<String>>>,
     fail_role: Option<PlayerRole>,
+    increments: Vec<u8>,
 }
 
-/// Agent which completes the game from role A and yields from role B.
+/// Agent which plays a scripted sequence from role A and yields from role B.
 struct TinyAgent {
     role: PlayerRole,
-    acted: bool,
+    increments: VecDeque<u8>,
     events: Arc<Mutex<Vec<String>>>,
 }
 
@@ -191,7 +213,8 @@ impl AgentFactory<TinyGame> for HangingStartFactory {
 #[async_trait]
 impl Agent<TinyGame> for TinyAgent {
     /// Records initial observation delivery.
-    async fn start(&mut self, _initial_observation: TinyObservation) -> Result<()> {
+    async fn start(&mut self, initial_observation: TinyObservation) -> Result<()> {
+        anyhow::ensure!(initial_observation.role == self.role);
         self.events
             .lock()
             .unwrap()
@@ -204,8 +227,9 @@ impl Agent<TinyGame> for TinyAgent {
         &mut self,
         _actor: PlayerRole,
         _action: TinyAction,
-        _observation: TinyObservation,
+        observation: TinyObservation,
     ) -> Result<()> {
+        anyhow::ensure!(observation.role == self.role);
         self.events
             .lock()
             .unwrap()
@@ -213,17 +237,15 @@ impl Agent<TinyGame> for TinyAgent {
         Ok(())
     }
 
-    /// Produces one completing action from role A and otherwise yields.
+    /// Produces the next scripted increment from role A or yields.
     async fn respond(
         &mut self,
         _available_actions: Option<Vec<TinyAction>>,
     ) -> Result<Option<AgentResponse<TinyAction>>> {
-        if self.role == PlayerRole::A && !self.acted {
-            self.acted = true;
-            Ok(Some(AgentResponse::action(TinyAction { amount: 1 })))
-        } else {
-            Ok(None)
-        }
+        Ok(self
+            .increments
+            .pop_front()
+            .map(|amount| AgentResponse::action(TinyAction { amount })))
     }
 
     /// Records normal completion delivery.
@@ -271,7 +293,11 @@ impl AgentFactory<TinyGame> for TinyAgentFactory {
         }
         Ok(Box::new(TinyAgent {
             role: context.role,
-            acted: false,
+            increments: if context.role == PlayerRole::A {
+                self.increments.clone().into()
+            } else {
+                VecDeque::new()
+            },
             events: self.events.clone(),
         }))
     }
@@ -325,6 +351,14 @@ output:
 
 /// Builds the test runner with a fresh lifecycle event sink.
 fn test_runner(events: Arc<Mutex<Vec<String>>>) -> ExperimentRunner<TinyGame> {
+    test_runner_with_increments(events, vec![1])
+}
+
+/// Builds a runner whose role-A agent proposes the supplied increments.
+fn test_runner_with_increments(
+    events: Arc<Mutex<Vec<String>>>,
+    increments: Vec<u8>,
+) -> ExperimentRunner<TinyGame> {
     ExperimentRunner::new(
         GameMetadata {
             id: "tiny".to_string(),
@@ -338,6 +372,7 @@ fn test_runner(events: Arc<Mutex<Vec<String>>>) -> ExperimentRunner<TinyGame> {
     .agent(TinyAgentFactory {
         events,
         fail_role: None,
+        increments,
     })
     .unwrap()
 }
@@ -357,6 +392,7 @@ fn failing_test_runner(events: Arc<Mutex<Vec<String>>>) -> ExperimentRunner<Tiny
     .agent(TinyAgentFactory {
         events,
         fail_role: Some(PlayerRole::B),
+        increments: vec![1],
     })
     .unwrap()
 }

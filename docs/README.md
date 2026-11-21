@@ -40,6 +40,8 @@ shape from a game description.
    macOS without Docker.
    For a complete worked Render deployment, follow [Deploy a Parlando Game on
    Render](deploying-on-render.md).
+   Use [Run a WebAssembly Component Game](component-games.md) to serve a component
+   or run headless evaluations with the same package.
 2. Open `/admin/experiments` to create, clone, edit, activate, and monitor
    experiments. Normal configuration is database-backed; an older YAML file is
    only a reference while its values are transferred through the dashboard.

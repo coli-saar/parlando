@@ -32,9 +32,10 @@ jsonwebtoken = "9"
 prost = "0.13"
 prost-types = "0.13"
 rand = "0.8"
+parlando-component-sdk = { version = "0.1.0", path = "../parlando-component-sdk", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["raw_value"] }
 serde_yaml = "0.9"
 semver = { version = "1", features = ["serde"] }
 sha2 = "0.10"
@@ -50,7 +51,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
 ratatui = { version = "0.30.2", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 
+wasmtime = { version = "36.0.23", default-features = false, features = ["component-model", "cranelift", "runtime", "std"], optional = true }
+
 [features]
+component-games = ["dep:wasmtime", "dep:clap", "dep:parlando-component-sdk"]
 internal-tools = []
 stress-tui = ["internal-tools", "dep:clap", "dep:ratatui"]
 
@@ -58,6 +62,11 @@ stress-tui = ["internal-tools", "dep:clap", "dep:ratatui"]
 name = "audio-stress-tui"
 path = "src/bin/audio_stress_tui.rs"
 required-features = ["stress-tui"]
+
+[[bin]]
+name = "parlando-component"
+path = "src/bin/parlando-component.rs"
+required-features = ["component-games"]
 
 [build-dependencies]
 tonic-build = "0.13.1"

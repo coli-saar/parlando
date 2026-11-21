@@ -31,11 +31,14 @@ use self::spec::ExperimentFile;
 use crate::agents::AgentFactory;
 use crate::game::{Game, GameFactory, GameMetadata, PlayerRole};
 use anyhow::{bail, Context, Result};
-use serde::Serialize;
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// Builds a typed reward for the selected YAML parameters during run validation.
+type RewardFactory<G> = Box<dyn Fn(&Value) -> Result<Arc<dyn RewardFunction<G>>> + Send + Sync>;
 
 /// Runs versioned YAML agent-agent experiments for one compiled game.
 ///
@@ -46,7 +49,8 @@ pub struct ExperimentRunner<G: Game> {
     game_factory: Arc<dyn GameFactory<Game = G>>,
     agent_factories: BTreeMap<String, Arc<dyn AgentFactory<G>>>,
     rl_agents: BTreeMap<String, Box<dyn RLAgent<G>>>,
-    reward_functions: BTreeMap<String, Arc<dyn RewardFunction<G>>>,
+    trajectory_decoder: Option<self::training::TrajectoryDecoder<G::Observation, G::Action>>,
+    reward_functions: BTreeMap<String, RewardFactory<G>>,
     schedule_factories: BTreeMap<String, ScheduleFactory<G>>,
     secrets: HashMap<String, String>,
 }
@@ -82,6 +86,7 @@ impl<G: Game> ExperimentRunner<G> {
             game_factory: Arc::new(game_factory),
             agent_factories: BTreeMap::new(),
             rl_agents: BTreeMap::new(),
+            trajectory_decoder: None,
             reward_functions: BTreeMap::new(),
             schedule_factories,
             secrets: HashMap::new(),
@@ -92,10 +97,12 @@ impl<G: Game> ExperimentRunner<G> {
     ///
     /// The learner resolves opaque checkpoints and exposes each checkpoint as a normal
     /// [`AgentFactory`]. Consequently session execution does not know whether an agent is
-    /// trainable, local, remote, in memory, or loaded from disk.
+    /// trainable, local, remote, in memory, or loaded from disk. The game observation
+    /// must support deserialization so a resumed run can recover finalized steps.
     pub fn rl_agent<L>(mut self, learner: L) -> Result<Self>
     where
         L: RLAgent<G>,
+        G::Observation: DeserializeOwned,
     {
         let id = learner.factory_id().to_string();
         if id.trim().is_empty() {
@@ -105,6 +112,7 @@ impl<G: Game> ExperimentRunner<G> {
             bail!("agent factory {id:?} is registered more than once");
         }
         self.rl_agents.insert(id, Box::new(learner));
+        self.trajectory_decoder = Some(|json| serde_json::from_str(json));
         Ok(self)
     }
 
@@ -119,7 +127,10 @@ impl<G: Game> ExperimentRunner<G> {
         }
         if self
             .reward_functions
-            .insert(id.clone(), Arc::new(reward))
+            .insert(
+                id.clone(),
+                Box::new(move |parameters| Ok(Arc::new(reward.configure(parameters)?))),
+            )
             .is_some()
         {
             bail!("reward function {id:?} is registered more than once");

@@ -160,7 +160,11 @@ fn experiment_validation_rejects_invalid_topology_and_limits() {
     for (yaml, expected) in cases {
         let spec: ExperimentFile = serde_yaml::from_str(&yaml).unwrap();
         let runner = test_runner(Arc::new(Mutex::new(Vec::new())));
-        let error = runner.validate_spec(&spec).unwrap_err().to_string();
+        let error = runner
+            .validate_spec(&spec)
+            .err()
+            .expect("invalid experiment")
+            .to_string();
         assert!(
             error.contains(expected),
             "{error:?} did not contain {expected:?}"

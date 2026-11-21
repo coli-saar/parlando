@@ -19,8 +19,10 @@ mod session_queries;
 mod sessions;
 
 pub use admin_auth::{StoredAdminCredential, StoredAdminSession};
-pub(crate) use events::TransitionCommit;
+#[cfg(test)]
+pub(crate) use events::TransitionAckFault;
 pub use events::{SessionEventRecord, StoredSessionEvent};
+pub(crate) use events::{TransitionCommit, TransitionCommitUnknown};
 pub use experiments::ExperimentRecord;
 pub(crate) use game_settings::GameSettingsUpdate;
 pub use game_settings::StoredGameSettings;
@@ -98,6 +100,10 @@ fn sqlite_unique_constraint_for(error: &sqlx::Error, column: &str) -> bool {
 pub struct SqliteExperimentStore {
     pool: SqlitePool,
     database_path: Option<PathBuf>,
+    #[cfg(test)]
+    pub(crate) transition_ack_fault: std::sync::Mutex<Option<events::TransitionAckFault>>,
+    #[cfg(test)]
+    pub(crate) fail_transition_probe_once: std::sync::atomic::AtomicBool,
 }
 
 impl SqliteExperimentStore {
@@ -111,6 +117,10 @@ impl SqliteExperimentStore {
             let store = Self {
                 pool,
                 database_path: None,
+                #[cfg(test)]
+                transition_ack_fault: Default::default(),
+                #[cfg(test)]
+                fail_transition_probe_once: Default::default(),
             };
             store.initialize_or_validate_schema().await?;
             return Ok(store);
@@ -135,6 +145,10 @@ impl SqliteExperimentStore {
         let store = Self {
             pool,
             database_path: Some(PathBuf::from(path)),
+            #[cfg(test)]
+            transition_ack_fault: Default::default(),
+            #[cfg(test)]
+            fail_transition_probe_once: Default::default(),
         };
         store.initialize_or_validate_schema().await?;
         Ok(store)

@@ -164,7 +164,11 @@ async fn cleanup_transient_rooms<A: Game>(state: &Arc<AppState<A>>) {
         let Some(transition_lock) = session_transition_lock(state, &public_session_id).await else {
             continue;
         };
-        let _transition_guard = transition_lock.lock().await;
+        // A room with an unresolved write retains its lock. Defer that room to
+        // the next sweep so other rooms can still expire and release resources.
+        let Ok(_transition_guard) = transition_lock.try_lock() else {
+            continue;
+        };
         let due = state
             .memory
             .read()

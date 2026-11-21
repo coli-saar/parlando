@@ -22,6 +22,31 @@ pub(crate) enum TransitionCommit {
     AlreadyEnded,
 }
 
+/// A COMMIT error requires checking the durable identity before assuming rollback.
+#[derive(Debug)]
+pub(crate) struct TransitionCommitUnknown(pub(crate) sqlx::Error);
+
+/// Pauses a test transition after the real commit, then simulates a lost success response.
+#[cfg(test)]
+pub(crate) struct TransitionAckFault {
+    pub(crate) committed: tokio::sync::oneshot::Sender<()>,
+    pub(crate) release: tokio::sync::oneshot::Receiver<()>,
+}
+
+impl std::fmt::Display for TransitionCommitUnknown {
+    /// Reports the database error while distinguishing it from a failed insert.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "could not confirm transition commit: {}", self.0)
+    }
+}
+
+impl std::error::Error for TransitionCommitUnknown {
+    /// Returns the driver error from the attempted COMMIT.
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
 /// Input for one ordered event inside a session.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SessionEventRecord {
@@ -113,7 +138,49 @@ async fn persist_terminal_value(
     Ok(())
 }
 
+/// Checks the accepted marker while the room lock prevents a later action.
+///
+/// The event-type index can find the most recent acceptance in insertion order.
+/// Other event types can still be appended by the logger during turn resolution.
+async fn latest_transition_matches(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    experiment_id: &str,
+    session_id: i64,
+    turn_id: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "select coalesce((select json_extract(payload_json, '$.turn_id') = ? from session_events
+         where experiment_id = ? and session_id = ? and event_type = 'game_action_accepted'
+         order by event_id desc limit 1), 0)",
+    )
+    .bind(turn_id)
+    .bind(experiment_id)
+    .bind(session_id)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
 impl SqliteExperimentStore {
+    /// Resolves an interrupted COMMIT after any prior SQLite writer has released its transaction.
+    pub(crate) async fn session_transition_committed(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+        turn_id: &str,
+    ) -> Result<bool> {
+        #[cfg(test)]
+        if self
+            .fail_transition_probe_once
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(sqlx::Error::PoolTimedOut.into());
+        }
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let committed =
+            latest_transition_matches(&mut tx, experiment_id, session_id, turn_id).await?;
+        Ok(committed)
+    }
+
     /// Appends an event with the next index on its session timeline.
     pub(crate) async fn append_session_event(&self, event: SessionEventRecord) -> Result<i64> {
         let occurred_at = now_iso();
@@ -154,7 +221,12 @@ impl SqliteExperimentStore {
         Ok(event_index)
     }
 
-    /// Commits an ordered event batch and optional terminal value in one transaction.
+    /// Atomically commits one event batch and its terminal value, if any.
+    ///
+    /// A `turn_id` on the first accepted-action event identifies retries of the same
+    /// prepared batch while the coordinator holds the live room lock. The check runs
+    /// under the SQLite writer reservation before checking lifecycle, so a retried
+    /// terminal action is idempotent.
     pub(crate) async fn commit_session_transition(
         &self,
         events: Vec<SessionEventRecord>,
@@ -172,7 +244,12 @@ impl SqliteExperimentStore {
             bail!("transition events must belong to one session");
         }
         let occurred_at = now_iso();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(turn_id) = first.payload.get("turn_id").and_then(Value::as_str) {
+            if latest_transition_matches(&mut tx, &experiment_id, session_id, turn_id).await? {
+                return Ok(TransitionCommit::Committed);
+            }
+        }
         let game_time_ms =
             stored_game_time_ms(&mut tx, &experiment_id, session_id, &occurred_at).await?;
         let lifecycle = sqlx::query_scalar::<_, String>(
@@ -220,7 +297,16 @@ impl SqliteExperimentStore {
         if let Some(session_end) = session_end.as_ref() {
             persist_terminal_value(&mut tx, &experiment_id, session_id, session_end).await?;
         }
-        tx.commit().await?;
+        tx.commit().await.map_err(TransitionCommitUnknown)?;
+        #[cfg(test)]
+        {
+            let fault = self.transition_ack_fault.lock().unwrap().take();
+            if let Some(fault) = fault {
+                let _ = fault.committed.send(());
+                let _ = fault.release.await;
+                return Err(TransitionCommitUnknown(sqlx::Error::PoolTimedOut).into());
+            }
+        }
         Ok(TransitionCommit::Committed)
     }
 

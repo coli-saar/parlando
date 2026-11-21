@@ -43,8 +43,9 @@ use parlando::{
         run_dashboard, AudioFrame, DashboardHealth, DashboardMetric, DashboardPanel,
         DashboardSeries, DashboardSnapshot, DashboardTile,
     },
-    ActionRejection, Game, GameInitializationContext, GameMetadata, PlayerRole, Server,
+    Game, GameFactory, GameMetadata, PlayerRole, Server,
 };
+use parlando_stress_fixture::StressAction;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
@@ -56,7 +57,11 @@ use tokio::{
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-const HARNESS_REVISION: u32 = 5;
+#[path = "runtime_stress/backend.rs"]
+mod backend;
+use backend::{GameBackend, StressGame, StressGameFactory};
+
+const HARNESS_REVISION: u32 = 6;
 const PROFILE: &str = "resident-capacity-v1";
 const PROVIDER_KEY: &str = "runtime-stress-provider-key";
 const FRAME_INTERVAL: Duration = Duration::from_millis(20);
@@ -78,6 +83,12 @@ struct Args {
     /// Participant composition used for every session.
     #[arg(long, value_enum, default_value_t = Pairing::HumanAgent)]
     pairing: Pairing,
+    /// Fixture execution backend.
+    #[arg(long, value_enum, default_value_t = GameBackend::Native)]
+    game_backend: GameBackend,
+    /// Compiled fixture component, required for the Wasm backend.
+    #[arg(long)]
+    wasm_module: Option<PathBuf>,
     /// Disable the terminal dashboard without changing the workload.
     #[arg(long)]
     headless: bool,
@@ -100,154 +111,71 @@ enum Pairing {
     HumanHuman,
 }
 
-/// Versioned fixture state with bounded history and representative padding.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct StressState {
-    counts: [u64; 2],
-    last_sequence: [u64; 2],
-    complete: bool,
-    history: VecDeque<(String, u64)>,
-    padding: String,
-}
-
-/// Monotonic fixture action used by humans and the compiled agent.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-enum StressAction {
-    Mark { sequence: u64, finish: bool },
-}
-
-/// Role-specific state projection used to verify reconnect snapshots.
-#[derive(Clone, Debug, Serialize)]
-struct StressObservation {
-    role: String,
-    counts: [u64; 2],
-    last_sequence: [u64; 2],
-    complete: bool,
-    padding: String,
-}
-
-/// Terminal fixture result.
-#[derive(Clone, Debug, Serialize)]
-struct StressCompletion {
-    total_actions: u64,
-}
-
-/// Cheap deterministic game compiled only into the stress executable.
-#[derive(Clone)]
-struct StressGame;
-
-struct StressGameFactory;
-
-impl parlando::GameFactory for StressGameFactory {
-    type Game = StressGame;
-
-    /// Creates one stateless stress-session game.
-    fn create(&self, _context: parlando::GameSessionContext) -> Result<StressGame> {
-        Ok(StressGame)
-    }
-}
-
-impl Game for StressGame {
-    type Config = Value;
-    type State = StressState;
-    type Action = StressAction;
-    type Observation = StressObservation;
-    type Completion = StressCompletion;
-
-    /// Creates one stateless stress-game value for an admitted session.
-    /// Creates one fixed-shape state value per admitted session.
-    fn initial_state(&self, _: GameInitializationContext<'_, Value>) -> Result<StressState> {
-        Ok(StressState {
-            counts: [0, 0],
-            last_sequence: [0, 0],
-            complete: false,
-            history: VecDeque::new(),
-            padding: "p".repeat(2048),
-        })
-    }
-
-    /// Rejects stale, duplicate, and post-terminal actions through the normal path.
-    fn apply_action(
-        &self,
-        state: &StressState,
-        action: &StressAction,
-        actor: PlayerRole,
-    ) -> std::result::Result<StressState, ActionRejection> {
-        if state.complete {
-            return Err(ActionRejection::new("session_complete"));
-        }
-        let StressAction::Mark { sequence, finish } = action;
-        let index = usize::from(actor == PlayerRole::B);
-        if *sequence <= state.last_sequence[index] {
-            return Err(ActionRejection::new("stale_or_duplicate_sequence"));
-        }
-        let mut next = state.clone();
-        next.counts[index] += 1;
-        next.last_sequence[index] = *sequence;
-        next.complete = *finish;
-        next.history.push_back((actor.as_str().into(), *sequence));
-        while next.history.len() > 32 {
-            next.history.pop_front();
-        }
-        Ok(next)
-    }
-
-    /// Returns the recipient role alongside all transition-verification fields.
-    fn observation(&self, state: &StressState, player: PlayerRole) -> StressObservation {
-        StressObservation {
-            role: player.as_str().into(),
-            counts: state.counts,
-            last_sequence: state.last_sequence,
-            complete: state.complete,
-            padding: state.padding.clone(),
-        }
-    }
-
-    /// Advertises representative terminal and nonterminal actions.
-    fn available_actions(&self, _: &StressState, _: PlayerRole) -> Option<Vec<StressAction>> {
-        Some(vec![
-            StressAction::Mark {
-                sequence: 1,
-                finish: false,
-            },
-            StressAction::Mark {
-                sequence: 1,
-                finish: true,
-            },
-        ])
-    }
-
-    /// Produces a terminal summary only after completion.
-    fn completion(&self, state: &StressState) -> Option<StressCompletion> {
-        state.complete.then_some(StressCompletion {
-            total_actions: state.counts.iter().sum(),
-        })
-    }
-}
-
 /// Deterministic session-local agent.
 struct StressAgent {
+    role: PlayerRole,
     sequence: u64,
     pending: bool,
     reply_tag: String,
 }
 
+/// Adapts the fixture agent's typed action and observation inputs to each backend.
+trait StressAgentGame: Game {
+    /// Adapts a typed action to the chosen backend.
+    fn agent_action(action: StressAction) -> Result<Self::Action>;
+
+    /// Reads the last accepted sequence for the agent's own role.
+    fn observed_sequence(observation: &Self::Observation, role: PlayerRole) -> Result<u64>;
+}
+
+impl StressAgentGame for StressGame {
+    /// Native mechanics consume the typed action directly.
+    fn agent_action(action: StressAction) -> Result<StressAction> {
+        Ok(action)
+    }
+
+    /// Reads the sequence directly from the native role view.
+    fn observed_sequence(observation: &Self::Observation, role: PlayerRole) -> Result<u64> {
+        Ok(observation.last_sequence()[usize::from(role == PlayerRole::B)])
+    }
+}
+
+#[cfg(feature = "stress-wasm")]
+impl StressAgentGame for parlando::component::ComponentGame {
+    /// Encodes the fixture action directly to the component contract.
+    fn agent_action(action: StressAction) -> Result<Self::Action> {
+        Ok(Self::Action::from_typed(&action)?)
+    }
+
+    /// Decodes just the typed field needed by the local policy.
+    fn observed_sequence(observation: &Self::Observation, role: PlayerRole) -> Result<u64> {
+        #[derive(Deserialize)]
+        struct Sequences {
+            last_sequence: [u64; 2],
+        }
+
+        let view: Sequences = observation.decode()?;
+        Ok(view.last_sequence[usize::from(role == PlayerRole::B)])
+    }
+}
+
 #[async_trait]
-impl Agent<StressGame> for StressAgent {
+impl<G: StressAgentGame> Agent<G> for StressAgent {
     /// Schedules the initial agent turn.
-    async fn start(&mut self, _: StressObservation) -> Result<()> {
+    async fn start(&mut self, observation: G::Observation) -> Result<()> {
+        self.sequence = G::observed_sequence(&observation, self.role)?;
         self.pending = true;
         self.reply_tag = "initial".into();
         Ok(())
     }
-    /// Responds after role A changes game state.
+    /// Refreshes the action sequence from the committed role view.
     async fn observe_transition(
         &mut self,
         _actor: PlayerRole,
-        _: StressAction,
-        _: StressObservation,
+        _: G::Action,
+        observation: G::Observation,
     ) -> Result<()> {
+        self.sequence = G::observed_sequence(&observation, self.role)?;
         self.pending = false;
         Ok(())
     }
@@ -262,18 +190,18 @@ impl Agent<StressGame> for StressAgent {
     /// Emits one deterministic action and TTS-triggering message.
     async fn respond(
         &mut self,
-        _: Option<Vec<StressAction>>,
-    ) -> Result<Option<AgentResponse<StressAction>>> {
+        _: Option<Vec<G::Action>>,
+    ) -> Result<Option<AgentResponse<G::Action>>> {
         if !self.pending {
             return Ok(None);
         }
         self.pending = false;
         self.sequence += 1;
         Ok(Some(AgentResponse::action_and_message(
-            StressAction::Mark {
+            G::agent_action(StressAction::Mark {
                 sequence: self.sequence,
                 finish: false,
-            },
+            })?,
             format!("agent reply {}", self.reply_tag),
         )))
     }
@@ -283,7 +211,7 @@ impl Agent<StressGame> for StressAgent {
 struct StressAgentFactory;
 
 #[async_trait]
-impl AgentFactory<StressGame> for StressAgentFactory {
+impl<G: StressAgentGame> AgentFactory<G> for StressAgentFactory {
     /// Describes the compiled fixture agent for experiment selection.
     fn definition(&self) -> AgentDefinition {
         AgentDefinition {
@@ -294,8 +222,9 @@ impl AgentFactory<StressGame> for StressAgentFactory {
         }
     }
     /// Creates isolated state for one session.
-    async fn create(&self, _: AgentContext) -> Result<Box<dyn Agent<StressGame> + Send>> {
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<G> + Send>> {
         Ok(Box::new(StressAgent {
+            role: context.role,
             sequence: 0,
             pending: false,
             reply_tag: String::new(),
@@ -364,6 +293,8 @@ struct Counters {
     first_failure: Mutex<Option<String>>,
     room_failures: Mutex<Vec<bool>>,
     rates: Mutex<RateHistory>,
+    steady_actions_sent: AtomicU64,
+    steady_action_latencies: Mutex<Vec<Duration>>,
 }
 
 /// Bounded rolling throughput samples rendered by the dashboard.
@@ -385,6 +316,28 @@ struct RateTotals {
 }
 
 impl Counters {
+    /// Computes nearest-rank percentiles once the workload has ended.
+    fn steady_action_to_observation(&self) -> ActionLatencyReport {
+        let mut samples = self
+            .steady_action_latencies
+            .lock()
+            .expect("action latency mutex poisoned");
+        samples.sort_unstable();
+        let percentile_ms = |percentile: usize| {
+            let rank = (samples.len() * percentile).div_ceil(100);
+            rank.checked_sub(1)
+                .map(|index| samples[index].as_secs_f64() * 1000.0)
+        };
+        let sent_count = self.steady_actions_sent.load(Ordering::Relaxed);
+        ActionLatencyReport {
+            sent_count,
+            sample_count: samples.len(),
+            unmatched_count: sent_count - samples.len() as u64,
+            p50_ms: percentile_ms(50),
+            p95_ms: percentile_ms(95),
+        }
+    }
+
     /// Records one correctness or transport failure with its session identity.
     fn fail(&self, session: usize, error: &anyhow::Error) {
         self.failures.fetch_add(1, Ordering::Relaxed);
@@ -472,6 +425,17 @@ struct WorkloadReport {
     first_failure: Option<String>,
 }
 
+/// Latencies of matching steady-phase action and observation pairs on participant A's game socket.
+#[derive(Debug, Serialize)]
+struct ActionLatencyReport {
+    sent_count: u64,
+    sample_count: usize,
+    /// Sent actions with no matching observation by the end of steady, including late observations.
+    unmatched_count: u64,
+    p50_ms: Option<f64>,
+    p95_ms: Option<f64>,
+}
+
 /// SQLite row and file verification results.
 #[derive(Clone, Debug, Default, Serialize)]
 struct DatabaseReport {
@@ -499,6 +463,7 @@ struct Report {
     sessions: usize,
     seconds: u64,
     pairing: Pairing,
+    game_backend: GameBackend,
     experiment_id: &'static str,
     config_revision: Option<i64>,
     provider: ProviderReady,
@@ -507,6 +472,7 @@ struct Report {
     server: ChildReport,
     providers: ChildReport,
     workload: WorkloadReport,
+    steady_action_to_observation: ActionLatencyReport,
     database: DatabaseReport,
     cleanup_ms: u64,
     success: bool,
@@ -541,6 +507,12 @@ async fn supervise(args: Args) -> Result<()> {
     if args.seconds < 10 {
         bail!("--seconds must be at least 10");
     }
+    args.game_backend.validate(args.wasm_module.as_deref())?;
+    let wasm_module_arg = args
+        .wasm_module
+        .as_deref()
+        .map(|path| path.to_str().context("Wasm component path is not UTF-8"))
+        .transpose()?;
     workload_preflight(args.sessions, args.pairing)?;
     let limits = descriptor_preflight(args.sessions, args.pairing)?;
     let run_id = format!(
@@ -569,18 +541,25 @@ async fn supervise(args: Args) -> Result<()> {
     )?;
     let provider = wait_readiness(&readiness, &mut providers).await?;
     let address = reserve_address().await?;
-    let mut server = spawn_logged(
-        &executable,
-        &[
-            "__server",
-            &address.to_string(),
-            &database.display().to_string(),
-        ],
-        &run_dir,
-        "server",
-    )?;
+    let address_arg = address.to_string();
+    let database_arg = database.display().to_string();
+    let mut server_args = vec![
+        "__server",
+        &address_arg,
+        &database_arg,
+        args.game_backend.as_str(),
+    ];
+    if let Some(path) = wasm_module_arg {
+        server_args.push(path);
+    }
+    let mut server = spawn_logged(&executable, &server_args, &run_dir, "server")?;
     let base = format!("http://{address}");
-    wait_health(&base, &mut server).await?;
+    wait_health(&base, &mut server).await.with_context(|| {
+        format!(
+            "server startup failed; see {}",
+            run_dir.join("server.stderr.log").display()
+        )
+    })?;
 
     let setup_result =
         configure_experiment(&base, &provider, args.pairing, args.sessions, &run_dir).await;
@@ -648,6 +627,7 @@ async fn supervise(args: Args) -> Result<()> {
         sessions: args.sessions,
         seconds: args.seconds,
         pairing: args.pairing,
+        game_backend: args.game_backend,
         experiment_id: "runtime-stress",
         config_revision: admin.as_ref().map(|auth| auth.config_revision),
         provider,
@@ -656,6 +636,7 @@ async fn supervise(args: Args) -> Result<()> {
         server: server_report,
         providers: provider_report,
         workload: counters.report(),
+        steady_action_to_observation: counters.steady_action_to_observation(),
         database: database_report.unwrap_or_default(),
         cleanup_ms,
         success: error.is_none(),
@@ -786,13 +767,40 @@ async fn server_child(arguments: &[String]) -> Result<()> {
         .context("missing server address")?
         .parse()?;
     let database = PathBuf::from(arguments.get(1).context("missing database path")?);
+    let backend = GameBackend::from_str(arguments.get(2).context("missing game backend")?, false)
+        .map_err(anyhow::Error::msg)?;
+    let wasm_module = arguments.get(3).map(Path::new);
+    backend.validate(wasm_module)?;
+    match backend {
+        GameBackend::Native => serve_fixture(StressGameFactory, address, &database).await,
+        #[cfg(feature = "stress-wasm")]
+        GameBackend::Wasm => {
+            let factory = parlando::component::ComponentGameFactory::load(
+                wasm_module.context("missing Wasm component path")?,
+            )?;
+            serve_fixture(factory, address, &database).await
+        }
+        #[cfg(not(feature = "stress-wasm"))]
+        GameBackend::Wasm => bail!("runtime-stress was built without Wasm support"),
+    }
+}
+
+/// Serves the same network workload using either production game factory.
+async fn serve_fixture<F: GameFactory>(
+    factory: F,
+    address: SocketAddr,
+    database: &Path,
+) -> Result<()>
+where
+    F::Game: StressAgentGame,
+{
     let metadata = GameMetadata {
         id: "runtime-stress".into(),
         name: "Runtime Stress Fixture".into(),
         version: semver::Version::new(1, 0, 0),
         build_manifest: json!({"harness_revision": HARNESS_REVISION}),
     };
-    Server::new(StressGameFactory, metadata)?
+    Server::new(factory, metadata)?
         .database_url(format!("sqlite:///{}", database.display()))
         .agent(StressAgentFactory)?
         .serve(address)
@@ -1269,11 +1277,13 @@ async fn drive_session(
     let mut next_action = Instant::now() + Duration::from_secs(3);
     let mut next_heartbeat = Instant::now() + Duration::from_secs(1);
     let mut next_frame = Instant::now();
+    let total = deadline.duration_since(measured_start);
+    let mut pending_actions = BTreeMap::new();
     while Instant::now() < deadline && !cancelled.load(Ordering::Relaxed) {
-        let phase = phase_name(
-            measured_start.elapsed(),
-            deadline.duration_since(measured_start),
-        );
+        let phase = phase_name(measured_start.elapsed(), total);
+        if phase != "steady" {
+            pending_actions.clear();
+        }
         if phase == "drain" {
             finish_session(&mut game_a, &staged.room, sequence, &counters).await?;
             break;
@@ -1282,8 +1292,9 @@ async fn drive_session(
             let _ = game_a.close(None).await;
             let _ = audio_a.close(None).await;
             game_a = game_socket(&client, &base, &ws, &staged.room, &staged.a).await?;
-            audio_a = audio_socket(&client, &base, &ws, &staged.room, &staged.a).await?;
+            // The upgrade can return before the server clears the pause, which blocks audio tickets.
             read_participant_state(&mut game_a, "active").await?;
+            audio_a = audio_socket(&client, &base, &ws, &staged.room, &staged.a).await?;
             send_json(&mut game_a, json!({"type":"ready"})).await?;
             counters.reconnects.fetch_add(2, Ordering::Relaxed);
             reconnected = true;
@@ -1325,7 +1336,13 @@ async fn drive_session(
             }
         }
         if Instant::now() >= next_action {
-            send_json(&mut game_a, json!({"type":"action","action":{"type":"mark","sequence":sequence,"finish":false}})).await?;
+            let action = json!({"type":"action","action":{"type":"mark","sequence":sequence,"finish":false}});
+            let sent_at = Instant::now();
+            send_json(&mut game_a, action).await?;
+            if phase_name(sent_at.duration_since(measured_start), total) == "steady" {
+                counters.steady_actions_sent.fetch_add(1, Ordering::Relaxed);
+                pending_actions.insert(u64::from(sequence), sent_at);
+            }
             counters.actions.fetch_add(1, Ordering::Relaxed);
             next_action += Duration::from_secs(5);
         }
@@ -1338,10 +1355,23 @@ async fn drive_session(
         }
         sequence = sequence.wrapping_add(1);
         next_frame += FRAME_INTERVAL;
-        if next_frame > Instant::now() {
+        let now = Instant::now();
+        if phase_name(now.duration_since(measured_start), total) == "steady" {
+            let steady_end = measured_start + total / 2;
+            read_steady_observations(
+                &mut game_a,
+                &staged.room,
+                next_frame.min(steady_end),
+                steady_end,
+                &mut pending_actions,
+                &counters,
+            )
+            .await?;
+            next_frame = next_frame.max(now);
+        } else if next_frame > now {
             time::sleep_until(next_frame.into()).await;
         } else {
-            next_frame = Instant::now();
+            next_frame = now;
         }
     }
     let _ = game_a.close(None).await;
@@ -1354,6 +1384,60 @@ async fn drive_session(
     }
     counters.finished_sessions.fetch_add(1, Ordering::Relaxed);
     Ok(())
+}
+
+/// Polls participant A's observations during PCM pacing and correlates each accepted action once.
+async fn read_steady_observations(
+    socket: &mut Socket,
+    room: &str,
+    next_frame: Instant,
+    steady_end: Instant,
+    pending: &mut BTreeMap<u64, Instant>,
+    counters: &Counters,
+) -> Result<()> {
+    let frame_timer = time::sleep_until(next_frame.into());
+    tokio::pin!(frame_timer);
+    loop {
+        let frame = tokio::select! {
+            _ = &mut frame_timer => return Ok(()),
+            frame = socket.next() => frame.context("game socket closed during steady phase")??,
+        };
+        let received_at = Instant::now();
+        if received_at >= steady_end {
+            return Ok(());
+        }
+        let Message::Text(text) = frame else {
+            continue;
+        };
+        let payload: Value = serde_json::from_str(&text)?;
+        if payload["type"] == "error" {
+            bail!("game socket error during steady phase: {payload}");
+        }
+        if let Some(sent_at) =
+            observed_action_sequence(room, &payload).and_then(|sequence| pending.remove(&sequence))
+        {
+            counters
+                .steady_action_latencies
+                .lock()
+                .expect("action latency mutex poisoned")
+                .push(received_at.duration_since(sent_at));
+        }
+    }
+}
+
+/// Identifies a nonterminal A mark from its action and resulting role-A observation.
+fn observed_action_sequence(room: &str, payload: &Value) -> Option<u64> {
+    let action = &payload["action"];
+    let observation = &payload["observation"];
+    let sequence = action["sequence"].as_u64()?;
+    (payload["type"] == "transition"
+        && payload["public_session_id"] == room
+        && payload["actor"] == "A"
+        && action["type"] == "mark"
+        && action["finish"] == false
+        && observation["role"] == "A"
+        && observation["last_sequence"][0].as_u64() == Some(sequence))
+    .then_some(sequence)
 }
 
 /// Keeps both participants connected until the server durably accepts session completion.
@@ -1868,8 +1952,10 @@ fn print_report_summary(report: &Report, path: &Path) {
     let run_directory = path.parent().unwrap_or_else(|| Path::new("."));
     eprintln!();
     eprintln!(
-        "Parlando runtime stress: {outcome} — {pairing}, {} {session_noun} for {}s",
-        report.sessions, report.seconds
+        "Parlando runtime stress: {outcome} — {}, {pairing}, {} {session_noun} for {}s",
+        report.game_backend.as_str(),
+        report.sessions,
+        report.seconds
     );
     if report.success {
         eprintln!(
@@ -1896,6 +1982,18 @@ fn print_report_summary(report: &Report, path: &Path) {
         rate(report.workload.actions),
         rate(report.workload.tts_audio)
     );
+    let latency = &report.steady_action_to_observation;
+    if let (Some(p50), Some(p95)) = (latency.p50_ms, latency.p95_ms) {
+        eprintln!(
+            "  Steady action-to-observation latency: p50 {p50:.2} ms, p95 {p95:.2} ms ({}/{} sampled, {} unmatched).",
+            latency.sample_count, latency.sent_count, latency.unmatched_count
+        );
+    } else {
+        eprintln!(
+            "  Steady action-to-observation latency: 0/{} sampled, {} unmatched.",
+            latency.sent_count, latency.unmatched_count
+        );
+    }
     match report.pairing {
         Pairing::HumanHuman => eprintln!(
             "  Audio: {} of {} full-duplex relay frames verified ({:.1}%).",
@@ -1945,7 +2043,9 @@ fn print_report_summary(report: &Report, path: &Path) {
     }
     eprintln!("  Artifacts: {}", run_directory.display());
     eprintln!("  JSON report: {}", path.display());
-    if report.success {
+    if report.game_backend == GameBackend::Wasm {
+        eprintln!("  Repeat with the same Wasm module, seed and workload to compare runs.");
+    } else if report.success {
         let increased =
             (report.sessions.saturating_mul(5).saturating_add(3) / 4).max(report.sessions + 1);
         eprintln!("  Next: repeat this exact run three times to establish consistency:");
@@ -2100,6 +2200,7 @@ fn spawn_logged(
     let mut command = Command::new(executable);
     command
         .args(arguments)
+        .kill_on_drop(true)
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
     #[cfg(unix)]
@@ -2214,7 +2315,7 @@ fn sample_process(pid: u32) -> Option<(Option<u64>, Option<f64>, Option<usize>)>
     #[cfg(not(target_os = "macos"))]
     {
         let output = std::process::Command::new("ps")
-            .args(["-o", "rss=", "-o", "%cpu=", "-p", &pid.to_string()])
+            .args(["-o", "rss=", "-o", "time=", "-p", &pid.to_string()])
             .output()
             .ok()?;
         let text = String::from_utf8(output.stdout).ok()?;
@@ -2223,7 +2324,7 @@ fn sample_process(pid: u32) -> Option<(Option<u64>, Option<f64>, Option<usize>)>
             .next()
             .and_then(|value| value.parse::<u64>().ok())
             .map(|kib| kib * 1024);
-        let cpu = fields.next().and_then(|value| value.parse::<f64>().ok());
+        let cpu = fields.next().and_then(parse_process_cpu_time);
         let fds = std::fs::read_dir(format!("/proc/{pid}/fd"))
             .ok()
             .map(|items| items.count())
@@ -2241,6 +2342,23 @@ fn sample_process(pid: u32) -> Option<(Option<u64>, Option<f64>, Option<usize>)>
             });
         Some((rss, cpu, fds))
     }
+}
+
+/// Converts the cumulative ps TIME field ([days-]hours:minutes:seconds) to seconds.
+#[cfg(any(not(target_os = "macos"), test))]
+fn parse_process_cpu_time(value: &str) -> Option<f64> {
+    let (days, time) = match value.split_once('-') {
+        Some((days, time)) => (days.parse::<u64>().ok()?, time),
+        None => (0, value),
+    };
+    let mut parts = time.rsplit(':');
+    let seconds = parts.next()?.parse::<f64>().ok()?;
+    let minutes = parts.next()?.parse::<u64>().ok()?;
+    let hours = parts.next().unwrap_or("0").parse::<u64>().ok()?;
+    parts
+        .next()
+        .is_none()
+        .then_some(days as f64 * 86400.0 + hours as f64 * 3600.0 + minutes as f64 * 60.0 + seconds)
 }
 
 /// Reads resident memory, CPU time, and descriptor count using macOS libproc.
@@ -2283,10 +2401,17 @@ fn sample_macos_process(pid: u32) -> Option<(Option<u64>, Option<f64>, Option<us
     if read != size {
         return None;
     }
-    let cpu_seconds = (info.total_user + info.total_system) as f64 / 1_000_000_000.0;
+    // libproc reports absolute Mach clock ticks. Apple Silicon and Intel can use different timebases.
+    let mut scale = mach2::mach_time::mach_timebase_info { numer: 0, denom: 0 };
+    let status = unsafe { mach2::mach_time::mach_timebase_info(&mut scale) };
+    let cpu_seconds = (status == 0 && scale.denom != 0).then(|| {
+        (info.total_user + info.total_system) as f64 * f64::from(scale.numer)
+            / f64::from(scale.denom)
+            / 1e9
+    });
     let fd_bytes = unsafe { proc_pidinfo(pid as i32, 1, 0, std::ptr::null_mut(), 0) };
     let fd_count = (fd_bytes > 0).then_some(fd_bytes as usize / 8);
-    Some((Some(info.resident_size), Some(cpu_seconds), fd_count))
+    Some((Some(info.resident_size), cpu_seconds, fd_count))
 }
 
 /// Writes JSON by rename so partial readiness is never observable.
@@ -2345,6 +2470,50 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
 
+    /// Requires a matching action and observation on the expected room and role.
+    #[test]
+    fn correlates_steady_observations_with_exact_actions() {
+        let mut payload = json!({
+            "type": "transition",
+            "public_session_id": "room",
+            "actor": "A",
+            "action": {"type": "mark", "sequence": 12, "finish": false},
+            "observation": {"role": "A", "last_sequence": [12, 9]},
+        });
+        assert_eq!(observed_action_sequence("room", &payload), Some(12));
+        assert_eq!(observed_action_sequence("other", &payload), None);
+        payload["actor"] = json!("B");
+        assert_eq!(observed_action_sequence("room", &payload), None);
+        payload["actor"] = json!("A");
+        payload["observation"]["last_sequence"][0] = json!(13);
+        assert_eq!(observed_action_sequence("room", &payload), None);
+        payload["type"] = json!("participant_state");
+        payload["observation"]["last_sequence"][0] = json!(12);
+        assert_eq!(observed_action_sequence("room", &payload), None);
+    }
+
+    /// Leaves empty percentile values unset and uses nearest-rank order statistics.
+    #[test]
+    fn summarizes_steady_action_latency() {
+        let counters = Counters::default();
+        let empty = counters.steady_action_to_observation();
+        assert_eq!(empty.sample_count, 0);
+        assert_eq!(empty.p50_ms, None);
+        assert_eq!(empty.p95_ms, None);
+        counters.steady_actions_sent.store(22, Ordering::Relaxed);
+        counters
+            .steady_action_latencies
+            .lock()
+            .unwrap()
+            .extend((1..=20).rev().map(Duration::from_millis));
+        let populated = counters.steady_action_to_observation();
+        assert_eq!(populated.sent_count, 22);
+        assert_eq!(populated.sample_count, 20);
+        assert_eq!(populated.unmatched_count, 2);
+        assert_eq!(populated.p50_ms, Some(10.0));
+        assert_eq!(populated.p95_ms, Some(19.0));
+    }
+
     /// Confirms the public parser rejects hidden or implementation-detail knobs.
     #[test]
     fn public_cli_is_deliberately_small() {
@@ -2364,6 +2533,13 @@ mod tests {
         assert!(message.contains("Use --sessions 150 or lower"));
         assert!(message.contains("rust-server/config/runtime-limits.json"));
         assert!(workload_preflight(300, Pairing::HumanAgent).is_ok());
+    }
+
+    /// Verifies ps CPU time is reported in seconds across minute, hour and day formats.
+    #[test]
+    fn process_cpu_time_units() {
+        assert_eq!(parse_process_cpu_time("01:02.5"), Some(62.5));
+        assert_eq!(parse_process_cpu_time("1-01:02:03"), Some(90123.0));
     }
 
     /// Confirms phase rounding retains the requested measured duration.
@@ -2454,3 +2630,7 @@ mod tests {
         assert_eq!(receiver.borrow().phase.as_deref(), Some("failed"));
     }
 }
+
+#[cfg(all(test, feature = "stress-wasm"))]
+#[path = "runtime_stress/component_tests.rs"]
+mod component_tests;

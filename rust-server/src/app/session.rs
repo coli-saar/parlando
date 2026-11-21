@@ -135,6 +135,8 @@ pub(super) struct LiveSession<G: Game> {
     pub agent_inbox: Option<mpsc::Sender<AgentObservation<G>>>,
     /// Serializes membership, lifecycle, and publication of committed game input.
     pub transition_lock: Arc<Mutex<()>>,
+    /// Releases submitting callers when storage cannot yet prove the current turn's outcome.
+    pub action_commit_pending: tokio::sync::watch::Sender<bool>,
     pub participants: HashMap<String, SessionParticipant>,
     timing: LiveSessionTiming,
 }

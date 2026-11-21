@@ -83,14 +83,14 @@ impl RewardFunction<CueChoiceGame> for CorrectnessReward {
     }
 
     /// Accepts only the empty parameter object used by this fixed objective.
-    fn validate_parameters(&self, parameters: &Value) -> Result<()> {
+    fn configure(&self, parameters: &Value) -> Result<Self> {
         anyhow::ensure!(
             parameters
                 .as_object()
                 .is_some_and(serde_json::Map::is_empty),
             "cue-choice correctness reward accepts no parameters"
         );
-        Ok(())
+        Ok(Self)
     }
 
     /// Rewards only the learner and only for its terminal choice.
@@ -101,7 +101,6 @@ impl RewardFunction<CueChoiceGame> for CorrectnessReward {
         actor: PlayerRole,
         action: &CueChoiceAction,
         completion: Option<&CueChoiceCompletion>,
-        _parameters: &Value,
     ) -> RoleRewards {
         let player_a = match (actor, action, completion) {
             (PlayerRole::A, CueChoiceAction::Choose { .. }, Some(result)) if result.correct => 1.0,

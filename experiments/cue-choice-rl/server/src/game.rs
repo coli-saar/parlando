@@ -88,7 +88,7 @@ pub enum CueChoiceAction {
 }
 
 /// Complete role-safe observation; player B never receives the private cue.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "view", rename_all = "snake_case")]
 pub enum CueChoiceObservation {
     Waiting,

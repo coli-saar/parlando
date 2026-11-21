@@ -273,20 +273,27 @@ session inference and training.
 Rewards are separate from `Game` because one game may support several learning
 objectives, while evaluation-only games need none. A reward function receives
 the authoritative state transition after an accepted action and returns one
-number for each fixed role:
+number for each fixed role. Implement `configure` to parse and validate the
+YAML parameters once during run setup. The same configured reward serves every
+training session in the run.
 
 ```rust,ignore
 use parlando::{PlayerRole, RewardFunction, RoleRewards};
 
-struct WinLossReward;
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WinLossReward {
+    win: f64,
+}
 
 impl RewardFunction<MyGame> for WinLossReward {
     fn id(&self) -> &'static str { "win_loss" }
     fn version(&self) -> &'static str { "1" }
 
-    fn validate_parameters(&self, parameters: &serde_json::Value) -> anyhow::Result<()> {
-        // Parse and validate any reward-specific YAML values here.
-        Ok(())
+    fn configure(&self, parameters: &serde_json::Value) -> anyhow::Result<Self> {
+        let reward: Self = serde_json::from_value(parameters.clone())?;
+        anyhow::ensure!(reward.win.is_finite() && reward.win > 0.0, "win must be positive");
+        Ok(reward)
     }
 
     fn rewards(
@@ -296,15 +303,25 @@ impl RewardFunction<MyGame> for WinLossReward {
         _actor: PlayerRole,
         _action: &MyAction,
         completion: Option<&MyCompletion>,
-        _parameters: &serde_json::Value,
     ) -> RoleRewards {
         match completion.and_then(|value| value.winner) {
-            Some(PlayerRole::A) => RoleRewards { player_a: 1.0, player_b: -1.0 },
-            Some(PlayerRole::B) => RoleRewards { player_a: -1.0, player_b: 1.0 },
+            Some(PlayerRole::A) => RoleRewards { player_a: self.win, player_b: -self.win },
+            Some(PlayerRole::B) => RoleRewards { player_a: -self.win, player_b: self.win },
             None => RoleRewards { player_a: 0.0, player_b: 0.0 },
         }
     }
 }
+```
+
+Register the implementation with `runner.reward(WinLossReward { win: 1.0 })?`
+and select it under `training` in the experiment YAML.
+
+```yaml
+training:
+  reward:
+    kind: win_loss
+    parameters:
+      win: 1.0
 ```
 
 Only the numeric `RoleRewards` enter the trajectory. Authoritative game state
@@ -316,7 +333,7 @@ does not cross the learner boundary.
 
 ```rust,ignore
 use parlando::{
-    agent::Factory as AgentFactory, CheckpointId, RLAgent, RLTrainingContext,
+    agent::Factory as AgentFactory, CheckpointId, Game, RLAgent, RLTrainingContext,
     TrainingBatch,
 };
 
@@ -345,9 +362,9 @@ impl RLAgent<MyGame> for MyLearner {
         &mut self,
         context: &RLTrainingContext,
         base: &CheckpointId,
-        batch: TrainingBatch,
+        batch: TrainingBatch<<MyGame as Game>::Observation, <MyGame as Game>::Action>,
     ) -> anyhow::Result<CheckpointId> {
-        // Decode batch.steps, update from `base`, and publish a new checkpoint.
+        // Update from typed batch.steps and publish a new checkpoint.
         train_policy(context, base, batch).await
     }
 }
@@ -359,7 +376,10 @@ optional available actions, then return typed `G::Action` values. Parlando does
 not define a game-independent observation vector; encoding belongs in your
 learner.
 
-`TrainingBatch` contains ordered action transitions for the named learner. Each
+Local learners receive the game’s observation and action types directly in
+`TrainingBatch`. Registering a learner requires an observation type that implements
+`DeserializeOwned` so Parlando can reconstruct a pending update from existing
+JSON result files after a restart. Each
 step includes the role-safe observation, available actions, chosen action,
 acceptance or rejection, per-role reward for accepted actions, next role-safe
 observation, terminal flag, scenario, role, checkpoint, and stable run/plan/

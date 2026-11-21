@@ -112,6 +112,7 @@ async fn game_factory_creates_exactly_one_instance_per_planned_session() {
     .agent(TinyAgentFactory {
         events: Arc::new(Mutex::new(Vec::new())),
         fail_role: None,
+        increments: vec![1],
     })
     .unwrap();
 
@@ -190,4 +191,73 @@ async fn decision_loop_persists_the_cause_and_exact_counters() {
         assert_eq!(result["accepted_actions"], 1);
         assert_eq!(result["completion"].is_object(), status == "completed");
     }
+}
+
+/// The runner uses role views from accepted steps and distinguishes rejections from faults.
+#[tokio::test]
+async fn game_step_rejections_and_faults_have_distinct_session_effects() {
+    let temporary = TempDir::new().unwrap();
+    let output = temporary.path().join("run");
+    let yaml_path = temporary.path().join("experiment.yaml");
+    let yaml = experiment_yaml(&output)
+        .replace("target: 1", "target: 2")
+        .replace("decisions: 4", "decisions: 5")
+        .replace("trace: decisions", "trace: full");
+    tokio::fs::write(&yaml_path, yaml).await.unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let summary = test_runner_with_increments(events.clone(), vec![0, 1, u8::MAX])
+        .run_yaml(yaml_path)
+        .await
+        .unwrap();
+    assert_eq!(summary.failed, 1);
+    let path = std::fs::read_dir(output.join("results"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let result: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["failure_phase"], "step");
+    assert_eq!(result["failure_role"], "A");
+    assert_eq!(result["diagnostic"], "guest step failed");
+    assert_eq!(result["decisions"], 5);
+    assert_eq!(result["accepted_actions"], 1);
+    assert_eq!(result["rejected_actions"], 1);
+    let trace = result["trace"].as_array().unwrap();
+    assert_eq!(trace.len(), 4);
+    assert_eq!(trace[0]["rejection"]["code"], "zero_increment");
+    assert_eq!(
+        trace[1]["input"]["observation"],
+        json!({"count": 0, "role": "B"})
+    );
+    assert_eq!(
+        trace[2]["input"]["observation"],
+        json!({"count": 0, "role": "A"})
+    );
+    assert_eq!(
+        trace[3]["input"]["observation"],
+        json!({"count": 1, "role": "B"})
+    );
+    assert_eq!(
+        trace[1]["input"]["available_actions"],
+        json!([{"amount": 2}])
+    );
+    assert_eq!(
+        trace[3]["input"]["available_actions"],
+        json!([{"amount": 3}])
+    );
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        [
+            "create:A",
+            "create:B",
+            "start:A",
+            "start:B",
+            "observe:A",
+            "observe:B",
+            "shutdown:A",
+            "shutdown:B",
+        ]
+    );
 }
