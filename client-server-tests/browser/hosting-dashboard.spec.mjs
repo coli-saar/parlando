@@ -203,29 +203,29 @@ test('Games deploys and updates packages, manages activation, and opens the game
   await page.goto('http://hosting.test/admin');
   await expect(page.getByText('No games have been deployed.')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Users' })).toBeHidden();
-  await page.getByText('Deploy or update a game', { exact: true }).click();
-  const input = page.getByLabel('Game build ZIP');
-  const deploy = page.getByRole('button', { name: 'Deploy game' });
+  await page.getByText('Upload a game or agent', { exact: true }).click();
+  const input = page.getByLabel('Build ZIP');
+  const upload = page.getByRole('button', { name: 'Upload package' });
   const notice = page.getByRole('status');
   await expect(input).toHaveAttribute('accept', '.zip');
   await input.setInputFiles({ name: 'game.yaml', mimeType: 'text/yaml', buffer: Buffer.from('name: test') });
-  await deploy.click();
-  await expect(notice).toHaveText('Choose a game build ZIP file.');
+  await upload.click();
+  await expect(notice).toHaveText('Choose a game or agent ZIP file.');
   expect(uploads).toHaveLength(0);
 
   const file = { name: 'example.zip', mimeType: 'application/octet-stream', buffer: zip };
   await input.setInputFiles(file);
-  await deploy.click();
+  await upload.click();
   await expect(notice).toHaveText('Invalid game ZIP');
   await expect(input).toHaveValue(/example\.zip$/);
-  await deploy.click();
+  await upload.click();
   await expect(notice).toHaveText('Deployed Example Game 1.0.0 (aaaaaaaaaaaa).');
 
   await page.getByRole('button', { name: 'Update example' }).click();
   await expect(input).toBeFocused();
   await expect(page.getByText('Updating Example Game (example).')).toBeVisible();
   await input.setInputFiles(file);
-  await page.getByRole('button', { name: 'Update game', exact: true }).click();
+  await upload.click();
   await expect(page.getByRole('cell', { name: '2.0.0' })).toBeVisible();
   expect(uploads).toEqual([
     '/api/hosting/packages',

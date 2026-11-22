@@ -158,7 +158,7 @@ function resetUpload() {
   byId("publish-form").reset();
   byId("upload-target").textContent = "";
   byId("cancel-update").hidden = true;
-  byId("submit-upload").textContent = "Deploy game";
+  byId("submit-upload").textContent = "Upload package";
 }
 
 // Scopes the upload to the selected game so the server can reject a mismatched ZIP.
@@ -167,7 +167,7 @@ function openUpdate(game) {
   state.uploadGame = game.id;
   byId("upload-target").textContent = `Updating ${game.name} (${game.id}).`;
   byId("cancel-update").hidden = false;
-  byId("submit-upload").textContent = "Update game";
+  byId("submit-upload").textContent = "Upload package";
   byId("publish-game").open = true;
   byId("publish-form").elements.archive.focus();
 }
@@ -345,16 +345,16 @@ onSubmit("cli-form", async form => {
 // Sends the ZIP to the server, which validates its contents and reads its manifest.
 onSubmit("publish-form", async form => {
   const [archive] = form.elements.archive.files;
-  if (!archive || !/\.zip$/i.test(archive.name)) throw new Error("Choose a game build ZIP file.");
+  if (!archive || !/\.zip$/i.test(archive.name)) throw new Error("Choose a game or agent ZIP file.");
   if (archive.size > UPLOAD_LIMIT) throw new Error("The ZIP exceeds the 64 MiB upload limit.");
   const game = state.uploadGame;
   const path = game ? `/packages/${encodeURIComponent(game)}` : "/packages";
-  notice("Uploading and validating the game build ZIP…");
+  notice("Uploading and validating the build ZIP…");
   const result = await request(path, { method: "PUT", body: archive, contentType: "application/zip" });
   resetUpload();
   byId("publish-game").open = false;
   await refreshGames();
-  notice(`Deployed ${result.name || result.game} ${result.version} (${result.revision.slice(0, 12)}).`);
+  notice(`Deployed ${result.agent || result.name || result.game} ${result.version} (${result.revision.slice(0, 12)}).`);
 });
 
 onSubmit("account-form", async form => {

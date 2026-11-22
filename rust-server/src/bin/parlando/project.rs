@@ -158,73 +158,15 @@ impl Manifest {
         Ok(cargo)
     }
 
-    /// Builds one Rust cdylib and wraps the core module with the guest's embedded WIT metadata.
+    /// Builds the game component without enabling policy-specific Cargo features.
     fn compile_rust(&self, component: &Path) -> Result<()> {
-        let manifest_path = self
-            .root
-            .join(
-                self.cargo_manifest
-                    .as_ref()
-                    .context("manifest requires cargo_manifest")?,
-            )
-            .canonicalize()
-            .context("locating the Rust game manifest")?;
-        let output = self
-            .cargo("build")?
-            .args([
-                "--lib",
-                "--release",
-                "--target",
-                "wasm32-unknown-unknown",
-                "--message-format=json-render-diagnostics",
-            ])
-            .stdin(Stdio::null())
-            .stderr(Stdio::inherit())
-            .output()
-            .context("starting cargo to build the Rust game")?;
-        let mut candidates = Vec::new();
-        for line in String::from_utf8(output.stdout)?.lines() {
-            let message: Value =
-                serde_json::from_str(line).context("decoding Cargo JSON output")?;
-            match message["reason"].as_str() {
-                Some("compiler-message") => {
-                    if let Some(diagnostic) = message["message"]["rendered"].as_str() {
-                        eprint!("{diagnostic}");
-                    }
-                }
-                Some("compiler-artifact")
-                    if message["manifest_path"]
-                        .as_str()
-                        .is_some_and(|path| Path::new(path) == manifest_path) =>
-                {
-                    if let Some(files) = message["filenames"].as_array() {
-                        candidates.extend(
-                            files
-                                .iter()
-                                .filter_map(Value::as_str)
-                                .map(PathBuf::from)
-                                .filter(|path| path.extension().is_some_and(|ext| ext == "wasm")),
-                        );
-                    }
-                }
-                _ => {}
-            }
-        }
-        ensure!(
-            output.status.success(),
-            "Cargo component build exited with {}",
-            output.status
-        );
-        let [artifact] = candidates.as_slice() else {
-            bail!("the Rust game must build exactly one WebAssembly cdylib");
-        };
-        run(
-            build_tool("wasm-tools")
-                .args(["component", "new"])
-                .arg(artifact)
-                .arg("-o")
-                .arg(component),
-            "wasm-tools component new",
+        compile_rust_component(
+            &self.root,
+            self.cargo_manifest
+                .as_deref()
+                .context("manifest requires cargo_manifest")?,
+            &[],
+            component,
         )
     }
 
@@ -485,6 +427,82 @@ impl Manifest {
     }
 }
 
+/// Builds one Rust cdylib and wraps the core module with its embedded WIT metadata.
+pub(super) fn compile_rust_component(
+    root: &Path,
+    manifest_path: &Path,
+    features: &[String],
+    component: &Path,
+) -> Result<()> {
+    let manifest_path = root
+        .join(manifest_path)
+        .canonicalize()
+        .context("locating the Rust component manifest")?;
+    let mut cargo = build_tool("cargo");
+    cargo
+        .current_dir(root)
+        .args(["build", "--manifest-path"])
+        .arg(&manifest_path);
+    if !features.is_empty() {
+        cargo.arg("--features").arg(features.join(","));
+    }
+    let output = cargo
+        .args([
+            "--lib",
+            "--release",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--message-format=json-render-diagnostics",
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::inherit())
+        .output()
+        .context("starting cargo to build the Rust component")?;
+    let mut candidates = Vec::new();
+    for line in String::from_utf8(output.stdout)?.lines() {
+        let message: Value = serde_json::from_str(line).context("decoding Cargo JSON output")?;
+        match message["reason"].as_str() {
+            Some("compiler-message") => {
+                if let Some(diagnostic) = message["message"]["rendered"].as_str() {
+                    eprint!("{diagnostic}");
+                }
+            }
+            Some("compiler-artifact")
+                if message["manifest_path"]
+                    .as_str()
+                    .is_some_and(|path| Path::new(path) == manifest_path) =>
+            {
+                if let Some(files) = message["filenames"].as_array() {
+                    candidates.extend(
+                        files
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(PathBuf::from)
+                            .filter(|path| path.extension().is_some_and(|ext| ext == "wasm")),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    ensure!(
+        output.status.success(),
+        "Cargo component build exited with {}",
+        output.status
+    );
+    let [artifact] = candidates.as_slice() else {
+        bail!("the Rust component must build exactly one WebAssembly cdylib");
+    };
+    run(
+        build_tool("wasm-tools")
+            .args(["component", "new"])
+            .arg(artifact)
+            .arg("-o")
+            .arg(component),
+        "wasm-tools component new",
+    )
+}
+
 /// Resolves a supplied archive or the exact release declared by the current project.
 pub(super) fn resolve_archive(package: Option<PathBuf>) -> Result<PathBuf> {
     match package {
@@ -493,15 +511,6 @@ pub(super) fn resolve_archive(package: Option<PathBuf>) -> Result<PathBuf> {
             .context("pass --package to use a ZIP outside a Parlando project")?
             .archive_path(),
     }
-}
-
-/// Verifies a deployment ZIP with the same component loader used by the host.
-pub(super) fn check_package(package: &Path) -> Result<Report> {
-    let (loaded_game, metadata) = deployment::load_package(package, WasmMetering::Fuel)?;
-    Ok(Report::new(
-        format!("Package check passed for {}.", metadata.id),
-        json!({"package": package, "game": metadata.id, "component_sha256": loaded_game.digest()}),
-    ))
 }
 
 /// Protects existing files by allowing replacement only for a package of this game.
@@ -514,6 +523,11 @@ fn check_output_path(package: &Path, game_id: &str) -> Result<()> {
     ensure!(
         kind.is_file(),
         "package output {} must be a regular file",
+        package.display()
+    );
+    ensure!(
+        !deployment::is_agent_package(package)?,
+        "output file {} is an agent package",
         package.display()
     );
     let previous = deployment::package_game(package)

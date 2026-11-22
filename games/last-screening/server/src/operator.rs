@@ -1,50 +1,20 @@
 //! Deterministic cooperative partner. Its inputs are its own observation,
 //! messages from the other player, and the runtime's legal-action catalogue.
 
-use crate::agent_response::Response;
-use parlando::component::ComponentValue;
-
-use anyhow::Result;
-use async_trait::async_trait;
-use parlando::{
-    agent::{Agent, Context, Definition, Factory, Identity},
-    PlayerRole,
-};
-use serde_json::Value;
-
 #[cfg(test)]
 use crate::Screening;
-use crate::{Action, Flat, Lantern, Observation, Room, Slide, POSITIONS};
+use crate::{Action, Completion, Flat, Lantern, Room, ScreeningView, Slide, POSITIONS};
+use parlando_game_sdk::agent::{
+    Agent, Definition, InitContext, Observation, RespondReason, Response, Result,
+};
+use parlando_game_sdk::Role as PlayerRole;
 
-/// Registers a configuration-free cooperative partner that can play either seat.
-pub struct ScreeningPartnerFactory;
+type View = crate::Observation<String>;
 
-#[async_trait]
-impl Factory for ScreeningPartnerFactory {
-    /// Lists the in-process partner among the server's available agent factories.
-    fn definition(&self) -> Definition {
-        Definition {
-            id: "last_screening.operator".into(),
-            name: "Screening partner".into(),
-            description: "Shares its cue in chat and operates the booth or backstage controls."
-                .into(),
-            config_fields: Vec::new(),
-        }
-    }
-
-    /// Builds a fresh partner with the cues and controls for its assigned seat.
-    async fn create(&self, context: Context) -> Result<Box<dyn Agent + Send>> {
-        Ok(Box::new(ScreeningPartner::new(context.role)))
-    }
-
-    /// Identifies the fixed implementation independently of game sessions.
-    fn identity(&self, _: &Value) -> Result<Identity> {
-        Ok(Identity {
-            name: "ScreeningPartner".into(),
-            version: "1".into(),
-        })
-    }
-}
+/// The screening partner accepts no policy settings.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreeningPartnerConfig {}
 
 impl Room {
     /// Returns the room's cue label and mark, followed by the label it must get in chat.
@@ -57,9 +27,9 @@ impl Room {
 }
 
 /// Session-local cue exchange and control of one room.
-struct ScreeningPartner {
+pub struct ScreeningPartner {
     role: PlayerRole,
-    view: Option<Observation>,
+    view: Option<View>,
     other_mark: Option<u8>,
     announce_cue: bool,
 }
@@ -76,7 +46,7 @@ impl ScreeningPartner {
     }
 
     /// Keeps the current reel's conversation and prompts when a new reel begins.
-    fn update_view(&mut self, view: Observation) {
+    fn update_view(&mut self, view: View) {
         if view.phase == "escape" {
             self.announce_cue = false;
         } else if self.view.as_ref().is_none_or(|old| old.level != view.level) {
@@ -114,7 +84,7 @@ impl ScreeningPartner {
 
     /// Aims through the shared window and follows the reel's ship-crossing cues.
     fn projection_action(
-        view: &Observation,
+        view: &View,
         lanterns: &[Lantern; 2],
         tower: u8,
         window: u8,
@@ -182,24 +152,19 @@ fn parse_mark(text: &str, cue: &str) -> Option<u8> {
 
 impl ScreeningPartner {
     /// Receives the partner's first role-filtered cue and controls.
-    async fn start(&mut self, observation: Observation) -> Result<()> {
+    fn start(&mut self, observation: View) -> Result<()> {
         self.update_view(observation);
         Ok(())
     }
 
     /// Refreshes the view after any accepted manipulation, including its own.
-    async fn observe_transition(
-        &mut self,
-        _: PlayerRole,
-        _: Action,
-        view: Observation,
-    ) -> Result<()> {
+    fn observe_transition(&mut self, _: PlayerRole, _: Action, view: View) -> Result<()> {
         self.update_view(view);
         Ok(())
     }
 
     /// Accepts a new or corrected mark and responds to malformed or impossible cues.
-    async fn observe_message(&mut self, sender: PlayerRole, text: String) -> Result<()> {
+    fn observe_message(&mut self, sender: PlayerRole, text: String) -> Result<()> {
         let Some(view) = self.view.as_ref() else {
             return Ok(());
         };
@@ -217,7 +182,7 @@ impl ScreeningPartner {
     }
 
     /// Sends the requested cue and takes any immediately available step.
-    async fn respond(&mut self) -> Result<Option<Response<Action>>> {
+    fn respond(&mut self) -> Result<Response<Action>> {
         let action = self.next_action(
             self.view
                 .as_ref()
@@ -233,55 +198,60 @@ impl ScreeningPartner {
                     mark + 1
                 )
             });
-        Ok(match (action, message) {
-            (Some(action), Some(message)) => Some(Response::action_and_message(action, message)),
-            (Some(action), None) => Some(Response::action(action)),
-            (None, Some(message)) => Some(Response::message(message)),
-            (None, None) => None,
+        Ok(Response {
+            action,
+            message,
+            wakeup: None,
         })
     }
 }
-#[async_trait]
+#[parlando_game_sdk::agent::async_trait]
 impl Agent for ScreeningPartner {
-    /// Delivers the decoded starting view to the policy.
-    async fn start(&mut self, view: ComponentValue) -> Result<()> {
-        Self::start(self, view.decode()?).await
+    type Config = ScreeningPartnerConfig;
+    type Action = Action;
+    type View = ScreeningView<String>;
+    type Completion = Completion;
+
+    /// Declares compatible settings and the stable identity shared by both builds.
+    fn definition() -> Definition {
+        Definition {
+            id: "last_screening.operator",
+            name: "Screening partner",
+            version: "1",
+            description: "Shares its cue in chat and operates the booth or backstage controls.",
+            config_fields: "[]",
+        }
     }
 
-    /// Delivers the accepted action and this seat's decoded view.
-    async fn observe_transition(
-        &mut self,
-        actor: PlayerRole,
-        action: ComponentValue,
-        view: ComponentValue,
-    ) -> Result<()> {
-        Self::observe_transition(self, actor, action.decode()?, view.decode()?).await
+    /// Initializes private policy state for this seat.
+    async fn init(context: InitContext<Self::Config>) -> Result<Self> {
+        Ok(Self::new(context.role))
     }
 
-    /// Delivers chat without modifying game state.
-    async fn observe_message(&mut self, actor: PlayerRole, text: String) -> Result<()> {
-        Self::observe_message(self, actor, text).await
+    /// Receives the initial typed observation.
+    async fn start(&mut self, view: Self::View) -> Result<()> {
+        Self::start(self, view.into())
     }
 
-    /// Encodes a typed policy decision for the shared component host.
-    async fn respond(&mut self) -> Result<Option<parlando::agent::Response>> {
+    /// Updates the policy from the accepted action first and then any accompanying chat.
+    async fn observe(&mut self, observation: Observation<Action, Self::View>) -> Result<()> {
+        if let Some(transition) = observation.transition {
+            self.observe_transition(transition.actor, transition.action, transition.view.into())?;
+        }
+        if let Some(message) = observation.message {
+            self.observe_message(message.sender, message.text)?;
+        }
+        Ok(())
+    }
+
+    /// Produces the next typed response for the assigned seat.
+    async fn respond(&mut self, _: RespondReason) -> Result<Response<Action>> {
         Self::respond(self)
-            .await?
-            .map(Response::into_wire)
-            .transpose()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    /// Maps the transport seat to a component rules seat.
-    fn guest_role(role: PlayerRole) -> parlando_game_sdk::Role {
-        match role {
-            PlayerRole::A => parlando_game_sdk::Role::A,
-            PlayerRole::B => parlando_game_sdk::Role::B,
-        }
-    }
-
     use super::*;
     use crate::{Config, ProjectionistSeat, State};
 
@@ -297,47 +267,42 @@ mod tests {
     }
 
     /// A cue arriving early or after a typo still leaves the agent's own cue available.
-    #[tokio::test]
-    async fn early_and_corrected_marks_do_not_lose_the_other_cue() {
+    #[test]
+    fn early_and_corrected_marks_do_not_lose_the_other_cue() {
         let state = State::deal(82);
         let mut partner = ScreeningPartner::new(PlayerRole::B);
         partner
-            .start(Screening::observation(&state, guest_role(PlayerRole::B)))
-            .await
+            .start(Screening::project(&state, PlayerRole::B))
             .unwrap();
         let cue = format!("tower {}", state.cue().tower + 1);
         let window = Action::MoveFlat {
             flat: Flat::Window,
             position: state.cue().window,
         };
-        partner
-            .observe_message(PlayerRole::A, cue.clone())
-            .await
-            .unwrap();
+        partner.observe_message(PlayerRole::A, cue.clone()).unwrap();
         assert!(matches!(
-            partner.respond().await.unwrap(),
-            Some(Response::ActionAndMessage { action, message })
+            partner.respond().unwrap(),
+            Response { action: Some(action), message: Some(message), .. }
                 if action == window && message.starts_with(&format!("window {}.", state.cue().window + 1))
         ));
         partner
             .observe_message(PlayerRole::A, "What is my cue?".into())
-            .await
             .unwrap();
         assert!(matches!(
-            partner.respond().await.unwrap(),
-            Some(Response::ActionAndMessage { action, message })
+            partner.respond().unwrap(),
+            Response { action: Some(action), message: Some(message), .. }
                 if action == window && message.starts_with(&format!("window {}.", state.cue().window + 1))
         ));
-        partner.observe_message(PlayerRole::A, cue).await.unwrap();
-        assert_eq!(
-            partner.respond().await.unwrap(),
-            Some(Response::action(window))
-        );
+        partner.observe_message(PlayerRole::A, cue).unwrap();
+        let response = partner.respond().unwrap();
+        assert_eq!(response.action, Some(window));
+        assert!(response.message.is_none());
+        assert!(response.wakeup.is_none());
     }
 
     /// Two independent partners share only what each human seat could see and finish both reels.
-    #[tokio::test]
-    async fn partners_clear_both_reels_with_either_seat_assignment() {
+    #[test]
+    fn partners_clear_both_reels_with_either_seat_assignment() {
         for projectionist_seat in [ProjectionistSeat::A, ProjectionistSeat::B] {
             for seed in 0..20 {
                 let mut state = State {
@@ -348,39 +313,28 @@ mod tests {
                 let mut partners = roles.map(ScreeningPartner::new);
                 for (index, role) in roles.into_iter().enumerate() {
                     partners[index]
-                        .start(Screening::observation(&state, guest_role(role)))
-                        .await
+                        .start(Screening::project(&state, role))
                         .unwrap();
                 }
                 for _ in 0..40 {
                     for (index, role) in roles.into_iter().enumerate() {
-                        let (action, message) = match partners[index].respond().await.unwrap() {
-                            Some(Response::Action(action)) => (Some(action), None),
-                            Some(Response::Message(message)) => (None, Some(message)),
-                            Some(Response::ActionAndMessage { action, message }) => {
-                                (Some(action), Some(message))
-                            }
-                            None => (None, None),
-                        };
+                        let Response {
+                            action, message, ..
+                        } = partners[index].respond().unwrap();
                         if let Some(action) = action {
-                            state =
-                                Screening::apply_action(&state, &action, guest_role(role)).unwrap();
+                            state = Screening::apply_action(&state, &action, role).unwrap();
                             for (partner_index, recipient) in roles.into_iter().enumerate() {
                                 partners[partner_index]
                                     .observe_transition(
                                         role,
                                         action,
-                                        Screening::observation(&state, guest_role(recipient)),
+                                        Screening::project(&state, recipient),
                                     )
-                                    .await
                                     .unwrap();
                             }
                         }
                         if let Some(message) = message {
-                            partners[1 - index]
-                                .observe_message(role, message)
-                                .await
-                                .unwrap();
+                            partners[1 - index].observe_message(role, message).unwrap();
                         }
                     }
                     if Screening::outcome(&state).is_some() {

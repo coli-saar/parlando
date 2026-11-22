@@ -451,28 +451,8 @@ impl GameMetadata {
     }
 }
 
-/// Identifies one of the two active player roles in a session.
-///
-/// Parlando deliberately models two-player games. Either role may be controlled
-/// by a human participant or an agent; the role does not encode presentation or
-/// participant kind.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
-pub enum PlayerRole {
-    /// The first active player role.
-    A,
-    /// The second active player role.
-    B,
-}
-
-impl PlayerRole {
-    /// Returns the stable wire-format role name.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::A => "A",
-            Self::B => "B",
-        }
-    }
-}
+/// The SDK seat used by games, agents, participant records, and the host protocol.
+pub use parlando_game_sdk::Role as PlayerRole;
 
 /// Machine-readable reason why a game rule rejected a typed action.
 ///

@@ -1,5 +1,7 @@
 //! Author, validate, build, and run a component game from a local project.
 
+#[path = "parlando/agent_project.rs"]
+mod agent_project;
 #[path = "parlando/project.rs"]
 mod project;
 #[path = "parlando/remote.rs"]
@@ -7,6 +9,7 @@ mod remote;
 #[path = "parlando/scenarios.rs"]
 mod scenarios;
 
+use agent_project::AgentManifest;
 use anyhow::Result;
 use clap::{error::ErrorKind, Parser, Subcommand, ValueEnum};
 use parlando::{agent::grpc::RemoteAgent, deployment, ExperimentFile, ExperimentRunner};
@@ -45,17 +48,17 @@ enum Command {
         #[arg(long)]
         sdk_path: Option<PathBuf>,
     },
-    /// Compile the game and create its deployable ZIP in dist/.
+    /// Compile a game or local agent and create its deployable ZIP in dist/.
     Build {
         #[arg(long, default_value = "game.yaml")]
         manifest: PathBuf,
     },
-    /// Check a project or a built ZIP archive and verify that the game can load.
+    /// Verify a game or agent project or a built ZIP archive.
     Check {
         /// Project manifest, defaulting to game.yaml.
         #[arg(long, conflicts_with = "package")]
         manifest: Option<PathBuf>,
-        /// ZIP archive produced by parlando build.
+        /// Game or agent ZIP archive produced by parlando build.
         #[arg(long)]
         package: Option<PathBuf>,
     },
@@ -68,6 +71,9 @@ enum Command {
     Run {
         /// Agent experiment YAML.
         experiment: PathBuf,
+        /// Local agent ZIP or prebuilt WASM component. May be repeated.
+        #[arg(long = "agent")]
+        agents: Vec<PathBuf>,
         /// Project manifest to compile or load directly.
         #[arg(long, conflicts_with = "package")]
         manifest: Option<PathBuf>,
@@ -126,20 +132,49 @@ async fn execute(command: Command) -> Result<(Report, bool)> {
             path,
             sdk_path,
         } => project::scaffold(&name, lang, path.as_deref(), sdk_path.as_deref())?,
-        Command::Build { manifest } => Manifest::read(&manifest)?.build()?,
+        Command::Build { manifest } => {
+            if agent_project::is_agent_manifest(&manifest)? {
+                AgentManifest::read(&manifest)?.build()?
+            } else {
+                Manifest::read(&manifest)?.build()?
+            }
+        }
         Command::Check {
             package: Some(package),
             ..
-        } => project::check_package(&package)?,
+        } => {
+            let mut details =
+                deployment::check_archive(&package, parlando::component::WasmMetering::Fuel)?;
+            let message = match details["kind"].as_str() {
+                Some("agent") => format!(
+                    "Agent package check passed for {}.",
+                    details["id"].as_str().unwrap_or("the policy")
+                ),
+                _ => format!(
+                    "Package check passed for {}.",
+                    details["game"].as_str().unwrap_or("the game")
+                ),
+            };
+            details["package"] = json!(package);
+            Report::new(message, details)
+        }
         Command::Check {
             manifest,
             package: None,
-        } => Manifest::read(manifest.as_deref().unwrap_or(Path::new("game.yaml")))?.check()?,
+        } => {
+            let manifest = manifest.as_deref().unwrap_or(Path::new("game.yaml"));
+            if agent_project::is_agent_manifest(manifest)? {
+                AgentManifest::read(manifest)?.check()?
+            } else {
+                Manifest::read(manifest)?.check()?
+            }
+        }
         Command::Test { manifest } => Manifest::read(&manifest)?.test()?,
         Command::Run {
             manifest,
             experiment,
             package,
+            agents,
         } => {
             let experiment = ExperimentFile::read(experiment).await?;
             let metering = experiment.wasm_metering();
@@ -147,10 +182,28 @@ async fn execute(command: Command) -> Result<(Report, bool)> {
                 Some(manifest) => Manifest::read(&manifest)?.load_with_metering(metering)?,
                 None => deployment::load_package(&project::resolve_archive(package)?, metering)?,
             };
-            let summary = ExperimentRunner::new(metadata, loaded_game)?
-                .agent(RemoteAgent::new())?
-                .run_file(experiment)
-                .await?;
+            let mut factories = Vec::new();
+            for path in agents {
+                let factory = if path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+                {
+                    deployment::load_agent_package(&path, &loaded_game, &metadata.id, metering)?
+                } else {
+                    parlando::agent::wasm::WasmAgentFactory::load_with_metering(
+                        &path,
+                        &loaded_game,
+                        metering,
+                    )?
+                };
+                factories.push(factory);
+            }
+            let mut runner =
+                ExperimentRunner::new(metadata, loaded_game)?.agent(RemoteAgent::new())?;
+            for factory in factories {
+                runner = runner.agent(factory)?;
+            }
+            let summary = runner.run_file(experiment).await?;
             let report = Report::new(format!(
                 "Run {} finished: {} planned, {} completed, {} failed, {} skipped.\nCheckpoints: {}\nResults: {}",
                 summary.run_id, summary.planned, summary.completed, summary.failed, summary.skipped,

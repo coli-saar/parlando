@@ -72,11 +72,11 @@ pub struct Lantern {
 
 /// What one participant can see during a reel or the final escape.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Observation {
+pub struct Observation<Text = Cow<'static, str>> {
     /// Authored reel identifier.
-    pub level: Cow<'static, str>,
+    pub level: Text,
     /// Authored cue label, or `escape` once both exit doors unlock.
-    pub phase: Cow<'static, str>,
+    pub phase: Text,
     /// Screen shared by both rooms.
     pub screen: Screen,
     /// Every currently legal control for the observing participant.
@@ -91,11 +91,11 @@ pub struct Observation {
 /// Component projection with the public role-tagged, flat observation shape.
 #[derive(Serialize, parlando_game_sdk::GameValue)]
 #[serde(tag = "role", rename_all = "lowercase")]
-pub enum ScreeningView {
+pub enum ScreeningView<Text = Cow<'static, str>> {
     /// Screen, booth controls, and tower cue visible to the projectionist.
     Projectionist {
-        level: Cow<'static, str>,
-        phase: Cow<'static, str>,
+        level: Text,
+        phase: Text,
         screen: Screen,
         actions: Vec<Action>,
         exited: bool,
@@ -104,8 +104,8 @@ pub enum ScreeningView {
     },
     /// Screen, scenery controls, and window cue visible to the stagehand.
     Stagehand {
-        level: Cow<'static, str>,
-        phase: Cow<'static, str>,
+        level: Text,
+        phase: Text,
         screen: Screen,
         actions: Vec<Action>,
         exited: bool,
@@ -114,9 +114,9 @@ pub enum ScreeningView {
     },
 }
 
-impl From<Observation> for ScreeningView {
+impl<Text> From<Observation<Text>> for ScreeningView<Text> {
     /// Selects the compact role payload while retaining the participant's named view.
-    fn from(view: Observation) -> Self {
+    fn from(view: Observation<Text>) -> Self {
         let Observation {
             level,
             phase,
@@ -143,6 +143,46 @@ impl From<Observation> for ScreeningView {
                 exited,
                 cue,
                 flats,
+            },
+        }
+    }
+}
+
+impl<Text> From<ScreeningView<Text>> for Observation<Text> {
+    /// Restores the policy's shared view with the room-local controls grouped together.
+    fn from(view: ScreeningView<Text>) -> Self {
+        match view {
+            ScreeningView::Projectionist {
+                level,
+                phase,
+                screen,
+                actions,
+                exited,
+                cue,
+                lanterns,
+            } => Self {
+                level,
+                phase,
+                screen,
+                actions,
+                exited,
+                room: Room::Projectionist { cue, lanterns },
+            },
+            ScreeningView::Stagehand {
+                level,
+                phase,
+                screen,
+                actions,
+                exited,
+                cue,
+                flats,
+            } => Self {
+                level,
+                phase,
+                screen,
+                actions,
+                exited,
+                room: Room::Stagehand { cue, flats },
             },
         }
     }
@@ -440,6 +480,11 @@ impl Screening {
     /// Shows both rooms the projected frame. The booth holds the tower cue, while the
     /// stagehand holds the window cue needed for aiming a lantern.
     fn observation(s: &State, r: PlayerRole) -> Observation {
+        Self::project(s, r)
+    }
+
+    /// Shares the named wire layout between borrowed game output and owned policy inputs.
+    fn project<Text: From<&'static str>>(s: &State, r: PlayerRole) -> Observation<Text> {
         let light = s.visible(Slide::Light);
         let cue = s.cue();
         let room = if r == s.projectionist_seat.role() {
@@ -455,8 +500,8 @@ impl Screening {
         };
         Observation {
             actions: s.actions(r),
-            level: Cow::Borrowed(s.level()),
-            phase: Cow::Borrowed(s.phase()),
+            level: s.level().into(),
+            phase: s.phase().into(),
             screen: Screen {
                 window: s.flats.window,
                 tower: s.flats.tower,
@@ -532,6 +577,7 @@ impl parlando_game_sdk::Game for Screening {
     }
 }
 
+#[cfg(not(all(feature = "agent-component", target_arch = "wasm32")))]
 parlando_game_sdk::export!(Screening);
 
 #[cfg(test)]
@@ -924,10 +970,18 @@ mod tests {
     }
 }
 
-#[cfg(all(feature = "bundled-agents", not(target_arch = "wasm32")))]
-#[path = "../../../support/agent_response.rs"]
-mod agent_response;
-#[cfg(all(feature = "bundled-agents", not(target_arch = "wasm32")))]
+#[cfg(any(
+    all(feature = "bundled-agents", not(target_arch = "wasm32")),
+    all(feature = "agent-component", any(target_arch = "wasm32", test)),
+))]
 mod operator;
+
 #[cfg(all(feature = "bundled-agents", not(target_arch = "wasm32")))]
-pub use operator::ScreeningPartnerFactory;
+pub use operator::ScreeningPartner;
+
+/// Registers the game's authored native policy with Parlando.
+#[cfg(all(feature = "bundled-agents", not(target_arch = "wasm32")))]
+pub type ScreeningPartnerFactory = parlando::agent::native::TypedAgentFactory<ScreeningPartner>;
+
+#[cfg(all(feature = "agent-component", target_arch = "wasm32"))]
+parlando_game_sdk::export_agent!(operator::ScreeningPartner);

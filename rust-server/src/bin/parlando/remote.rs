@@ -1,4 +1,4 @@
-//! CLI entry points for deploying game packages and operating a deployment host.
+//! CLI entry points for deploying game and agent packages and operating a deployment host.
 
 use std::{env, net::SocketAddr, path::PathBuf};
 
@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 /// Deployment commands exposed at the main Parlando CLI level.
 #[derive(Subcommand)]
 pub(super) enum RemoteCommand {
-    /// Sign in through your browser to deploy games to a server.
+    /// Sign in through your browser to deploy packages to a server.
     Login {
         /// Parlando server URL (e.g. http://127.0.0.1:8000) or alias from ~/.parlando/servers.yaml.
         #[arg(
@@ -25,7 +25,7 @@ pub(super) enum RemoteCommand {
         #[arg(long)]
         no_browser: bool,
     },
-    /// Upload a built game package to a deployment host.
+    /// Upload a game or agent ZIP to a deployment host.
     Deploy {
         /// Parlando server URL (e.g. http://127.0.0.1:8000) or alias from ~/.parlando/servers.yaml.
         #[arg(
@@ -35,7 +35,7 @@ pub(super) enum RemoteCommand {
             default_value = "default"
         )]
         host: String,
-        /// ZIP archive produced by parlando build, defaulting to the game ID and version in game.yaml.
+        /// Game or agent ZIP produced by parlando build. Defaults to the game release in game.yaml.
         #[arg(long)]
         package: Option<PathBuf>,
     },
@@ -111,18 +111,18 @@ pub(super) async fn execute(command: RemoteCommand) -> Result<Report> {
             let package = project::resolve_archive(package)?;
             let origin = credentials::resolve_host(&host)?;
             let receipt = deployment::deploy_with_saved_credentials(&origin, &package).await?;
+            let mut data = serde_json::to_value(&receipt)?;
+            data["server"] = json!(origin);
+            let package_name = match receipt.agent.as_deref() {
+                Some(agent) => format!("{agent} for {}", receipt.game),
+                None => receipt.game.clone(),
+            };
             Ok(Report::new(
                 format!(
                     "Deployed {} {} to {origin}.\nRevision: {}\nComponent SHA-256: {}",
-                    receipt.game, receipt.version, receipt.revision, receipt.component_sha256
+                    package_name, receipt.version, receipt.revision, receipt.component_sha256
                 ),
-                json!({
-                    "server": origin,
-                    "game": receipt.game,
-                    "revision": receipt.revision,
-                    "version": receipt.version,
-                    "component_sha256": receipt.component_sha256,
-                }),
+                data,
             ))
         }
         RemoteCommand::Serve {

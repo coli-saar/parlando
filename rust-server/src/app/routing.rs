@@ -321,9 +321,7 @@ impl HostedRuntime {
             .await?
             .is_empty()
         {
-            return Ok(Some(
-                "This game still has unfinished participant sessions.",
-            ));
+            return Ok(Some("This game still has unfinished participant sessions."));
         }
         let registry = self
             .host
@@ -386,6 +384,7 @@ pub(crate) async fn build_hosted_game(
     database_url: &str,
     participant_base_url: &str,
     client_dist: Option<&std::path::Path>,
+    wasm_agents: Vec<crate::agent::wasm::WasmAgentFactory>,
 ) -> Result<HostedRuntime> {
     let mut config = ExperimentConfig::default();
     config.database.url = database_url.to_string();
@@ -405,7 +404,10 @@ pub(crate) async fn build_hosted_game(
         .map(str::to_string);
     config.validate()?;
     let game_id = metadata.id.clone();
-    let mut agents = Vec::new();
+    let mut agents: Vec<crate::agents::SharedAgentFactory> = wasm_agents
+        .into_iter()
+        .map(|factory| Arc::new(factory) as crate::agents::SharedAgentFactory)
+        .collect();
     crate::server::register_default_remote_agent(&mut agents);
     let options_factory: ServeOptionsFactory =
         Arc::new(move |config| crate::server::experiment_serve_options(&agents, config));

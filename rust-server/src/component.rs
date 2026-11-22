@@ -53,7 +53,7 @@ impl WasmMetering {
     }
 
     /// Supply the initial or next call budget only to stores compiled with fuel support.
-    fn begin_call(self, store: &mut Store<StoreLimits>) -> Result<()> {
+    pub(crate) fn begin_call(self, store: &mut Store<StoreLimits>) -> Result<()> {
         if self.is_fuel() {
             store.set_fuel(CALL_FUEL)?;
         }
@@ -97,23 +97,32 @@ impl LoadedGame {
         Self::compile(bytes.into(), metering)
     }
 
-    /// Reuse the compiled handle when possible. A mode switch compiles the pinned
-    /// bytes, so replacing the package on disk cannot change a running experiment.
-    pub(crate) fn with_metering(self, metering: WasmMetering) -> Result<Self> {
-        if self.metering == metering {
-            Ok(self)
-        } else {
-            Self::compile(self.bytes, metering)
-        }
+    /// Returns the instrumentation configured for this game.
+    pub(crate) fn metering(&self) -> WasmMetering {
+        self.metering
     }
 
-    /// Compile and validate the original bytes once for this execution mode.
-    fn compile(bytes: Arc<[u8]>, metering: WasmMetering) -> Result<Self> {
+    /// Changes instrumentation using the pinned bytes and preserves the checked schema.
+    pub(crate) fn with_metering(mut self, metering: WasmMetering) -> Result<Self> {
+        if self.metering != metering {
+            self.compiled = Arc::new(Self::compile_component(&self.bytes, metering)?);
+            self.metering = metering;
+        }
+        Ok(self)
+    }
+
+    /// Compiles the pinned game bytes with the selected store instrumentation.
+    fn compile_component(bytes: &[u8], metering: WasmMetering) -> Result<InstancePre<StoreLimits>> {
         let mut config = Config::new();
         config.consume_fuel(metering.is_fuel());
         let engine = Engine::new(&config)?;
-        let component = Component::from_binary(&engine, &bytes)?;
-        let compiled = Linker::new(&engine).instantiate_pre(&component)?;
+        let component = Component::from_binary(&engine, bytes)?;
+        Ok(Linker::new(&engine).instantiate_pre(&component)?)
+    }
+
+    /// Compiles the original bytes and validates the initial description.
+    fn compile(bytes: Arc<[u8]>, metering: WasmMetering) -> Result<Self> {
+        let compiled = Self::compile_component(&bytes, metering)?;
         let mut guest = Guest::instantiate(&compiled, metering)?;
         guest.metering.begin_call(&mut guest.store)?;
         let description = guest
@@ -576,7 +585,9 @@ mod tests {
         let digest = game.digest().to_owned();
         let guest = Guest::instantiate(&game.compiled, game.metering).unwrap();
         assert!(guest.store.get_fuel().unwrap() <= CALL_FUEL);
+        let schema = game.schema.clone();
         let game = game.with_metering(WasmMetering::None).unwrap();
+        assert!(Arc::ptr_eq(&game.schema, &schema));
         assert_eq!(game.digest(), digest);
         let guest = Guest::instantiate(&game.compiled, game.metering).unwrap();
         assert!(guest.store.get_fuel().is_err());

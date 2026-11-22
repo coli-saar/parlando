@@ -4,6 +4,7 @@ import { chromium, expect } from "@playwright/test";
 /** Creates or signs in the disposable rehearsal account at the supplied dashboard page. */
 async function signIn(browser, url) {
   const page = await browser.newPage();
+  page.on("pageerror", error => console.error(error));
   const username = "release-rehearsal";
   const password = process.env.PARLANDO_REHEARSAL_PASSWORD;
   if (!password) throw new Error("Missing release rehearsal account password");
@@ -28,17 +29,31 @@ async function signIn(browser, url) {
 }
 
 /** Opens the deployed game and starts a local pilot for the two participant profiles. */
-async function startPreview(browser, adminOrigin, game) {
+async function startPreview(browser, adminOrigin, game, agentId) {
   const page = await signIn(browser, `${adminOrigin}/admin`);
   const row = page.getByRole("row").filter({ has: page.getByRole("link", { name: game, exact: true }) });
   await expect(row.getByRole("cell", { name: "Active", exact: true })).toBeVisible();
   await row.getByRole("link", { name: game, exact: true }).click();
   await expect(page).toHaveURL(`${adminOrigin}/${game}`);
+  await expect(page.locator("#gameName")).toHaveText("Beacon Relay");
+  const experiment = agentId ? "with-agent" : game;
   await page.getByRole("button", { name: "New experiment" }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByRole("textbox", { name: /^Experiment ID/ }).fill(game);
+  await dialog.getByRole("textbox", { name: /^Experiment ID/ }).fill(experiment);
   await dialog.getByRole("button", { name: "Create experiment" }).click();
   await expect(dialog).toBeHidden();
+  await expect(page.getByRole("heading", { level: 1, name: experiment, exact: true })).toBeVisible();
+  if (agentId) {
+    await page.getByRole("button", { name: "Configuration", exact: true }).click();
+    await expect(page.locator("#configRevision")).toHaveText("Revision 1");
+    await page.locator("[data-agent-mode]").selectOption("human_vs_agent");
+    const factory = page.locator("[data-agent-factory]");
+    await expect(factory).toBeVisible();
+    await factory.selectOption(agentId);
+    await page.getByRole("button", { name: "Save new revision" }).click();
+    await expect(page.locator("#configRevision")).toHaveText("Revision 2");
+    await expect(factory).toHaveValue(agentId);
+  }
   await page.getByText("Start experiment", { exact: true }).click();
   await page.locator(".launch-mode").filter({ hasText: "Local preview" })
     .getByRole("button", { name: "Start", exact: true }).click();
@@ -153,12 +168,48 @@ async function approveCli(url) {
   try {
     const page = await signIn(browser, url);
     await expect(page.getByLabel("Terminal code")).toBeHidden();
-    await page.getByRole("button", {name: "Authorize CLI"}).click();
+    await page.getByRole("button", { name: "Authorize CLI" }).click();
     await expect(page.getByRole("status")).toContainText("CLI deployment authorized");
   } finally {
     await browser.close();
   }
 }
 
+/** Plays one human seat and checks that the installed policy supplies the partner's pulses. */
+async function playAgent(adminOrigin, publicOrigin, game, agentId) {
+  const browser = await chromium.launch();
+  try {
+    const admin = await startPreview(browser, adminOrigin, game, agentId);
+    const page = await enter(browser, `${publicOrigin}/e/${game}~with-agent/`);
+    await expect(page.getByRole("heading", { name: "Beacon Relay" })).toBeVisible();
+    await expectTypedControls(page);
+    const charge = page.getByRole("progressbar");
+    const pulse = page.getByRole("button", { name: "Add one tick" });
+    const target = Number(await charge.getAttribute("max"));
+    expect([4, 5, 6]).toContain(target);
+    await expect(charge).toHaveAttribute("value", "0");
+    for (let before = 0; before < target; before += 2) {
+      await expect(pulse).toBeEnabled();
+      await pulse.click();
+      if (before + 2 < target) {
+        // Only one human action was sent. The second tick must come from seat B.
+        await expect(charge).toHaveAttribute("value", String(before + 2));
+      }
+      if (before === 0) {
+        const conversation = page.getByRole("list", { name: "Text conversation" });
+        await expect(conversation.getByText("One tick from the Beacon partner.", { exact: true })).toHaveCount(1);
+      }
+    }
+    await expect(page.getByText(`Beacon activated at ${target} ticks.`)).toBeVisible();
+    await expectTypedControls(page);
+    await page.context().close();
+    await admin.getByRole("button", { name: "Stop", exact: true }).click();
+    await expect(admin.getByText("Start experiment", { exact: true })).toBeVisible();
+  } finally {
+    await browser.close();
+  }
+}
+
 if (process.argv[2] === "login") await approveCli(readFileSync(0, "utf8").trim());
+else if (process.argv[5]) await playAgent(...process.argv.slice(2));
 else await play(...process.argv.slice(2));

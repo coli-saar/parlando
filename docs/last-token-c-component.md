@@ -22,9 +22,9 @@ parlando build --manifest experiments/c-last-token/game.yaml
 
 The build packages the compiled C component and the React application in
 `experiments/c-last-token/dist/c-last-token-1.0.0.zip`. Follow the [local pilot walkthrough](web/content/manual/start/getting-started.md#start-a-local-server)
-using that package path and game ID `c-last-token`. Select the revision for
-an experiment with the default configuration, then open testing intake and
-enter from two independent browser profiles.
+using that package path and game ID `c-last-token`. Activate the game and
+create an experiment with the default configuration. Start a local preview
+and enter from two independent browser profiles.
 
 ## Check the game and reproduce the benchmark
 

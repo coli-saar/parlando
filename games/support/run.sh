@@ -47,9 +47,9 @@ if [[ "$bundled_agents" == true ]]; then
   exit
 fi
 
-# The deployment host stores each pinned experiment in its own SQLite database.
+# The deployment host stores game data independently of the embedded agent host.
 serve_args=(serve --bind "$host:$port" --store "${PARLANDO_STORE:-$game_dir/.local/host}")
-printf 'Built %s. Deploy and select it on this host, then open intake.\n' "$package" >&2
+printf 'Built %s. Deploy and activate the game, then configure experiment intake.\n' "$package" >&2
 if [[ -n ${PARLANDO_PUBLIC_URL:-} ]]; then
   serve_args+=(--public-url "$PARLANDO_PUBLIC_URL")
 fi

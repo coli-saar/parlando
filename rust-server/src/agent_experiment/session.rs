@@ -141,7 +141,13 @@ pub(super) async fn deliver_message(
     let receiver = other_role(sender);
     timeout(
         callback_timeout,
-        agents[role_index(receiver)].observe_message(sender, message.to_string()),
+        agents[role_index(receiver)].observe(crate::agent::Observation {
+            transition: None,
+            message: Some(crate::agent::Message {
+                sender,
+                text: message.to_owned(),
+            }),
+        }),
     )
     .await
     .map_err(|_| callback_timeout_failure("observe_message", receiver))?

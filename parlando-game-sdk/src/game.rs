@@ -5,7 +5,7 @@ use crate::{decode_declared, encode_compact, GameSchema};
 use crate::{DecodeGameValue, GameValue};
 
 /// Identifies which of the two fixed participants submitted an action.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Role {
     /// The first participant.
     A,

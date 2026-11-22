@@ -291,3 +291,176 @@ async fn wasm_metering_yaml_controls_execution_and_resume() {
     let invalid = runner().run_yaml(&path).await.unwrap_err();
     assert!(format!("{invalid:#}").contains("unknown variant"));
 }
+
+/// The programmatic runner uses YAML instrumentation for both actual agent stores.
+#[tokio::test]
+async fn registered_agents_inherit_experiment_wasm_metering() {
+    use crate::agent::wasm::{WasmAgentFactory, WasmAgentTelemetry};
+    use crate::component::WasmMetering;
+
+    let dir = TempDir::new().unwrap();
+    for (mode, initial, expected, diagnostic) in [
+        ("none", WasmMetering::Fuel, false, false),
+        ("fuel", WasmMetering::None, true, false),
+        ("diagnostic", WasmMetering::Fuel, true, true),
+    ] {
+        let yaml_metering = if diagnostic { "none" } else { mode };
+        let yaml = experiment_yaml(&dir.path().join(mode)).replace(
+            "execution:",
+            &format!("execution:\n  wasm_metering: {yaml_metering}"),
+        );
+        let spec = serde_yaml::from_str::<ExperimentFile>(&yaml).unwrap();
+        let game = tiny_game().with_metering(initial).unwrap();
+        let telemetry = Arc::new(WasmAgentTelemetry::default());
+        // Rebuild the policy with the SDK's counter_fixture example, componentize
+        // the output with wasm-tools component new, then strip custom sections.
+        let mut factory = WasmAgentFactory::from_bytes_with_metering(
+            include_bytes!("counter-policy.wasm"),
+            &game,
+            initial,
+        )
+        .unwrap()
+        .with_telemetry(telemetry.clone());
+        if diagnostic {
+            factory = factory.with_diagnostic_metering();
+        }
+        let runner = ExperimentRunner::new(
+            GameMetadata {
+                id: "tiny".to_owned(),
+                name: "Tiny".to_owned(),
+                version: semver::Version::new(1, 0, 0),
+                build_manifest: json!({"test": true}),
+            },
+            game,
+        )
+        .unwrap()
+        .agent(factory)
+        .unwrap();
+        assert_eq!(runner.run_file(spec).await.unwrap().completed, 1, "{mode}");
+        assert_eq!(telemetry.store_fuel_modes(), vec![expected; 2], "{mode}");
+    }
+}
+
+/// A combined headless response gives the two agents one delivery each.
+#[tokio::test]
+async fn combined_response_merges_chat_into_the_recipient_transition() {
+    use crate::agent::{Decision, Observation, Reason};
+
+    struct CombinedAgent {
+        role: PlayerRole,
+        responses: u8,
+        observations: Arc<Mutex<Vec<(PlayerRole, Observation)>>>,
+    }
+
+    #[async_trait]
+    impl Agent for CombinedAgent {
+        /// Records the complete, role-specific delivery in a single call.
+        async fn observe(&mut self, observation: Observation) -> Result<()> {
+            self.observations
+                .lock()
+                .unwrap()
+                .push((self.role, observation));
+            Ok(())
+        }
+
+        /// Tries an invalid combined response, then an accepted combined response.
+        async fn decide(&mut self, reason: Reason) -> Result<Decision> {
+            if self.role == PlayerRole::A && self.responses < 2 {
+                let expected = if self.responses == 0 {
+                    Reason::Scheduled
+                } else {
+                    Reason::ActionRejected("zero_increment".to_owned())
+                };
+                assert_eq!(reason, expected);
+                let action = increment(self.responses);
+                self.responses += 1;
+                Ok(Decision {
+                    action: Some(action),
+                    message: Some("moving".to_owned()),
+                    wakeup: None,
+                })
+            } else {
+                Ok(Decision::default())
+            }
+        }
+    }
+
+    struct CombinedFactory(Arc<Mutex<Vec<(PlayerRole, Observation)>>>);
+
+    #[async_trait]
+    impl crate::agent::Factory for CombinedFactory {
+        /// Reuses the settings-free test registration.
+        fn definition(&self) -> AgentDefinition {
+            AgentDefinition {
+                id: "tiny.agent".to_owned(),
+                name: "Combined response fixture".to_owned(),
+                description: "Emits a combined response.".to_owned(),
+                config_fields: Vec::new(),
+            }
+        }
+
+        /// Creates a role-aware agent with shared observation records.
+        async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
+            Ok(Box::new(CombinedAgent {
+                role: context.role,
+                responses: 0,
+                observations: self.0.clone(),
+            }))
+        }
+
+        /// Identifies the combined fixture in result artifacts.
+        fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+            Ok(AgentIdentity {
+                name: "Combined".to_owned(),
+                version: "1".to_owned(),
+            })
+        }
+    }
+
+    let temporary = TempDir::new().unwrap();
+    let output = temporary.path().join("combined-output");
+    let yaml_path = temporary.path().join("combined.yaml");
+    tokio::fs::write(
+        &yaml_path,
+        experiment_yaml(&output)
+            .replace("target: 1", "target: 2")
+            .replace("decisions: 4", "decisions: 5"),
+    )
+    .await
+    .unwrap();
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let report = ExperimentRunner::new(
+        GameMetadata {
+            id: "tiny".to_owned(),
+            name: "Tiny".to_owned(),
+            version: semver::Version::new(1, 0, 0),
+            build_manifest: json!({"test": true}),
+        },
+        tiny_game(),
+    )
+    .unwrap()
+    .agent(CombinedFactory(observations.clone()))
+    .unwrap()
+    .run_yaml(&yaml_path)
+    .await
+    .unwrap();
+    assert_eq!(report.failed, 0);
+
+    let observations = observations.lock().unwrap();
+    assert_eq!(observations.len(), 2);
+    for (role, observation) in observations.iter() {
+        let transition = observation.transition.as_ref().unwrap();
+        assert_eq!(transition.actor, PlayerRole::A);
+        assert_eq!(
+            transition.view.decode::<TinyObservation>().unwrap().role,
+            role.as_str()
+        );
+        if *role == PlayerRole::A {
+            assert!(observation.message.is_none());
+        } else {
+            let message = observation.message.as_ref().unwrap();
+            assert_eq!(message.sender, PlayerRole::A);
+            assert_eq!(message.text, "moving");
+        }
+    }
+}

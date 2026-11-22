@@ -44,6 +44,11 @@ class AgentServiceStub:
                 request_serializer=parlando__agent__v5__pb2.StartRequest.SerializeToString,
                 response_deserializer=parlando__agent__v5__pb2.ObserveResponse.FromString,
                 _registered_method=True)
+        self.Observe = channel.unary_unary(
+                '/parlando.agent.v5.AgentService/Observe',
+                request_serializer=parlando__agent__v5__pb2.ObserveRequest.SerializeToString,
+                response_deserializer=parlando__agent__v5__pb2.ObserveResponse.FromString,
+                _registered_method=True)
         self.ObserveTransition = channel.unary_unary(
                 '/parlando.agent.v5.AgentService/ObserveTransition',
                 request_serializer=parlando__agent__v5__pb2.ObserveTransitionRequest.SerializeToString,
@@ -81,6 +86,12 @@ class AgentServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def Start(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Observe(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -127,6 +138,11 @@ def add_AgentServiceServicer_to_server(servicer, server):
             'Start': grpc.unary_unary_rpc_method_handler(
                     servicer.Start,
                     request_deserializer=parlando__agent__v5__pb2.StartRequest.FromString,
+                    response_serializer=parlando__agent__v5__pb2.ObserveResponse.SerializeToString,
+            ),
+            'Observe': grpc.unary_unary_rpc_method_handler(
+                    servicer.Observe,
+                    request_deserializer=parlando__agent__v5__pb2.ObserveRequest.FromString,
                     response_serializer=parlando__agent__v5__pb2.ObserveResponse.SerializeToString,
             ),
             'ObserveTransition': grpc.unary_unary_rpc_method_handler(
@@ -208,6 +224,33 @@ class AgentService:
             target,
             '/parlando.agent.v5.AgentService/Start',
             parlando__agent__v5__pb2.StartRequest.SerializeToString,
+            parlando__agent__v5__pb2.ObserveResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Observe(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/parlando.agent.v5.AgentService/Observe',
+            parlando__agent__v5__pb2.ObserveRequest.SerializeToString,
             parlando__agent__v5__pb2.ObserveResponse.FromString,
             options,
             channel_credentials,

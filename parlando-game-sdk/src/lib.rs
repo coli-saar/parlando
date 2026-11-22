@@ -1,5 +1,6 @@
-//! Parlando Game SDK for Rust. Implement [`Game`] for the state of one session
-//! and derive [`GameValue`] on the structs and enums exchanged with Parlando.
+//! Parlando SDK for Rust. Implement [`Game`] for a game session or
+//! [`agent::Agent`] for a software player. Derive [`GameValue`] on the types
+//! exchanged with Parlando.
 
 extern crate self as parlando_game_sdk;
 pub use parlando_game_derive::GameValue;
@@ -12,9 +13,10 @@ use std::{borrow::Cow, fmt, sync::Arc};
 
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
+pub mod agent;
 mod encoder;
 mod export;
-mod game;
+pub mod game;
 
 pub use game::{Game, Rejection, Role};
 

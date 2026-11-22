@@ -1780,6 +1780,7 @@ name = "parlando-game-sdk"
 version = "0.6.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "parlando-game-derive",
  "rmp",
  "rmp-serde",
@@ -1793,7 +1794,6 @@ name = "parlando-last-screening"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "clap",
  "parlando",
  "parlando-game-sdk",

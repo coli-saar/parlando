@@ -1265,7 +1265,7 @@ const PARLANDO_CONFIG_SECTIONS = [
     { path: 'recruitment.prolific.completion_paths.no_consent', label: 'No consent code', help: 'Game condition: The participant declined required consent before registration. Prolific outcome: Request return. Suggested Prolific label: No consent.', type: 'completion-code' }
   ]},
   { title: 'Players and agents', description: 'Select human pairing or one server-side agent and configure its runtime limits.', fields: [
-    { path: 'agents', label: 'Participants', help: 'Pair two people, or pair one person with an agent compiled into this game server.', type: 'agents' }
+    { path: 'agents', label: 'Participants', help: 'Pair two people, or pair one person with an agent available for this game.', type: 'agents' }
   ]},
   { title: 'Capacity', description: 'Admission limits and the disk reserve protecting durable storage.', fields: [
     { path: 'capacity.max_active_sessions', label: 'Maximum active sessions', help: 'Maximum sessions that have paired participants or otherwise occupy active runtime capacity.', type: 'number', min: 1 },
@@ -1423,7 +1423,7 @@ function renderAgentEditor(field, agents) {
   return `<div class="config-field agent-editor" data-agent-editor>
     <label class="config-field"><span>Participant pairing</span><select data-agent-mode><option value="human_vs_human" ${humanVsAgent ? '' : 'selected'}>Human vs human</option><option value="human_vs_agent" ${humanVsAgent ? 'selected' : ''} ${state.agentFactories.length ? '' : 'disabled'}>Human vs agent</option></select><span class="config-help">${escapeHtml(field.help || '')}</span></label>
     <div class="agent-settings" data-agent-settings ${humanVsAgent ? '' : 'hidden'}>
-      <label class="config-field"><span>Agent</span><select data-agent-factory>${state.agentFactories.map(factory => `<option value="${escapeHtml(factory.id)}" ${factory.id === descriptor?.id ? 'selected' : ''}>${escapeHtml(factory.name)}</option>`).join('')}</select><span class="config-help" data-agent-description>${escapeHtml(descriptor?.description || 'Select one of the agent implementations compiled into this game binary.')}</span></label>
+      <label class="config-field"><span>Agent</span><select data-agent-factory>${state.agentFactories.map(factory => `<option value="${escapeHtml(factory.id)}" ${factory.id === descriptor?.id ? 'selected' : ''}>${escapeHtml(factory.name)}</option>`).join('')}</select><span class="config-help" data-agent-description>${escapeHtml(descriptor?.description || 'Select an agent available for this game.')}</span></label>
       <div class="agent-specific-fields" data-agent-specific-fields>${agentFactoryFieldsMarkup(descriptor, configured.config || {})}</div>
       <label class="config-field"><span>Action timeout (seconds)</span><input data-agent-timeout type="text" inputmode="decimal" value="${escapeHtml(configured.act_timeout_seconds ?? 30)}"><span class="config-help">Maximum time allowed for the agent to choose one action.</span></label>
       <label class="config-field"><span>Invalid-action limit</span><input data-agent-invalid-limit type="number" min="1" step="1" value="${escapeHtml(configured.invalid_action_limit ?? 3)}"><span class="config-help">End the session after this many invalid agent actions.</span></label>

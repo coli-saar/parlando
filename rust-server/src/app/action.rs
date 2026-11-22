@@ -70,10 +70,15 @@ fn prepare_action(
             agent = session.agent_inbox.clone().map(|sender| {
                 (
                     sender,
-                    AgentObservation::Action {
-                        actor,
-                        action: action.clone(),
-                        resulting_observation: observation,
+                    AgentObservation::Delivery {
+                        observation: crate::agent::Observation {
+                            transition: Some(crate::agent::Transition {
+                                actor,
+                                action: action.clone(),
+                                view: observation,
+                            }),
+                            message: None,
+                        },
                         completion: completion.clone(),
                     },
                 )

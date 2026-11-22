@@ -60,14 +60,36 @@ parlando activate --host http://127.0.0.1:8000 --game beacon
 
 To withdraw the game after its experiments and sessions finish, run `parlando deactivate --host http://127.0.0.1:8000 --game beacon`. Use the game dashboard for experiment creation and study intake. Keep all credentials out of game files and prompts.
 
+
+## Upload a local agent
+
+Build the [agent ZIP](../build/packages/#build-an-agent-zip) and upload it
+after the game ZIP. Stop the game's experiments and let active sessions
+finish before uploading a policy. Use **Games** in the administrator
+dashboard, or use the CLI after signing in to the same host.
+
+```sh
+parlando deploy --host "$PARLANDO_SERVER" \
+  --package dist/agent-counterweight_hotel.porter-11.0.0.zip
+```
+
+The host installs the policy for the current game package revision. In the
+game dashboard, open an inactive experiment's **Configuration**. Set
+**Participant pairing** to **Human vs agent** and choose the uploaded policy in
+**Agent factory**. Save the configuration and start a **Local preview** before
+opening intake. After updating the game package, upload its agent ZIP again
+for the new revision. Record both package revisions with the study.
+
 ## Upload through REST
 
 Use `parlando deploy` for terminal and CI uploads. A custom client can send
 `PUT /api/hosting/packages/{game_id}` with an account deployment credential in the bearer
 authorization header. Set `Content-Type: application/zip` and send the ZIP bytes as the request body.
-Place `game.yaml` at the archive root and include the component and declared
-browser assets at their manifest paths. The host limits both the upload and the
-combined uncompressed entries to 64 MiB.
-The response includes the package `revision`. The same file names and bytes yield the same revision.
+A game upload contains `game.yaml`, the game component, and its declared
+browser assets. An agent upload contains `agent.yaml` and the policy component
+for the same game ID. The host limits both the upload and the combined
+uncompressed entries to 64 MiB. The response includes the package `revision`
+and, for an agent upload, the agent's factory ID. Retrying with the same file
+names and bytes returns the same revision.
 
 For installation, accounts, networking, and backups, see [operate a shared host](host/).

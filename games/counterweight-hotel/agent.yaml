@@ -1,0 +1,6 @@
+game: counterweight-hotel
+id: counterweight_hotel.porter
+name: Hotel porter
+version: 11.0.0
+cargo_manifest: server/Cargo.toml
+features: [agent-component]

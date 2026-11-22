@@ -10,7 +10,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 const ADMIN: &str = "operator-only-credential-for-deployment-tests";
 const PATH: &str = "/api/hosting";
-// Selection and restart can compile several real components in an unoptimized test build.
+// Deployment and restart can compile several real components in an unoptimized test build.
 // Use the production control client's request budget during parallel CI runs.
 const HOST_OPERATION_TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -969,4 +969,88 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
         .status()
         .is_success());
     restarted.stop().await;
+}
+
+/// Verifies that the active game build owns its independently uploaded policy registry.
+#[tokio::test]
+async fn deployment_restores_independent_agents_for_the_current_build() {
+    const GAME: &[u8] =
+        include_bytes!("../../../../rust-server/src/agent_experiment/tests/headless.wasm");
+    const AGENT: &[u8] =
+        include_bytes!("../../../../rust-server/src/agent_experiment/tests/counter-policy.wasm");
+    let root = tempfile::tempdir().unwrap();
+    let address = reserve_address().await.unwrap();
+    let admin = format!("http://localhost:{}", address.port());
+    let host = TestHost::start(address, root.path(), Some(admin.clone())).await;
+    let password = "independent-policy-test-password";
+    check_json(
+        host.client
+            .post(format!("{admin}{PATH}/accounts"))
+            .bearer_auth(ADMIN)
+            .json(&json!({"username":"operator","password":password}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    let (cookie, session) = browser_login(&host.client, &admin, "operator", password).await;
+    let token = pair_cli(&host, &admin, &cookie, &session).await;
+    let scope = format!("{PATH}/packages/tiny");
+    let policy = crafted_zip(&[
+        (
+            "agent.yaml",
+            b"game: tiny\nid: tiny.agent\nname: Counter policy fixture\nversion: 1.0.0\ncomponent: agent.wasm\n",
+        ),
+        ("agent.wasm", AGENT),
+    ]);
+    assert_eq!(
+        host.upload(&scope, &token, policy.clone()).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    let game = |version| {
+        let manifest = format!("id: tiny\nname: Tiny\nversion: {version}\ncomponent: game.wasm\n");
+        crafted_zip(&[("game.yaml", manifest.as_bytes()), ("game.wasm", GAME)])
+    };
+    let first = check_json(host.upload(&scope, &token, game("1.0.0")).await).await;
+    let receipt = check_json(host.upload(&scope, &token, policy.clone()).await).await;
+    assert_eq!(receipt["agent"], "tiny.agent");
+    assert_eq!(receipt["game"], "tiny");
+    let experiments = format!("{admin}/tiny/api/admin/experiments");
+    check_json(
+        host.client
+            .post(&experiments)
+            .header(COOKIE, &cookie)
+            .header(ORIGIN, &admin)
+            .header("x-csrf-token", session["csrf_token"].as_str().unwrap())
+            .json(&json!({"experiment_id":"Agent-Trial"}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    let config = format!("{experiments}/Agent-Trial/config");
+    let has_policy = |host: &TestHost| {
+        let request = host.client.get(&config).header(COOKIE, &cookie);
+        async move {
+            check_json(request.send().await.unwrap()).await["agent_factories"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|definition| definition["id"] == "tiny.agent")
+        }
+    };
+    assert!(has_policy(&host).await);
+    host.stop().await;
+
+    let host = TestHost::start(address, root.path(), Some(admin)).await;
+    assert!(has_policy(&host).await);
+    let second = check_json(host.upload(&scope, &token, game("1.0.1")).await).await;
+    assert_ne!(first["revision"], second["revision"]);
+    assert!(!has_policy(&host).await);
+    assert_eq!(
+        check_json(host.upload(&scope, &token, policy).await).await,
+        receipt
+    );
+    assert!(has_policy(&host).await);
+    host.stop().await;
 }

@@ -44,10 +44,7 @@ use tower_http::{
 };
 
 use crate::{
-    agents::{
-        configuration_fingerprint, Agent, AgentContext, AgentFactory, AgentResponse,
-        SharedAgentFactory,
-    },
+    agents::{configuration_fingerprint, Agent, AgentContext, AgentFactory, SharedAgentFactory},
     audio::{
         AudioFrame, AudioOutbound, AudioSessionRegistry, SharedAudioSessions, AUDIO_CHANNELS,
         AUDIO_FRAME_DURATION_MS, AUDIO_PROTOCOL_VERSION, AUDIO_SAMPLE_RATE,

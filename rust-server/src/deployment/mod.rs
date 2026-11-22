@@ -6,8 +6,9 @@ mod dashboard;
 mod package;
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs::{self, File, OpenOptions},
+    io::Write as _,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
@@ -30,14 +31,19 @@ use axum::{
     Json, Router,
 };
 use fs2::FileExt;
-use package::{recover_build, validate_id, Package, PackageManifest, UPLOAD_LIMIT};
+pub use package::{
+    check_agent_package, check_archive, is_agent_package, load_agent_package, validate_agent_id,
+    write_agent_archive, write_package_archive, Deployment,
+};
+use package::{
+    recover_build, validate_id, validate_revision, AgentManifest, Package, PackageManifest,
+    UPLOAD_LIMIT,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
-
-pub use package::{write_package_archive, Deployment};
 
 use crate::{
     component::{LoadedGame, WasmMetering},
@@ -45,6 +51,10 @@ use crate::{
 };
 
 const PACKAGE_CONTENT_TYPE: &str = "application/zip";
+const AGENT_PINS_FILE: &str = ".agent-pins.json";
+
+/// Records the exact compatible policy revision registered for each agent ID.
+type AgentPins = BTreeMap<String, String>;
 
 /// Names the storage and authority configuration of one long-running deployment host.
 pub struct HostOptions {
@@ -59,6 +69,7 @@ pub struct HostOptions {
 /// Owns the current runtime and participant availability for one deployed game.
 struct HostedGame {
     deployment: Deployment,
+    build: PathBuf,
     active: bool,
     runtime: crate::app::HostedRuntime,
     websocket_upgrades: Arc<AtomicUsize>,
@@ -266,7 +277,7 @@ impl Host {
                 continue;
             };
             let mut game = self
-                .build_game(id, revision, build)
+                .build_game(id, revision, build, None)
                 .await
                 .with_context(|| format!("restoring hosted game {id}"))?;
             game.runtime.recover_interrupted().await?;
@@ -283,19 +294,49 @@ impl Host {
         self.store.join("games").join(id)
     }
 
-    /// Opens the game's existing installation with the prepared package and stable database.
-    async fn build_game(&self, id: &str, revision: String, build: PathBuf) -> Result<HostedGame> {
+    /// Opens the prepared game build with its stable database and registered policies.
+    /// An uploaded policy supplies its bytes directly until the replacement runtime validates.
+    async fn build_game(
+        &self,
+        id: &str,
+        revision: String,
+        build: PathBuf,
+        candidate: Option<(AgentPins, Arc<Package>)>,
+    ) -> Result<HostedGame> {
         let metering = self.wasm_metering;
         let package_revision = revision.clone();
-        let (loaded_game, metadata, client_dist) = tokio::task::spawn_blocking(move || {
-            let manifest = PackageManifest::read(&build).context("opening game package")?;
-            let (loaded_game, metadata) = manifest.load(&build, &package_revision, metering)?;
-            Ok::<_, anyhow::Error>((loaded_game, metadata, manifest.client(&build)))
+        let store = self.store.clone();
+        let game_id = id.to_owned();
+        let directory = build.clone();
+        let (loaded_game, metadata, agents, client_dist) = tokio::task::spawn_blocking(move || {
+            let manifest = PackageManifest::read(&directory).context("opening game package")?;
+            let (loaded_game, metadata) = manifest.load(&directory, &package_revision, metering)?;
+            let (pins, candidate) = match candidate {
+                Some((pins, package)) => (pins, Some(package)),
+                None => (read_agent_pins(&directory)?, None),
+            };
+            let agents = pins
+                .into_iter()
+                .map(|(id, revision)| {
+                    validate_agent_id(&id)?;
+                    validate_revision(&revision)?;
+                    if let Some(package) = candidate
+                        .as_ref()
+                        .filter(|package| package.agent_id() == Some(id.as_str()))
+                    {
+                        return package.load_agent(&loaded_game, &game_id, metering);
+                    }
+                    let path = store.join("agents").join(&game_id).join(&id).join(revision);
+                    AgentManifest::read(&path)?.load(&path, &loaded_game, &game_id, &id, metering)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok::<_, anyhow::Error>((loaded_game, metadata, agents, manifest.client(&directory)))
         })
         .await??;
         ensure!(metadata.id == id, "installed package has the wrong game ID");
         let deployment = Deployment {
             game: id.to_owned(),
+            agent: None,
             name: metadata.name.clone(),
             version: metadata.version.clone(),
             revision,
@@ -318,11 +359,13 @@ impl Host {
             &format!("sqlite:///{database}"),
             &format!("{}/{id}", self.public_url),
             client_dist.as_deref().map(Path::new),
+            agents,
         )
         .await?;
         File::open(&game_directory)?.sync_all()?;
         Ok(HostedGame {
             deployment,
+            build,
             active: false,
             runtime,
             websocket_upgrades: Arc::new(AtomicUsize::new(0)),
@@ -434,6 +477,12 @@ async fn install_upload(
             Some(game) => Some(game.write().await),
             None => None,
         };
+        if let Some(agent) = package.agent_id().map(str::to_owned) {
+            let current = existing.as_mut().ok_or_else(|| {
+                bad_request(format!("deploy game {id:?} before deploying its agents"))
+            })?;
+            return install_agent(&host, current, agent, package).await;
+        }
         let revision = package.revision();
         if let Some(current) = &existing {
             require_idle(current).await?;
@@ -456,7 +505,7 @@ async fn install_upload(
         .map_err(internal)?
         .map_err(internal)?;
         let mut replacement = host
-            .build_game(&id, revision.clone(), staged.directory.clone())
+            .build_game(&id, revision.clone(), staged.directory.clone(), None)
             .await
             .map_err(bad_request)?;
         let receipt = replacement.deployment.clone();
@@ -486,6 +535,73 @@ async fn install_upload(
     })
     .await
     .map_err(internal)?
+}
+
+/// Restores policy pins owned by the current build directory.
+fn read_agent_pins(build: &Path) -> Result<AgentPins> {
+    match fs::read(build.join(AGENT_PINS_FILE)) {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(AgentPins::new()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Installs an immutable policy revision and replaces the current runtime's policy registry.
+async fn install_agent(
+    host: &Host,
+    current: &mut HostedGame,
+    agent: String,
+    package: Package,
+) -> HttpResult<Json<Deployment>> {
+    let mut pins = read_agent_pins(&current.build).map_err(internal)?;
+    let receipt = package.receipt();
+    if pins.get(&agent) == Some(&receipt.revision) {
+        return Ok(Json(receipt));
+    }
+    require_idle(current).await?;
+    pins.insert(agent, receipt.revision.clone());
+    let package = Arc::new(package);
+    let mut replacement = host
+        .build_game(
+            &current.deployment.game,
+            current.deployment.revision.clone(),
+            current.build.clone(),
+            Some((pins.clone(), package.clone())),
+        )
+        .await
+        .map_err(bad_request)?;
+    let store = host.store.clone();
+    let revision = receipt.revision.clone();
+    tokio::task::spawn_blocking(move || package.install_agent(&store, &revision))
+        .await
+        .map_err(internal)?
+        .map_err(internal)?;
+    replacement.active = current.active;
+    publish_agent_pins(&current.build, &pins).map_err(internal)?;
+    *current = replacement;
+    Ok(Json(receipt))
+}
+
+/// Publishes the complete policy registry after its files and replacement runtime are prepared.
+fn publish_agent_pins(build: &Path, pins: &AgentPins) -> Result<()> {
+    let temporary = build.join(".agent-pins.tmp");
+    let result = (|| -> Result<()> {
+        let mut file = File::create(&temporary)?;
+        serde_json::to_writer(&mut file, pins)?;
+        file.flush()?;
+        file.sync_all()?;
+        fs::rename(&temporary, build.join(AGENT_PINS_FILE))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result?;
+    // The new registry is visible after rename even if its durability flush fails.
+    if let Err(error) = File::open(build).and_then(|directory| directory.sync_all()) {
+        tracing::error!(%error, "could not flush agent registry");
+    }
+    Ok(())
 }
 
 /// Enables participant requests for the selected game.

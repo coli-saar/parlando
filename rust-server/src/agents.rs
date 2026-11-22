@@ -100,6 +100,18 @@ impl AgentResponse {
         }
     }
 
+    /// Projects the action and chat onto the headless scheduler's nonempty output.
+    pub(crate) fn from_decision(decision: Decision) -> Option<Self> {
+        match (decision.action, decision.message) {
+            (Some(action), Some(message)) => {
+                Some(AgentResponse::action_and_message(action, message))
+            }
+            (Some(action), None) => Some(AgentResponse::action(action)),
+            (None, Some(message)) => Some(AgentResponse::message(message)),
+            (None, None) => None,
+        }
+    }
+
     /// Separates the response into the runtime's ordered action and message operations.
     pub(crate) fn into_parts(self) -> (Option<ComponentValue>, Option<String>) {
         match self {
@@ -110,6 +122,17 @@ impl AgentResponse {
     }
 }
 
+pub use parlando_game_sdk::agent::{Message, RespondReason as Reason, WakeupRequest};
+
+/// A game transition carrying the host's compact action and role-private view.
+pub type Transition = parlando_game_sdk::agent::Transition<ComponentValue, ComponentValue>;
+
+/// A single delivery of a transition, a partner message, or both.
+pub type Observation = parlando_game_sdk::agent::Observation<ComponentValue, ComponentValue>;
+
+/// A policy response carrying a compact action ready for the game host.
+pub type Decision = parlando_game_sdk::agent::Response<ComponentValue>;
+
 /// Mutable agent instance controlling one player role in one game session.
 #[async_trait]
 pub trait Agent: Send {
@@ -119,6 +142,18 @@ pub trait Agent: Send {
     /// the agent, so implementations may load models or establish remote resources
     /// before they receive game information.
     async fn start(&mut self, _initial_observation: ComponentValue) -> Result<()> {
+        Ok(())
+    }
+
+    /// Delivers a committed transition, chat, or both in order.
+    async fn observe(&mut self, observation: Observation) -> Result<()> {
+        if let Some(transition) = observation.transition {
+            self.observe_transition(transition.actor, transition.action, transition.view)
+                .await?;
+        }
+        if let Some(message) = observation.message {
+            self.observe_message(message.sender, message.text).await?;
+        }
         Ok(())
     }
 
@@ -142,11 +177,27 @@ pub trait Agent: Send {
         Ok(())
     }
 
+    /// Responds to a decision opportunity with optional action, chat, and timer update.
+    async fn decide(&mut self, _reason: Reason) -> Result<Decision> {
+        let (action, message) = self
+            .respond()
+            .await?
+            .map(AgentResponse::into_parts)
+            .unwrap_or_default();
+        Ok(Decision {
+            action,
+            message,
+            wakeup: None,
+        })
+    }
+
     /// Optionally produces one action, message, or combined response.
     ///
     /// Use the latest observation to decide whether to act. Every action is
     /// checked by the game before it changes state.
-    async fn respond(&mut self) -> Result<Option<AgentResponse>>;
+    async fn respond(&mut self) -> Result<Option<AgentResponse>> {
+        Ok(None)
+    }
 
     /// Releases remote or per-session resources before the runtime drops the agent.
     async fn shutdown(&mut self) -> Result<()> {
@@ -159,6 +210,22 @@ pub trait Agent: Send {
 pub trait AgentFactory: Send + Sync + 'static {
     /// Returns the stable dashboard definition for this factory.
     fn definition(&self) -> AgentDefinition;
+
+    /// Returns the SHA-256 of the loaded agent artifact when the factory executes WASM.
+    fn wasm_sha256(&self) -> Option<&str> {
+        None
+    }
+
+    /// Returns a replacement factory if the host's shared WASM metering mode requires
+    /// recompilation. Native and remote implementations use the default and keep their
+    /// existing factory.
+    #[doc(hidden)]
+    fn with_host_wasm_metering(
+        &self,
+        _metering: crate::component::WasmMetering,
+    ) -> Result<Option<Arc<dyn AgentFactory>>> {
+        Ok(None)
+    }
 
     /// Instantiates one mutable agent before game-state delivery begins.
     async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>>;

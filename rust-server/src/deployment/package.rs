@@ -13,7 +13,9 @@ use sha2::{Digest, Sha256};
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::{
+    agent::{grpc::RemoteAgent, wasm::WasmAgentFactory, Definition, Factory},
     component::{LoadedGame, WasmMetering},
+    wasm_agent::InspectedAgent,
     GameMetadata,
 };
 
@@ -21,11 +23,19 @@ pub(super) const UPLOAD_LIMIT: usize = 64 * 1024 * 1024;
 const EXPANDED_LIMIT: usize = 64 * 1024 * 1024;
 const FILE_LIMIT: usize = 4096;
 const MANIFEST_LIMIT: usize = 64 * 1024;
+const GAME_MANIFEST: &str = "game.yaml";
+const AGENT_MANIFEST: &str = "agent.yaml";
 
-/// Fully decoded regular files and the validated manifest for a portable game revision.
+/// Fully decoded regular files and a validated game or agent manifest.
 pub(super) struct Package {
     files: BTreeMap<String, Vec<u8>>,
-    manifest: PackageManifest,
+    manifest: Manifest,
+}
+
+/// Selects the required files and identity for each portable package kind.
+enum Manifest {
+    Game(PackageManifest),
+    Agent(AgentManifest),
 }
 
 /// Developer-controlled package metadata. The host supplies all runtime configuration.
@@ -40,16 +50,30 @@ pub(super) struct PackageManifest {
     client_dist: Option<String>,
 }
 
-/// Identifies the build currently installed for a hosted game.
+/// Manifest of an independently published policy for one target game.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AgentManifest {
+    game: String,
+    id: String,
+    name: String,
+    version: semver::Version,
+    component: String,
+}
+
+/// Public result of registering an immutable package revision.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Deployment {
     /// Game ID that owns this build.
     pub game: String,
     /// Display name declared inside the package.
     pub name: String,
+    /// Agent ID when the receipt identifies a policy revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     /// Digest over all canonical paths and decoded file contents.
     pub revision: String,
-    /// SHA-256 of the actual game component.
+    /// SHA-256 of the actual game or agent component.
     pub component_sha256: String,
     /// Version declared inside the package.
     pub version: semver::Version,
@@ -118,7 +142,7 @@ impl Package {
             let remaining = EXPANDED_LIMIT - expanded;
             let limit = match kind {
                 EntryKind::Directory => 0,
-                EntryKind::File if path == "game.yaml" => remaining.min(MANIFEST_LIMIT),
+                EntryKind::File if is_manifest(path) => remaining.min(MANIFEST_LIMIT),
                 EntryKind::File => remaining,
             };
             ensure!(
@@ -156,29 +180,45 @@ impl Package {
         Ok(package)
     }
 
-    /// Checks that every build artifact is listed by the manifest and all required files are present.
+    /// Checks the exclusive archive kind and every path declared by its manifest.
     fn from_files(files: BTreeMap<String, Vec<u8>>) -> Result<Self> {
-        let manifest =
-            PackageManifest::parse(files.get("game.yaml").context("missing game.yaml")?)?;
+        let manifest = match (files.get(GAME_MANIFEST), files.get(AGENT_MANIFEST)) {
+            (Some(bytes), None) => Manifest::Game(PackageManifest::parse(bytes)?),
+            (None, Some(bytes)) => Manifest::Agent(AgentManifest::parse(bytes)?),
+            _ => anyhow::bail!("package must contain exactly one game.yaml or agent.yaml"),
+        };
         ensure!(
-            files.contains_key(&manifest.component),
+            files.contains_key(manifest.component()),
             "package is missing its component"
         );
         for path in files.keys() {
             manifest.validate_file(path)?;
         }
-        if let Some(client) = &manifest.client_dist {
-            ensure!(
-                files.contains_key(&format!("{client}/index.html")),
-                "package is missing its client index"
-            );
+        if let Manifest::Game(game) = &manifest {
+            if let Some(client) = &game.client_dist {
+                ensure!(
+                    files.contains_key(&format!("{client}/index.html")),
+                    "package is missing its client index"
+                );
+            }
         }
         Ok(Self { files, manifest })
     }
 
-    /// Returns the game ID declared by the archive's validated manifest.
+    /// Returns the game targeted by either a game or an agent archive.
     pub(super) fn game(&self) -> &str {
-        &self.manifest.id
+        match &self.manifest {
+            Manifest::Game(manifest) => &manifest.id,
+            Manifest::Agent(manifest) => &manifest.game,
+        }
+    }
+
+    /// Returns the policy ID when the archive contains an independent agent.
+    pub(super) fn agent_id(&self) -> Option<&str> {
+        match &self.manifest {
+            Manifest::Game(_) => None,
+            Manifest::Agent(manifest) => Some(&manifest.id),
+        }
     }
 
     /// Computes the canonical revision from sorted paths and bytes, independently of ZIP encoding.
@@ -194,12 +234,125 @@ impl Package {
         format!("{:x}", hash.finalize())
     }
 
-    /// Loads the component and validates the guest ABI and schema directly from the package files.
+    /// Loads a game package and validates the executable's ABI and schema.
     pub(super) fn load(&self, metering: WasmMetering) -> Result<(LoadedGame, GameMetadata)> {
-        let game =
-            LoadedGame::from_bytes_with_metering(&self.files[&self.manifest.component], metering)
-                .context("invalid game component")?;
-        self.manifest.describe(game, &self.revision())
+        let Manifest::Game(manifest) = &self.manifest else {
+            anyhow::bail!("expected a game package");
+        };
+        let game = LoadedGame::from_bytes_with_metering(&self.files[&manifest.component], metering)
+            .context("invalid game component")?;
+        manifest.describe(game, &self.revision())
+    }
+
+    /// Loads an agent package against the game scope and its exact payload layouts.
+    pub(super) fn load_agent(
+        &self,
+        game: &LoadedGame,
+        game_id: &str,
+        metering: WasmMetering,
+    ) -> Result<WasmAgentFactory> {
+        let Manifest::Agent(manifest) = &self.manifest else {
+            anyhow::bail!("expected an agent package");
+        };
+        manifest.bind(&self.files[&manifest.component], game, game_id, metering)
+    }
+
+    /// Runs standalone metadata discovery and verifies the archive identity.
+    fn inspect_agent(&self, metering: WasmMetering) -> Result<(&AgentManifest, InspectedAgent)> {
+        let Manifest::Agent(manifest) = &self.manifest else {
+            anyhow::bail!("expected an agent package");
+        };
+        let inspected = WasmAgentFactory::inspect_bytes_with_metering(
+            &self.files[&manifest.component],
+            metering,
+        )
+        .context("invalid agent component")?;
+        manifest.verify_definition(inspected.definition())?;
+        Ok((manifest, inspected))
+    }
+
+    /// Returns the package metadata after checking the standalone policy interface.
+    fn check_agent(&self, metering: WasmMetering) -> Result<serde_json::Value> {
+        let (manifest, inspected) = self.inspect_agent(metering)?;
+        let receipt = self.receipt();
+        Ok(serde_json::json!({
+            "kind": "agent",
+            "game": receipt.game,
+            "id": manifest.id,
+            "name": manifest.name,
+            "version": receipt.version,
+            "agent_version": inspected.identity.version,
+            "revision": receipt.revision,
+            "component_sha256": receipt.component_sha256,
+        }))
+    }
+
+    /// Publishes an agent revision after the caller has bound it to an installed game.
+    pub(super) fn install_agent(&self, store: &Path, revision: &str) -> Result<()> {
+        let Manifest::Agent(manifest) = &self.manifest else {
+            anyhow::bail!("expected an agent package");
+        };
+        let destination = store
+            .join("agents")
+            .join(&manifest.game)
+            .join(&manifest.id)
+            .join(revision);
+        self.publish_agent(&destination)?;
+        // A retry can encounter a rename that succeeded before its directory flush.
+        for directory in destination.ancestors().skip(1).take(4) {
+            fs::File::open(directory)?.sync_all()?;
+        }
+        Ok(())
+    }
+
+    /// Describes the exact canonical revision and component bytes available for installation.
+    pub(super) fn receipt(&self) -> Deployment {
+        Deployment {
+            game: self.game().to_owned(),
+            name: self.manifest.name().to_owned(),
+            agent: self.agent_id().map(str::to_owned),
+            revision: self.revision(),
+            version: self.manifest.version().clone(),
+            component_sha256: format!(
+                "{:x}",
+                Sha256::digest(&self.files[self.manifest.component()])
+            ),
+        }
+    }
+
+    /// Writes and synchronizes canonical files before atomically publishing their directory.
+    fn publish_agent(&self, destination: &Path) -> Result<()> {
+        if destination.is_dir() {
+            return Ok(());
+        }
+        let parent = destination.parent().expect("package scope directory");
+        fs::create_dir_all(parent)?;
+        let staging = parent.join(format!(".upload-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&staging)?;
+        let install = (|| -> Result<()> {
+            for (path, bytes) in &self.files {
+                let target = staging.join(path);
+                fs::create_dir_all(target.parent().expect("package file parent"))?;
+                let mut file = fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(target)?;
+                file.write_all(bytes)?;
+                file.sync_all()?;
+            }
+            sync_directory(&staging)?;
+            match fs::rename(&staging, destination) {
+                Ok(()) => Ok(()),
+                Err(_) if destination.is_dir() => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        })();
+        match fs::remove_dir_all(&staging) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(%error, "could not remove package staging directory"),
+        }
+        install
     }
 
     /// Prepares a complete build directory for validation and runtime construction.
@@ -334,16 +487,14 @@ fn remove_directory(directory: &Path) -> Result<()> {
 }
 
 impl PackageManifest {
-    /// Reads and validates package metadata from a committed revision.
+    /// Reports the public version declared by an installed package.
+    pub(super) fn version(&self) -> &semver::Version {
+        &self.version
+    }
+
+    /// Reads validated game metadata from a committed revision.
     pub(super) fn read(directory: &Path) -> Result<Self> {
-        let path = directory.join("game.yaml");
-        let metadata = fs::symlink_metadata(&path)?;
-        ensure!(metadata.is_file(), "game.yaml must be a regular file");
-        ensure!(
-            metadata.len() <= MANIFEST_LIMIT as u64,
-            "game.yaml exceeds the manifest size limit"
-        );
-        Self::parse(&fs::read(path)?)
+        Self::parse(&read_manifest(directory, GAME_MANIFEST)?)
     }
 
     /// Resolves metadata and client paths against the containing package revision.
@@ -356,7 +507,7 @@ impl PackageManifest {
         validate_id(&manifest.id)?;
         validate_path(&manifest.component)?;
         ensure!(
-            manifest.component != "game.yaml",
+            !manifest.component.eq_ignore_ascii_case(GAME_MANIFEST),
             "component cannot be game.yaml"
         );
         if let Some(client) = &manifest.client_dist {
@@ -371,7 +522,7 @@ impl PackageManifest {
 
     /// Ensures a file belongs to the manifest, component, or declared participant assets.
     fn validate_file(&self, path: &str) -> Result<()> {
-        if path == "game.yaml" || path == self.component {
+        if path == GAME_MANIFEST || path == self.component {
             return Ok(());
         }
         let asset_path = self
@@ -412,7 +563,7 @@ impl PackageManifest {
         Ok(())
     }
 
-    /// Validates the Wasm ABI on the host and returns the loaded game and recorded identity.
+    /// Validates the game Wasm ABI and returns the executable and recorded identity.
     pub(super) fn load(
         &self,
         directory: &Path,
@@ -447,6 +598,185 @@ impl PackageManifest {
             .as_ref()
             .map(|client| directory.join(client).to_string_lossy().into_owned())
     }
+}
+
+impl AgentManifest {
+    /// Reports the packaging version of an installed policy.
+    pub(super) fn version(&self) -> &semver::Version {
+        &self.version
+    }
+
+    /// Reads validated agent metadata from a committed revision.
+    pub(super) fn read(directory: &Path) -> Result<Self> {
+        Self::parse(&read_manifest(directory, AGENT_MANIFEST)?)
+    }
+
+    /// Checks the archive scope, policy ID, and fixed executable filename.
+    fn parse(bytes: &[u8]) -> Result<Self> {
+        ensure!(
+            bytes.len() <= MANIFEST_LIMIT,
+            "agent.yaml exceeds the manifest size limit"
+        );
+        let manifest: Self = serde_yaml::from_slice(bytes).context("invalid agent.yaml")?;
+        validate_id(&manifest.game).context("invalid agent target game")?;
+        validate_agent_id(&manifest.id)?;
+        ensure!(
+            !manifest.name.trim().is_empty(),
+            "agent package name must not be empty"
+        );
+        ensure!(
+            manifest.component == "agent.wasm",
+            "agent component must be agent.wasm"
+        );
+        Ok(manifest)
+    }
+
+    /// Checks that the executable declares the ID and name used by its archive.
+    fn verify_definition(&self, definition: &Definition) -> Result<()> {
+        ensure!(
+            self.id == definition.id,
+            "agent manifest ID differs from component ID {:?}",
+            definition.id
+        );
+        ensure!(
+            self.name == definition.name,
+            "agent manifest name differs from component name {:?}",
+            definition.name
+        );
+        Ok(())
+    }
+
+    /// Binds pinned executable bytes to the selected game and verifies its package identity.
+    fn bind(
+        &self,
+        bytes: &[u8],
+        game: &LoadedGame,
+        game_id: &str,
+        metering: WasmMetering,
+    ) -> Result<WasmAgentFactory> {
+        ensure!(
+            self.game == game_id,
+            "agent package targets game {:?}, expected {game_id:?}",
+            self.game
+        );
+        let agent = WasmAgentFactory::from_bytes_with_metering(bytes, game, metering)
+            .context("invalid agent component or incompatible game layouts")?;
+        self.verify_definition(&agent.definition())?;
+        Ok(agent)
+    }
+
+    /// Checks and loads an installed policy revision for a pinned game.
+    pub(super) fn load(
+        &self,
+        directory: &Path,
+        game: &LoadedGame,
+        game_id: &str,
+        agent_id: &str,
+        metering: WasmMetering,
+    ) -> Result<WasmAgentFactory> {
+        ensure!(
+            self.id == agent_id,
+            "installed policy has the wrong agent ID"
+        );
+        let path = directory.join(&self.component);
+        let metadata = fs::symlink_metadata(&path)?;
+        ensure!(metadata.is_file(), "agent component must be a regular file");
+        let mut bytes = Vec::new();
+        fs::File::open(path)?
+            .take(EXPANDED_LIMIT as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        ensure!(
+            bytes.len() <= EXPANDED_LIMIT,
+            "agent component exceeds the size limit"
+        );
+        self.bind(&bytes, game, game_id, metering)
+    }
+}
+
+impl Manifest {
+    /// Returns the canonical executable path for either package kind.
+    fn component(&self) -> &str {
+        match self {
+            Self::Game(manifest) => &manifest.component,
+            Self::Agent(manifest) => &manifest.component,
+        }
+    }
+
+    /// Returns the display name declared by either manifest.
+    fn name(&self) -> &str {
+        match self {
+            Self::Game(manifest) => &manifest.name,
+            Self::Agent(manifest) => &manifest.name,
+        }
+    }
+
+    /// Returns the version recorded in the archive manifest.
+    fn version(&self) -> &semver::Version {
+        match self {
+            Self::Game(manifest) => manifest.version(),
+            Self::Agent(manifest) => manifest.version(),
+        }
+    }
+
+    /// Limits regular files to the contents allowed by the package kind.
+    fn validate_file(&self, path: &str) -> Result<()> {
+        match self {
+            Self::Game(manifest) => manifest.validate_file(path),
+            Self::Agent(manifest) => {
+                ensure!(
+                    path == AGENT_MANIFEST || path == manifest.component,
+                    "unexpected agent package file: {path:?}"
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// Allows participant assets only in a game package.
+    fn validate_directory(&self, path: &str) -> Result<()> {
+        match self {
+            Self::Game(manifest) => manifest.validate_directory(path),
+            Self::Agent(_) => anyhow::bail!("unexpected agent package directory: {path:?}"),
+        }
+    }
+}
+
+/// Recognizes manifest files for the shared ZIP expansion cap.
+fn is_manifest(path: &str) -> bool {
+    path == GAME_MANIFEST || path == AGENT_MANIFEST
+}
+
+/// Reads a regular manifest with a bound that also applies if the file grows.
+fn read_manifest(directory: &Path, name: &str) -> Result<Vec<u8>> {
+    let path = directory.join(name);
+    let metadata = fs::symlink_metadata(&path)?;
+    ensure!(metadata.is_file(), "{name} must be a regular file");
+    ensure!(
+        metadata.len() <= MANIFEST_LIMIT as u64,
+        "{name} exceeds the manifest size limit"
+    );
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(MANIFEST_LIMIT as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() <= MANIFEST_LIMIT,
+        "{name} exceeds the manifest size limit"
+    );
+    Ok(bytes)
+}
+
+/// Validates a policy ID for use in archive filenames and deployed revision paths.
+pub fn validate_agent_id(id: &str) -> Result<()> {
+    ensure!(
+        id.len() <= 64 && id.split('.').all(|part| validate_id(part).is_ok()),
+        "invalid agent identifier"
+    );
+    ensure!(
+        id != RemoteAgent::new().definition().id,
+        "agent identifier is reserved"
+    );
+    Ok(())
 }
 
 /// Restricts identifiers to single, portable path components.
@@ -506,13 +836,72 @@ fn sync_directory(directory: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Validates and writes a deterministic ZIP of a build staging directory without replacing an existing file.
+/// Writes a deterministic ZIP of a game build directory without overwriting an archive.
 pub fn write_package_archive(directory: &Path, archive: &Path) -> Result<()> {
+    write_archive(directory, archive, |directory| {
+        PackageManifest::read(directory).map(Manifest::Game)
+    })
+}
+
+/// Writes a deterministic ZIP of an independent agent build directory.
+pub fn write_agent_archive(directory: &Path, archive: &Path) -> Result<()> {
+    write_archive(directory, archive, |directory| {
+        AgentManifest::read(directory).map(Manifest::Agent)
+    })
+}
+
+/// Validates a ZIP and identifies whether it contains an independent agent.
+pub fn is_agent_package(archive: &Path) -> Result<bool> {
+    Ok(Package::read_archive(archive)?.0.agent_id().is_some())
+}
+
+/// Checks either ZIP package kind and reports its validated revision and executable identity.
+pub fn check_archive(archive: &Path, metering: WasmMetering) -> Result<serde_json::Value> {
+    let (package, _) = Package::read_archive(archive)?;
+    match &package.manifest {
+        Manifest::Agent(_) => package.check_agent(metering),
+        Manifest::Game(_) => {
+            let (game, metadata) = package.load(metering)?;
+            let revision = metadata.build_manifest["package_revision"].clone();
+            Ok(serde_json::json!({
+                "kind": "game",
+                "game": metadata.id,
+                "version": metadata.version,
+                "revision": revision,
+                "component_sha256": game.digest(),
+            }))
+        }
+    }
+}
+
+/// Checks the policy's packaging and component interface before a game is selected.
+pub fn check_agent_package(archive: &Path, metering: WasmMetering) -> Result<serde_json::Value> {
+    Package::read_archive(archive)?.0.check_agent(metering)
+}
+
+/// Loads a packaged policy for a game with compatible wire layouts.
+pub fn load_agent_package(
+    archive: &Path,
+    game: &LoadedGame,
+    game_id: &str,
+    metering: WasmMetering,
+) -> Result<WasmAgentFactory> {
+    Package::read_archive(archive)?
+        .0
+        .load_agent(game, game_id, metering)
+}
+
+/// Collects and validates one declared build tree before publishing its ZIP file.
+fn write_archive(
+    directory: &Path,
+    archive: &Path,
+    manifest: impl FnOnce(&Path) -> Result<Manifest>,
+) -> Result<()> {
     ensure!(
         fs::symlink_metadata(directory)?.is_dir(),
         "package source must be a regular directory"
     );
-    let manifest = PackageManifest::read(directory)?;
+    let manifest = manifest(directory)?;
     let mut files = BTreeMap::new();
     let mut names = BTreeMap::new();
     let mut expanded = 0;
@@ -665,7 +1054,7 @@ fn validate_entry_path(
 fn collect(
     root: &Path,
     directory: &Path,
-    manifest: &PackageManifest,
+    manifest: &Manifest,
     files: &mut BTreeMap<String, Vec<u8>>,
     names: &mut BTreeMap<String, (String, EntryKind)>,
     expanded: &mut usize,
@@ -697,6 +1086,11 @@ fn collect(
             );
             let mut data = Vec::new();
             let remaining = EXPANDED_LIMIT - *expanded;
+            let remaining = if is_manifest(&relative) {
+                remaining.min(MANIFEST_LIMIT)
+            } else {
+                remaining
+            };
             fs::File::open(&path)?
                 .take(remaining as u64 + 1)
                 .read_to_end(&mut data)?;
@@ -767,6 +1161,53 @@ mod tests {
         });
         let error = Package::decode(&bytes).err().unwrap();
         assert!(error.to_string().contains("expanded package size limit"));
+    }
+
+    /// Accepts only one package kind and preserves independent agent identity.
+    #[test]
+    fn agent_archive_keeps_game_scope_and_policy_id() -> Result<()> {
+        let source = tempfile::tempdir()?;
+        fs::write(
+            source.path().join(AGENT_MANIFEST),
+            "game: hotel\nid: hotel.porter\nname: Porter\nversion: 1.2.3\ncomponent: agent.wasm\n",
+        )?;
+        fs::write(source.path().join("agent.wasm"), b"test component bytes")?;
+        let output = tempfile::tempdir()?;
+        let path = output.path().join("agent.zip");
+        write_agent_archive(source.path(), &path)?;
+        let (package, _) = Package::read_archive(&path)?;
+        assert_eq!(package.game(), "hotel");
+        assert_eq!(package.agent_id(), Some("hotel.porter"));
+        assert_eq!(package.receipt().version, semver::Version::new(1, 2, 3));
+        assert!(validate_revision(&package.revision()).is_ok());
+        assert!(package.load(WasmMetering::Fuel).is_err());
+        assert!(check_agent_package(&path, WasmMetering::Fuel).is_err());
+
+        let bytes = archive(|writer| {
+            for manifest in [GAME_MANIFEST, AGENT_MANIFEST] {
+                writer
+                    .start_file(manifest, SimpleFileOptions::default())
+                    .unwrap();
+            }
+        });
+        let error = Package::decode(&bytes).err().unwrap();
+        assert!(error.to_string().contains("exactly one"));
+        Ok(())
+    }
+
+    /// Rejects traversal, empty namespace segments, and the built-in transport ID.
+    #[test]
+    fn agent_identifier_is_portable_and_unreserved() {
+        assert!(validate_agent_id("hotel.porter").is_ok());
+        for id in [
+            "../porter",
+            "hotel..porter",
+            "hotel/porter",
+            "Hotel.porter",
+            "remote_grpc",
+        ] {
+            assert!(validate_agent_id(id).is_err(), "accepted {id}");
+        }
     }
 
     /// Verifies a member's checksum instead of accepting corrupt contents from a valid ZIP directory.

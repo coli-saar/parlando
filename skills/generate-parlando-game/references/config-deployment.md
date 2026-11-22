@@ -21,3 +21,20 @@ the study data. A new upload replaces the current package if the game's
 experiments and sessions have stopped. Game activation through the CLI requires
 host administrator credentials. Follow [Deploy to a shared host](https://coli-saar.github.io/parlando/manual/deploy/)
 for credential setup and operator commands.
+
+For a local WASM policy, build a separate agent ZIP with
+`parlando build --manifest agent.yaml` and check it with
+`parlando check --package "$AGENT_PACKAGE"`. Upload the game ZIP first.
+Use the same account to upload the agent ZIP to the same host while the
+game's experiments are stopped and its sessions have finished:
+
+```sh
+parlando deploy --host "$HOST" --package "$GAME_PACKAGE" --json
+parlando deploy --host "$HOST" --package "$AGENT_PACKAGE" --json
+```
+
+Record both returned revisions. In the game dashboard, choose the installed
+factory in the experiment's configuration and verify the pairing in a local
+preview. After updating the game, upload the agent ZIP again for the new
+game revision. For an external service, choose `remote_grpc` and configure
+its endpoint in the experiment.

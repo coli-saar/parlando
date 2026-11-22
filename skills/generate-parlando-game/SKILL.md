@@ -1,6 +1,6 @@
 ---
 name: generate-parlando-game
-description: Implement, port, or update a Parlando game from supplied rules using the Parlando CLI, WebAssembly Game SDK, and participant client. Use for technical game creation and packaging from an existing specification.
+description: Implement, port, or update a Parlando game from supplied rules using the Parlando CLI, shared Rust SDK, and participant client. Use for technical game creation, optional policy authoring, and packaging from an existing specification.
 ---
 
 # Generate a Parlando game
@@ -19,7 +19,15 @@ Use the starter and the documentation for the project's Parlando release to esta
 - Define a view for each role. Expose only that role's authorized information and keep the shared completion safe for both roles. See [component mechanics](references/server-adapter.md) for Rust and Python integration and recovery.
 - With the starter's React client, render the view through `ParticipantApp` and send actions through `snapshot.act`. Let the SDK handle participant entry, connections, and terminal handling. The experiment selects typed chat or speech. Keep the default communication widget, or place one `CommunicationWidget` inside the game and style it using the package's CSS hooks. See [browser client integration](references/browser-client.md) for the placement and styling contract.
 - Keep game instructions and completion text recruitment-neutral. Let `ParticipantApp` show Prolific return instructions only for a server-issued participant handoff. Test leaving the waiting room through a direct link.
-- Keep study settings and secrets in the host's configuration. Use typed game configuration for the game's own parameters. Read [agent integration](references/agents.md) when the user requests an agent and [deployment](references/config-deployment.md) when the task includes upload or hosting.
+- Keep study settings and secrets in the host's configuration. Use typed game configuration for the game's own parameters. Read [deployment](references/config-deployment.md) when the task includes upload or hosting.
+
+## Add a policy when requested
+
+Use the same Rust SDK to write a typed policy against the game's compact
+action, role-private view, and completion. Build a separate agent ZIP from
+`agent.yaml` and exercise it against the game ZIP in a seeded experiment.
+Use the built-in remote gRPC adapter for a separately hosted policy. Follow
+[agent integration](references/agents.md) for implementation and validation.
 
 ## Validate the package
 

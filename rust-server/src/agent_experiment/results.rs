@@ -137,6 +137,7 @@ pub(super) enum TraceInput {
 pub(super) struct DecisionTrace {
     pub(super) decision: u64,
     pub(super) role: PlayerRole,
+    pub(super) reason: crate::agent::Reason,
     pub(super) response: TraceResponse,
     pub(super) rejection: Option<ActionRejection>,
     pub(super) input: Option<TraceInput>,
@@ -189,6 +190,7 @@ impl Serialize for TraceEntries<'_> {
             rows.serialize_element(&TraceRow {
                 decision: row.decision,
                 role: row.role,
+                reason: &row.reason,
                 response: &row.response,
                 rejection: &row.rejection,
                 input,
@@ -203,6 +205,7 @@ impl Serialize for TraceEntries<'_> {
 struct TraceRow<'a> {
     decision: u64,
     role: PlayerRole,
+    reason: &'a crate::agent::Reason,
     response: &'a TraceResponse,
     rejection: &'a Option<ActionRejection>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -232,6 +235,9 @@ pub struct ResultAgent {
     pub checkpoint: Option<CheckpointId>,
     /// Canonical non-secret settings fingerprint.
     pub settings_fingerprint: String,
+    /// SHA-256 of the deployed WASM policy when this seat used a local artifact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wasm_sha256: Option<String>,
     /// Role occupied in this session.
     pub role: PlayerRole,
     /// Deterministically derived agent seed.

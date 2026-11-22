@@ -76,13 +76,13 @@
         </table></div>
 
         <details id="publish-game">
-          <summary>Deploy or update a game</summary>
-          <p>Choose the game build ZIP produced in <code>dist/</code> by <code>parlando build</code>.</p>
+          <summary>Upload a game or agent</summary>
+          <p>Choose a ZIP from <code>dist/</code>. Upload the game before uploading its agents.</p>
           <form id="publish-form">
             <p id="upload-target"></p>
-            <label>Game build ZIP <input name="archive" type="file" accept=".zip" required></label>
+            <label>Build ZIP <input name="archive" type="file" accept=".zip" required></label>
             <div class="toolbar">
-              <button id="submit-upload" class="primary">Deploy game</button>
+              <button id="submit-upload" class="primary">Upload package</button>
               <button id="cancel-update" type="button" hidden>Cancel update</button>
             </div>
           </form>

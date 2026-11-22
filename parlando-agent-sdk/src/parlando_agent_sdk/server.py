@@ -19,6 +19,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any, Awaitable, Callable, Literal, Optional
 
 import grpc
@@ -91,6 +92,72 @@ class Context:
 
 
 @dataclass(frozen=True)
+class Transition:
+    """An accepted action and the resulting role-private view."""
+
+    actor: PlayerRole
+    action: dict[str, Any]
+    view: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class Message:
+    """Player-to-player chat delivered to its recipient."""
+
+    sender: PlayerRole
+    text: str
+
+
+@dataclass(frozen=True)
+class Observation:
+    """One committed delivery containing a transition, chat, or both."""
+
+    transition: Transition | None = None
+    message: Message | None = None
+
+
+@dataclass(frozen=True)
+class Reason:
+    """The host event that triggered a decision, with a game code on rejection."""
+
+    kind: Literal[
+        "session_started", "after_observation", "scheduled", "wakeup_due", "action_rejected"
+    ]
+    rejection_code: str | None = None
+
+
+@dataclass(frozen=True)
+class WakeupRequest:
+    """Replaces the live one-shot timer after a delay, or cancels it."""
+
+    delay: timedelta | None = None
+
+    def __post_init__(self) -> None:
+        """Checks that a requested delay is representable by protobuf Duration."""
+        if self.delay is not None and not timedelta() <= self.delay <= timedelta(days=3_652_500):
+            raise ValueError("wake-up delay is outside the protobuf Duration range")
+
+    @classmethod
+    def after(cls, delay: timedelta) -> "WakeupRequest":
+        """Replaces any pending timer with one due after the given delay."""
+        return cls(delay)
+
+    @classmethod
+    def cancel(cls) -> "WakeupRequest":
+        """Removes any pending timer."""
+        return cls()
+
+
+@dataclass(frozen=True)
+class Decision:
+    """Optional action, player message, and live wakeup update from one decision."""
+
+    action: dict[str, Any] | None = None
+    message: str | None = None
+    wakeup: WakeupRequest | None = None
+
+
+@dataclass(frozen=True)
 class Response:
     """Non-empty response returned by a Python agent decision call."""
 
@@ -124,6 +191,22 @@ class Agent:
     async def start(self, observation: dict[str, Any]) -> None:
         """Receives the first role-specific observation after initialization."""
         return None
+
+    async def observe(self, observation: Observation) -> None:
+        """Receives one role-specific delivery, including both facets of a combined response."""
+        if observation.transition is not None:
+            transition = observation.transition
+            await self.observe_transition(transition.actor, transition.action, transition.view)
+        if observation.message is not None:
+            message = observation.message
+            await self.observe_message(message.sender, message.text)
+
+    async def decide(self, reason: Reason) -> Decision:
+        """Returns the agent's response to the given decision opportunity."""
+        response = await self.respond(None)
+        if response is None:
+            return Decision()
+        return Decision(action=response._action, message=response._message)
 
     async def observe_transition(
         self,
@@ -242,6 +325,22 @@ class _AgentService:
             await instance.agent.start(_struct_to_dict(request.observation))
             return self._pb2.ObserveResponse(session_logs=instance.logger._drain())
 
+    async def Observe(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
+        """Delivers a combined observation under the instance's callback lock."""
+        async with self._instance(request.agent_id, context) as instance:
+            transition = None
+            message = None
+            if request.HasField("transition"):
+                transition = Transition(
+                    request.transition.actor,
+                    _struct_to_dict(request.transition.action),
+                    _struct_to_dict(request.transition.view),
+                )
+            if request.HasField("message"):
+                message = Message(request.message.sender, request.message.text)
+            await instance.agent.observe(Observation(transition, message))
+            return self._pb2.ObserveResponse(session_logs=instance.logger._drain())
+
     async def ObserveTransition(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote ObserveTransition request from the Rust server."""
         async with self._instance(request.agent_id, context) as instance:
@@ -267,6 +366,20 @@ class _AgentService:
     async def Respond(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote Respond request from the Rust server."""
         async with self._instance(request.agent_id, context) as instance:
+            if request.HasField("reason"):
+                try:
+                    kind = request.reason.Kind.Name(request.reason.kind).lower()
+                except ValueError:
+                    await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "unknown decision reason")
+                if kind == "unspecified":
+                    await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "missing decision reason")
+                decision = await instance.agent.decide(
+                    Reason(kind, request.reason.rejection_code if kind == "action_rejected" else None)
+                )
+                return self._pb2.RespondResponse(
+                    response=_decision_to_proto(self._pb2, decision),
+                    session_logs=instance.logger._drain(),
+                )
             result = await instance.agent.respond(_available_actions(request))
             logs = instance.logger._drain()
             if result is None:
@@ -467,4 +580,20 @@ def _response_to_proto(pb2: Any, response: Response) -> Any:
         converted.message = response._message
     if response._action is not None:
         converted.action.CopyFrom(_dict_to_struct(response._action))
+    return converted
+
+
+def _decision_to_proto(pb2: Any, decision: Decision) -> Any:
+    """Serializes the three independent fields of the agent's decision."""
+    converted = pb2.AgentResponse()
+    if decision.action is not None:
+        converted.action.CopyFrom(_dict_to_struct(decision.action))
+    if decision.message is not None:
+        converted.message = decision.message
+    if decision.wakeup is not None:
+        delay = decision.wakeup.delay
+        if delay is None:
+            converted.wakeup.cancel = True
+        else:
+            converted.wakeup.after.FromTimedelta(delay)
     return converted

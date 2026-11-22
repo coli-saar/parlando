@@ -66,7 +66,11 @@ requests performance evidence.
 
 Require the candidate rehearsal to install all six packaged artifacts and play both deployed
 starter games through completion. In each typed experiment verify a two-way chat with one copy
-of each message in each browser and no microphone request. Inspect the saved candidate before publication. `make publish`
+of each message in each browser and no microphone request. Check the standalone Rust agent as an external consumer of the packaged
+`parlando-game-sdk`. Require the candidate CLI to build and check the agent ZIP,
+complete two-agent headless games under both metering modes, and record the packaged WASM
+digest for each seat. Require the separate agent upload and live human–agent
+game to pass through the installed host. Inspect the saved candidate before publication. `make publish`
 verifies its checksums and inputs and publishes the saved npm and PyPI distributions. Cargo
 packages the verified Rust inputs during publication.
 
@@ -84,8 +88,8 @@ Preparation usually leaves tracked changes. Because Cargo's real publish must us
 Proceed only when actual publication was explicitly requested and all six packages still pass the target-version audit and dry runs from the committed candidate. Run clean-source Cargo checks as dependencies become available in the index.
 
 Follow the canonical publication order in `docs/releasing-parlando.md`.
-The default command is `make publish`, which includes the Rust Game SDK
-crates and both Python SDKs. Preserve the npm approval process if it
+The default command is `make publish`, which includes the three Rust crates,
+the npm client and both Python SDKs. Preserve the npm approval process if it
 prompts. Verify exact versions and clean consumers at each applicable
 registry. After a partial release, verify the successful uploads and run
 only the failed and pending package targets.
