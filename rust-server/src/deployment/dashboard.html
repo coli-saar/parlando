@@ -26,6 +26,15 @@
 
   <main>
     <p id="notice" role="status" hidden></p>
+    <section id="cli-login" class="cli-card" aria-labelledby="cli-title" hidden>
+      <span class="terminal-icon" aria-hidden="true">›_</span>
+      <h1 id="cli-title">Connect your terminal</h1>
+      <p>Authorize the Parlando CLI to deploy games to this server with your account.</p>
+      <form method="post" id="cli-form">
+        <label>Terminal code <input id="cli-code" name="code" autocomplete="off" spellcheck="false" maxlength="16" required></label>
+        <button class="primary">Authorize CLI</button>
+      </form>
+    </section>
     <div id="auth" class="auth-page" hidden>
       <div class="auth-shell">
         <div class="auth-brand" aria-hidden="true">

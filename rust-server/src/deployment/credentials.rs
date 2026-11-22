@@ -1,13 +1,7 @@
-//! Resolve deployment targets and read a per-origin, per-game upload credential.
+//! Resolve deployment targets and sign in to a deployment server using its dashboard accounts.
 //! Only aliases and public origins belong in the configuration file.
 
-use std::{
-    collections::BTreeMap,
-    env, fs,
-    io::{self, IsTerminal, Read},
-    net::IpAddr,
-    path::PathBuf,
-};
+use std::{collections::BTreeMap, env, fs, net::IpAddr, path::PathBuf};
 
 use anyhow::{ensure, Context, Result};
 
@@ -16,23 +10,41 @@ use super::{package::validate_id, validate_token};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 const SERVICE: &str = "org.coli-saar.parlando.deploy";
 
-/// Resolves a URL or an alias from the user's `parlando/servers.yaml` configuration.
+/// Resolves a URL or an alias from the user's `~/.parlando/servers.yaml` configuration.
 /// Returns a canonical origin suitable for both credential scoping and HTTP calls.
 pub fn resolve_host(host_or_alias: &str) -> Result<String> {
     if host_or_alias.contains("://") {
         return origin(host_or_alias);
     }
     validate_id(host_or_alias).context("invalid server alias")?;
-    let config = env::var_os("XDG_CONFIG_HOME")
+    let config = env::var_os("HOME")
+        .filter(|home| !home.is_empty())
         .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .context("cannot locate server alias configuration")?
-        .join("parlando/servers.yaml");
-    let aliases: BTreeMap<String, String> = serde_yaml::from_slice(
-        &fs::read(&config).with_context(|| format!("reading {}", config.display()))?,
-    )
-    .context("invalid servers.yaml alias mapping")?;
-    origin(aliases.get(host_or_alias).context("unknown server alias")?)
+        .context("Set HOME to locate ~/.parlando/servers.yaml.")?
+        .join(".parlando/servers.yaml");
+    let contents = fs::read(&config).with_context(|| {
+        format!(
+            "Could not read {}. Specify a server URL or define an alias in this file.",
+            config.display()
+        )
+    })?;
+    let aliases: BTreeMap<String, String> = serde_yaml::from_slice(&contents)
+        .with_context(|| format!("Invalid alias mapping in {}", config.display()))?;
+    let lookup = |name: &str| {
+        aliases.get(name).with_context(|| {
+            format!(
+                "Server alias '{name}' is missing from {}. Specify a server URL or add the alias.",
+                config.display()
+            )
+        })
+    };
+    let mut value = lookup(host_or_alias)?;
+    // A default may select an existing alias or contain a server URL directly.
+    if host_or_alias == "default" && !value.contains("://") {
+        validate_id(value).context("Invalid default server alias")?;
+        value = lookup(value)?;
+    }
+    origin(value)
 }
 
 /// Validates the target before looking up secrets or building a request URL.
@@ -60,59 +72,71 @@ pub(super) fn origin(value: &str) -> Result<String> {
     Ok(url.origin().ascii_serialization())
 }
 
-/// Associates a token with exactly one canonical origin and game.
-fn account(origin: &str, game_id: &str) -> Result<String> {
-    validate_id(game_id)?;
-    Ok(format!("{origin}/{game_id}"))
+/// Reads the deployment credential for a server from the operating system's credential store.
+pub fn upload_token(server: &str) -> Result<String> {
+    let server = origin(server)?;
+    read_keyring(&server)?.with_context(|| {
+        format!("Sign in to deploy to {server}. Run: parlando login --server {server}")
+    })
 }
 
-/// Returns the upload credential for a single server and game. A token injected by
-/// CI must be paired with its intended origin in `PARLANDO_DEPLOY_ORIGIN`.
-pub fn upload_token(server_origin: &str, game_id: &str) -> Result<String> {
-    let server_origin = origin(server_origin)?;
-    let account = account(&server_origin, game_id)?;
-    match env::var("PARLANDO_DEPLOY_TOKEN") {
-        Ok(token) => {
-            let expected = env::var("PARLANDO_DEPLOY_ORIGIN")
-                .context("Set PARLANDO_DEPLOY_ORIGIN when using PARLANDO_DEPLOY_TOKEN")?;
-            ensure!(
-                origin(&expected)? == server_origin,
-                "The upload token belongs to another server"
-            );
-            validate_token(&token)?;
-            Ok(token)
-        }
-        Err(env::VarError::NotPresent) => read_keyring(&account)?.with_context(|| {
-            format!(
-                "No upload token is saved for game '{game_id}' on {server_origin}.\n\
-             Ask the host administrator for this game's upload token, then pipe it to:\n  \
-             parlando login --server {server_origin} --game {game_id}\n\
-             You can also upload the ZIP from the Games page in the Parlando dashboard."
-            )
-        }),
-        Err(_) => anyhow::bail!("The upload token contains invalid text"),
+/// Opens the host's dashboard in the default browser. Only the terminal receives the
+/// persistent credential, which is saved under the normalized server URL after approval.
+pub async fn login(server: &str, open_browser: bool) -> Result<()> {
+    #[derive(serde::Deserialize)]
+    struct Pairing {
+        device: String,
+        code: String,
+        url: String,
     }
-}
-
-/// Reads one token from a pipe and saves it in the OS credential store for the selected game.
-/// Rejects interactive stdin to avoid displaying a secret in terminal echo or shell history.
-pub fn login(server: &str, game_id: &str) -> Result<()> {
-    let account = account(&resolve_host(server)?, game_id)?;
-    let stdin = io::stdin();
+    #[derive(serde::Deserialize)]
+    struct Exchange {
+        token: Option<String>,
+    }
+    let server = origin(server)?;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let pairing: Pairing =
+        super::management_response(client.post(format!("{server}/api/hosting/cli/start"))).await?;
+    let mut url = reqwest::Url::parse(&pairing.url)?;
+    origin(&url.origin().ascii_serialization())?;
     ensure!(
-        !stdin.is_terminal(),
-        "Pipe the upload token from your secret manager to this command on standard input."
+        url.username().is_empty()
+            && url.password().is_none()
+            && url.path() == "/admin"
+            && url.query() == Some("cli-login")
+            && url.fragment().is_none(),
+        "Invalid browser sign-in URL"
     );
-    let mut input = String::new();
-    stdin
-        .lock()
-        .take(8193)
-        .read_to_string(&mut input)
-        .context("reading upload credential")?;
-    let token = input.trim_end_matches(['\r', '\n']);
-    ensure!(input.len() <= 8192, "credential too long");
-    validate_token(token)?;
-    write_keyring(&account, token)
+    // The fragment pairs the approval page with this request without entering HTTP logs.
+    url.set_fragment(Some(&pairing.code));
+    eprintln!("Authorize this CLI in your browser: {url}");
+    if open_browser {
+        #[cfg(target_os = "macos")]
+        let opener = "open";
+        #[cfg(not(target_os = "macos"))]
+        let opener = "xdg-open";
+        if let Ok(mut child) = std::process::Command::new(opener).arg(url.as_str()).spawn() {
+            std::thread::spawn(move || child.wait());
+        }
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let result: Exchange = super::management_response(
+            client
+                .post(format!("{server}/api/hosting/cli/exchange"))
+                .json(&serde_json::json!({"device": pairing.device})),
+        )
+        .await?;
+        if let Some(token) = result.token {
+            validate_token(&token)?;
+            return write_keyring(&server, &token);
+        }
+    }
+    anyhow::bail!("Browser sign-in expired. Run parlando login again.")
 }
 
 /// Reads this account's generic password using the native macOS Keychain API.
@@ -191,16 +215,16 @@ fn write_keyring(account: &str, token: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reports the supported unattended credential path on platforms without a keyring adapter.
+/// Explains the dashboard upload path when local credential storage is unavailable.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn read_keyring(_: &str) -> Result<Option<String>> {
-    anyhow::bail!("set PARLANDO_DEPLOY_ORIGIN and PARLANDO_DEPLOY_TOKEN on this platform")
+    anyhow::bail!("CLI credential storage requires macOS Keychain or Linux Secret Service. Use the dashboard to upload on this platform.")
 }
 
-/// Reports how to inject a credential on platforms without a keyring adapter.
+/// Reports that this platform cannot persist a browser-authorized CLI credential.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn write_keyring(_: &str, _: &str) -> Result<()> {
-    anyhow::bail!("set PARLANDO_DEPLOY_ORIGIN and PARLANDO_DEPLOY_TOKEN on this platform")
+    anyhow::bail!("CLI credential storage requires macOS Keychain or Linux Secret Service. Use the dashboard to upload on this platform.")
 }
 
 #[cfg(test)]

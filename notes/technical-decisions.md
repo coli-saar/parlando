@@ -5852,3 +5852,17 @@ The host attaches the receiving seat’s admission source to waiting, active, an
 ## Missing upload tokens in the CLI
 
 Credential lookups distinguish a missing game token from a credential-store failure. For a missing token, deploy prints the login command for the resolved server URL and the package’s game ID, plus the dashboard upload option. Other store failures retain their diagnostic context so login is suggested only when it addresses the failure.
+
+## Browser-authorized CLI deployment
+
+CLI sign-in uses a five-minute device pairing with the existing dashboard account. The browser requires a signed-in session, CSRF protection, and the code printed in the terminal. The CLI exchanges a separate device secret once and stores the resulting credential under the canonical server URL in the OS credential store. The account database holds only digests, bounds outstanding requests, and revokes CLI credentials and approved pending requests when a password changes or an account is disabled. Uploads use the same account-level authority as dashboard uploads and record the same audit identity. A host needs the separate administrator origin for this flow. Bootstrap operator access remains a separate server-management capability.
+
+### Default CLI deployment host
+
+Keep servers.yaml as a flat alias-to-URL mapping. Login, deployment and availability commands resolve the alias `default` when the target flag is omitted. That entry may select a named alias so a URL only needs to be maintained once. Existing URL-valued entries, including one named `default`, keep their meaning. Explicit URLs bypass configuration. A missing default produces an error rather than choosing a server implicitly.
+
+CLI host aliases live in ~/.parlando/servers.yaml so the manual, help and lookup all point to one predictable location. Existing users of the former XDG location can move their servers.yaml file there.
+
+CLI login links carry the short-lived approval code in the URL fragment. This identifies the requesting process across browser sign-in without typing a code or opening a local callback port. Approval requires an explicit authenticated click. Only the CLI holds the separate secret needed to retrieve the credential. Links from other people can identify their CLI, hence the prompt to approve only a login the user initiated.
+
+The CLI approval page uses a compact card with a plain statement of the permission granted and a single explicit approval action. The header identifies the signed-in account.

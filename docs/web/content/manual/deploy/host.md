@@ -65,11 +65,9 @@ Use a password of at least 12 bytes. Sign in at `/admin` and open **Users** to c
 
 Administrators use **Users** to create accounts, reset passwords, and disable accounts. A reset or disable revokes that account's current dashboard sessions. Expand **Audit history** on the same page to review recorded operations.
 
-## Grant machine uploads
+## Authorize CLI deployments
 
-The dashboard supports browser uploads with an experimenter account. To enable CLI or automated uploads, pass `--grants GRANTS_FILE` to `parlando serve`. Use a protected JSON file mapping game IDs to distinct random tokens. Keep those tokens separate from the host administrator token. Provision one token for each game a client needs to upload. Restart the host after changing the file.
-
-`parlando serve` can also run without the browser dashboard. Specify the public origin with `--public-url` and omit the administrator origin. Supply the grants file or set `PARLANDO_DEPLOY_GAME` and `PARLANDO_DEPLOY_TOKEN` for a single game. Use the administrator token to activate and deactivate games through the CLI. See [deploy to a shared host](../).
+Enable the dashboard and create an account for each person who deploys games. Operators and experimenters can sign in from the CLI and upload any game to this host. Account password resets and account disabling also revoke that account’s CLI credentials. See [deploy with the CLI](../#deploy-with-the-cli) for the browser sign-in steps.
 
 ## Retain the store
 

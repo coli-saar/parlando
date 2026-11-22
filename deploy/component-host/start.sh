@@ -24,7 +24,4 @@ if [ -z "$public_url" ] && [ -n "${RAILWAY_PUBLIC_DOMAIN:-}" ]; then
 fi
 : "${public_url:?Set PARLANDO_PUBLIC_URL to the public HTTPS origin of this host}"
 set -- "$@" --public-url "$public_url"
-if [ -n "${PARLANDO_GRANTS_FILE:-}" ]; then
-    set -- "$@" --grants "$PARLANDO_GRANTS_FILE"
-fi
 run_parlando "$@"

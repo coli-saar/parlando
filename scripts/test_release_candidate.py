@@ -288,24 +288,21 @@ def local_host(work, binary, env):
     address = f"127.0.0.1:{port}"
     origin = f"http://{address}"
     admin_origin = f"http://localhost:{port}"
-    grants = {game: secrets.token_urlsafe(32) for game in GAMES.values()}
-    grant_file = work / "grants.json"
-    grant_file.write_text(json.dumps(grants), encoding="utf-8")
     credentials = {
         **env, "PARLANDO_HOST_ADMIN_TOKEN": secrets.token_urlsafe(32),
-        "PARLANDO_HOST_ADMIN_ORIGIN": origin, "PARLANDO_DEPLOY_ORIGIN": origin,
+        "PARLANDO_HOST_ADMIN_ORIGIN": origin,
         "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost",
     }
     credentials.pop("PARLANDO_ADMIN_URL", None)
     log = work / "host.log"
     with log.open("w", encoding="utf-8") as output, subprocess.Popen(
         [binary, "serve", "--bind", address,
-         "--store", work / "host", "--grants", grant_file],
+         "--store", work / "host"],
         cwd=work, env=credentials, stdout=output, stderr=subprocess.STDOUT,
     ) as host:
         try:
             wait_for_host(host, origin)
-            yield origin, admin_origin, credentials, grants
+            yield origin, admin_origin, credentials
         except BaseException:
             print(log.read_text(encoding="utf-8"), file=sys.stderr)
             raise
@@ -316,6 +313,28 @@ def local_host(work, binary, env):
                     host.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     host.kill()
+
+
+def authorize_cli(binary, origin, admin_origin, browser, env):
+    """Complete the installed CLI's pairing with the disposable browser account."""
+    with subprocess.Popen(
+        [binary, "login", "--server", origin, "--no-browser"], stderr=subprocess.PIPE,
+        text=True, env=env,
+    ) as login:
+        try:
+            prompt = login.stderr.readline()
+            url = prompt.strip().removeprefix("Authorize this CLI in your browser: ")
+            if not url.startswith(f"{admin_origin}/admin?cli-login#"):
+                raise RuntimeError("CLI did not print the expected authorization link")
+            subprocess.run(
+                ["node", "release_candidate_browser.mjs", "login"],
+                input=url, text=True, check=True, cwd=browser, env=env, timeout=60,
+            )
+            if login.wait(timeout=20):
+                raise RuntimeError(login.stderr.read())
+        finally:
+            if login.poll() is None:
+                login.kill()
 
 
 def play_games(work, binary, env):
@@ -329,12 +348,12 @@ def play_games(work, binary, env):
     run("npm", "install", "--no-audit", "--no-fund", f"@playwright/test@{playwright}", cwd=browser, env=env)
     run("node", "ensure-browser.mjs", cwd=browser, env=env)
     browser_env = {**env, "PARLANDO_REHEARSAL_PASSWORD": secrets.token_urlsafe(32)}
-    with local_host(work, binary, env) as (origin, admin_origin, credentials, grants):
+    with local_host(work, binary, env) as (origin, admin_origin, credentials):
+        authorize_cli(binary, origin, admin_origin, browser, browser_env)
         for game in GAMES.values():
-            deploy_env = {**credentials, "PARLANDO_DEPLOY_TOKEN": grants[game]}
             receipt = json.loads(run(
                 binary, "deploy", "--host", origin, "--json",
-                cwd=work / game, env=deploy_env, capture=True, timeout=60,
+                cwd=work / game, env=credentials, capture=True, timeout=60,
             ))["result"]
             if receipt["game"] != game or receipt["version"] != "0.1.0":
                 raise RuntimeError(f"Unexpected deployment receipt for {game}: {receipt}")

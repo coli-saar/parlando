@@ -92,6 +92,30 @@ th { background: var(--surface); color: var(--muted); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* Retains the split brand and form layout of the administrator setup page. */
+/* Keep the single authorization decision readable on phones and wide displays. */
+.cli-card {
+  width: min(calc(100% - 2rem), 34rem);
+  margin: clamp(2rem, 12vh, 9rem) auto 2rem;
+  padding: clamp(1.5rem, 5vw, 3rem);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 8px 32px rgba(20, 34, 45, .07);
+}
+.terminal-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 3rem;
+  height: 3rem;
+  margin-bottom: 1.5rem;
+  background: var(--selected);
+  border-radius: 10px;
+  color: var(--accent);
+  font: 700 1.5rem/1 ui-monospace, monospace;
+}
+.cli-card h1 { margin-bottom: .65rem; font-size: 2rem; letter-spacing: -.035em; }
+.cli-card p { margin: 0 0 1.75rem; color: #475561; font-size: 1.1rem; }
+.cli-card .primary { min-height: 44px; padding-inline: 1.25rem; }
 .auth-page {
   display: grid;
   place-items: center;

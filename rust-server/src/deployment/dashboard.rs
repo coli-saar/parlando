@@ -168,6 +168,9 @@ pub(super) fn routes() -> Router<Arc<Host>> {
         .route("/api/hosting/auth/setup", get(setup_status).post(setup))
         .route("/api/hosting/auth/login", post(login))
         .route("/api/hosting/auth/logout", post(logout))
+        .route("/api/hosting/cli/start", post(cli_start))
+        .route("/api/hosting/cli/approve", post(cli_approve))
+        .route("/api/hosting/cli/exchange", post(cli_exchange))
         .route("/api/hosting/auth/session", get(session))
         .route("/api/hosting/dashboard", get(index))
         .route(
@@ -245,6 +248,90 @@ pub(super) async fn authorize(
     let dashboard = admin(host, parts).map_err(|_| unauthorized())?;
     let session = dashboard.browser_session(parts).await?;
     Ok(actor_name(&session))
+}
+
+/// Accepts an account-bound deployment token or the existing authenticated dashboard session.
+pub(super) async fn upload_actor(host: &Host, parts: &Parts) -> HttpResult<String> {
+    if let Some(header) = parts.headers.get(AUTHORIZATION) {
+        let token = header
+            .to_str()
+            .ok()
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .ok_or_else(unauthorized)?;
+        let dashboard = host.dashboard.as_ref().ok_or_else(unauthorized)?;
+        let account = dashboard
+            .accounts
+            .deploy_account(token)
+            .await
+            .map_err(internal)?
+            .ok_or_else(unauthorized)?;
+        return Ok(format!("account:{}:{}", account.id, account.username));
+    }
+    let session = admin(host, parts)
+        .map_err(|_| unauthorized())?
+        .browser_session(parts)
+        .await?;
+    Ok(actor_name(&session))
+}
+
+/// Opens a short-lived device request and directs the CLI to this host's configured dashboard.
+async fn cli_start(State(host): State<Arc<Host>>) -> HttpResult<Json<Value>> {
+    let dashboard = host.dashboard.as_ref().ok_or_else(not_found)?;
+    let (device, code) = dashboard
+        .accounts
+        .start_cli_login()
+        .await
+        .map_err(internal)?
+        .ok_or((
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many pending CLI sign-ins. Try again later.".into(),
+        ))?;
+    Ok(Json(
+        json!({"device":device,"code":code,"url":format!("{}/admin?cli-login",dashboard.origin)}),
+    ))
+}
+
+/// Requires dashboard authentication, same-origin CSRF protection, and the code shown by the CLI.
+async fn cli_approve(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Json<Value>> {
+    let (parts, body) = request.into_parts();
+    let dashboard = admin(&host, &parts)?;
+    let session = dashboard.browser_session(&parts).await?;
+    #[derive(Deserialize)]
+    struct Approval {
+        code: String,
+    }
+    let Json(input) = parse_json::<Approval>(parts, body, &host).await?;
+    if !dashboard
+        .accounts
+        .approve_cli(&input.code, &session)
+        .await
+        .map_err(internal)?
+    {
+        return Err(bad_request(
+            "This sign-in code is incorrect, expired, or already used.",
+        ));
+    }
+    Ok(Json(json!({"approved":true})))
+}
+
+/// Returns a deploy-only credential to the requesting terminal after browser approval.
+async fn cli_exchange(
+    State(host): State<Arc<Host>>,
+    Json(input): Json<DeviceRequest>,
+) -> HttpResult<Json<Value>> {
+    let dashboard = host.dashboard.as_ref().ok_or_else(not_found)?;
+    let token = dashboard
+        .accounts
+        .exchange_cli(&input.device)
+        .await
+        .map_err(internal)?;
+    Ok(Json(json!({"token":token})))
+}
+
+/// Private polling secret issued to the initiating CLI and never included in a browser URL.
+#[derive(Deserialize)]
+struct DeviceRequest {
+    device: String,
 }
 
 /// Formats an audit identity with its durable ID and display name.

@@ -1,12 +1,13 @@
+import { readFileSync } from "node:fs";
 import { chromium, expect } from "@playwright/test";
 
-/** Signs in to the loopback host and starts one experiment in its game dashboard. */
-async function startPreview(browser, adminOrigin, game) {
+/** Creates or signs in the disposable rehearsal account at the supplied dashboard page. */
+async function signIn(browser, url) {
   const page = await browser.newPage();
   const username = "release-rehearsal";
   const password = process.env.PARLANDO_REHEARSAL_PASSWORD;
   if (!password) throw new Error("Missing release rehearsal account password");
-  await page.goto(`${adminOrigin}/admin`, { waitUntil: "domcontentloaded" });
+  await page.goto(url, { waitUntil: "domcontentloaded" });
   const setup = page.getByRole("heading", { name: "Create your administrator account" });
   const login = page.getByRole("heading", { name: "Sign in", exact: true });
   await expect(setup.or(login)).toBeVisible();
@@ -22,6 +23,13 @@ async function startPreview(browser, adminOrigin, game) {
     await form.getByLabel("Password").fill(password);
     await form.getByRole("button", { name: "Sign in" }).click();
   }
+  await expect(page.locator("#identity")).toBeVisible();
+  return page;
+}
+
+/** Opens the deployed game and starts a local pilot for the two participant profiles. */
+async function startPreview(browser, adminOrigin, game) {
+  const page = await signIn(browser, `${adminOrigin}/admin`);
   const row = page.getByRole("row").filter({ has: page.getByRole("link", { name: game, exact: true }) });
   await expect(row.getByRole("cell", { name: "Active", exact: true })).toBeVisible();
   await row.getByRole("link", { name: game, exact: true }).click();
@@ -139,4 +147,18 @@ async function play(adminOrigin, publicOrigin, game) {
   }
 }
 
-await play(...process.argv.slice(2));
+/** Authorizes the actual CLI process used by the release rehearsal. */
+async function approveCli(url) {
+  const browser = await chromium.launch();
+  try {
+    const page = await signIn(browser, url);
+    await expect(page.getByLabel("Terminal code")).toBeHidden();
+    await page.getByRole("button", {name: "Authorize CLI"}).click();
+    await expect(page.getByRole("status")).toContainText("CLI deployment authorized");
+  } finally {
+    await browser.close();
+  }
+}
+
+if (process.argv[2] === "login") await approveCli(readFileSync(0, "utf8").trim());
+else await play(...process.argv.slice(2));

@@ -8,6 +8,9 @@ const state = {
   resetAccountId: null,
 };
 
+// A link opened by the CLI already identifies the terminal requesting approval.
+const approvalCode = /^[A-F0-9]{16}$/.test(location.hash.slice(1)) ? location.hash.slice(1) : "";
+
 // Looks up persistent dashboard controls.
 const byId = id => document.getElementById(id);
 
@@ -119,8 +122,14 @@ function setAccount(account, setupAvailable = false) {
   byId("setup").hidden = !!account || !setupAvailable;
   byId("sign-in").hidden = !!account || setupAvailable;
   byId("identity").hidden = !account;
-  byId("workspace").hidden = !account;
-  byId("workspace-nav").hidden = !account;
+  const cliLogin = new URLSearchParams(location.search).has("cli-login");
+  byId("cli-login").hidden = !account || !cliLogin;
+  if (cliLogin && approvalCode) {
+    byId("cli-code").defaultValue = approvalCode;
+    byId("cli-code").closest("label").hidden = true;
+  }
+  byId("workspace").hidden = !account || cliLogin;
+  byId("workspace-nav").hidden = !account || cliLogin;
   byId("users-nav").hidden = !admin;
   byId("signed-in-as").textContent = account ? `${account.username} · ${roleLabel(account.role)}` : "";
 
@@ -326,6 +335,13 @@ onSubmit("login", async form => {
   }
 });
 
+// Approves the pending CLI request using the current dashboard session.
+onSubmit("cli-form", async form => {
+  await request("/cli/approve", {method: "POST", body: {code: form.elements.code.value}});
+  byId("cli-login").hidden = true;
+  notice("CLI deployment authorized. Return to your terminal.");
+});
+
 // Sends the ZIP to the server, which validates its contents and reads its manifest.
 onSubmit("publish-form", async form => {
   const [archive] = form.elements.archive.files;
@@ -410,6 +426,11 @@ async function openWorkspace({ allowSetup = true } = {}) {
     return;
   }
   setAccount(account);
+  if (!byId("cli-login").hidden) {
+    if (approvalCode) byId("cli-form").querySelector("button").focus();
+    else byId("cli-code").focus();
+    return;
+  }
   const next = new URLSearchParams(location.search).get("next");
   // Accept only a game mount path. The destination still checks the session and game.
   if (next && /^\/[a-z0-9][a-z0-9_-]{0,63}$/.test(next)

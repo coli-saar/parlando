@@ -550,7 +550,6 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
 /// Builds trusted project code without passing the CLI's deployment authority to child processes.
 fn build_tool(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut command = Command::new(program);
-    command.env_remove("PARLANDO_DEPLOY_TOKEN");
     command.env_remove("PARLANDO_HOST_ADMIN_TOKEN");
     command
 }

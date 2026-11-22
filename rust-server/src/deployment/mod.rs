@@ -6,7 +6,7 @@ mod dashboard;
 mod package;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -52,8 +52,6 @@ pub struct HostOptions {
     pub store: PathBuf,
     /// External HTTPS origin. Loopback origins can use HTTP for local installation tests.
     pub public_url: String,
-    /// Independent upload tokens indexed by the exact game ID each token may publish.
-    pub grants: BTreeMap<String, String>,
     /// Optional operator bearer credential. Omit it to disable bearer-authorized game management.
     pub admin_token: Option<String>,
 }
@@ -89,7 +87,6 @@ struct Host {
     wasm_metering: WasmMetering,
     store: PathBuf,
     public_url: String,
-    grants: BTreeMap<String, [u8; 32]>,
     admin_token: Option<[u8; 32]>,
     dashboard: Option<dashboard::Dashboard>,
     games: RwLock<HashMap<String, Arc<RwLock<HostedGame>>>>,
@@ -196,17 +193,6 @@ async fn run_host(
             Ok(token_digest(token))
         })
         .transpose()?;
-    let mut grants = BTreeMap::new();
-    for (game, token) in options.grants {
-        validate_hosted_game_id(&game)?;
-        validate_token(&token)?;
-        let digest = token_digest(&token);
-        ensure!(
-            Some(digest) != admin_token && !grants.values().any(|value| *value == digest),
-            "operator and game upload tokens must all be distinct"
-        );
-        grants.insert(game, digest);
-    }
     fs::create_dir_all(&options.store)?;
     let store = options.store.canonicalize()?;
     let lock = OpenOptions::new()
@@ -225,7 +211,6 @@ async fn run_host(
         wasm_metering,
         store,
         public_url,
-        grants,
         admin_token,
         dashboard,
         games: RwLock::new(HashMap::new()),
@@ -357,10 +342,7 @@ async fn upload(
     request: Request,
 ) -> HttpResult<Json<Deployment>> {
     let (parts, body) = request.into_parts();
-    let actor = dashboard::authorize(&host, &parts, host.grants.get(&game), || {
-        format!("upload-token:{game}")
-    })
-    .await?;
+    let actor = dashboard::upload_actor(&host, &parts).await?;
     validate_hosted_game_id(&game).map_err(bad_request)?;
     let request = Request::from_parts(parts, body);
     dashboard::audited(&host, &actor, "upload", &game, async {
@@ -379,7 +361,7 @@ async fn dashboard_upload(
     request: Request,
 ) -> HttpResult<Json<Deployment>> {
     let (parts, body) = request.into_parts();
-    let actor = dashboard::authorize(&host, &parts, None, String::new).await?;
+    let actor = dashboard::upload_actor(&host, &parts).await?;
     match read_upload(&host, Request::from_parts(parts, body)).await {
         Ok((package, permit)) => {
             let game = package.game().to_owned();
@@ -684,34 +666,24 @@ fn validate_hosted_game_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validates a built game ZIP and sends its original bytes with a game-scoped upload token.
+/// Validates a built game ZIP and sends its original bytes with a server-wide upload token.
 /// This installs the current build for the archive’s game on a deployment host.
 pub async fn deploy(host: &str, archive: &Path, token: &str) -> Result<Deployment> {
-    deploy_archive(host, archive, |_| Ok(token.to_owned())).await
-}
-
-/// Looks up the saved upload credential for the manifest in a built ZIP and deploys that archive.
-/// The game ID used for credential resolution is read from the same ZIP bytes that are sent.
-pub async fn deploy_with_saved_credentials(host: &str, archive: &Path) -> Result<Deployment> {
-    deploy_archive(host, archive, |game| credentials::upload_token(host, game)).await
-}
-
-/// Authenticates for the game declared in the checked archive, then sends its original ZIP bytes.
-async fn deploy_archive(
-    host: &str,
-    archive: &Path,
-    token: impl FnOnce(&str) -> Result<String>,
-) -> Result<Deployment> {
     let path = archive.to_owned();
     let (game, bytes) = tokio::task::spawn_blocking(move || -> Result<_> {
         let (package, bytes) = Package::read_archive(&path)?;
         Ok((package.game().to_owned(), bytes))
     })
     .await??;
-    let request = management_request(host, "PUT", &format!("packages/{game}"), &token(&game)?)?
+    let request = management_request(host, "PUT", &format!("packages/{game}"), token)?
         .header(CONTENT_TYPE, PACKAGE_CONTENT_TYPE)
         .body(bytes);
     management_response(request).await
+}
+
+/// Reads the account credential saved for this server and uploads the supplied game archive.
+pub async fn deploy_with_saved_credentials(host: &str, archive: &Path) -> Result<Deployment> {
+    deploy(host, archive, &credentials::upload_token(host)?).await
 }
 
 /// Calls a host management route without forwarding credentials to redirect targets.

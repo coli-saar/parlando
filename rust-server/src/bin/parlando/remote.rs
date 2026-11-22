@@ -1,6 +1,6 @@
 //! CLI entry points for deploying game packages and operating a deployment host.
 
-use std::{collections::BTreeMap, env, net::SocketAddr, path::PathBuf};
+use std::{env, net::SocketAddr, path::PathBuf};
 
 use super::{project, Report};
 use anyhow::{ensure, Context, Result};
@@ -11,19 +11,29 @@ use serde_json::{json, Value};
 /// Deployment commands exposed at the main Parlando CLI level.
 #[derive(Subcommand)]
 pub(super) enum RemoteCommand {
-    /// Store an upload token in the system credential store.
+    /// Sign in through your browser to deploy games to a server.
     Login {
-        /// Parlando server URL (e.g. http://127.0.0.1:8000) or saved server alias.
-        #[arg(long, alias = "host", value_name = "URL_OR_ALIAS")]
+        /// Parlando server URL (e.g. http://127.0.0.1:8000) or alias from ~/.parlando/servers.yaml.
+        #[arg(
+            long,
+            alias = "host",
+            value_name = "URL_OR_ALIAS",
+            default_value = "default"
+        )]
         server: String,
-        /// Game ID this credential is authorized to publish.
+        /// Print the browser sign-in link without opening it automatically.
         #[arg(long)]
-        game: String,
+        no_browser: bool,
     },
     /// Upload a built game package to a deployment host.
     Deploy {
-        /// Parlando server URL (e.g. http://127.0.0.1:8000) or saved server alias.
-        #[arg(long, alias = "server", value_name = "URL_OR_ALIAS")]
+        /// Parlando server URL (e.g. http://127.0.0.1:8000) or alias from ~/.parlando/servers.yaml.
+        #[arg(
+            long,
+            alias = "server",
+            value_name = "URL_OR_ALIAS",
+            default_value = "default"
+        )]
         host: String,
         /// ZIP archive produced by parlando build, defaulting to the game ID and version in game.yaml.
         #[arg(long)]
@@ -33,9 +43,7 @@ pub(super) enum RemoteCommand {
     ///
     /// With the default loopback origins, open the dashboard link printed at startup.
     /// To set the dashboard origin explicitly, pass --admin-url or set PARLANDO_ADMIN_URL.
-    /// For an explicit dashboard origin or upload grant, set PARLANDO_HOST_ADMIN_TOKEN.
-    /// To grant CLI upload access, pass --grants or set PARLANDO_DEPLOY_GAME and
-    /// PARLANDO_DEPLOY_TOKEN for one game.
+    /// For an explicit dashboard origin, set PARLANDO_HOST_ADMIN_TOKEN.
     Serve {
         /// Local TCP address, typically behind an HTTPS reverse proxy.
         #[arg(long, default_value = "127.0.0.1:8000")]
@@ -52,9 +60,6 @@ pub(super) enum RemoteCommand {
         /// Dashboard origin on a different hostname from the participant site.
         #[arg(long)]
         admin_url: Option<String>,
-        /// Path to a JSON file mapping game IDs to independent bearer tokens.
-        #[arg(long)]
-        grants: Option<PathBuf>,
     },
     /// Enable participant access to a deployed game.
     Activate(GameTarget),
@@ -65,8 +70,13 @@ pub(super) enum RemoteCommand {
 /// Identifies a deployed game and the host responsible for its availability.
 #[derive(clap::Args)]
 pub(super) struct GameTarget {
-    /// Parlando server URL (e.g. http://127.0.0.1:8000) or saved server alias.
-    #[arg(long, alias = "server", value_name = "URL_OR_ALIAS")]
+    /// Parlando server URL (e.g. http://127.0.0.1:8000) or alias from ~/.parlando/servers.yaml.
+    #[arg(
+        long,
+        alias = "server",
+        value_name = "URL_OR_ALIAS",
+        default_value = "default"
+    )]
     host: String,
     /// Game ID declared in the deployed ZIP.
     #[arg(long)]
@@ -89,12 +99,12 @@ impl RemoteCommand {
 /// Runs a remote deployment operation and returns the result for CLI formatting.
 pub(super) async fn execute(command: RemoteCommand) -> Result<Report> {
     match command {
-        RemoteCommand::Login { server, game } => {
-            credentials::login(&server, &game)?;
+        RemoteCommand::Login { server, no_browser } => {
             let origin = credentials::resolve_host(&server)?;
+            credentials::login(&origin, !no_browser).await?;
             Ok(Report::new(
-                format!("Saved upload token for {game} on {origin}."),
-                json!({"server": origin, "game": game}),
+                format!("Signed in to {origin}."),
+                json!({"server": origin}),
             ))
         }
         RemoteCommand::Deploy { host, package } => {
@@ -121,7 +131,6 @@ pub(super) async fn execute(command: RemoteCommand) -> Result<Report> {
             store,
             public_url,
             admin_url,
-            grants,
         } => {
             let listener = tokio::net::TcpListener::bind(bind)
                 .await
@@ -130,24 +139,8 @@ pub(super) async fn execute(command: RemoteCommand) -> Result<Report> {
             let use_local_dashboard = bind.ip().is_loopback() && public_url.is_none();
             let public_url = public_url.unwrap_or_else(|| format!("http://{bind}"));
             let admin_url = admin_url.or_else(|| env::var("PARLANDO_ADMIN_URL").ok());
-            let grants = if let Some(path) = grants {
-                serde_json::from_slice(
-                    &std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
-                )
-                .context("expected a JSON object mapping game IDs to deployment tokens")?
-            } else if env::var_os("PARLANDO_DEPLOY_GAME").is_some()
-                || env::var_os("PARLANDO_DEPLOY_TOKEN").is_some()
-            {
-                BTreeMap::from([(
-                    required_env("PARLANDO_DEPLOY_GAME")?,
-                    required_env("PARLANDO_DEPLOY_TOKEN")?,
-                )])
-            } else {
-                BTreeMap::new()
-            };
-            let management_configured = !grants.is_empty()
-                || admin_url.is_some()
-                || env::var_os("PARLANDO_HOST_ADMIN_TOKEN").is_some();
+            let management_configured =
+                admin_url.is_some() || env::var_os("PARLANDO_HOST_ADMIN_TOKEN").is_some();
             let admin_token = management_configured
                 .then(|| required_env("PARLANDO_HOST_ADMIN_TOKEN"))
                 .transpose()?;
@@ -159,7 +152,6 @@ pub(super) async fn execute(command: RemoteCommand) -> Result<Report> {
             let options = HostOptions {
                 store,
                 public_url,
-                grants,
                 admin_token,
             };
             let dashboard_url = admin_url
@@ -169,10 +161,8 @@ pub(super) async fn execute(command: RemoteCommand) -> Result<Report> {
                 eprintln!("Parlando deployment host listening on {bind}\nStore: {store_display}");
                 if let Some(url) = &dashboard_url {
                     eprintln!("Administrator dashboard: {url}");
-                } else if !management_configured {
-                    eprintln!(
-                        "Uploads and experiment management are disabled (no credentials configured)."
-                    );
+                } else {
+                    eprintln!("Set --admin-url to enable dashboard sign-in and game uploads.");
                 }
             };
             match admin_url {

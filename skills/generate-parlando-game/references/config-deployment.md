@@ -16,7 +16,7 @@ Store secrets outside packages, browser assets, and experiment configuration.
 
 For an authorized deployment, use the shared dashboard or
 `parlando deploy --host <origin> --package "$PACKAGE" --json`.
-The CLI uses a game-scoped upload credential. Record the returned revision with
+Sign in once with `parlando login --server SERVER_URL` and choose **Authorize CLI** in the browser. The saved credential can deploy any game on that server. Record the returned revision with
 the study data. A new upload replaces the current package if the game's
 experiments and sessions have stopped. Game activation through the CLI requires
 host administrator credentials. Follow [Deploy to a shared host](https://coli-saar.github.io/parlando/manual/deploy/)

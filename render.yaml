@@ -14,7 +14,5 @@ services:
     envVars:
       - key: PARLANDO_HOST_ADMIN_TOKEN
         generateValue: true
-      - key: PARLANDO_DEPLOY_GAME
+      - key: PARLANDO_ADMIN_URL
         sync: false
-      - key: PARLANDO_DEPLOY_TOKEN
-        generateValue: true

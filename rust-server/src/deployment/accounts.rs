@@ -142,6 +142,13 @@ impl AccountStore {
                 ON dashboard_session (account_id)",
             "CREATE INDEX IF NOT EXISTS dashboard_session_expiration
                 ON dashboard_session (expires_at)",
+            "CREATE TABLE IF NOT EXISTS cli_login (
+                device_digest BLOB PRIMARY KEY, code_digest BLOB NOT NULL UNIQUE,
+                expires_at INTEGER NOT NULL, account_id INTEGER REFERENCES dashboard_account(id)
+            )",
+            "CREATE TABLE IF NOT EXISTS cli_credential (
+                token_digest BLOB PRIMARY KEY, account_id INTEGER NOT NULL REFERENCES dashboard_account(id)
+            )",
             "CREATE TABLE IF NOT EXISTS dashboard_audit (
                 id INTEGER PRIMARY KEY,
                 actor TEXT NOT NULL,
@@ -163,6 +170,72 @@ impl AccountStore {
             password_slots,
             dummy_hash,
         })
+    }
+
+    /// Starts a five-minute pairing and bounds the number of unauthenticated requests on disk.
+    pub async fn start_cli_login(&self) -> Result<Option<(String, String)>> {
+        let device = random_token();
+        let code = format!("{:016X}", OsRng.next_u64());
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM cli_login WHERE expires_at <= unixepoch()")
+            .execute(&mut *tx)
+            .await?;
+        let inserted = sqlx::query(
+            "INSERT INTO cli_login(device_digest,code_digest,expires_at)
+            SELECT ?,?,unixepoch()+300 WHERE (SELECT count(*) FROM cli_login) < 1024",
+        )
+        .bind(token_digest(&device))
+        .bind(token_digest(&code))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok((inserted.rows_affected() == 1).then_some((device, code)))
+    }
+
+    /// Binds the terminal's single-use code to a still-authenticated dashboard session.
+    pub async fn approve_cli(&self, code: &str, session: &DashboardSession) -> Result<bool> {
+        let updated = sqlx::query("UPDATE cli_login SET account_id=? WHERE code_digest=?
+            AND account_id IS NULL AND expires_at > unixepoch()
+            AND EXISTS (SELECT 1 FROM dashboard_session WHERE account_id=? AND csrf=? AND expires_at > unixepoch())")
+            .bind(session.account.id).bind(token_digest(&code.trim().to_ascii_uppercase()))
+            .bind(session.account.id).bind(&session.csrf).execute(&self.pool).await?;
+        Ok(updated.rows_affected() == 1)
+    }
+
+    /// Exchanges an approved device secret exactly once and stores only the new token digest.
+    pub async fn exchange_cli(&self, device: &str) -> Result<Option<String>> {
+        let mut tx = self.pool.begin().await?;
+        let account: Option<i64> = sqlx::query_scalar(
+            "DELETE FROM cli_login WHERE device_digest=?
+            AND account_id IS NOT NULL AND expires_at > unixepoch() RETURNING account_id",
+        )
+        .bind(token_digest(device))
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(account) = account else {
+            return Ok(None);
+        };
+        let token = random_token();
+        sqlx::query("INSERT INTO cli_credential VALUES (?,?)")
+            .bind(token_digest(&token))
+            .bind(account)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(Some(token))
+    }
+
+    /// Resolves a persistent upload token to the enabled account responsible for each deployment.
+    pub async fn deploy_account(&self, token: &str) -> Result<Option<Account>> {
+        let row: Option<AccountRow> = sqlx::query_as(
+            "SELECT a.id,a.username,a.role,a.disabled FROM
+            cli_credential c JOIN dashboard_account a ON a.id=c.account_id
+            WHERE c.token_digest=? AND a.disabled=0",
+        )
+        .bind(token_digest(token))
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(Account::from))
     }
 
     /// Creates a named account with an operator-supplied password and a host-level role.
@@ -231,7 +304,7 @@ impl AccountStore {
     /// Changes an existing account's password and revokes every active session atomically.
     pub async fn reset_password(&self, id: i64, password: String) -> Result<bool> {
         let hash = self.prepare_password(password).await?;
-        self.revoke_account_sessions(
+        self.revoke_account_access(
             sqlx::query("UPDATE dashboard_account SET password_hash = ? WHERE id = ?")
                 .bind(hash)
                 .bind(id),
@@ -242,15 +315,15 @@ impl AccountStore {
 
     /// Permanently disables an account and revokes every active session atomically.
     pub async fn disable(&self, id: i64) -> Result<bool> {
-        self.revoke_account_sessions(
+        self.revoke_account_access(
             sqlx::query("UPDATE dashboard_account SET disabled = 1 WHERE id = ?").bind(id),
             id,
         )
         .await
     }
 
-    /// Applies an account update and removes its sessions in the same transaction.
-    async fn revoke_account_sessions<'query>(
+    /// Applies an account update and revokes browser sessions, pending approvals, and CLI credentials atomically.
+    async fn revoke_account_access<'query>(
         &self,
         update: sqlx::query::Query<'query, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'query>>,
         id: i64,
@@ -258,6 +331,14 @@ impl AccountStore {
         let mut transaction = self.pool.begin().await?;
         let updated = update.execute(&mut *transaction).await?.rows_affected() == 1;
         if updated {
+            sqlx::query("DELETE FROM cli_login WHERE account_id=?")
+                .bind(id)
+                .execute(&mut *transaction)
+                .await?;
+            sqlx::query("DELETE FROM cli_credential WHERE account_id=?")
+                .bind(id)
+                .execute(&mut *transaction)
+                .await?;
             sqlx::query("DELETE FROM dashboard_session WHERE account_id = ?")
                 .bind(id)
                 .execute(&mut *transaction)

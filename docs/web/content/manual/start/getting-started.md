@@ -78,8 +78,9 @@ Press Ctrl+C in the server terminal when you finish. Restart with the same store
 | Produce a package | `parlando build` |
 | Validate a built package | `parlando check --package dist/beacon-0.1.0.zip` |
 | Start a server | `parlando serve` |
-| Upload a package | `parlando deploy --host ORIGIN --package dist/beacon-0.1.0.zip` |
-| Enable or disable a deployed game | `parlando activate --host ORIGIN --game GAME` or `parlando deactivate --host ORIGIN --game GAME` |
+| Sign in for CLI uploads | `parlando login --server SERVER_URL` |
+| Upload a package | `parlando deploy --host SERVER_URL --package dist/beacon-0.1.0.zip` |
+| Enable or disable a deployed game | `parlando activate --host SERVER_URL --game GAME` or `parlando deactivate --host SERVER_URL --game GAME` |
 
 Use `parlando COMMAND --help` for options. Build commands read `game.yaml`
 in the working directory unless you pass `--manifest`. Commands print readable

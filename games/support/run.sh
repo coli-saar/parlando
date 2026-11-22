@@ -48,7 +48,6 @@ if [[ "$bundled_agents" == true ]]; then
 fi
 
 # The deployment host stores each pinned experiment in its own SQLite database.
-export PARLANDO_DEPLOY_GAME="${game_dir##*/}"
 serve_args=(serve --bind "$host:$port" --store "${PARLANDO_STORE:-$game_dir/.local/host}")
 printf 'Built %s. Deploy and select it on this host, then open intake.\n' "$package" >&2
 if [[ -n ${PARLANDO_PUBLIC_URL:-} ]]; then

@@ -23,29 +23,47 @@ After updating a game, select the existing experiment and start a local preview 
 
 Keep the exact ZIP and its revision alongside the study records when you need to reproduce earlier results. The host serves the current package after an update.
 
+## Define host aliases
+
+Create `~/.parlando/servers.yaml`. Give each server a name and set `default` to the alias you usually use.
+
+```yaml
+local: http://127.0.0.1:8000
+lab: https://parlando.example.org
+default: local
+```
+
+With this configuration, `parlando login` and `parlando deploy` target the local server. To deploy to the lab, run `parlando login --server lab` once and use `parlando deploy --host lab`. An explicit URL or alias overrides the default for that command. The same default applies to `activate` and `deactivate`.
+
 ## Deploy with the CLI
 
-Ask for a game-scoped upload token and the service URL. On macOS and Linux, read the token from your secret manager and pipe it to `parlando login --server "$PARLANDO_SERVER" --game beacon`. The CLI stores it in Keychain or Linux Secret Service. Linux desktop installs require `secret-tool`. In CI, inject `PARLANDO_DEPLOY_TOKEN` and set `PARLANDO_DEPLOY_ORIGIN` to the service origin.
+Sign in once per server with your dashboard account. For a local server, run:
 
-Set `PARLANDO_SERVER` to your host's HTTPS origin and run these commands from the project.
+```sh
+parlando login --server http://127.0.0.1:8000
+```
+
+The CLI opens a link for this login request. Sign in to the dashboard and choose **Authorize CLI**. The link expires after five minutes. The terminal saves a persistent credential in macOS Keychain or Linux Secret Service. Linux requires `secret-tool` and an unlocked Secret Service. Use `--no-browser` to open the printed link yourself.
+
+Both dashboard roles can deploy any game on the server, including its first version. Run these commands from a game project, using the same server URL for login and deployment.
 
 ```sh
 parlando build
-parlando deploy --host "$PARLANDO_SERVER" --package dist/beacon-0.1.0.zip
+parlando deploy --host http://127.0.0.1:8000 --package dist/beacon-0.1.0.zip
 ```
 
-Record the package revision printed by the command. For scripts, add `--json` and read `result.revision`. The scoped upload token allows deployment for its game. Activation and deactivation require the host administrator token. Set `PARLANDO_HOST_ADMIN_TOKEN` and set `PARLANDO_HOST_ADMIN_ORIGIN` to the service origin before using the CLI for those operations.
+Record the package revision printed by the command. For scripts, add `--json` and read `result.revision`. Changing the account password or disabling the account revokes its saved CLI credentials. Activation and deactivation require the host administrator token. Set `PARLANDO_HOST_ADMIN_TOKEN` and set `PARLANDO_HOST_ADMIN_ORIGIN` to the service origin before using the CLI for those operations.
 
 ```sh
-parlando activate --host "$PARLANDO_SERVER" --game beacon
+parlando activate --host http://127.0.0.1:8000 --game beacon
 ```
 
-To withdraw the game after its experiments and sessions finish, run `parlando deactivate --host "$PARLANDO_SERVER" --game beacon`. Use the game dashboard for experiment creation and study intake. Keep all credentials out of game files and prompts.
+To withdraw the game after its experiments and sessions finish, run `parlando deactivate --host http://127.0.0.1:8000 --game beacon`. Use the game dashboard for experiment creation and study intake. Keep all credentials out of game files and prompts.
 
 ## Upload through REST
 
 Use `parlando deploy` for terminal and CI uploads. A custom client can send
-`PUT /api/hosting/packages/{game_id}` with the game-scoped token in the bearer
+`PUT /api/hosting/packages/{game_id}` with an account deployment credential in the bearer
 authorization header. Set `Content-Type: application/zip` and send the ZIP bytes as the request body.
 Place `game.yaml` at the archive root and include the component and declared
 browser assets at their manifest paths. The host limits both the upload and the

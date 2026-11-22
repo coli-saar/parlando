@@ -8,8 +8,6 @@ use std::io::{Cursor, Write};
 use tokio::{task::JoinHandle, time::timeout};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-const UPLOAD_A: &str = "fixture-a-upload-credential-for-deployment-tests";
-const UPLOAD_B: &str = "fixture-b-upload-credential-for-deployment-tests";
 const ADMIN: &str = "operator-only-credential-for-deployment-tests";
 const PATH: &str = "/api/hosting";
 // Selection and restart can compile several real components in an unoptimized test build.
@@ -35,10 +33,6 @@ impl TestHost {
         let options = HostOptions {
             store: store.into(),
             public_url: origin.clone(),
-            grants: BTreeMap::from([
-                ("fixture-a".to_owned(), UPLOAD_A.to_owned()),
-                ("fixture-b".to_owned(), UPLOAD_B.to_owned()),
-            ]),
             admin_token: Some(ADMIN.into()),
         };
         let task = match admin_url {
@@ -86,7 +80,7 @@ impl TestHost {
         request.send().await.unwrap()
     }
 
-    /// Uploads an archive with a game-scoped credential and a caller-selected package path.
+    /// Uploads an archive with an account credential and a caller-selected package path.
     async fn upload(&self, path: &str, credential: &str, bytes: Vec<u8>) -> Response {
         self.client
             .put(format!("{}{path}", self.origin))
@@ -251,6 +245,39 @@ async fn browser_login(
     (cookie, check_json(response).await)
 }
 
+/// Authorizes a new CLI through the same device pairing endpoints as the dashboard.
+async fn pair_cli(host: &TestHost, admin: &str, cookie: &str, session: &Value) -> String {
+    let pairing = check_json(
+        host.request(Method::POST, &format!("{PATH}/cli/start"), None, None)
+            .await,
+    )
+    .await;
+    let exchange = || {
+        host.client
+            .post(format!("{}{PATH}/cli/exchange", host.origin))
+            .json(&json!({"device":pairing["device"]}))
+    };
+    assert!(check_json(exchange().send().await.unwrap()).await["token"].is_null());
+    check_json(
+        host.client
+            .post(format!("{admin}{PATH}/cli/approve"))
+            .header(COOKIE, cookie)
+            .header(ORIGIN, admin)
+            .header("x-csrf-token", session["csrf_token"].as_str().unwrap())
+            .json(&json!({"code":pairing["code"]}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    let token = check_json(exchange().send().await.unwrap()).await["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(check_json(exchange().send().await.unwrap()).await["token"].is_null());
+    token
+}
+
 /// Exercises browser permissions across games and durable account changes on the admin origin.
 #[tokio::test]
 #[ignore = "requires the component fixture built by make test-components"]
@@ -350,8 +377,9 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
         );
     }
 
+    let token = pair_cli(&host, &admin_origin, &cookie, &session).await;
     let cli_package = create_package(&directory.path().join("fixture-a"), "fixture-a", "CLI game");
-    deployment::deploy(&host.origin, &cli_package, UPLOAD_A)
+    deployment::deploy(&host.origin, &cli_package, &token)
         .await
         .unwrap();
     let browser_package = create_package(
@@ -361,17 +389,6 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
     );
     let upload = std::fs::read(browser_package).unwrap();
     let upload_path = "/packages";
-    assert_eq!(
-        request(Method::PUT, upload_path)
-            .bearer_auth(UPLOAD_A)
-            .header(CONTENT_TYPE, "application/zip")
-            .body(upload.clone())
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::UNAUTHORIZED,
-    );
     for (origin, csrf_token) in [
         (None, Some(csrf)),
         (Some(host.origin.as_str()), Some(csrf)),
@@ -483,6 +500,17 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
         .unwrap()
         .status()
         .is_success());
+    assert_eq!(
+        host.request(
+            Method::PUT,
+            &format!("{PATH}/packages/fixture-a"),
+            Some(&token),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
     for revoked in [&cookie, &second_cookie] {
         assert_eq!(
             session_request(revoked).send().await.unwrap().status(),
@@ -553,7 +581,7 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
     let reset_target = account_id.to_string();
     for (actor, operation, target) in [
         (researcher.as_str(), "upload", "browser-fixture"),
-        ("upload-token:fixture-a", "upload", "fixture-a"),
+        (researcher.as_str(), "upload", "fixture-a"),
         ("host-operator-token", "reset-password", &reset_target),
         (operator_actor.as_str(), "create-account", "colleague"),
         (operator_actor.as_str(), "disable-account", &reset_target),
@@ -617,13 +645,37 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
     let address = reserve_address().await.unwrap();
     let admin_origin = format!("http://localhost:{}", address.port());
     let host = TestHost::start(address, &store, Some(admin_origin.clone())).await;
+    let create_user = |name: &str| {
+        host.client
+            .post(format!("{admin_origin}{PATH}/accounts"))
+            .bearer_auth(ADMIN)
+            .json(&json!({"username":name,"password":"two-user-race-password"}))
+    };
+    for username in ["researcher", "deployer"] {
+        check_json(create_user(username).send().await.unwrap()).await;
+    }
+    let (researcher, identity) = browser_login(
+        &host.client,
+        &admin_origin,
+        "researcher",
+        "two-user-race-password",
+    )
+    .await;
+    let (deployer, other) = browser_login(
+        &host.client,
+        &admin_origin,
+        "deployer",
+        "two-user-race-password",
+    )
+    .await;
+    let token = pair_cli(&host, &admin_origin, &deployer, &other).await;
     let uploads = format!("{PATH}/packages");
     let first_scope = format!("{uploads}/fixture-a");
     let other_scope = format!("{uploads}/fixture-b");
 
     for (scope, token) in [
         (&first_scope, None),
-        (&other_scope, Some(UPLOAD_A)),
+        (&other_scope, Some("unrecognized")),
         (&first_scope, Some(ADMIN)),
     ] {
         let response = host
@@ -632,9 +684,14 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
     assert_eq!(
-        host.request(Method::PUT, &first_scope, Some(UPLOAD_A), Some(json!({})))
-            .await
-            .status(),
+        host.request(
+            Method::PUT,
+            &first_scope,
+            Some(token.as_str()),
+            Some(json!({}))
+        )
+        .await
+        .status(),
         StatusCode::UNSUPPORTED_MEDIA_TYPE
     );
     let mut duplicate = crafted_zip(&[("game.yaml", b"One"), ("fake.yaml", b"two")]);
@@ -663,7 +720,7 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
         duplicate,
         std::fs::read(&package_b).unwrap(),
     ] {
-        let response = host.upload(&first_scope, UPLOAD_A, invalid).await;
+        let response = host.upload(&first_scope, &token, invalid).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
     assert!(!directory.path().join("escape").exists());
@@ -682,8 +739,8 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
     }
 
     let (first, retry) = tokio::join!(
-        deployment::deploy(&host.origin, &package_a, UPLOAD_A),
-        deployment::deploy(&host.origin, &package_a, UPLOAD_A),
+        deployment::deploy(&host.origin, &package_a, &token),
+        deployment::deploy(&host.origin, &package_a, &token),
     );
     let (first, retry) = (first.unwrap(), retry.unwrap());
     assert_eq!(first.revision, retry.revision);
@@ -701,34 +758,11 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
         .map(|(path, bytes)| (*path, bytes.as_slice()))
         .collect::<Vec<_>>();
     let reordered = check_json(
-        host.upload(&first_scope, UPLOAD_A, crafted_zip(&members))
+        host.upload(&first_scope, &token, crafted_zip(&members))
             .await,
     )
     .await;
     assert_eq!(reordered["revision"], first.revision);
-    let create_user = |name: &str| {
-        host.client
-            .post(format!("{admin_origin}{PATH}/accounts"))
-            .bearer_auth(ADMIN)
-            .json(&json!({"username":name,"password":"two-user-race-password"}))
-    };
-    for username in ["researcher", "deployer"] {
-        check_json(create_user(username).send().await.unwrap()).await;
-    }
-    let (researcher, identity) = browser_login(
-        &host.client,
-        &admin_origin,
-        "researcher",
-        "two-user-race-password",
-    )
-    .await;
-    let (deployer, other) = browser_login(
-        &host.client,
-        &admin_origin,
-        "deployer",
-        "two-user-race-password",
-    )
-    .await;
     let manage = |path: &str| {
         host.client
             .post(format!("{admin_origin}/fixture-a/api/admin/{path}"))
@@ -790,7 +824,7 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
         replace_bytes.clone()
     };
     assert_eq!(
-        host.upload(&first_scope, UPLOAD_A, different_bytes.clone())
+        host.upload(&first_scope, &token, different_bytes.clone())
             .await
             .status(),
         StatusCode::CONFLICT
@@ -835,7 +869,7 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
     .await;
     // Closing intake leaves existing sessions on their original engine.
     assert_eq!(
-        host.upload(&first_scope, UPLOAD_A, different_bytes.clone())
+        host.upload(&first_scope, &token, different_bytes.clone())
             .await
             .status(),
         StatusCode::CONFLICT
@@ -870,7 +904,7 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
     let replaced = timeout(Duration::from_secs(15), async {
         loop {
             let response = host
-                .upload(&first_scope, UPLOAD_A, different_bytes.clone())
+                .upload(&first_scope, &token, different_bytes.clone())
                 .await;
             if response.status() != StatusCode::CONFLICT {
                 break check_json(response).await;
@@ -882,7 +916,7 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
     .expect("the idle game should accept replacement after disconnection");
     assert_eq!(replaced["game"], "fixture-a");
     // Publishing another game is independent and never gives it access to this one's sessions.
-    deployment::deploy(&host.origin, &package_b, UPLOAD_B)
+    deployment::deploy(&host.origin, &package_b, &token)
         .await
         .unwrap();
     assert_eq!(
@@ -893,6 +927,13 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
     );
     host.stop().await;
     let restarted = TestHost::start(address, &store, Some(admin_origin)).await;
+    assert_eq!(
+        restarted
+            .request(Method::PUT, &first_scope, Some(&token), Some(json!({})))
+            .await
+            .status(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
     let cfg = check_json(
         restarted
             .request(

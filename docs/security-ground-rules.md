@@ -167,7 +167,7 @@ the direct network peer and permits only two concurrent password verifications.
 When a trusted reverse proxy hides the original client address, the equivalent
 IP/VPN rule belongs at that proxy rather than in untrusted forwarding headers.
 
-The shared host uses a dedicated dashboard account store, scoped upload tokens,
+The shared host uses a dedicated dashboard account store, account-bound, server-wide deployment credentials,
 and a separate research database for each game. Maintain deployment and dashboard authority
 separately from participant credentials and the files in a game package.
 
