@@ -57,6 +57,7 @@ pub(super) async fn game_socket(
     Path(public_session_id): Path<String>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
+    upgrade_lease: Option<Extension<Arc<crate::deployment::UpgradeLease>>>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, AppError> {
     validate_websocket_origin(&state.context.config, &headers)?;
@@ -94,6 +95,8 @@ pub(super) async fn game_socket(
         .max_frame_size(32 * 1024)
         .max_message_size(64 * 1024)
         .on_upgrade(move |socket| async move {
+            // The host must see this connection while Axum completes the upgrade.
+            let _upgrade_lease = upgrade_lease;
             websocket_loop(
                 state,
                 socket,

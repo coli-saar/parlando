@@ -43,7 +43,7 @@ fi
 if [[ "$test_game" == true ]]; then
   "${host_cli[@]}" test --manifest "$game_dir/game.yaml"
 fi
-"${host_cli[@]}" build --manifest "$game_dir/game.yaml"
+package=$("${host_cli[@]}" build --manifest "$game_dir/game.yaml" --json | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["package"])')
 
 CARGO_ZIGBUILD_CACHE_DIR="${CARGO_ZIGBUILD_CACHE_DIR:-$CARGO_TARGET_DIR/zigbuild-cache}" \
   ZIG_GLOBAL_CACHE_DIR="${ZIG_GLOBAL_CACHE_DIR:-$CARGO_TARGET_DIR/zig-global-cache}" \
@@ -65,18 +65,19 @@ trap cleanup EXIT
 
 mkdir "$stage/bin"
 cp "$host_binary" "$stage/bin/parlando"
-cp -R "$game_dir/dist/parlando" "$stage/game"
+archive_name=$(basename "$package")
+cp "$package" "$stage/$archive_name"
 cat >"$stage/run" <<'RUN'
 #!/bin/sh
-# Starts the bundled game using the generic Linux host.
+# Starts the generic host. Deploy the bundled game ZIP separately.
 set -eu
 release_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec "$release_dir/bin/parlando" serve --manifest "$release_dir/game/game.yaml" "$@"
+exec "$release_dir/bin/parlando" serve "$@"
 RUN
 chmod 0755 "$stage/run"
 (
   cd "$stage"
-  find bin game run -type f -exec shasum -a 256 {} + | LC_ALL=C sort > SHA256SUMS
+  find bin "$archive_name" run -type f -exec shasum -a 256 {} + | LC_ALL=C sort > SHA256SUMS
 )
 
 # Publish a complete release under its checksum so staging never changes a deployed copy.

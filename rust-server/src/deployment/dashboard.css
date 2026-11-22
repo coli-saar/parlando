@@ -1,80 +1,142 @@
+/* Shares Parlando's brand palette across account setup and the workspace. */
 :root {
   color-scheme: light;
-  font: 16px/1.5 system-ui, sans-serif;
-  color: #182820;
-  background: #f5f7f4;
-  --accent: #19563f;
-  --border: #c9d5ce;
-  --muted: #516358;
+  font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #20262c;
+  background: #f6f7f9;
+  --accent: var(--parlando-blue);
+  --border: #d9dee3;
+  --muted: #65717c;
+  --surface: #f4f5f6;
+  --selected: #e5f2fb;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
 [hidden] { display: none !important; }
-header {
-  min-height: 4.5rem;
+body { margin: 0; min-height: 100vh; }
+.app-header { background: #fff; border-bottom: 1px solid var(--border); }
+.header-row {
+  min-height: 64px;
   padding: 0.75rem max(1rem, calc((100% - 72rem) / 2));
-  border-bottom: 1px solid var(--border);
-  background: #fff;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 1rem;
 }
-.brand { color: inherit; text-decoration: none; font-size: 1.25rem; font-weight: 750; }
-.brand span { color: var(--muted); font-size: 1rem; font-weight: 500; }
-main { max-width: 74rem; margin: 1.5rem auto 4rem; padding: 0 1rem; }
+.brand img { display: block; height: auto; }
 nav, .toolbar { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
-nav { margin: 0 0 1.25rem; }
-nav a { padding: 0.3rem 0.7rem; }
-.page-title { justify-content: space-between; }
-.panel { background: #fff; border: 1px solid var(--border); border-radius: 0.75rem; padding: clamp(0.85rem, 3vw, 1.5rem); margin-bottom: 1rem; }
-.narrow { max-width: 27rem; margin: 3rem auto 0; }
-.inset { margin: 1rem 0; padding: 1rem; background: #f5f8f5; border: 1px solid var(--border); border-radius: 0.5rem; }
-.subsection { margin-top: 1.5rem; }
+nav {
+  gap: 4px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 0 max(1rem, calc((100% - 72rem) / 2));
+}
+nav a {
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 10px 11px;
+  text-decoration: none;
+}
+nav a:hover { border-bottom-color: var(--accent); color: var(--accent); }
+nav a[aria-current="page"], nav a[aria-current="location"] { border-bottom-color: var(--accent); color: var(--accent); }
+#workspace { max-width: 74rem; margin: 1.5rem auto 4rem; padding: 0 1rem; }
+.page-title { justify-content: space-between; margin-bottom: 1rem; }
+.page-title h1 { margin: 0; overflow-wrap: anywhere; }
+.panel { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: clamp(0.85rem, 3vw, 1.5rem); margin-bottom: 1rem; }
+.inset { margin: 1rem 0; padding: 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
 h1, h2, h3, h4 { line-height: 1.2; margin: 0 0 0.85rem; }
-.toolbar h3, .toolbar h4 { margin: 0; }
-h1 { font-size: clamp(1.65rem, 4vw, 2.5rem); }
-h2 { font-size: 1.5rem; }
+.toolbar h2, .toolbar h3, .toolbar h4 { margin: 0; }
+h1 { font-size: 22px; }
+h2 { font-size: 18px; }
 p { margin: 0.5rem 0 0.85rem; }
 a { color: var(--accent); }
 form { display: grid; gap: 0.85rem; justify-items: start; }
-.configuration-fields, .speech-settings, .speech-settings .config-fields { display: grid; gap: 0.85rem; width: 100%; }
-.speech-settings { border: 1px solid var(--border); border-radius: 0.5rem; min-width: 0; margin: 0; }
-.speech-settings legend { font-weight: 700; }
-.speech-settings:disabled { opacity: 0.6; }
-.speech-settings section + section { border-top: 1px solid var(--border); padding-top: 0.85rem; }
-.speech-settings .config-group-copy h4, .speech-settings .config-group-copy p { margin: 0; }
-.configuration-fields .config-help, .configuration-fields .muted { color: var(--muted); font-size: 0.875rem; font-weight: 400; }
-.configuration-fields .checkbox-line { display: flex; align-items: center; gap: 0.4rem; }
 .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); gap: 0.85rem; width: 100%; }
 label { display: grid; gap: 0.25rem; width: 100%; font-weight: 600; }
 .toolbar label { width: auto; }
-input, textarea, select, button, .button {
+input, select, button {
   font: inherit;
-  border: 1px solid #aabbb0;
-  border-radius: 0.35rem;
+  border: 1px solid #cbd2d8;
+  border-radius: 6px;
   background: #fff;
   color: inherit;
   padding: 0.35rem 0.65rem;
   max-width: 100%;
 }
-input, textarea, select { min-width: 0; }
-textarea, code, pre, .revision { font-family: ui-monospace, monospace; }
-textarea { resize: vertical; }
-button, .button { cursor: pointer; width: fit-content; font-weight: 650; text-decoration: none; }
-button:hover:enabled, .button:hover { background: #e8efe9; }
+input, select { min-width: 0; }
+code, .revision { font-family: ui-monospace, monospace; }
+button { cursor: pointer; width: fit-content; font-weight: 650; text-decoration: none; }
+button:hover:enabled { background: var(--selected); }
 button:disabled { opacity: 0.62; cursor: wait; }
 .primary { background: var(--accent); border-color: var(--accent); color: white; }
-.primary:hover:enabled { background: #103c2b; }
+.primary:hover:enabled { background: #124f79; }
 details { margin-top: 1rem; border-top: 1px solid var(--border); padding-top: 0.85rem; }
 summary { cursor: pointer; color: var(--accent); font-weight: 700; }
 details form { margin-top: 0.75rem; }
 .scroll { overflow-x: auto; }
+/* Match the experiment dashboard's active and inactive markers. */
+.game-status { display: inline-flex; align-items: center; gap: 6px; }
+.game-status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--parlando-ochre); }
+.game-status.active::before { background: var(--parlando-green); }
+
 table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; text-align: left; }
 th, td { padding: 0.55rem; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
-th { background: #edf2ed; color: #35483b; }
+th { background: var(--surface); color: var(--muted); }
 .revision { font-size: 0.84rem; }
-pre { padding: 0.75rem; max-height: 34rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #fff; border: 1px solid var(--border); }
-#notice { position: sticky; top: 0.5rem; z-index: 1; padding: 0.65rem 0.85rem; background: #edf5ee; border: 1px solid var(--border); border-radius: 0.35rem; overflow-wrap: anywhere; }
-#notice.error { color: #772315; background: #fff1ed; border-color: #dca69c; }
-:focus-visible { outline: 2px solid #16714b; outline-offset: 2px; }
+#upload-target { margin: 0; }
+#upload-target:empty { display: none; }
+#notice { position: sticky; top: 0.5rem; z-index: 1; max-width: 72rem; margin-inline: auto; width: calc(100% - 2rem); padding: 0.65rem 0.85rem; background: var(--selected); border: 1px solid var(--border); border-radius: 6px; overflow-wrap: anywhere; }
+#notice.error { color: var(--parlando-brick); background: #fff8f7; border-color: #efc3bf; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Retains the split brand and form layout of the administrator setup page. */
+.auth-page {
+  display: grid;
+  place-items: center;
+  min-height: calc(100vh - 65px);
+  padding: 48px 20px;
+}
+.auth-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 42%) minmax(0, 58%);
+  width: 100%;
+  max-width: 880px;
+  overflow: hidden;
+  border: 1px solid #dce2e8;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 18px 60px rgba(20, 34, 45, .12);
+}
+.auth-brand {
+  display: grid;
+  place-items: center;
+  background: var(--accent);
+  padding: 24px;
+}
+.auth-brand img {
+  display: block;
+  width: 112px;
+  height: auto;
+  padding: 10px;
+  border-radius: 12px;
+  background: #fff;
+}
+.auth-panel { padding: 48px; }
+.auth-panel h1 { margin-bottom: 24px; font-size: 28px; letter-spacing: -.02em; }
+.auth-panel form { gap: 18px; }
+.auth-panel label { gap: 7px; color: #31404c; font-size: 13px; font-weight: 750; }
+.auth-panel input { width: 100%; padding: 11px 12px; font-size: 14px; font-weight: 400; }
+.auth-field { width: 100%; }
+.auth-field small { display: block; margin-top: 5px; color: var(--muted); }
+.auth-panel .primary { width: 100%; margin-top: 4px; min-height: 44px; }
+
+@media (max-width: 720px) {
+  .auth-page { align-items: start; padding: 24px 14px; }
+  .auth-shell { display: block; }
+  .auth-brand { justify-items: start; padding: 16px 26px; }
+  .auth-brand img { width: 48px; padding: 4px; border-radius: 8px; }
+  .auth-panel { padding: 30px 26px 34px; }
+  .auth-panel h1 { font-size: 24px; }
+}

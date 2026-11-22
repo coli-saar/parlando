@@ -1,4 +1,4 @@
-//! Uploads Wasm game packages and hosts explicitly pinned participant experiments.
+//! Hosts each deployed game with its own current build and research database.
 
 mod accounts;
 pub mod credentials;
@@ -10,7 +10,10 @@ use std::{
     fs::{self, File, OpenOptions},
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -18,73 +21,88 @@ use anyhow::{bail, ensure, Context, Result};
 use axum::{
     body::to_bytes,
     extract::{Path as RoutePath, Request, State},
-    http::{header::AUTHORIZATION, HeaderMap, StatusCode},
-    response::Response,
-    routing::{get, put},
+    http::{
+        header::{AUTHORIZATION, CONTENT_TYPE},
+        HeaderMap, Method, StatusCode,
+    },
+    response::{IntoResponse, Redirect, Response},
+    routing::{get, post, put},
     Json, Router,
 };
 use fs2::FileExt;
-use package::{validate_id, validate_revision, PackageManifest, Upload, UPLOAD_LIMIT};
-use serde::{Deserialize, Serialize};
+use package::{recover_build, validate_id, Package, PackageManifest, UPLOAD_LIMIT};
+use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
-use tokio::sync::{Mutex, RwLock, Semaphore};
-use tower::ServiceExt;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 
-pub use package::Deployment;
+pub use package::{write_package_archive, Deployment};
 
-use crate::component::WasmMetering;
+use crate::{
+    component::{LoadedGame, WasmMetering},
+    GameMetadata,
+};
 
-const CONTROL_LIMIT: usize = 256 * 1024;
+const PACKAGE_CONTENT_TYPE: &str = "application/zip";
 
 /// Names the storage and authority configuration of one long-running deployment host.
 pub struct HostOptions {
-    /// Directory containing immutable packages, experiment pins, and research databases.
+    /// Directory containing current packages and one research database per game.
     pub store: PathBuf,
     /// External HTTPS origin. Loopback origins can use HTTP for local installation tests.
     pub public_url: String,
     /// Independent upload tokens indexed by the exact game ID each token may publish.
     pub grants: BTreeMap<String, String>,
-    /// Operator credential for pinning releases and operating experiments.
-    pub admin_token: String,
+    /// Optional operator bearer credential. Omit it to disable bearer-authorized game management.
+    pub admin_token: Option<String>,
 }
 
-/// Host-owned experiment settings bound to one exact package revision.
-#[derive(Clone, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExperimentSelection {
-    /// Package game ID.
-    pub game: String,
-    /// Immutable revision returned by deployment.
-    pub revision: String,
-    /// Experiment YAML with the same fields as the Parlando experiment configuration.
-    pub config: Value,
+/// Owns the current runtime and participant availability for one deployed game.
+struct HostedGame {
+    deployment: Deployment,
+    active: bool,
+    runtime: crate::app::HostedRuntime,
+    websocket_upgrades: Arc<AtomicUsize>,
 }
 
-struct HostedExperiment {
-    selection: ExperimentSelection,
-    participant: Router,
-    admin: Router,
-    state: Arc<crate::app::AppState>,
+/// Keeps asynchronous WebSocket upgrades visible to the host after HTTP dispatch returns.
+pub(crate) struct UpgradeLease(Arc<AtomicUsize>);
+
+impl UpgradeLease {
+    /// Marks an upgrade as pending before it reaches the underlying game route.
+    fn new(upgrades: &Arc<AtomicUsize>) -> Arc<Self> {
+        upgrades.fetch_add(1, Ordering::Relaxed);
+        Arc::new(Self(upgrades.clone()))
+    }
 }
 
+impl Drop for UpgradeLease {
+    /// Releases the upgrade when Axum drops the callback or the socket task finishes.
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
+}
+
+/// Coordinates game operations while owning the exclusive deployment-store lease.
 struct Host {
     wasm_metering: WasmMetering,
     store: PathBuf,
     public_url: String,
     grants: BTreeMap<String, [u8; 32]>,
-    admin_token: [u8; 32],
+    admin_token: Option<[u8; 32]>,
     dashboard: Option<dashboard::Dashboard>,
-    experiments: RwLock<HashMap<String, HostedExperiment>>,
-    selection_lock: Mutex<()>,
+    games: RwLock<HashMap<String, Arc<RwLock<HostedGame>>>>,
+    // Only upload operations insert into the game map. Dispatch and activation synchronize
+    // against the selected game's lock and do not need this publication lock.
+    publication_lock: Mutex<()>,
     uploads: Arc<Semaphore>,
     _store_lock: File,
 }
 
 type HttpResult<T> = std::result::Result<T, (StatusCode, String)>;
 
-/// Runs a deployment host and reloads every pinned experiment before it accepts traffic.
+/// Runs a deployment host and restores every deployed game before it accepts traffic.
 pub async fn serve(address: SocketAddr, options: HostOptions) -> Result<()> {
     serve_configured(address, options, None, WasmMetering::Fuel).await
 }
@@ -102,7 +120,7 @@ pub async fn serve_with_dashboard(
 }
 
 /// Starts a deployment host with an operator-selected guest execution budget.
-/// The policy covers upload validation, new selections, and reloaded experiments.
+/// The policy covers upload validation, new game builds, and restored builds.
 /// An optional administrator origin enables the separate browser dashboard.
 pub async fn serve_configured(
     address: SocketAddr,
@@ -110,20 +128,81 @@ pub async fn serve_configured(
     admin_url: Option<String>,
     wasm_metering: WasmMetering,
 ) -> Result<()> {
-    let public_url = checked_origin(&options.public_url)?;
+    let listener = tokio::net::TcpListener::bind(address).await?;
+    serve_on_listener(listener, options, admin_url, wasm_metering, || {}).await
+}
+
+/// Serves a deployment host on an already bound TCP listener. This allows callers to use
+/// the assigned port in public URLs. The readiness callback runs once after configuration
+/// and stored games have loaded, immediately before the server begins accepting requests.
+pub async fn serve_on_listener(
+    listener: tokio::net::TcpListener,
+    options: HostOptions,
+    admin_url: Option<String>,
+    wasm_metering: WasmMetering,
+    on_ready: impl FnOnce(),
+) -> Result<()> {
+    run_host(listener, options, admin_url, false, wasm_metering, on_ready).await
+}
+
+/// Starts the local administrator dashboard on a loopback listener. The administrator origin
+/// must be localhost on the listener's assigned port. The dashboard offers first-operator setup
+/// to local browsers while the account store is empty. The readiness callback runs once before
+/// the listener starts accepting requests.
+pub async fn serve_local_dashboard_on_listener(
+    listener: tokio::net::TcpListener,
+    options: HostOptions,
+    admin_url: String,
+    wasm_metering: WasmMetering,
+    on_ready: impl FnOnce(),
+) -> Result<()> {
+    let bind = listener.local_addr()?;
     ensure!(
-        !options.grants.is_empty() || admin_url.is_some(),
-        "configure a game upload grant or an administrator origin"
+        bind.ip().is_loopback(),
+        "local dashboard setup requires a loopback listener"
     );
-    validate_token(&options.admin_token)?;
-    let admin_token = token_digest(&options.admin_token);
+    ensure!(
+        checked_origin(&admin_url)?
+            == checked_origin(&format!("http://localhost:{}", bind.port()))?
+            && checked_origin(&options.public_url)? == checked_origin(&format!("http://{bind}"))?,
+        "local dashboard setup requires local administrator and participant origins"
+    );
+    run_host(
+        listener,
+        options,
+        Some(admin_url),
+        true,
+        wasm_metering,
+        on_ready,
+    )
+    .await
+}
+
+/// Restores a store and signals readiness once the requested serving mode is fully initialized.
+async fn run_host(
+    listener: tokio::net::TcpListener,
+    options: HostOptions,
+    admin_url: Option<String>,
+    local_setup: bool,
+    wasm_metering: WasmMetering,
+    on_ready: impl FnOnce(),
+) -> Result<()> {
+    let public_url = checked_origin(&options.public_url)?;
+    let admin_token = options
+        .admin_token
+        .as_deref()
+        .map(|token| -> Result<_> {
+            validate_token(token)?;
+            Ok(token_digest(token))
+        })
+        .transpose()?;
     let mut grants = BTreeMap::new();
     for (game, token) in options.grants {
-        validate_id(&game)?;
+        validate_hosted_game_id(&game)?;
         validate_token(&token)?;
         let digest = token_digest(&token);
         ensure!(
-            digest != admin_token && !grants.values().any(|value| *value == digest),
+            Some(digest) != admin_token && !grants.values().any(|value| *value == digest),
             "operator and game upload tokens must all be distinct"
         );
         grants.insert(game, digest);
@@ -137,7 +216,9 @@ pub async fn serve_configured(
         .open(store.join(".host.lock"))?;
     FileExt::try_lock_exclusive(&lock).context("another deployment host is using this store")?;
     let dashboard = match admin_url {
-        Some(origin) => Some(dashboard::Dashboard::open(&store, &public_url, &origin).await?),
+        Some(origin) => {
+            Some(dashboard::Dashboard::open(&store, &public_url, &origin, local_setup).await?)
+        }
         None => None,
     };
     let mut host = Host {
@@ -147,21 +228,23 @@ pub async fn serve_configured(
         grants,
         admin_token,
         dashboard,
-        experiments: RwLock::new(HashMap::new()),
-        selection_lock: Mutex::new(()),
+        games: RwLock::new(HashMap::new()),
+        publication_lock: Mutex::new(()),
         uploads: Arc::new(Semaphore::new(2)),
         _store_lock: lock,
     };
-    host.load_experiments().await?;
+    host.load_games().await?;
     let router = Router::new()
         .route("/health", get(|| async { Json(json!({"status":"ok"})) }))
+        .route("/api/hosting/packages", put(dashboard_upload))
         .route("/api/hosting/packages/:game", put(upload))
-        .route("/api/hosting/experiments/:id", put(select_experiment))
+        .route("/api/hosting/games/:game/activate", post(activate))
+        .route("/api/hosting/games/:game/deactivate", post(deactivate))
         .merge(dashboard::routes())
         .fallback(dispatch)
         .with_state(Arc::new(host));
-    let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(address = %listener.local_addr()?, "started Parlando deployment host");
+    on_ready();
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
@@ -172,65 +255,71 @@ pub async fn serve_configured(
 }
 
 impl Host {
-    /// Restores the exact selection for every previously provisioned experiment.
-    async fn load_experiments(&mut self) -> Result<()> {
-        let selections = self.store.join("selections");
-        fs::create_dir_all(&selections)?;
-        fs::create_dir_all(self.store.join("experiments"))?;
-        for entry in fs::read_dir(selections)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().is_none_or(|extension| extension != "json") {
-                continue;
+    /// Restores each game's committed build and participant availability before serving requests.
+    async fn load_games(&mut self) -> Result<()> {
+        for path in [
+            self.store.join("selections"),
+            self.store.join("experiments"),
+        ] {
+            if path.exists() {
+                ensure!(
+                    fs::read_dir(path)?.next().is_none(),
+                    "the deployment store contains legacy experiments and requires offline conversion"
+                );
             }
-            let id = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .context("invalid stored selection filename")?;
-            let selection = serde_json::from_slice(&fs::read(&path)?)?;
-            let experiment = self
-                .build_experiment(id, selection)
+        }
+        let packages = self.store.join("packages");
+        fs::create_dir_all(&packages)?;
+        fs::create_dir_all(self.store.join("games"))?;
+        File::open(&self.store)?.sync_all()?;
+        for entry in fs::read_dir(packages)? {
+            let entry = entry?;
+            let id = entry.file_name();
+            let id = id.to_str().context("invalid stored game ID")?;
+            validate_hosted_game_id(id)?;
+            let Some((revision, build)) = recover_build(&entry.path())? else {
+                continue;
+            };
+            let mut game = self
+                .build_game(id, revision, build)
                 .await
-                .with_context(|| format!("restoring hosted experiment {id}"))?;
-            self.experiments.get_mut().insert(id.to_owned(), experiment);
+                .with_context(|| format!("restoring hosted game {id}"))?;
+            game.runtime.recover_interrupted().await?;
+            game.active = self.game_directory(id).join("active").try_exists()?;
+            self.games
+                .get_mut()
+                .insert(id.to_owned(), Arc::new(RwLock::new(game)));
         }
         Ok(())
     }
 
-    /// Builds a runtime scoped to its own storage, participant URL, and package revision.
-    async fn build_experiment(
-        &self,
-        id: &str,
-        selection: ExperimentSelection,
-    ) -> Result<HostedExperiment> {
-        validate_id(id)?;
-        validate_id(&selection.game)?;
-        validate_revision(&selection.revision)?;
-        let mut config: crate::config::ExperimentConfig =
-            serde_json::from_value(selection.config.clone())?;
-        let directory = self
-            .store
-            .join("packages")
-            .join(&selection.game)
-            .join(&selection.revision);
-        let revision = selection.revision.clone();
+    /// Locates the durable game data independently of the installed build.
+    fn game_directory(&self, id: &str) -> PathBuf {
+        self.store.join("games").join(id)
+    }
+
+    /// Opens the game's existing installation with the prepared package and stable database.
+    async fn build_game(&self, id: &str, revision: String, build: PathBuf) -> Result<HostedGame> {
         let metering = self.wasm_metering;
+        let package_revision = revision.clone();
         let (loaded_game, metadata, client_dist) = tokio::task::spawn_blocking(move || {
-            let manifest = PackageManifest::read(&directory).context("opening selected package")?;
-            let (loaded_game, metadata) = manifest.load(&directory, &revision, metering)?;
-            Ok::<_, anyhow::Error>((loaded_game, metadata, manifest.client(&directory)))
+            let manifest = PackageManifest::read(&build).context("opening game package")?;
+            let (loaded_game, metadata) = manifest.load(&build, &package_revision, metering)?;
+            Ok::<_, anyhow::Error>((loaded_game, metadata, manifest.client(&build)))
         })
         .await??;
-        ensure!(
-            metadata.id == selection.game,
-            "selected package has the wrong game ID"
-        );
-        config.experiment.id = Some(id.to_owned());
-        let selection_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&selection)?));
-        let database = self
-            .store
-            .join("experiments")
-            .join(format!("{id}-{selection_hash}.sqlite"));
+        ensure!(metadata.id == id, "installed package has the wrong game ID");
+        let deployment = Deployment {
+            game: id.to_owned(),
+            name: metadata.name.clone(),
+            version: metadata.version.clone(),
+            revision,
+            component_sha256: loaded_game.digest().to_owned(),
+        };
+        let game_directory = self.game_directory(id);
+        fs::create_dir_all(&game_directory)?;
+        File::open(self.store.join("games"))?.sync_all()?;
+        let database = game_directory.join("game.sqlite");
         let database = database
             .to_str()
             .context("hosted database path is not UTF-8")?;
@@ -238,17 +327,26 @@ impl Host {
             !database.contains(['?', '%']),
             "hosted database path cannot contain ? or %"
         );
-        config.database.url = format!("sqlite:///{database}");
-        config.server.public_base_url = format!("{}/e/{id}", self.public_url);
-        config.server.client_dist_path = client_dist;
-        let (participant, admin, state) =
-            crate::app::build_deployed_experiment(loaded_game, config, metadata).await?;
-        Ok(HostedExperiment {
-            selection,
-            participant,
-            admin,
-            state,
+        let runtime = crate::app::build_hosted_game(
+            loaded_game,
+            metadata,
+            &format!("sqlite:///{database}"),
+            &format!("{}/{id}", self.public_url),
+            client_dist.as_deref().map(Path::new),
+        )
+        .await?;
+        File::open(&game_directory)?.sync_all()?;
+        Ok(HostedGame {
+            deployment,
+            active: false,
+            runtime,
+            websocket_upgrades: Arc::new(AtomicUsize::new(0)),
         })
+    }
+
+    /// Looks up the stable lock that owns dispatch and lifecycle changes for one game.
+    async fn game(&self, id: &str) -> Option<Arc<RwLock<HostedGame>>> {
+        self.games.read().await.get(id).cloned()
     }
 }
 
@@ -263,20 +361,56 @@ async fn upload(
         format!("upload-token:{game}")
     })
     .await?;
-    validate_id(&game).map_err(bad_request)?;
+    validate_hosted_game_id(&game).map_err(bad_request)?;
     let request = Request::from_parts(parts, body);
-    dashboard::audited(
-        &host,
-        &actor,
-        "upload",
-        &game,
-        install_upload(&host, &game, request),
-    )
+    dashboard::audited(&host, &actor, "upload", &game, async {
+        let (package, permit) = read_upload(&host, request).await?;
+        if package.game() != game {
+            return Err(bad_request("package game ID does not match upload scope"));
+        }
+        install_upload(host.clone(), package, permit).await
+    })
     .await
 }
 
-/// Bounds the upload body and installs the validated package off the request executor.
-async fn install_upload(host: &Host, game: &str, request: Request) -> HttpResult<Json<Deployment>> {
+/// Authorizes a dashboard session and installs the archive in its declared game scope.
+async fn dashboard_upload(
+    State(host): State<Arc<Host>>,
+    request: Request,
+) -> HttpResult<Json<Deployment>> {
+    let (parts, body) = request.into_parts();
+    let actor = dashboard::authorize(&host, &parts, None, String::new).await?;
+    match read_upload(&host, Request::from_parts(parts, body)).await {
+        Ok((package, permit)) => {
+            let game = package.game().to_owned();
+            dashboard::audited(
+                &host,
+                &actor,
+                "upload",
+                &game,
+                install_upload(host.clone(), package, permit),
+            )
+            .await
+        }
+        Err(error) => {
+            dashboard::audited(&host, &actor, "upload", "packages", async { Err(error) }).await
+        }
+    }
+}
+
+/// Bounds upload time, wire size, and concurrent decoding before handing a package to installation.
+async fn read_upload(host: &Host, request: Request) -> HttpResult<(Package, OwnedSemaphorePermit)> {
+    if request
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_none_or(|value| !value.eq_ignore_ascii_case(PACKAGE_CONTENT_TYPE))
+    {
+        return Err((
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "upload must have content type application/zip".to_owned(),
+        ));
+    }
     let permit = host.uploads.clone().try_acquire_owned().map_err(|_| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -295,216 +429,289 @@ async fn install_upload(host: &Host, game: &str, request: Request) -> HttpResult
             "upload exceeds body limit or is incomplete".to_owned(),
         )
     })?;
-    let dir = host.store.clone();
-    let metering = host.wasm_metering;
-    let game = game.to_owned();
-    let receipt = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> Result<_> { Ok((Package::decode(&bytes)?, permit)) })
+        .await
+        .map_err(internal)?
+        .map_err(bad_request)
+}
+
+/// Installs a candidate only when the current game has no experiment or session in progress.
+async fn install_upload(
+    host: Arc<Host>,
+    package: Package,
+    permit: OwnedSemaphorePermit,
+) -> HttpResult<Json<Deployment>> {
+    let id = package.game().to_owned();
+    validate_hosted_game_id(&id).map_err(bad_request)?;
+    // Finish disk and memory publication together if the upload connection closes.
+    tokio::spawn(async move {
         let _permit = permit;
-        let upload: Upload = serde_json::from_slice(&bytes).context("invalid package envelope")?;
-        upload.install(&dir, &game, metering)
+        let _publication = host.publication_lock.lock().await;
+        let game = host.game(&id).await;
+        let mut existing = match &game {
+            Some(game) => Some(game.write().await),
+            None => None,
+        };
+        let revision = package.revision();
+        if let Some(current) = &existing {
+            require_idle(current).await?;
+            if current.deployment.revision == revision {
+                return Ok(Json(current.deployment.clone()));
+            }
+        }
+        let package_dir = host.store.join("packages").join(&id);
+        if existing.is_some() {
+            File::open(&package_dir)
+                .and_then(|directory| directory.sync_all())
+                .map_err(internal)?;
+        }
+        let staged = tokio::task::spawn_blocking({
+            let package_dir = package_dir.clone();
+            let revision = revision.clone();
+            move || package.stage(&package_dir, &revision)
+        })
+        .await
+        .map_err(internal)?
+        .map_err(internal)?;
+        let mut replacement = host
+            .build_game(&id, revision.clone(), staged.directory.clone())
+            .await
+            .map_err(bad_request)?;
+        let receipt = replacement.deployment.clone();
+        if let Some(current) = &existing {
+            replacement.active = current.active;
+        }
+        let durable = staged.publish(&revision).map_err(internal)?;
+        match &mut existing {
+            Some(current) => {
+                **current = replacement;
+                // If the pointer flush failed, restart may see either pointer. Keep both
+                // candidates recoverable until the next successful flush.
+                if durable {
+                    if let Err(error) = recover_build(&package_dir) {
+                        tracing::warn!(%error, game = id, "could not remove replaced game build");
+                    }
+                }
+            }
+            None => {
+                host.games
+                    .write()
+                    .await
+                    .insert(id, Arc::new(RwLock::new(replacement)));
+            }
+        }
+        Ok(Json(receipt))
     })
     .await
     .map_err(internal)?
-    .map_err(bad_request)?;
-    Ok(Json(receipt))
 }
 
-/// Provisions a durable pin. Repeating the same selection is safe and replacing it is rejected.
-async fn select_experiment(
+/// Enables participant requests for the selected game.
+async fn activate(
     State(host): State<Arc<Host>>,
     RoutePath(id): RoutePath<String>,
     request: Request,
 ) -> HttpResult<Json<Value>> {
-    let (parts, body) = request.into_parts();
-    let actor = dashboard::authorize(&host, &parts, Some(&host.admin_token), || {
+    set_activation(host, id, request, true).await
+}
+
+/// Disables participant requests once the selected game's experiments and sessions have stopped.
+async fn deactivate(
+    State(host): State<Arc<Host>>,
+    RoutePath(id): RoutePath<String>,
+    request: Request,
+) -> HttpResult<Json<Value>> {
+    set_activation(host, id, request, false).await
+}
+
+/// Updates participant availability under the same lock used to replace a running runtime.
+async fn set_activation(
+    host: Arc<Host>,
+    id: String,
+    request: Request,
+    active: bool,
+) -> HttpResult<Json<Value>> {
+    let (parts, _) = request.into_parts();
+    let actor = dashboard::authorize(&host, &parts, host.admin_token.as_ref(), || {
         "host-operator-token".into()
     })
     .await?;
-    validate_id(&id).map_err(bad_request)?;
-    let request = Request::from_parts(parts, body);
-    let target = id.clone();
-    let audit_host = host.clone();
-    dashboard::audited(
-        &audit_host,
-        &actor,
-        "select",
-        &target,
-        pin_experiment(host, id, request),
-    )
-    .await
-}
-
-/// Validates and persists an experiment's immutable package and configuration pin.
-async fn pin_experiment(host: Arc<Host>, id: String, request: Request) -> HttpResult<Json<Value>> {
-    let bytes = tokio::time::timeout(
-        Duration::from_secs(15),
-        to_bytes(request.into_body(), CONTROL_LIMIT),
-    )
-    .await
-    .map_err(|_| {
-        (
-            StatusCode::REQUEST_TIMEOUT,
-            "selection request timed out".to_owned(),
-        )
-    })?
-    .map_err(bad_request)?;
-    let mut selection: ExperimentSelection = serde_json::from_slice(&bytes).map_err(bad_request)?;
-    let config: crate::config::ExperimentConfig =
-        serde_json::from_value(selection.config).map_err(bad_request)?;
-    selection.config = crate::app::validate_hosted_config(&config).map_err(bad_request)?;
-    let revision = selection.revision.clone();
-    let experiment_id = id.clone();
-    let public_url = host.public_url.clone();
-    tokio::spawn(async move {
-        let _guard = host.selection_lock.lock().await;
-        let existing = host
-            .experiments
-            .read()
-            .await
-            .get(&experiment_id)
-            .map(|experiment| experiment.selection.clone());
-        if let Some(existing) = existing {
-            if existing != selection {
-                return Err((
-                    StatusCode::CONFLICT,
-                    "experiment already pins a different revision or configuration".to_owned(),
-                ));
+    let operation = if active { "activate" } else { "deactivate" };
+    dashboard::audited(&host, &actor, operation, &id, async {
+        let game = host.game(&id).await.ok_or_else(not_found)?;
+        let mut game = game.write().await;
+        if game.active != active {
+            if !active {
+                require_idle(&game).await?;
             }
-            return Ok(());
+            let directory = host.game_directory(&id);
+            let marker = directory.join("active");
+            if active {
+                File::create(marker).map_err(internal)?;
+            } else {
+                fs::remove_file(marker).map_err(internal)?;
+            }
+            game.active = active;
+            if let Err(error) = File::open(directory).and_then(|directory| directory.sync_all()) {
+                tracing::error!(%error, game = id, "could not flush game activation change");
+            }
         }
-        let experiment = host
-            .build_experiment(&experiment_id, selection)
-            .await
-            .map_err(bad_request)?;
-        persist_selection(&host.store, &experiment_id, &experiment.selection).map_err(internal)?;
-        host.experiments
-            .write()
-            .await
-            .insert(experiment_id, experiment);
-        Ok(())
+        Ok(Json(json!({ "active": game.active })))
     })
     .await
-    .map_err(internal)??;
-    Ok(Json(json!({
-        "experiment": id,
-        "revision": revision,
-        "url": format!("{public_url}/e/{id}/")
-    })))
 }
 
-/// Routes participant and operator requests to the pinned runtime, including WebSocket upgrades.
+/// Confirms that lifecycle state and draining sessions permit replacing or retiring a runtime.
+async fn require_idle(game: &HostedGame) -> HttpResult<()> {
+    if let Some(reason) = game.runtime.replacement_blocker().await.map_err(internal)? {
+        return Err((StatusCode::CONFLICT, reason.to_owned()));
+    }
+    if game.websocket_upgrades.load(Ordering::Acquire) != 0 {
+        return Err((
+            StatusCode::CONFLICT,
+            "Participant connections are still open for this game.".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// Dispatches game-scoped requests while excluding runtime replacement and deactivation.
 async fn dispatch(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Response> {
     let (parts, body) = request.into_parts();
     let path = parts.uri.path();
-    let (id, admin) = if let Some(rest) = path.strip_prefix("/e/") {
-        if !dashboard::participant_origin_allowed(&host, &parts) {
-            return Err(not_found());
-        }
-        let (id, tail) = rest.split_once('/').unwrap_or((rest, ""));
-        if tail == "admin"
-            || tail.starts_with("admin/")
-            || tail == "api/admin"
-            || tail.starts_with("api/admin/")
-        {
-            return Err(not_found());
-        }
-        (id, false)
-    } else if let Some((id, tail)) = path
-        .strip_prefix("/api/hosting/experiments/")
-        .and_then(|rest| rest.split_once('/'))
+    let participant_game = if let Some(path) = path.strip_prefix("/e/") {
+        path.split('/')
+            .next()
+            .and_then(|scope| scope.split_once('~'))
+            .map(|(game_id, _)| game_id)
+    } else {
+        path.strip_prefix("/api/admin/replays/")
+            .and_then(|path| path.split_once('/'))
+            .map(|(game_id, _)| game_id)
+    };
+    if let Some(game_id) = participant_game.map(str::to_owned) {
+        return dispatch_participant(&host, &game_id, parts, body).await;
+    }
+    let (id, tail) = path
+        .strip_prefix('/')
+        .map(|rest| rest.split_once('/').unwrap_or((rest, "")))
+        .ok_or_else(not_found)?;
+    let game = host.game(id).await.ok_or_else(not_found)?;
+    if dashboard::administrator_origin_allowed(&host, &parts)
+        && (tail.is_empty() || tail.starts_with("api/admin/") || tail.starts_with("admin/assets/"))
     {
-        if !tail.starts_with("admin/") {
-            return Err(not_found());
-        }
-        (id, true)
-    } else {
-        return Err(not_found());
-    };
-    let actor = if admin {
-        Some(
-            dashboard::authorize(&host, &parts, Some(&host.admin_token), || {
-                "host-operator-token".into()
+        let (actor, csrf_token) = match dashboard::game_session(&host, &parts).await {
+            Ok(session) => session,
+            Err((StatusCode::UNAUTHORIZED, _))
+                if tail.is_empty() && parts.method == Method::GET =>
+            {
+                return Ok(Redirect::temporary(&format!("/admin?next=/{id}")).into_response());
+            }
+            Err(error) => return Err(error),
+        };
+        let action = match (parts.method.as_str(), tail) {
+            ("GET" | "HEAD", tail) if tail.ends_with("/export") => Some("export"),
+            ("POST", tail) if tail.ends_with("/status") => Some("intake"),
+            ("POST", tail) if tail.ends_with("/config") => Some("save-experiment-config"),
+            ("POST", "api/admin/experiments") => Some("create-experiment"),
+            ("POST", tail) if tail.ends_with("/deletion") => Some("delete-participant-data"),
+            ("POST", tail) if tail.ends_with("/replay-link") => Some("issue-replay-link"),
+            (_, _) => None,
+        };
+        let target = id.to_owned();
+        let request = Request::from_parts(parts, body);
+        let host_lease = host.clone();
+        let response = async {
+            // A disconnected operator must not release the deployment guard while a
+            // lifecycle update is still being committed by the runtime.
+            tokio::spawn(async move {
+                let _host_lease = host_lease;
+                let game = game.read().await;
+                game.runtime
+                    .dispatch_admin(request, csrf_token, game.active)
+                    .await
             })
-            .await?,
-        )
-    } else {
-        None
-    };
-    let router = {
-        let experiments = host.experiments.read().await;
-        let experiment = experiments.get(id).ok_or_else(not_found)?;
-        if admin {
-            experiment.admin.clone()
-        } else {
-            experiment.participant.clone()
-        }
-    };
-    let action = match (actor.as_ref(), parts.method.as_str(), path) {
-        (Some(actor), "GET" | "HEAD", path) if path.ends_with("/admin/export") => {
-            Some((actor, "export"))
-        }
-        (Some(actor), "POST", path) if path.ends_with("/admin/experiment/status") => {
-            Some((actor, "intake"))
-        }
-        (Some(actor), "POST", path) if path.ends_with("/deletion") => {
-            Some((actor, "delete-participant-data"))
-        }
-        _ => None,
-    };
-    let target = id.to_owned();
-    let request = Request::from_parts(parts, body);
-    let response = async {
-        Ok(router
-            .oneshot(request)
             .await
-            .expect("Axum routers are infallible"))
-    };
-    match action {
-        Some((actor, operation)) => {
-            dashboard::audited_response(&host, actor, operation, &target, response).await
-        }
-        None => response.await,
+            .map_err(internal)
+        };
+        return match action {
+            Some(action) => {
+                dashboard::audited_response(&host, &actor, action, &target, response).await
+            }
+            None => response.await,
+        };
     }
+    Err(not_found())
 }
 
-/// Writes an operator selection atomically so startup never sees a half-written experiment.
-fn persist_selection(store: &Path, id: &str, selection: &ExperimentSelection) -> Result<()> {
-    use std::io::Write as _;
-
-    let directory = store.join("selections");
-    let temporary = directory.join(format!(".selection-{}", uuid::Uuid::new_v4()));
-    let mut options = OpenOptions::new();
-    options.create_new(true).write(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let result = (|| -> Result<()> {
-        let mut file = options.open(&temporary)?;
-        serde_json::to_writer(&mut file, selection)?;
-        file.flush()?;
-        file.sync_all()?;
-        fs::rename(&temporary, directory.join(format!("{id}.json")))?;
-        File::open(&directory)?.sync_all()?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+/// Checks the public origin before routing participant and capability-backed replay requests.
+async fn dispatch_participant(
+    host: &Host,
+    game_id: &str,
+    parts: axum::http::request::Parts,
+    body: axum::body::Body,
+) -> HttpResult<Response> {
+    if !dashboard::participant_origin_allowed(host, &parts) {
+        return Err(not_found());
     }
-    result
+    let game = host.game(game_id).await.ok_or_else(not_found)?;
+    let game = game.read().await;
+    let mut request = Request::from_parts(parts, body);
+    if request
+        .uri()
+        .path()
+        .strip_prefix("/e/")
+        .and_then(|path| path.split_once('/'))
+        .is_some_and(|(_, tail)| tail.starts_with("ws/"))
+    {
+        request
+            .extensions_mut()
+            .insert(UpgradeLease::new(&game.websocket_upgrades));
+    }
+    Ok(game
+        .runtime
+        .dispatch_participant(request, game.active)
+        .await)
 }
 
-/// Sends a built package using a game-scoped upload token to an HTTPS host.
-pub async fn deploy(host: &str, directory: &Path, token: &str) -> Result<Deployment> {
-    let manifest = PackageManifest::read(directory)?;
-    let game = manifest.id();
-    let payload = Upload::read(directory, &manifest)?;
-    control_request(
-        host,
-        "PUT",
-        &format!("packages/{game}"),
-        token,
-        Some(&payload),
-    )
-    .await
+/// Reserves the host's own route names while accepting normal package game identifiers.
+fn validate_hosted_game_id(id: &str) -> Result<()> {
+    validate_id(id)?;
+    ensure!(
+        !matches!(id, "admin" | "api" | "health"),
+        "game ID {id:?} is reserved by the deployment host"
+    );
+    Ok(())
+}
+
+/// Validates a built game ZIP and sends its original bytes with a game-scoped upload token.
+/// This installs the current build for the archive’s game on a deployment host.
+pub async fn deploy(host: &str, archive: &Path, token: &str) -> Result<Deployment> {
+    deploy_archive(host, archive, |_| Ok(token.to_owned())).await
+}
+
+/// Looks up the saved upload credential for the manifest in a built ZIP and deploys that archive.
+/// The game ID used for credential resolution is read from the same ZIP bytes that are sent.
+pub async fn deploy_with_saved_credentials(host: &str, archive: &Path) -> Result<Deployment> {
+    deploy_archive(host, archive, |game| credentials::upload_token(host, game)).await
+}
+
+/// Authenticates for the game declared in the checked archive, then sends its original ZIP bytes.
+async fn deploy_archive(
+    host: &str,
+    archive: &Path,
+    token: impl FnOnce(&str) -> Result<String>,
+) -> Result<Deployment> {
+    let path = archive.to_owned();
+    let (game, bytes) = tokio::task::spawn_blocking(move || -> Result<_> {
+        let (package, bytes) = Package::read_archive(&path)?;
+        Ok((package.game().to_owned(), bytes))
+    })
+    .await??;
+    let request = management_request(host, "PUT", &format!("packages/{game}"), &token(&game)?)?
+        .header(CONTENT_TYPE, PACKAGE_CONTENT_TYPE)
+        .body(bytes);
+    management_response(request).await
 }
 
 /// Calls a host management route without forwarding credentials to redirect targets.
@@ -515,6 +722,20 @@ pub async fn control_request<T: Serialize + ?Sized, R: serde::de::DeserializeOwn
     token: &str,
     body: Option<&T>,
 ) -> Result<R> {
+    let mut request = management_request(host, method, path, token)?;
+    if let Some(body) = body {
+        request = request.json(body);
+    }
+    management_response(request).await
+}
+
+/// Applies the shared origin, credential, redirect, and timeout rules for management requests.
+fn management_request(
+    host: &str,
+    method: &str,
+    path: &str,
+    token: &str,
+) -> Result<reqwest::RequestBuilder> {
     validate_token(token)?;
     let host = checked_origin(host)?;
     let client = reqwest::Client::builder()
@@ -523,10 +744,13 @@ pub async fn control_request<T: Serialize + ?Sized, R: serde::de::DeserializeOwn
         .timeout(Duration::from_secs(180))
         .build()?;
     let url = format!("{host}/api/hosting/{path}");
-    let mut request = client.request(method.parse()?, url).bearer_auth(token);
-    if let Some(body) = body {
-        request = request.json(body);
-    }
+    Ok(client.request(method.parse()?, url).bearer_auth(token))
+}
+
+/// Decodes a management receipt or reports a host rejection with its status and detail.
+async fn management_response<R: serde::de::DeserializeOwned>(
+    request: reqwest::RequestBuilder,
+) -> Result<R> {
     let response = request.send().await?;
     let status = response.status();
     if !status.is_success() {
@@ -541,13 +765,19 @@ pub fn checked_origin(host: &str) -> Result<String> {
     credentials::origin(host)
 }
 
-/// Reads the game ID needed to look up an upload credential for a built package.
-pub fn package_game(directory: &Path) -> Result<String> {
-    Ok(PackageManifest::read(directory)?.id().to_owned())
+/// Validates a built ZIP and returns its declared game ID for credential resolution.
+pub fn package_game(archive: &Path) -> Result<String> {
+    Ok(Package::read_archive(archive)?.0.game().to_owned())
 }
 
-/// Validates an experiment identifier before including it in a management URL.
-pub fn validate_experiment_id(id: &str) -> Result<()> {
+/// Compiles the component from a built ZIP and validates its ABI and game schema with the selected
+/// Wasm metering. The returned metadata identifies the canonical package revision and component.
+pub fn load_package(archive: &Path, metering: WasmMetering) -> Result<(LoadedGame, GameMetadata)> {
+    Package::read_archive(archive)?.0.load(metering)
+}
+
+/// Validates a game identifier before using it in a package filename or management URL.
+pub fn validate_game_id(id: &str) -> Result<()> {
     validate_id(id)
 }
 
@@ -589,7 +819,7 @@ fn token_digest(token: &str) -> [u8; 32] {
 fn not_found() -> (StatusCode, String) {
     (
         StatusCode::NOT_FOUND,
-        "deployment route or experiment not found".to_owned(),
+        "deployment route or game not found".to_owned(),
     )
 }
 

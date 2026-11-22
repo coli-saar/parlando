@@ -50,7 +50,7 @@ enum RuntimeSurface {
 
 impl GameHost {
     /// Returns the admission owner for the current configuration, mounting it once if necessary.
-    async fn experiment_router(&self, experiment_id: &str) -> Result<Arc<BuiltRouters>> {
+    pub(super) async fn experiment_router(&self, experiment_id: &str) -> Result<Arc<BuiltRouters>> {
         if let Some(router) = self
             .routers
             .read()
@@ -83,6 +83,7 @@ impl GameHost {
             config,
             options,
             true,
+            self.hosted,
             identity.clone(),
         )
         .await?;

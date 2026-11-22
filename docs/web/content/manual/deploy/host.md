@@ -14,10 +14,12 @@ The host loads compiled packages. Build tools belong on game authors' machines o
 
 ## Start and expose the service
 
-For a loopback trial, set `PARLANDO_HOST_ADMIN_TOKEN` in the host process environment to a long random value. Start the service from a writable directory.
+For a local pilot, run `parlando serve` in the host directory and open the administrator link printed in the terminal. The same `/admin` page lets you create the first administrator account in a new store and sign in to an existing store.
+
+To test an explicitly configured pair of origins, set `PARLANDO_HOST_ADMIN_TOKEN` in the host process environment to a long random value. Start the service from a writable directory.
 
 ```sh
-parlando host --bind 127.0.0.1:8000 --store ./parlando-host \
+parlando serve --bind 127.0.0.1:8000 --store ./parlando-host \
   --public-url http://127.0.0.1:8000 --admin-url http://localhost:8000
 ```
 
@@ -25,9 +27,9 @@ The two names reach the same listener. They count as different browser origins, 
 
 For a public host, use HTTPS on both hostnames, route them to the service, and preserve the requested Host header and WebSocket upgrades. Set `--public-url` to the participant origin and `--admin-url` to the administrator origin. Use a single host process for the persistent store. Check `/health` on the running service, then open `/admin` on the administrator origin.
 
-## Create the first operator
+## Create the first administrator on a configured host
 
-In the operator shell, set `PARLANDO_ADMIN_URL` to the configured administrator origin and provide the bootstrap token in `PARLANDO_HOST_ADMIN_TOKEN`. Run this from an interactive terminal with Python 3 for the password prompt. It creates a named operator called `operator`.
+In your shell, set `PARLANDO_ADMIN_URL` to the configured administrator origin and provide the bootstrap token in `PARLANDO_HOST_ADMIN_TOKEN`. Run this from an interactive terminal with Python 3 for the password prompt. It creates an administrator account with the username `admin`.
 
 ```sh
 python3 - <<'PY'
@@ -48,8 +50,8 @@ request = urllib.request.Request(
         "Content-Type": "application/json",
     },
     data=json.dumps({
-        "username": "operator",
-        "password": getpass.getpass("Operator password: "),
+        "username": "admin",
+        "password": getpass.getpass("Administrator password: "),
         "role": "operator",
     }).encode(),
     method="POST",
@@ -59,20 +61,20 @@ with urllib.request.build_opener(NoRedirect).open(request) as response:
 PY
 ```
 
-Use a password of at least 12 bytes. Sign in at `/admin` and create an experimenter account for each colleague. Experimenters share access to every game and experiment. Operators can also create accounts, reset passwords, disable accounts, and review audit events. A reset or disable revokes that account's current dashboard sessions.
+Use a password of at least 12 bytes. Sign in at `/admin` and open **Users** to create an experimenter account for each colleague. Experimenters share access to every game and experiment.
+
+Administrators use **Users** to create accounts, reset passwords, and disable accounts. A reset or disable revokes that account's current dashboard sessions. Expand **Audit history** on the same page to review recorded operations.
 
 ## Grant machine uploads
 
-The dashboard supports browser uploads with an experimenter account. To enable CLI or automated uploads, pass `--grants GRANTS_FILE` to `parlando host`. Use a protected JSON file mapping game IDs to distinct random tokens. Keep those tokens separate from the host administrator token. Provision one token for each game a client needs to upload. Restart the host after changing the file.
+The dashboard supports browser uploads with an experimenter account. To enable CLI or automated uploads, pass `--grants GRANTS_FILE` to `parlando serve`. Use a protected JSON file mapping game IDs to distinct random tokens. Keep those tokens separate from the host administrator token. Provision one token for each game a client needs to upload. Restart the host after changing the file.
 
-`parlando host` can also run without the browser dashboard. Supply the grants file or set `PARLANDO_DEPLOY_GAME` and `PARLANDO_DEPLOY_TOKEN` for a single game. Use the operator token to select packages and change intake through the CLI. See [deploy to a shared host](../).
+`parlando serve` can also run without the browser dashboard. Specify the public origin with `--public-url` and omit the administrator origin. Supply the grants file or set `PARLANDO_DEPLOY_GAME` and `PARLANDO_DEPLOY_TOKEN` for a single game. Use the administrator token to activate and deactivate games through the CLI. See [deploy to a shared host](../).
 
 ## Retain the store
 
-Back up the entire store while the service is stopped, including package files, experiment pins, research databases, and the dashboard account and audit database. Store backups and provider credentials in access-controlled locations. Restarting restores the selected packages and closes intake. Verify participant entry and explicitly reopen the experiments you intend to run.
+Back up the entire store while the service is stopped. Include the current packages, game research databases, and the dashboard account and audit database. Store backups and provider credentials in access-controlled locations. Game activation persists across restarts. Reopen the experiments you intend to run after the host restarts.
 
-When upgrading a schema-16 installation to the server with `communication.mode`, plan the change offline. Map the old `voice.enabled` value in each experiment and its configuration revisions to `speech` for true or `typed` for false. Preserve recorded events, including typed messages from older voice-enabled sessions.
+When upgrading a schema-16 installation to the server with `communication.mode`, plan the change offline. Map the old `voice.enabled` value in each experiment and its configuration revisions to `speech` for true or `typed` for false. Preserve recorded events, including typed messages from older voice-enabled sessions. See the [0.7.0 migration guide](https://github.com/coli-saar/parlando/blob/main/docs/migrating-0.6.0-to-0.7.0.md).
 
-On a shared host, each database filename contains the hash of its immutable selection. Converting a selection changes that hash. Keep its converted database paired with the new filename before restarting, and verify the experiment's session counts against the backup. A selection whose database is missing can open an empty store. Rebuild the participant assets against the matching client library and use a fresh game revision and experiment pin when replacing a deployed browser build.
-
-Use a shared participant origin for game publishers you trust within the same browser origin. Run a different host on a different origin when publishers need independent browser trust boundaries. Use a separate participant link for each updated study run and retain earlier packages with the original data.
+Use a shared participant origin for game publishers you trust within the same browser origin. Run a different host on a different origin when publishers need independent browser trust boundaries. Keep earlier game ZIPs with the corresponding study data when you need to reproduce a run.

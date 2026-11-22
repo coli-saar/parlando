@@ -202,10 +202,10 @@
   </main>
   <div class="quick-tooltip" id="quickTooltip" role="tooltip" hidden></div>
   <dialog id="createExperimentDialog" aria-labelledby="createExperimentTitle">
-    <form id="createExperimentForm" class="dialog-form" method="dialog">
-      <header><h2 id="createExperimentTitle">New experiment</h2><p class="muted">Choose its immutable identifier and optional private Markdown notes.</p></header>
-      <label>Experiment ID (unique and immutable after creation)<input id="newExperimentId" name="experiment_id" required pattern="[A-Za-z0-9._-]{1,128}" autocomplete="off" aria-describedby="newExperimentIdHelp"><span id="newExperimentIdHelp" class="config-help">1–128 letters, digits, dots, dashes, or underscores. This cannot be changed later.</span></label>
-      <label>Markdown description (optional)<textarea id="newExperimentNotes" name="notes" rows="7" spellcheck="true"></textarea></label>
+    <form id="createExperimentForm" class="dialog-form" method="dialog" novalidate>
+      <header><h2 id="createExperimentTitle">New experiment</h2></header>
+      <label>Experiment ID<input id="newExperimentId" name="experiment_id" required maxlength="128" autocomplete="off" aria-describedby="newExperimentIdHelp createExperimentError"><span id="newExperimentIdHelp" class="config-help">Use letters, digits, dots, dashes, or underscores. The ID cannot be changed later.</span></label>
+      <p id="createExperimentError" role="alert"></p>
       <div class="dialog-actions"><button id="cancelCreateExperiment" class="secondary" type="button">Cancel</button><button class="primary" type="submit">Create experiment</button></div>
     </form>
   </dialog>

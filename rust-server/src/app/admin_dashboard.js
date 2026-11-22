@@ -6,7 +6,7 @@
 import { bindSpeechSettings, COMMUNICATION_MODE_FIELD, configAt, readConfigFields, renderSpeechSettings, renderStandardConfigField, setConfigAt } from './communication-config.js';
 import { state } from './admin-dashboard-state.js';
 import { isSpeechBundle, sessionTimeline, roleBadge, escapeHtml, experimentDisplayStatus, fmtClockTime, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, participantDeletionPrompt, plannedProgressLayout, sessionEndCauseRows, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
-import { absoluteParticipantUrl, adminFetch, SelectionRequests, experimentRuntimeApi, participantUrlCanOpen } from './admin-dashboard-api.js';
+import { absoluteParticipantUrl, adminPath, adminFetch, SelectionRequests, experimentRuntimeApi, participantUrlCanOpen } from './admin-dashboard-api.js';
 const catalogueRequests = new SelectionRequests();
 const experimentRequests = new SelectionRequests();
 const sessionRequests = new SelectionRequests();
@@ -620,18 +620,18 @@ function localPreviewId() {
 
 // Builds a participant URL, minting a fresh identity for each Local Preview action.
 function participantPageHref(experiment) {
-  const url = new URL(`/e/${encodeURIComponent(experiment.experiment_id)}/`, window.location.origin);
+  const url = new URL(experiment.participant_page_url || `/e/${encodeURIComponent(experiment.experiment_id)}/`, window.location.origin);
   const selectedConfig = state.experiment?.experiment_id === experiment.experiment_id ? state.configValue : null;
   const prolific = selectedConfig?.recruitment?.prolific || experiment.config?.recruitment?.prolific;
   const runningUrl = experiment.participant_url;
-  if (!runningUrl || runningUrl.kind === 'direct' || !prolific?.enabled) return `${url.pathname}${url.search}`;
+  if (!runningUrl || runningUrl.kind === 'direct' || !prolific?.enabled) return experiment.participant_page_url || `${url.pathname}${url.search}`;
   if (runningUrl.kind === 'prolific') {
     return prolificSetupUrl(experiment);
   }
   url.searchParams.set('PROLIFIC_PID', localPreviewId());
   url.searchParams.set('STUDY_ID', prolific.study_id);
   url.searchParams.set('SESSION_ID', localPreviewId());
-  return `${url.pathname}${url.search}`;
+  return experiment.participant_page_url ? url.href : `${url.pathname}${url.search}`;
 }
 
 // Opens one newly minted Local Preview invitation without retaining it for later launches.
@@ -1111,6 +1111,22 @@ function replayPageHref(sessionId) {
   return `${url.pathname}${url.search}`;
 }
 
+// Opens the isolated package renderer using a one-use link for the selected session.
+async function launchHostedReplay(sessionId) {
+  const popup = window.open('about:blank', '_blank');
+  if (!popup) throw new Error('Allow pop-up windows to open the replay.');
+  popup.opener = null;
+  try {
+    const response = await adminFetch(state, runtimeApi(`sessions/${sessionId}/replay-link`), { method: 'POST' });
+    if (!response.ok) throw new Error((await response.text()) || 'The replay could not be opened.');
+    const data = await response.json();
+    popup.location.replace(data.url);
+  } catch (error) {
+    popup.close();
+    throw error;
+  }
+}
+
 // Loads the selected experiment's authoritative database-backed configuration.
 async function loadConfiguration() {
   if (!state.experiment) return;
@@ -1162,7 +1178,7 @@ async function loadConfigurationSafely() {
 
 // Reapplies editor availability after lifecycle-only refreshes that do not reload configuration data.
 function updateConfigurationEditability(experiment = state.experiment) {
-  const readOnly = !state.loadedConfigKey || state.configLoadFailed || !experiment || experiment.status !== 'inactive' || experiment.game_version !== state.game?.version;
+  const readOnly = !state.loadedConfigKey || state.configLoadFailed || !experiment || experiment.status !== 'inactive';
   configForm.querySelectorAll('input, textarea, select, button:not([data-reveal-secret])').forEach(control => { control.disabled = readOnly; });
   saveConfiguration.disabled = readOnly;
 }
@@ -1219,8 +1235,8 @@ const CONSENT_TEMPLATE_CHOICES = [
 ];
 
 const PARLANDO_CONFIG_SECTIONS = [
-  { title: 'Progress', description: 'Optional target for direct or mixed recruitment.', fields: [
-    { path: 'progress.planned_sessions', label: 'Planned sessions', help: 'Leave empty to use the linked Prolific study when available.', type: 'optional-number', min: 1 }
+  { title: 'Progress', description: 'The Progress tab compares completed game sessions with your target. Reaching the target leaves participant intake open.', fields: [
+    { path: 'progress.planned_sessions', label: 'Planned sessions (optional)', help: 'Count one session per game played. For example, 40 people playing once in pairs would play 20 sessions. If you leave this blank, Parlando uses the target from your verified Prolific study when available. Otherwise, the Progress tab shows session counts without a target.', type: 'optional-number', min: 1 }
   ]},
   { title: 'Session lifecycle', description: 'Timeouts applied uniformly to every session in this experiment.', fields: [
     { path: 'session.waiting_session_timeout_seconds', label: 'Waiting-session timeout (seconds)', help: 'Time before an unmatched session expires.', type: 'number', min: 1 },
@@ -1716,13 +1732,15 @@ async function revealSecret(key, button) {
 }
 
 // Creates an inactive experiment from the installation’s current defaults.
-async function createExperiment(experimentId, notes) {
+async function createExperiment(experimentId) {
   const response = await adminFetch(state, '/api/admin/experiments', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
-    body: JSON.stringify({ experiment_id: experimentId, notes: notes.trim() || null })
+    body: JSON.stringify({ experiment_id: experimentId })
   });
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) {
+    throw new Error((await response.text()) || 'The experiment could not be created.');
+  }
   await reloadCatalogue();
   await selectExperiment(experimentId);
 }
@@ -2025,7 +2043,7 @@ function renderPrivacy() {
       <h3>Data retained in Parlando's SQLite database</h3><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Information</th><th>Why it is processed</th><th>What is retained</th></tr></thead><tbody>${storageRows}</tbody></table></div>
       <h3>Data not retained by Parlando</h3><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Information</th><th>Parlando guarantee</th><th>Boundary of the guarantee</th></tr></thead><tbody>${nonRetainedRows}</tbody></table></div>
       <h3>External speech services</h3><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Service</th><th>Purpose</th><th>Data sent</th></tr></thead><tbody>${serviceRows}</tbody></table></div>
-      <h3>Corpus export</h3><p>${escapeHtml(privacy.exports?.structure || '')} ${escapeHtml(privacy.exports?.scope || '')}</p><p>${escapeHtml(privacy.exports?.identifiers || '')} ${escapeHtml(privacy.exports?.timing || '')}</p><p><strong>How fields are selected:</strong> ${escapeHtml(privacy.exports?.selection_rule || '')}</p><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Part of the corpus</th><th>What it contains</th></tr></thead><tbody>${exportRows}</tbody></table></div><p><strong>Stored or used by Parlando but not written to the corpus:</strong></p><ul>${notWrittenItems}</ul><p><strong>Before sharing:</strong> ${escapeHtml(privacy.exports?.detail || '')}</p><p class="muted">Schema ${escapeHtml(privacy.exports?.schema_id || '')}; available as ${escapeHtml((privacy.exports?.formats || []).join(', '))}. <a href="/api/admin/export-schema" download>Download the machine-readable schema</a>.</p>
+      <h3>Corpus export</h3><p>${escapeHtml(privacy.exports?.structure || '')} ${escapeHtml(privacy.exports?.scope || '')}</p><p>${escapeHtml(privacy.exports?.identifiers || '')} ${escapeHtml(privacy.exports?.timing || '')}</p><p><strong>How fields are selected:</strong> ${escapeHtml(privacy.exports?.selection_rule || '')}</p><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Part of the corpus</th><th>What it contains</th></tr></thead><tbody>${exportRows}</tbody></table></div><p><strong>Stored or used by Parlando but not written to the corpus:</strong></p><ul>${notWrittenItems}</ul><p><strong>Before sharing:</strong> ${escapeHtml(privacy.exports?.detail || '')}</p><p class="muted">Schema ${escapeHtml(privacy.exports?.schema_id || '')}; available as ${escapeHtml((privacy.exports?.formats || []).join(', '))}. <a href="${escapeHtml(adminPath(state, '/api/admin/export-schema'))}" download>Download the machine-readable schema</a>.</p>
       <h3>Consent evidence and deletion</h3><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Area</th><th>Behavior</th></tr></thead><tbody><tr><td>Consent evidence</td><td>${escapeHtml(privacy.consent_evidence?.detail || '')}</td></tr><tr><td>Participant deletion</td><td>${escapeHtml(privacy.participant_deletion?.detail || '')}</td></tr></tbody></table></div>
       <h3>Scope of this record</h3><p>This record documents behavior enforced by Parlando for this experiment. Store it with the exported data. Supplement it with the controller, legal basis, retention period, hosting arrangements${providerRecord} that apply at your institution.</p>
     </article>`;
@@ -2039,8 +2057,8 @@ async function loadPrivacy() {
     return;
   }
   const id = encodeURIComponent(state.experiment.experiment_id);
-  document.getElementById('privacyMarkdown').href = `/api/admin/experiments/${id}/privacy.md`;
-  document.getElementById('privacyJson').href = `/api/admin/experiments/${id}/privacy.json`;
+  document.getElementById('privacyMarkdown').href = adminPath(state, `/api/admin/experiments/${id}/privacy.md`);
+  document.getElementById('privacyJson').href = adminPath(state, `/api/admin/experiments/${id}/privacy.json`);
   await experimentRequests.json('privacy', state, `/api/admin/experiments/${id}/privacy`, data => {
     state.privacy = data;
     renderPrivacy();
@@ -2120,7 +2138,9 @@ function renderSummary(session, participantRows) {
     facts.push(`<div><dt>Last meaningful activity</dt><dd>${escapeHtml(fmtTime(session.last_meaningful_activity_at))}</dd></div>`);
   }
   summary.innerHTML = `
-    <div class="session-summary-heading"><h2>Session ${escapeHtml(session.session_id)}</h2>${session.dialogue_id ? `<strong class="session-dialogue-name">${escapeHtml(session.dialogue_id)}</strong>` : ''}<a class="secondary session-replay" href="${escapeHtml(replayPageHref(session.session_id))}" target="_blank" rel="noopener">${icon('play')}Replay</a></div>
+    <div class="session-summary-heading"><h2>Session ${escapeHtml(session.session_id)}</h2>${session.dialogue_id ? `<strong class="session-dialogue-name">${escapeHtml(session.dialogue_id)}</strong>` : ''}${state.adminPrefix
+      ? `<button class="secondary session-replay" type="button">${icon('play')}Replay</button>`
+      : `<a class="secondary session-replay" href="${escapeHtml(replayPageHref(session.session_id))}" target="_blank" rel="noopener">${icon('play')}Replay</a>`}</div>
     <dl class="session-facts">${facts.join('')}</dl>
     ${participantAssignments(participantRows, session)}
   `;
@@ -2357,20 +2377,45 @@ async function refreshEvents() {
   });
 }
 
+document.addEventListener('click', event => {
+  if (!state.adminPrefix || !state.selectedSession || !event.target.closest('button.session-replay')) return;
+  launchHostedReplay(state.selectedSession.session_id).catch(error => window.alert(error.message));
+});
+
 showHousekeeping.addEventListener('change', renderEventBundles);
 showLogs.addEventListener('change', renderEventBundles);
 refreshProgressButton.addEventListener('click', () => refreshProgress().catch(error => window.alert(error.message)));
+const createExperimentForm = document.getElementById('createExperimentForm');
+const newExperimentId = document.getElementById('newExperimentId');
+const createExperimentError = document.getElementById('createExperimentError');
+const submitExperiment = createExperimentForm.querySelector('button[type="submit"]');
+
 document.getElementById('createExperimentButton').addEventListener('click', () => {
-  document.getElementById('createExperimentForm').reset();
+  createExperimentForm.reset();
+  createExperimentError.textContent = '';
   createExperimentDialog.showModal();
-  document.getElementById('newExperimentId').focus();
+  newExperimentId.focus();
 });
 document.getElementById('cancelCreateExperiment').addEventListener('click', () => createExperimentDialog.close());
-document.getElementById('createExperimentForm').addEventListener('submit', event => {
+createExperimentForm.addEventListener('submit', async event => {
   event.preventDefault();
-  const experimentId = document.getElementById('newExperimentId').value.trim();
-  const notes = document.getElementById('newExperimentNotes').value;
-  createExperiment(experimentId, notes).then(() => createExperimentDialog.close()).catch(error => window.alert(error.message));
+  if (submitExperiment.disabled) return;
+  const experimentId = newExperimentId.value;
+  createExperimentError.textContent = '';
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(experimentId) || ['.', '..'].includes(experimentId)) {
+    createExperimentError.textContent = 'Use 1–128 ASCII letters, digits, dots, dashes, or underscores. A single dot or two dots is invalid.';
+    newExperimentId.focus();
+    return;
+  }
+  submitExperiment.disabled = true;
+  try {
+    await createExperiment(experimentId);
+    createExperimentDialog.close();
+  } catch (error) {
+    createExperimentError.textContent = error.message;
+  } finally {
+    submitExperiment.disabled = false;
+  }
 });
 document.getElementById('notesWriteMode').addEventListener('click', () => setNotesMode('write'));
 document.getElementById('notesPreviewMode').addEventListener('click', () => setNotesMode('preview'));
@@ -2435,7 +2480,7 @@ document.getElementById('downloadExport').addEventListener('click', () => {
     format: document.getElementById('exportFormat').value,
     variant: document.getElementById('exportVariant').value
   });
-  window.location.href = `${runtimeApi('export')}?${params}`;
+  window.location.href = adminPath(state, `${runtimeApi('export')}?${params}`);
 });
 summary.addEventListener('click', event => {
   const button = event.target.closest('.delete-participant');

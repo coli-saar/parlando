@@ -255,8 +255,11 @@ def build_games(work, binary, client, version, env):
         package["dependencies"][CLIENT] = f"file:{client}"
         client_manifest.write_text(json.dumps(package, indent=2) + "\n", encoding="utf-8")
         run(binary, "test", cwd=project, env=env)
-        run(binary, "build", cwd=project, env=env)
-        run(binary, "check", "--manifest", "dist/parlando/game.yaml", cwd=project, env=env)
+        built = json.loads(run(binary, "build", "--json", cwd=project, env=env, capture=True))
+        archive = Path(built["result"]["package"])
+        if archive != project.resolve() / "dist" / f"{game}-0.1.0.zip" or not archive.is_file():
+            raise RuntimeError(f"Unexpected starter archive: {archive}")
+        run(binary, "check", "--package", archive, cwd=project, env=env)
         installed = project / "client/node_modules" / CLIENT / "package.json"
         if json.loads(installed.read_text(encoding="utf-8"))["version"] != version:
             raise RuntimeError(f"{game} did not install the candidate browser client")
@@ -281,25 +284,28 @@ def local_host(work, binary, env):
     """Start the installed host with a temporary store and distinct throwaway credentials."""
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
-        address = f"127.0.0.1:{listener.getsockname()[1]}"
+        port = listener.getsockname()[1]
+    address = f"127.0.0.1:{port}"
     origin = f"http://{address}"
+    admin_origin = f"http://localhost:{port}"
     grants = {game: secrets.token_urlsafe(32) for game in GAMES.values()}
     grant_file = work / "grants.json"
     grant_file.write_text(json.dumps(grants), encoding="utf-8")
     credentials = {
         **env, "PARLANDO_HOST_ADMIN_TOKEN": secrets.token_urlsafe(32),
         "PARLANDO_HOST_ADMIN_ORIGIN": origin, "PARLANDO_DEPLOY_ORIGIN": origin,
-        "NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1",
+        "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost",
     }
+    credentials.pop("PARLANDO_ADMIN_URL", None)
     log = work / "host.log"
     with log.open("w", encoding="utf-8") as output, subprocess.Popen(
-        [binary, "host", "--bind", address, "--public-url", origin,
+        [binary, "serve", "--bind", address,
          "--store", work / "host", "--grants", grant_file],
         cwd=work, env=credentials, stdout=output, stderr=subprocess.STDOUT,
     ) as host:
         try:
             wait_for_host(host, origin)
-            yield origin, credentials, grants
+            yield origin, admin_origin, credentials, grants
         except BaseException:
             print(log.read_text(encoding="utf-8"), file=sys.stderr)
             raise
@@ -313,36 +319,39 @@ def local_host(work, binary, env):
 
 
 def play_games(work, binary, env):
-    """Pin both starters in Typed mode and run the two-browser communication and gameplay gate."""
+    """Deploy and activate both starters, then pilot them through the game dashboards."""
     browser = work / "browser"
     browser.mkdir()
-    typed_config = work / "typed-experiment.yaml"
-    typed_config.write_text("communication:\n  mode: typed\n", encoding="utf-8")
     fixtures = ROOT / "client-server-tests/browser"
     playwright = json.loads((fixtures / "package.json").read_text())["devDependencies"]["@playwright/test"]
     for source in (fixtures / "ensure-browser.mjs", ROOT / "scripts/release_candidate_browser.mjs"):
         shutil.copyfile(source, browser / source.name)
     run("npm", "install", "--no-audit", "--no-fund", f"@playwright/test@{playwright}", cwd=browser, env=env)
     run("node", "ensure-browser.mjs", cwd=browser, env=env)
-    with local_host(work, binary, env) as (origin, credentials, grants):
+    browser_env = {**env, "PARLANDO_REHEARSAL_PASSWORD": secrets.token_urlsafe(32)}
+    with local_host(work, binary, env) as (origin, admin_origin, credentials, grants):
         for game in GAMES.values():
             deploy_env = {**credentials, "PARLANDO_DEPLOY_TOKEN": grants[game]}
             receipt = json.loads(run(
-                binary, "deploy", "--server", origin, "--package", "dist/parlando", "--json",
+                binary, "deploy", "--host", origin, "--json",
                 cwd=work / game, env=deploy_env, capture=True, timeout=60,
             ))["result"]
-            pin = json.loads(run(
-                binary, "select", "--server", origin, "--experiment", game, "--game", game,
-                "--revision", receipt["revision"], "--config", typed_config, "--json",
+            if receipt["game"] != game or receipt["version"] != "0.1.0":
+                raise RuntimeError(f"Unexpected deployment receipt for {game}: {receipt}")
+            activation = json.loads(run(
+                binary, "activate", "--host", origin, "--game", game, "--json",
                 cwd=work, env=credentials, capture=True, timeout=60,
             ))["result"]
-            if pin["url"] != f"{origin}/e/{game}/" or pin["revision"] != receipt["revision"]:
-                raise RuntimeError(f"Unexpected experiment pin for {game}: {pin}")
+            if activation["active"] is not True:
+                raise RuntimeError(f"Candidate host did not activate {game}: {activation}")
             run(
-                binary, "intake", "--server", origin, "--experiment", game, "testing",
+                "node", "release_candidate_browser.mjs", admin_origin, origin, game,
+                cwd=browser, env=browser_env, timeout=60,
+            )
+            run(
+                binary, "deactivate", "--host", origin, "--game", game,
                 cwd=work, env=credentials, timeout=60,
             )
-            run("node", "release_candidate_browser.mjs", pin["url"], cwd=browser, env=env, timeout=60)
             print(f"Completed {game} with two-way Typed chat in Chromium", flush=True)
 
 

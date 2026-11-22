@@ -10,6 +10,7 @@ use super::*;
 pub(super) fn experiment_routes(
     state: Arc<AppState>,
     mounted_runtime: bool,
+    hosted: bool,
     cors: CorsLayer,
     client_dist: Option<PathBuf>,
 ) -> BuiltRouters {
@@ -84,31 +85,45 @@ pub(super) fn experiment_routes(
             context.clone(),
             require_admin_network,
         ));
-    let api = Router::new()
+    let mut api = Router::new()
         .merge(public_routes)
         .merge(participant_routes)
-        .merge(experiment_admin)
-        .merge(websocket_routes)
-        .with_state(state.clone())
-        .merge(dashboard_routes(&context, &participant_prefix));
-    let api = http_layers(api, &context, cors);
+        .merge(websocket_routes);
+    if !hosted {
+        api = api.merge(experiment_admin);
+    }
+    let mut api = api.with_state(state.clone());
+    if !hosted {
+        api = api.merge(dashboard_routes(&context, &participant_prefix));
+    }
     spawn_security_cleanup(state.clone(), !mounted_runtime);
     if !mounted_runtime {
         spawn_load_sampler(context.clone());
     }
 
-    let api = if let Some(dist) = client_dist.filter(|path| path.join("index.html").is_file()) {
-        let index = dist.join("index.html");
-        api.route_service(&participant_path("/"), ServeFile::new(index))
-            .nest_service(
+    if let Some(dist) = client_dist.filter(|path| path.join("index.html").is_file()) {
+        api = api.route_service(
+            &participant_path("/"),
+            ServeFile::new(dist.join("index.html")),
+        );
+        if hosted {
+            api = api.fallback_service(Router::new().nest_service(
+                &participant_prefix,
+                ServeDir::new(dist).append_index_html_on_directories(false),
+            ));
+        } else {
+            api = api.nest_service(
                 &participant_path("/assets"),
                 ServeDir::new(dist.join("assets")),
-            )
+            );
+        }
+    }
+    let api = http_layers(api, &context, cors);
+    let runtime_admin = experiment_admin_routes(&runtime_admin_prefix);
+    let runtime_admin = if hosted {
+        runtime_admin
     } else {
-        api
-    };
-    let runtime_admin = {
-        experiment_admin_routes(&runtime_admin_prefix)
+        runtime_admin
             .route_layer(middleware::from_fn_with_state(
                 context.clone(),
                 require_admin_auth,
@@ -117,14 +132,15 @@ pub(super) fn experiment_routes(
                 context.clone(),
                 require_admin_network,
             ))
-            .layer(RequestBodyLimitLayer::new(64 * 1024))
-            .layer(middleware::from_fn(security_headers))
-            .layer(middleware::from_fn_with_state(
-                context.clone(),
-                track_request_load,
-            ))
-            .with_state(state.clone())
     };
+    let runtime_admin = runtime_admin
+        .layer(RequestBodyLimitLayer::new(64 * 1024))
+        .layer(middleware::from_fn(security_headers))
+        .layer(middleware::from_fn_with_state(
+            context.clone(),
+            track_request_load,
+        ))
+        .with_state(state.clone());
     BuiltRouters {
         state,
         primary: api,
@@ -186,16 +202,50 @@ pub(super) fn dashboard_routes(state: &Arc<ServerContext>, prefix: &str) -> Rout
             state.clone(),
             require_admin_network,
         ));
-    let admin_routes = Router::new()
+    let admin_routes = dashboard_feature_routes(prefix)
+        .route(
+            &participant_path("/admin/experiments"),
+            get(admin_experiments_page),
+        )
+        .route(&participant_path("/admin/privacy"), get(admin_privacy_page))
+        .route(&participant_path("/api/admin/logout"), post(admin_logout))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_admin_auth,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_admin_network,
+        ));
+    public_admin_routes
+        .merge(admin_routes)
+        .with_state(state.clone())
+}
+
+/// Serves the dashboard after the deployment host authenticates a game owner.
+pub(super) fn hosted_dashboard_routes(state: &Arc<ServerContext>) -> Router {
+    let cors = CorsLayer::new();
+    let router = dashboard_feature_routes("")
+        .route("/", get(hosted_admin_experiments_page))
+        .route("/admin/assets/parlando-mark.svg", get(parlando_mark))
+        .route(
+            "/admin/assets/parlando-wordmark.svg",
+            get(parlando_wordmark),
+        )
+        .route("/admin/assets/palette.css", get(parlando_palette))
+        .with_state(state.clone());
+    http_layers(router, state, cors)
+}
+
+/// Shares catalogue, settings, data, and dashboard assets across administration surfaces.
+fn dashboard_feature_routes(prefix: &str) -> Router<Arc<ServerContext>> {
+    let participant_path = |path: &str| format!("{prefix}{path}");
+    Router::new()
         .route(
             &participant_path("/api/admin/export-schema"),
             get(admin_corpus_export_schema),
         )
         .route(&participant_path("/api/admin/load"), get(admin_load))
-        .route(
-            &participant_path("/admin/experiments"),
-            get(admin_experiments_page),
-        )
         .route(
             &participant_path("/admin/assets/admin-dashboard.css"),
             get(admin_dashboard_css),
@@ -220,7 +270,6 @@ pub(super) fn dashboard_routes(state: &Arc<ServerContext>, prefix: &str) -> Rout
             &participant_path("/admin/assets/communication-config.js"),
             get(admin_communication_config_javascript),
         )
-        .route(&participant_path("/admin/privacy"), get(admin_privacy_page))
         .route(
             &participant_path("/api/admin/privacy"),
             get(admin_privacy_json),
@@ -285,18 +334,6 @@ pub(super) fn dashboard_routes(state: &Arc<ServerContext>, prefix: &str) -> Rout
             &participant_path("/api/admin/game/secrets/reveal"),
             post(admin_reveal_game_secret),
         )
-        .route(&participant_path("/api/admin/logout"), post(admin_logout))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_admin_auth,
-        ))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_admin_network,
-        ));
-    public_admin_routes
-        .merge(admin_routes)
-        .with_state(state.clone())
 }
 
 /// Applies the same HTTP limits and response policy to installation and experiment routes.

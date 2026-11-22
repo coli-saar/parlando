@@ -13,11 +13,18 @@ pub(super) async fn build_experiment_router(
     config: ExperimentConfig,
     options: ServeOptions,
     mounted_runtime: bool,
+    hosted: bool,
     identity: MountIdentity,
 ) -> Result<BuiltRouters> {
     config.validate()?;
     validate_game_config_contains_no_secrets(&config.game)?;
-    let game_config = parse_game_config(&installation.loaded_game, &config.game)?;
+    let game_config = parse_game_config(&installation.loaded_game, &config.game)
+        .map_err(|error| error.to_string());
+    if !hosted {
+        if let Err(error) = &game_config {
+            return Err(anyhow!("{error}"));
+        }
+    }
     let agent_definitions = registered_agent_definitions(&options)?;
     let experiment_id = config
         .experiment
@@ -26,24 +33,15 @@ pub(super) async fn build_experiment_router(
         .unwrap_or_else(generated_experiment_id);
     let speechmatics_api_key = config.speechmatics.api_key.clone();
     let tts_api_key = config.tts.api_key.clone();
-    let store = &installation.store;
-    let (lifecycle, config_revision) = {
-        let lifecycle = store
-            .ensure_experiment(ExperimentRecord {
-                experiment_id: experiment_id.clone(),
-                game_version: installation.game_descriptor.version.to_string(),
-                config: persistable_config_json(&config)?,
-                server_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-                version_manifest: Some(installation.version_manifest.clone()),
-                status: "inactive".to_string(),
-                notes: None,
-            })
-            .await?;
-        let stored_experiment = store
+    let (lifecycle, config_revision) = if hosted {
+        let stored = installation
+            .store
             .experiment_definition(&experiment_id)
             .await?
-            .ok_or_else(|| anyhow!("configured experiment was not stored"))?;
-        (lifecycle, stored_experiment.config_revision)
+            .context("experiment definition disappeared during mount")?;
+        (stored.status, stored.config_revision)
+    } else {
+        ensure_runtime_definition(&installation, &experiment_id, &config).await?
     };
     let client_dist = config.server.client_dist_path.as_ref().map(PathBuf::from);
     let tts_provider = if !config.tts_active() {
@@ -147,5 +145,37 @@ pub(super) async fn build_experiment_router(
         runtimes.retain(|runtime| runtime.strong_count() > 0);
         runtimes.push(Arc::downgrade(&state));
     }
-    Ok(experiment_routes(state, mounted_runtime, cors, client_dist))
+    Ok(experiment_routes(
+        state,
+        mounted_runtime,
+        hosted,
+        cors,
+        client_dist,
+    ))
+}
+
+/// Records a new experiment's initial settings and reads the current lifecycle and revision.
+pub(super) async fn ensure_runtime_definition(
+    installation: &Installation,
+    experiment_id: &str,
+    config: &ExperimentConfig,
+) -> Result<(String, i64)> {
+    let lifecycle = installation
+        .store
+        .ensure_experiment(ExperimentRecord {
+            experiment_id: experiment_id.to_string(),
+            game_version: installation.game_descriptor.version.to_string(),
+            config: persistable_config_json(config)?,
+            server_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            version_manifest: Some(installation.version_manifest.clone()),
+            status: "inactive".to_string(),
+            notes: None,
+        })
+        .await?;
+    let stored_experiment = installation
+        .store
+        .experiment_definition(experiment_id)
+        .await?
+        .ok_or_else(|| anyhow!("configured experiment was not stored"))?;
+    Ok((lifecycle, stored_experiment.config_revision))
 }

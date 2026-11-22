@@ -1,5 +1,9 @@
 # Agent Instructions
 
+## Parlando branding
+
+Whenever a logo includes the name “Parlando”, use the [official Parlando wordmark](brand/parlando-wordmark.svg). The asset supplies both the symbol and its lettering. Use the standalone mark only for icon-only placements.
+
 ## Releases
 - Follow [`docs/releasing-parlando.md`](docs/releasing-parlando.md) for every Parlando release.
 - Treat the Rust `parlando` crate and `@coli-saar/parlando-client` as one lockstep release. Unless the user requests another version, increment the current version by `0.0.1`.

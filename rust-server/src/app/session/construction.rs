@@ -149,8 +149,12 @@ pub(in crate::app) async fn create_live_session_locked(
     let mut failure_reason = "game_state_initialization_failed";
     let initialization: Result<_, AppError> = async {
         let game = state.context.installation.loaded_game.session();
+        let game_config = state
+            .game_config
+            .as_ref()
+            .map_err(|issue| AppError::bad_request(issue.clone()))?;
         let game_state = game
-            .init(&state.game_config, seed)
+            .init(game_config, seed)
             .map_err(|error| AppError::bad_request(error.to_string()))?;
         failure_reason = "session_event_persistence_failed";
         let initial_state_json = protocol_json(&game_state)?;

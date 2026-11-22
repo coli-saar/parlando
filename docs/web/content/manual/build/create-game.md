@@ -24,10 +24,9 @@ python3 -m venv .venv
 .venv/bin/python -m pip install componentize-py==0.25.1 parlando-python-sdk==0.7.0
 parlando test
 parlando build
-parlando serve --manifest dist/parlando/game.yaml
 ```
 
-Use a different parent directory if you already created the Rust starter there. The Python build packages the interpreter with the game component. The shared host runs that component through the same interface as the Rust build.
+Use a different parent directory if you already created the Rust starter there. Follow the [local pilot walkthrough](../start/getting-started/#start-a-local-server) to deploy the package and play both seats. The Python build packages the interpreter with the game component. The shared host runs that component through the same interface as the Rust build.
 
 ## Define the task before changing the browser
 
@@ -40,9 +39,11 @@ Use the session seed for any randomized task setup. An invalid action should lea
 1. Edit the starter rule, such as the target charge. Keep the browser view driven by the target reported by the game.
 2. Update the deterministic scenario for that rule. Include an accepted turn, a rejected turn, both role views, and the terminal outcome.
 3. Run `parlando test`. It runs native tests and checks scenario expectations through the actual WASM interface.
-4. Run `parlando build` and repeat the [two-browser pilot](../start/getting-started/#play-both-seats) with the built package.
+4. Run `parlando build` and repeat the [two-browser pilot](../start/getting-started/#deploy-the-game-and-start-a-pilot) with the built package.
 
 ## Place communication beside the game
+
+During play, `snapshot.recruitmentSource` identifies the current seat’s admission as `direct`, `prolific`, or `local_preview` for a simulated Prolific admission. It is `null` during replay or when the host omits the source. Put game results in `renderCompletion`. The participant client displays Prolific return instructions when the server supplies a handoff for that participant.
 
 `ParticipantApp` displays the experiment's communication widget below the game by default. In a typed experiment it shows the conversation and a message composer. In a speech experiment it shows microphone status, the level meter, and the mute control. The same game build supports both configurations.
 

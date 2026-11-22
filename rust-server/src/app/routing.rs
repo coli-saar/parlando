@@ -5,10 +5,12 @@
 
 use super::*;
 use tokio::sync::Semaphore;
+mod hosted_replay;
 pub(super) mod mount_lock;
 mod mounts;
 mod routes;
 mod runtime;
+use hosted_replay::ReplayGrants;
 use mounts::dispatch_experiment_service;
 pub(super) use mounts::ExperimentMounts;
 use routes::{dashboard_routes, experiment_routes, http_layers};
@@ -36,6 +38,7 @@ type ServeOptionsFactory = Arc<dyn Fn(&ExperimentConfig) -> Result<ServeOptions>
 
 /// Installation dispatcher that owns the router cache and lazily mounts experiments.
 struct GameHost {
+    hosted: bool,
     dashboard: Arc<ServerContext>,
     options_factory: ServeOptionsFactory,
     routers: Arc<ExperimentMountCache>,
@@ -138,6 +141,7 @@ where
     let admin_router = http_layers(dashboard_routes(&dashboard, ""), &dashboard, cors);
     spawn_load_sampler(dashboard.clone());
     let host = Arc::new(GameHost {
+        hosted: false,
         dashboard,
         options_factory: Arc::new(options_factory),
         routers: router_cache,
@@ -164,70 +168,277 @@ where
         .fallback_service(runtime_service))
 }
 
-/// Produces a canonical host selection and rejects values requiring credential redaction.
-pub(crate) fn validate_hosted_config(config: &ExperimentConfig) -> Result<Value> {
-    validate_game_config_contains_no_secrets(&config.game)?;
-    let raw = serde_json::to_value(StoredExperimentConfig::from(config))?;
-    let sanitized = persistable_config_json(config)?;
-    anyhow::ensure!(
-        raw == sanitized,
-        "experiment configuration contains inline credentials"
-    );
-    Ok(sanitized)
+/// Carries the deployment's lifecycle decision into an authenticated status mutation.
+#[derive(Clone, Copy)]
+pub(super) struct HostedGameActive(pub(super) bool);
+
+/// Owns the current published component and all experiments in one game database.
+pub(crate) struct HostedRuntime {
+    game_id: String,
+    host: Arc<GameHost>,
+    dashboard: Router,
+    replays: ReplayGrants,
 }
 
-/// Mounts a host-selected component experiment and its operator-only HTTP surface.
-pub(crate) async fn build_deployed_experiment(
+impl HostedRuntime {
+    /// Dispatches only participant paths, keeping account and experiment management separate.
+    pub(crate) async fn dispatch_participant(
+        &self,
+        mut request: Request,
+        active: bool,
+    ) -> Response {
+        let original = request.uri();
+        if let Some(token) = ReplayGrants::credential(&self.game_id, original.path()) {
+            if request.method() != Method::GET {
+                return StatusCode::METHOD_NOT_ALLOWED.into_response();
+            }
+            return self.replays.redeem(&self.host.dashboard, token).await;
+        }
+        let prefix = format!("/e/{}~", self.game_id);
+        let Some(experiment_path) = original
+            .path()
+            .strip_prefix(&prefix)
+            .filter(|path| !path.is_empty())
+        else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        if !active {
+            let (experiment_id, suffix) = experiment_path
+                .split_once('/')
+                .unwrap_or((experiment_path, ""));
+            if suffix.starts_with("api/") || suffix.starts_with("ws/") {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+            if suffix.is_empty()
+                && !self
+                    .replays
+                    .authorizes_shell(&self.game_id, experiment_id, original)
+                    .await
+            {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+        }
+        if !experiment_path.contains('/') {
+            let query = original
+                .query()
+                .map(|query| format!("?{query}"))
+                .unwrap_or_default();
+            return Redirect::temporary(&format!("{}/{}", original.path(), query)).into_response();
+        }
+        let path = format!("/e/{experiment_path}");
+        replace_request_path(&mut request, &path);
+        dispatch_experiment_service(self.host.clone(), request).await
+    }
+
+    /// Dispatches the original dashboard after account ownership and CSRF checks at the host.
+    pub(crate) async fn dispatch_admin(
+        &self,
+        mut request: Request,
+        csrf_token: String,
+        active: bool,
+    ) -> Response {
+        let Some(path) = self.game_relative_path(&request) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        if let Err(error) =
+            check_admin_network(&self.host.dashboard, direct_peer_ip(&request)).await
+        {
+            return error.into_response();
+        }
+        if let Some((experiment_id, session_id)) = ReplayGrants::issue_target(&path) {
+            if request.method() != Method::POST {
+                return StatusCode::METHOD_NOT_ALLOWED.into_response();
+            }
+            return self
+                .replays
+                .issue(
+                    &self.host.dashboard,
+                    &self.game_id,
+                    experiment_id,
+                    session_id,
+                )
+                .await
+                .into_response();
+        }
+        request.extensions_mut().insert(AdminSession {
+            role: crate::auth::AdminRole::Administrator,
+            csrf_token,
+            created_at: 0,
+            last_seen_at: 0,
+        });
+        request.extensions_mut().insert(HostedGameActive(active));
+        let runtime_request = path.starts_with("/api/admin/runtime/");
+        replace_request_path(&mut request, &path);
+        if runtime_request {
+            dispatch_experiment_service(self.host.clone(), request).await
+        } else {
+            tower::ServiceExt::oneshot(self.dashboard.clone(), request)
+                .await
+                .unwrap_or_else(|error| match error {})
+        }
+    }
+
+    /// Closes intake and ends interrupted sessions on process startup.
+    pub(crate) async fn recover_interrupted(&self) -> Result<()> {
+        let context = &self.host.dashboard;
+        let store = &context.installation.store;
+        store.deactivate_open_experiments().await?;
+        for experiment_id in store.interrupted_experiment_ids().await? {
+            let configuration = hydrated_experiment_config(context, &experiment_id)
+                .await
+                .map_err(|error| anyhow!(error.message))?;
+            finalize_interrupted_experiment(
+                &context.installation.store,
+                &experiment_id,
+                &configuration,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Reports whether replacing the loaded component would interrupt intake or a live room.
+    /// The deployment host holds the game's exclusive lock through this check and replacement.
+    pub(crate) async fn replacement_blocker(&self) -> Result<Option<&'static str>> {
+        if self
+            .host
+            .dashboard
+            .installation
+            .store
+            .has_open_experiments()
+            .await?
+        {
+            return Ok(Some(
+                "This game has an experiment open for testing or participant intake.",
+            ));
+        }
+        if !self
+            .host
+            .dashboard
+            .installation
+            .store
+            .interrupted_experiment_ids()
+            .await?
+            .is_empty()
+        {
+            return Ok(Some(
+                "This game still has unfinished participant sessions.",
+            ));
+        }
+        let registry = self
+            .host
+            .dashboard
+            .installation
+            .runtime_registry
+            .read()
+            .await;
+        for runtime in registry.values().flatten().filter_map(Weak::upgrade) {
+            if runtime.game_connections.count().await != 0
+                || runtime.audio_connections.count().await != 0
+                || runtime
+                    .memory
+                    .read()
+                    .await
+                    .sessions
+                    .values()
+                    .any(|room| room.timing().voice_ends_at.is_some())
+            {
+                return Ok(Some(
+                    "Participant connections are still open for this game.",
+                ));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Strips exactly this game's namespace, leaving the internal route shape.
+    fn game_relative_path(&self, request: &Request) -> Option<String> {
+        let suffix = request
+            .uri()
+            .path()
+            .strip_prefix('/')?
+            .strip_prefix(&self.game_id)?;
+        if suffix.is_empty() {
+            Some("/".to_string())
+        } else {
+            suffix.starts_with('/').then(|| suffix.to_string())
+        }
+    }
+}
+
+/// Rewrites host dispatch paths without losing the request query, headers or upgrade state.
+fn replace_request_path(request: &mut Request, path: &str) {
+    let original = request.uri();
+    let path_and_query = match original.query() {
+        Some(query) => format!("{path}?{query}"),
+        None => path.to_string(),
+    };
+    let mut parts = original.clone().into_parts();
+    parts.path_and_query = Some(path_and_query.parse().expect("valid routed path and query"));
+    *request.uri_mut() = http::Uri::from_parts(parts).expect("valid routed request URI");
+}
+
+/// Builds the hosted installation for a published package and its stable game database.
+/// Recovery is explicit so preparing a replacement does not mutate experiment lifecycle.
+pub(crate) async fn build_hosted_game(
     loaded_game: LoadedGame,
-    config: ExperimentConfig,
     metadata: GameMetadata,
-) -> Result<(Router, Router, Arc<AppState>)> {
-    let id = config
-        .experiment
-        .id
-        .clone()
-        .context("missing hosted experiment ID")?;
+    database_url: &str,
+    participant_base_url: &str,
+    client_dist: Option<&std::path::Path>,
+) -> Result<HostedRuntime> {
+    let mut config = ExperimentConfig::default();
+    config.database.url = database_url.to_string();
+    let game_path = format!("/{}", metadata.id);
+    let participant_origin = participant_base_url
+        .trim_end_matches('/')
+        .strip_suffix(&game_path)
+        .context("participant URL must end with the published game ID")?;
+    crate::config::validate_public_origin("hosted participant origin", participant_origin)?;
+    config.server.public_base_url = format!("{participant_origin}/e/{}~", metadata.id);
+    config.server.client_dist_path = client_dist
+        .map(|path| {
+            path.to_str()
+                .context("participant client directory is not UTF-8")
+        })
+        .transpose()?
+        .map(str::to_string);
     config.validate()?;
-    validate_game_config_contains_no_secrets(&config.game)?;
-    parse_game_config(&loaded_game, &config.game)?;
-    let dist = config.server.client_dist_path.clone();
+    let game_id = metadata.id.clone();
     let mut agents = Vec::new();
     crate::server::register_default_remote_agent(&mut agents);
-    let options = crate::server::experiment_serve_options(&agents, &config)?;
-    let installation =
-        open_installation(loaded_game, metadata, &config.database.url, Weak::new()).await?;
-    installation.store.deactivate_open_experiments().await?;
-    let built = build_experiment_router(
-        installation,
-        config,
-        options,
-        true,
-        MountIdentity {
-            generation: 1,
-            ..MountIdentity::default()
-        },
+    let options_factory: ServeOptionsFactory =
+        Arc::new(move |config| crate::server::experiment_serve_options(&agents, config));
+    let options = options_factory(&config)?;
+    let routers = Arc::new(RwLock::new(HashMap::new()));
+    let installation = open_installation(
+        loaded_game,
+        metadata,
+        database_url,
+        Arc::downgrade(&routers),
     )
     .await?;
-    let admin = routes::experiment_admin_routes(&format!("/api/hosting/experiments/{id}/admin"))
-        .with_state(built.state.clone())
-        .layer(Extension(AdminExperimentScope(id.clone())))
-        .layer(RequestBodyLimitLayer::new(64 * 1024))
-        .layer(middleware::from_fn(security_headers));
-    let participant = if let Some(dist) = dist {
-        built
-            .primary
-            .fallback_service(Router::new().nest_service(&format!("/e/{id}"), ServeDir::new(dist)))
-    } else {
-        built.primary
-    };
-    Ok((participant, admin, built.state))
-}
-
-impl AppState {
-    /// Reports the runtime's current intake status for the hosted dashboard.
-    pub(crate) async fn hosted_intake_status(&self) -> &'static str {
-        self.experiment_lifecycle.read().await.as_str()
-    }
+    let context = Arc::new(ServerContext {
+        installation,
+        config,
+        agent_definitions: registered_agent_definitions(&options)?,
+        has_tts_provider: options.tts_provider.is_some(),
+        has_transcription_provider: options.transcription_provider.is_some(),
+    });
+    let dashboard = routes::hosted_dashboard_routes(&context);
+    spawn_load_sampler(context.clone());
+    Ok(HostedRuntime {
+        game_id,
+        dashboard,
+        replays: ReplayGrants::default(),
+        host: Arc::new(GameHost {
+            hosted: true,
+            dashboard: context,
+            options_factory,
+            routers,
+            health_slots: Semaphore::new(1),
+        }),
+    })
 }
 
 /// Builds and runs one game component's multi-experiment HTTP and WebSocket server.
@@ -305,6 +516,7 @@ async fn build_standalone_router(
         installation,
         config,
         options,
+        false,
         false,
         MountIdentity::default(),
     )

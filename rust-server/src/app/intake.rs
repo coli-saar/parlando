@@ -20,7 +20,9 @@ pub(super) fn prolific_no_consent_url(
     config: &ExperimentConfig,
     participant_url: Option<&RunningParticipantUrl>,
 ) -> Option<String> {
-    if config.direct.consents.is_empty() || participant_url.is_none() {
+    if config.direct.consents.is_empty()
+        || !participant_url.is_some_and(|url| url.kind == "prolific")
+    {
         return None;
     }
     let code = config
@@ -220,7 +222,12 @@ async fn create_participant_inner(
             admission.participant_session_id,
             admission.participant_id,
             admission.research_id,
-            "prolific".to_string(),
+            if verification_method == "synthetic_testing" {
+                "local_preview"
+            } else {
+                "prolific"
+            }
+            .to_string(),
             intake_guard.data_purpose().to_string(),
         )
     } else {

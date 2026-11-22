@@ -1,21 +1,23 @@
 # Package and deploy a game
 
 The project `game.yaml` declares game identity and build inputs.
-`parlando build` stages a deployable directory at `dist/parlando/`.
+`parlando build` creates the deployable ZIP at `dist/<game-id>-<game-version>.zip`.
 Its manifest points to the exact component and optional built participant
-assets. Run `parlando check --manifest dist/parlando/game.yaml` before
-handing off or uploading that directory.
+assets. Set `PACKAGE` to the path printed by the build. Run `parlando check --package "$PACKAGE"` before
+handing off or uploading that ZIP.
 
-For a local pilot, run `parlando serve --manifest dist/parlando/game.yaml`
-and open `/admin` on the local listener. Study settings such as pairing,
-consent, intake, communication, and agent selection belong to the experiment.
-Game-owned parameters go in the game's typed configuration. Store secrets
-outside packages, browser assets, and experiment configuration.
+For a [local pilot](https://coli-saar.github.io/parlando/manual/start/getting-started/#start-a-local-server),
+start a server with `parlando serve --store DIRECTORY`, deploy the ZIP in
+**Games**, and activate the game. Open its game ID link and use the game
+dashboard to configure the experiment and start a local preview. Study settings
+such as pairing, consent, intake, communication, and agent selection belong to
+the experiment. Game-owned parameters go in the game's typed configuration.
+Store secrets outside packages, browser assets, and experiment configuration.
 
 For an authorized deployment, use the shared dashboard or
-`parlando deploy --server <origin> --package dist/parlando --json`.
-The CLI uses a game-scoped upload credential. Record the returned revision.
-A hosted experiment pins that revision and its configuration. A different
-revision gets a fresh experiment ID. Selection and intake require dashboard
-or operator authority. Follow [Deploy to a shared host](https://coli-saar.github.io/parlando/manual/deploy/)
-for exact credential setup and operator commands.
+`parlando deploy --host <origin> --package "$PACKAGE" --json`.
+The CLI uses a game-scoped upload credential. Record the returned revision with
+the study data. A new upload replaces the current package if the game's
+experiments and sessions have stopped. Game activation through the CLI requires
+host administrator credentials. Follow [Deploy to a shared host](https://coli-saar.github.io/parlando/manual/deploy/)
+for credential setup and operator commands.

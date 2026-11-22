@@ -8,21 +8,19 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { type VoiceStatus } from "../audio/types.js";
 import { microphoneMuteButtonLabel } from "../helpers.js";
-import { type ExperimentInfo, type ParticipantOutcome, type RecruitmentHandoff } from "../protocol.js";
+import { type ParticipantOutcome, type RecruitmentHandoff } from "../protocol.js";
 
 /** Standard terminal surface for provider-neutral outcomes and recruitment handoff. */
 export function SessionOutcomePanel({
   outcome,
   reason,
   handoff,
-  recruitment,
   completionContent,
   farewellContent
 }: {
   outcome: ParticipantOutcome | null;
   reason: string | null;
   handoff: RecruitmentHandoff | null;
-  recruitment?: ExperimentInfo["recruitment"];
   completionContent?: ReactNode;
   farewellContent?: ReactNode;
 }) {
@@ -141,7 +139,7 @@ export function ProlificHandoff({ handoff }: { handoff: RecruitmentHandoff }) {
 function outcomeText(outcome: ParticipantOutcome | null, reason: string | null): string {
   switch (outcome) {
     case "completed": return "Thank you. Your responses have been recorded.";
-    case "left_waiting_room": return "You left before a playable game began. Use the Game did not start completion path below to return to Prolific.";
+    case "left_waiting_room": return "You left before a playable game began.";
     case "left_game": return "You left after the game started. Your responses up to that point have been recorded.";
     case "connection_lost": return "The session ended because your connection did not return before the reconnect deadline.";
     case "partner_left": return "Your partner left or could not reconnect, so the session cannot continue.";

@@ -148,8 +148,17 @@ pub(super) async fn participant_state_response(
         .ok_or_else(|| AppError::not_found("Session not found."))?;
     let view = participant_view_from_session(session, role)?;
     let presence = view.presence;
+    let recruitment_source = || {
+        session
+            .participants
+            .values()
+            .find(|seat| seat.role == role)
+            .map(|seat| seat.source.clone())
+            .ok_or_else(|| AppError::not_found("Participant seat not found."))
+    };
     let participant_state = match session.lifecycle() {
         SessionLifecycle::Forming => ParticipantState::Waiting {
+            recruitment_source: recruitment_source()?,
             public_session_id: public_session_id.to_string(),
             role: role.as_str().to_string(),
             waiting_started_at: session.timing().waiting_started_at.clone(),
@@ -158,6 +167,7 @@ pub(super) async fn participant_state_response(
         },
         SessionLifecycle::Running => match session.pause() {
             Some(reason) => ParticipantState::Paused {
+                recruitment_source: recruitment_source()?,
                 public_session_id: public_session_id.to_string(),
                 role: role.as_str().to_string(),
                 reason: reason.clone(),
@@ -177,6 +187,7 @@ pub(super) async fn participant_state_response(
                 })?,
             },
             None => ParticipantState::Active {
+                recruitment_source: recruitment_source()?,
                 public_session_id: public_session_id.to_string(),
                 role: role.as_str().to_string(),
                 observation: view.observation.ok_or_else(|| {

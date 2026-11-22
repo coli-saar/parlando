@@ -11,6 +11,8 @@ import { type CommunicationMode, type PlayerMessage, type PlayerRole } from "../
 export interface GameSnapshot<TObservation, TAction> {
   sessionId: string;
   role: PlayerRole;
+  /** Server-reported admission source for this seat, or null during replay or when unavailable. */
+  recruitmentSource: "direct" | "local_preview" | "prolific" | null;
   observation: TObservation;
   /** Most recent accepted action, or null for an initial or resynchronized observation. */
   transition: GameTransition<TAction> | null;

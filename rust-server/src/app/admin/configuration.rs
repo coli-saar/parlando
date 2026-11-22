@@ -66,32 +66,27 @@ pub(in crate::app) async fn admin_experiment_config(
     )
     .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
     let configured_secrets = configured_secret_statuses(&stored_secrets);
-    let activation_issues =
-        if experiment.game_version == state.installation.game_descriptor.version.to_string() {
-            match experiment_config_from_json_unvalidated(
-                experiment.config.clone(),
-                &state.config,
-                &experiment_id,
-            ) {
-                Ok(mut normalized) => {
-                    experiment.config = persistable_config_json(&normalized).map_err(|error| {
-                        AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-                    })?;
-                    match normalized.validate() {
-                        Ok(()) => {
-                            apply_experiment_secrets(&mut normalized, &stored_secrets);
-                            let game_secrets = state.installation.store.game_secrets().await?;
-                            apply_game_provider_secrets(&mut normalized, &game_secrets);
-                            local_testing_issues_for_config(&state, &mut normalized)
-                        }
-                        Err(error) => vec![error.to_string()],
-                    }
+    let activation_issues = match experiment_config_from_json_unvalidated(
+        experiment.config.clone(),
+        &state.config,
+        &experiment_id,
+    ) {
+        Ok(mut normalized) => {
+            experiment.config = persistable_config_json(&normalized).map_err(|error| {
+                AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            })?;
+            match normalized.validate() {
+                Ok(()) => {
+                    apply_experiment_secrets(&mut normalized, &stored_secrets);
+                    let game_secrets = state.installation.store.game_secrets().await?;
+                    apply_game_provider_secrets(&mut normalized, &game_secrets);
+                    local_testing_issues_for_config(&state, &mut normalized)
                 }
                 Err(error) => vec![error.to_string()],
             }
-        } else {
-            Vec::new()
-        };
+        }
+        Err(error) => vec![error.to_string()],
+    };
     Ok(Json(json!({
         "experiment": experiment,
         "game_yaml": game_yaml,
@@ -216,6 +211,15 @@ pub(in crate::app) async fn admin_save_experiment_config(
     Path(experiment_id): Path<String>,
     Json(request): Json<AdminSaveExperimentConfigRequest>,
 ) -> Result<Json<Value>, AppError> {
+    save_experiment_configuration(state, experiment_id, request).await
+}
+
+/// Validates, records, and retires the previous revision under the runtime build lock.
+async fn save_experiment_configuration(
+    state: Arc<ServerContext>,
+    experiment_id: String,
+    request: AdminSaveExperimentConfigRequest,
+) -> Result<Json<Value>, AppError> {
     let runtime_guard = lock_runtime_router_build(&state, &experiment_id).await;
     let experiment = state
         .installation
@@ -227,12 +231,6 @@ pub(in crate::app) async fn admin_save_experiment_config(
         return Err(AppError::new(
             StatusCode::CONFLICT,
             "Experiment configuration can only be edited while the experiment is inactive",
-        ));
-    }
-    if experiment.game_version != state.installation.game_descriptor.version.to_string() {
-        return Err(AppError::new(
-            StatusCode::CONFLICT,
-            "Clone this experiment before editing it under the current game version",
         ));
     }
     for (key, value) in &request.secret_updates {

@@ -199,6 +199,15 @@ impl SqliteExperimentStore {
             .collect()
     }
 
+    /// Identifies experiments with unfinished sessions, including retired runtime revisions.
+    pub(crate) async fn interrupted_experiment_ids(&self) -> Result<Vec<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT DISTINCT experiment_id FROM sessions WHERE lifecycle != 'ended'",
+        )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     /// Lists all unfinished sessions for process recovery without dashboard limits or event joins.
     pub(crate) async fn interrupted_sessions(
         &self,
@@ -354,7 +363,9 @@ impl SqliteExperimentStore {
             select sp.experiment_id, sp.session_id, sp.participant_id,
                    sp.participant_session_id, sp.role, sp.joined_at, sp.left_at,
                    sp.connection_status, sp.disconnected_at, sp.reconnect_deadline_at,
-                   p.research_id, p.participant_kind, p.identity_provider,
+                   p.research_id, p.participant_kind,
+                   case when ps.verification_method = 'synthetic_testing' then 'local_preview'
+                        else p.identity_provider end as identity_provider,
                    p.metadata_json,
                    sp.terminal_result_json, ps.prolific_participant_id, ps.prolific_study_id,
                    ps.prolific_session_id, ps.provider_status as prolific_status,

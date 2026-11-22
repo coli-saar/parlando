@@ -2,3 +2,4 @@ id: c-last-token
 name: Last Token
 version: 1.0.0
 component: build/last-token.wasm
+client_project: client

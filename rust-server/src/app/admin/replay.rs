@@ -5,7 +5,8 @@
 
 use crate::app::{
     admin_experiment_id, json, protocol_json, AdminExperimentScope, AppError, AppState, Arc,
-    ComponentValue, Extension, GameFrame, Json, Path, PlayerRole, Result, State, StatusCode, Value,
+    ComponentValue, Extension, GameFrame, Json, Path, PlayerRole, Result, ServerContext, State,
+    StatusCode, Value,
 };
 
 /// Builds one role-specific replay frame from an authoritative reconstructed state.
@@ -35,11 +36,19 @@ pub(in crate::app) async fn admin_session_replay(
     Path(session_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let experiment_id = admin_experiment_id(&state, scope.as_ref());
+    experiment_session_replay(&state.context, &experiment_id, session_id).await
+}
+
+/// Produces the same authorized replay for the dashboard and a scoped hosted replay grant.
+pub(in crate::app) async fn experiment_session_replay(
+    state: &ServerContext,
+    experiment_id: &str,
+    session_id: i64,
+) -> Result<Json<Value>, AppError> {
     let events = state
-        .context
         .installation
         .store
-        .session_events(&experiment_id, session_id, None)
+        .session_events(experiment_id, session_id, None)
         .await?;
     let created = events
         .iter()
@@ -77,7 +86,7 @@ pub(in crate::app) async fn admin_session_replay(
             format!("The recorded initial state is incompatible: {error}"),
         )
     })?;
-    let game = state.context.installation.loaded_game.session();
+    let game = state.installation.loaded_game.session();
     game.validate_replay_state(&game_state)
         .map_err(|error| AppError::new(StatusCode::CONFLICT, error.to_string()))?;
     let mut conversation = Vec::<Value>::new();
@@ -238,10 +247,9 @@ pub(in crate::app) async fn admin_session_replay(
         )?);
     }
     let communication = state
-        .context
         .installation
         .store
-        .session_communication(&experiment_id, session_id)
+        .session_communication(experiment_id, session_id)
         .await?
         .ok_or_else(|| {
             AppError::new(

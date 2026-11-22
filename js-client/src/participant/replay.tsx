@@ -86,6 +86,7 @@ export function ReplayPlayer<TObservation, TAction, TCompletion = Record<string,
   const snapshot: GameSnapshot<TObservation, TAction> = {
     sessionId: replay.public_session_id,
     role,
+    recruitmentSource: null,
     observation: frame.observation,
     transition: frame.transition,
     availableActions: frame.available_actions,

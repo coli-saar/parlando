@@ -15,7 +15,7 @@ use std::collections::HashMap;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ExperimentRecord {
     pub experiment_id: String,
-    /// Exact semantic version of the compiled game which owns this experiment.
+    /// Semantic version of the game at experiment creation.
     pub game_version: String,
     pub config: Value,
     pub server_version: Option<String>,
@@ -28,7 +28,7 @@ pub struct ExperimentRecord {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StoredExperimentSummary {
     pub experiment_id: String,
-    /// Exact semantic version required for activation.
+    /// Semantic version of the game when the experiment was created.
     pub game_version: String,
     pub created_at: String,
     pub status: String,
@@ -49,7 +49,7 @@ pub struct StoredExperimentSummary {
 pub struct StoredExperimentDefinition {
     /// Stable experiment identifier used in participant routes and stored data.
     pub experiment_id: String,
-    /// Exact game version required for activation.
+    /// Game version recorded at experiment creation.
     pub game_version: String,
     /// Current normalized, secret-free experiment configuration.
     pub config: Value,
@@ -454,6 +454,15 @@ impl SqliteExperimentStore {
                 "Experiment in {status} status must stop intake before archival."
             )),
         }
+    }
+
+    /// Checks whether any experiment still allows participant intake.
+    pub(crate) async fn has_open_experiments(&self) -> Result<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM experiments WHERE status IN ('active', 'testing'))",
+        )
+        .fetch_one(&self.pool)
+        .await?)
     }
 
     /// Returns open experiments to inactive status.

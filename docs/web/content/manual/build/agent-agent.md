@@ -35,7 +35,7 @@ output:
 
 ```sh
 parlando build
-parlando run evaluation.yaml --manifest dist/parlando/game.yaml --json
+parlando run evaluation.yaml --package dist/beacon-0.1.0.zip --json
 ```
 
 Each session has separate agent instances, even when both seats use the same service. The command reports counts for completed, failed and skipped sessions. Review the output files and investigate failed sessions before aggregating results.

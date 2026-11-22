@@ -31,9 +31,14 @@ export function adminRequestOptions(state, options = {}) {
   return { ...options, method, headers };
 }
 
+// Resolves an administrator API resource under the current dashboard's game namespace.
+export function adminPath(state, path) {
+  return `${state.adminPrefix || ''}${path}`;
+}
+
 // Sends one authenticated administrator request through the browser Fetch implementation.
 export function adminFetch(state, input, options = {}) {
-  return fetch(input, adminRequestOptions(state, options));
+  return fetch(adminPath(state, input), adminRequestOptions(state, options));
 }
 
 // A selection owns the latest outstanding request for each resource it displays.

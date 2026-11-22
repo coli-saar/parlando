@@ -18,6 +18,7 @@ Use the starter and the documentation for the project's Parlando release to esta
 - Use the public Game SDK to implement session-owned mechanics for roles A and B. Keep private state in the component, derive random behavior from the supplied seed, and reject invalid actions before mutating state or consuming randomness. Actions change task state. Messages use the participant runtime.
 - Define a view for each role. Expose only that role's authorized information and keep the shared completion safe for both roles. See [component mechanics](references/server-adapter.md) for Rust and Python integration and recovery.
 - With the starter's React client, render the view through `ParticipantApp` and send actions through `snapshot.act`. Let the SDK handle participant entry, connections, and terminal handling. The experiment selects typed chat or speech. Keep the default communication widget, or place one `CommunicationWidget` inside the game and style it using the package's CSS hooks. See [browser client integration](references/browser-client.md) for the placement and styling contract.
+- Keep game instructions and completion text recruitment-neutral. Let `ParticipantApp` show Prolific return instructions only for a server-issued participant handoff. Test leaving the waiting room through a direct link.
 - Keep study settings and secrets in the host's configuration. Use typed game configuration for the game's own parameters. Read [agent integration](references/agents.md) when the user requests an agent and [deployment](references/config-deployment.md) when the task includes upload or hosting.
 
 ## Validate the package
@@ -26,10 +27,10 @@ From the game project, run:
 
 ```sh
 parlando test
-parlando build
-parlando check --manifest dist/parlando/game.yaml
+PACKAGE=$(parlando build --json | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["package"])')
+parlando check --package "$PACKAGE"
 ```
 
-Update the generated scenarios to exercise relevant accepted and rejected actions, both role views, the terminal outcome, and recovery where appropriate. Use `parlando serve --manifest dist/parlando/game.yaml` for a local pilot. If the participant interface changed, verify that actions are disabled outside an active interaction and that the intended view and completion render. Use two independent browser profiles for a two-human pilot.
+Update the generated scenarios to exercise relevant accepted and rejected actions, both role views, the terminal outcome, and recovery where appropriate. For a local pilot, [start a server, deploy and activate the game, and start a local preview](https://coli-saar.github.io/parlando/manual/start/getting-started/#start-a-local-server). If the participant interface changed, verify that actions are disabled outside an active interaction and that the intended view and completion render. Use two independent browser profiles for a two-human pilot.
 
 Report the package path, the checks that ran, and the local serve command. Include deployment results or agent commands when those are part of the request.

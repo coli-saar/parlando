@@ -1,10 +1,10 @@
 //! Hosts lab accounts and their operator UI on a dedicated web origin.
 
-use std::{collections::BTreeMap, fs, future::Future, path::Path};
+use std::{future::Future, net::SocketAddr, path::Path};
 
 use anyhow::{ensure, Context, Result};
 use axum::{
-    extract::{DefaultBodyLimit, Path as RoutePath, Request, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Path as RoutePath, Request, State},
     http::{
         header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, COOKIE, HOST, ORIGIN, SET_COOKIE},
         request::Parts,
@@ -17,14 +17,14 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use super::{
     accounts::{
-        AccountInputError, AccountStore, DashboardSession, PasswordWorkBusy,
+        Account, AccountInputError, AccountStore, DashboardSession, PasswordWorkBusy,
         SESSION_DURATION_SECONDS,
     },
-    bad_request, checked_origin, internal, not_found, require_token, validate_id,
-    validate_revision, Host, HttpResult, PackageManifest,
+    bad_request, checked_origin, internal, not_found, require_token, Host, HttpResult,
 };
 use std::sync::Arc;
 
@@ -34,12 +34,20 @@ pub(super) struct Dashboard {
     origin: String,
     authority: String,
     public_authority: String,
+    cookie_name: String,
     secure: bool,
+    local_setup: bool,
 }
 
 impl Dashboard {
-    /// Opens lab accounts only when a dedicated browser origin is configured.
-    pub async fn open(store: &Path, public_url: &str, admin_url: &str) -> Result<Self> {
+    /// Opens lab accounts for a separate origin. The listener must have been validated
+    /// for local setup before enabling browser creation of the first account.
+    pub async fn open(
+        store: &Path,
+        public_url: &str,
+        admin_url: &str,
+        local_setup: bool,
+    ) -> Result<Self> {
         let origin = checked_origin(admin_url)?;
         let admin = reqwest::Url::parse(&origin)?;
         let public = reqwest::Url::parse(public_url)?;
@@ -50,13 +58,25 @@ impl Dashboard {
         );
         let public_authority = authority(public_url)?.to_owned();
         let authority = authority(&origin)?.to_owned();
+        let secure = admin.scheme() == "https";
         Ok(Self {
             accounts: AccountStore::open(store).await?,
+            cookie_name: session_cookie_name(&admin),
             origin,
             authority,
             public_authority,
-            secure: admin.scheme() == "https",
+            secure,
+            local_setup,
         })
+    }
+
+    /// Restricts browser setup to local mode and the loopback TCP peer supplied by Axum.
+    fn allows_local_setup(&self, parts: &Parts) -> bool {
+        self.local_setup
+            && parts
+                .extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .is_some_and(|ConnectInfo(peer)| peer.ip().is_loopback())
     }
 
     /// Checks the browser-supplied origin before processing credential or state changes.
@@ -67,21 +87,12 @@ impl Dashboard {
         Err(forbidden("Invalid administrator origin"))
     }
 
-    /// Uses a host-only cookie, with prefix enforcement on production HTTPS.
-    fn cookie_name(&self) -> &'static str {
-        if self.secure {
-            "__Host-parlando_host"
-        } else {
-            "parlando_host"
-        }
-    }
-
     /// Formats the session or removal cookie using the same attributes.
     fn cookie(&self, token: &str, max_age: u64) -> HttpResult<HeaderValue> {
         let secure = if self.secure { "Secure; " } else { "" };
         HeaderValue::from_str(&format!(
             "{}={token}; Path=/; Max-Age={max_age}; {secure}HttpOnly; SameSite=Strict",
-            self.cookie_name()
+            self.cookie_name
         ))
         .map_err(internal)
     }
@@ -119,7 +130,25 @@ impl Dashboard {
             .filter_map(|value| value.to_str().ok())
             .flat_map(|value| value.split(';'))
             .filter_map(|pair| pair.trim().split_once('='))
-            .find_map(|(name, token)| (name == self.cookie_name()).then_some(token))
+            .find_map(|(name, token)| (name == self.cookie_name).then_some(token))
+    }
+}
+
+/// Names the host-only cookie for a canonical origin. Cookies ignore ports, so
+/// alternate-port dashboards need distinct names. Default ports retain their
+/// existing names, including browser prefix enforcement on HTTPS.
+fn session_cookie_name(admin: &reqwest::Url) -> String {
+    let base = if admin.scheme() == "https" {
+        "__Host-parlando_host"
+    } else {
+        "parlando_host"
+    };
+    match admin.port() {
+        Some(_) => {
+            let origin = admin.origin().ascii_serialization();
+            format!("{base}_{:x}", Sha256::digest(origin.as_bytes()))
+        }
+        None => base.to_owned(),
     }
 }
 
@@ -128,13 +157,15 @@ pub(super) fn routes() -> Router<Arc<Host>> {
     Router::new()
         .route("/admin", get(page))
         .route("/admin/", get(page))
-        .route("/games/:game/admin", get(game_page))
         .route("/admin/dashboard.js", get(javascript))
-        .route(
-            "/admin/communication-config.js",
-            get(communication_config_javascript),
-        )
         .route("/admin/dashboard.css", get(stylesheet))
+        .route("/admin/assets/parlando-mark.svg", get(parlando_mark))
+        .route(
+            "/admin/assets/parlando-wordmark.svg",
+            get(parlando_wordmark),
+        )
+        .route("/admin/assets/palette.css", get(parlando_palette))
+        .route("/api/hosting/auth/setup", get(setup_status).post(setup))
         .route("/api/hosting/auth/login", post(login))
         .route("/api/hosting/auth/logout", post(logout))
         .route("/api/hosting/auth/session", get(session))
@@ -178,6 +209,18 @@ fn admin<'a>(host: &'a Host, parts: &Parts) -> HttpResult<&'a Dashboard> {
         .as_ref()
         .filter(|dashboard| matches_authority(parts, &dashboard.authority))
         .ok_or_else(not_found)
+}
+
+/// Identifies requests to the separate administrator origin before game dispatch.
+pub(super) fn administrator_origin_allowed(host: &Host, parts: &Parts) -> bool {
+    admin(host, parts).is_ok()
+}
+
+/// Resolves the game dashboard's authenticated audit actor and CSRF token.
+/// Mutations must pass the same origin and CSRF checks as host dashboard mutations.
+pub(super) async fn game_session(host: &Host, parts: &Parts) -> HttpResult<(String, String)> {
+    let session = admin(host, parts)?.browser_session(parts).await?;
+    Ok((actor_name(&session), session.csrf))
 }
 
 /// Keeps uploaded applications off the dashboard hostname.
@@ -305,16 +348,6 @@ async fn page(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Res
     )
 }
 
-/// Serves the same dashboard with the browser scoped to one game.
-async fn game_page(
-    State(host): State<Arc<Host>>,
-    RoutePath(game): RoutePath<String>,
-    request: Request,
-) -> HttpResult<Response> {
-    validate_id(&game).map_err(|_| not_found())?;
-    page(State(host), request).await
-}
-
 /// Serves the dashboard's own client script.
 async fn javascript(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Response> {
     asset(
@@ -325,25 +358,45 @@ async fn javascript(State(host): State<Arc<Host>>, request: Request) -> HttpResu
     )
 }
 
-/// Serves the configuration controls shared by both administrator dashboards.
-async fn communication_config_javascript(
-    State(host): State<Arc<Host>>,
-    request: Request,
-) -> HttpResult<Response> {
-    asset(
-        &host,
-        request,
-        include_str!("../app/communication_config.mjs"),
-        "text/javascript; charset=utf-8",
-    )
-}
-
 /// Serves the dashboard's own stylesheet.
 async fn stylesheet(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Response> {
     asset(
         &host,
         request,
         include_str!("dashboard.css"),
+        "text/css; charset=utf-8",
+    )
+}
+
+/// Serves the shared Parlando icon on the administrator origin.
+async fn parlando_mark(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Response> {
+    asset(
+        &host,
+        request,
+        include_str!("../../brand/parlando-mark.svg"),
+        "image/svg+xml",
+    )
+}
+
+/// Serves the shared Parlando wordmark on the administrator origin.
+async fn parlando_wordmark(
+    State(host): State<Arc<Host>>,
+    request: Request,
+) -> HttpResult<Response> {
+    asset(
+        &host,
+        request,
+        include_str!("../../brand/parlando-wordmark.svg"),
+        "image/svg+xml",
+    )
+}
+
+/// Serves the shared Parlando color palette on the administrator origin.
+async fn parlando_palette(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Response> {
+    asset(
+        &host,
+        request,
+        include_str!("../../brand/palette.css"),
         "text/css; charset=utf-8",
     )
 }
@@ -365,6 +418,44 @@ fn asset(
 struct SignIn {
     username: String,
     password: String,
+}
+
+/// Tells the administrator dashboard whether a local browser can create the first operator.
+async fn setup_status(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Json<Value>> {
+    let (parts, _) = request.into_parts();
+    let dashboard = admin(&host, &parts)?;
+    let available = dashboard.allows_local_setup(&parts)
+        && dashboard.accounts.is_empty().await.map_err(internal)?;
+    Ok(Json(json!({ "available": available })))
+}
+
+/// Creates the initial operator for a loopback peer on the configured administrator origin.
+async fn setup(
+    State(host): State<Arc<Host>>,
+    request: Request,
+) -> HttpResult<(StatusCode, Json<Account>)> {
+    let (parts, body) = request.into_parts();
+    let dashboard = admin(&host, &parts)?;
+    dashboard.verify_origin(&parts.headers)?;
+    if !dashboard.allows_local_setup(&parts) {
+        return Err(unauthorized());
+    }
+    let Json(input) = parse_json::<SignIn>(parts, body, &host).await?;
+    let account = audited(&host, "local-setup", "setup-account", "dashboard", async {
+        dashboard
+            .accounts
+            .create_first_operator(&input.username, input.password)
+            .await
+            .map_err(account_error)?
+            .ok_or_else(|| {
+                (
+                    StatusCode::CONFLICT,
+                    "The dashboard already has an account.".to_owned(),
+                )
+            })
+    })
+    .await?;
+    Ok((StatusCode::CREATED, Json(account)))
 }
 
 /// Creates a browser session after checking origin and verifying the password.
@@ -412,87 +503,42 @@ fn session_json(session: &DashboardSession) -> Value {
            "role": session.account.role, "csrf_token": session.csrf})
 }
 
-/// Lists every game and experiment for a signed-in lab member.
+/// Lists the deployed games and their activation state for a signed-in lab member.
 async fn index(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Json<Value>> {
     let (parts, _) = request.into_parts();
     admin(&host, &parts)?.browser_session(&parts).await?;
-    let store = host.store.clone();
-    let games = tokio::task::spawn_blocking(move || package_index(&store))
-        .await
-        .map_err(internal)?
-        .map_err(internal)?;
-    let experiments = {
-        let experiments = host.experiments.read().await;
-        experiments
-            .iter()
-            .map(|(id, experiment)| {
-                (
-                    id.clone(),
-                    (experiment.selection.clone(), experiment.state.clone()),
-                )
-            })
-            .collect::<BTreeMap<_, _>>()
-    };
-    let mut rows = Vec::with_capacity(experiments.len());
-    for (id, (selection, state)) in experiments {
-        rows.push(
-            json!({"id": id, "game": selection.game, "revision": selection.revision,
-            "config": selection.config, "status": state.hosted_intake_status().await,
-            "participant_url": format!("{}/e/{id}/", host.public_url)}),
-        );
+    let slots: Vec<_> = host.games.read().await.values().cloned().collect();
+    let mut games = Vec::with_capacity(slots.len());
+    for slot in slots {
+        let game = slot.read().await;
+        let deployment = &game.deployment;
+        games.push((
+            deployment.game.clone(),
+            json!({
+                "id": deployment.game,
+                "name": deployment.name,
+                "version": deployment.version,
+                "revision": deployment.revision,
+                "active": game.active,
+            }),
+        ));
     }
-    let config_defaults =
-        crate::app::validate_hosted_config(&crate::config::ExperimentConfig::default())
-            .map_err(internal)?;
-    Ok(Json(
-        json!({"games": games, "experiments": rows, "config_defaults": config_defaults}),
-    ))
-}
-
-/// Reads public metadata for installed revisions, excluding staging directories.
-fn package_index(store: &Path) -> Result<Vec<Value>> {
-    let mut games = BTreeMap::new();
-    let packages = store.join("packages");
-    if !packages.exists() {
-        return Ok(Vec::new());
-    }
-    for game in fs::read_dir(packages)? {
-        let game = game?;
-        let id = game.file_name().to_string_lossy().into_owned();
-        if !game.file_type()?.is_dir() || validate_id(&id).is_err() {
-            continue;
-        }
-        let mut revisions = BTreeMap::new();
-        for revision in fs::read_dir(game.path())? {
-            let revision = revision?;
-            let name = revision.file_name().to_string_lossy().into_owned();
-            if !revision.file_type()?.is_dir() || validate_revision(&name).is_err() {
-                continue;
-            }
-            let manifest = PackageManifest::read(&revision.path())?;
-            revisions.insert(
-                name.clone(),
-                json!({"revision":name,"version":manifest.version()}),
-            );
-        }
-        games.insert(
-            id.clone(),
-            json!({"id":id,"revisions":revisions.into_values().collect::<Vec<_>>()}),
-        );
-    }
-    Ok(games.into_values().collect())
+    games.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    Ok(Json(json!({
+        "games": games.into_iter().map(|(_, game)| game).collect::<Vec<_>>(),
+    })))
 }
 
 /// Requires an operator session or the infrastructure bootstrap token.
 async fn operator<'a>(host: &'a Host, parts: &Parts) -> HttpResult<(&'a Dashboard, String)> {
     let dashboard = admin(host, parts)?;
     if parts.headers.contains_key(AUTHORIZATION) {
-        require_token(&parts.headers, Some(&host.admin_token))?;
+        require_token(&parts.headers, host.admin_token.as_ref())?;
         return Ok((dashboard, "host-operator-token".into()));
     }
     let session = dashboard.browser_session(parts).await?;
     if session.account.role != "operator" {
-        return Err(forbidden("Operator role required"));
+        return Err(forbidden("Administrator role required"));
     }
     Ok((dashboard, actor_name(&session)))
 }
@@ -639,4 +685,49 @@ fn unauthorized() -> (StatusCode, String) {
 /// Signals that an authenticated request failed an authority check.
 fn forbidden(message: &str) -> (StatusCode, String) {
     (StatusCode::FORBIDDEN, message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Setup trusts the serving mode and the connection address supplied by Axum.
+    #[tokio::test]
+    async fn setup_requires_local_mode_and_loopback_peer() {
+        let store = tempfile::tempdir().unwrap();
+        let mut dashboard = Dashboard::open(
+            store.path(),
+            "http://127.0.0.1:3000",
+            "http://localhost:3000",
+            true,
+        )
+        .await
+        .unwrap();
+        let (mut parts, _) = Request::new(axum::body::Body::empty()).into_parts();
+        parts
+            .headers
+            .insert("x-forwarded-for", HeaderValue::from_static("127.0.0.1"));
+        assert!(!dashboard.allows_local_setup(&parts));
+        parts
+            .extensions
+            .insert(ConnectInfo("192.0.2.1:5000".parse::<SocketAddr>().unwrap()));
+        assert!(!dashboard.allows_local_setup(&parts));
+        parts
+            .extensions
+            .insert(ConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
+        assert!(dashboard.allows_local_setup(&parts));
+        dashboard.local_setup = false;
+        assert!(!dashboard.allows_local_setup(&parts));
+    }
+
+    /// Checks port isolation and compatibility with default-port cookies.
+    #[test]
+    fn session_cookie_names_isolate_dashboard_ports() {
+        let name = |origin| session_cookie_name(&reqwest::Url::parse(origin).unwrap());
+        assert_ne!(name("http://localhost:3000"), name("http://localhost:3001"));
+        assert_eq!(name("http://localhost:3000"), name("http://LOCALHOST:3000"));
+        assert_eq!(name("http://localhost:80"), "parlando_host");
+        assert_eq!(name("https://lab.example:443"), "__Host-parlando_host");
+        assert!(name("https://lab.example:8443").starts_with("__Host-parlando_host_"));
+    }
 }

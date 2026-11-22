@@ -12,7 +12,7 @@ For the upcoming 0.7.0 release, see the [migration guide](docs/migrating-0.6.0-t
 
 - Author stateful component games with the Rust SDK and `parlando new`. Build,
   test, and serve the same package locally or upload it to a persistent Parlando
-  host. Each hosted experiment pins an immutable package revision.
+  host. Each deployed game has a dashboard and research database.
 
 - Scaffold Python games alongside Rust games and run their scenarios and packages with the same CLI. The shared host supports named experimenter accounts and a dashboard on its own administrator origin.
 - For trusted agent–agent workloads, `execution.wasm_metering: none` disables fuel accounting. The default remains `fuel`.
@@ -21,7 +21,7 @@ For the upcoming 0.7.0 release, see the [migration guide](docs/migrating-0.6.0-t
 
 ### Changed
 
-- Experiments select `communication.mode: typed` (default) or `speech`. Both dashboards group and disable speech settings in Typed mode, retaining their values. Typed experiments use no audio transport or speech providers. Speech experiments reject human-authored typed messages.
+- Experiments select `communication.mode: typed` (default) or `speech`. The game dashboard groups and disables speech settings in Typed mode, retaining their values. Typed experiments use no audio transport or speech providers. Speech experiments reject human-authored typed messages.
 - Schema 17 stores the communication mode in each experiment revision. Replay reads the mode recorded for the session. Upgrade populated schema-16 databases offline and rebuild participant assets with the matching client.
 
 - Live play, replay and headless experiments now execute Wasm games. Custom Rust hosts load components with `LoadedGame`. The game-authoring trait lives in `parlando-game-sdk`.
@@ -30,8 +30,14 @@ For the upcoming 0.7.0 release, see the [migration guide](docs/migrating-0.6.0-t
   Update Rust imports to `parlando_game_sdk` and replace `ComponentWire` and
   `ComponentDecode` derives with one `GameValue` derive. Existing compiled
   game components remain compatible with the host.
-- The local component runner is now `parlando`. Pass a package manifest after
-  the subcommand, for example `parlando serve --manifest game.yaml`.
+- Build and upload games as a single `dist/<game-id>-<game-version>.zip` file. Both the CLI
+  and the dashboard accept the same ZIP, including its manifest, Wasm component
+  and optional participant assets.
+- Start the local or shared host with `parlando serve --store DIRECTORY`. Use
+  `parlando deploy` to install or replace a game package and `parlando activate`
+  or `parlando deactivate` to control participant access for that game. Manage
+  experiment creation, intake, replay, and export in the game dashboard. The
+  CLI prints readable results by default and supports `--json` for scripts.
 - Component games use the v4 WIT world. The host reads the guest's schema once
   at load time. Configuration, actions, observations, completion and metadata
   cross the game boundary as MessagePack values. Build guests with the v4

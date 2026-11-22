@@ -34,29 +34,31 @@ pub(super) async fn require_admin_network(
     request: Request,
     next: Next,
 ) -> Result<Response, AppError> {
-    let ranges = state
-        .installation
-        .game_settings
-        .read()
-        .await
-        .admin_allowed_ip_ranges
-        .clone();
-    if ranges.is_empty() {
-        return Ok(next.run(request).await);
-    }
-    let client_ip = request
+    check_admin_network(&state, direct_peer_ip(&request)).await?;
+    Ok(next.run(request).await)
+}
+
+/// Obtains the direct connection peer supplied by the listener.
+pub(super) fn direct_peer_ip(request: &Request) -> Option<IpAddr> {
+    request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|peer| peer.0.ip());
-    let allowed = admin_network_allows(&ranges, client_ip);
-    if !allowed {
+        .map(|peer| peer.0.ip())
+}
+
+/// Applies game-level administrator CIDRs to the request's trusted socket peer.
+pub(super) async fn check_admin_network(
+    state: &ServerContext,
+    client_ip: Option<IpAddr>,
+) -> Result<(), AppError> {
+    let settings = state.installation.game_settings.read().await;
+    if !admin_network_allows(&settings.admin_allowed_ip_ranges, client_ip) {
         tracing::warn!(?client_ip, "administrator network policy rejected request");
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
+        return Err(AppError::forbidden(
             "Administrator access is not available from this network",
         ));
     }
-    Ok(next.run(request).await)
+    Ok(())
 }
 
 /// Applies a validated CIDR list to one direct network peer.

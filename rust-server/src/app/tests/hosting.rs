@@ -415,9 +415,9 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         .all(|experiment| experiment["status"] == "inactive"));
 }
 
-/// Confirms old game versions remain inspectable but must be cloned before activation.
+/// Checks that an existing experiment can start and edit its settings after a game update.
 #[tokio::test]
-async fn compiled_game_router_requires_exact_version_and_clones_forward() {
+async fn compiled_game_router_reuses_experiments_after_a_game_update() {
     let (mut config, _tmp) = sqlite_config();
     config.experiment.id = Some("current".to_string());
     let store = experiment_store_from_url(&config.database.url)
@@ -451,14 +451,48 @@ async fn compiled_game_router_requires_exact_version_and_clones_forward() {
     .unwrap();
     authenticate_test_admin(router.clone()).await.unwrap();
 
-    let (activation_status, _) = admin_json_request(
+    let (_, catalogue) = admin_json_request(
         router.clone(),
-        http::Method::POST,
-        "/api/admin/runtime/historical/experiment/status",
-        json!({"status": "active"}),
+        http::Method::GET,
+        "/api/admin/experiments",
+        Value::Null,
     )
     .await;
-    assert_eq!(activation_status, StatusCode::CONFLICT);
+    let historical = catalogue["experiments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["experiment_id"] == "historical")
+        .unwrap();
+    assert_eq!(historical["local_testing_runnable"], true);
+    for lifecycle in ["testing", "inactive"] {
+        let (status, body) = admin_json_request(
+            router.clone(),
+            http::Method::POST,
+            "/api/admin/runtime/historical/experiment/status",
+            json!({"status": lifecycle}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (status, mut loaded) = admin_json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/experiments/historical/config",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    loaded["experiment"]["config"]["session"]["waiting_session_timeout_seconds"] = json!(300);
+    let (status, saved) = admin_json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/experiments/historical/config",
+        json!({"expected_revision": 1, "config": loaded["experiment"]["config"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["revision"], 2);
 
     let (clone_status, clone) = admin_json_request(
         router.clone(),

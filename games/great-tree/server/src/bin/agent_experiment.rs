@@ -13,9 +13,12 @@ use parlando_great_tree::{IdleAgentFactory, LlmAgentFactory, RootBotAgentFactory
 struct Cli {
     /// Versioned YAML experiment specification.
     experiment: PathBuf,
-    /// Built Great Tree component from the game package.
-    #[arg(long, default_value = "dist/parlando/game.wasm")]
-    component: PathBuf,
+    /// Game archive produced by parlando build.
+    #[arg(long, default_value = "dist/great-tree-0.1.0.zip")]
+    package: PathBuf,
+    /// Use a separately compiled component for an experimental run.
+    #[arg(long, conflicts_with = "package")]
+    component: Option<PathBuf>,
 }
 
 /// Registers the compiled Great Tree implementations and executes the YAML run.
@@ -26,7 +29,14 @@ async fn main() -> Result<()> {
         .init();
     let cli = Cli::parse();
     let experiment = ExperimentFile::read(&cli.experiment).await?;
-    let game = LoadedGame::load_with_metering(&cli.component, experiment.wasm_metering())?;
+    let metering = experiment.wasm_metering();
+    let game = if let Some(component) = cli.component {
+        LoadedGame::load_with_metering(&component, metering)?
+    } else {
+        let (game, metadata) = parlando::deployment::load_package(&cli.package, metering)?;
+        anyhow::ensure!(metadata.id == "great-tree", "expected a Great Tree package");
+        game
+    };
     let metadata = GameMetadata {
         id: "great-tree".to_string(),
         name: "The Great Tree".to_string(),

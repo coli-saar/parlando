@@ -51,6 +51,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 ratatui = { version = "0.30.2", optional = true }
 clap = { version = "4", features = ["derive"] }
 tempfile = { version = "3" }
+zip = { version = "7.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 wasmtime = { version = "36.0.23", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
 

@@ -21,11 +21,13 @@ Partner relay, transcription, and agent playback are independent consumers. A sl
 
 ## Session And Authentication
 
-After joining a room, the browser requests
-`POST /e/{experiment_id}/api/sessions/{public_session_id}/audio-session` with its participant
-bearer credential. When voice is enabled, the response contains:
+The participant page is mounted at `/e/{game_id}~{experiment_id}/` on a shared
+host and `/e/{experiment_id}/` on a custom single-game host. After joining a
+room, the browser sends `POST api/sessions/{public_session_id}/audio-session`
+relative to the participant page, using its participant bearer credential.
+When voice is enabled, the response contains the following fields.
 
-- the relative `/e/{experiment_id}/ws/audio/{public_session_id}` path;
+- the `ws/audio/{public_session_id}` path under the same participant scope;
 - an opaque, random token valid for one minute and one WebSocket upgrade;
 - protocol version, sample rate, channel count, frame duration, and jitter-buffer target.
 
@@ -146,7 +148,8 @@ them. In `typed` mode the server accepts participant messages over the game conn
 `voice.frame_duration_ms` at 20, mono PCM, and a TTS output format compatible with
 24 kHz PCM. The normal initial jitter target is 100 ms.
 
-In the single-game dashboard, add Speechmatics and ElevenLabs credentials under Game settings. The shared host's dashboard has no provider credential editor.
+Add Speechmatics and ElevenLabs credentials under **Game settings** in the
+game dashboard.
 Parlando has no environment-variable fallback for provider secrets. Configure
 the exact Speechmatics realtime URL, ElevenLabs base URL, recognition behavior,
 and ElevenLabs voice in the experiment revision. Provider keys remain outside

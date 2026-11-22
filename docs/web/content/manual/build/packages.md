@@ -4,10 +4,10 @@ title: Package a game for deployment
 
 # Package a game for deployment
 
-A deployable package is the output of `parlando build`. It contains the game rules the host executes and the files participants load in their browsers. Copy the whole `dist/parlando/` directory when moving a build to another machine.
+For the Beacon starter, `parlando build` creates **`dist/beacon-0.1.0.zip`**, a single file containing the game metadata, the WebAssembly rules, and any browser assets. The filename combines the game ID and version from the project’s `game.yaml`. After the compiler and browser logs, the final line gives the absolute path to the ZIP. Pass that file to `parlando deploy --package` or select it in the dashboard to upload the build.
 
 ```text
-dist/parlando/
+dist/beacon-0.1.0.zip
   game.yaml
   game.wasm
   client/
@@ -15,7 +15,7 @@ dist/parlando/
     assets/
 ```
 
-The built manifest declares a game ID, display name, version, and paths relative to the package directory.
+The built manifest declares a game ID, display name, version, and paths relative to the archive root.
 
 ```yaml
 id: beacon
@@ -25,19 +25,21 @@ component: game.wasm
 client_dist: client
 ```
 
-The project-level `game.yaml` points to build inputs and outputs. The manifest inside `dist/parlando/` describes the finished artifact. Pass the built manifest when you want to validate the exact package you will send.
+Edit `name` in the project’s `game.yaml` to change the display name. **Games** lists **Beacon Relay** with the game ID `beacon`. Click the ID to open `/beacon` on the administrator origin. Games can share a name because their URLs and research databases are keyed by ID. Build and deploy the updated ZIP for the new name to appear.
+
+The project-level `game.yaml` points to build inputs and outputs. The manifest at the root of `dist/beacon-0.1.0.zip` describes the finished artifact. Pass the ZIP when you want to validate the exact package you will send.
 
 ```sh
 parlando test
 parlando build
-parlando check --manifest dist/parlando/game.yaml --json
+parlando check --package dist/beacon-0.1.0.zip --json
 ```
 
 ## Package identity
 
-The game ID groups releases of the same game. Set a human-readable version when you change the rules or participant experience. The host computes a **package revision** from every package path and its bytes. A JavaScript change yields a new package revision even when the mechanics component stays identical. Use the revision returned at upload when selecting a package for an experiment.
+The game ID groups releases of the same game. Set a human-readable version when you change the rules or participant experience. The host computes a **package revision** from every package path and its bytes. A JavaScript change yields a new package revision even when the mechanics component stays identical. Record the revision returned by the upload to identify the exact ZIP used in a study.
 
-An experiment on a shared host retains its package revision and configuration for the life of its ID. A changed package or configuration gets a fresh experiment ID. Earlier results retain their original rules and browser build.
+A shared host serves the current package for each game ID. Replacing the package keeps the game's study records. Keep the original ZIP if you need to reproduce sessions recorded with that build.
 
 ## Use a custom build
 

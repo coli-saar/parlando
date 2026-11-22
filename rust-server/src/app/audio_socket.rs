@@ -69,6 +69,7 @@ pub(super) async fn audio_socket(
     Path(public_session_id): Path<String>,
     Query(query): Query<AudioSocketQuery>,
     headers: HeaderMap,
+    upgrade_lease: Option<Extension<Arc<crate::deployment::UpgradeLease>>>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, AppError> {
     if !state.context.config.is_speech() {
@@ -102,6 +103,8 @@ pub(super) async fn audio_socket(
         .max_frame_size(8 * 1024)
         .max_message_size(8 * 1024)
         .on_upgrade(move |socket| async move {
+            // The host must see this connection while Axum completes the upgrade.
+            let _upgrade_lease = upgrade_lease;
             audio_websocket_loop(state, socket, claims).await;
         }))
 }

@@ -176,8 +176,8 @@ struct ServerContext {
 /// Shared server state used by HTTP handlers, WebSocket tasks, and background agents.
 pub(crate) struct AppState {
     context: Arc<ServerContext>,
-    /// Typed game-owned configuration validated when this experiment runtime is built.
-    pub game_config: ComponentValue,
+    /// Current package configuration, or the validation issue keeping this revision closed.
+    game_config: Result<ComponentValue, String>,
     pub experiment_id: String,
     /// Immutable configuration revision used for newly created sessions.
     pub config_revision: i64,
@@ -385,7 +385,8 @@ use session_activity::{
 };
 mod maintenance;
 use maintenance::{
-    finalize_interrupted_sessions, session_lifecycle_is_ended, spawn_security_cleanup,
+    finalize_interrupted_experiment, finalize_interrupted_sessions, session_lifecycle_is_ended,
+    spawn_security_cleanup,
 };
 mod connections;
 use connections::ConnectionRegistry;
@@ -429,8 +430,8 @@ mod authentication;
 #[cfg(test)]
 use authentication::admin_network_allows;
 use authentication::{
-    authenticated_participant_id, bearer_token, cookie_value, require_admin_auth,
-    require_admin_network, require_participant_auth,
+    authenticated_participant_id, bearer_token, check_admin_network, cookie_value, direct_peer_ip,
+    require_admin_auth, require_admin_network, require_participant_auth,
 };
 mod admin_login;
 #[cfg(test)]
@@ -522,9 +523,9 @@ impl IntoResponse for AppError {
 
 mod routing;
 pub use routing::serve_game;
-pub(crate) use routing::{build_deployed_experiment, termination_signal, validate_hosted_config};
 #[cfg(any(test, feature = "internal-tools"))]
 pub use routing::{build_game_router, build_router};
+pub(crate) use routing::{build_hosted_game, termination_signal, HostedRuntime};
 
 /// Checks that the experiment store is accepting read-write transactions.
 async fn health(State(state): State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
@@ -572,7 +573,11 @@ async fn public_config(State(state): State<Arc<AppState>>) -> Json<PublicConfigR
             })
             .collect(),
         communication: config.communication,
-        recruitment: if config.recruitment.prolific.enabled {
+        recruitment: if config.recruitment.prolific.enabled
+            && participant_url
+                .as_ref()
+                .is_some_and(|url| url.kind == "prolific")
+        {
             json!({
                 "provider": "prolific",
                 "decline_url": prolific_no_consent_url(config, participant_url.as_ref()),

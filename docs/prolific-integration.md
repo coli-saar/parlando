@@ -40,9 +40,9 @@ built-in **No consent** path with **Request return** and creates no Parlando par
 The values configured in Parlando are the exact completion codes created in Prolific. All six
 codes must be present and distinct.
 
-## Configure a single-game installation
+## Configure the game
 
-Use this workflow on a game served with `parlando serve`. The shared host's dashboard does not provision Prolific credentials.
+Open the game dashboard to provision Prolific credentials and configure the experiment's recruitment settings.
 
 An administrator configures two installation-level values in the Parlando dashboard:
 

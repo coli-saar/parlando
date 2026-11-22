@@ -1,6 +1,6 @@
 use super::*;
 
-/// Confirms Local Preview cannot replace a missing Prolific refusal redirect with local UI.
+/// Checks the completion-code prerequisites for a Prolific-configured study.
 #[test]
 fn prolific_local_preview_requires_all_completion_paths() {
     let mut config = ExperimentConfig::default();
@@ -154,9 +154,9 @@ fn prolific_readiness_rejects_an_incomplete_six_path_draft() {
         .any(|issue| issue.contains("all six")));
 }
 
-/// Confirms Local Preview uses the configured no-consent code but never emits an empty code.
+/// Confirms only a Prolific launch receives a configured no-consent return URL.
 #[test]
-fn prolific_no_consent_url_uses_the_configured_code_in_every_active_run() {
+fn prolific_no_consent_url_requires_a_prolific_launch() {
     let mut config = ExperimentConfig::default();
     config.direct.consents.push(ConsentItemConfig {
         id: "study".to_string(),
@@ -176,10 +176,7 @@ fn prolific_no_consent_url_uses_the_configured_code_in_every_active_run() {
         session_id: None,
     };
 
-    assert_eq!(
-        prolific_no_consent_url(&config, Some(&local)).as_deref(),
-        Some("https://app.prolific.com/submissions/complete?cc=NOCONSENT")
-    );
+    assert_eq!(prolific_no_consent_url(&config, Some(&local)), None);
     assert_eq!(
         prolific_no_consent_url(&config, Some(&prolific)).as_deref(),
         Some("https://app.prolific.com/submissions/complete?cc=NOCONSENT")
@@ -565,14 +562,16 @@ async fn prolific_participant_with_new_session_id_enters_new_session() {
         connect_async(game_socket_url(&router, &base_url, &first_session_id, &partner).await)
             .await
             .unwrap();
-    let _ = read_participant_state(&mut first_socket, "active").await;
+    let active = read_participant_state(&mut first_socket, "active").await;
+    assert_eq!(active["recruitment_source"], "local_preview");
     let _ = read_participant_state(&mut partner_socket, "active").await;
     send_ws_json(
         &mut first_socket,
         json!({"type": "action", "action": {"finish": true}}),
     )
     .await;
-    let _ = read_participant_state(&mut first_socket, "ended").await;
+    let ended = read_participant_state(&mut first_socket, "ended").await;
+    assert_eq!(ended["result"]["handoff"], Value::Null);
     let _ = read_participant_state(&mut partner_socket, "ended").await;
 
     let returning =

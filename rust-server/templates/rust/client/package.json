@@ -6,7 +6,7 @@
     "build": "vite build --base ./"
   },
   "dependencies": {
-    "@coli-saar/parlando-client": "__CLIENT_VERSION__",
+    "@coli-saar/parlando-client": "__CLIENT_DEPENDENCY__",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

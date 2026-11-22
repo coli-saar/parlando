@@ -11,15 +11,15 @@ record for analysis.
 Retain the experiment ID, configuration revision, game version, and component
 digest with session records. On a shared host, retain the selected package
 revision as well. It identifies the component and the participant assets.
-A hosted experiment ID always selects the same package and configuration.
-Create a new ID for a changed build or condition. Local configuration changes
-create revisions under the local experiment.
+A hosted experiment ID always selects the same game package. Settings saved
+while the experiment is inactive create configuration revisions. Use a new ID
+for a changed build or to run study conditions independently.
 
 ## Monitor an experiment
 
-Open **Manage** for the hosted experiment or **Sessions** in the local
+Open the experiment from the game’s **Experiments** list or **Sessions** in a custom single-game
 dashboard. Use the session record, events, and replay to inspect the
-play-through. The local single-game dashboard also includes load history and
+play-through. The custom single-game dashboard also includes load history and
 configuration revision views. See the [experimenter workflow](web/content/manual/run/data-operations.md).
 
 ### Interpret load and liveness

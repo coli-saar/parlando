@@ -42,12 +42,7 @@ pub(in crate::app) async fn admin_experiments(
     let experiments = state.installation.store.list_experiments(1_000).await?;
     let mut catalogue = Vec::with_capacity(experiments.len());
     for experiment in experiments {
-        let readiness = experiment_catalogue_readiness(
-            &state,
-            &experiment.experiment_id,
-            &experiment.game_version,
-        )
-        .await;
+        let readiness = experiment_catalogue_readiness(&state, &experiment.experiment_id).await;
         let runtime = state
             .installation
             .runtime_registry
@@ -95,13 +90,20 @@ pub(in crate::app) async fn admin_experiments(
             "runnable_issues".to_string(),
             json!(readiness.prolific_issues),
         );
+        let public_base = experiment_public_base_url(
+            &state.config.server.public_base_url,
+            &experiment.experiment_id,
+        );
         object.insert(
             "prolific_setup_url".to_string(),
-            json!(prolific_setup_url(&experiment_public_base_url(
-                &state.config.server.public_base_url,
-                &experiment.experiment_id,
-            ))),
+            json!(prolific_setup_url(&public_base)),
         );
+        if state.config.server.public_base_url.ends_with('~') {
+            object.insert(
+                "participant_page_url".to_string(),
+                json!(format!("{public_base}/")),
+            );
+        }
         object.insert("participant_url".to_string(), json!(participant_url));
         catalogue.push(value);
     }
@@ -129,7 +131,6 @@ struct ExperimentCatalogueReadiness {
 async fn experiment_catalogue_readiness(
     state: &ServerContext,
     experiment_id: &str,
-    game_version: &str,
 ) -> ExperimentCatalogueReadiness {
     let mut config = match hydrated_experiment_config(state, experiment_id).await {
         Ok(config) => config,
@@ -158,14 +159,7 @@ async fn experiment_catalogue_readiness(
             prolific_issues: Vec::new(),
         };
     }
-    let mut local_testing_issues = Vec::new();
-    if game_version != state.installation.game_descriptor.version.to_string() {
-        local_testing_issues.push(
-            "This experiment belongs to another game version; clone it before activation."
-                .to_string(),
-        );
-    }
-    local_testing_issues.extend(local_testing_issues_for_config(state, &mut config));
+    let local_testing_issues = local_testing_issues_for_config(state, &mut config);
     let mut prolific_issues = local_testing_issues.clone();
     prolific_issues.extend(prolific_local_activation_issues(&config));
     if prolific_issues.is_empty() {
@@ -329,14 +323,15 @@ pub(in crate::app) async fn admin_archive_experiment(
 
 /// Validates a dashboard-supplied experiment id using the public configuration contract.
 fn validate_new_experiment_id(experiment_id: &str) -> Result<(), AppError> {
-    if experiment_id.is_empty()
+    if matches!(experiment_id, "." | "..")
+        || experiment_id.is_empty()
         || experiment_id.chars().count() > 128
         || !experiment_id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     {
         return Err(AppError::bad_request(
-            "experiment_id must contain 1 to 128 letters, digits, dots, dashes, or underscores",
+            "Experiment ID must be 1–128 letters, digits, dots, dashes, or underscores and cannot be . or ..",
         ));
     }
     Ok(())

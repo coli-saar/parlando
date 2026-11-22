@@ -2,7 +2,10 @@
 //! asset with its media type. The browser loads experiment data through separate
 //! authenticated API endpoints.
 
-use crate::app::{HeaderValue, Html, IntoResponse, Response, CACHE_CONTROL, CONTENT_TYPE};
+use crate::app::{
+    Arc, HeaderValue, Html, IntoResponse, Response, ServerContext, State, CACHE_CONTROL,
+    CONTENT_TYPE,
+};
 
 /// Serves the shared parlando-mark.svg brand asset, including on the sign-in page.
 pub(in crate::app) async fn parlando_mark() -> Response {
@@ -31,6 +34,21 @@ pub(in crate::app) async fn parlando_palette() -> Response {
 /// Serves the database-backed experiment/session dashboard.
 pub(in crate::app) async fn admin_experiments_page() -> Html<&'static str> {
     Html(ADMIN_EXPERIMENT_HTML)
+}
+
+/// Serves the original administration UI with this game's authenticated route prefix.
+pub(in crate::app) async fn hosted_admin_experiments_page(
+    State(state): State<Arc<ServerContext>>,
+) -> Response {
+    let prefix = format!("/{}", state.installation.game_descriptor.id);
+    let html = ADMIN_EXPERIMENT_HTML
+        .replace("<body>", &format!(r#"<body data-admin-prefix="{prefix}">"#))
+        .replace("/admin/assets/", &format!("{prefix}/admin/assets/"));
+    let mut response = Html(html).into_response();
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// Serves the embedded dashboard stylesheet as a same-origin protected asset.

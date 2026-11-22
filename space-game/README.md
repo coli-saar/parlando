@@ -25,9 +25,8 @@ database. The default database is `.local/component.sqlite`.
 
 ## Package the game
 
-`make build` writes `dist/parlando/game.yaml`, the component, and the
-browser bundle. Use this manifest with `parlando serve` to run the package
-with the generic host. For the authored agent, use `make run`.
+`make build` writes `dist/space-game-0.1.0.zip` with the manifest, component, and browser
+bundle. Upload this ZIP to a running deployment host with `parlando deploy`. For the authored agent, use `make run`.
 
 ## Solo voice test
 
@@ -61,7 +60,7 @@ Game-specific UI should stay here. For example, the station map, inventory/actio
 
 ## Runtime expectation
 
-The client expects a Parlando-compatible server that exposes experiment-scoped `/e/{experiment_id}/api/*` and WebSocket routes. In local runs, the launcher serves the browser files bundled under `dist/parlando/client`.
+The client expects a Parlando-compatible server that exposes experiment-scoped `/e/{experiment_id}/api/*` and WebSocket routes. In local runs, the launcher serves the browser files from the ZIP’s `client/` directory.
 
 ## Deploy on Render
 

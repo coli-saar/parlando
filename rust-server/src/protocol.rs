@@ -265,6 +265,8 @@ pub enum ParticipantState {
     Registered,
     /// The participant belongs to a session which has not started.
     Waiting {
+        /// Admission source of the receiving participant.
+        recruitment_source: String,
         public_session_id: String,
         role: String,
         waiting_started_at: String,
@@ -273,6 +275,8 @@ pub enum ParticipantState {
     },
     /// The running session currently accepts meaningful participant input.
     Active {
+        /// Admission source of the receiving participant.
+        recruitment_source: String,
         public_session_id: String,
         role: String,
         observation: Value,
@@ -282,6 +286,8 @@ pub enum ParticipantState {
     },
     /// The running session preserves its projection while interaction is unavailable.
     Paused {
+        /// Admission source of the receiving participant.
+        recruitment_source: String,
         public_session_id: String,
         role: String,
         reason: ParticipantPauseReason,

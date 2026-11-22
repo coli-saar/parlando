@@ -1,6 +1,6 @@
 # <img src="brand/parlando-wordmark.svg" width="260" alt="Parlando">
 
-Parlando runs two-player dialogue-game experiments with humans and software agents. A game package contains WebAssembly mechanics and a browser application. One shared host can serve several games, and each experiment records the package revision and settings used for its sessions.
+Parlando runs two-player dialogue-game experiments with humans and software agents. A game package contains WebAssembly mechanics and a browser application. A shared host serves one current package per game and opens a separate dashboard for each game’s experiments.
 
 ```sh
 cargo install --locked parlando --bin parlando

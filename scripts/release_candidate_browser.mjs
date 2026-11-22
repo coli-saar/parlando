@@ -1,5 +1,43 @@
 import { chromium, expect } from "@playwright/test";
 
+/** Signs in to the loopback host and starts one experiment in its game dashboard. */
+async function startPreview(browser, adminOrigin, game) {
+  const page = await browser.newPage();
+  const username = "release-rehearsal";
+  const password = process.env.PARLANDO_REHEARSAL_PASSWORD;
+  if (!password) throw new Error("Missing release rehearsal account password");
+  await page.goto(`${adminOrigin}/admin`, { waitUntil: "domcontentloaded" });
+  const setup = page.getByRole("heading", { name: "Create your administrator account" });
+  const login = page.getByRole("heading", { name: "Sign in", exact: true });
+  await expect(setup.or(login)).toBeVisible();
+  if (await setup.isVisible()) {
+    const form = page.locator("#setup-form");
+    await form.getByLabel("Username").fill(username);
+    await form.getByLabel("Password", { exact: true }).fill(password);
+    await form.getByLabel("Confirm password").fill(password);
+    await form.getByRole("button", { name: "Create administrator" }).click();
+  } else {
+    const form = page.locator("#login");
+    await form.getByLabel("Username").fill(username);
+    await form.getByLabel("Password").fill(password);
+    await form.getByRole("button", { name: "Sign in" }).click();
+  }
+  const row = page.getByRole("row").filter({ has: page.getByRole("link", { name: game, exact: true }) });
+  await expect(row.getByRole("cell", { name: "Active", exact: true })).toBeVisible();
+  await row.getByRole("link", { name: game, exact: true }).click();
+  await expect(page).toHaveURL(`${adminOrigin}/${game}`);
+  await page.getByRole("button", { name: "New experiment" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("textbox", { name: /^Experiment ID/ }).fill(game);
+  await dialog.getByRole("button", { name: "Create experiment" }).click();
+  await expect(dialog).toBeHidden();
+  await page.getByText("Start experiment", { exact: true }).click();
+  await page.locator(".launch-mode").filter({ hasText: "Local preview" })
+    .getByRole("button", { name: "Start", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeVisible();
+  return page;
+}
+
 /** Enters the hosted starter as a new participant with independent session storage. */
 async function enter(browser, url) {
   const context = await browser.newContext();
@@ -52,9 +90,11 @@ async function exchangeMessages(pages) {
 }
 
 /** Plays a hosted Typed experiment from intake through the shared terminal outcome. */
-async function play(url) {
+async function play(adminOrigin, publicOrigin, game) {
   const browser = await chromium.launch();
   try {
+    const admin = await startPreview(browser, adminOrigin, game);
+    const url = `${publicOrigin}/e/${game}~${game}/`;
     const config = await fetch(new URL("api/config", url));
     expect(config.ok).toBe(true);
     expect((await config.json()).communication.mode).toBe("typed");
@@ -90,9 +130,13 @@ async function play(url) {
     await a.reload();
     await expect(a.getByText(`Beacon activated at ${target} ticks.`)).toBeVisible();
     await expectTypedControls(a);
+
+    await Promise.all(pages.map(page => page.context().close()));
+    await admin.getByRole("button", { name: "Stop", exact: true }).click();
+    await expect(admin.getByText("Start experiment", { exact: true })).toBeVisible();
   } finally {
     await browser.close();
   }
 }
 
-await play(process.argv[2]);
+await play(...process.argv.slice(2));

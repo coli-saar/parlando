@@ -243,18 +243,24 @@ async fn cleanup_transient_rooms(state: &Arc<AppState>) {
 
 /// Finalizes sessions left nonterminal by an earlier process before opening new intake.
 pub(super) async fn finalize_interrupted_sessions(state: &Arc<AppState>) -> Result<()> {
-    let sessions = state
-        .context
-        .installation
-        .store
-        .interrupted_sessions(&state.experiment_id)
-        .await?;
+    finalize_interrupted_experiment(
+        &state.context.installation.store,
+        &state.experiment_id,
+        &state.context.config,
+    )
+    .await
+}
+
+/// Records interrupted rooms from durable state without loading a game component.
+pub(super) async fn finalize_interrupted_experiment(
+    store: &crate::storage::SqliteExperimentStore,
+    experiment_id: &str,
+    config: &super::ExperimentConfig,
+) -> Result<()> {
+    let sessions = store.interrupted_sessions(experiment_id).await?;
     for (session_id, started) in sessions {
-        let participants = state
-            .context
-            .installation
-            .store
-            .session_participants(&state.experiment_id, session_id)
+        let participants = store
+            .session_participants(experiment_id, session_id)
             .await?;
         let participant_results = participants
             .into_iter()
@@ -265,7 +271,7 @@ pub(super) async fn finalize_interrupted_sessions(state: &Arc<AppState>) -> Resu
                     participant.role,
                     ParticipantResult {
                         handoff: (participant.identity_provider.as_deref() == Some("prolific"))
-                            .then(|| prolific_handoff(&state.context.config, &outcome, started))
+                            .then(|| prolific_handoff(config, &outcome, started))
                             .flatten(),
                         outcome,
                         reason: "server_restart".to_string(),
@@ -281,7 +287,7 @@ pub(super) async fn finalize_interrupted_sessions(state: &Arc<AppState>) -> Resu
             participant_results,
         };
         let event = SessionEventRecord {
-            experiment_id: state.experiment_id.clone(),
+            experiment_id: experiment_id.to_string(),
             session_id,
             event_type: "session_ended".to_string(),
             actor_participant_id: None,
@@ -289,12 +295,7 @@ pub(super) async fn finalize_interrupted_sessions(state: &Arc<AppState>) -> Resu
             payload: serde_json::to_value(&session_end)?,
             game_state: None,
         };
-        state
-            .context
-            .installation
-            .store
-            .end_session(event, session_end)
-            .await?;
+        store.end_session(event, session_end).await?;
     }
     Ok(())
 }

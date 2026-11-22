@@ -8,7 +8,17 @@ Use the 0.7.0 versions of `parlando` and `@coli-saar/parlando-client`. Use match
 
 Start a reference project with `parlando new <game-id> --lang rust` or `--lang python`. Move game mechanics into the session-owned component. For Rust games the public `Game` trait lives in `parlando_game_sdk`. Projects using the earlier component SDK should rename `parlando-component-sdk` to `parlando-game-sdk` and replace `ComponentWire` and `ComponentDecode` with the `GameValue` derive. Build for the v4 game world. Custom Rust hosts load games with `LoadedGame`. Local agents receive `ComponentValue` observations, and Rust reward functions receive their configuration once through `configure`. See the [component interface](component-games.md) and [agent integration guide](agents.md).
 
-Run `parlando test`, `parlando build`, then `parlando check --manifest dist/parlando/game.yaml`. Deploy the resulting package as a fresh revision. Retain the exact component used to record each session you wish to replay. See [package a game](web/content/manual/build/packages.md).
+Run `parlando test` and `parlando build`. Pass the ZIP path printed by the build to `parlando check --package`. Deploy the resulting ZIP to your host. Retain the exact component used to record each session you wish to replay. See [package a game](web/content/manual/build/packages.md).
+
+## Deploy and activate the game
+
+Start the server with `parlando serve --store DIRECTORY`. Sign in at the
+administrator origin and deploy the ZIP from **Games**. Activate the game, then
+click its ID to reach the game dashboard. Create and configure your experiment
+there. You can also use `parlando deploy` and `parlando activate` with the
+corresponding CLI credentials. See the
+[local pilot walkthrough](web/content/manual/start/getting-started.md#start-a-local-server)
+and the [shared host guide](web/content/manual/deploy/host.md).
 
 ## Select the communication mode
 
@@ -90,8 +100,6 @@ COMMIT;
 ```
 
 Before starting the new server, verify that the maximum version is 17, integrity returns `ok`, foreign-key checks return no rows, and the four row counts match the backup. Compare each revision's mode with the backup's old flag by experiment ID and revision.
-
-**Existing shared-host pins need one additional step.** With the host still stopped, convert `config.voice.enabled` in each saved selection under `selections/` using the same mapping. The corresponding database lives under `experiments/<id>-<hash>.sqlite`. Its hash is the lowercase SHA-256 of the compact JSON bytes produced by Rust's `serde_json::to_vec` on the host's `ExperimentSelection` (fields `game`, `revision`, `config`, in that order). Verify the old hash against the original filename, checkpoint the converted database's WAL with `PRAGMA wal_checkpoint(TRUNCATE)`, close SQLite, and move the database to its matching new hash path. Check for a destination collision before moving it. Keep the selected game revision intact. Verify the session count from the dashboard after restarting. A mismatched filename can cause the host to create an empty database. See [retain the store](web/content/manual/deploy/host.md#retain-the-store).
 
 ## Pilot before opening intake
 

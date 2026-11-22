@@ -66,6 +66,7 @@ const audio = {
 function game(session: GameSnapshot<{ view: string }, { type: string }>) {
   return <div>
     <span>{session.observation.view}</span>
+    <span>Source: {session.recruitmentSource ?? "unknown"}</span>
     <span>{String(session.interactionEnabled)}</span>
     <span>Actor: {session.transition?.actor ?? "none"}</span>
   </div>;
@@ -174,6 +175,7 @@ describe("ReplayPlayer", () => {
       renderGame={(snapshot) => <>{game(snapshot)}{placement === "game" && <CommunicationWidget />}</>}
     />);
     expect(screen.getByText("A start")).toBeInTheDocument();
+    expect(screen.getByText("Source: unknown")).toBeInTheDocument();
     expect(screen.getByText("false")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Next event" }));
     expect(screen.getByText("A moved")).toBeInTheDocument();
@@ -232,7 +234,8 @@ describe("ParticipantApp participant state machine", () => {
     const socket = FakeWebSocket.instances[0];
     act(() => socket.open());
     expect(screen.queryByText("live")).not.toBeInTheDocument();
-    act(() => socket.message({ protocol_version: 2, type: "participant_state", participant_state: active }));
+    act(() => socket.message({ protocol_version: 2, type: "participant_state", participant_state: { ...active, recruitment_source: "prolific" } }));
+    expect(screen.getByText("Source: prolific")).toBeInTheDocument();
     expect(await screen.findByText("live")).toBeInTheDocument();
     expect(screen.getByText("true")).toBeInTheDocument();
   });
@@ -465,6 +468,7 @@ describe("ParticipantApp participant state machine", () => {
       });
     });
     expect(await screen.findByText(expectedText)).toBeInTheDocument();
+    expect(screen.queryByText(/prolific/i)).not.toBeInTheDocument();
   });
 
   it("renders game completion and copies the Prolific handoff code", async () => {

@@ -54,9 +54,9 @@ its research data from a malicious authenticated administrator.
 
 ## Accepted product choices that are not security findings
 
-### The first visitor may create the administrator
+### The first visitor may create the administrator on custom single-game hosts
 
-A fresh single-game installation started with `parlando serve` lets the first
+A fresh custom single-game installation using the Rust `Server` builder lets the first
 visitor to `/admin` create its administrator credential. This is the supported bootstrap ceremony. The operator
 is expected to visit the installation before distributing its URL, and the
 singleton insert must be atomic.
@@ -70,7 +70,7 @@ singleton atomically.
 
 ### The shared host has a separate administrative origin
 
-For `parlando host`, configure the dashboard on a hostname distinct from the
+For `parlando serve`, configure the dashboard on a hostname distinct from the
 participant hostname. The host operator provisions the first named account
 using the operator token. Experimenter accounts share access to the host's
 games and research data. Participant apps on a shared origin must belong to
@@ -167,8 +167,8 @@ the direct network peer and permits only two concurrent password verifications.
 When a trusted reverse proxy hides the original client address, the equivalent
 IP/VPN rule belongs at that proxy rather than in untrusted forwarding headers.
 
-The shared host uses immutable experiment selections, a dedicated account
-store, and scoped upload tokens. Maintain deployment and dashboard authority
+The shared host uses a dedicated dashboard account store, scoped upload tokens,
+and a separate research database for each game. Maintain deployment and dashboard authority
 separately from participant credentials and the files in a game package.
 
 ## Realistic attack scenarios

@@ -1,47 +1,28 @@
-import { bindSpeechSettings, COMMUNICATION_FIELD_PATHS, COMMUNICATION_MODE_FIELD, configAt, readConfigFields, renderSpeechSettings, renderStandardConfigField, setConfigAt } from "./communication-config.js";
-
 const API = "/api/hosting";
-const SESSION_LIMIT = 10_000;
 const UPLOAD_LIMIT = 64 * 1024 * 1024;
-const LIFECYCLE_ACTIONS = {
-  inactive: [["testing", "Start testing"], ["active", "Open intake"], ["archived", "Archive"]],
-  testing: [["inactive", "Stop testing"]],
-  active: [["inactive", "Pause intake"], ["completed", "Complete experiment"]],
-  completed: [["archived", "Archive"]],
-  archived: [["inactive", "Restore experiment"]],
-};
-
-// Owns the current account and selections. A generation prevents requests from an old
-// account or experiment from repopulating their views after navigation.
+// Tracks the signed-in account, the scoped upload, and pending account actions.
 const state = {
   account: null,
   generation: 0,
-  games: [],
-  experiments: [],
-  configDefaults: {},
-  experimentId: null,
-  sessionId: null,
-  sessionRequest: 0,
-  sessionLimit: 50,
+  uploadGame: null,
   resetAccountId: null,
 };
 
+// Looks up persistent dashboard controls.
 const byId = id => document.getElementById(id);
-const experimentForm = byId("experiment-form");
-const communicationConfig = byId("communication-config");
 
-// Sends hosting requests to the operator origin and reports server validation messages.
-async function request(path, { method = "GET", body, data = "json" } = {}) {
+// Sends dashboard requests to the configured origin and reports server validation messages.
+async function request(path, { method = "GET", body, data = "json", contentType = "application/json" } = {}) {
   const generation = state.generation;
   const headers = new Headers();
   if (method !== "GET" && state.account) {
     headers.set("X-CSRF-Token", state.account.csrf_token);
   }
-  if (body !== undefined) headers.set("Content-Type", "application/json");
+  if (body !== undefined) headers.set("Content-Type", contentType);
   const response = await fetch(API + path, {
     method,
     headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined || contentType !== "application/json" ? body : JSON.stringify(body),
     credentials: "same-origin",
     cache: "no-store",
   });
@@ -54,7 +35,9 @@ async function request(path, { method = "GET", body, data = "json" } = {}) {
       setAccount(null);
       throw new Error("Your session expired. Sign in again.");
     }
-    throw new Error(message || `Request failed (HTTP ${response.status}).`);
+    throw Object.assign(new Error(message || `Request failed (HTTP ${response.status}).`), {
+      status: response.status,
+    });
   }
   if (response.status === 204) return;
   if (data === "response") return response;
@@ -122,296 +105,101 @@ function digest(value) {
   return element;
 }
 
-// Shows the login or workspace and discards account-specific data on a sign-out.
-function setAccount(account) {
+// Translates account roles for display without changing their API values.
+function roleLabel(role) {
+  return role === "operator" ? "Admin" : "Experimenter";
+}
+
+// Shows the authenticated workspace or the available sign-in form and clears account-specific data.
+function setAccount(account, setupAvailable = false) {
   state.generation++;
   state.account = account;
-  const operator = account?.role === "operator";
-  byId("sign-in").hidden = !!account;
+  const admin = account?.role === "operator";
+  byId("auth").hidden = !!account;
+  byId("setup").hidden = !!account || !setupAvailable;
+  byId("sign-in").hidden = !!account || setupAvailable;
   byId("identity").hidden = !account;
   byId("workspace").hidden = !account;
-  byId("operator").hidden = !operator;
-  byId("operator-nav").hidden = !operator;
-  byId("signed-in-as").textContent = account ? `${account.username} · ${account.role}` : "";
+  byId("workspace-nav").hidden = !account;
+  byId("users-nav").hidden = !admin;
+  byId("signed-in-as").textContent = account ? `${account.username} · ${roleLabel(account.role)}` : "";
 
-  state.games = [];
-  state.experiments = [];
-  state.configDefaults = {};
-  state.experimentId = null;
+  resetUpload();
   state.resetAccountId = null;
-  clearSessions();
-  for (const id of ["experiment-rows", "game-rows", "account-rows", "audit-rows",
-    "experiment-title", "experiment-status", "experiment-config", "experiment-actions", "reset-title"]) {
+  for (const id of ["game-rows", "account-rows", "audit-rows", "reset-title"]) {
     byId(id).replaceChildren();
   }
-  byId("experiment-detail").hidden = true;
   byId("reset-password").hidden = true;
+  for (const disclosure of byId("workspace").querySelectorAll("details")) disclosure.open = false;
   for (const form of document.querySelectorAll("form")) form.reset();
-  communicationConfig.replaceChildren();
-  if (!account) byId("login").elements.username.focus();
+  if (!account) {
+    document.title = "Parlando";
+    byId(setupAvailable ? "setup-form" : "login").elements.username.focus();
+  }
 }
 
-// Reads the optional game scope from the dashboard URL.
-function dashboardGame() {
-  return /^\/games\/([a-z0-9_-]+)\/admin$/.exec(location.pathname)?.[1] ?? null;
+// Restricts the Users view to authenticated administrators.
+function showingUsers() {
+  return location.hash === "#users" && state.account?.role === "operator";
 }
 
-// Links to the game's own dashboard using a known package identifier.
-function gameLink(id) {
+// Resets the upload to deployment from any package and discards the selected file.
+function resetUpload() {
+  state.uploadGame = null;
+  byId("publish-form").reset();
+  byId("upload-target").textContent = "";
+  byId("cancel-update").hidden = true;
+  byId("submit-upload").textContent = "Deploy game";
+}
+
+// Scopes the upload to the selected game so the server can reject a mismatched ZIP.
+function openUpdate(game) {
+  resetUpload();
+  state.uploadGame = game.id;
+  byId("upload-target").textContent = `Updating ${game.name} (${game.id}).`;
+  byId("cancel-update").hidden = false;
+  byId("submit-upload").textContent = "Update game";
+  byId("publish-game").open = true;
+  byId("publish-form").elements.archive.focus();
+}
+
+// Builds a game row with the installed package and host-level lifecycle controls.
+function gameRow(game) {
   const link = document.createElement("a");
-  link.href = `/games/${encodeURIComponent(id)}/admin`;
-  link.textContent = id;
-  return link;
-}
+  link.href = `/${encodeURIComponent(game.id)}`;
+  link.textContent = game.id;
 
-// Rebuilds the build and experiment catalogues with their current selection.
-async function refreshDashboard() {
-  const dashboard = await request("/dashboard");
-  state.configDefaults = dashboard.config_defaults;
-  if (!communicationConfig.hasChildNodes()) renderConfiguration({});
-  const scope = dashboardGame();
-  byId("dashboard-title").textContent = scope ? `Game dashboard · ${scope}` : "Hosting dashboard";
-  state.games = scope ? dashboard.games.filter(game => game.id === scope) : dashboard.games;
-  state.experiments = scope ? dashboard.experiments.filter(experiment => experiment.game === scope) : dashboard.experiments;
-  const games = byId("game-rows");
-  const builds = state.games.flatMap(game => game.revisions.map(build => {
-    const use = action("Create experiment", () => configure(game.id, build.revision));
-    return row([gameLink(game.id), build.version, digest(build.revision), use]);
-  }));
-  if (builds.length) games.replaceChildren(...builds);
-  else emptyTable(games, 4, "No game builds have been uploaded.");
-  const experiments = byId("experiment-rows");
-  const entries = state.experiments.map(experiment => {
-    const manage = action("Manage", () => openExperiment(experiment.id));
-    return row([experiment.id, experiment.game, digest(experiment.revision), experiment.status, manage]);
+  const controls = document.createElement("div");
+  controls.className = "toolbar";
+  const update = action("Update", () => openUpdate(game));
+  update.setAttribute("aria-label", `Update ${game.id}`);
+  const lifecycleLabel = game.active ? "Deactivate" : "Activate";
+  const lifecycle = action(lifecycleLabel, async () => {
+    await request(`/games/${encodeURIComponent(game.id)}/${lifecycleLabel.toLowerCase()}`, {
+      method: "POST", data: "response",
+    });
+    await refreshGames();
+    notice(`${game.name} ${game.active ? "deactivated" : "activated"}.`);
   });
-  if (entries.length) experiments.replaceChildren(...entries);
-  else emptyTable(experiments, 5, "No experiments have been created.");
-
-  const gameSelect = experimentForm.elements.game;
-  const game = gameSelect.value;
-  gameSelect.replaceChildren(new Option("Choose a game", ""), ...state.games.map(item => new Option(item.id, item.id)));
-  gameSelect.value = state.games.some(item => item.id === game) ? game : scope ?? "";
-  updateRevisionOptions();
-  renderExperiment();
+  lifecycle.setAttribute("aria-label", `${lifecycleLabel} ${game.id}`);
+  controls.append(update, lifecycle);
+  const status = document.createElement("span");
+  status.className = game.active ? "game-status active" : "game-status";
+  status.textContent = game.active ? "Active" : "Inactive";
+  return row([link, game.name, game.version, digest(game.revision), status, controls]);
 }
 
-// Keeps the selected revision within the selected game's revisions.
-function updateRevisionOptions() {
-  const game = state.games.find(item => item.id === experimentForm.elements.game.value);
-  const revisionSelect = experimentForm.elements.revision;
-  const revision = revisionSelect.value;
-  const revisions = game?.revisions ?? [];
-  revisionSelect.replaceChildren(new Option("Choose a revision", ""), ...revisions.map(item =>
-    new Option(`${item.version} · ${item.revision.slice(0, 12)}`, item.revision)));
-  if (revisions.some(item => item.revision === revision)) revisionSelect.value = revision;
-  else if (revisions.length === 1) revisionSelect.value = revisions[0].revision;
+// Loads the currently deployed package and activation state for each game.
+async function refreshGames() {
+  const { games } = await request("/dashboard");
+  const rows = byId("game-rows");
+  if (games.length) rows.replaceChildren(...games.map(gameRow));
+  else emptyTable(rows, 6, "No games have been deployed.");
 }
 
-// Opens a fresh experiment form prefilled from a package or pinned configuration.
-function configure(game, revision, config = {}) {
-  byId("create-experiment").open = true;
-  experimentForm.reset();
-  experimentForm.elements.game.value = game;
-  updateRevisionOptions();
-  experimentForm.elements.revision.value = revision;
-  renderConfiguration(config);
-  experimentForm.elements.id.focus();
-}
-
-// Splits an existing pin into controls and remaining JSON without dropping neighboring fields.
-function renderConfiguration(config) {
-  const other = structuredClone(config);
-  const communication = {};
-  for (const path of COMMUNICATION_FIELD_PATHS) {
-    const [group, name] = path.split(".");
-    setConfigAt(communication, path, configAt(config, path) ?? configAt(state.configDefaults, path));
-    if (other[group]) {
-      delete other[group][name];
-      if (!Object.keys(other[group]).length) delete other[group];
-    }
-  }
-  communicationConfig.innerHTML = renderStandardConfigField(COMMUNICATION_MODE_FIELD, communication)
-    + renderSpeechSettings(communication);
-  bindSpeechSettings(communicationConfig);
-  experimentForm.elements.config.value = JSON.stringify(other, null, 2);
-}
-
-// Constructs an API path from the selected experiment's validated identifier.
-function experimentApi(id) {
-  return `/experiments/${encodeURIComponent(id)}/admin`;
-}
-
-// Shows the pinned experiment and applicable intake actions.
-function renderExperiment() {
-  const experiment = state.experiments.find(item => item.id === state.experimentId);
-  byId("experiment-detail").hidden = !experiment;
-  if (!experiment) return;
-  byId("experiment-title").textContent = experiment.id;
-  byId("experiment-config").textContent = JSON.stringify(experiment.config, null, 2);
-  byId("experiment-status").textContent = experiment.status || "Unavailable";
-
-  const actions = byId("experiment-actions");
-  actions.replaceChildren();
-  if (experiment.participant_url) {
-    const url = new URL(experiment.participant_url, location.origin);
-    if (url.protocol === "https:" || url.protocol === "http:") {
-      const link = document.createElement("a");
-      link.className = "button";
-      link.href = url.href;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.textContent = "Participant page";
-      actions.append(link);
-    }
-  }
-  for (const [status, label] of LIFECYCLE_ACTIONS[experiment.status] ?? []) {
-    actions.append(action(label, () => updateStatus(experiment.id, status)));
-  }
-  actions.append(action("Copy configuration to new experiment",
-    () => configure(experiment.game, experiment.revision, experiment.config)));
-}
-
-// Changes intake status and retrieves the latest durable status.
-async function updateStatus(id, status) {
-  if (["completed", "archived"].includes(status) &&
-      !window.confirm(`Set experiment "${id}" to ${status}?`)) return;
-  const result = await request(`${experimentApi(id)}/experiment/status`, { method: "POST", body: { status } });
-  const experiment = state.experiments.find(item => item.id === id);
-  if (experiment) experiment.status = result.status;
-  renderExperiment();
-  await refreshDashboard();
-  notice(`Updated ${id} to ${result.status}.`);
-}
-
-// Switches to the selected experiment and drops data belonging to the previous one.
-function openExperiment(id) {
-  state.experimentId = id;
-  clearSessions();
-  renderExperiment();
-  byId("experiment-title").focus();
-}
-
-// Clears session identity, data and paging controls.
-function clearSessions() {
-  state.sessionId = null;
-  state.sessionRequest++;
-  state.sessionLimit = 50;
-  byId("session-list").hidden = true;
-  byId("load-more-sessions").hidden = true;
-  byId("session-rows").replaceChildren();
-  byId("session-detail").hidden = true;
-  byId("session-title").replaceChildren();
-  byId("session-data").replaceChildren();
-}
-
-// Fetches recent sessions for the selected experiment and can expand the result window.
-async function loadSessions(limit) {
-  const id = state.experimentId;
-  const result = await request(`${experimentApi(id)}/sessions?limit=${limit}`);
-  if (state.experimentId !== id) return;
-  state.sessionLimit = limit;
-  const rows = byId("session-rows");
-  if (!result.sessions.length) emptyTable(rows, 6, "This experiment has no sessions.");
-  else rows.replaceChildren(...result.sessions.map(session => row([
-    session.dialogue_id, session.lifecycle, session.purpose, session.started_at, session.event_count,
-    action("View", () => {
-      state.sessionId = session.session_id;
-      byId("session-title").textContent = session.dialogue_id;
-      return loadSessionRecord("", true);
-    }),
-  ])));
-  byId("session-list").hidden = false;
-  byId("load-more-sessions").hidden = result.sessions.length < limit || limit >= SESSION_LIMIT;
-}
-
-// Displays a session's record, timeline, or replay using only textual JSON.
-async function loadSessionRecord(suffix, focus = false) {
-  const id = state.experimentId;
-  const session = state.sessionId;
-  const current = ++state.sessionRequest;
-  byId("session-detail").hidden = false;
-  byId("session-data").textContent = "Loading…";
-  try {
-    const output = await request(`${experimentApi(id)}/sessions/${encodeURIComponent(session)}${suffix}`);
-    if (state.sessionRequest !== current) return;
-    byId("session-data").textContent = JSON.stringify(output, null, 2);
-  } catch (error) {
-    if (state.sessionRequest !== current) return;
-    byId("session-data").textContent = error.message;
-    throw error;
-  }
-  if (focus) byId("session-title").focus();
-}
-
-// Downloads an authenticated export without navigating away or embedding response HTML.
-async function exportCorpus(format) {
-  const id = state.experimentId;
-  const response = await request(`${experimentApi(id)}/export?format=${format}`, { data: "response" });
-  const objectUrl = URL.createObjectURL(await response.blob());
-  try {
-    const link = document.createElement("a");
-    link.href = objectUrl;
-    link.download = `${id}-corpus-v1.${format}`;
-    link.click();
-  } finally {
-    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-  }
-}
-
-// Mirrors the server's portable package path rules before any files leave the browser.
-function validPackagePath(path) {
-  return path.length <= 512 && path.split("/").every(part =>
-    /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/.test(part) && !part.endsWith("."));
-}
-
-// Encodes a selected file without passing a large byte array as function arguments.
-function base64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result.slice(reader.result.indexOf(",") + 1));
-    reader.onerror = () => reject(new Error(`Could not read ${file.name}.`));
-    reader.readAsDataURL(file);
-  });
-}
-
-// Checks the selected folder and encodes only declared package files for upload.
-async function packageFiles(directory, component, client) {
-  if (!validPackagePath(component) || (client && !validPackagePath(client))) {
-    throw new Error("Use relative package paths such as game.wasm or client.");
-  }
-  if (!directory.length || directory.length > 4096) throw new Error("Choose a package of up to 4096 files.");
-  const paths = new Set();
-  const entries = [];
-  let encodedSize = 0;
-  for (const file of directory) {
-    const relative = file.webkitRelativePath;
-    const path = relative.slice(relative.indexOf("/") + 1);
-    const asset = client && path.startsWith(`${client}/`) ? path.slice(client.length + 1) : "";
-    if (!validPackagePath(path) || paths.has(path.toLowerCase()) ||
-        (path !== "game.yaml" && path !== component && !asset) ||
-        (asset && /^(api|ws|admin|health)(\/|$)/i.test(asset))) {
-      throw new Error(`Unexpected package file "${path}". Choose a directory containing only the prepared game build.`);
-    }
-    paths.add(path.toLowerCase());
-    entries.push([path, file]);
-    encodedSize += 4 * Math.ceil(file.size / 3) + path.length + 8;
-  }
-
-  const names = new Set(entries.map(([path]) => path));
-  if (!names.has("game.yaml") || !names.has(component) ||
-      (client && !names.has(`${client}/index.html`))) {
-    throw new Error("The package needs game.yaml, the component, and index.html if a participant app is declared.");
-  }
-  if (encodedSize + 12 > UPLOAD_LIMIT) throw new Error("The encoded package exceeds the 64 MiB upload limit.");
-  const files = Object.create(null);
-  for (const [path, file] of entries) files[path] = await base64(file);
-  return files;
-}
-
-// Refreshes account and audit views for operators.
-async function refreshOperator() {
-  const [{ accounts }, { events }] = await Promise.all([request("/accounts"), request("/audit")]);
+// Refreshes the Users list and its account controls.
+async function refreshUsers() {
+  const { accounts } = await request("/accounts");
   const accountRows = byId("account-rows");
   if (accounts.length) {
     accountRows.replaceChildren(...accounts.map(account => {
@@ -423,15 +211,45 @@ async function refreshOperator() {
           action("Disable", () => disableAccount(account)),
         );
       }
-      return row([account.username, account.role, account.disabled ? "Disabled" : "Enabled", controls]);
+      return row([account.username, roleLabel(account.role), account.disabled ? "Disabled" : "Enabled", controls]);
     }));
   } else emptyTable(accountRows, 4, "No accounts found.");
+}
 
+// Retrieves the latest audit events when an administrator opens the history.
+async function refreshAudit() {
+  const { events } = await request("/audit");
   const auditRows = byId("audit-rows");
   if (events.length) auditRows.replaceChildren(...events.map(event => row([
-    new Date(event.created_at * 1000).toLocaleString(), event.actor, event.operation, event.target, event.outcome,
+    new Date(event.created_at * 1000).toLocaleString(),
+    event.actor === "host-operator-token" ? "Admin token" : event.actor,
+    event.operation, event.target, event.outcome,
   ])));
   else emptyTable(auditRows, 5, "No audit events recorded.");
+}
+
+// Refreshes Users and includes the audit history when it is visible.
+async function refreshUsersView() {
+  await Promise.all([
+    refreshUsers(),
+    byId("audit-history").open ? refreshAudit() : undefined,
+  ]);
+}
+
+// Applies the address to the workspace controls and loads the active view.
+async function openWorkspaceView({ focus = false } = {}) {
+  const users = showingUsers();
+  const title = users ? "Users" : "Games";
+  byId("page-title").textContent = title;
+  document.title = `${title} · Parlando`;
+  byId("games").hidden = users;
+  byId("users").hidden = !users;
+  if (!users) byId("audit-history").open = false;
+  byId("games-nav").setAttribute("aria-current", users ? "false" : "page");
+  byId("users-nav").setAttribute("aria-current", users ? "page" : "false");
+  if (focus) byId("page-title").focus();
+  if (users) await refreshUsersView();
+  else await refreshGames();
 }
 
 // Opens the password reset form for the selected identity.
@@ -460,7 +278,7 @@ async function disableAccount(account) {
     notice("Your account was disabled.");
     return;
   }
-  await refreshOperator();
+  await refreshUsersView();
   notice("Account disabled.");
 }
 
@@ -472,61 +290,56 @@ function onSubmit(id, submit) {
   });
 }
 
+// Exchanges account credentials for a cookie-backed dashboard session.
+async function signIn(credentials) {
+  await request("/auth/login", { method: "POST", body: credentials, data: "response" });
+  await openWorkspace({ allowSetup: false });
+}
+
+// Confirms the password, creates the first administrator, and signs in.
+onSubmit("setup-form", async form => {
+  const { username, password, password_confirmation } = form.elements;
+  if (password.value !== password_confirmation.value) {
+    password_confirmation.focus();
+    throw new Error("Passwords do not match.");
+  }
+  const credentials = { username: username.value, password: password.value };
+  try {
+    await request("/auth/setup", { method: "POST", body: credentials, data: "response" });
+  } catch (error) {
+    if (error.status === 409) setAccount(null);
+    throw error;
+  }
+  setAccount(null);
+  byId("login").elements.username.value = credentials.username;
+  await signIn(credentials);
+  notice("Administrator account created.");
+});
+
 onSubmit("login", async form => {
   const { username, password } = form.elements;
+  const credentials = { username: username.value, password: password.value };
   try {
-    await request("/auth/login", { method: "POST", body: { username: username.value, password: password.value }, data: "response" });
+    await signIn(credentials);
   } finally {
     password.value = "";
   }
-  await openDashboard();
 });
 
-onSubmit("experiment-form", async form => {
-  const { id, game, revision, config } = form.elements;
-  // The server validates speech settings in context, including disabled providers.
-  if ([id, game, revision, config].some(control => !control.reportValidity())) return;
-  let configuration;
-  try {
-    configuration = JSON.parse(config.value);
-  } catch {
-    throw new Error("Enter a valid JSON configuration.");
-  }
-  if (!configuration || Array.isArray(configuration) || typeof configuration !== "object") {
-    throw new Error("Configuration must be a JSON object.");
-  }
-  const duplicate = COMMUNICATION_FIELD_PATHS.find(path => configAt(configuration, path) !== undefined);
-  if (duplicate) throw new Error(`Set ${duplicate} in the communication controls above.`);
-  readConfigFields(communicationConfig, configuration);
-  const experimentId = id.value;
-  await request(`/experiments/${encodeURIComponent(experimentId)}`, {
-    method: "PUT", body: { game: game.value, revision: revision.value, config: configuration },
-  });
-  form.reset();
-  renderConfiguration({});
-  byId("create-experiment").open = false;
-  await refreshDashboard();
-  openExperiment(experimentId);
-  notice(`Experiment ${experimentId} is ready to configure for intake.`);
-});
-
+// Sends the ZIP to the server, which validates its contents and reads its manifest.
 onSubmit("publish-form", async form => {
-  const { id, component, client, directory } = form.elements;
-  const generation = state.generation;
-  const game = id.value;
-  notice("Preparing the game package…");
-  const files = await packageFiles(directory.files, component.value, client.value);
-  if (state.generation !== generation) return;
-  notice("Uploading and validating the game build…");
-  const result = await request(`/packages/${encodeURIComponent(game)}`, { method: "PUT", body: { files } });
-  form.reset();
+  const [archive] = form.elements.archive.files;
+  if (!archive || !/\.zip$/i.test(archive.name)) throw new Error("Choose a game build ZIP file.");
+  if (archive.size > UPLOAD_LIMIT) throw new Error("The ZIP exceeds the 64 MiB upload limit.");
+  const game = state.uploadGame;
+  const path = game ? `/packages/${encodeURIComponent(game)}` : "/packages";
+  notice("Uploading and validating the game build ZIP…");
+  const result = await request(path, { method: "PUT", body: archive, contentType: "application/zip" });
+  resetUpload();
   byId("publish-game").open = false;
-  await refreshDashboard();
-  configure(result.game, result.revision);
-  notice(`Uploaded ${result.game} ${result.version} (${result.revision.slice(0, 12)}).`);
+  await refreshGames();
+  notice(`Deployed ${result.name || result.game} ${result.version} (${result.revision.slice(0, 12)}).`);
 });
-
-onSubmit("export", form => exportCorpus(form.elements.format.value));
 
 onSubmit("account-form", async form => {
   const { username, password, role } = form.elements;
@@ -535,7 +348,7 @@ onSubmit("account-form", async form => {
   });
   form.reset();
   byId("create-account").open = false;
-  await refreshOperator();
+  await refreshUsersView();
   notice("Account created.");
 });
 
@@ -550,7 +363,7 @@ onSubmit("reset-password", async form => {
     return;
   }
   closePasswordReset();
-  await refreshOperator();
+  await refreshUsersView();
   notice("Password reset.");
 });
 
@@ -565,37 +378,53 @@ onClick("logout", async () => {
   setAccount(null);
   notice("Signed out.");
 });
-onClick("refresh", refreshDashboard);
-onClick("load-sessions", () => loadSessions(state.sessionLimit));
-onClick("load-more-sessions", () => loadSessions(Math.min(SESSION_LIMIT, state.sessionLimit * 2)));
-onClick("session-summary", () => loadSessionRecord(""));
-onClick("session-events", () => loadSessionRecord("/events"));
-onClick("session-replay", () => loadSessionRecord("/replay"));
-onClick("load-operator", refreshOperator);
+onClick("refresh", () => showingUsers() ? refreshUsersView() : refreshGames());
+onClick("cancel-update", resetUpload);
 onClick("cancel-reset", closePasswordReset);
-experimentForm.elements.game.addEventListener("change", updateRevisionOptions);
 
-// Recognizes the standard participant app path produced by parlando build.
-byId("publish-form").elements.directory.addEventListener("change", event => {
-  const input = event.currentTarget;
-  const client = input.form.elements.client;
-  if (!client.value || client.value === "client") {
-    const standardClient = [...input.files].some(file => /^[^/]+\/client\/index\.html$/.test(file.webkitRelativePath));
-    client.value = standardClient ? "client" : "";
-  }
+// Reloads the visible view on same-document navigation, including browser Back.
+window.addEventListener("hashchange", () => {
+  if (state.account) perform(null, () => openWorkspaceView({ focus: true }));
+});
+
+// Updates account and game data when Back restores a cached document.
+window.addEventListener("pageshow", event => {
+  if (event.persisted) perform(null, openWorkspace);
+});
+
+// Keeps the audit request independent of ordinary Users navigation.
+byId("audit-history").addEventListener("toggle", () => {
+  if (showingUsers() && byId("audit-history").open) perform(null, refreshAudit);
 });
 
 // Loads the cookie-backed identity before requesting any account-protected data.
-async function openDashboard() {
-  const account = await request("/auth/session");
+// An unsigned visitor can create an administrator only when the server offers setup.
+async function openWorkspace({ allowSetup = true } = {}) {
+  let account;
+  try {
+    account = await request("/auth/session");
+  } catch (error) {
+    if (error.status !== 401 || !allowSetup) throw error;
+    const setup = await request("/auth/setup");
+    setAccount(null, setup.available);
+    return;
+  }
   setAccount(account);
-  await refreshDashboard();
-  if (state.account?.role === "operator") await refreshOperator();
+  const next = new URLSearchParams(location.search).get("next");
+  // Accept only a game mount path. The destination still checks the session and game.
+  if (next && /^\/[a-z0-9][a-z0-9_-]{0,63}$/.test(next)
+      && !["/admin", "/api", "/health"].includes(next)) {
+    location.replace(next);
+    return;
+  }
+  await openWorkspaceView();
 }
 
 try {
-  await openDashboard();
+  await openWorkspace();
 } catch (error) {
-  if (!state.account) setAccount(null);
-  else if (error.name !== "AbortError") notice(error.message, true);
+  if (error.name !== "AbortError") {
+    if (!state.account) setAccount(null);
+    notice(error.message, true);
+  }
 }

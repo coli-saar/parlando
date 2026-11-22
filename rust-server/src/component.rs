@@ -89,7 +89,12 @@ impl LoadedGame {
 
     /// Compiles in-memory package bytes using the default fuel budget.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        Self::compile(bytes.into(), WasmMetering::Fuel)
+        Self::from_bytes_with_metering(bytes, WasmMetering::Fuel)
+    }
+
+    /// Compiles in-memory package bytes using the selected execution budget.
+    pub(crate) fn from_bytes_with_metering(bytes: &[u8], metering: WasmMetering) -> Result<Self> {
+        Self::compile(bytes.into(), metering)
     }
 
     /// Reuse the compiled handle when possible. A mode switch compiles the pinned

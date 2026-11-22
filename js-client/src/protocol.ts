@@ -101,9 +101,9 @@ export interface ParticipantResult<TObservation = unknown, TCompletion = Record<
 /** Canonical participant lifecycle shared with the server. */
 export type ParticipantState<TObservation = unknown, TAction = unknown, TCompletion = Record<string, unknown>> =
   | { state: "registered" }
-  | { state: "waiting"; public_session_id: string; role: PlayerRole; waiting_started_at: string; waiting_deadline_at: string; presence: Record<string, unknown> }
-  | { state: "active"; public_session_id: string; role: PlayerRole; observation: TObservation; available_actions: TAction[] | null; presence: Record<string, unknown>; idle_deadline_at: string }
-  | { state: "paused"; public_session_id: string; role: PlayerRole; reason: ParticipantPauseReason; observation: TObservation; available_actions: TAction[] | null; presence: Record<string, unknown>; idle_deadline_at: string }
+  | { state: "waiting"; recruitment_source?: "direct" | "prolific" | "local_preview"; public_session_id: string; role: PlayerRole; waiting_started_at: string; waiting_deadline_at: string; presence: Record<string, unknown> }
+  | { state: "active"; recruitment_source?: "direct" | "prolific" | "local_preview"; public_session_id: string; role: PlayerRole; observation: TObservation; available_actions: TAction[] | null; presence: Record<string, unknown>; idle_deadline_at: string }
+  | { state: "paused"; recruitment_source?: "direct" | "prolific" | "local_preview"; public_session_id: string; role: PlayerRole; reason: ParticipantPauseReason; observation: TObservation; available_actions: TAction[] | null; presence: Record<string, unknown>; idle_deadline_at: string }
   | { state: "ended"; public_session_id: string; role: PlayerRole; result: ParticipantResult<TObservation, TCompletion>; voice_ends_at?: string | null };
 
 /** Applies a complete snapshot while rejecting impossible lifecycle jumps. */
@@ -289,6 +289,7 @@ function requireParticipantState<TObservation, TAction, TCompletion>(value: unkn
   if (value.state === "registered") return;
   requireString(value, "public_session_id");
   requireRole(value, "role");
+  if (value.recruitment_source !== undefined && !["direct", "local_preview", "prolific"].some(source => source === value.recruitment_source)) throw new Error("invalid recruitment source");
   if (value.state === "waiting") {
     requireString(value, "waiting_started_at");
     requireString(value, "waiting_deadline_at");

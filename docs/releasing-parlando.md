@@ -121,12 +121,14 @@ and installs them in temporary consumer projects. Cargo installs the CLI from it
 and resolves the Rust SDK and derive dependencies from their candidate archives.
 The starter clients install the npm tarball. A fresh virtual environment
 installs both Python SDK wheels and runs their tests. The installed CLI creates,
-tests, and builds the Rust and Python Beacon Relay starters, deploys each to a
-loopback host, and opens intake in explicitly typed experiments. For each
-starter, two independent Chromium sessions exchange messages in both
+tests, and builds the Rust and Python Beacon Relay starters, then deploys
+and activates each on a loopback host. Chromium signs in on the administrator
+origin, opens the game dashboard, and starts a local preview. For each starter,
+two independent Chromium sessions exchange messages in both
 directions, check that each message appears once in each browser, and verify
 that the client never requests the microphone. Both participants then play
 the game to completion. Reloading one browser verifies that the result persists.
+The dashboard stops the preview before the CLI deactivates the game.
 
 The rehearsal installs `componentize-py` and Playwright as test dependencies.
 Set `PLAYWRIGHT_BROWSERS_PATH` to reuse a compatible Chromium installation.

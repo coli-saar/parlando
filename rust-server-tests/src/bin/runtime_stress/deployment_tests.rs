@@ -1,9 +1,10 @@
 //! Exercises the deployment host over real HTTP connections and WebSockets.
 
 use super::*;
-use parlando::deployment::{self, Deployment, ExperimentSelection, HostOptions};
-use reqwest::header::{COOKIE, ORIGIN, SET_COOKIE};
+use parlando::deployment::{self, HostOptions};
+use reqwest::header::{CONTENT_TYPE, COOKIE, ORIGIN, SET_COOKIE};
 use reqwest::{Client, Method, Response};
+use std::io::{Cursor, Write};
 use tokio::{task::JoinHandle, time::timeout};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -38,7 +39,7 @@ impl TestHost {
                 ("fixture-a".to_owned(), UPLOAD_A.to_owned()),
                 ("fixture-b".to_owned(), UPLOAD_B.to_owned()),
             ]),
-            admin_token: ADMIN.into(),
+            admin_token: Some(ADMIN.into()),
         };
         let task = match admin_url {
             Some(admin_url) => tokio::spawn(deployment::serve_with_dashboard(
@@ -85,42 +86,24 @@ impl TestHost {
         request.send().await.unwrap()
     }
 
-    /// Pins the requested revision and materializes the response for assertion.
-    async fn select(&self, id: &str, package: &Deployment, config: Value) -> Response {
-        let selection = ExperimentSelection {
-            game: package.game.clone(),
-            revision: package.revision.clone(),
-            config,
-        };
-        self.request(
-            Method::PUT,
-            &format!("{PATH}/experiments/{id}"),
-            Some(ADMIN),
-            Some(serde_json::to_value(selection).unwrap()),
-        )
-        .await
+    /// Uploads an archive with a game-scoped credential and a caller-selected package path.
+    async fn upload(&self, path: &str, credential: &str, bytes: Vec<u8>) -> Response {
+        self.client
+            .put(format!("{}{path}", self.origin))
+            .bearer_auth(credential)
+            .header(CONTENT_TYPE, "application/zip")
+            .body(bytes)
+            .send()
+            .await
+            .unwrap()
     }
 
-    /// Opens test intake and creates a participant attached to one hosted room.
+    /// Registers a participant with open intake and attaches them to a room.
     async fn seat(&self, id: &str) -> (String, String) {
-        let status = self
-            .request(
-                Method::POST,
-                &format!("{PATH}/experiments/{id}/admin/experiment/status"),
-                Some(ADMIN),
-                Some(json!({"status": "testing"})),
-            )
-            .await;
-        assert_eq!(
-            status.status(),
-            StatusCode::OK,
-            "{}",
-            status.text().await.unwrap()
-        );
         let registration = check_json(
             self.request(
                 Method::POST,
-                &format!("/e/{id}/api/participants"),
+                &format!("/e/fixture-a~{id}/api/participants"),
                 None,
                 Some(json!({})),
             )
@@ -131,7 +114,7 @@ impl TestHost {
         let consent = self
             .request(
                 Method::POST,
-                &format!("/e/{id}/api/consent"),
+                &format!("/e/fixture-a~{id}/api/consent"),
                 Some(token),
                 Some(json!({"decisions": {}})),
             )
@@ -140,7 +123,7 @@ impl TestHost {
         let room = check_json(
             self.request(
                 Method::POST,
-                &format!("/e/{id}/api/sessions"),
+                &format!("/e/fixture-a~{id}/api/sessions"),
                 Some(token),
                 Some(json!({})),
             )
@@ -161,7 +144,7 @@ impl TestHost {
         check_json(
             self.request(
                 Method::POST,
-                &format!("/e/{id}/api/sessions/{room}/game-session"),
+                &format!("/e/fixture-a~{id}/api/sessions/{room}/game-session"),
                 Some(token),
                 Some(json!({})),
             )
@@ -205,7 +188,7 @@ async fn check_json(response: Response) -> Value {
 }
 
 /// Writes one ordinary deployable fixture with revision-identifying participant assets.
-fn create_package(path: &Path, game: &str, asset: &str) {
+fn create_package(path: &Path, game: &str, asset: &str) -> PathBuf {
     std::fs::create_dir_all(path.join("client/assets")).unwrap();
     let fixture = std::env::var_os("PARLANDO_TEST_COMPONENT").expect("set PARLANDO_TEST_COMPONENT");
     std::fs::copy(fixture, path.join("game.wasm")).unwrap();
@@ -223,6 +206,25 @@ fn create_package(path: &Path, game: &str, asset: &str) {
     .unwrap();
     std::fs::write(path.join("client/assets/app.js"), asset).unwrap();
     std::fs::write(path.join("client/favicon.ico"), "fixture icon").unwrap();
+    let archive = path.with_extension("zip");
+    deployment::write_package_archive(path, &archive).unwrap();
+    archive
+}
+
+/// Encodes crafted ZIP paths and inputs without the production writer's package checks.
+fn crafted_zip(members: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (path, data) in members {
+        writer
+            .start_file(
+                *path,
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored),
+            )
+            .unwrap();
+        writer.write_all(data).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
 }
 
 /// Signs in on the admin origin and keeps the cookie separate from the session response.
@@ -348,45 +350,28 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
         );
     }
 
-    let cli_package = directory.path().join("fixture-a");
-    create_package(&cli_package, "fixture-a", "CLI game");
-    let cli_deployment = deployment::deploy(&host.origin, &cli_package, UPLOAD_A)
+    let cli_package = create_package(&directory.path().join("fixture-a"), "fixture-a", "CLI game");
+    deployment::deploy(&host.origin, &cli_package, UPLOAD_A)
         .await
         .unwrap();
-    check_json(
-        host.select("cli-experiment", &cli_deployment, json!({}))
-            .await,
-    )
-    .await;
+    let browser_package = create_package(
+        &directory.path().join("browser-fixture"),
+        "browser-fixture",
+        "browser game",
+    );
+    let upload = std::fs::read(browser_package).unwrap();
+    let upload_path = "/packages";
     assert_eq!(
-        client
-            .get(format!("{admin_origin}/e/cli-experiment/assets/app.js"))
+        request(Method::PUT, upload_path)
+            .bearer_auth(UPLOAD_A)
+            .header(CONTENT_TYPE, "application/zip")
+            .body(upload.clone())
             .send()
             .await
             .unwrap()
             .status(),
-        StatusCode::NOT_FOUND
+        StatusCode::UNAUTHORIZED,
     );
-    let browser_package = directory.path().join("browser-fixture");
-    create_package(&browser_package, "browser-fixture", "browser game");
-    let files = [
-        "game.yaml",
-        "game.wasm",
-        "client/index.html",
-        "client/assets/app.js",
-        "client/favicon.ico",
-    ]
-    .into_iter()
-    .map(|path| {
-        let contents = std::fs::read(browser_package.join(path)).unwrap();
-        (
-            path,
-            base64::engine::general_purpose::STANDARD.encode(contents),
-        )
-    })
-    .collect::<BTreeMap<_, _>>();
-    let upload = json!({"files": files});
-    let upload_path = "/packages/browser-fixture";
     for (origin, csrf_token) in [
         (None, Some(csrf)),
         (Some(host.origin.as_str()), Some(csrf)),
@@ -399,7 +384,12 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
         if let Some(csrf_token) = csrf_token {
             rejected = rejected.header("x-csrf-token", csrf_token);
         }
-        let response = rejected.json(&json!({})).send().await.unwrap();
+        let response = rejected
+            .header(CONTENT_TYPE, "application/zip")
+            .body(upload.clone())
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
     let browser_deployment = check_json(
@@ -407,27 +397,14 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
             .header(COOKIE, &cookie)
             .header(ORIGIN, &admin_origin)
             .header("x-csrf-token", csrf)
-            .json(&upload)
+            .header(CONTENT_TYPE, "application/zip")
+            .body(upload)
             .send()
             .await
             .unwrap(),
     )
     .await;
-    check_json(
-        request(Method::PUT, "/experiments/browser-experiment")
-            .header(COOKIE, &cookie)
-            .header(ORIGIN, &admin_origin)
-            .header("x-csrf-token", csrf)
-            .json(&json!({
-                "game": browser_deployment["game"],
-                "revision": browser_deployment["revision"],
-                "config": {"communication": {"mode": "speech"}, "voice": {"jitter_buffer_ms": 130}},
-            }))
-            .send()
-            .await
-            .unwrap(),
-    )
-    .await;
+    assert_eq!(browser_deployment["game"], "browser-fixture");
     let dashboard = check_json(
         request(Method::GET, "/dashboard")
             .header(COOKIE, &cookie)
@@ -436,81 +413,7 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
             .unwrap(),
     )
     .await;
-    assert_eq!(
-        dashboard["config_defaults"]["communication"]["mode"],
-        "typed"
-    );
-    let browser_pin = dashboard["experiments"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["id"] == "browser-experiment")
-        .unwrap();
-    assert_eq!(browser_pin["config"]["voice"]["jitter_buffer_ms"], 130);
-    for (experiment, mode) in [
-        ("cli-experiment", "typed"),
-        ("browser-experiment", "speech"),
-    ] {
-        let public_config = check_json(
-            host.request(
-                Method::GET,
-                &format!("/e/{experiment}/api/config"),
-                None,
-                None,
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(public_config["communication"]["mode"], mode);
-    }
-    for (section, expected) in [
-        ("games", ["fixture-a", "browser-fixture"]),
-        ("experiments", ["cli-experiment", "browser-experiment"]),
-    ] {
-        let rows = dashboard[section].as_array().unwrap();
-        for id in expected {
-            assert!(rows.iter().any(|row| row["id"] == id));
-        }
-    }
-    for experiment in ["cli-experiment", "browser-experiment"] {
-        let sessions = check_json(
-            request(
-                Method::GET,
-                &format!("/experiments/{experiment}/admin/sessions"),
-            )
-            .header(COOKIE, &cookie)
-            .send()
-            .await
-            .unwrap(),
-        )
-        .await;
-        assert_eq!(sessions["experiment_id"], experiment);
-    }
-
-    check_json(
-        request(
-            Method::POST,
-            "/experiments/cli-experiment/admin/experiment/status",
-        )
-        .header(COOKIE, &cookie)
-        .header(ORIGIN, &admin_origin)
-        .header("x-csrf-token", csrf)
-        .json(&json!({"status":"testing"}))
-        .send()
-        .await
-        .unwrap(),
-    )
-    .await;
-    assert_eq!(
-        request(Method::GET, "/experiments/cli-experiment/admin/export")
-            .header(COOKIE, &cookie)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::OK
-    );
-
+    assert_eq!(dashboard["games"].as_array().unwrap().len(), 2);
     let operator_password = "browser-operator-credential";
     let operator = check_json(
         request(Method::POST, accounts)
@@ -635,15 +538,6 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
     )
     .await;
     assert_eq!(colleague_dashboard["games"], dashboard["games"]);
-    assert_eq!(
-        request(Method::GET, "/experiments/browser-experiment/admin/export")
-            .header(COOKIE, &colleague_cookie)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::OK
-    );
     let audit = check_json(
         request(Method::GET, "/audit")
             .header(COOKIE, &operator_cookie)
@@ -654,17 +548,11 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
     .await;
     let events = audit["events"].as_array().unwrap();
     let researcher = format!("account:{account_id}:researcher");
-    let colleague_id = colleague["id"].as_i64().unwrap();
-    let colleague_actor = format!("account:{colleague_id}:colleague");
     let operator_id = operator["id"].as_i64().unwrap();
     let operator_actor = format!("account:{operator_id}:operator");
     let reset_target = account_id.to_string();
     for (actor, operation, target) in [
         (researcher.as_str(), "upload", "browser-fixture"),
-        (researcher.as_str(), "select", "browser-experiment"),
-        (researcher.as_str(), "intake", "cli-experiment"),
-        (researcher.as_str(), "export", "cli-experiment"),
-        (colleague_actor.as_str(), "export", "browser-experiment"),
         ("upload-token:fixture-a", "upload", "fixture-a"),
         ("host-operator-token", "reset-password", &reset_target),
         (operator_actor.as_str(), "create-account", "colleague"),
@@ -690,20 +578,45 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
         assert!(!audit.contains(credential));
     }
     host.stop().await;
+
+    let restarted = TestHost::start(address, &store, Some(admin_origin.clone())).await;
+    let (cookie, _) = browser_login(
+        &restarted.client,
+        &admin_origin,
+        "operator",
+        operator_password,
+    )
+    .await;
+    let after = check_json(
+        restarted
+            .client
+            .get(format!("{admin_origin}{PATH}/dashboard"))
+            .header(COOKIE, cookie)
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(after["games"], dashboard["games"]);
+    restarted.stop().await;
 }
 
 /// Checks concurrent publication, strict scope and validation, and durable per-experiment routing.
 #[tokio::test]
 #[ignore = "requires the component fixture built by make test-components"]
-async fn deployment_publishes_immutable_packages_and_routes_sessions_to_their_pin() {
+async fn deployment_replaces_idle_games_and_protects_live_runs() {
     let directory = tempfile::tempdir().unwrap();
     let store = directory.path().join("host");
-    let package_a = directory.path().join("fixture-a");
-    let package_b = directory.path().join("fixture-b");
-    create_package(&package_a, "fixture-a", "first revision");
-    create_package(&package_b, "fixture-b", "second game");
+    let source_a = directory.path().join("fixture-a");
+    let package_a = create_package(&source_a, "fixture-a", "first revision");
+    let package_b = create_package(
+        &directory.path().join("fixture-b"),
+        "fixture-b",
+        "second game",
+    );
     let address = reserve_address().await.unwrap();
-    let host = TestHost::start(address, &store, None).await;
+    let admin_origin = format!("http://localhost:{}", address.port());
+    let host = TestHost::start(address, &store, Some(admin_origin.clone())).await;
     let uploads = format!("{PATH}/packages");
     let first_scope = format!("{uploads}/fixture-a");
     let other_scope = format!("{uploads}/fixture-b");
@@ -718,33 +631,53 @@ async fn deployment_publishes_immutable_packages_and_routes_sessions_to_their_pi
             .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
+    assert_eq!(
+        host.request(Method::PUT, &first_scope, Some(UPLOAD_A), Some(json!({})))
+            .await
+            .status(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
+    let mut duplicate = crafted_zip(&[("game.yaml", b"One"), ("fake.yaml", b"two")]);
+    let mut offset = 0;
+    while let Some(index) = duplicate[offset..]
+        .windows(9)
+        .position(|name| name == b"fake.yaml")
+    {
+        offset += index;
+        duplicate[offset..offset + 9].copy_from_slice(b"game.yaml");
+        offset += 9;
+    }
     for invalid in [
-        json!({"files":{"../escape":"ZA=="}}),
-        json!({"files":{"game.yaml":"!!!"}}),
-        json!({"files":{"Client/a":"YQ==","client/b":"Yg=="}}),
-        json!({"files":{
-            "game.yaml": base64::engine::general_purpose::STANDARD.encode("id: fixture-a\nname: Fixture\nversion: 1.0.0\ncomponent: invalid.wasm\n"),
-            "invalid.wasm":"aW52YWxpZA=="
-        }}),
+        b"This is not a zip".to_vec(),
+        crafted_zip(&[("../escape", b"contents")]),
+        crafted_zip(&[("game.yaml", b"!!!")]),
+        crafted_zip(&[("Client/a", b"One"), ("client/b", b"two")]),
+        crafted_zip(&[("client", b"One"), ("client/b", b"two")]),
+        crafted_zip(&[
+            (
+                "game.yaml",
+                b"id: fixture-a\nname: Fixture\nversion: 1.0.0\ncomponent: invalid.wasm\n",
+            ),
+            ("invalid.wasm", b"invalid"),
+        ]),
+        duplicate,
+        std::fs::read(&package_b).unwrap(),
     ] {
-        let response = host
-            .request(Method::PUT, &first_scope, Some(UPLOAD_A), Some(invalid))
-            .await;
+        let response = host.upload(&first_scope, UPLOAD_A, invalid).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
     assert!(!directory.path().join("escape").exists());
 
     for relative in [".env", "client/assets/.env", "unrelated.txt"] {
-        let unwanted = package_a.join(relative);
+        let unwanted = source_a.join(relative);
         std::fs::write(&unwanted, "deployment-secret-sentinel").unwrap();
-        // An unreachable target distinguishes local rejection from server validation.
-        let error = deployment::deploy("http://127.0.0.1:1", &package_a, UPLOAD_A)
-            .await
-            .unwrap_err();
+        let rejected_archive = directory.path().join("rejected.zip");
+        let error = deployment::write_package_archive(&source_a, &rejected_archive).unwrap_err();
         assert!(
             error.to_string().contains("package path")
                 || error.to_string().contains("unexpected file")
         );
+        assert!(!rejected_archive.exists());
         std::fs::remove_file(unwanted).unwrap();
     }
 
@@ -755,155 +688,244 @@ async fn deployment_publishes_immutable_packages_and_routes_sessions_to_their_pi
     let (first, retry) = (first.unwrap(), retry.unwrap());
     assert_eq!(first.revision, retry.revision);
     assert_eq!(first.component_sha256, retry.component_sha256);
-    assert_eq!(
-        std::fs::read_dir(store.join("packages/fixture-a"))
-            .unwrap()
-            .count(),
-        1
-    );
-
-    for config in [
-        json!({"speechmatics":{"api_key":"deployment-secret-sentinel"}}),
-        json!({"game":{"access_token":"deployment-secret-sentinel"}}),
-        json!({"session":{"session_max_lifetime_seconds":0}}),
-    ] {
-        assert_eq!(
-            host.select("one", &first, config).await.status(),
-            StatusCode::BAD_REQUEST
-        );
+    let reordered_members = [
+        "client/favicon.ico",
+        "client/assets/app.js",
+        "game.wasm",
+        "client/index.html",
+        "game.yaml",
+    ]
+    .map(|path| (path, std::fs::read(source_a.join(path)).unwrap()));
+    let members = reordered_members
+        .iter()
+        .map(|(path, bytes)| (*path, bytes.as_slice()))
+        .collect::<Vec<_>>();
+    let reordered = check_json(
+        host.upload(&first_scope, UPLOAD_A, crafted_zip(&members))
+            .await,
+    )
+    .await;
+    assert_eq!(reordered["revision"], first.revision);
+    let create_user = |name: &str| {
+        host.client
+            .post(format!("{admin_origin}{PATH}/accounts"))
+            .bearer_auth(ADMIN)
+            .json(&json!({"username":name,"password":"two-user-race-password"}))
+    };
+    for username in ["researcher", "deployer"] {
+        check_json(create_user(username).send().await.unwrap()).await;
     }
-    assert_eq!(
-        std::fs::read_dir(store.join("selections")).unwrap().count(),
-        0
+    let (researcher, identity) = browser_login(
+        &host.client,
+        &admin_origin,
+        "researcher",
+        "two-user-race-password",
+    )
+    .await;
+    let (deployer, other) = browser_login(
+        &host.client,
+        &admin_origin,
+        "deployer",
+        "two-user-race-password",
+    )
+    .await;
+    let manage = |path: &str| {
+        host.client
+            .post(format!("{admin_origin}/fixture-a/api/admin/{path}"))
+            .header(COOKIE, &researcher)
+            .header(ORIGIN, &admin_origin)
+            .header("x-csrf-token", identity["csrf_token"].as_str().unwrap())
+    };
+    let activate = format!("{PATH}/games/fixture-a/activate");
+    check_json(
+        host.request(Method::POST, &activate, Some(ADMIN), None)
+            .await,
+    )
+    .await;
+    check_json(
+        manage("experiments")
+            .json(&json!({"experiment_id":"Beacon-Trial"}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    let lifecycle = "runtime/Beacon-Trial/experiment/status";
+    let replace_package = create_package(
+        &directory.path().join("replacement"),
+        "fixture-a",
+        "changed revision",
     );
-    assert_eq!(
-        std::fs::read_dir(store.join("experiments"))
-            .unwrap()
-            .count(),
-        0
+    let replace_bytes = std::fs::read(&replace_package).unwrap();
+    let replace = || {
+        host.client
+            .put(format!("{admin_origin}{first_scope}"))
+            .header(COOKIE, &deployer)
+            .header(ORIGIN, &admin_origin)
+            .header("x-csrf-token", other["csrf_token"].as_str().unwrap())
+            .header(CONTENT_TYPE, "application/zip")
+            .body(replace_bytes.clone())
+            .send()
+    };
+    let (starting, replacing) = tokio::join!(
+        manage(lifecycle).json(&json!({"status":"testing"})).send(),
+        replace()
     );
-    check_json(host.select("one", &first, json!({})).await).await;
-    check_json(host.select("one", &first, json!({})).await).await;
-
-    for path in [
-        "/e/one/api/admin/setup",
-        "/api/hosting/experiments/one/admin/setup",
-        "/api/hosting/experiments/one/admin/game/secrets/reveal",
-        "/api/hosting/experiments/one/admin/game/settings",
-    ] {
+    check_json(starting.unwrap()).await;
+    let replacing = replacing.unwrap();
+    let installed = if replacing.status().is_success() {
+        "changed revision"
+    } else {
         assert_eq!(
-            host.request(Method::POST, path, Some(ADMIN), Some(json!({})))
-                .await
-                .status(),
-            StatusCode::NOT_FOUND
+            replacing.status(),
+            StatusCode::CONFLICT,
+            "{}",
+            replacing.text().await.unwrap()
         );
-    }
-    let sessions = format!("{PATH}/experiments/one/admin/sessions");
+        "first revision"
+    };
+    let different_bytes = if installed == "changed revision" {
+        std::fs::read(&package_a).unwrap()
+    } else {
+        replace_bytes.clone()
+    };
     assert_eq!(
-        host.request(Method::GET, &sessions, Some(UPLOAD_A), None)
+        host.upload(&first_scope, UPLOAD_A, different_bytes.clone())
             .await
             .status(),
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        host.request(Method::GET, &sessions, Some(ADMIN), None)
-            .await
-            .status(),
-        StatusCode::OK
-    );
-
-    let (participant, room) = host.seat("one").await;
-    create_package(&package_a, "fixture-a", "changed revision");
-    let replacement = deployment::deploy(&host.origin, &package_a, UPLOAD_A)
-        .await
-        .unwrap();
-    assert_ne!(first.revision, replacement.revision);
-    assert_eq!(first.component_sha256, replacement.component_sha256);
-    assert_eq!(
-        host.select("one", &replacement, json!({})).await.status(),
         StatusCode::CONFLICT
-    );
-
-    let second = deployment::deploy(&host.origin, &package_b, UPLOAD_B)
-        .await
-        .unwrap();
-    assert_eq!(
-        host.select("two", &second, json!({})).await.status(),
-        StatusCode::OK
     );
     assert_eq!(
         host.request(
             Method::GET,
-            "/e/two/api/participant-state",
-            Some(&participant),
+            "/e/fixture-a~Beacon-Trial/assets/app.js",
+            None,
+            None
+        )
+        .await
+        .text()
+        .await
+        .unwrap(),
+        installed
+    );
+    let (credential, room) = host.seat("Beacon-Trial").await;
+    let ticket = host.ticket("Beacon-Trial", &credential, &room).await;
+    let ws_path = ticket["websocket_url"].as_str().unwrap();
+    assert!(
+        ws_path.starts_with("/e/fixture-a~Beacon-Trial/ws/game/"),
+        "{ws_path}"
+    );
+    let mut socket = connect_async(host.websocket(ws_path, ticket["token"].as_str().unwrap()))
+        .await
+        .unwrap()
+        .0;
+    assert!(timeout(Duration::from_secs(5), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .is_text());
+    check_json(
+        manage(lifecycle)
+            .json(&json!({"status":"inactive"}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    // Closing intake leaves existing sessions on their original engine.
+    assert_eq!(
+        host.upload(&first_scope, UPLOAD_A, different_bytes.clone())
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        host.request(
+            Method::POST,
+            &format!("{PATH}/games/fixture-a/deactivate"),
+            Some(ADMIN),
             None
         )
         .await
         .status(),
-        StatusCode::UNAUTHORIZED,
+        StatusCode::CONFLICT
     );
-    let ticket = host.ticket("one", &participant, &room).await;
-    let path = ticket["websocket_url"].as_str().unwrap();
-    let token = ticket["token"].as_str().unwrap();
-    assert!(path.starts_with("/e/one/ws/game/"));
-    let wrong_path = path.replacen("/e/one/", "/e/two/", 1);
-    let error = timeout(
-        Duration::from_secs(5),
-        connect_async(host.websocket(&wrong_path, token)),
-    )
-    .await
-    .expect("wrong experiment handshake timed out")
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        tokio_tungstenite::tungstenite::Error::Http(_)
-    ));
-    let (mut socket, _) = timeout(
-        Duration::from_secs(5),
-        connect_async(host.websocket(path, token)),
-    )
-    .await
-    .expect("owning experiment handshake timed out")
-    .unwrap();
-    let message = timeout(Duration::from_secs(2), socket.next())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    assert!(message.is_text());
+    let leave = host
+        .request(
+            Method::POST,
+            &format!("/e/fixture-a~Beacon-Trial/api/sessions/{room}/leave"),
+            Some(&credential),
+            Some(json!({})),
+        )
+        .await;
+    assert!(
+        leave.status().is_success(),
+        "{}",
+        leave.text().await.unwrap()
+    );
     socket.close(None).await.unwrap();
     drop(socket);
-
-    let response = host
-        .request(Method::GET, "/e/one/assets/app.js", None, None)
-        .await;
-    assert_eq!(response.text().await.unwrap(), "first revision");
-    let response = host
-        .request(Method::GET, "/e/two/favicon.ico", None, None)
-        .await;
-    assert_eq!(response.text().await.unwrap(), "fixture icon");
+    // Socket closure is acknowledged asynchronously by the host.
+    let replaced = timeout(Duration::from_secs(15), async {
+        loop {
+            let response = host
+                .upload(&first_scope, UPLOAD_A, different_bytes.clone())
+                .await;
+            if response.status() != StatusCode::CONFLICT {
+                break check_json(response).await;
+            }
+            time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the idle game should accept replacement after disconnection");
+    assert_eq!(replaced["game"], "fixture-a");
+    // Publishing another game is independent and never gives it access to this one's sessions.
+    deployment::deploy(&host.origin, &package_b, UPLOAD_B)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_dir(store.join("packages/fixture-a"))
+            .unwrap()
+            .count(),
+        2
+    );
     host.stop().await;
-
-    let restarted = TestHost::start(address, &store, None).await;
-    let config = check_json(
+    let restarted = TestHost::start(address, &store, Some(admin_origin)).await;
+    let cfg = check_json(
         restarted
-            .request(Method::GET, "/e/one/api/config", None, None)
+            .request(
+                Method::GET,
+                "/e/fixture-a~Beacon-Trial/api/config",
+                None,
+                None,
+            )
             .await,
     )
     .await;
-    assert_eq!(config["experiment_status"], "inactive");
-    assert_eq!(config["game_name"], "fixture-a");
-    assert_eq!(
-        restarted.select("one", &first, json!({})).await.status(),
-        StatusCode::OK
-    );
-    let response = restarted
-        .request(Method::GET, "/e/one/assets/app.js", None, None)
-        .await;
-    assert_eq!(response.text().await.unwrap(), "first revision");
-    let response = restarted
-        .request(Method::GET, "/e/two/assets/app.js", None, None)
-        .await;
-    assert_eq!(response.text().await.unwrap(), "second game");
+    assert_eq!(cfg["experiment_status"], "inactive");
+    assert_eq!(cfg["game_name"], "fixture-a");
+    check_json(
+        restarted
+            .request(
+                Method::POST,
+                &format!("{PATH}/games/fixture-a/deactivate"),
+                Some(ADMIN),
+                None,
+            )
+            .await,
+    )
+    .await;
+    assert!(!restarted
+        .request(
+            Method::GET,
+            "/e/fixture-a~Beacon-Trial/api/config",
+            None,
+            None
+        )
+        .await
+        .status()
+        .is_success());
     restarted.stop().await;
 }

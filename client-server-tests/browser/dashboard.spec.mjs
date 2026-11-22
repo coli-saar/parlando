@@ -1,9 +1,17 @@
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 
 const assets = new URL('../../rust-server/src/app/', import.meta.url);
 
+const brandFiles = {
+  '/admin/assets/palette.css': ['../../brand/palette.css', 'text/css'],
+  '/admin/assets/parlando-wordmark.svg': ['../../brand/parlando-wordmark.svg', 'image/svg+xml'],
+  '/admin/assets/parlando-mark.svg': ['../../brand/parlando-mark.svg', 'image/svg+xml'],
+};
+
 const files = {
+  ...brandFiles,
   '/admin/': ['admin_dashboard.html', 'text/html'],
   '/admin/assets/admin-dashboard.js': ['admin_dashboard.js', 'text/javascript'],
   '/admin/assets/admin-dashboard-format.js': ['admin_dashboard_format.mjs', 'text/javascript'],
@@ -73,6 +81,9 @@ test('dashboard keeps late experiment lists and session details out of the selec
   await page.clock.install({ time: new Date('2026-01-01T12:00:00Z') });
   await page.clock.pauseAt(new Date('2026-01-01T12:00:01Z'));
   await page.goto('http://dashboard.test/admin/');
+  const wordmark = page.getByRole('img', { name: 'Parlando', exact: true });
+  await expect(wordmark).toHaveJSProperty('complete', true);
+  await expect(wordmark).not.toHaveJSProperty('naturalWidth', 0);
   await slowList.requested;
   await page.locator('[data-experiment="second"]').click();
   await slowDetail.requested;
@@ -219,92 +230,66 @@ test('typed communication disables speech settings and preserves their values wh
   await expect(voiceId).toHaveValue('voice-2');
 });
 
-test('shared hosting creates and copies pins with one communication editor', async ({ page }) => {
-  const hostingAssets = new URL('../../rust-server/src/deployment/', import.meta.url);
-  const revision = 'a'.repeat(64);
-  const defaults = {
-    communication: { mode: 'typed' },
-    voice: { sample_rate_hz: 24000, frame_duration_ms: 20, jitter_buffer_ms: 100, post_completion_seconds: 20 },
-    transcription: { enabled: false, language: 'en', model: 'enhanced', provider: 'speechmatics' },
-    speechmatics: { realtime_url: 'wss://speech.example/v2', max_delay: 2, end_of_utterance_silence_trigger: 1.2 },
-    tts: { enabled: false, base_url: 'wss://tts.example', model: 'eleven_flash_v2_5', voice_id: '', provider: 'elevenlabs', output_format: 'pcm_24000' },
-    capacity: { max_transcription_streams: 32 }
-  };
-  const copiedConfig = structuredClone(defaults);
-  copiedConfig.communication.mode = 'speech';
-  copiedConfig.voice.jitter_buffer_ms = 140;
-  copiedConfig.transcription.language = 'de';
-  copiedConfig.tts.model = 'custom_elevenlabs_model';
-  copiedConfig.tts.output_format = 'dormant_custom_format';
-  copiedConfig.capacity.max_active_sessions = 17;
-  copiedConfig.game = { trial: 2 };
-  const experiments = [{ id: 'existing', game: 'game', revision, config: copiedConfig, status: 'inactive' }];
+test('the hosted game dashboard validates IDs and creates experiments in its own namespace', async ({ page }) => {
+  const prefix = '/game';
+  const catalogue = `${prefix}/api/admin/experiments`;
+  const created = [];
+  const entries = [];
+  const shell = await readFile(new URL('admin_dashboard.html', assets), 'utf8');
   await page.route('http://hosting.test/**', async route => {
-    const { pathname } = new URL(route.request().url());
-    if (pathname === '/admin' || pathname === '/admin/dashboard.js' || pathname === '/admin/dashboard.css') {
-      const [name, contentType] = {
-        '/admin': ['dashboard.html', 'text/html'],
-        '/admin/dashboard.js': ['dashboard.js', 'text/javascript'],
-        '/admin/dashboard.css': ['dashboard.css', 'text/css'],
-      }[pathname];
-      return route.fulfill({ path: fileURLToPath(new URL(name, hostingAssets)), contentType });
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === prefix) {
+      return route.fulfill({
+        contentType: 'text/html',
+        body: shell.replace('<body>', `<body data-admin-prefix="${prefix}">`)
+          .replaceAll('/admin/assets/', `${prefix}/admin/assets/`),
+      });
     }
-    if (pathname === '/admin/communication-config.js') {
-      return route.fulfill({ path: fileURLToPath(new URL('communication_config.mjs', assets)), contentType: 'text/javascript' });
+    const asset = path.startsWith(`${prefix}/admin/assets/`) && files[path.slice(prefix.length)];
+    if (asset) {
+      const [name, contentType] = asset;
+      return route.fulfill({ path: fileURLToPath(new URL(name, assets)), contentType });
     }
-    if (pathname === '/api/hosting/auth/session') {
-      return route.fulfill({ json: { username: 'researcher', role: 'member' } });
+    if (path === catalogue && request.method() === 'POST') {
+      const body = request.postDataJSON();
+      created.push({ body, csrf: request.headers()['x-csrf-token'] });
+      if (created.length === 1) return route.fulfill({ status: 409, body: 'Experiment ID already used.' });
+      entries.push(experiment(body.experiment_id));
+      return route.fulfill({ status: 201, json: {} });
     }
-    if (pathname === '/api/hosting/dashboard') {
-      return route.fulfill({ json: { games: [{ id: 'game', revisions: [{ revision, version: '1.0' }] }], experiments, config_defaults: defaults } });
+    if (path === catalogue) {
+      return route.fulfill({ json: {
+        experiments: entries, game: { name: 'Example Game', version: '1.0' }, csrf_token: 'hosted-csrf',
+      } });
     }
-    if (route.request().method() === 'PUT') {
-      experiments.push({ id: pathname.split('/').at(-1), status: 'inactive', ...route.request().postDataJSON() });
+    if (path.startsWith(`${catalogue}/`) && path.endsWith('/config')) {
+      return route.fulfill({ json: { experiment: { ...entries[0], config: {} } } });
     }
     return route.fulfill({ json: {} });
   });
-  await page.goto('http://hosting.test/admin');
-  await page.locator('#game-rows').getByRole('button', { name: 'Create experiment' }).click();
 
-  const form = page.locator('#experiment-form');
-  const mode = form.locator('[data-config-path="communication.mode"]');
-  const speech = form.getByRole('group', { name: 'Speech settings' });
-  const buffer = speech.locator('[data-config-path="voice.jitter_buffer_ms"]');
-  const other = form.getByRole('textbox', { name: 'Other experiment settings (JSON)' });
-  await expect(mode.locator('option')).toHaveText(['Typed', 'Speech']);
-  await expect(mode).toHaveValue('typed');
-  await expect(speech).toHaveCSS('opacity', '0.6');
-  await expect(buffer).toBeDisabled();
-  await mode.selectOption('speech');
-  await expect(buffer).toBeEnabled();
-  await buffer.fill('130');
-  await form.getByRole('textbox', { name: 'Experiment ID' }).fill('fresh');
-  await other.fill('{"game":{"trial":1}}');
-  await form.getByRole('button', { name: 'Create experiment' }).click();
-  await expect(page.locator('#experiment-title')).toHaveText('fresh');
-  expect(experiments.at(-1).config).toMatchObject({
-    communication: { mode: 'speech' },
-    voice: { jitter_buffer_ms: 130 },
-    game: { trial: 1 },
-  });
+  await page.goto('http://hosting.test/game');
+  await expect(page.getByRole('heading', { name: 'No experiments yet' })).toBeVisible();
+  await page.getByRole('button', { name: 'New experiment' }).click();
+  const dialog = page.getByRole('dialog');
+  const id = dialog.getByRole('textbox', { name: 'Experiment ID' });
+  const submit = dialog.getByRole('button', { name: 'Create experiment' });
+  await expect(id).toBeFocused();
+  await id.fill('bad id');
+  await submit.click();
+  await expect(dialog.getByRole('alert')).toContainText('ASCII letters');
+  expect(created).toHaveLength(0);
 
-  await page.getByRole('row').filter({ hasText: 'existing' }).getByRole('button', { name: 'Manage' }).click();
-  await page.getByRole('button', { name: 'Copy configuration to new experiment' }).click();
-  await expect(mode).toHaveValue('speech');
-  await expect(buffer).toHaveValue('140');
-  const sampleRate = speech.locator('[data-config-path="voice.sample_rate_hz"]');
-  await expect(sampleRate).toHaveValue('24000');
-  await expect(sampleRate).not.toBeEditable();
-  await expect(speech.locator('[data-config-path="tts.output_format"]')).toHaveValue('dormant_custom_format');
-  expect(JSON.parse(await other.inputValue())).toEqual({
-    capacity: { max_active_sessions: 17 },
-    game: { trial: 2 },
-  });
-  await mode.selectOption('typed');
-  await expect(buffer).toBeDisabled();
-  await expect(other).toBeEditable();
-  await form.getByRole('textbox', { name: 'Experiment ID' }).fill('copy');
-  await form.getByRole('button', { name: 'Create experiment' }).click();
-  await expect(page.locator('#experiment-title')).toHaveText('copy');
-  expect(experiments.at(-1).config).toMatchObject({ ...copiedConfig, communication: { mode: 'typed' } });
+  await id.fill('Existing');
+  await submit.click();
+  await expect(dialog.getByRole('alert')).toHaveText('Experiment ID already used.');
+  await id.fill('Beacon-Test');
+  await submit.click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole('heading', { name: 'Beacon-Test', exact: true })).toBeVisible();
+  expect(created).toEqual([
+    { body: { experiment_id: 'Existing' }, csrf: 'hosted-csrf' },
+    { body: { experiment_id: 'Beacon-Test' }, csrf: 'hosted-csrf' },
+  ]);
 });

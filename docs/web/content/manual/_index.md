@@ -11,7 +11,7 @@ browser application displays that view and sends actions. A **package** contains
 both builds. A **host** runs the packages and handles participant entry, pairing,
 communication, monitoring, and data collection.
 
-An **experiment** selects a package revision and settings for a study condition.
+An **experiment** defines a study condition for one game.
 A **session** is one play-through. Archive the package revision and settings with
 your results so that the behavior participants experienced remains identifiable.
 

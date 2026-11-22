@@ -8,7 +8,7 @@ Prepare the participant information before opening research intake. Explain the 
 
 ## Use the approved text in the condition
 
-On a single-game installation, configure consent and participant information in the experiment settings. When creating a hosted experiment, include the corresponding settings in the JSON configuration. The following excerpt shows the direct-entry section. Replace the URL, version, and statement with your own study materials.
+Open **Configuration** for the inactive experiment and find **Participant access and consent**. Enter the participant information URL and version and provide your approved consent statement. The following excerpt shows the corresponding configuration fields.
 
 ```json
 {

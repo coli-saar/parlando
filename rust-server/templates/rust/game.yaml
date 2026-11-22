@@ -1,8 +1,6 @@
 id: __GAME_ID__
 name: Beacon Relay
 version: 0.1.0
-component: dist/parlando/game.wasm
 cargo_manifest: Cargo.toml
 client_project: client
-client_dist: dist/parlando/client
 scenarios: scenarios.yaml

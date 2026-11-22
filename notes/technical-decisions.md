@@ -5698,3 +5698,157 @@ The benchmark scripts, full methodology and samples are in
 Realistic agent–agent workload measurements above justify an opt-in unmetered mode for trusted components. Keep the 50-million-unit per-call budget by default. Select instrumentation when compiling the component because raising the fuel allowance still incurs accounting overhead. Use one mode throughout an experiment, including training, validation and replay within the run. Record a non-default mode in the experiment fingerprint while preserving the existing fingerprint for default fuel. This keeps existing outputs resumable and prevents mixing modes in one result directory.
 
 Live servers select the policy at launch. Memory and instance limits are independent of fuel. With fuel disabled a non-returning guest can occupy its worker indefinitely. No wall-clock interruption replaces the deterministic budget in this mode.
+
+## 2026-11-22 — Select a single participant communication channel per experiment
+
+The participant shell previously rendered its text composer even when voice transport was enabled. A browser could also submit typed dialogue to the game socket in a speech condition. The experiment now pins one communication mode, typed (the default) or speech. Speech transport, recognition, and synthesis settings remain revisioned when dormant. The effective mode controls validation, provider initialization, audio-plan issuance, public participant UI, and admission of human-authored messages. The origin remains on the research record. Agents keep their existing speaker-and-text observation for typed messages and final transcripts.
+
+The React package owns one communication widget, its styles, and its actions. The default shell mounts it for games that use standard placement. With communicationPlacement="game", the renderer mounts it inside its layout. React context supplies the same session capabilities in either position and keeps presentation and transport out of the game observation schema. The replay uses the experiment revision that produced the session and shows recorded messages without live controls. Stable CSS hooks and theme properties allow game styling. Existing built participant assets must be rebuilt against the matching client before deployment with this server.
+
+### Workspace data conversion
+
+Schema 17 replaces voice.enabled in the stored experiment configuration and every configuration revision. A true flag maps to speech and a false flag maps to typed. The previous schema allowed typed input in either condition. This correspondence identifies the intended transport setting, not the origin of every historical utterance. Recorded events retain their original content and attribution.
+
+Before conversion, the source stores were checked for open database, WAL, and SHM handles. Each database was backed up alongside its source and converted transactionally. The backups are:
+
+- `games/last-screening/.local/screening.sqlite.schema16-before-communication-20261122T065523Z.backup` (2 experiments, 3 revisions, 0 sessions).
+- `games/counterweight-hotel/.local/hotel.sqlite.schema16-before-communication-20261122T065523Z.backup` (3 experiments, 6 revisions, 46 sessions, 4,506 events).
+- `games/great-tree/server/parlando-great-tree.sqlite.schema16-before-communication-20261122T065523Z.backup` (4 experiments, 18 revisions, 50 sessions, 1,640 events).
+
+The source, backup, and converted databases passed SQLite integrity and foreign-key checks. Each converted configuration matched the original with only the communication mapping applied. Each experiment matched its current revision, and every session retained a valid revision. Per-table row counts were preserved apart from the new schema-history record. The older schema-10 Space Game database and disposable smoke-test and screenshot databases were outside this conversion.
+
+Shared hosts store immutable selection files separately and derive each database filename from the serialized selection hash. No shared-host selection store was found in this workspace. An operator upgrading a populated shared host must convert its saved selection and database together while the host is stopped and preserve the database under the updated selection hash; changing just the selection would select an empty store.
+
+## 2026-11-22 — Exercise typed games in the runtime stress harness
+
+The stress workload previously exercised the speech channel for both seat pairings. The communication condition belongs to an experiment, so each harness invocation now creates its own typed or speech experiment. Speech remains the default for continuity with existing capacity runs. The four-condition Make target runs separate experiments in succession. Its reports keep provider costs and message counts attributable to the relevant mode.
+
+Typed runs use the production participant and game endpoints, including the normal agent callback when one seat is an agent. In addition to observing delivery on the game sockets, the runner checks the durable conversation and terminal outcome of the fixture games. Synthetic recognition and synthesis processes run only for speech. Browser playthroughs remain a separate check on the real widget and participant interface; the load clients exercise the same server using sockets. A passing short matrix establishes correctness at its stated concurrency and duration.
+
+The prerelease gate runs the four-condition stress matrix and repeats the typed conversation at the package boundary. Both the installed Rust and Python Beacon Relay starters are deployed as explicitly typed experiments. Two independent browser contexts exchange text in both directions and finish each game. The package test catches failures in UI composition or npm packaging that a socket client cannot observe, while the stress runs check concurrent delivery, agent responses, and storage.
+
+## 2026-11-22 — Confirm project creation in the terminal
+
+The CLI renders the successful scaffold result as a short confirmation with the project and manifest paths. Formatting at the CLI boundary keeps both paths tied to the scaffold result, including custom destinations, and preserves the existing structured envelope for callers that pass `--json`.
+
+## 2026-11-22 — Unpublished starter dependencies
+
+The 0.7.0 CLI can be used locally before the matching browser client reaches npm.
+The CLI looks beside its executable for `share/parlando/<CLI version>/`. When that
+directory contains the matching npm tarball, scaffolding copies it to the
+project's `vendor/` and uses a relative `file:` dependency from `client/package.json`.
+This keeps the scaffold movable and lets npm record the tarball integrity in its
+normal lockfile. A CLI without the tarball generates the exact release version
+as a registry dependency. Python setup instructions use the SDK version
+independently of how npm obtains the client.
+
+Explicit guest SDK paths continue to take priority. The versioned asset directory
+also accepts the matching Rust and Python guest SDK sources. Existing portable
+CLI archives supply SDKs under `share/`, so that location remains available
+before the source checkout fallback. Local prerelease bundles need to be restaged
+if their source artifacts change, even when the prerelease version stays the same.
+The 0.7.0 bundle was installed at
+`/Users/koller/.cargo/bin/share/parlando/0.7.0`. Its npm tarball SHA-256 is
+`2f8339c4a8ed8149f52eac83ac77e22bbbac37f476c4e36c9ed899661947cb64`.
+
+## 2026-11-22 — Separate server startup, deployment and intake in the CLI
+
+The local tutorial used to start a game-specific server from a package manifest. Local pilots now use the same deployment host as shared installations. The CLI exposes that host through `serve --store`. Deploying records an immutable revision, selecting pins it to an experiment, and changing intake admits participants. This adds setup steps to a first pilot and makes it possible to inspect and retry each operation independently. A custom Rust application can still embed the game runtime.
+
+Each CLI operation supplies its terminal summary alongside its structured result. The terminal can report domain-specific outcomes such as native tests skipped, scenario counts, deployment revision and participant URL. The global `--json` flag selects the result envelope for automation and subprocess diagnostics stay on stderr. Scripts that parsed the previous pretty-printed default must request JSON and read its `result` field.
+
+## 2026-11-22 — Deploy the built game as a single ZIP
+
+One upload must carry the exact component, game metadata and browser assets selected at build time. The CLI creates `dist/<game-id>-<game-version>.zip` using the manifest ID and semantic version and prints its absolute path after the build diagnostics. The same file is the input to package validation, the deployment CLI and the browser file picker.
+
+The dashboard sends the ZIP bytes to the host with the existing session and CSRF credentials. The host reads the manifest to determine the game in the installation-wide dashboard. On a game-specific route the server checks the ID against the route and its credential scope. Package revisions still identify the member paths and bytes, so archive compression does not change a pin. The service unpacks accepted contents into its existing immutable revision store. The builder stages the ZIP under the output directory and replaces the same game/version atomically after validation. Other versions keep their filenames. Project-based deployment resolves the exact current ID and version. A previously built directory must be rebuilt as a ZIP for a new upload. Existing server-side package revisions remain usable.
+
+CLI success messages describe the state reached by the command. The build confirmation states that the ZIP is ready for deployment and leaves the path on its own final line.
+
+## 2026-11-22 — Default host store for local pilots
+
+The host CLI uses its working directory as the default store. The tutorial explicitly creates a sibling host directory and starts the service there in a subshell, keeping the interactive shell in the game project for deployment. Starting the CLI in a different directory therefore selects a different store. Startup diagnostics display the resolved path. Operators can pin an absolute location with `--store` independently of the service working directory.
+
+A host can start without any game or operator credential. In this mode the existing selection loader restores participant routes, while the absence of an expected bearer digest or a dashboard session keeps the management endpoints closed. Configured CLI upload grants and dashboard bootstrap still require their normal credentials. Credential configuration takes effect at startup.
+
+On a default loopback listener the CLI enables the administrator dashboard on localhost and prints its URL after restoring experiments. The participant origin uses the numeric loopback address. For an empty account store, the local terminal receives a per-process setup link whose fragment authorizes only the first operator creation. The dashboard clears the fragment and uses ordinary password login thereafter. Explicitly configured external hosts retain their operator-token bootstrap. Binding first preserves the assigned port in generated URLs.
+
+## 2026-11-22 — Preserve dashboard setup on reload and separate local logins
+
+The first-operator link is scrubbed from the address bar immediately. The setup form keeps its credential in the administrator origin’s tab session storage until setup finishes, is cancelled, or the server rejects the credential. This lets the user reload the form. Browsers that block session storage can still complete setup on the original page.
+
+Browser cookies are shared across ports on the same hostname. Dashboards on nonstandard ports now use a stable cookie name derived from the canonical administrator origin for login, lookup, and logout. Existing sessions on those ports require one new sign-in. The standard HTTP and HTTPS ports keep their existing cookie names.
+
+## 2026-11-22 — One administrator URL for local hosting
+
+The default loopback host prints its plain `/admin` URL on every start. The page checks the account store when a visitor has no session and offers first-operator creation only while the store is empty. This supersedes the terminal setup link and tab storage described above. First-use authorization now trusts a local client reaching the configured administrator origin. A second local user could claim an empty store first. Explicitly configured hosts retain their operator-token bootstrap. The database still arbitrates concurrent first-account requests.
+
+## 2026-11-22 — Reuse the Parlando administrator identity
+
+The local dashboard serves the existing Parlando wordmark, mark and palette from the administrator origin. Its account creation and sign-in pages follow the existing administrator page. Browser labels and instructions call the privileged account an administrator. The stored role and API value remain `operator`, so existing privileges and account records retain their meaning.
+
+## 2026-11-22 — Organize the administrator site around games
+
+The administrator landing page lists games once per game ID. Opening a game takes the user to its existing scoped URL, where its revisions and experiments can be managed together. User administration lives in its own view. Audit history loads on demand there. This keeps account and audit queries off the Games page and preserves links to individual game pages.
+
+## 2026-11-22 — Display the manifest name in game administration
+
+The project and ZIP already declare a public `name` and an immutable game `id`. The dashboard reads the name from installed package manifests and uses it for the game list, game heading and browser tab. A smaller ID distinguishes games with the same name. Upload confirmations use the name in that upload. Experiment pins, URLs, grants and archive filenames continue to use IDs or digests.
+
+A game may be renamed across revisions, including builds with the same semantic version. The catalogue takes its name from the distinct revision with the latest revision-directory modification time, using the greatest digest to break a tie. An identical re-upload reuses its directory. This avoids a separate mutable naming record and makes already-installed games readable on upgrade. Copying stores without preserving directory timestamps can alter which label wins when names differ.
+
+## 2026-11-22 — Create an experiment first and configure it on its own page
+
+Game pages collect only the new experiment ID and its package revision in a modal. A successful creation opens the same administrator URL as Manage in the experiment list, `/experiments/<id>/admin`. Choosing a revision from its row preselects that revision. The separate participant URL continues to resolve under `/e/<id>/`.
+
+The creation POST reserves a fresh ID, records defaults and leaves intake inactive. Required game-specific values can be supplied on the experiment page. The CLI's selection PUT continues to support an explicit initial configuration and idempotent retries. The initial selection hash still identifies the same SQLite database. Later settings saves use its existing configuration revision records, with an expected revision and inactive-state checks. Participant sessions remain associated with their originating runtime revision.
+
+## 2026-11-22 — Explain experiment IDs before submission
+
+Hosted experiment IDs form single path segments in participant and administrator URLs and in the host store. The creation dialog describes the existing identifier rules and suggests a valid spelling for spaces. The user retains control of the ID that will be shared and persisted.
+
+## 2026-11-22 — One creation button on the game page
+
+The Experiments section opens the creation dialog. Its package revision picker handles all builds, so the Revisions table only lists versions and digests.
+
+## 2026-11-22 — Preserve the case of hosted experiment IDs
+
+Hosted experiment IDs accept uppercase ASCII letters within the existing 64-character format. The host preserves the submitted spelling in URLs, selection filenames, and SQLite paths. It matches route IDs exactly. Game package IDs, grants, and host aliases retain their lowercase format.
+
+Creating or pinning a case-only variant returns a conflict before building a runtime or writing files. This keeps the same store valid on case-sensitive and case-insensitive filesystems and leaves exact-spelling CLI retries idempotent. Startup also rejects case-only duplicates in stored selections, which can otherwise be introduced by editing or merging stores outside Parlando.
+
+## 2026-11-22 — One current build and one installation per hosted game
+
+The administrator dashboard opens the game’s existing multi-experiment installation. The installation reads and writes `games/<id>/game.sqlite` across deployments. Newly deployed games start inactive. A persistent activation marker records participant availability separately from experiment intake, and an idle replacement preserves the marker. Each participant URL uses `/e/<game-id>~<experiment-id>/` so games can reuse experiment IDs while ZIPs built against the existing JavaScript client still recognize a single experiment path segment. The administrator origin mounts the dashboard at `/<game-id>`.
+
+The host prepares and validates a candidate before switching `packages/<id>/current` by atomic file rename. The pointer names one complete build directory. Once the directory update is durable, the host removes previous build directories. Startup prunes candidates left by interruption and requires offline conversion of stores containing legacy experiment pins or versioned package directories. The database retains recorded study metadata and results as the build changes.
+
+Requests hold a per-game read lock through app dispatch. Replacement and availability changes hold the write lock while checking intake, sessions and connections and publishing the result. Upload publication also serializes competing uploads, including the first upload for a game, to avoid duplicate runtimes. The upload semaphore bounds archive memory while this work proceeds. Deactivation waits for intake to close and connections to drain. The administrator can continue to review settings and historical data while the game is inactive.
+
+### Dashboard ownership and the local Beacon installation
+
+The shared server overview links each game ID to its existing experiment administration application on the admin origin. Authentication and CSRF come from the host session. The participant origin serves package code. A one-use replay grant carrying the game, experiment and session lets existing ZIP clients read a replay for up to 60 seconds after issuance. Opening intake checks the current package configuration, while historical experiments remain available for inspection.
+
+Converted the stopped pre-release store at `/private/tmp/parlando-test/beacon/exec` under its exclusive host lock. The byte-verified backup is `/private/tmp/parlando-test/beacon/exec-backup-20261122-203325`. The sole selection referenced the sole Beacon build, with SHA-256 revision `723f3284bdca93f5fef539ebc280825254d5a29f9315e85511ca74031861ce4f`. The selection’s configuration matched the saved experiment. Copied that build byte-for-byte and took a transactional SQLite snapshot into the per-game database. Set the game active to preserve its former participant URL availability under the new URL scheme. Its one experiment, `beacon-test`, remains inactive.
+
+Verified database integrity and foreign keys, schema version 17, exact experiment database dump equality and every table count before switching directories. The database preserves the experiment, its configuration revision and the game settings row, with zero sessions. The unchanged account database contains one account, one login session and six audit events. The old structures exist only in the backup.
+
+The Games overview shows the existing boolean availability as a text label with the same 7 px green or ochre marker as an active or inactive experiment. The decorative CSS marker needs no separate accessible label.
+
+The planned sessions field explains the reporting target in the experiment configuration form. Its help uses a paired-game example to distinguish sessions from participant places and describes the verified Prolific fallback and continued intake after the target is reached.
+
+## Beacon Relay participant styling
+
+Both starter languages copy the same client stylesheet. The starter owns the visual theme and uses the participant runtime’s lobby, countdown, and seat classes so game authors can restyle them without replacing the waiting-room logic. Changes to these classes should be checked against the screenshot in the getting-started guide. The image was captured from an isolated two-browser pilot before the second seat joined.
+
+## Reusing experiments after a game update
+
+A game update retains the game’s database and experiment IDs. Dashboard readiness, editing, and intake use the installed game’s configuration validation across semantic versions. A compatible configuration can launch at its existing revision. An inactive experiment with incompatible game settings can be repaired through the ordinary revision-checked save. The experiment’s creation version remains provenance, while each new session records the installed game version. Reproducibility across updates depends on retaining the earlier game package.
+
+## Participant recruitment in Beacon and other browser games
+
+The host attaches the receiving seat’s admission source to waiting, active, and paused participant snapshots. A synthetic Prolific admission is a local preview. The JavaScript client exposes the source through GameSnapshot.recruitmentSource. Replay has no live participant and uses null. Terminal outcome text describes the game event, while the optional recipient-specific server handoff supplies the provider instructions. This keeps a direct participant’s exit message accurate on reload and after intake settings change.
+
+## Missing upload tokens in the CLI
+
+Credential lookups distinguish a missing game token from a credential-store failure. For a missing token, deploy prints the login command for the resolved server URL and the package’s game ID, plus the dashboard upload option. Other store failures retain their diagnostic context so login is suggested only when it addresses the failure.

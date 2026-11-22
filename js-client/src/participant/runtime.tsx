@@ -187,7 +187,6 @@ export function ParticipantAppRuntime<
         outcome={result.outcome}
         reason={result.reason}
         handoff={result.handoff}
-        recruitment={publicConfig.recruitment}
         completionContent={result.outcome === "completed" && result.completion !== null
           ? renderCompletion?.(result.completion)
           : null}
@@ -220,6 +219,7 @@ export function ParticipantAppRuntime<
     const gameSnapshot: GameSnapshot<TObservation, TAction> = {
       sessionId: participantState.public_session_id,
       role: participantState.role,
+      recruitmentSource: participantState.recruitment_source ?? null,
       observation: participantState.observation,
       transition: session.transition,
       availableActions: participantState.available_actions,
@@ -263,7 +263,7 @@ export function ParticipantAppRuntime<
         {session.participantState.state === "waiting" && (
           <WaitingRoomNotice
             deadlineAt={session.participantState.waiting_deadline_at}
-            prolific={publicConfig.recruitment?.provider === "prolific"}
+            prolific={(session.participantState.recruitment_source ?? publicConfig.recruitment?.provider) === "prolific"}
             startedAt={session.participantState.waiting_started_at}
           />
         )}

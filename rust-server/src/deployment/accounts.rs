@@ -167,15 +167,9 @@ impl AccountStore {
 
     /// Creates a named account with an operator-supplied password and a host-level role.
     pub async fn create(&self, username: &str, password: String, role: &str) -> Result<Account> {
-        let username = username.trim();
-        if username.is_empty()
-            || username.len() > USERNAME_LIMIT
-            || username.chars().any(char::is_control)
-        {
-            return Err(AccountInputError("Enter a username of 1 to 128 bytes.").into());
-        }
+        let username = validate_username(username)?;
         if !matches!(role, "operator" | "experimenter") {
-            return Err(AccountInputError("Choose the operator or experimenter role.").into());
+            return Err(AccountInputError("Choose the Administrator or Experimenter role.").into());
         }
         let hash = self.prepare_password(password).await?;
         let row: AccountRow = sqlx::query_as(
@@ -189,6 +183,39 @@ impl AccountStore {
         .await?
         .ok_or(AccountInputError("That username is already in use."))?;
         Ok(Account::from(row))
+    }
+
+    /// Checks whether an account has ever been created, including disabled accounts.
+    pub async fn is_empty(&self) -> Result<bool> {
+        Ok(
+            sqlx::query_scalar("SELECT NOT EXISTS (SELECT 1 FROM dashboard_account)")
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    /// Creates the first operator only while the account table is empty.
+    /// The INSERT tests the condition again in the same statement to serialize concurrent requests.
+    pub async fn create_first_operator(
+        &self,
+        username: &str,
+        password: String,
+    ) -> Result<Option<Account>> {
+        if !self.is_empty().await? {
+            return Ok(None);
+        }
+        let username = validate_username(username)?;
+        let hash = self.prepare_password(password).await?;
+        let row: Option<AccountRow> = sqlx::query_as(
+            "INSERT INTO dashboard_account (username, role, password_hash)
+             SELECT ?, 'operator', ? WHERE NOT EXISTS (SELECT 1 FROM dashboard_account)
+             RETURNING id, username, role, disabled",
+        )
+        .bind(username)
+        .bind(hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(Account::from))
     }
 
     /// Lists account identities and disabled states for operator review.
@@ -403,6 +430,18 @@ impl AccountStore {
     }
 }
 
+/// Normalizes names and applies the same length and control-character rules to all accounts.
+fn validate_username(username: &str) -> Result<&str> {
+    let username = username.trim();
+    if username.is_empty()
+        || username.len() > USERNAME_LIMIT
+        || username.chars().any(char::is_control)
+    {
+        return Err(AccountInputError("Enter a username of 1 to 128 bytes.").into());
+    }
+    Ok(username)
+}
+
 /// Produces a PHC-encoded Argon2id verifier with a fresh random salt.
 fn hash_password(password: &[u8]) -> Result<String> {
     let salt = SaltString::generate(&mut OsRng);
@@ -427,6 +466,38 @@ fn token_digest(token: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Checks that parallel setup writes create only one durable operator across independent pools.
+    #[tokio::test]
+    async fn initial_operator_is_created_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = AccountStore::open(directory.path()).await.unwrap();
+        let second = AccountStore::open(directory.path()).await.unwrap();
+        let password = "first-operator-password";
+        assert!(first.is_empty().await.unwrap());
+        let (left, right) = tokio::join!(
+            first.create_first_operator("left", password.into()),
+            second.create_first_operator("right", password.into())
+        );
+        let left = left.unwrap();
+        let right = right.unwrap();
+        assert_ne!(left.is_some(), right.is_some());
+        let account = left.or(right).unwrap();
+        assert_eq!(account.role, "operator");
+        assert!(!second.is_empty().await.unwrap());
+        assert_eq!(second.list().await.unwrap().len(), 1);
+        assert!(second
+            .login(&account.username, password.into())
+            .await
+            .unwrap()
+            .is_some());
+        assert!(first.disable(account.id).await.unwrap());
+        assert!(second
+            .create_first_operator("later", password.into())
+            .await
+            .unwrap()
+            .is_none());
+    }
 
     /// Checks that session identity survives a restart and follows credential revocations.
     #[tokio::test]

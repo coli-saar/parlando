@@ -92,7 +92,11 @@ pub(super) fn experiment_config_from_json_unvalidated(
 pub(super) fn experiment_public_base_url(public_origin: &str, experiment_id: &str) -> String {
     let base = public_origin.trim_end_matches('/');
     let experiment_suffix = format!("/e/{experiment_id}");
-    if base.ends_with(&experiment_suffix) {
+    if base.ends_with('~') {
+        // Hosted games share each participant origin. An encoded game/experiment
+        // pair occupies the single experiment segment understood by built packages.
+        format!("{base}{experiment_id}")
+    } else if base.ends_with(&experiment_suffix) {
         base.to_string()
     } else {
         format!("{base}{experiment_suffix}")

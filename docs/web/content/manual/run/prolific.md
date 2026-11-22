@@ -4,13 +4,12 @@ title: Recruit through Prolific
 
 # Recruit through Prolific
 
-Use a single-game installation started with `parlando serve` for this workflow.
-It has the game settings and Prolific preflight controls used below. The shared
-multi-game host has no dashboard for provisioning Prolific credentials.
+Use the game dashboard to configure Prolific credentials and verify the linked
+study before opening intake.
 
 ## Configure the study
 
-1. Run the built package on a persistent HTTPS deployment. Pass its participant origin as `--public-url` to `parlando serve`.
+1. Run the host on a persistent HTTPS deployment. Set the public participant origin with `parlando serve --public-url` or with `Server::public_url` for a custom Rust host.
 2. In **Game settings**, add the Prolific API token under **Provider secrets**.
 3. Configure the condition while its intake is inactive. Under **Configuration → Prolific study and completion paths**, copy **URL for Prolific study setup** into the external study in Prolific.
 4. Configure Prolific to record IDs through URL parameters and retain the placeholders in the copied URL. Enable **Secure external URL** if your Prolific workspace offers it.
