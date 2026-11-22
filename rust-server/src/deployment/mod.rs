@@ -34,6 +34,8 @@ use tower::ServiceExt;
 
 pub use package::Deployment;
 
+use crate::component::WasmMetering;
+
 const CONTROL_LIMIT: usize = 256 * 1024;
 
 /// Names the storage and authority configuration of one long-running deployment host.
@@ -68,6 +70,7 @@ struct HostedExperiment {
 }
 
 struct Host {
+    wasm_metering: WasmMetering,
     store: PathBuf,
     public_url: String,
     grants: BTreeMap<String, [u8; 32]>,
@@ -83,7 +86,7 @@ type HttpResult<T> = std::result::Result<T, (StatusCode, String)>;
 
 /// Runs a deployment host and reloads every pinned experiment before it accepts traffic.
 pub async fn serve(address: SocketAddr, options: HostOptions) -> Result<()> {
-    serve_configured(address, options, None).await
+    serve_configured(address, options, None, WasmMetering::Fuel).await
 }
 
 /// Runs a deployment host with named dashboard accounts on a separate web origin.
@@ -95,14 +98,17 @@ pub async fn serve_with_dashboard(
     options: HostOptions,
     admin_url: String,
 ) -> Result<()> {
-    serve_configured(address, options, Some(admin_url)).await
+    serve_configured(address, options, Some(admin_url), WasmMetering::Fuel).await
 }
 
-/// Initializes the host store and its optional browser management surface.
-async fn serve_configured(
+/// Starts a deployment host with an operator-selected guest execution budget.
+/// The policy covers upload validation, new selections, and reloaded experiments.
+/// An optional administrator origin enables the separate browser dashboard.
+pub async fn serve_configured(
     address: SocketAddr,
     options: HostOptions,
     admin_url: Option<String>,
+    wasm_metering: WasmMetering,
 ) -> Result<()> {
     let public_url = checked_origin(&options.public_url)?;
     ensure!(
@@ -135,6 +141,7 @@ async fn serve_configured(
         None => None,
     };
     let mut host = Host {
+        wasm_metering,
         store,
         public_url,
         grants,
@@ -207,9 +214,10 @@ impl Host {
             .join(&selection.game)
             .join(&selection.revision);
         let revision = selection.revision.clone();
+        let metering = self.wasm_metering;
         let (loaded_game, metadata, client_dist) = tokio::task::spawn_blocking(move || {
             let manifest = PackageManifest::read(&directory).context("opening selected package")?;
-            let (loaded_game, metadata) = manifest.load(&directory, &revision)?;
+            let (loaded_game, metadata) = manifest.load(&directory, &revision, metering)?;
             Ok::<_, anyhow::Error>((loaded_game, metadata, manifest.client(&directory)))
         })
         .await??;
@@ -288,11 +296,12 @@ async fn install_upload(host: &Host, game: &str, request: Request) -> HttpResult
         )
     })?;
     let dir = host.store.clone();
+    let metering = host.wasm_metering;
     let game = game.to_owned();
     let receipt = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let upload: Upload = serde_json::from_slice(&bytes).context("invalid package envelope")?;
-        upload.install(&dir, &game)
+        upload.install(&dir, &game, metering)
     })
     .await
     .map_err(internal)?

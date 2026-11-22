@@ -197,10 +197,16 @@ separate operation to list available actions. A policy can use affordances
 included in its own view. Keep role-private information out of the other role's
 view and out of shared metadata. The guest has no filesystem, network, clock,
 environment, or credential imports. Treat the game configuration as guest input
-and keep provider credentials in host-side secret settings. The host gives
+and keep provider credentials in host-side secret settings. By default the host gives
 each guest call 50 million Wasmtime fuel units and limits each linear memory
 to 64 MiB, with at most four memories and 64 core Wasm instances per guest
 store. A guest trap, including fuel exhaustion, is an execution failure.
+
+Use `parlando serve --wasm-metering none` for a local game or
+`parlando host --wasm-metering none` for all games on a shared host to remove
+the per-call fuel budget. Memory and instance limits still apply. An unmetered
+game can loop indefinitely inside a call. For headless evaluations, select the
+mode in the [agent–agent experiment YAML](agent-agent-and-rl-experiments.md#choose-the-game-components-execution-budget).
 
 The host stores a full checkpoint only when the guest returns one. A checkpoint
 contains all guest state needed to restore that position in a fresh instance,

@@ -34,10 +34,39 @@ use bindings::exports::parlando::game::mechanics::{Frame, Role};
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 const CALL_FUEL: u64 = 50_000_000;
 
+/// Execution budget selected by the host before compiling a game component.
+/// The mode applies to schema discovery, initialization, turns and recovery.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum WasmMetering {
+    /// Instrument each guest call with a fresh 50-million-unit deterministic budget.
+    #[default]
+    Fuel,
+    /// Compile without fuel checks. A looping guest can occupy its worker indefinitely.
+    None,
+}
+
+impl WasmMetering {
+    /// Preserves the historical serialized experiment specification for the default.
+    pub(crate) fn is_fuel(&self) -> bool {
+        *self == Self::Fuel
+    }
+
+    /// Supply the initial or next call budget only to stores compiled with fuel support.
+    fn begin_call(self, store: &mut Store<StoreLimits>) -> Result<()> {
+        if self.is_fuel() {
+            store.set_fuel(CALL_FUEL)?;
+        }
+        Ok(())
+    }
+}
+
 /// Precompiled, import-free game implementing the `parlando:game@4.0.0` WIT world.
 /// Clone this handle to share compilation across otherwise independent sessions.
 #[derive(Clone)]
 pub struct LoadedGame {
+    bytes: Arc<[u8]>,
+    metering: WasmMetering,
     compiled: Arc<InstancePre<StoreLimits>>,
     digest: String,
     schema: Arc<GameSchema>,
@@ -48,19 +77,40 @@ impl LoadedGame {
     /// its bytes. Loads and checks the wire schema once using a separate guest
     /// with the same fuel and memory limits as session instances.
     pub fn load(path: &Path) -> Result<Self> {
-        let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-        Self::from_bytes(&bytes).with_context(|| format!("loading game from {}", path.display()))
+        Self::load_with_metering(path, WasmMetering::Fuel)
     }
 
-    /// Compiles a package already read into memory, validating its imports, exports and schema.
+    /// Loads the file under the selected execution budget, including its schema call.
+    pub fn load_with_metering(path: &Path, metering: WasmMetering) -> Result<Self> {
+        let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        Self::compile(bytes.into(), metering)
+            .with_context(|| format!("loading game from {}", path.display()))
+    }
+
+    /// Compiles in-memory package bytes using the default fuel budget.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        Self::compile(bytes.into(), WasmMetering::Fuel)
+    }
+
+    /// Reuse the compiled handle when possible. A mode switch compiles the pinned
+    /// bytes, so replacing the package on disk cannot change a running experiment.
+    pub(crate) fn with_metering(self, metering: WasmMetering) -> Result<Self> {
+        if self.metering == metering {
+            Ok(self)
+        } else {
+            Self::compile(self.bytes, metering)
+        }
+    }
+
+    /// Compile and validate the original bytes once for this execution mode.
+    fn compile(bytes: Arc<[u8]>, metering: WasmMetering) -> Result<Self> {
         let mut config = Config::new();
-        config.consume_fuel(true);
+        config.consume_fuel(metering.is_fuel());
         let engine = Engine::new(&config)?;
-        let component = Component::from_binary(&engine, bytes)?;
+        let component = Component::from_binary(&engine, &bytes)?;
         let compiled = Linker::new(&engine).instantiate_pre(&component)?;
-        let mut guest = Guest::instantiate(&compiled)?;
-        guest.store.set_fuel(CALL_FUEL)?;
+        let mut guest = Guest::instantiate(&compiled, metering)?;
+        guest.metering.begin_call(&mut guest.store)?;
         let description = guest
             .game
             .parlando_game_mechanics()
@@ -70,7 +120,9 @@ impl LoadedGame {
             .context("validating component schema")?;
         Ok(Self {
             compiled: Arc::new(compiled),
-            digest: format!("{:x}", Sha256::digest(bytes)),
+            digest: format!("{:x}", Sha256::digest(&bytes)),
+            bytes,
+            metering,
             schema: Arc::new(schema),
         })
     }
@@ -207,7 +259,7 @@ impl Recovery {
     /// accepted sequence must still be legal under the pinned component.
     fn restore(&self, guest: &mut Guest, schema: &GameSchema) -> Result<()> {
         let api = guest.game.parlando_game_mechanics();
-        guest.store.set_fuel(CALL_FUEL)?;
+        guest.metering.begin_call(&mut guest.store)?;
         match self.origin.as_ref() {
             Origin::Seed { config, seed } => {
                 let config = config
@@ -222,7 +274,7 @@ impl Recovery {
             }
         }
         for turn in self.turns.chronological() {
-            guest.store.set_fuel(CALL_FUEL)?;
+            guest.metering.begin_call(&mut guest.store)?;
             let action = turn
                 .action
                 .to_schema_messagepack(&schema.action)
@@ -351,13 +403,14 @@ pub struct GameSession {
 
 /// Store and typed interface for one independently mutable component instance.
 struct Guest {
+    metering: WasmMetering,
     store: Store<StoreLimits>,
     game: bindings::Game,
 }
 
 impl Guest {
     /// Allocates a clean instance, including fresh globals and linear memory.
-    fn instantiate(compiled: &InstancePre<StoreLimits>) -> Result<Self> {
+    fn instantiate(compiled: &InstancePre<StoreLimits>, metering: WasmMetering) -> Result<Self> {
         let limits = StoreLimitsBuilder::new()
             .memory_size(MEMORY_LIMIT)
             .table_elements(65_536)
@@ -368,10 +421,14 @@ impl Guest {
             .build();
         let mut store = Store::new(compiled.engine(), limits);
         store.limiter(|limits| limits);
-        store.set_fuel(CALL_FUEL)?;
+        metering.begin_call(&mut store)?;
         let instance = compiled.instantiate(&mut store)?;
         let game = bindings::Game::new(&mut store, &instance)?;
-        Ok(Self { store, game })
+        Ok(Self {
+            metering,
+            store,
+            game,
+        })
     }
 }
 
@@ -385,8 +442,8 @@ impl GameSession {
             .current
             .lock()
             .map_err(|_| anyhow!("component lock poisoned"))?;
-        let mut guest = Guest::instantiate(&self.loaded_game.compiled)?;
-        guest.store.set_fuel(CALL_FUEL)?;
+        let mut guest = Guest::instantiate(&self.loaded_game.compiled, self.loaded_game.metering)?;
+        guest.metering.begin_call(&mut guest.store)?;
         let frame = guest
             .game
             .parlando_game_mechanics()
@@ -428,13 +485,14 @@ impl GameSession {
         let mut guest = match current.take() {
             Some((id, guest)) if Arc::ptr_eq(&id, &state.identity) => guest,
             _ => {
-                let mut guest = Guest::instantiate(&self.loaded_game.compiled)?;
+                let mut guest =
+                    Guest::instantiate(&self.loaded_game.compiled, self.loaded_game.metering)?;
                 state.recovery.restore(&mut guest, schema)?;
                 guest
             }
         };
         let role = guest_role(actor);
-        guest.store.set_fuel(CALL_FUEL)?;
+        guest.metering.begin_call(&mut guest.store)?;
         match guest.game.parlando_game_mechanics().call_step(
             &mut guest.store,
             role,
@@ -504,6 +562,20 @@ mod tests {
     use super::*;
     use parlando_game_sdk::Field;
     use serde_json::json;
+
+    /// Switching the mode changes the engine instrumentation while preserving the package.
+    #[test]
+    fn wasm_metering_selects_store_instrumentation() {
+        let game =
+            LoadedGame::from_bytes(include_bytes!("agent_experiment/tests/headless.wasm")).unwrap();
+        let digest = game.digest().to_owned();
+        let guest = Guest::instantiate(&game.compiled, game.metering).unwrap();
+        assert!(guest.store.get_fuel().unwrap() <= CALL_FUEL);
+        let game = game.with_metering(WasmMetering::None).unwrap();
+        assert_eq!(game.digest(), digest);
+        let guest = Guest::instantiate(&game.compiled, game.metering).unwrap();
+        assert!(guest.store.get_fuel().is_err());
+    }
 
     /// Verifies each named snapshot payload against its own schema before replay.
     #[test]

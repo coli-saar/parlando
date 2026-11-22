@@ -9,7 +9,9 @@ mod scenarios;
 
 use anyhow::{ensure, Result};
 use clap::{error::ErrorKind, Parser, Subcommand, ValueEnum};
-use parlando::{agent::grpc::RemoteAgent, ExperimentRunner, Server};
+use parlando::{
+    agent::grpc::RemoteAgent, component::WasmMetering, ExperimentFile, ExperimentRunner, Server,
+};
 use project::Manifest;
 use serde_json::{json, Value};
 use std::{net::SocketAddr, path::PathBuf, process::ExitCode};
@@ -61,6 +63,9 @@ enum Command {
     Serve {
         #[arg(long, default_value = "game.yaml")]
         manifest: PathBuf,
+        /// Guest execution budget for this installation.
+        #[arg(long, value_enum, default_value = "fuel")]
+        wasm_metering: WasmMetering,
         /// Listener address, including the port.
         #[arg(long, default_value = "127.0.0.1:8000")]
         bind: SocketAddr,
@@ -122,12 +127,13 @@ async fn execute(command: Command) -> Result<(Value, bool)> {
         Command::Serve {
             manifest,
             bind,
+            wasm_metering,
             database_url,
             client_dist,
             public_url,
         } => {
             let project = Manifest::read(&manifest)?;
-            let (loaded_game, metadata) = project.load()?;
+            let (loaded_game, metadata) = project.load_with_metering(wasm_metering)?;
             let mut server = Server::new(loaded_game, metadata)?;
             if let Some(database_url) = database_url {
                 server = server.database_url(database_url);
@@ -151,10 +157,12 @@ async fn execute(command: Command) -> Result<(Value, bool)> {
             manifest,
             experiment,
         } => {
-            let (loaded_game, metadata) = Manifest::read(&manifest)?.load()?;
+            let experiment = ExperimentFile::read(experiment).await?;
+            let (loaded_game, metadata) =
+                Manifest::read(&manifest)?.load_with_metering(experiment.wasm_metering())?;
             let summary = ExperimentRunner::new(metadata, loaded_game)?
                 .agent(RemoteAgent::new())?
-                .run_yaml(experiment)
+                .run_file(experiment)
                 .await?;
             return Ok((serde_json::to_value(&summary)?, summary.failed == 0));
         }

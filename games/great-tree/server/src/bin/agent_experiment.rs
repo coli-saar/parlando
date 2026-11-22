@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-use parlando::{agent::grpc::RemoteAgent, component::LoadedGame, ExperimentRunner, GameMetadata};
+use parlando::{
+    agent::grpc::RemoteAgent, component::LoadedGame, ExperimentFile, ExperimentRunner, GameMetadata,
+};
 use parlando_great_tree::{IdleAgentFactory, LlmAgentFactory, RootBotAgentFactory};
 
 /// Command-line arguments for one headless Great Tree agent experiment.
@@ -23,7 +25,8 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let cli = Cli::parse();
-    let game = LoadedGame::load(&cli.component)?;
+    let experiment = ExperimentFile::read(&cli.experiment).await?;
+    let game = LoadedGame::load_with_metering(&cli.component, experiment.wasm_metering())?;
     let metadata = GameMetadata {
         id: "great-tree".to_string(),
         name: "The Great Tree".to_string(),
@@ -39,7 +42,7 @@ async fn main() -> Result<()> {
         .agent(LlmAgentFactory)?
         .agent(RootBotAgentFactory)?
         .agent(RemoteAgent::new())?
-        .run_yaml(cli.experiment)
+        .run_file(experiment)
         .await?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())

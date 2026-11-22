@@ -1,5 +1,34 @@
 # Technical Decisions
 
+## 2026-11-21: Rehearse publication with local package artifacts
+
+The crate dry run can only list a crate's contents when a new exact dependency is
+absent from crates.io. Tests built from the repository also cannot show that
+scaffolding, compilation, and deployment work with just the packaged files.
+
+`make test-release-candidate` packages the six coordinated releases and runs
+consumers from a temporary directory outside the checkout. Cargo patches point
+to SDKs extracted from their own archives so the candidate can resolve its
+exact pins before the registry has the new version. The starter clients install
+the npm tarball, and a fresh virtual environment installs both SDK wheels.
+Reusing Beacon Relay exercises the published scaffolding and component toolchain
+for both languages without maintaining a second game. The browser checks use a
+temporary loopback host and real package upload, revision selection, and intake.
+Snapshot the six package trees together before building. A run can record the
+tested snapshot even when an unrelated edit lands during compilation. The
+publication preflight names any inputs that changed since the snapshot.
+
+The candidate target runs the ordinary, end-to-end, and component suites,
+including runtime stress tests, before it retains the rehearsal's artifacts.
+The coordinated publish target checks the version, source fingerprints, and
+artifact checksums. npm and Twine upload the exact retained files. Cargo's
+standard publish command packages the verified source again with registry
+dependency metadata and VCS provenance. This preserves Cargo authentication,
+verification, and registry polling without implementing a separate upload
+client. Registry dry runs and post-publication consumer checks cover that
+registry boundary. Individual upload targets remain available for a partial
+release, with npm and Python using the saved candidate.
+
 ## 2026-09-02: Participant admission retries reuse captured launch identity
 
 Context: The browser deliberately removes Prolific identifiers from the visible URL before sending
@@ -4814,3 +4843,858 @@ release build, Hugo build, package archives, and publication dry runs also passe
 consumers compiled against the two locally packed artifacts, and the examples built with the
 local SDK. Docker was unavailable because no local daemon was listening. The published build
 paths and registry lockfile audit require the actual 0.6.0 artifacts on both registries.
+
+## 2026-11-21 — Compare game execution through the existing runtime stress harness
+
+A shared Rust fixture provides identical game rules and projections in the native
+and Wasm runs. The opt-in Wasmtime adapter compiles a core module once and gives
+each session a separate store. The test-only JSON ABI serializes each game method
+independently, allowing the existing typed Game trait, storage, WebSockets, and
+full-duplex audio path to run as usual. This tests the cost of the simplest
+integration, including serialization and copying. A stateful single-call adapter
+or a WIT component could have different costs. Only locally built trusted
+fixtures belong here. Handling arbitrary game uploads would also require execution
+budgets and a recoverable guest failure boundary.
+
+Action latency measures from the client send to the matching role-A transition
+during steady traffic. Polling while waiting for the next PCM frame preserves
+audio pacing. The report includes missed matches to expose window censoring.
+Live scheduling varies between runs even with identical inputs. Child CPU seconds
+include server startup, compilation, and drain. Resource samples follow drain,
+so RSS cannot establish a per-active-room allocation. The macOS sampler converts
+Mach absolute ticks using the hardware timebase. The ps fallback reads cumulative
+TIME instead of percent CPU. The pilot protocol and measurements are in
+`notes/wasm-stress-pilot/`.
+
+An initial human-human pair exposed a race during churn. The stress client
+requested the new audio grant after the game WebSocket upgrade but before
+receiving its active participant snapshot. During that window the room could
+still be paused for reconnect, and the audio endpoint correctly returned HTTP
+400. Churn now waits for the active game snapshot before requesting audio.
+Both initial runs are retained in `notes/wasm-stress-pilot/initial-reconnect-diagnosis/`
+and excluded from the paired measurements.
+
+All six corrected 12-room runs passed. The paired change in p95 ranged from
+−0.97 to +1.78 ms, and server CPU increased in each pair. Per-run measurements
+and raw report links are in `notes/wasm-stress-pilot/results.md`.
+
+## 2026-11-21 — Commit live turns before publishing their checkpoints
+
+The room lock covers the stateful step, storage, and publication. The action task
+owns that lock independently of the submitting socket, so cancellation cannot
+interrupt installation after a durable write. The host keeps the last committed
+checkpoint until storage confirms the accepted event batch and terminal result.
+Reconnects take the room lock, and observations and affordances project from
+the host's committed checkpoint.
+
+A UUID on the accepted event identifies one prepared turn without a schema
+change. SQLite checks the ID under its writer reservation, before checking the
+lifecycle. The host retries the same event payloads and terminal value, including
+after a commit failure that a subsequent transaction proves absent. If SQLite
+cannot establish the outcome, the coordinator retains the room lock and checks
+again. Action callers receive an error while confirmation is pending. The
+periodic lifecycle sweep defers locked rooms so unrelated rooms can still
+expire. Once storage proves rollback and the write attempts are exhausted, the
+next submitted action still receives the prior checkpoint.
+
+## 2026-11-21 — Exercise the production component host in the stress harness
+
+The stress Wasm server registers the production component factory through the
+same generic server startup as the typed native fixture. Both share mechanics
+and deterministic workload agents. At the component boundary the agent
+serializes its typed mark as JSON. The fixture computes both views in one step
+and keeps its ordinary state inside the instance. A checkpoint every 32
+accepted actions bounds reconstruction from the preceding checkpoint. Native
+and component observations each include only the recipient's detailed history.
+The matching headless test compares complete decision traces and completion.
+The guest test build can trap after clearing its state to verify that a
+replacement reconstructs the latest accepted frame. Benchmark builds omit
+fault injection.
+
+## 2026-11-21 — Keep mutable game state in a component and select durable frames in the host
+
+The WIT world in rust-server/wit/game.wit defines init, restore and step. The
+same session-specific instance advances once for an ordinary turn in either
+runner. A returned frame carries both private views, neutral metadata and a
+completion result. Queries during publication and reconnect read the selected
+frame without a guest call. Choices, when exposed, belong in the role view.
+Native games retain their existing typed trait and agent interfaces. Game::step
+adds the distinction between an expected rules rejection and an execution fault
+to the existing host paths, including historical reconstruction and headless
+trajectory capture.
+
+Deterministic components can omit checkpoints. Each accepted action adds a
+constant-time immutable history entry to the candidate recovery recipe. A
+matching selected frame reuses the warm guest. A different frame or trap
+requires fresh linear memory and recovery from the most recent checkpoint or
+the recorded initialization and subsequent accepted actions. The per-frame
+cache identity is distinct even for two branches at the same depth and is
+regenerated on deserialization. Longer periods between snapshots save copying
+at the expense of memory for history and slower recovery. Nondeterministic
+transitions require explicit complete snapshots. The host commits those
+snapshots alongside the turn; a marked frame with missing data fails replay.
+The public corpus projection excludes private recovery data.
+
+The component package loader and CLI are opt-in. Each store has no host imports,
+bounded memory, and per-call fuel. A SHA-256 check protects replay frames and
+headless result reuse from a different component with the same game version.
+The CLI loads one local game package per process and uses the existing live
+database startup policy. Hot installation of multiple packages, process-crash
+resumption of active rooms and a component-native training reward interface
+would be separate changes.
+
+The `make test-components` target builds both the Rust fixture and a minimal
+guest written directly against the canonical ABI in WebAssembly text. The
+second guest avoids a common binding generator between host and both test
+guests. Its fixed ABI layout is specific to the versioned WIT fixture. The
+Rust test guest can also return an invalid role view after modifying its state.
+The host must discard that instance and recover the committed frame before
+accepting another turn.
+
+Verification included the shared native/guest headless decision trace, a
+separately authored WAT component, two isolated sessions, recovery from a guest
+trap, exhausted fuel, malformed output after mutation, and an uninstalled turn.
+Live SQLite fault tests held an actual commit acknowledgement while cancelling
+its submitter, and checked one durable record and one publication. Another
+stored a non-reproducible transition and verified checkpoint replay, corruption
+detection and corpus privacy. The component CLI was exercised with two live
+WebSocket participants and a headless Python gRPC policy. These are correctness
+checks; the earlier stateless benchmark numbers do not characterize this ABI.
+
+## 2026-11-21 — Binary role observations on the component boundary
+
+The stateful fixture profile attributed 4.11 µs per accepted headless action
+to encoding the result and installing guest state. The entire hot component
+call's bindings and payload transfer took about 0.61 µs. WIT v2 keeps the
+one-step component interface and changes just the two role views to MessagePack
+byte lists. Typed Rust game code can use the component SDK's named-field Serde
+encoder. Other languages can encode the documented JSON subset directly.
+Configuration, actions, completion, transition metadata, and opaque checkpoints
+retain their existing representations.
+
+The host decodes and validates both roles before installing a frame. It shares
+each decoded role view as an immutable Arc<Value> with local Rust agents.
+Explicitly typed component-agent callbacks need the new Rust observation type.
+Browsers, gRPC agents and experiment records receive their usual values. Wire
+decoding is bounded per view to constrain allocation on untrusted guest data.
+Direct guest encoding assumes JSON-shaped Serde data. Types relying on JSON
+coercions can materialize a serde_json::Value first, at the cost of allocating
+that intermediate value. Compiled v1 guests require a matching v1 host for
+historical replay and a rebuild for new v2 sessions.
+
+The comparison uses the previous JSON component, the new component, and a native
+fixture. Its in-process policies exercise both ignored and consumed observations.
+The additional Hotel workload uses sampled role views and synthetic transitions.
+Experiment sources, protocols, and measurements are under
+`notes/wasm-codec-performance/`.
+
+On the M5, the original one-worker workload improved from 110,422 to 165,129
+actions/s (631,092 native). The matched hot interface subtotal fell from 5.86
+to 3.63 µs. The four-way test kept execution and agent inputs fixed while
+varying encoding and sharing independently. MessagePack and sharing both helped
+the string-heavy fixture. On the nested Hotel snapshots, JSON plus sharing
+reached 43,151 actions/s versus 39,993 for MessagePack plus sharing and 37,102
+for JSON plus cloning. A single preferred codec for every view shape is still
+an open question. New fixed-load live runs completed successfully, with higher
+client p95 than the preceding same-seed JSON runs. The live comparison used
+historical controls and does not establish causation.
+
+## 2026-11-21 — Keep game execution typed through the local policy and learner
+
+The v2 boundary eliminated JSON text for views but still allocated two decoded
+JSON trees every accepted turn. Hotel and Last Screening also generated trees
+for their native agents, which immediately deserialized them again. Component
+WIT v3 represents config, actions, both role observations, completion and
+metadata as MessagePack. The host validates each returned payload before
+installing the frame and shares its original buffer with local agents. They can
+decode into a game type or borrow selected strings and omit fields from a
+policy-specific struct. An opaque checkpoint stays game-defined. The fixture
+keeps its existing JSON checkpoint encoding. Replay pins the original component
+digest; a v2 component needs its matching host.
+
+Local rollout, training and trace capture retain typed observations and actions,
+including native Rust structs or shared ComponentValue handles. A training
+plan resolves its reward configuration before running sessions. The learner
+registration supplies a decoder for pending batches resumed from JSON result
+files, so observation deserialization is a requirement for learners and not for
+evaluation-only games. Full traces can reference the learner input already
+owned by a captured transition. Output serialization reconstructs the previous
+trace and trajectory shape. WebSocket, gRPC and storage adapters may convert
+data at their boundaries; the component recovery snapshot preserves the old
+compact JSON-text action/config fields, including key order.
+
+Both bundled games now project typed role-private observations for local
+policies. The complete Hotel opening views match the v2 recorded fixture.
+The cost of validation and policy-requested decoding remains part of the game
+step or the subsequent callback. A policy that requests the whole view pays
+for that decode. See `notes/wasm-component-v3/` for the headless measurements.
+
+On one M5 worker the repeated original fixture rose from 177,252 to 210,062
+Wasm actions/s (614,398 native). Reading the Hotel-shaped opening views rose
+from 37,356 to 76,938 Wasm actions/s; the new typed native comparison reached
+595,786 actions/s. Hotel includes the removal of the guest/native projection
+trees in addition to the component ABI change. Both roles matched their v2
+digests. Verification exercised the complete component suite, both native game
+adapters, the cue-choice learner, the live WebSocket client and administrator
+replay, and headless gRPC including result resume and digest rejection.
+
+### Trust codec-produced values across the v3 component interface
+
+Both endpoints use a codec that produces one JSON-compatible MessagePack value
+per observation, action, configuration, completion, or metadata field. The host
+adopts buffers received from that codec after checking their length (1 byte
+through 8 MiB). It retains each role's immutable observation and decodes only
+for a consumer. Session state, replay selection and opaque guest checkpoints
+use the existing v3 rules. Game authors continue to use ordinary Serde types
+with the component SDK. The public Game trait and the WIT function signatures
+stay the same.
+
+The SDK writer enforces the value-domain and resource rules as it encodes.
+The separate raw-byte constructor still validates data with unknown
+provenance. A third-party language binding is responsible for enforcing the
+same rules before returning bytes. In particular, the host no longer promises
+to detect a malformed, unused in-bounds observation when installing a frame.
+The live event writer asks the game for metadata through an infallible optional
+field. Unreadable metadata from a nonconforming encoder is logged and omitted
+at that point. A headless rollout that ignores metadata never builds its JSON
+representation. Persisted records and external protocols retain their existing
+formats.
+
+Measuring the encoder and receiver together was important. A first checked
+encoder rebuilt map key sets and used the same expensive bookkeeping for
+arrays and structs. The retained implementation writes typed MessagePack
+directly and keeps separate state for arrays, named structs, and dynamic maps.
+For small named structs a bitmap detects potentially repeated names and an
+exact string comparison resolves collisions. This keeps custom serializers
+subject to the same uniqueness rules as derived serializers.
+
+In ten paired release trials, the median paired throughput gain was 24% for
+the original ignore policy and 68% for policies reading the nested Hotel
+fixture. The Hotel policy checksums matched the original implementation for
+both seats in every trial. See `notes/trusted-codec/` for the release build
+identifiers, exact workloads and raw samples. These figures describe local
+agent rollouts; live web and remote-agent tests exercised correctness.
+
+### Positional observation schema pilot
+
+The local rollout pilot in `notes/declared-wire/` generated matching guest
+writers and host readers from the stress and Hotel observation declarations.
+It sends every struct slot in declaration order. An absent optional value
+occupies a nil slot. Unit-only enums use numeric tags; an enum whose variants
+can carry data uses an array containing the tag and all variant fields. Plain
+strings remain ordinary MessagePack strings. All 514 named Hotel role views
+matched their independently reconstructed compact equivalents. The study
+keeps the production component contract intact. A deployed positional codec
+would need an agreed schema/version and a schema-aware conversion back to the
+existing named representation for recording and external clients.
+
+### Discover each game's compact wire schema at load time
+
+The v4 component exports describe(). The host calls it once on a disposable
+instance before accepting sessions, validates its JSON declaration, and shares
+the resulting schema with all sessions for that component. A separate instance
+ensures that initialization cannot depend on side effects of discovery. Using a
+declaration allows one host binary to load unrelated games, including non-Rust
+guests, without linking their types or sending field names with every view.
+
+Struct fields occupy fixed positions and enum variants have numeric tags.
+Arbitrary strings and dynamic map keys keep their actual contents. The host
+can borrow string data from an observation for a local policy. A ComponentValue
+keeps its compact bytes and slot schema together, so serialization at a public
+boundary reconstructs named fields and variants. Incoming named MessagePack
+actions and configurations map directly into the declared representation.
+Serde projections can skip unrequested fields. Reads bound structurally skipped
+data and the aggregate text synthesized from declared names. Guests using the
+provided codecs are trusted to encode the declared types.
+
+A schema explains representations, not game semantics. Games still own state,
+action acceptance, checkpoints, and both role views. Public and persistent
+formats retain named values. Version 3 components require a version 3 host,
+including for historical replay. Keep the matching artifacts when upgrading.
+The tradeoff for independent game deployment is interpreting a loaded schema
+while reading values on the host. The full measurements and reproduction
+scripts are in notes/declared-generic/.
+
+Twelve paired release trials per workload gave 160,665 Hotel actions/s for
+the generic host, 135,369 for named v3, 205,197 for the game-specific positional
+reader, and 629,177 native (medians). Both roles' full Hotel observations used
+54,873 bytes across one session, down from 374,324. All 514 Hotel and 514 stress
+views agreed. The simpler workloads lost 4–7% relative to named v3. This
+benchmark uses the Hotel opening projections driven by stress-fixture actions.
+Its throughput gap does not isolate the choice of Wasm execution engine.
+
+### Decode declared Rust guest actions from their wire slots
+
+The guest knows its Rust action type when it is compiled. A separate
+`ComponentDecode` derive lets it opt in to constructing that type from the
+fixed slots and numeric enum ordinals already defined by `ComponentWire`.
+The guest does not need a cached runtime schema or a Serde visitor for the
+declared portion of the action. The stress fixture uses `decode_declared`
+at its step boundary, including the component compiled with trap variants.
+
+The reader shares the MessagePack token, byte, node, and depth checks used by
+schema decoding, and validates all slots before returning the constructed
+value. Nested dynamic JSON uses the existing named reader on the same cursor.
+String borrows come from the supplied action buffer. The separate derive
+allows callers that rely on custom Serde behavior or runtime declarations to
+keep using the schema adapter. It adds generated construction code to the
+guest and requires nested declared types to support direct decoding. The
+public names, wire bytes, and ABI version are independent of this choice.
+
+## Resolved observation policies
+
+The declared observation reader presents the public field names and enum
+tagging through Serde. Hotel policies that visit an entire action catalogue
+need its variant names and selected scalars from the surrounding view. Repeating
+field and enum dispatch for each observation made these reads a measurable
+part of the local rollout.
+
+The component SDK resolves an explicit `Selection` with
+`Projection::resolve`, using the guest's declaration for each seat. It sorts
+record and tuple selections by their compact positions and prepares a table
+from enum ordinals to names and payload lengths. Reads use the existing bounded
+wire cursor and deliver borrowed strings and variant labels to the caller. A
+read checks schema identity before walking the bytes and permits independently
+owned but equal declarations. The normal host path shares the same schema
+allocation, so it takes the identity fast path.
+
+The caller sees values in wire order and chooses the projected inputs and
+their keys. Options without a value emit no inputs. The API streams selected
+values, so callers can accumulate into local state and publish only after
+validation succeeds. The decoder still walks preceding values to find later
+slots and checks the physical structure of unselected fields. Enum payloads
+remain skippable when the caller selects only the variant label. The named
+Serde interface continues to handle arbitrary deserialization and structured
+payloads. List element boundaries, map selection, and enum payload projection
+can be added if a policy needs them.
+
+### Host several WASM games in one Parlando installation
+
+The live component command binds one component factory, dashboard, and database
+at startup. A long-running host should register immutable releases above the
+existing game installations, preserve each game's database and dashboard, and
+bind each experiment revision to both the mechanics and browser build. A game
+admission gate can close independently of experiment activation and drain sessions
+on their pinned releases. The additional catalog and release retention are the
+cost of restarting and rolling back without losing provenance.
+
+Use a versioned ZIP bundle and a scoped REST API with independent upload and
+activation permissions. Install provider credentials once at the host, with
+per-game grants enforced by host adapters. Serve game JavaScript on participant
+origins separated from the dashboard. The first deployment model assumes reviewed
+releases. Supporting unreviewed publishers requires stronger process isolation
+and validation of the existing trusted component codec boundary. The design and
+verification cases are in [multi-game-host-design.md](multi-game-host-design.md).
+
+### Verify the final component rollout path against the previous v4 build
+
+For the stress fixture, history stores StressRole values which serialize to
+the original role strings. Native apply_action retains the immutable caller
+contract. The stateful guest validates before writing and retains the evicted
+history and previous scalar values until both role views and any checkpoint
+have encoded. A recoverable projection failure rolls back without cloning
+every history entry. The immutable native comparison also benefits from
+copying typed history rather than allocating per-entry strings.
+
+Use the resolved policy reader for stable local scalar selections and the
+derived guest reader when the action type is known at compile time. Neither
+choice alters the v4 ABI or the named protocol for remote agents. The local
+reader test keeps the same policy outputs and visits all observations for both
+seats. On 16 paired release rounds, Hotel progressed from 155,807 to 236,808
+actions/s and the updated native fixture reached 844,548. Median paired
+speedup was 1.55× against the prior v4 implementation and the paired native
+lead was 3.52×. This is traffic from Hotel opening views with stress mechanics.
+Measured with the older host, the fixture's history change improved throughput
+by 19%, with a further 7% after enabling the direct action decoder. The
+resolved reader added 23% on the completed guest. These are separate paired
+comparisons. See notes/final-rollout/ for protocol, raw data and stage probes.
+
+### Demonstrate the v4 component contract with Last Token in C
+
+Use a standalone game under `experiments/c-last-token` to exercise the
+language boundary of the existing component host. Generate the canonical
+ABI from the checkout's WIT with `wit-bindgen c`. Compile with Zig's C driver
+and use its libc for ownership-compatible buffers. The packaged guest has
+zero host imports. The registry Rust release 0.6.0 lacks component hosting,
+so build the host from this checkout. The React app consumes the registry
+client 0.6.0.
+
+Keep the guest codec limited to the game's bounded compact MessagePack
+schema. The schema and encoder evolve together, so the host probe checks
+named payloads and rejection codes. With at most 15 accepted moves,
+deterministic replay is sufficient for recovery. Larger games may need
+checkpoints to bound re-execution. The release benchmark uses the actual
+component factory from the checkout and measures load, fresh session
+initialization, and current-state turns. It leaves transport, persistence,
+and named observation decoding outside the timed sections.
+
+### Resolve shared provider credentials through explicit grants
+
+Use operator-owned provider profiles for the authenticated destination and
+secret reference, with per-game grants and usage limits. The current adapter
+sends the bearer key to the configured URL, so experiment endpoint overrides
+cannot govern a shared credential. Resolve the key on new connections to
+support rotation without redeployment. Upstream costs and compromise affect
+every game using the same key.
+
+Keep the bundle tool artifact-based. Game toolchains produce a WASM component
+and static assets. One packer and host-compatible validator serve manual and
+automated deployment. This keeps project build scripts off the host and lets
+CI isolate upload credentials from build steps. See the
+[multi-game host design](multi-game-host-design.md).
+
+### Test import-free Python mechanics against the existing component host
+
+Port Last Token to Python to distinguish a WASI compatibility issue from
+resource limits. The port uses generated WIT bindings, the same compact
+MessagePack schema as the C version, and deterministic replay. It reuses
+the participant bundle and the same host probe. Its manifest uses a
+separate game ID to keep its component provenance distinct.
+
+With componentize-py 0.25.1 and `--stub-wasi`, the component validates and
+exports the expected WIT with zero imports. The stock host fails when it
+tries to instantiate core instance 17. Componentize-py 0.17.2, 0.19.3,
+and 0.24.0 also hit that limit. The 0.17.2 test uses the older generated
+binding module for `Err`. The 0.25.1 artifact contains 38 core module
+instantiations.
+
+A temporary host copy under `/private/tmp` raises the Wasmtime store
+instance cap from 16 to 64. The Python component passes the host probe
+with that single adjustment, including both winners, action rejection,
+session isolation, and recovery by replay. The host in the repository
+retains its current limits and empty linker. If Parlando adopts this build
+path, consider a higher instance allowance for reviewed components after
+measuring the effect of concurrent Python sessions. That decision is
+independent of granting WASI capabilities.
+
+On Apple M5 with Wasmtime 36.0.23, both guests used the same temporary
+release host. The probe takes 21 factory load measurements and reports
+medians of 21 batch means for session and turn measurements after one
+warmup batch. Each batch contains 1,000 12-move games. Timings cover the
+in-process host only.
+
+| Measure | C median (min–max) | Python median (min–max) |
+| --- | ---: | ---: |
+| Component bytes | 7,388 | 18,456,593 |
+| Factory load, ms | 2.982 (2.701–4.042) | 4,338.250 (4,161.408–4,849.305) |
+| Session creation and initialization, µs | 6.935 (6.736–8.659) | 671.105 (630.338–832.098) |
+| Current-state accepted turn, µs | 0.376 (0.369–0.381) | 9.727 (9.262–11.320) |
+
+Build with `componentize-py==0.25.1` on PATH and
+`experiments/c-last-token/python/build.sh`. The existing probe takes an
+optional component path after `check` or `bench`. Pass
+`experiments/c-last-token/build/last-token-python.wasm` to the stock probe
+to reproduce the load failure or to a probe linked to the temporary
+64-instance host to reproduce the successful checks and timings. The
+Python manifest uses the existing Last Token client bundle.
+
+The temporary host also passed a live desktop and phone-width Chromium
+smoke test. Two participants paired, saw matching pile updates and
+role-appropriate turn controls, and received the same winner.
+
+## 2026-11-21: Separate editable component projects from deployable packages
+
+Context: Game authors need source-level validation and a portable artifact whose identity and paths
+do not depend on their local Cargo or npm installations.
+
+Decision: The project manifest resolves source and output paths relative to itself. Builds compile a
+Rust cdylib with the import-free WebAssembly target and use Cargo's artifact records to locate it,
+then wrap its embedded WIT interface with wasm-tools. The build validates it with the same factory
+used by both runners. It stages the component, manifest and compiled browser assets under
+`dist/parlando`. The staged manifest carries only the public game metadata and relative artifact
+paths. A build lock serializes replacements and a failed subprocess leaves the preceding package
+available. JSON command output has a single envelope on stdout and child diagnostics go to stderr.
+
+Decision: Scenario tests submit named JSON values through the real component runtime. Cases may
+request a fresh engine session plus restoration of persisted state before a move. The starter uses
+deterministic replay from the recorded seed and accepted actions. An uninterrupted control session
+receives accepted actions only. Comparing role views, completion and transition metadata with that
+control exposes hidden side effects of rejection and discrepancies after recovery. A native test
+independently exercises the same game trait.
+
+Tradeoffs: Web compilation requires the Rust WebAssembly target and wasm-tools. Browser builds
+install npm dependencies and use the lockfile once generated. The Rust scaffold honors an explicit
+`--sdk-path`. Otherwise it copies the necessary SDK manifests, sources and WIT from the SDK bundled
+beside the CLI or its source checkout, so the generated project can move without machine-specific
+paths. Without an available source, the generated registry dependency requires a published SDK
+release. The local live server continues to
+use the administrative dashboard to configure and open experiments.
+
+## 2026-11-21 — Export typed guest mechanics and deploy immutable packages
+
+A Rust component implements a small, stateful game trait. The SDK owns the WIT
+exports, schema description, typed input decoding, and frame construction.
+Role views, completion and metadata can borrow session data while the SDK encodes
+them. Checkpoints are optional and opaque. Stateful games retain deterministic
+replay and need neither a Clone implementation nor a general-purpose state codec.
+The guest and server each package their own WIT definition, with a workspace
+test for byte equality. Ordinary rejections leave the guest reusable. Failure
+to encode a frame after state mutation traps so the host discards that instance;
+a fixture exercises recovery to the last committed action.
+
+The local server and hosted deployment use the same component loader. The
+deployment host validates packages, includes participant files in the revision
+digest, and pins each experiment to one revision. Selection and intake have a
+separate operator credential. Browser JavaScript is trusted by the operator
+selecting a revision and runs on the installation's web origin. Distinct asset
+bundles are not separate browser security origins. Deploy independent trust
+domains on separate origins. One instance owns the durable volume, including
+package revisions, selections, and per-experiment databases. Intake is closed
+on startup so recovery does not admit participants without operator action.
+
+Store upload credentials per origin and game in Keychain or the desktop Secret
+Service. CI-injected credentials must name their receiving origin. Uploads use
+the same noninteractive command that developers use, while provider credentials
+are confined to infrastructure provisioning. Use a manual artifact build for
+CLI bundles and host images, keeping artifact generation separate from package
+publication. Source deployment uses the provider's volume for SQLite and
+package files. Live cloud provisioning and registry publication require the
+operator's account and are separate from local conformance and integration tests.
+
+### Measure concurrent Python Last Token sessions
+
+Use the same temporary 64-instance host from the Python compatibility
+test. The harness loads one shared factory and holds 16, 64, 128, or 256
+session stores and their states in one process. It initializes them
+serially, then four workers advance disjoint sets of sessions over 12
+synchronized rounds. Each round submits one move per game. Every session
+must report player B as the winner at the end. The macOS stress probe
+samples process resident memory and physical footprint after initialization
+and during play. It checks a 3.25 GiB footprint budget every 16 session
+initializations and caps the test at 256 sessions.
+
+The host ran on a 32 GiB Apple M5. Both Python runs completed all sessions.
+Ranges below span the two runs. Each baseline was collected after loading
+one factory and running the correctness checks.
+
+| Open games | Python midpoint footprint, MiB | Python turns/s | C midpoint footprint, MiB |
+| ---: | ---: | ---: | ---: |
+| 0 | 166–169 | — | 5.1 |
+| 16 | 351–353 | 16,910–115,701 | 6.2 |
+| 64 | 904–907 | 24,951–140,759 | 9.5 |
+| 128 | 1,670–1,686 | 22,626–136,742 | 14.0 |
+| 256 | 3,196–3,222 | 34,483–94,463 | 22.9 |
+
+Python added approximately 11.8–11.9 MiB per session above the factory
+baseline at 256 sessions. The slowest round of 256 turns took 9.47–28.95 ms.
+Other workloads ran on the same machine, and scheduler contention can
+affect those timings. The experiment includes engine work and synchronization.
+It excludes networking, SQLite, agents, and sustained churn, so the maximum
+tested tier is a lower bound for this particular component and harness.
+
+The separate instance cap limits the number of core Wasm instances a single
+store may allocate. Raising it to 64 permits the tested Python component
+while preserving the import boundary. A deployment's game admission budget
+should account for observed per-game memory and leave headroom for the rest
+of the server, independent of the instance cap.
+
+Reproduce on macOS with the Last Token probe linked to the temporary
+64-instance host. Run it with `stress experiments/c-last-token/build/last-token-python.wasm`
+and pass `experiments/c-last-token/build/last-token.wasm` for the C control.
+The probe implementation is in `experiments/c-last-token/probe/src/stress.rs`.
+
+## Parlando Game SDK naming and derivation
+
+Expose the Rust guest library as parlando-game-sdk. GameValue describes a type
+in the public game interface and derives its schema and encoder together. Emit
+the direct decoder with field-specific trait bounds, so input types are checked
+by the Game trait and an output containing borrowed slices can be written without
+providing a decoder. Preserve the v4 WIT contract and existing encoded values.
+
+### Add Python authoring to the component SDK and CLI
+
+Raise the core instance cap from 16 to 64 per Wasmtime store. The earlier
+Python probe established that the CPython component exceeds 16 and runs at
+64 with the existing memory and fuel budgets. Keep the empty linker and
+compile Python with `componentize-py --stub-wasi`. This change expands the
+number of Wasm modules one session may instantiate. Session admission and
+memory budgeting remain separate concerns.
+
+The Python SDK specializes the existing v4 game world using six Python
+payload annotations. One compiled type description drives schema emission
+and the bounded MessagePack codec. Guest state lives in a session object
+owned by each component instance. A rule rejection returns the stable
+application reason before state mutation. Encoding or projection failure
+after a successful turn traps, which gives the host its normal recovery
+path. Generated WIT types are imported by the guest adapter and native
+unit tests can import the same game module. A game with external package
+dependencies must load its dependencies at build time and remain within
+the capabilities provided by the component.
+
+The CLI dispatches build and native test commands through the manifest's
+language-specific authoring inputs. Both languages use the same loader,
+scenario runner and package output. The portable CLI archive carries
+matching SDK sources and the scaffold vendors the Python package. Beacon
+Relay uses the same participant view and YAML scenario in both languages.
+Its target derives from the session seed and it recovers through accepted
+action replay.
+
+The packaged CLI was tested from a moved Python scaffold. Verification
+covers SDK wire and lifecycle tests, native Beacon tests, the shared
+scenario against the exact packaged Wasm, zero Wasm imports, and a
+two-browser live game through the packaged CLI. The Rust component
+conformance suite provides regression coverage for the shared host.
+
+## Use Wasm as the server game contract
+
+The live server and headless runner previously supported a native Rust implementation as well as a Wasm implementation behind game and factory traits. Both now hold a compiled LoadedGame, open an isolated GameSession per play-through and consume GameFrame observations and completion. The Rust Game authoring trait belongs to the guest SDK. Native Rust policies can still register in a thin host or a headless runner.
+
+The guest owns mutable state. A frame records the identity needed to recover the committed position after a trap or failed write, using a checkpoint when available and deterministic replay otherwise. Successful writes need no second guest invocation. Choices a game needs to disclose travel in its role views. The store and participant protocols retain their existing formats. Pre-Wasm recordings need their original executable and data store for replay; an unrelated module cannot reconstruct their private initial state. Bundled game launchers use separate component databases.
+
+The live installation adds the SHA-256 of the loaded component to the existing
+JSON build manifest. It accepts an object or null and rejects a supplied digest
+that differs from the executable bytes. Standalone, embedded and deployed
+launchers publish that provenance through the installation manifest. The live
+test suite embeds a prebuilt WebAssembly fixture to exercise production frame
+projection, failed writes, checkpoint replay and agent startup during Rust test
+runs.
+
+### Headless agents and Cue Choice
+
+The headless runner accepts a compiled component alongside deployment metadata
+and stores the digest calculated from the executable in the run manifest. A
+worker shares that compiled component across plans and uses one isolated game
+session per plan. Resumed runs validate the saved component digest before
+reusing finalized results or training batches. Outputs created by an earlier
+native binary lack that digest and require a fresh run directory.
+
+Agent callbacks and learner trajectory payloads use the host's concrete
+ComponentValue. The game can include a legal-action catalogue in a role view.
+Cue Choice does this for the learner and signals the dealer phase in the dealer
+view. The Python policy still applies the legal set at selection time while
+retaining the same model prompt. The v1 artifact and gRPC fields for an
+additional action catalogue remain optional and new host decisions leave them
+empty. Rewards can inspect role views, transition metadata and completion
+through GameFrame. Private state stays in the guest.
+
+The headless lifecycle tests embed a stripped build of the stress fixture's
+headless example. Ordinary host tests therefore exercise a real guest without
+invoking the Rust Wasm toolchain at test time. Rebuild the fixture when changing
+the game interface or test mechanics using the commands documented beside the
+fixture loader.
+
+### Use the same game SDK import name in Python and Rust
+
+Expose `parlando_game_sdk` as the Python module so examples use the same
+game SDK name in both languages. The Python distribution, source directory,
+and CLI vendor directory are named `parlando-python-sdk` to identify the
+Python package alongside the Rust crate. The scaffold, archive, and wheel
+all supply the new module name.
+
+### Package the four authored Rust games as components
+
+Space Game, The Great Tree, Counterweight Hotel, and The Last Screening now
+build Wasm from the same Rust mechanics their rule tests exercise. The guest
+owns mutable state and uses the recorded seed. The host recovers through action
+replay. The HTTP protocol and WIT need no game-specific extensions. Space Game
+and Screening carry legal controls in each role projection. Hotel already
+carried them in its view. Great Tree continues to validate controls when acted
+upon. Screening's compact role enum retains the flattened public JSON fields
+used by its browser and authored agent.
+
+The optional native launchers register each game's existing agent factories
+with the shared host. They load the exact same component as the generic CLI.
+The hosted agents retain their typed policy logic and convert values at the host
+callback boundary. Great Tree's headless launcher uses the same pattern.
+
+Each default local launcher writes to `.local/component.sqlite`. Included
+container recipes use a separate component SQLite path. Historical installations
+keep their native records and stores. Opening those records through the new
+guest is outside this transition because the old state snapshot format has no
+component replay provenance.
+
+Native rule suites and four component scenarios verified role views, seeded
+starts, accepted and rejected actions, and recovery through the guest ABI.
+Clean npm builds verified the four packages against the matching published
+0.6.0 client lockfiles.
+
+### Publish all reusable registry packages from Make
+
+Use one serial publication sequence for the derive crate, Rust Game SDK,
+server, browser client, Python Game SDK, and Python agent SDK. Keep the
+server and browser client in lockstep. SDKs retain their independent
+versions, so dependency crates already available in the Cargo index can
+be reused and Twine skips existing PyPI distribution files. Named Make
+targets support recovery after a partial release.
+
+The dry-run target builds and checks each Python wheel and source
+distribution without invoking upload. Cargo dry runs use the registry
+package when its workspace dependencies are indexed. For a new dependency
+chain, the dry run lists the dependent crate contents and the maintainer
+runs its full verification after its dependency becomes available.
+
+The three optional authored configuration fields are represented as optional in
+the compact schema. The guest assigns the previous default when no value is
+supplied. Declaring an ordinary required field with only a Serde default was
+insufficient because the host validates named configuration before invoking the
+guest. All four packages passed fresh-database startup and HTTP health checks.
+The Space Game Linux package built as a static x86-64 executable and passed its
+manifest checksum verification. The Docker daemon was unavailable for image
+builds.
+
+### Version all registry packages together
+
+All six Parlando packages carry the same release version. Align the SDK
+manifests with the existing server and client version, 0.6.0, as a repository
+metadata change. The next release increments the shared version and
+publishes all six packages even when some package source has not changed.
+Use exact Rust SDK dependency versions to prevent Cargo from pairing a
+server or SDK with a different release. The CLI derives its scaffold SDK
+dependency from its own version.
+
+Make checks the package versions, Rust SDK pins and npm lockfile before
+uploading. Standard publication attempts each package at the shared version.
+Use individual targets to recover a partial release.
+
+### Extend the deployed-experiment host
+
+The checkout already has a long-running host with game-scoped REST uploads,
+content-addressed packages, immutable experiment selections, per-experiment
+SQLite databases and explicit intake. Preserve those contracts. A per-game
+dashboard can index the current selections and reuse applicable experiment
+views without consolidating databases or adding a second release lifecycle.
+Put the dashboard on an operator origin. Participant origins may be shared
+within a trust domain, with distinct origins for independent publishers.
+
+The hosted selection path rejects inline keys. Use a host-owned Speechmatics
+binding through the existing transcription-provider seam and check the same
+binding at activation and stream admission. Keep the existing package format
+and CLI, including the Python build path. Revisit binary upload transport only
+if package size or handoff warrants it. The revised
+[multi-game host design](multi-game-host-design.md) records remaining work and
+verification cases.
+
+### Scope credential sharing across integrations
+
+Use one operator-managed registry for outbound credential references, typed
+service profiles and game or experiment grants. Apply it to Speechmatics,
+ElevenLabs, Prolific and remote-agent transport. Check allowed operations and
+upstream resources as well as endpoint identity. The same Prolific token can
+back distinct study grants, and a remote-agent transport key is independent
+of the model keys held by that agent. Keep deployment, admin and participant
+authentication in their existing scopes. This extends the earlier
+Speechmatics-only integration plan. See the
+[multi-game host design](multi-game-host-design.md).
+
+### Keep remote agents game-scoped
+
+Remote agents are defined against a game's action and observation contract.
+Register each agent endpoint and its transport credential under one game ID.
+Experiments of that game may select compatible registrations. The host may
+resolve references through the same secret backend used for shared provider
+credentials. Remote-agent registrations and transport credentials are outside
+the cross-game provider grant model described in the preceding decision.
+
+### Scope researcher access at the host
+
+Use one named dashboard login for a single operator. With multiple
+experimenters, authorize an individual identity against host-owned game and
+experiment grants and record the actor for lifecycle and data operations.
+Prefer existing institutional identity for login. An experiment assignment
+does not imply export permission. Start with operator-managed grants and
+reuse the game-scoped deployment tokens for machine uploads.
+
+### Let an experimenter deploy and update an assigned experiment
+
+Authorize deployment against the experiment as well as the package's game ID.
+Keep a stable experiment identity and participant entry URL. Record immutable
+deployments under that identity and switch only the named experiment's
+selection. Reuse existing selection database isolation for deployment data.
+The first cutover closes intake and drains live sessions. It retains the
+history and checks the expected selection before switching. Experiment-scoped
+machine credentials can deploy within the same limits. Host operators retain
+namespace, access and provider authority. This supersedes the proposal to
+reserve release selection for operators and require a new public experiment
+ID for each update.
+
+### Start with lab-wide experimenter access
+
+For a group whose members can share study data and operational authority,
+start with a lab-wide experimenter role and an infrastructure operator role.
+Keep individual identities for audit and revocation through existing sign-in
+when available. Finer grants follow project access boundaries. Self-service
+deployment can use a fresh immutable run ID under the same game. Introduce
+in-place deployment switching when a participant link must survive an
+update.
+
+### Use individual passwords with host-wide experimenter access
+
+The lab wants separate named password accounts for attribution and revocation,
+with the same access to every game and experiment. Store accounts at the host
+and reuse the local authenticator's Argon2id password hashing and session
+mechanisms where applicable. Replace the earlier human assignment-grant
+proposal with host-wide role checks. Keep a separate operator role for account
+and infrastructure management. Provider grants and scoped machine deployment
+tokens retain their own authorization boundaries.
+
+### Implement named hosted accounts and a shared lab dashboard
+
+The host can expose a browser dashboard on a dedicated hostname while
+preserving the participant and bearer-token API routes. Cookie sessions are
+host-only and authenticated mutations require the configured Origin and a
+CSRF token. The separate hostname is required because uploaded participant
+HTML and JavaScript are controlled by game authors. Use the infrastructure
+bearer token to provision the first operator account, then let named
+operators create, reset, and disable accounts through the dashboard.
+
+Store users, revocable sessions and audit events in a separate host
+dashboard SQLite database. Passwords use Argon2id with bounded verification
+work. Sessions hold only token digests at rest and expire after 12 hours.
+Reset and disable revoke sessions transactionally. Durable audit attempts
+precede side effects and outcomes are written after the result. Run data
+and immutable selections keep their existing storage and lifecycle.
+Experimenters share authority across all games and runs. Browser deployment
+uses the existing immutable package envelope and creates a fresh run when
+switching builds. No experiment databases need conversion.
+
+### Make the hosted manual CLI-first
+
+The 0.7.0 experimenter manual assumes the installed CLI and uses Beacon
+Relay throughout. Order the public workflow around a local pilot, the
+portable WASM package, shared-host deployment, then data collection and
+export. Keep operator bootstrap separate from the experimenter's upload
+and intake steps. The shared host uses immutable run IDs and named accounts.
+Describe provider-backed flows under the single-game host where their
+credential editor exists.
+
+Use the Hugo manual as the canonical task guide. Keep current technical
+references and institutional privacy materials in docs. Remove superseded
+single-game deployment tutorials, historical migrations, duplicate manual
+chapters, and their obsolete screenshots. The docs assume the 0.7.0
+release. Smoke tests exercise the checkout CLI with local SDK sources
+because that release is awaiting publication.
+
+### Keep the game creation skill technical
+
+Use the installed CLI and the project scaffold as the working examples.
+Default new mechanics to Rust, honor an explicit Python request, and keep an
+existing project's language unless asked to port it. The supplied specification
+owns game design. The skill covers the Wasm contract, role-safe browser views,
+testing, and packaging. Agent and deployment instructions live in conditional
+references. The local skill is a symlink to the repository version, so one
+edit updates both entry points.
+
+### Keep Cranelift and fuel for agent experiments
+
+Full agent–agent play through the production experiment runner on Apple M5
+covered both Hotel routes and both Screening seat assignments with bundled
+agents. Compare component backends only after checking full role inputs,
+decisions and outcomes for identical seeds. Wasmtime 36.0.23 Winch loaded the
+components faster and changed the seeded starting observations in both games.
+Pulley preserved the traces and delivered 13–21% of Cranelift throughput.
+
+Keep the per-call fuel budget for deterministic interruption and replay.
+Cranelift with an epoch watchdog reached a 1.5–10.1% higher paired median and
+Cranelift with no execution budget reached a 1.1–14.6% higher paired median
+across the four workload and concurrency combinations. Each combination had
+paired rounds on either side of baseline. The epoch option trades a fixed
+instruction budget for a timing-dependent deadline. Revisit on the target
+deployment after profiling workloads that spend more time in guest execution.
+The benchmark scripts, full methodology and samples are in
+`notes/wasm-engine-evaluation/`.
+
+## Make Wasmtime fuel accounting configurable for agent–agent workloads
+
+Realistic agent–agent workload measurements above justify an opt-in unmetered mode for trusted components. Keep the 50-million-unit per-call budget by default. Select instrumentation when compiling the component because raising the fuel allowance still incurs accounting overhead. Use one mode throughout an experiment, including training, validation and replay within the run. Record a non-default mode in the experiment fingerprint while preserving the existing fingerprint for default fuel. This keeps existing outputs resumable and prevents mixing modes in one result directory.
+
+Live servers select the policy at launch. Memory and instance limits are independent of fuel. With fuel disabled a non-returning guest can occupy its worker indefinitely. No wall-clock interruption replaces the deterministic budget in this mode.

@@ -25,7 +25,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-use parlando::{component::LoadedGame, ExperimentRunner, GameMetadata};
+use parlando::{component::LoadedGame, ExperimentFile, ExperimentRunner, GameMetadata};
 
 #[derive(Parser)]
 struct Arguments {
@@ -49,11 +49,12 @@ async fn main() -> Result<()> {
         }),
     };
 
-    let game = LoadedGame::load(&arguments.component)?;
+    let experiment = ExperimentFile::read(&arguments.experiment).await?;
+    let game = LoadedGame::load_with_metering(&arguments.component, experiment.wasm_metering())?;
     let summary = ExperimentRunner::new(metadata, game)?
         .agent(CandidateFactory)?
         .agent(BaselineFactory)?
-        .run_yaml(arguments.experiment)
+        .run_file(experiment)
         .await?;
 
     println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -181,6 +182,19 @@ serialized within a session, while separate sessions may run concurrently.
 With `fail_fast: false`, a failed session is finalized and unrelated sessions
 continue. With `fail_fast: true`, the runner stops after a failed session and
 runs sessions sequentially.
+
+### Choose the game component’s execution budget
+
+`execution.wasm_metering` defaults to `fuel`. Wasmtime gives each game component call a fresh budget of 50 million fuel units and traps if the guest exhausts it. For repeated agent–agent sessions with a trusted component, use the following setting to remove fuel accounting from compiled game code:
+
+```yaml
+execution:
+  wasm_metering: none
+```
+
+The setting applies to all sessions in the run, including RL training and validation. The throughput gain depends on how much time the agents spend waiting for inference or I/O versus executing the game. Compare modes using the same scenarios, seeds, agents and concurrency. Use a fresh output directory when switching modes.
+
+An unmetered guest can keep a worker busy indefinitely inside a single game call. Session deadlines and decision limits take effect when control returns to the host. The component’s memory and instance limits apply in both modes.
 
 ## Inspect results and resume a run
 

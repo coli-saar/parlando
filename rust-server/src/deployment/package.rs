@@ -7,7 +7,10 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{component::LoadedGame, GameMetadata};
+use crate::{
+    component::{LoadedGame, WasmMetering},
+    GameMetadata,
+};
 
 pub(super) const UPLOAD_LIMIT: usize = 64 * 1024 * 1024;
 const FILE_LIMIT: usize = 4096;
@@ -59,7 +62,12 @@ impl Upload {
     }
 
     /// Validates an upload, materializes it privately, and publishes by atomic rename.
-    pub(super) fn install(self, store: &Path, game: &str) -> Result<Deployment> {
+    pub(super) fn install(
+        self,
+        store: &Path,
+        game: &str,
+        metering: WasmMetering,
+    ) -> Result<Deployment> {
         ensure!(
             self.files.len() <= FILE_LIMIT,
             "package contains too many files"
@@ -135,7 +143,7 @@ impl Upload {
                 file.write_all(&bytes)?;
                 file.sync_all()?;
             }
-            manifest.load(&staging, &result.revision)?;
+            manifest.load(&staging, &result.revision, metering)?;
             sync_directory(&staging)?;
             match fs::rename(&staging, &destination) {
                 Ok(()) => fs::File::open(parent)?.sync_all().map_err(Into::into),
@@ -243,9 +251,11 @@ impl PackageManifest {
         &self,
         directory: &Path,
         revision: &str,
+        metering: WasmMetering,
     ) -> Result<(LoadedGame, GameMetadata)> {
         let loaded_game =
-            LoadedGame::load(&directory.join(&self.component)).context("invalid game component")?;
+            LoadedGame::load_with_metering(&directory.join(&self.component), metering)
+                .context("invalid game component")?;
         let metadata = GameMetadata {
             id: self.id.clone(),
             name: self.name.clone(),

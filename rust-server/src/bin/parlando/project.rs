@@ -3,7 +3,10 @@
 use super::{scenarios, Language};
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use fs2::FileExt;
-use parlando::{component::LoadedGame, GameMetadata};
+use parlando::{
+    component::{LoadedGame, WasmMetering},
+    GameMetadata,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -93,12 +96,24 @@ impl Manifest {
 
     /// Loads the canonical public game identity and its configured built component.
     pub(super) fn load(&self) -> Result<(LoadedGame, GameMetadata)> {
-        self.load_component(&self.root.join(&self.component))
+        self.load_with_metering(WasmMetering::Fuel)
+    }
+
+    /// Loads a built game with the operator-selected execution budget.
+    pub(super) fn load_with_metering(
+        &self,
+        metering: WasmMetering,
+    ) -> Result<(LoadedGame, GameMetadata)> {
+        self.load_component(&self.root.join(&self.component), metering)
     }
 
     /// Binds an executable's digest to the declared game identity.
-    fn load_component(&self, component: &Path) -> Result<(LoadedGame, GameMetadata)> {
-        let loaded_game = LoadedGame::load(component)
+    fn load_component(
+        &self,
+        component: &Path,
+        metering: WasmMetering,
+    ) -> Result<(LoadedGame, GameMetadata)> {
+        let loaded_game = LoadedGame::load_with_metering(component, metering)
             .with_context(|| format!("loading game component {}", component.display()))?;
         let metadata = GameMetadata {
             id: self.id.clone(),
@@ -280,11 +295,11 @@ impl Manifest {
     fn for_validation(&self, temporary: &Path) -> Result<LoadedGame> {
         let component = temporary.join("game.wasm");
         let (loaded_game, _) = if self.compile_component(&component)? {
-            self.load_component(&component)?
+            self.load_component(&component, WasmMetering::Fuel)?
         } else if self.client_project.is_some() {
             self.load()?
         } else {
-            self.load_component(&self.validate_package_assets()?)?
+            self.load_component(&self.validate_package_assets()?, WasmMetering::Fuel)?
         };
         Ok(loaded_game)
     }
@@ -366,7 +381,7 @@ impl Manifest {
         if !self.compile_component(&component)? {
             fs::copy(self.root.join(&self.component), &component)?;
         }
-        let (loaded_game, _) = self.load_component(&component)?;
+        let (loaded_game, _) = self.load_component(&component, WasmMetering::Fuel)?;
 
         let client_dir = if let Some(project) = &self.client_project {
             let project = self.root.join(project);

@@ -26,7 +26,7 @@ mod transcription;
 mod tts;
 
 pub use agent_experiment::{
-    AgentSchedule, AlternateAfterAction, AlternateEveryResponse, CheckpointId,
+    AgentSchedule, AlternateAfterAction, AlternateEveryResponse, CheckpointId, ExperimentFile,
     ExperimentRunSummary, ExperimentRunner, RLAgent, RLTrainingContext, ResultAgent,
     RewardFunction, RoleRewards, SessionResult, SessionStatus, TrainingBatch, TrajectoryStep,
 };

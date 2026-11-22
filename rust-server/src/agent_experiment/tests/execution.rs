@@ -251,3 +251,43 @@ async fn game_step_rejections_and_faults_have_distinct_session_effects() {
         ]
     );
 }
+
+/// YAML defaults preserve resume identity, while changing the execution policy starts a distinct run.
+#[tokio::test]
+async fn wasm_metering_yaml_controls_execution_and_resume() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("spec.yaml");
+    let yaml = experiment_yaml(&dir.path().join("results"));
+    let runner = || test_runner(Arc::new(Mutex::new(Vec::new())));
+    tokio::fs::write(&path, &yaml).await.unwrap();
+    assert_eq!(runner().run_yaml(&path).await.unwrap().completed, 1);
+    let with_mode = |spec: &str, mode: &str| {
+        spec.replace(
+            "execution:",
+            &format!("execution:\n  wasm_metering: {mode}"),
+        )
+    };
+
+    tokio::fs::write(&path, with_mode(&yaml, "fuel"))
+        .await
+        .unwrap();
+    assert_eq!(runner().run_yaml(&path).await.unwrap().skipped, 1);
+
+    tokio::fs::write(&path, with_mode(&yaml, "none"))
+        .await
+        .unwrap();
+    let mismatch = runner().run_yaml(&path).await.unwrap_err();
+    assert!(format!("{mismatch:#}").contains("different experiment specification"));
+
+    let fresh = experiment_yaml(&dir.path().join("unmetered"));
+    tokio::fs::write(&path, with_mode(&fresh, "none"))
+        .await
+        .unwrap();
+    assert_eq!(runner().run_yaml(&path).await.unwrap().completed, 1);
+
+    tokio::fs::write(&path, with_mode(&yaml, "invalid"))
+        .await
+        .unwrap();
+    let invalid = runner().run_yaml(&path).await.unwrap_err();
+    assert!(format!("{invalid:#}").contains("unknown variant"));
+}

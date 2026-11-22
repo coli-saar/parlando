@@ -27,7 +27,7 @@ pub use training::{
 };
 
 use self::schedule::require_empty_parameters;
-use self::spec::ExperimentFile;
+pub use self::spec::ExperimentFile;
 use crate::agents::AgentFactory;
 use crate::component::LoadedGame;
 use crate::game::{GameMetadata, PlayerRole};
@@ -189,13 +189,14 @@ impl ExperimentRunner {
     }
 
     /// Reads, validates, plans, and executes one YAML experiment file.
-    pub async fn run_yaml(mut self, path: impl AsRef<Path>) -> Result<ExperimentRunSummary> {
-        let path = path.as_ref();
-        let bytes = tokio::fs::read(path)
-            .await
-            .with_context(|| format!("failed to read agent experiment {}", path.display()))?;
-        let spec: ExperimentFile = serde_yaml::from_slice(&bytes)
-            .with_context(|| format!("invalid agent experiment YAML in {}", path.display()))?;
+    pub async fn run_yaml(self, path: impl AsRef<Path>) -> Result<ExperimentRunSummary> {
+        self.run_file(ExperimentFile::read(path).await?).await
+    }
+
+    /// Executes an already parsed specification. Its metering mode applies to every
+    /// session, including training and validation, before any artifacts are opened.
+    pub async fn run_file(mut self, spec: ExperimentFile) -> Result<ExperimentRunSummary> {
+        self.loaded_game = self.loaded_game.with_metering(spec.wasm_metering())?;
         for (key, reference) in &spec.secrets {
             if !self.secrets.contains_key(key) {
                 let value = std::env::var(&reference.environment).with_context(|| {
@@ -208,6 +209,23 @@ impl ExperimentRunner {
             }
         }
         self.run(spec).await
+    }
+}
+
+impl ExperimentFile {
+    /// Reads the versioned agent experiment YAML before compiling the component.
+    pub async fn read(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let bytes = tokio::fs::read(path)
+            .await
+            .with_context(|| format!("failed to read agent experiment {}", path.display()))?;
+        serde_yaml::from_slice(&bytes)
+            .with_context(|| format!("invalid agent experiment YAML in {}", path.display()))
+    }
+
+    /// Selects the Wasmtime instrumentation for the component used by this experiment.
+    pub fn wasm_metering(&self) -> crate::component::WasmMetering {
+        self.execution.wasm_metering
     }
 }
 

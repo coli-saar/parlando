@@ -33,6 +33,9 @@ pub(super) enum RemoteCommand {
         /// Local TCP address, typically behind an HTTPS reverse proxy.
         #[arg(long, default_value = "127.0.0.1:8000")]
         bind: SocketAddr,
+        /// Guest execution budget for every package on this host.
+        #[arg(long, value_enum, default_value = "fuel")]
+        wasm_metering: parlando::component::WasmMetering,
         /// Durable package, experiment, and database directory.
         #[arg(long)]
         store: PathBuf,
@@ -111,6 +114,7 @@ pub(super) async fn execute(command: RemoteCommand) -> Result<Value> {
             }))
         }
         RemoteCommand::Host {
+            wasm_metering,
             bind,
             store,
             public_url,
@@ -141,11 +145,7 @@ pub(super) async fn execute(command: RemoteCommand) -> Result<Value> {
                 grants,
                 admin_token: required_env("PARLANDO_HOST_ADMIN_TOKEN")?,
             };
-            if let Some(admin_url) = admin_url {
-                deployment::serve_with_dashboard(bind, options, admin_url).await?;
-            } else {
-                deployment::serve(bind, options).await?;
-            }
+            deployment::serve_configured(bind, options, admin_url, wasm_metering).await?;
             Ok(json!({"status": "stopped"}))
         }
         RemoteCommand::Select {

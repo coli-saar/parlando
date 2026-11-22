@@ -4,7 +4,10 @@ use std::{net::IpAddr, path::PathBuf};
 
 use anyhow::Result;
 use clap::Parser;
-use parlando::{component::LoadedGame, GameMetadata, Server};
+use parlando::{
+    component::{LoadedGame, WasmMetering},
+    GameMetadata, Server,
+};
 
 /// Inputs for the optional host binary that registers the authored agents.
 #[derive(Parser)]
@@ -12,6 +15,9 @@ pub(crate) struct Launch {
     /// Built component from a Parlando game package.
     #[arg(long)]
     component: PathBuf,
+    /// Guest execution budget for the local installation.
+    #[arg(long, value_enum, default_value = "fuel")]
+    wasm_metering: WasmMetering,
     /// Compiled participant browser application.
     #[arg(long, env = "PARLANDO_CLIENT_DIST")]
     client_dist: PathBuf,
@@ -32,7 +38,7 @@ pub(crate) struct Launch {
 impl Launch {
     /// Opens the component and binds its verified digest to the game identity.
     pub(crate) fn server(&self, id: &str, name: &str, version: &str) -> Result<Server> {
-        let game = LoadedGame::load(&self.component)?;
+        let game = LoadedGame::load_with_metering(&self.component, self.wasm_metering)?;
         let metadata = GameMetadata {
             id: id.into(),
             name: name.into(),

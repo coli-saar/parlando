@@ -15,10 +15,12 @@ use std::time::Duration;
 
 pub(super) const EXPERIMENT_SCHEMA: &str = "parlando-agent-experiment/v1";
 
-/// Strict top-level representation of the versioned YAML input.
+/// Parsed agent–agent experiment specification shared by component setup and execution.
+/// Read the file before loading the game to compile it with the requested metering
+/// mode, then pass the specification to [`super::ExperimentRunner::run_file`].
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ExperimentFile {
+pub struct ExperimentFile {
     pub(super) schema: String,
     pub(super) game: ExperimentGame,
     #[serde(default)]
@@ -221,6 +223,8 @@ impl SessionLimits {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct ExecutionSpec {
+    #[serde(skip_serializing_if = "crate::component::WasmMetering::is_fuel")]
+    pub(super) wasm_metering: crate::component::WasmMetering,
     pub(super) concurrency: usize,
     pub(super) fail_fast: bool,
 }
@@ -229,6 +233,7 @@ impl Default for ExecutionSpec {
     /// Runs one session at a time unless YAML explicitly requests concurrency.
     fn default() -> Self {
         Self {
+            wasm_metering: Default::default(),
             concurrency: 1,
             fail_fast: false,
         }
