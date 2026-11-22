@@ -297,6 +297,30 @@ impl SqliteExperimentStore {
         Ok(next_revision)
     }
 
+    /// Reads the revisioned communication channel of the experiment that created the session.
+    pub(crate) async fn session_communication(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+    ) -> Result<Option<crate::config::CommunicationConfig>> {
+        let config = sqlx::query_scalar::<_, String>(
+            "select r.config_json from sessions s
+             join experiment_config_revisions r
+             on r.experiment_id = s.experiment_id and r.revision = s.config_revision
+             where s.experiment_id = ? and s.session_id = ?",
+        )
+        .bind(experiment_id)
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        config
+            .map(|json| {
+                let config: crate::config::StoredExperimentConfig = serde_json::from_str(&json)?;
+                Ok(config.communication)
+            })
+            .transpose()
+    }
+
     /// Lists the saved configuration revisions for one experiment.
     pub(crate) async fn experiment_revisions(
         &self,

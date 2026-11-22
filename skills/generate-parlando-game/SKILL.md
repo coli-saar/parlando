@@ -17,7 +17,7 @@ Use the starter and the documentation for the project's Parlando release to esta
 
 - Use the public Game SDK to implement session-owned mechanics for roles A and B. Keep private state in the component, derive random behavior from the supplied seed, and reject invalid actions before mutating state or consuming randomness. Actions change task state. Messages use the participant runtime.
 - Define a view for each role. Expose only that role's authorized information and keep the shared completion safe for both roles. See [component mechanics](references/server-adapter.md) for Rust and Python integration and recovery.
-- With the starter's React client, render the view through `ParticipantApp` and send actions through `snapshot.act`. Let the SDK handle participant entry, connections, communication, and terminal handling. See [browser client integration](references/browser-client.md).
+- With the starter's React client, render the view through `ParticipantApp` and send actions through `snapshot.act`. Let the SDK handle participant entry, connections, and terminal handling. The experiment selects typed chat or speech. Keep the default communication widget, or place one `CommunicationWidget` inside the game and style it using the package's CSS hooks. See [browser client integration](references/browser-client.md) for the placement and styling contract.
 - Keep study settings and secrets in the host's configuration. Use typed game configuration for the game's own parameters. Read [agent integration](references/agents.md) when the user requests an agent and [deployment](references/config-deployment.md) when the task includes upload or hosting.
 
 ## Validate the package

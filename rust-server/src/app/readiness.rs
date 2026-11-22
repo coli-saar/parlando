@@ -52,7 +52,7 @@ pub(super) async fn publish_transcription_readiness(
     };
     let message = if !ready {
         "Waiting for game activation"
-    } else if state.context.config.transcription.enabled {
+    } else if state.context.config.transcription_active() {
         "ASR listening"
     } else {
         "ASR idle"
@@ -158,12 +158,17 @@ pub(super) async fn maybe_start_game(state: Arc<AppState>, public_session_id: &s
         };
         permit.send(AgentObservation::Activated);
     }
-    let _ = state
-        .session_bus(public_session_id)
-        .await
-        .send(voice_message(&state, public_session_id).await);
+    let speech = state.context.config.is_speech();
+    if speech {
+        let _ = state
+            .session_bus(public_session_id)
+            .await
+            .send(voice_message(&state, public_session_id).await);
+    }
     for (participant_session_id, role) in participants {
-        publish_transcription_readiness(&state, public_session_id, role.as_str()).await;
+        if speech {
+            publish_transcription_readiness(&state, public_session_id, role.as_str()).await;
+        }
         send_role_assignment(&state, public_session_id, &participant_session_id, role).await;
     }
 }

@@ -9,6 +9,7 @@ const files = {
   '/admin/assets/admin-dashboard-format.js': ['admin_dashboard_format.mjs', 'text/javascript'],
   '/admin/assets/admin-dashboard-api.js': ['admin_dashboard_api.mjs', 'text/javascript'],
   '/admin/assets/admin-dashboard-state.js': ['admin_dashboard_state.js', 'text/javascript'],
+  '/admin/assets/communication-config.js': ['communication_config.mjs', 'text/javascript'],
   '/admin/assets/admin-dashboard.css': ['admin_dashboard.css', 'text/css']
 };
 
@@ -150,4 +151,160 @@ test('deletion blocks unfinished sessions, honors cancellation and removes delet
   await expect(page.locator('[data-session="7"]')).toHaveCount(0);
   await expect(remove).toBeHidden();
   expect(deletions).toBe(1);
+});
+
+test('typed communication disables speech settings and preserves their values when saved', async ({ page }) => {
+  const entry = { ...experiment('study'), prolific_setup_url: 'http://dashboard.test/study/?PROLIFIC_PID={{%PROLIFIC_PID%}}' };
+  let config = {
+    communication: { mode: 'typed' },
+    voice: { sample_rate_hz: 24000, frame_duration_ms: 20, jitter_buffer_ms: 120, post_completion_seconds: 20 },
+    transcription: { enabled: true, language: 'de', model: 'enhanced', provider: 'speechmatics' },
+    speechmatics: { realtime_url: 'wss://speech.example/v2', max_delay: 2, end_of_utterance_silence_trigger: 1.2 },
+    tts: { enabled: true, voice_id: 'voice-1', model: 'eleven_flash_v2_5', provider: 'elevenlabs', output_format: 'pcm_24000' },
+    capacity: { max_transcription_streams: 4 }
+  };
+  await page.route('http://dashboard.test/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (files[path]) {
+      const [name, contentType] = files[path];
+      return route.fulfill({ path: fileURLToPath(new URL(name, assets)), contentType });
+    }
+    if (path === '/api/admin/experiments') {
+      return route.fulfill({ json: { experiments: [entry], game: { name: 'Fixture', version: '1.0' } } });
+    }
+    if (path.endsWith('/config')) {
+      if (route.request().method() === 'POST') {
+        config = route.request().postDataJSON().config;
+        entry.config_revision++;
+      }
+      return route.fulfill({ json: { experiment: { ...entry, config } } });
+    }
+    return route.fulfill({ json: {} });
+  });
+  await page.goto('http://dashboard.test/admin/');
+  await page.getByRole('button', { name: 'Configuration', exact: true }).click();
+
+  const mode = page.locator('[data-config-path="communication.mode"]');
+  const speechSettings = page.getByRole('group', { name: 'Speech settings' });
+  const speechControls = speechSettings.locator('input, select');
+  const voiceId = speechSettings.locator('[data-config-path="tts.voice_id"]');
+  await expect(mode.locator('option')).toHaveText(['Typed', 'Speech']);
+  await expect(mode).toHaveValue('typed');
+  await expect(speechSettings).toBeVisible();
+  await expect(speechSettings).toHaveCSS('opacity', '0.6');
+  await expect(speechControls.first()).toBeDisabled();
+  for (const control of await speechControls.all()) await expect(control).toBeDisabled();
+  await expect(voiceId).toHaveValue('voice-1');
+
+  await mode.selectOption('speech');
+  for (const control of await speechControls.all()) await expect(control).toBeEnabled();
+  await voiceId.fill('voice-2');
+  await mode.selectOption('typed');
+  await expect(voiceId).toBeDisabled();
+  const save = page.waitForResponse(response => response.url().endsWith('/config') && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Save new revision' }).click();
+  await (await save).finished();
+  expect(config).toMatchObject({
+    communication: { mode: 'typed' },
+    voice: { jitter_buffer_ms: 120 },
+    transcription: { enabled: true, language: 'de' },
+    speechmatics: { realtime_url: 'wss://speech.example/v2' },
+    tts: { enabled: true, voice_id: 'voice-2' },
+    capacity: { max_transcription_streams: 4 }
+  });
+  expect(config.voice).not.toHaveProperty('enabled');
+  await expect(page.locator('#configRevision')).toHaveText('Revision 2');
+  await mode.selectOption('speech');
+  await expect(voiceId).toBeEnabled();
+  await expect(voiceId).toHaveValue('voice-2');
+});
+
+test('shared hosting creates and copies pins with one communication editor', async ({ page }) => {
+  const hostingAssets = new URL('../../rust-server/src/deployment/', import.meta.url);
+  const revision = 'a'.repeat(64);
+  const defaults = {
+    communication: { mode: 'typed' },
+    voice: { sample_rate_hz: 24000, frame_duration_ms: 20, jitter_buffer_ms: 100, post_completion_seconds: 20 },
+    transcription: { enabled: false, language: 'en', model: 'enhanced', provider: 'speechmatics' },
+    speechmatics: { realtime_url: 'wss://speech.example/v2', max_delay: 2, end_of_utterance_silence_trigger: 1.2 },
+    tts: { enabled: false, base_url: 'wss://tts.example', model: 'eleven_flash_v2_5', voice_id: '', provider: 'elevenlabs', output_format: 'pcm_24000' },
+    capacity: { max_transcription_streams: 32 }
+  };
+  const copiedConfig = structuredClone(defaults);
+  copiedConfig.communication.mode = 'speech';
+  copiedConfig.voice.jitter_buffer_ms = 140;
+  copiedConfig.transcription.language = 'de';
+  copiedConfig.tts.model = 'custom_elevenlabs_model';
+  copiedConfig.tts.output_format = 'dormant_custom_format';
+  copiedConfig.capacity.max_active_sessions = 17;
+  copiedConfig.game = { trial: 2 };
+  const experiments = [{ id: 'existing', game: 'game', revision, config: copiedConfig, status: 'inactive' }];
+  await page.route('http://hosting.test/**', async route => {
+    const { pathname } = new URL(route.request().url());
+    if (pathname === '/admin' || pathname === '/admin/dashboard.js' || pathname === '/admin/dashboard.css') {
+      const [name, contentType] = {
+        '/admin': ['dashboard.html', 'text/html'],
+        '/admin/dashboard.js': ['dashboard.js', 'text/javascript'],
+        '/admin/dashboard.css': ['dashboard.css', 'text/css'],
+      }[pathname];
+      return route.fulfill({ path: fileURLToPath(new URL(name, hostingAssets)), contentType });
+    }
+    if (pathname === '/admin/communication-config.js') {
+      return route.fulfill({ path: fileURLToPath(new URL('communication_config.mjs', assets)), contentType: 'text/javascript' });
+    }
+    if (pathname === '/api/hosting/auth/session') {
+      return route.fulfill({ json: { username: 'researcher', role: 'member' } });
+    }
+    if (pathname === '/api/hosting/dashboard') {
+      return route.fulfill({ json: { games: [{ id: 'game', revisions: [{ revision, version: '1.0' }] }], experiments, config_defaults: defaults } });
+    }
+    if (route.request().method() === 'PUT') {
+      experiments.push({ id: pathname.split('/').at(-1), status: 'inactive', ...route.request().postDataJSON() });
+    }
+    return route.fulfill({ json: {} });
+  });
+  await page.goto('http://hosting.test/admin');
+  await page.locator('#game-rows').getByRole('button', { name: 'Create experiment' }).click();
+
+  const form = page.locator('#experiment-form');
+  const mode = form.locator('[data-config-path="communication.mode"]');
+  const speech = form.getByRole('group', { name: 'Speech settings' });
+  const buffer = speech.locator('[data-config-path="voice.jitter_buffer_ms"]');
+  const other = form.getByRole('textbox', { name: 'Other experiment settings (JSON)' });
+  await expect(mode.locator('option')).toHaveText(['Typed', 'Speech']);
+  await expect(mode).toHaveValue('typed');
+  await expect(speech).toHaveCSS('opacity', '0.6');
+  await expect(buffer).toBeDisabled();
+  await mode.selectOption('speech');
+  await expect(buffer).toBeEnabled();
+  await buffer.fill('130');
+  await form.getByRole('textbox', { name: 'Experiment ID' }).fill('fresh');
+  await other.fill('{"game":{"trial":1}}');
+  await form.getByRole('button', { name: 'Create experiment' }).click();
+  await expect(page.locator('#experiment-title')).toHaveText('fresh');
+  expect(experiments.at(-1).config).toMatchObject({
+    communication: { mode: 'speech' },
+    voice: { jitter_buffer_ms: 130 },
+    game: { trial: 1 },
+  });
+
+  await page.getByRole('row').filter({ hasText: 'existing' }).getByRole('button', { name: 'Manage' }).click();
+  await page.getByRole('button', { name: 'Copy configuration to new experiment' }).click();
+  await expect(mode).toHaveValue('speech');
+  await expect(buffer).toHaveValue('140');
+  const sampleRate = speech.locator('[data-config-path="voice.sample_rate_hz"]');
+  await expect(sampleRate).toHaveValue('24000');
+  await expect(sampleRate).not.toBeEditable();
+  await expect(speech.locator('[data-config-path="tts.output_format"]')).toHaveValue('dormant_custom_format');
+  expect(JSON.parse(await other.inputValue())).toEqual({
+    capacity: { max_active_sessions: 17 },
+    game: { trial: 2 },
+  });
+  await mode.selectOption('typed');
+  await expect(buffer).toBeDisabled();
+  await expect(other).toBeEditable();
+  await form.getByRole('textbox', { name: 'Experiment ID' }).fill('copy');
+  await form.getByRole('button', { name: 'Create experiment' }).click();
+  await expect(page.locator('#experiment-title')).toHaveText('copy');
+  expect(experiments.at(-1).config).toMatchObject({ ...copiedConfig, communication: { mode: 'typed' } });
 });

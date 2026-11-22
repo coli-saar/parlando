@@ -54,7 +54,7 @@ async fn sqlite_schema_has_evaluation_and_administrator_tables() {
         .fetch_one(&store.pool)
         .await
         .unwrap();
-    assert_eq!(schema_version, 16);
+    assert_eq!(schema_version, 17);
 }
 
 /// Confirms first setup wins atomically and survives reopening the SQLite database.

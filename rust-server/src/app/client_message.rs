@@ -72,9 +72,20 @@ pub(super) async fn handle_client_message(
             if let Some(message) = presence_message(&state, public_session_id).await {
                 let _ = bus.send(message);
             }
-            let _ = bus.send(voice_message(&state, public_session_id).await);
+            if state.context.config.is_speech() {
+                let _ = bus.send(voice_message(&state, public_session_id).await);
+            }
         }
         ClientMessage::Message { text } => {
+            if state.context.config.is_speech() {
+                let _ = bus.send(error_message(
+                    participant_session_id,
+                    public_session_id,
+                    "typed_messages_disabled",
+                    false,
+                ));
+                return;
+            }
             if text.chars().count() > 4_000 {
                 persist_rejected_input(
                     &state,

@@ -71,4 +71,8 @@ The dashboard supports browser uploads with an experimenter account. To enable C
 
 Back up the entire store while the service is stopped, including package files, experiment pins, research databases, and the dashboard account and audit database. Store backups and provider credentials in access-controlled locations. Restarting restores the selected packages and closes intake. Verify participant entry and explicitly reopen the experiments you intend to run.
 
+When upgrading a schema-16 installation to the server with `communication.mode`, plan the change offline. Map the old `voice.enabled` value in each experiment and its configuration revisions to `speech` for true or `typed` for false. Preserve recorded events, including typed messages from older voice-enabled sessions.
+
+On a shared host, each database filename contains the hash of its immutable selection. Converting a selection changes that hash. Keep its converted database paired with the new filename before restarting, and verify the experiment's session counts against the backup. A selection whose database is missing can open an empty store. Rebuild the participant assets against the matching client library and use a fresh game revision and experiment pin when replacing a deployed browser build.
+
 Use a shared participant origin for game publishers you trust within the same browser origin. Run a different host on a different origin when publishers need independent browser trust boundaries. Use a separate participant link for each updated study run and retain earlier packages with the original data.

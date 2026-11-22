@@ -142,6 +142,7 @@ async fn experiment_starts_inactive_and_admin_controls_intake() {
 #[tokio::test]
 async fn hosted_voice_services_without_credentials_block_experiment_start() {
     let (mut config, _tmp) = sqlite_config();
+    config.communication.mode = CommunicationMode::Speech;
     config.transcription.enabled = true;
     config.speechmatics.api_key.clear();
     let router = crate::app::build_router(live_game(), config, ServeOptions::default())

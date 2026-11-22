@@ -49,6 +49,50 @@ async fn enabled_audio_session_returns_parlando_websocket_contract() {
         .is_some_and(|value| !value.is_empty()));
 }
 
+/// A speech room rejects a typed chat frame without forwarding its text.
+#[tokio::test]
+async fn speech_experiment_rejects_typed_chat() {
+    let router = build_router(live_game(), voice_enabled_config(), ServeOptions::default())
+        .await
+        .unwrap();
+    let (a, b, room) = create_joined_room(router.clone()).await;
+    let (base, server) = spawn_test_server(router.clone()).await;
+    let (mut first, _) = connect_async(game_socket_url(&router, &base, &room, &a).await)
+        .await
+        .unwrap();
+    let (mut second, _) = connect_async(game_socket_url(&router, &base, &room, &b).await)
+        .await
+        .unwrap();
+    read_participant_state(&mut first, "active").await;
+    read_participant_state(&mut second, "active").await;
+    send_ws_json(&mut first, json!({"type": "message", "text": "typed only"})).await;
+    assert_eq!(
+        read_ws_type(&mut first, "error").await["code"],
+        "typed_messages_disabled"
+    );
+    assert_no_ws_type(&mut second, "message").await;
+    let (_, list) = admin_json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/sessions",
+        Value::Null,
+    )
+    .await;
+    let id = list["sessions"][0]["session_id"].as_i64().unwrap();
+    let (status, replay) = admin_json_request(
+        router,
+        http::Method::GET,
+        &format!("/api/admin/sessions/{id}/replay"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(replay["communication"]["mode"], "speech");
+    assert_eq!(replay["roles"]["B"].as_array().unwrap().len(), 1);
+    assert_eq!(replay["roles"]["B"][0]["conversation"], json!([]));
+    server.abort();
+}
+
 #[tokio::test]
 /// Forming audio is excluded, but the first frame after public activation is transcribed.
 async fn audio_readiness_first_active_frame_is_transcribed() {

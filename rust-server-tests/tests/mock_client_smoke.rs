@@ -25,7 +25,7 @@ use parlando::{
         },
         AgentsConfig, AgentsMode, AudioChunk, ConsentItemConfig, DatabaseConfig, DirectConfig,
         ExperimentConfig, ExperimentIdentityConfig, HumanVsAgentConfig, ServeOptions,
-        SpeechmaticsConfig, StreamingTtsProvider, TranscriptionConfig, VoiceConfig,
+        SpeechmaticsConfig, StreamingTtsProvider, TranscriptionConfig,
     },
     PlayerRole,
 };
@@ -350,10 +350,6 @@ fn config(mode: AgentsMode) -> ExperimentConfig {
             }],
             ..DirectConfig::default()
         },
-        voice: VoiceConfig {
-            enabled: true,
-            ..VoiceConfig::default()
-        },
         speechmatics: SpeechmaticsConfig::default(),
         transcription: TranscriptionConfig {
             enabled: false,
@@ -648,12 +644,8 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
         .error_for_status()?
         .json::<Value>()
         .await?;
-    assert_eq!(audio["enabled"], true);
-    assert_eq!(audio["protocol_version"], 1);
-    assert_eq!(audio["sample_rate_hz"], 24000);
-    assert!(audio["token"]
-        .as_str()
-        .is_some_and(|value| !value.is_empty()));
+    assert_eq!(audio["enabled"], false);
+    assert!(audio["token"].is_null());
 
     let mut socket_a = ws_connect(&client, &server, &public_session_id, &a).await?;
     let mut socket_b = ws_connect(&client, &server, &public_session_id, &b).await?;
@@ -712,8 +704,7 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
 }
 
 #[tokio::test]
-async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_diagnostics(
-) -> Result<()> {
+async fn mock_browser_typed_agent_conversation_ignores_the_speech_provider() -> Result<()> {
     let tts = Arc::new(RecordingTts {
         messages: Mutex::new(vec![]),
     });
@@ -726,8 +717,11 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
             &json!({"type":"mark","finish":true}),
         )?)),
     ]));
+    let mut experiment_config = config(AgentsMode::HumanVsAgent);
+    experiment_config.tts.enabled = true;
+    experiment_config.transcription.enabled = true;
     let server = spawn_server(
-        config(AgentsMode::HumanVsAgent),
+        experiment_config,
         ServeOptions {
             agent_factory: Some(factory),
             tts_provider: Some(tts.clone()),
@@ -756,18 +750,7 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
     let completed = read_participant_state(&mut socket, "ended").await?;
     assert_eq!(completed["result"]["completion"]["done"], true);
 
-    for _ in 0..20 {
-        if tts
-            .messages
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|message| message == "agent says hello")
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    assert!(tts.messages.lock().unwrap().is_empty());
 
     let export = admin_export(&client, &server.base_url, &admin_cookie).await?;
     let events = export["experiment"]["sessions"][0]["events"]

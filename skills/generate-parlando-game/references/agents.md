@@ -6,6 +6,8 @@ seat's view. Keep the policy in its own per-session instance. Use the latest
 observation delivered by `start` or `observe_transition` in `respond`.
 Returned actions go through the game's normal validation.
 
+Implement `observe_message(sender, text)` for policies that respond to dialogue. The server delivers typed messages and finalized speech transcripts through this callback. Return text replies in either mode. The experiment owns speech recognition and synthesis.
+
 For a shared host, run the agent as a remote gRPC service and select
 `remote_grpc` in the experiment configuration. Use the public
 `parlando_agent_sdk` Python API for a Python service and follow the

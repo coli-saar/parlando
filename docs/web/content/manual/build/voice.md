@@ -4,10 +4,20 @@ title: Configure communication
 
 # Configure communication
 
-Choose the communication channel as part of the condition. Check that participants can use it, that its storage settings match the study, and that the session record contains the evidence you need.
+Choose **Typed** or **Speech** in the experiment's communication settings. The choice applies to both seats and determines which interface the participant application displays. You can use the same game package for both conditions.
 
-- **Typed conversation** lets participants exchange messages through the participant application. The game still controls legal actions and completion.
-- **Human-to-human audio** relays microphone audio between participants. Test microphone permissions and reconnect behavior using the public HTTPS participant address.
-- **Transcription and synthesized agent speech** use external services. Configure Speechmatics and ElevenLabs credentials in **Game settings** on a single-game installation started with `parlando serve`. The shared host accepts experiment configuration without provider credentials and currently has no dashboard for provisioning those keys. Use the single-game deployment when your study needs them.
+| Mode | Participant interface | Operator setup |
+| --- | --- | --- |
+| Typed (default) | Message history, text field, and Send button | Speech settings are disabled. Participants can enter without microphone permission. Speechmatics and ElevenLabs stay inactive, including when the experiment retains settings for them. |
+| Speech | Microphone level, status, and mute control | Use HTTPS for participant microphone access. Configure transcription to deliver finalized human utterances to an agent and synthesis to make its replies audible. |
 
-Test the chosen channel in two independent browser profiles. Check mute controls and an ordinary session ending. If you enable transcription, check the stored final text and how it appears in a research export. Explain any external processing in your [participant information](../run/consent-privacy/).
+In experiment configuration files the field is `communication.mode`, with values `typed` and `speech`. For example:
+
+```yaml
+communication:
+  mode: speech
+```
+
+Select **Speech** to edit audio transport, Speechmatics transcription, and ElevenLabs synthesis settings. Switching to **Typed** preserves those values for the next time you select **Speech**. Provider credentials belong in **Game settings** on a single-game installation started with `parlando serve`. The shared host currently has no dashboard for provisioning provider keys.
+
+Pilot the chosen mode in two independent browser profiles. For typed sessions, exchange a message in each direction. For speech, check microphone permission, mute, partner playback, and reconnect using the public participant address. If transcription is enabled, check the final text in a research export. Explain any external processing in your [participant information](../run/consent-privacy/).

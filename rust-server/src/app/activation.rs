@@ -247,10 +247,10 @@ pub(super) fn local_testing_issues_for_config(
     state: &ServerContext,
     config: &mut ExperimentConfig,
 ) -> Vec<String> {
-    if state.has_transcription_provider {
+    if config.transcription_active() && state.has_transcription_provider {
         config.speechmatics.api_key = "provided-by-runtime".to_string();
     }
-    if state.has_tts_provider {
+    if config.tts_active() && state.has_tts_provider {
         config.tts.api_key = "provided-by-runtime".to_string();
         config.tts.voice_id = "provided-by-runtime".to_string();
     }

@@ -24,6 +24,8 @@ Consent is an admission guard on `Registered -> Waiting`; it is not a participan
 
 ## HTTP workflow
 
+Read `GET /api/config` before participant entry. Its `communication.mode` selects the session channel. In `typed` mode the participant can enter directly and exchange text in active play. In `speech` mode the participant prepares the microphone before entry and obtains an authenticated audio plan. A typed experiment returns a disabled audio plan without an upgrade token.
+
 1. `POST /api/participants` creates a participant credential.
 2. `POST /api/consent` records required consent decisions.
 3. `POST /api/sessions` joins or reuses a session and returns `{ "participant_state": ... }`.
@@ -44,7 +46,7 @@ Clients may send only:
 
 - `ready`
 - `action`
-- `message`
+- `message` for participant-authored text in typed mode. Sending it in speech mode returns a nonfatal `typed_messages_disabled` error.
 - `heartbeat`
 
 Explicit leave is HTTP-only. Unknown protocol versions or message variants are errors.

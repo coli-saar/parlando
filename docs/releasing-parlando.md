@@ -108,12 +108,13 @@ python3 -m venv .local/release-venv
 make test-release-candidate PYTHON=.local/release-venv/bin/python
 ```
 
-The target runs `make test`, `make test-e2e`, and `make test-components`,
-including the browser and Prolific scenarios, Wasm compatibility, and the
-runtime stress test suite. Read the report at `target/e2e-report.md` and require
-every layer and scenario to pass. The standalone sustained-capacity programs
-in [runtime stress testing](runtime-stress-testing.md) measure performance under
-load and run separately.
+The target runs `make test`, `make test-e2e`, `make test-components`, and
+`make test-runtime-communication`. Read the browser and Prolific results in
+`target/e2e-report.md`. The communication gate runs four concurrent fixture
+games for each combination of typed or speech communication and human–human
+or human–agent pairing. All four runs must pass before the candidate is saved.
+Each writes a JSON report under `target/runtime-stress/`. Longer capacity
+runs are described in [runtime stress testing](runtime-stress-testing.md).
 
 The candidate rehearsal snapshots the package inputs, builds all six packages,
 and installs them in temporary consumer projects. Cargo installs the CLI from its extracted `.crate` archive
@@ -121,8 +122,11 @@ and resolves the Rust SDK and derive dependencies from their candidate archives.
 The starter clients install the npm tarball. A fresh virtual environment
 installs both Python SDK wheels and runs their tests. The installed CLI creates,
 tests, and builds the Rust and Python Beacon Relay starters, deploys each to a
-loopback host, and opens intake. Two independent Chromium sessions play each
-game to completion and verify that the outcome survives a reload.
+loopback host, and opens intake in explicitly typed experiments. For each
+starter, two independent Chromium sessions exchange messages in both
+directions, check that each message appears once in each browser, and verify
+that the client never requests the microphone. Both participants then play
+the game to completion. Reloading one browser verifies that the result persists.
 
 The rehearsal installs `componentize-py` and Playwright as test dependencies.
 Set `PLAYWRIGHT_BROWSERS_PATH` to reuse a compatible Chromium installation.

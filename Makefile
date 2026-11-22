@@ -34,6 +34,16 @@ sync-brand:
 # Runs the complete reusable-server, browser-client, and Python-SDK test matrix.
 test: test-rust test-client-server test-python
 
+.PHONY: test-runtime-communication
+# Plays concurrent fixture games in each communication mode and pairing, stopping on failure.
+test-runtime-communication:
+	@set -e; for mode in typed speech; do \
+	  for pairing in human-human human-agent; do \
+	    cargo stress --communication "$$mode" --pairing "$$pairing" \
+	      --sessions 4 --seconds 20 --headless; \
+	  done; \
+	done
+
 # Runs the Rust unit, integration, protocol, and documentation tests.
 test-rust:
 	cd "$(RUST_SERVER_DIR)" && cargo test --all-features
@@ -166,6 +176,7 @@ test-release-candidate: check-release-versions check-release-tools
 	$(MAKE) test
 	$(MAKE) test-e2e
 	$(MAKE) test-components
+	$(MAKE) test-runtime-communication
 	npm_config_cache="$(NPM_CACHE)" "$(PYTHON)" "$(RELEASE_REHEARSAL)" --output "$(RELEASE_CANDIDATES)"
 
 # Serial sub-makes preserve publication order and stop on a failed upload even with make -j.

@@ -10,7 +10,7 @@ use anyhow::{bail, Result};
 impl SqliteExperimentStore {
     /// Validates an existing schema before writes, or initializes a new database atomically.
     pub(crate) async fn initialize_or_validate_schema(&self) -> Result<()> {
-        const CURRENT_SCHEMA_VERSION: i64 = 16;
+        const CURRENT_SCHEMA_VERSION: i64 = 17;
         let existing_tables = sqlx::query_scalar::<_, String>(
             "select name from sqlite_master where type = 'table' and name not like 'sqlite_%' order by name",
         )

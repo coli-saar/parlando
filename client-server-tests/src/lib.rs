@@ -10,8 +10,8 @@ use axum::Router;
 use parlando::{
     component::LoadedGame,
     test_support::{
-        build_router, AgentsConfig, AgentsMode, ConsentItemConfig, DatabaseConfig, DirectConfig,
-        ExperimentConfig, ExperimentIdentityConfig, ServeOptions, VoiceConfig,
+        build_router, AgentsConfig, AgentsMode, CommunicationMode, ConsentItemConfig,
+        DatabaseConfig, DirectConfig, ExperimentConfig, ExperimentIdentityConfig, ServeOptions,
     },
 };
 use reqwest::Client;
@@ -254,8 +254,5 @@ pub fn enable_browser_fixture(config: &mut ExperimentConfig) -> Result<()> {
 
 /// Enables the production audio route without selecting an external provider.
 pub fn enable_voice(config: &mut ExperimentConfig) {
-    config.voice = VoiceConfig {
-        enabled: true,
-        ..VoiceConfig::default()
-    };
+    config.communication.mode = CommunicationMode::Speech;
 }

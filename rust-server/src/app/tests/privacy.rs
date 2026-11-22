@@ -161,9 +161,8 @@ async fn admin_privacy_status_renders_and_downloads_current_facts() {
     assert!(!markdown_body.contains("requires content review"));
     assert!(!markdown_body.contains("inspect game configuration"));
     assert!(!markdown_body.contains("rare behavior"));
-    assert!(markdown_body.contains(
-        "review participant-authored typed messages and remove explicit identifying information"
-    ));
+    assert!(markdown_body
+        .contains("review any message and log text for explicit identifying information"));
     assert!(!markdown_body.contains("Final voice transcripts"));
     assert!(!markdown_body.contains("Raw microphone audio"));
     assert!(!markdown_body.contains("Browser voice diagnostics"));
@@ -178,7 +177,7 @@ async fn admin_privacy_status_renders_and_downloads_current_facts() {
 #[tokio::test]
 async fn experiment_privacy_reports_only_the_enabled_speech_path() {
     let (mut config, _tmp) = sqlite_config();
-    config.voice.enabled = true;
+    config.communication.mode = CommunicationMode::Speech;
     config.transcription.enabled = true;
     config.speechmatics.api_key = "test-key".to_string();
     let router = build_router(live_game(), config, ServeOptions::default())
@@ -227,8 +226,22 @@ async fn experiment_privacy_reports_only_the_enabled_speech_path() {
         .iter()
         .any(|item| item["category"] == "Raw microphone audio"));
     assert_eq!(privacy["external_services"][0]["service"], "speechmatics");
-    assert!(privacy["exports"]["detail"]
-        .as_str()
+    assert!(privacy["exports"]["included_fields"]
+        .as_array()
         .unwrap()
-        .contains("final voice transcripts"));
+        .iter()
+        .any(|item| item["section"] == "Message event"
+            && item["description"]
+                .as_str()
+                .unwrap()
+                .contains("final voice transcripts")
+            && !item["description"]
+                .as_str()
+                .unwrap()
+                .contains("participant-typed messages")));
+    assert!(!privacy["storage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["category"] == "Typed participant messages"));
 }

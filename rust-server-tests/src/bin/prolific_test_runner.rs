@@ -2033,7 +2033,7 @@ fn fixture_config(
             "session_max_lifetime_seconds": lifetime_seconds
         },
         "agents": {"mode": "human_vs_human"},
-        "voice": {"enabled": false},
+        "communication": {"mode": "typed"},
         "transcription": {"enabled": false},
         "game": {}
     })

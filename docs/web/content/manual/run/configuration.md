@@ -8,7 +8,7 @@ Use a [local pilot](../start/getting-started/) to verify the participant procedu
 
 ## Choose the condition
 
-Use the dashboard to select a revision and supply an experiment configuration. Start with `{}` for direct entry and a human partner. The local single-game dashboard also offers forms for setting up a condition. To supply a configuration file from the operator CLI, pass `--config experiment.yaml` to `parlando select`. The hosted dashboard accepts the same settings as a JSON object.
+In the hosted dashboard, open **Create an experiment**, choose a game revision, and set **Communication mode**. The default **Typed** condition provides text chat. **Speech** enables the speech settings. Use **Other experiment settings (JSON)** for settings such as pairing, timing, and game parameters. Leaving this object empty uses direct entry with a human partner. To reuse an existing setup, choose **Copy configuration to new experiment** and give the copy a fresh ID. The local single-game dashboard also provides a communication selector. To supply the complete configuration as a file, pass `--config experiment.yaml` to `parlando select`.
 
 Before opening a study, settle the following decisions for that condition.
 

@@ -9,6 +9,7 @@ export {
   reduceParticipantState,
   type AudioSessionPlan,
   type ConsentItem,
+  type CommunicationMode,
   type ExperimentInfo,
   type ParticipantState,
   type ParticipantResult,

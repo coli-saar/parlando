@@ -94,7 +94,7 @@ pub(super) fn stored_data(
             },
             PrivacyStorageStatus {
                 category: "Typed participant messages".to_string(),
-                persisted_when_produced: true,
+                persisted_when_produced: facts.iter().any(|fact| !fact.voice_enabled),
                 purpose: "Preserve the dialogue as experimental data."
                     .to_string(),
                 detail: "Event order and game_time_ms, measured in milliseconds from game start; sending participant and role; message text; an indication that it was typed; and message metadata."
@@ -110,6 +110,14 @@ pub(super) fn stored_data(
                         .to_string()
                 },
                 detail: transcript_storage_detail,
+            },
+            PrivacyStorageStatus {
+                category: "Agent messages".to_string(),
+                persisted_when_produced: facts.iter().any(|fact| fact.human_vs_agent),
+                purpose: "Preserve the software agent's contribution to the dialogue."
+                    .to_string(),
+                detail: "Event order and game_time_ms, software-agent role, generated message text, agent origin, and message metadata."
+                    .to_string(),
             },
             PrivacyStorageStatus {
                 category: "Agent speech timings".to_string(),

@@ -29,6 +29,10 @@ export interface PlayerPresence {
 
 export type Presence = Partial<Record<PlayerRole, PlayerPresence>>;
 
+/** The single communication channel available during live play. */
+export type CommunicationMode = "typed" | "speech";
+
+/** Participant-visible configuration supplied by the experiment. */
 export interface ExperimentInfo {
   /** Human-readable name of the compiled game used for participant-facing identity. */
   gameName: string;
@@ -39,7 +43,7 @@ export interface ExperimentInfo {
   participantInformationVersion?: string | null;
   participantInformationUrl?: string | null;
   consents: ConsentItem[];
-  voice?: { enabled?: boolean };
+  communication: { mode: CommunicationMode };
   recruitment?: RecruitmentInfo;
 }
 
@@ -50,8 +54,18 @@ interface ExperimentResponse {
   participant_information_version?: string | null;
   participant_information_url?: string | null;
   consents: ConsentItem[];
-  voice?: { enabled?: boolean };
+  communication?: unknown;
   recruitment?: RecruitmentInfo;
+}
+
+/** @internal Decodes the required communication setting on a server response. */
+export function decodeCommunication(
+  value: unknown,
+  response: "Experiment configuration" | "Replay"
+): ExperimentInfo["communication"] {
+  const mode = isRecord(value) ? value.mode : undefined;
+  if (mode === "typed" || mode === "speech") return { mode };
+  throw new Error(`${response} must specify communication.mode as "typed" or "speech".`);
 }
 
 /** Participant-visible recruitment behavior required during intake. */
@@ -379,6 +393,7 @@ export class ParticipantClient {
   /** Reads the participant-visible experiment configuration. */
   async getExperiment(): Promise<ExperimentInfo> {
     const experiment = await this.get<ExperimentResponse>("/api/config");
+    const communication = decodeCommunication(experiment?.communication, "Experiment configuration");
     return {
       gameName: experiment.game_name,
       status: experiment.experiment_status,
@@ -386,7 +401,7 @@ export class ParticipantClient {
       participantInformationVersion: experiment.participant_information_version,
       participantInformationUrl: experiment.participant_information_url,
       consents: experiment.consents,
-      voice: experiment.voice,
+      communication,
       recruitment: experiment.recruitment
     };
   }
@@ -487,13 +502,15 @@ export class ParticipantClient {
     }
   }
 
-  /** @internal Sends one message for the standard participant application. */
-  sendMessage(socket: WebSocket | null, text: string): void {
-    if (socket?.readyState !== WebSocket.OPEN) return;
+  /** @internal Returns whether the current socket accepted the message for sending. */
+  sendMessage(socket: WebSocket | null, text: string): boolean {
+    if (socket?.readyState !== WebSocket.OPEN) return false;
     try {
       socket.send(JSON.stringify({ type: "message", text }));
+      return true;
     } catch {
       // A close may race the ready-state check; the reconnect owner handles recovery.
+      return false;
     }
   }
 

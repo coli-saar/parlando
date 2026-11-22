@@ -1,5 +1,6 @@
 import { createRoot } from "react-dom/client";
 import {
+  CommunicationWidget,
   ParticipantApp,
   type GameSnapshot
 } from "@coli-saar/parlando-client/react";
@@ -21,8 +22,9 @@ interface ContractCompletion {
 }
 
 /** Renders the game-owned snapshot and actions used by the browser acceptance scenarios. */
-function ContractGame({ snapshot }: {
+function ContractGame({ snapshot, placeCommunication }: {
   snapshot: GameSnapshot<ContractObservation, ContractAction>;
+  placeCommunication: boolean;
 }) {
   return (
     <main>
@@ -37,15 +39,18 @@ function ContractGame({ snapshot }: {
         <button onClick={() => snapshot.act({ type: "reject" })}>Reject action</button>
         <button onClick={() => snapshot.act({ type: "mark", finish: true })}>Finish game</button>
       </div>
+      {placeCommunication && <aside data-testid="game-communication"><CommunicationWidget /></aside>}
     </main>
   );
 }
 
 /** Renders the fixture through the public package surface used by real games. */
 function App() {
+  const placeCommunication = new URLSearchParams(window.location.search).has("gameCommunication");
   return (
     <ParticipantApp<ContractObservation, ContractAction, ContractCompletion>
-      renderGame={(snapshot) => <ContractGame snapshot={snapshot} />}
+      communicationPlacement={placeCommunication ? "game" : undefined}
+      renderGame={(snapshot) => <ContractGame placeCommunication={placeCommunication} snapshot={snapshot} />}
       renderCompletion={(completion) => (
         <p data-testid="completion">Completed after {completion.actions} actions</p>
       )}

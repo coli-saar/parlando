@@ -67,9 +67,9 @@ export class ParticipantConnection<TObservation, TAction, TCompletion> {
     if (this.acceptsInput()) this.api.sendAction(this.socket, action);
   }
 
-  /** Sends participant chat under the same lifecycle rules as actions. */
-  message(text: string): void {
-    if (this.acceptsInput()) this.api.sendMessage(this.socket, text);
+  /** Returns whether the active game socket accepted this participant chat message. */
+  message(text: string): boolean {
+    return this.acceptsInput() && this.api.sendMessage(this.socket, text);
   }
 
   /** Checks current state at send time, including input from a retained game callback. */

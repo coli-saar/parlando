@@ -38,6 +38,8 @@ Use `new ParticipantClient({ baseUrl })` for the HTTP lifecycle of a custom non-
 
 The package supplies platform behavior and platform widgets, while the game supplies its game surface. Maps, task-specific labels, and game animation belong to the game. Conversation, microphone, connection, leave, and replay controls belong to Parlando and expose stable `parlando-*` styling hooks.
 
+`ParticipantApp` displays a communication widget below the game by default. The experiment's `communication.mode` selects typed chat or the microphone controls. To place the widget in your UI, set `communicationPlacement="game"` on `ParticipantApp` and render one `<CommunicationWidget />` inside `renderGame`. Import both components from `@coli-saar/parlando-client/react`. The widget includes default styling. Scope game CSS to its `.parlando-communication` root to customize its appearance. See the [game developer guide](../docs/web/content/manual/build/create-game.md#place-communication-beside-the-game) for a layout example.
+
 Speechmatics and TTS credentials and provider selection remain server-owned. Participant code receives only narrow capabilities and session status. Do not call provider APIs directly.
 
 ## Local development

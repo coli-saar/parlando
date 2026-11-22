@@ -313,9 +313,11 @@ def local_host(work, binary, env):
 
 
 def play_games(work, binary, env):
-    """Deploy, pin, and complete each game in separate Chromium participant contexts."""
+    """Pin both starters in Typed mode and run the two-browser communication and gameplay gate."""
     browser = work / "browser"
     browser.mkdir()
+    typed_config = work / "typed-experiment.yaml"
+    typed_config.write_text("communication:\n  mode: typed\n", encoding="utf-8")
     fixtures = ROOT / "client-server-tests/browser"
     playwright = json.loads((fixtures / "package.json").read_text())["devDependencies"]["@playwright/test"]
     for source in (fixtures / "ensure-browser.mjs", ROOT / "scripts/release_candidate_browser.mjs"):
@@ -331,8 +333,8 @@ def play_games(work, binary, env):
             ))["result"]
             pin = json.loads(run(
                 binary, "select", "--server", origin, "--experiment", game, "--game", game,
-                "--revision", receipt["revision"], "--json", cwd=work, env=credentials,
-                capture=True, timeout=60,
+                "--revision", receipt["revision"], "--config", typed_config, "--json",
+                cwd=work, env=credentials, capture=True, timeout=60,
             ))["result"]
             if pin["url"] != f"{origin}/e/{game}/" or pin["revision"] != receipt["revision"]:
                 raise RuntimeError(f"Unexpected experiment pin for {game}: {pin}")
@@ -341,7 +343,7 @@ def play_games(work, binary, env):
                 cwd=work, env=credentials, timeout=60,
             )
             run("node", "release_candidate_browser.mjs", pin["url"], cwd=browser, env=env, timeout=60)
-            print(f"Completed {game} in Chromium", flush=True)
+            print(f"Completed {game} with two-way Typed chat in Chromium", flush=True)
 
 
 def main():

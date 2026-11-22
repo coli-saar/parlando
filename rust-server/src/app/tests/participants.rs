@@ -35,7 +35,7 @@ pub(super) fn sqlite_config() -> (ExperimentConfig, tempfile::TempDir) {
 
 pub(super) fn voice_enabled_config() -> ExperimentConfig {
     let mut config = step_five_config();
-    config.voice.enabled = true;
+    config.communication.mode = CommunicationMode::Speech;
     config
 }
 

@@ -232,6 +232,7 @@ async fn simultaneous_actions_publish_role_private_snapshots_in_replay_order() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(replay["communication"]["mode"], "typed");
     for (i, (a, b)) in packets.iter().enumerate() {
         for (role, packet) in [("A", a), ("B", b)] {
             let frame = &replay["roles"][role][i + 1];

@@ -242,6 +242,10 @@ textarea { min-height: 92px; resize: vertical; width: 100%; }
 .config-group-copy { display: grid; gap: 5px; align-content: start; }
 .config-group-copy h3 { font-size: 16px; margin: 0; }
 .config-fields { display: grid; gap: 16px; }
+.speech-settings { border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 24px; margin: 0; min-width: 0; padding: 16px; }
+.speech-settings legend { font-size: 14px; font-weight: 700; padding: 0 6px; }
+.speech-settings h4 { font-size: 13px; margin: 0; }
+.speech-settings:disabled { opacity: .6; }
 .config-field { display: grid; gap: 6px; min-width: 0; }
 .config-field > span:first-child { font-size: 13px; font-weight: 700; }
 .config-boolean { align-content: start; }

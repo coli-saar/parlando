@@ -14,7 +14,7 @@ function publicConfig(overrides: Partial<ExperimentInfo> = {}): ExperimentInfo {
     gameName: "Tiny Game",
     status: "active",
     consents: [],
-    voice: { enabled: false },
+    communication: { mode: "typed" },
     ...overrides
   };
 }
@@ -33,7 +33,7 @@ describe("Parlando startup helpers", () => {
 
   it("treats disabled voice as a no-voice startup", () => {
     expect(isVoiceEnabled(publicConfig())).toBe(false);
-    expect(isVoiceEnabled(publicConfig({ voice: { enabled: true } }))).toBe(true);
+    expect(isVoiceEnabled(publicConfig({ communication: { mode: "speech" } }))).toBe(true);
   });
 
   it("derives consent readiness from configured items alone", () => {

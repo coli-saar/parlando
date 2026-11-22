@@ -81,7 +81,7 @@ The server creates one `TranscriptionProvider` session per human microphone stre
 - `FinalUtterance` with formatted text, utterance timing, independently timed tokens, and stable result ids;
 - `Failed`.
 
-Only final utterances are durable. Parlando deduplicates provider results, persists a `voice_transcript` conversation message, broadcasts it on the game WebSocket, and calls `agent::Agent::observe_message` with spoken modality. Speechmatics is the current hosted implementation and is contacted only by the server. Its API key is never returned to a browser. A future local recognizer can implement the same provider trait without changing browser or agent code.
+Only final utterances are durable. Parlando deduplicates provider results, persists a `voice_transcript` conversation message, broadcasts it on the game WebSocket, and calls `agent::Agent::observe_message` with the speaker and text. Typed messages reach an agent through the same callback. Speechmatics is the current hosted implementation and is contacted only by the server. Its API key is never returned to a browser. A future local recognizer can implement the same provider trait without changing browser or agent code.
 
 The provider connection may become ready while participants are still waiting, because provider
 readiness is one of the conditions for starting a voice-enabled game. Parlando does not send PCM to
@@ -141,8 +141,8 @@ Bounded queues protect the game server from slow clients. When an outbound queue
 ## Configuration
 
 Configure non-secret audio settings in the inactive experiment's dashboard form.
-Enable `voice`, then enable `transcription` and `tts` only when the study requires
-them. Protocol version 1 fixes `voice.sample_rate_hz` at 24000,
+Set `communication.mode` to `speech`, then enable `transcription` and `tts` when the study requires
+them. In `typed` mode the server accepts participant messages over the game connection and keeps the audio transport and both speech providers inactive. Protocol version 1 fixes `voice.sample_rate_hz` at 24000,
 `voice.frame_duration_ms` at 20, mono PCM, and a TTS output format compatible with
 24 kHz PCM. The normal initial jitter target is 100 ms.
 

@@ -32,6 +32,28 @@ conversation, audio, replay, and recruitment. Preserve these controls when
 styling the app, including their accessible labels and focus states. Check
 the actual markup from the project's SDK version.
 
+When upgrading a game built with 0.6.0, rebuild its browser assets with the matching client and replace the experiment’s old `voice.enabled` flag with `communication.mode`. A deployed game needs a new package revision for the updated browser assets.
+
+### Place and style experiment communication
+
+Use the same game UI for both values of `communication.mode`. With `typed`, the library displays the message history and composer. With `speech`, it displays the microphone meter, mute control, and status. Mode selection, provider access, and message delivery belong to Parlando. The standard placement below the game requires no code or stylesheet import.
+
+For a custom layout, import `CommunicationWidget` from the same React entry point as `ParticipantApp`. In the example above, replace the app's render callback with:
+
+```tsx
+<ParticipantApp<GameObservation, GameAction, GameCompletion>
+  communicationPlacement="game"
+  renderGame={(snapshot) => (
+    <main>
+      <GameView snapshot={snapshot} />
+      <aside className="game-dialogue"><CommunicationWidget /></aside>
+    </main>
+  )}
+/>
+```
+
+Render exactly one widget in this layout. Style it with scoped CSS, for example `.game-dialogue .parlando-communication { --parlando-communication-radius: 0.25rem; }`. Preserve keyboard focus, form labels, microphone status, and mute feedback. Pilot the same game in both modes when changing communication placement or styling.
+
 Use relative asset URLs in the production build so the package works under
 an experiment path on the shared host. A browser pilot can check both role
 views, action gating, and the terminal surface with two isolated profiles.

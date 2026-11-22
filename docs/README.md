@@ -12,6 +12,8 @@ The [experimenter manual](web/content/manual/_index.md) is the main guide. It st
 
 ## Reference
 
+- [Migrate from 0.6.0 to 0.7.0](migrating-0.6.0-to-0.7.0.md)
+
 - [WebAssembly component interface](component-games.md)
 - [Participant client protocol](client-protocol.md) and [audio transport](audio-transport.md)
 - [Agent API](agents.md) and [headless evaluation and training](agent-agent-and-rl-experiments.md)

@@ -11,7 +11,7 @@ import { replayRequestUrl, ReplayApp } from "./participant/replay.js";
 import { createDefaultAudioController } from "./participant/microphone.js";
 import { ParticipantAppRuntime } from "./participant/runtime.js";
 
-export { type GameSnapshot, type GameTransition, type ParticipantAppProps, type ReplayFrame, type SessionReplay } from "./participant/types.js";
+export { type CommunicationPlacement, type GameSnapshot, type GameTransition, type ParticipantAppProps, type ReplayFrame, type SessionReplay } from "./participant/types.js";
 export { ReplayPlayer } from "./participant/replay.js";
 export { PartnerReconnectNotice } from "./participant/deadlines.js";
 export { ProlificHandoff } from "./participant/outcome.js";
@@ -23,16 +23,17 @@ export function ParticipantApp<
   TObservation,
   TAction = unknown,
   TCompletion = Record<string, unknown>
->({ renderGame, renderCompletion, baseUrl }: ParticipantAppProps<TObservation, TAction, TCompletion>) {
+>({ renderGame, renderCompletion, baseUrl, communicationPlacement }: ParticipantAppProps<TObservation, TAction, TCompletion>) {
   const apiClient = useMemo(() => new ParticipantClient({ baseUrl }), [baseUrl]);
   const replayUrl = replayRequestUrl();
   if (replayUrl) {
-    return <ReplayApp key={replayUrl} replayUrl={replayUrl} renderGame={renderGame} />;
+    return <ReplayApp key={replayUrl} replayUrl={replayUrl} renderGame={renderGame} communicationPlacement={communicationPlacement} />;
   }
   return (
     <ParticipantAppRuntime
       apiClient={apiClient}
       createAudioController={createDefaultAudioController}
+      communicationPlacement={communicationPlacement}
       renderGame={renderGame}
       renderCompletion={renderCompletion}
     />

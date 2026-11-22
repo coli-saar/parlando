@@ -15,6 +15,7 @@ import { IdleDeadlineNotice, WaitingRoomNotice } from "./participant/deadlines";
 import { FarewellVoiceNotice } from "./participant/outcome";
 import { VoicePreparationControls } from "./participant/microphone";
 import { replayRequestUrl } from "./participant/replay";
+import { CommunicationWidget } from "./react";
 import { ParticipantAppRuntime } from "./participant/runtime";
 
 class FakeWebSocket extends EventTarget {
@@ -37,7 +38,7 @@ const active: ParticipantState<{ view: string }, { type: string }, { score: numb
 };
 
 function config(): ExperimentInfo {
-  return { gameName: "Tiny Game", status: "active", consents: [], voice: { enabled: false } };
+  return { gameName: "Tiny Game", status: "active", consents: [], communication: { mode: "typed" } };
 }
 
 function api() {
@@ -109,6 +110,15 @@ describe("administrator replay startup", () => {
     expect(replayRequestUrl()).toBe(expected);
   });
 
+  it.each([undefined, { mode: "voice" }])("reports invalid replay communication %j before rendering", async (communication) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(Response.json({ communication })));
+    window.history.replaceState(null, "", "?parlandoReplay=/api/admin/replay");
+    render(<ParticipantApp renderGame={game} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      'Replay must specify communication.mode as "typed" or "speech".'
+    );
+  });
+
   it("loads only the current replay and clears a previous request's error", async () => {
     const fetchReplay = vi.fn<typeof fetch>();
     vi.stubGlobal("fetch", fetchReplay);
@@ -124,7 +134,7 @@ describe("administrator replay startup", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Loading replay");
 
     window.history.replaceState(null, "", "?parlandoReplay=/api/admin/third");
-    fetchReplay.mockResolvedValueOnce(Response.json({ roles: { A: [], B: [] } }));
+    fetchReplay.mockResolvedValueOnce(Response.json({ communication: { mode: "typed" }, roles: { A: [], B: [] } }));
     rerender(<ParticipantApp renderGame={game} />);
     expect(await screen.findByRole("alert")).toHaveTextContent("This replay has no frames.");
     await act(async () => { finishSecond(new Response("stale failure", { status: 404 })); });
@@ -136,31 +146,42 @@ describe("administrator replay startup", () => {
 });
 
 describe("ReplayPlayer", () => {
-  it("jumps between reconstructed events and role-specific observations", () => {
+  it.each([
+    ["typed", "default"],
+    ["speech", "game"],
+  ] as const)("jumps between reconstructed events in %s mode with %s placement", (mode, placement) => {
     vi.useFakeTimers();
     const replay: SessionReplay<{ view: string }, { type: string }, { score: number }> = {
       experiment_id: "demo",
       session_id: 7,
       public_session_id: "ROOM1",
+      communication: { mode },
       compatibility: { state: "1", action: "1", rules: "1" },
       roles: {
         A: [
           { event_index: 1, game_time_ms: 0, observation: { view: "A start" }, available_actions: null, transition: null, conversation: [], completion: null },
-          { event_index: 4, game_time_ms: 800, observation: { view: "A moved" }, available_actions: null, transition: { actor: "B", action: { type: "move" } }, conversation: [{ id: "m1", sender: "A", text: "go", input: "text", createdAt: "" }], completion: null }
+          { event_index: 4, game_time_ms: 800, observation: { view: "A moved" }, available_actions: null, transition: { actor: "B", action: { type: "move" } }, conversation: [{ id: "m1", sender: "A", text: "go", input: mode === "typed" ? "text" : "voice_transcript", createdAt: "" }], completion: null }
         ],
         B: [
           { event_index: 1, game_time_ms: 0, observation: { view: "B start" }, available_actions: null, transition: null, conversation: [], completion: null },
-          { event_index: 4, game_time_ms: 800, observation: { view: "B moved" }, available_actions: null, transition: { actor: "B", action: { type: "move" } }, conversation: [{ id: "m1", sender: "A", text: "go", input: "text", createdAt: "" }], completion: null }
+          { event_index: 4, game_time_ms: 800, observation: { view: "B moved" }, available_actions: null, transition: { actor: "B", action: { type: "move" } }, conversation: [{ id: "m1", sender: "A", text: "go", input: mode === "typed" ? "text" : "voice_transcript", createdAt: "" }], completion: null }
         ]
       }
     };
-    render(<ReplayPlayer replay={replay} renderGame={game} />);
+    render(<ReplayPlayer
+      communicationPlacement={placement}
+      replay={replay}
+      renderGame={(snapshot) => <>{game(snapshot)}{placement === "game" && <CommunicationWidget />}</>}
+    />);
     expect(screen.getByText("A start")).toBeInTheDocument();
     expect(screen.getByText("false")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Next event" }));
     expect(screen.getByText("A moved")).toBeInTheDocument();
     expect(screen.getByText("Actor: B")).toBeInTheDocument();
-    expect(screen.getByText("go")).toBeInTheDocument();
+    const widget = screen.getByText("go").closest("section")!;
+    expect(widget).toHaveAttribute("data-mode", mode);
+    expect(Boolean(widget.closest(".parlando-replay-surface"))).toBe(placement === "game");
+    expect(widget.querySelector("input, button")).toBeNull();
     fireEvent.change(screen.getByRole("combobox", { name: "Replay viewpoint" }), { target: { value: "B" } });
     expect(screen.getByText("B moved")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Play replay" }));

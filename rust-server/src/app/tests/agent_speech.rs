@@ -13,9 +13,12 @@ async fn agent_tts_records_diagnostics_for_agent_messages() {
     let audio_publisher = Arc::new(MockAudioPublisher {
         calls: AtomicUsize::new(0),
     });
+    let mut config = human_vs_agent_config();
+    config.communication.mode = CommunicationMode::Speech;
+    config.tts.enabled = true;
     let router = build_router(
         live_game(),
-        human_vs_agent_config(),
+        config,
         ServeOptions {
             agent_factory: Some(factory),
             tts_provider: Some(tts_provider),
@@ -116,12 +119,18 @@ async fn agent_tts_continues_after_provider_failure() {
         calls: AtomicUsize::new(0),
         fail_first: true,
     });
+    let mut config = human_vs_agent_config();
+    config.communication.mode = CommunicationMode::Speech;
+    config.tts.enabled = true;
     let router = build_router(
         live_game(),
-        human_vs_agent_config(),
+        config,
         ServeOptions {
             agent_factory: Some(factory),
             tts_provider: Some(tts_provider),
+            audio_publisher: Some(Arc::new(MockAudioPublisher {
+                calls: AtomicUsize::new(0),
+            })),
             ..ServeOptions::default()
         },
     )
@@ -138,7 +147,7 @@ async fn agent_tts_continues_after_provider_failure() {
     let _ = wait_for_tts_diagnostic(router.clone(), "tts_message_failed").await;
     send_ws_json(
         &mut socket,
-        json!({"type": "message", "text": "please try again"}),
+        json!({"type": "action", "action": {"finish": false, "invalid": false}}),
     )
     .await;
     let export = wait_for_tts_diagnostic(router, "tts_message_completed").await;

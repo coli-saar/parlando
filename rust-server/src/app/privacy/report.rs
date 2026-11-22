@@ -54,7 +54,6 @@ pub(super) fn build_report(
         transcription_providers.join(", ")
     };
     let has_external_services = !external_services.is_empty();
-    let selected = (total == 1).then(|| &facts[0]);
     PrivacyStatus {
         generated_at: now_iso(),
         experiment_id: experiment_id.map(str::to_string),
@@ -84,7 +83,13 @@ pub(super) fn build_report(
         not_retained: non_retention(total, voice, transcription, &provider_description),
         raw_audio_stored_by_parlando: false,
         external_services,
-        exports: export_status(selected.is_some_and(|fact| fact.human_vs_agent), transcription, facts.iter().any(|fact| fact.tts_enabled), has_external_services),
+        exports: export_status(
+            facts.iter().any(|fact| fact.human_vs_agent),
+            voice < total,
+            transcription > 0,
+            facts.iter().any(|fact| fact.tts_enabled && fact.human_vs_agent),
+            has_external_services,
+        ),
         participant_deletion: PrivacyFeatureStatus {
             available: true,
             detail: "Deleting a human participant physically removes that participant and every session in which the participant appeared, including all messages, transcripts, actions, game states, operational events, role assignments, and consent records attached to those sessions. Because the complete shared session is removed, the other participant's contribution to that session is removed as well. Deletion is blocked while an affected session is still live or otherwise unfinished. Database backups and corpus files already copied elsewhere are not changed by this operation."

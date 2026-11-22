@@ -1,3 +1,5 @@
+import { bindSpeechSettings, COMMUNICATION_FIELD_PATHS, COMMUNICATION_MODE_FIELD, configAt, readConfigFields, renderSpeechSettings, renderStandardConfigField, setConfigAt } from "./communication-config.js";
+
 const API = "/api/hosting";
 const SESSION_LIMIT = 10_000;
 const UPLOAD_LIMIT = 64 * 1024 * 1024;
@@ -16,6 +18,7 @@ const state = {
   generation: 0,
   games: [],
   experiments: [],
+  configDefaults: {},
   experimentId: null,
   sessionId: null,
   sessionRequest: 0,
@@ -25,6 +28,7 @@ const state = {
 
 const byId = id => document.getElementById(id);
 const experimentForm = byId("experiment-form");
+const communicationConfig = byId("communication-config");
 
 // Sends hosting requests to the operator origin and reports server validation messages.
 async function request(path, { method = "GET", body, data = "json" } = {}) {
@@ -132,6 +136,7 @@ function setAccount(account) {
 
   state.games = [];
   state.experiments = [];
+  state.configDefaults = {};
   state.experimentId = null;
   state.resetAccountId = null;
   clearSessions();
@@ -142,6 +147,7 @@ function setAccount(account) {
   byId("experiment-detail").hidden = true;
   byId("reset-password").hidden = true;
   for (const form of document.querySelectorAll("form")) form.reset();
+  communicationConfig.replaceChildren();
   if (!account) byId("login").elements.username.focus();
 }
 
@@ -161,6 +167,8 @@ function gameLink(id) {
 // Rebuilds the build and experiment catalogues with their current selection.
 async function refreshDashboard() {
   const dashboard = await request("/dashboard");
+  state.configDefaults = dashboard.config_defaults;
+  if (!communicationConfig.hasChildNodes()) renderConfiguration({});
   const scope = dashboardGame();
   byId("dashboard-title").textContent = scope ? `Game dashboard · ${scope}` : "Hosting dashboard";
   state.games = scope ? dashboard.games.filter(game => game.id === scope) : dashboard.games;
@@ -207,8 +215,26 @@ function configure(game, revision, config = {}) {
   experimentForm.elements.game.value = game;
   updateRevisionOptions();
   experimentForm.elements.revision.value = revision;
-  experimentForm.elements.config.value = JSON.stringify(config, null, 2);
+  renderConfiguration(config);
   experimentForm.elements.id.focus();
+}
+
+// Splits an existing pin into controls and remaining JSON without dropping neighboring fields.
+function renderConfiguration(config) {
+  const other = structuredClone(config);
+  const communication = {};
+  for (const path of COMMUNICATION_FIELD_PATHS) {
+    const [group, name] = path.split(".");
+    setConfigAt(communication, path, configAt(config, path) ?? configAt(state.configDefaults, path));
+    if (other[group]) {
+      delete other[group][name];
+      if (!Object.keys(other[group]).length) delete other[group];
+    }
+  }
+  communicationConfig.innerHTML = renderStandardConfigField(COMMUNICATION_MODE_FIELD, communication)
+    + renderSpeechSettings(communication);
+  bindSpeechSettings(communicationConfig);
+  experimentForm.elements.config.value = JSON.stringify(other, null, 2);
 }
 
 // Constructs an API path from the selected experiment's validated identifier.
@@ -458,6 +484,8 @@ onSubmit("login", async form => {
 
 onSubmit("experiment-form", async form => {
   const { id, game, revision, config } = form.elements;
+  // The server validates speech settings in context, including disabled providers.
+  if ([id, game, revision, config].some(control => !control.reportValidity())) return;
   let configuration;
   try {
     configuration = JSON.parse(config.value);
@@ -467,11 +495,15 @@ onSubmit("experiment-form", async form => {
   if (!configuration || Array.isArray(configuration) || typeof configuration !== "object") {
     throw new Error("Configuration must be a JSON object.");
   }
+  const duplicate = COMMUNICATION_FIELD_PATHS.find(path => configAt(configuration, path) !== undefined);
+  if (duplicate) throw new Error(`Set ${duplicate} in the communication controls above.`);
+  readConfigFields(communicationConfig, configuration);
   const experimentId = id.value;
   await request(`/experiments/${encodeURIComponent(experimentId)}`, {
     method: "PUT", body: { game: game.value, revision: revision.value, config: configuration },
   });
   form.reset();
+  renderConfiguration({});
   byId("create-experiment").open = false;
   await refreshDashboard();
   openExperiment(experimentId);

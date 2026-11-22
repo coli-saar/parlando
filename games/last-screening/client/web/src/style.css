@@ -47,7 +47,7 @@ input:not([type="checkbox"]), select {
 a { color: #ecc28c; }
 p, h1, h2 { margin: 0; }
 #root { min-height: 100vh; padding: 0 clamp(.75rem, 3vw, 3rem) 1.5rem; }
-.screening, #root > .parlando-session-tools, #root > .online-error,
+.screening, #root > .parlando-session-tools, #root > .parlando-communication, #root > .online-error,
 #root > .parlando-partner-reconnect, #root > .parlando-idle-deadline {
   width: min(100%, 1440px);
   margin-inline: auto;
@@ -130,7 +130,8 @@ p, h1, h2 { margin: 0; }
 .exit-control p { margin-top: .5rem; color: var(--muted); }
 .exit-button { background: #4d2f19; border-color: #bd8f56; }
 
-#root > .parlando-session-tools {
+#root > .parlando-session-tools,
+#root > .parlando-communication {
   margin-top: .65rem;
   padding: .45rem .65rem;
   gap: .4rem;
@@ -300,9 +301,3 @@ p, h1, h2 { margin: 0; }
 }
 .parlando-game-completion { margin-top: 1rem; }
 .parlando-session-tools-message p { overflow-wrap: anywhere; min-width: 0; }
-@media (min-width: 831px) {
-  #root > .parlando-session-tools { grid-template-columns: minmax(16rem, 24rem) minmax(0, 1fr); column-gap: .8rem; }
-  .parlando-session-tools-header { grid-area: 1 / 1; }
-  .parlando-session-tools-form { grid-area: 1 / 2; }
-  .parlando-session-tools-conversation, .parlando-session-tools-voice { grid-column: 1 / -1; }
-}

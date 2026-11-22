@@ -51,7 +51,7 @@ impl SessionParticipant {
 
 /// Returns whether session start must wait for Speechmatics setup to finish.
 pub(in crate::app) fn speechmatics_readiness_required(config: &ExperimentConfig) -> bool {
-    config.transcription.enabled && config.transcription.provider == "speechmatics"
+    config.transcription_active() && config.transcription.provider == "speechmatics"
 }
 
 /// Returns whether both player roles are connected and past required audio setup.

@@ -172,7 +172,9 @@ async fn websocket_loop(
     if let Some(message) = presence_message(&state, &public_session_id).await {
         let _ = bus.send(message);
     }
-    let _ = bus.send(voice_message(&state, &public_session_id).await);
+    if state.context.config.is_speech() {
+        let _ = bus.send(voice_message(&state, &public_session_id).await);
+    }
     drop(connection_guard);
     if session_has_started(&state, &public_session_id).await {
         broadcast_participant_states(&state, &public_session_id).await;

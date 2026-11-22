@@ -70,6 +70,14 @@ pub(in crate::app) async fn admin_dashboard_api_javascript() -> Response {
     )
 }
 
+/// Serves the configuration controls shared by both administrator dashboards.
+pub(in crate::app) async fn admin_communication_config_javascript() -> Response {
+    admin_dashboard_asset(
+        include_str!("../communication_config.mjs"),
+        "text/javascript; charset=utf-8",
+    )
+}
+
 /// Prevents a restarted dashboard from combining newly embedded markup with stale assets.
 fn admin_dashboard_asset(body: &'static str, content_type: &'static str) -> Response {
     let mut response = body.into_response();

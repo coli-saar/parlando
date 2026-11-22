@@ -50,15 +50,16 @@ pub(super) fn privacy_config_facts(config: &Value) -> PrivacyConfigFacts {
     let information_version =
         privacy_config_string(config, "direct", "participant_information_version");
     let information_url = privacy_config_string(config, "direct", "participant_information_url");
+    let speech = privacy_config_string(config, "communication", "mode") == "speech";
     PrivacyConfigFacts {
         contract_version: privacy_config_string(config, "privacy", "contract_version"),
-        transcription_enabled: privacy_config_bool(config, "transcription", "enabled"),
+        transcription_enabled: speech && privacy_config_bool(config, "transcription", "enabled"),
         transcription_provider: privacy_config_string(config, "transcription", "provider"),
         transcription_endpoint: privacy_config_string(config, "speechmatics", "realtime_url"),
-        tts_enabled: privacy_config_bool(config, "tts", "enabled"),
+        tts_enabled: speech && privacy_config_bool(config, "tts", "enabled"),
         tts_provider: privacy_config_string(config, "tts", "provider"),
         tts_endpoint: privacy_config_string(config, "tts", "base_url"),
-        voice_enabled: privacy_config_bool(config, "voice", "enabled"),
+        voice_enabled: speech,
         human_vs_agent: privacy_config_string(config, "agents", "mode") == "human_vs_agent",
         consent_items: config
             .get("direct")

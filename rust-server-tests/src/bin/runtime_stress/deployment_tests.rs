@@ -421,7 +421,7 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
             .json(&json!({
                 "game": browser_deployment["game"],
                 "revision": browser_deployment["revision"],
-                "config": {},
+                "config": {"communication": {"mode": "speech"}, "voice": {"jitter_buffer_ms": 130}},
             }))
             .send()
             .await
@@ -436,6 +436,33 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
             .unwrap(),
     )
     .await;
+    assert_eq!(
+        dashboard["config_defaults"]["communication"]["mode"],
+        "typed"
+    );
+    let browser_pin = dashboard["experiments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "browser-experiment")
+        .unwrap();
+    assert_eq!(browser_pin["config"]["voice"]["jitter_buffer_ms"], 130);
+    for (experiment, mode) in [
+        ("cli-experiment", "typed"),
+        ("browser-experiment", "speech"),
+    ] {
+        let public_config = check_json(
+            host.request(
+                Method::GET,
+                &format!("/e/{experiment}/api/config"),
+                None,
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(public_config["communication"]["mode"], mode);
+    }
     for (section, expected) in [
         ("games", ["fixture-a", "browser-fixture"]),
         ("experiments", ["cli-experiment", "browser-experiment"]),

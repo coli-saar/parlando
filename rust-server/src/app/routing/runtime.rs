@@ -46,9 +46,11 @@ pub(super) async fn build_experiment_router(
         (lifecycle, stored_experiment.config_revision)
     };
     let client_dist = config.server.client_dist_path.as_ref().map(PathBuf::from);
-    let tts_provider = if options.tts_provider.is_some() {
+    let tts_provider = if !config.tts_active() {
+        None
+    } else if options.tts_provider.is_some() {
         options.tts_provider
-    } else if config.tts.enabled && !tts_api_key.is_empty() && !config.tts.voice_id.is_empty() {
+    } else if !tts_api_key.is_empty() && !config.tts.voice_id.is_empty() {
         let mut provider_config = config.tts.clone();
         provider_config.api_key = tts_api_key;
         Some(
@@ -59,12 +61,11 @@ pub(super) async fn build_experiment_router(
         None
     };
     let audio_sessions = Arc::new(AudioSessionRegistry::default());
-    let transcription_provider = if options.transcription_provider.is_some() {
+    let transcription_provider = if !config.transcription_active() {
+        None
+    } else if options.transcription_provider.is_some() {
         options.transcription_provider
-    } else if config.transcription.enabled
-        && config.transcription.provider == "speechmatics"
-        && !speechmatics_api_key.is_empty()
-    {
+    } else if config.transcription.provider == "speechmatics" && !speechmatics_api_key.is_empty() {
         let mut provider_config = config.speechmatics.clone();
         provider_config.api_key = speechmatics_api_key;
         Some(
@@ -74,15 +75,15 @@ pub(super) async fn build_experiment_router(
     } else {
         None
     };
-    let audio_publisher = if options.audio_publisher.is_some() {
+    let audio_publisher = if !config.tts_active() {
+        None
+    } else if options.audio_publisher.is_some() {
         options.audio_publisher
-    } else if config.tts.enabled && config.voice.enabled {
+    } else {
         Some(Arc::new(SessionAgentAudioPublisher::new(
             audio_sessions.clone(),
             config.voice.jitter_buffer_ms,
         )) as Arc<dyn AgentAudioPublisher>)
-    } else {
-        None
     };
     let prolific_api_base_url = installation
         .game_settings

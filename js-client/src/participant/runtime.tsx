@@ -11,7 +11,8 @@ import { AudioSessionController } from "../audio/audioSessionController.js";
 import { errorMessage, experimentAllowsIntake, requiredConsentsAccepted } from "../helpers.js";
 import { TranscriptionProgress } from "../voiceComponents.js";
 import { ParticipantClient, type ExperimentInfo } from "../protocol.js";
-import { type GameSnapshot } from "./types.js";
+import { type CommunicationPlacement, type GameSnapshot } from "./types.js";
+import { CommunicationContext, CommunicationWidget } from "./communicationWidget.js";
 import { SessionTools } from "./sessionControls.js";
 import { WaitingRoomNotice, PartnerReconnectNotice, IdleDeadlineNotice } from "./deadlines.js";
 import { SessionOutcomePanel, FarewellVoiceNotice } from "./outcome.js";
@@ -22,6 +23,7 @@ import { farewellVoiceIsOpen, useParticipantVoice } from "./useParticipantVoice.
 interface ParticipantAppRuntimeProps<TObservation, TAction, TCompletion = Record<string, unknown>> {
   renderGame(snapshot: GameSnapshot<TObservation, TAction>): ReactNode;
   renderCompletion?(completion: TCompletion): ReactNode;
+  communicationPlacement?: CommunicationPlacement;
   apiClient: ParticipantClient;
   createAudioController: () => AudioSessionController;
 }
@@ -33,7 +35,7 @@ export function ParticipantAppRuntime<
   TObservation,
   TAction = unknown,
   TCompletion = Record<string, unknown>
->({ renderGame, renderCompletion, apiClient, createAudioController }: ParticipantAppRuntimeProps<TObservation, TAction, TCompletion>) {
+>({ renderGame, renderCompletion, apiClient, createAudioController, communicationPlacement = "default" }: ParticipantAppRuntimeProps<TObservation, TAction, TCompletion>) {
   const audioControllerRef = useRef<AudioSessionController | null>(null);
   if (!audioControllerRef.current) audioControllerRef.current = createAudioController();
   const audioController = audioControllerRef.current;
@@ -225,25 +227,24 @@ export function ParticipantAppRuntime<
       act: (action) => connection.act(action)
     };
     return (
-      <>
+      <CommunicationContext.Provider value={enabled ? {
+        mode: "speech", preflight: voicePreflight, status, setMuted: setMicrophoneMuted
+      } : {
+        mode: "typed", conversation: session.conversation, enabled: gameSnapshot.interactionEnabled,
+        send: (message) => connection.message(message)
+      }}>
         <div className="parlando-game-surface">{renderGame(gameSnapshot)}</div>
+        {communicationPlacement === "default" && <CommunicationWidget />}
         <SessionTools
           connected={session.synchronization === "connected"}
-          conversation={session.conversation}
-          interactionEnabled={gameSnapshot.interactionEnabled}
           onLeave={leave}
-          onMessage={(text) => connection.message(text)}
-          onMutedChange={setMicrophoneMuted}
           role={participantState.role}
           sessionId={participantState.public_session_id}
-          voiceEnabled={enabled}
-          voicePreflight={voicePreflight}
-          voiceStatus={status}
         />
         <IdleDeadlineNotice deadlineAt={participantState.idle_deadline_at} />
         {participantState.state === "paused" && participantState.reason.type === "partner_reconnecting" && <PartnerReconnectNotice deadlineAt={participantState.reason.deadline_at} />}
         {error && <p className="online-error">{error}</p>}
-      </>
+      </CommunicationContext.Provider>
     );
   }
 

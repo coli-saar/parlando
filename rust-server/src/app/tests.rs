@@ -22,7 +22,7 @@ use tower::ServiceExt;
 
 use crate::agents::{Agent, AgentContext, AgentIdentity, AgentResponse};
 use crate::config::{
-    AgentsConfig, AgentsMode, ConsentItemConfig, DatabaseConfig, DirectConfig,
+    AgentsConfig, AgentsMode, CommunicationMode, ConsentItemConfig, DatabaseConfig, DirectConfig,
     ExperimentIdentityConfig,
 };
 use crate::game::{AgentConfigField, AgentConfigValue, AgentDefinition, PlayerRole, SecretPurpose};

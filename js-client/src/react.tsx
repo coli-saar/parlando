@@ -4,41 +4,15 @@
  * The participant runtime and audio controller own the connections behind those callbacks.
  */
 
-import { microphoneMuteButtonLabel } from "./helpers.js";
-import type { VoiceStatus } from "./audio/types.js";
-import { initialVoiceStatus } from "./audio/types.js";
-
-export { MicrophoneLevelMeter, TranscriptionProgress } from "./voiceComponents.js";
-
-/** Renders the participant control for muting an already connected microphone. */
-export function MicrophoneMuteButton({
-  enabled,
-  onMutedChange,
-  status = initialVoiceStatus
-}: {
-  enabled: boolean;
-  onMutedChange: (muted: boolean) => void;
-  status?: VoiceStatus;
-}) {
-  const muted = status.connected && !status.microphoneEnabled;
-  return (
-    <button
-      aria-pressed={muted}
-      className={`microphone-mute-button ${muted ? "muted" : "live"}`}
-      disabled={!enabled || !status.connected || status.microphoneChanging}
-      onClick={() => onMutedChange(!muted)}
-      type="button"
-    >
-      {microphoneMuteButtonLabel(status)}
-    </button>
-  );
-}
+export { MicrophoneLevelMeter, MicrophoneMuteButton, TranscriptionProgress } from "./voiceComponents.js";
+export { CommunicationWidget } from "./participant/communicationWidget.js";
 
 export {
   ParticipantApp,
   PartnerReconnectNotice,
   ProlificHandoff,
   ReplayPlayer,
+  type CommunicationPlacement,
   type GameSnapshot,
   type GameTransition,
   type ParticipantAppProps,

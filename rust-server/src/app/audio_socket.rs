@@ -28,7 +28,7 @@ pub(super) async fn audio_session(
 ) -> Result<Json<AudioSessionPlanResponse>, AppError> {
     let participant_session_id = authenticated_participant_id(principal.clone())?;
     let role = participant_role(&state, &public_session_id, &participant_session_id).await?;
-    if !state.context.config.voice.enabled {
+    if !state.context.config.is_speech() {
         return Ok(Json(AudioSessionPlanResponse::disabled()));
     }
     if !session_accepts_audio(&state, &public_session_id).await {
@@ -71,6 +71,9 @@ pub(super) async fn audio_socket(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, AppError> {
+    if !state.context.config.is_speech() {
+        return Err(AppError::forbidden("Voice chat is disabled."));
+    }
     validate_websocket_origin(&state.context.config, &headers)?;
     let claims = state
         .upgrade_tickets
@@ -224,7 +227,7 @@ async fn audio_websocket_loop(
             }
         })
     });
-    if transcription_input.is_none() && !state.context.config.transcription.enabled {
+    if transcription_input.is_none() && !state.context.config.transcription_active() {
         mark_participant_audio_ready(&state, &public_session_id, &participant_session_id).await;
         let _ = state
             .session_bus(&public_session_id)

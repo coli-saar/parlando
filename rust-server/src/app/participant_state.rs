@@ -323,7 +323,7 @@ pub(super) async fn voice_message(state: &Arc<AppState>, public_session_id: &str
         voice: json!({
             "audioReady": audio_ready,
             "transcriptionReady": transcription_ready,
-            "transcriptionStatus": if !state.context.config.transcription.enabled {
+            "transcriptionStatus": if !state.context.config.transcription_active() {
                 "Disabled"
             } else if transcription_ready {
                 "Ready"

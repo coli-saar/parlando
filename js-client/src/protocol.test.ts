@@ -79,13 +79,21 @@ describe("ParticipantClient room helpers", () => {
     });
   });
 
+  it.each([undefined, { mode: "voice" }])("rejects invalid experiment communication %j", async (communication) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({ communication }));
+    const client = new ParticipantClient({ baseUrl: "http://server.test" });
+    await expect(client.getExperiment()).rejects.toThrow(
+      'Experiment configuration must specify communication.mode as "typed" or "speech".'
+    );
+  });
+
   it("runs the supported experiment, consent, audio, and game-plan lifecycle", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({
         game_name: "Tiny Game",
         experiment_status: "active",
         consents: [],
-        voice: { enabled: true }
+        communication: { mode: "speech" }
       }), { status: 200 }))
       .mockResolvedValueOnce(participantResponse("one", "credential-1"))
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
@@ -105,7 +113,7 @@ describe("ParticipantClient room helpers", () => {
       }), { status: 200 }));
     const client = new ParticipantClient({ baseUrl: "http://server.test" });
 
-    await expect(client.getExperiment()).resolves.toMatchObject({ gameName: "Tiny Game", status: "active" });
+    await expect(client.getExperiment()).resolves.toMatchObject({ gameName: "Tiny Game", status: "active", communication: { mode: "speech" } });
     await client.register();
     await client.acceptConsents({ research: true });
     await expect(client.getAudioSession("ROOM1")).resolves.toEqual({

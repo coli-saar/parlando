@@ -130,6 +130,10 @@ pub(super) fn routes() -> Router<Arc<Host>> {
         .route("/admin/", get(page))
         .route("/games/:game/admin", get(game_page))
         .route("/admin/dashboard.js", get(javascript))
+        .route(
+            "/admin/communication-config.js",
+            get(communication_config_javascript),
+        )
         .route("/admin/dashboard.css", get(stylesheet))
         .route("/api/hosting/auth/login", post(login))
         .route("/api/hosting/auth/logout", post(logout))
@@ -321,6 +325,19 @@ async fn javascript(State(host): State<Arc<Host>>, request: Request) -> HttpResu
     )
 }
 
+/// Serves the configuration controls shared by both administrator dashboards.
+async fn communication_config_javascript(
+    State(host): State<Arc<Host>>,
+    request: Request,
+) -> HttpResult<Response> {
+    asset(
+        &host,
+        request,
+        include_str!("../app/communication_config.mjs"),
+        "text/javascript; charset=utf-8",
+    )
+}
+
 /// Serves the dashboard's own stylesheet.
 async fn stylesheet(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Response> {
     asset(
@@ -424,7 +441,12 @@ async fn index(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Js
             "participant_url": format!("{}/e/{id}/", host.public_url)}),
         );
     }
-    Ok(Json(json!({"games": games, "experiments": rows})))
+    let config_defaults =
+        crate::app::validate_hosted_config(&crate::config::ExperimentConfig::default())
+            .map_err(internal)?;
+    Ok(Json(
+        json!({"games": games, "experiments": rows, "config_defaults": config_defaults}),
+    ))
 }
 
 /// Reads public metadata for installed revisions, excluding staging directories.

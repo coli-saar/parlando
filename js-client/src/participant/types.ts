@@ -5,7 +5,7 @@
  */
 
 import { type ReactNode } from "react";
-import { type PlayerMessage, type PlayerRole } from "../protocol.js";
+import { type CommunicationMode, type PlayerMessage, type PlayerRole } from "../protocol.js";
 
 /** A role-specific view of the live game and its available interactions. */
 export interface GameSnapshot<TObservation, TAction> {
@@ -25,11 +25,16 @@ export interface GameTransition<TAction> {
   action: TAction;
 }
 
+/** Places the communication widget in the standard layout or inside the game renderer. */
+export type CommunicationPlacement = "default" | "game";
+
 /** Supplies game rendering and optional experiment server location. */
 export interface ParticipantAppProps<TObservation, TAction, TCompletion = Record<string, unknown>> {
   renderGame(snapshot: GameSnapshot<TObservation, TAction>): ReactNode;
   /** Renders game-specific public success content inside the standard terminal shell. */
   renderCompletion?(completion: TCompletion): ReactNode;
+  /** Choose "game" to render CommunicationWidget inside renderGame. Defaults to "default". */
+  communicationPlacement?: CommunicationPlacement;
   baseUrl?: string;
 }
 
@@ -49,6 +54,7 @@ export interface SessionReplay<TObservation, TAction, TCompletion = Record<strin
   experiment_id: string;
   session_id: number;
   public_session_id: string;
+  communication: { mode: CommunicationMode };
   compatibility: { state: string; action: string; rules: string };
   roles: Record<PlayerRole, ReplayFrame<TObservation, TAction, TCompletion>[]>;
 }

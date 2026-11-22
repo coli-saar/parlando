@@ -530,7 +530,7 @@ async fn reusable_router_builds_with_typed_adapter() {
 #[tokio::test]
 async fn health_and_public_config_expose_client_bootstrap_shape() {
     let mut config = step_five_config();
-    config.voice.enabled = true;
+    config.communication.mode = CommunicationMode::Speech;
     config.transcription.enabled = true;
     config.speechmatics.api_key = "test-key".to_string();
     config.tts.enabled = true;
@@ -574,7 +574,8 @@ async fn health_and_public_config_expose_client_bootstrap_shape() {
     assert!(public_config.get("participant_title").is_none());
     assert!(public_config["institution"].is_null());
     assert_eq!(public_config["consents"][0]["id"], "study");
-    assert_eq!(public_config["voice"]["enabled"], true);
+    assert_eq!(public_config["communication"]["mode"], "speech");
+    assert!(public_config.get("voice").is_none());
     assert_eq!(public_config["recruitment"]["provider"], "direct");
     assert!(public_config.get("transcription").is_none());
     assert!(public_config.get("tts").is_none());

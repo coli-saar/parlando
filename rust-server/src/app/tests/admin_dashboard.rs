@@ -48,6 +48,10 @@ async fn admin_dashboard_serves_html_css_and_javascript_assets() {
             "/admin/assets/admin-dashboard-api.js",
             "text/javascript; charset=utf-8",
         ),
+        (
+            "/admin/assets/communication-config.js",
+            "text/javascript; charset=utf-8",
+        ),
     ] {
         let asset = admin_raw_request(router.clone(), http::Method::GET, path).await;
         assert_eq!(asset.status(), StatusCode::OK);

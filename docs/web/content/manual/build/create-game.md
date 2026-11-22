@@ -42,6 +42,45 @@ Use the session seed for any randomized task setup. An invalid action should lea
 3. Run `parlando test`. It runs native tests and checks scenario expectations through the actual WASM interface.
 4. Run `parlando build` and repeat the [two-browser pilot](../start/getting-started/#play-both-seats) with the built package.
 
-The starter connects the browser to Parlando's participant application. Keep its session and communication controls when changing the task display. Send actions through the SDK and render the observation the component returns.
+## Place communication beside the game
+
+`ParticipantApp` displays the experiment's communication widget below the game by default. In a typed experiment it shows the conversation and a message composer. In a speech experiment it shows microphone status, the level meter, and the mute control. The same game build supports both configurations.
+
+To put the widget beside your board, set `communicationPlacement="game"` and render one `CommunicationWidget` inside your game layout. Here `Board` is your existing game component.
+
+```jsx
+import { CommunicationWidget, ParticipantApp } from "@coli-saar/parlando-client/react";
+
+export function App() {
+  return (
+    <ParticipantApp
+      communicationPlacement="game"
+      renderGame={(snapshot) => (
+        <main className="game-layout">
+          <Board snapshot={snapshot} />
+          <aside className="game-dialogue">
+            <CommunicationWidget />
+          </aside>
+        </main>
+      )}
+    />
+  );
+}
+```
+
+The package supplies the widget's JavaScript and default CSS. Scope your overrides to its location.
+
+```css
+.game-dialogue .parlando-communication {
+  --parlando-communication-radius: 0.25rem;
+  max-inline-size: 24rem;
+}
+```
+
+The panel also accepts `--parlando-communication-background`, `--parlando-communication-border`, and `--parlando-communication-color`. The root's `data-mode` attribute is `typed` or `speech` for mode-specific styling. The transcript and composer expose `.parlando-communication-conversation` and `.parlando-communication-form`. Keep keyboard focus and mute status visible when overriding the defaults.
+
+Parlando handles microphone access, message delivery, and connection state. Keep game actions in `snapshot.act` and let the widget handle dialogue. To pilot both interfaces, [configure communication](voice/) for two experiments using the same package.
+
+The live text panel shows up to 50 messages received by the current page. A reconnect keeps the messages already displayed. Reloading the page starts a fresh live history. Administrator replay reconstructs the conversation from recorded events and displays the messages available at the selected frame. A widget placed inside the replayed game shares the game surface's read-only behavior.
 
 See [package a game](packages/) for what the host accepts. Use the [Rust Game SDK](https://docs.rs/parlando-game-sdk/) or the [Python Game SDK](https://pypi.org/project/parlando-python-sdk/) for the language API.

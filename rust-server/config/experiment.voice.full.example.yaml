@@ -6,8 +6,10 @@
 # This file intentionally documents configuration only. The Parlando Rust server
 # and browser SDK own the audio relay, Speechmatics, and ElevenLabs runtime behavior.
 
+communication:
+  mode: speech
+
 voice:
-  enabled: true
   sample_rate_hz: 24000
   frame_duration_ms: 20
   jitter_buffer_ms: 100

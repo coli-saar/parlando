@@ -285,6 +285,35 @@ async fn sqlite_stores_multi_experiment_catalogue_and_revisions() {
     assert_eq!(revisions[1].revision, 1);
 }
 
+/// Resolves replay communication from the session's recorded revision after the mode changes.
+#[tokio::test]
+async fn session_communication_stays_pinned_to_its_recorded_revision() {
+    use crate::config::CommunicationMode;
+
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+    let session = running_test_session(&store, "communication").await;
+    let revision = store
+        .save_experiment_configuration(
+            "communication",
+            1,
+            json!({"communication": {"mode": "speech"}}),
+            None,
+            HashMap::new(),
+            vec![],
+        )
+        .await
+        .unwrap();
+    assert_eq!(revision, 2);
+    let communication = store
+        .session_communication("communication", session)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(communication.mode, CommunicationMode::Typed);
+}
+
 /// Confirms shared institution settings use optimistic concurrency.
 #[tokio::test]
 async fn sqlite_game_settings_reject_stale_updates() {

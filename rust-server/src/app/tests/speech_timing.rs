@@ -124,7 +124,7 @@ async fn generated_and_recognized_speech_keep_audio_clock_timings_end_to_end() {
     let tts_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let asr_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut config = human_vs_agent_config();
-    config.voice.enabled = true;
+    config.communication.mode = CommunicationMode::Speech;
     config.transcription.enabled = true;
     config.speechmatics.api_key = "local-asr-key".into();
     config.speechmatics.realtime_url = format!("ws://{}", asr_listener.local_addr().unwrap());

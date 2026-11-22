@@ -53,6 +53,8 @@ The Rust server must not depend on React or on the implementation of a participa
 
 `@coli-saar/parlando-client` is a convenient implementation of that protocol for custom browser applications. Its React entry point provides `ParticipantApp` as a simple way to build React frontends. Neither package defines server semantics, and using them is optional.
 
+The experiment owns the communication mode. The server enforces typed or speech input and delivers conversation to an agent as speaker and text. The participant application supplies the corresponding `CommunicationWidget`, including its behavior and default CSS. A game can place and style the widget alongside its task controls without adding conversation to its action or observation schema.
+
 Serving compiled participant assets from `Server::participant_app` is a deployment convenience, not architectural coupling. The protocol must remain implementable by a separately hosted or non-React client without changing the game semantics or server protocol.
 
 The current `Server` builder supports same-origin assets and deployments that put a frontend and

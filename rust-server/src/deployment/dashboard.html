@@ -87,10 +87,11 @@
               <label>Game <select name="game" required></select></label>
               <label>Package revision <select name="revision" required></select></label>
             </div>
-            <label>Experiment configuration (JSON)
+            <div id="communication-config" class="configuration-fields"></div>
+            <label>Other experiment settings (JSON)
               <textarea name="config" spellcheck="false" rows="8" required>{}</textarea>
             </label>
-            <button class="primary">Create experiment</button>
+            <button class="primary" formnovalidate>Create experiment</button>
           </form>
         </details>
       </section>

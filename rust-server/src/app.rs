@@ -571,9 +571,7 @@ async fn public_config(State(state): State<Arc<AppState>>) -> Json<PublicConfigR
                 required: item.required,
             })
             .collect(),
-        voice: json!({
-            "enabled": config.voice.enabled,
-        }),
+        communication: config.communication,
         recruitment: if config.recruitment.prolific.enabled {
             json!({
                 "provider": "prolific",

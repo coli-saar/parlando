@@ -6,13 +6,23 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## Unreleased
 
+For the upcoming 0.7.0 release, see the [migration guide](docs/migrating-0.6.0-to-0.7.0.md).
+
 ### Added
 
 - Author stateful component games with the Rust SDK and `parlando new`. Build,
   test, and serve the same package locally or upload it to a persistent Parlando
   host. Each hosted experiment pins an immutable package revision.
 
+- Scaffold Python games alongside Rust games and run their scenarios and packages with the same CLI. The shared host supports named experimenter accounts and a dashboard on its own administrator origin.
+- For trusted agent–agent workloads, `execution.wasm_metering: none` disables fuel accounting. The default remains `fuel`.
+- The React client includes a styled `CommunicationWidget`. Games can use its default placement or put it inside their own layout. The same widget displays typed chat or microphone controls according to the experiment mode.
+- The runtime stress harness supports typed human–human and human–agent games. The prerelease suite exercises both communication modes and verifies two-way typed chat in the packaged Rust and Python starters.
+
 ### Changed
+
+- Experiments select `communication.mode: typed` (default) or `speech`. Both dashboards group and disable speech settings in Typed mode, retaining their values. Typed experiments use no audio transport or speech providers. Speech experiments reject human-authored typed messages.
+- Schema 17 stores the communication mode in each experiment revision. Replay reads the mode recorded for the session. Upgrade populated schema-16 databases offline and rebuild participant assets with the matching client.
 
 - Live play, replay and headless experiments now execute Wasm games. Custom Rust hosts load components with `LoadedGame`. The game-authoring trait lives in `parlando-game-sdk`.
 
@@ -27,8 +37,8 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
   cross the game boundary as MessagePack values. Build guests with the v4
   bindings and retain matching host and guest builds for historical replay. Local Rust policies
   receive `ComponentValue` handles and training batches carry game types.
-  Participant messages and stored experiment, trace and replay formats retain
-  their existing fields.
+  The component encoding applies at the guest boundary. The experiment and replay
+  configuration changes are described above.
 - Configure Rust `RewardFunction` implementations once per run via `configure`.
   Accepted turns use the configured reward without passing YAML parameters again.
 

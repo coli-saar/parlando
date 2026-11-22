@@ -216,6 +216,10 @@ pub(super) fn dashboard_routes(state: &Arc<ServerContext>, prefix: &str) -> Rout
             &participant_path("/admin/assets/admin-dashboard-api.js"),
             get(admin_dashboard_api_javascript),
         )
+        .route(
+            &participant_path("/admin/assets/communication-config.js"),
+            get(admin_communication_config_javascript),
+        )
         .route(&participant_path("/admin/privacy"), get(admin_privacy_page))
         .route(
             &participant_path("/api/admin/privacy"),

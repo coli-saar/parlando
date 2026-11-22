@@ -126,14 +126,22 @@ pub(super) fn apply_game_provider_secrets(
     config: &mut ExperimentConfig,
     stored_secrets: &HashMap<String, String>,
 ) {
-    config.speechmatics.api_key = stored_secrets
-        .get("speechmatics.api_key")
-        .cloned()
-        .unwrap_or_default();
-    config.tts.api_key = stored_secrets
-        .get("tts.api_key")
-        .cloned()
-        .unwrap_or_default();
+    config.speechmatics.api_key = if config.transcription_active() {
+        stored_secrets
+            .get("speechmatics.api_key")
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    config.tts.api_key = if config.tts_active() {
+        stored_secrets
+            .get("tts.api_key")
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     config.recruitment.prolific.api_token = stored_secrets
         .get("prolific.api_token")
         .cloned()

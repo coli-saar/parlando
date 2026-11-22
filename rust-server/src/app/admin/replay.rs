@@ -237,11 +237,24 @@ pub(in crate::app) async fn admin_session_replay(
             &conversation,
         )?);
     }
+    let communication = state
+        .context
+        .installation
+        .store
+        .session_communication(&experiment_id, session_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::new(
+                StatusCode::CONFLICT,
+                "The session configuration revision is missing.",
+            )
+        })?;
     Ok(Json(json!({
         "experiment_id": experiment_id,
         "session_id": session_id,
         "public_session_id": created.payload.get("public_session_id"),
         "compatibility": expected,
+        "communication": communication,
         "roles": {"A": role_a, "B": role_b},
     })))
 }

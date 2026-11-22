@@ -219,7 +219,8 @@ p, h1, h2 { margin: 0; }
 .hotel-close { font: normal 1.45rem/1 var(--serif); min-width: 38px; min-height: 38px; padding: 0; }
 .hotel-panel-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .75rem; }
 
-#root > .parlando-session-tools {
+#root > .parlando-session-tools,
+#root > .parlando-communication {
   position: relative;
   margin: 0;
   padding: .55rem clamp(.65rem, 4vw, 3.8rem);
@@ -357,13 +358,6 @@ p, h1, h2 { margin: 0; }
 .microphone-mute-button.muted { border-color: #a86e57; color: #ffd4c0; }
 .mic-meter-track { display: block; height: 5px; width: 5rem; background: #323426; }
 .mic-meter-track > span { display: block; width: 100%; height: 100%; transform-origin: left; background: #9db781; }
-
-@media (min-width: 760px) {
-  #root > .parlando-session-tools { grid-template-columns: minmax(15rem, 24rem) minmax(0, 1fr); }
-  .parlando-session-tools-header { grid-area: 1 / 1; }
-  .parlando-session-tools-form { grid-area: 1 / 2; }
-  .parlando-session-tools-conversation, .parlando-session-tools-voice { grid-column: 1 / -1; }
-}
 
 @media (max-width: 590px) {
   .hotel { height: max(560px, 100svh - 108px); min-height: 0; }

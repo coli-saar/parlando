@@ -60,11 +60,13 @@ make publish-dry-run PYTHON=.local/release-venv/bin/python
 Require `target/e2e-report.md` to show every browser and Prolific scenario passing. A test-harness
 failure is still a release blocker: diagnose and fix the harness or product, then rerun both the
 affected gate and its own test target. The candidate target includes `make test-components`
-and its runtime stress tests. Run the standalone sustained-capacity programs when the maintainer
+and `make test-runtime-communication`. Require the short stress runs to pass in both typed and
+speech modes for human–human and human–agent pairings. Run the standalone sustained-capacity programs when the maintainer
 requests performance evidence.
 
 Require the candidate rehearsal to install all six packaged artifacts and play both deployed
-starter games through completion. Inspect the saved candidate before publication. `make publish`
+starter games through completion. In each typed experiment verify a two-way chat with one copy
+of each message in each browser and no microphone request. Inspect the saved candidate before publication. `make publish`
 verifies its checksums and inputs and publishes the saved npm and PyPI distributions. Cargo
 packages the verified Rust inputs during publication.
 

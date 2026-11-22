@@ -3,6 +3,7 @@
 //! recipient. The server marks outgoing messages as targeted or broadcast so the socket loop
 //! can select what each participant receives.
 
+use crate::config::CommunicationConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -53,7 +54,8 @@ pub struct PublicConfigResponse {
     pub participant_information_version: Option<String>,
     pub participant_information_url: Option<String>,
     pub consents: Vec<ConsentItemResponse>,
-    pub voice: Value,
+    /// Conversation channel participants should use for this experiment.
+    pub communication: CommunicationConfig,
     /// Narrow intake capability; study ids and completion codes remain private.
     pub recruitment: Value,
 }

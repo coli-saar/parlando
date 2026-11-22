@@ -260,7 +260,7 @@ async fn commit_action(
         .telemetry
         .record_action_accepted();
     let keep_voice_open = completed
-        && state.context.config.voice.enabled
+        && state.context.config.is_speech()
         && state.context.config.agents.mode == AgentsMode::HumanVsHuman
         && state.audio_sessions.has_human_pair(public_session_id).await;
     {

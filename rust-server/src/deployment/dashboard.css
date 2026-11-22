@@ -38,6 +38,14 @@ h2 { font-size: 1.5rem; }
 p { margin: 0.5rem 0 0.85rem; }
 a { color: var(--accent); }
 form { display: grid; gap: 0.85rem; justify-items: start; }
+.configuration-fields, .speech-settings, .speech-settings .config-fields { display: grid; gap: 0.85rem; width: 100%; }
+.speech-settings { border: 1px solid var(--border); border-radius: 0.5rem; min-width: 0; margin: 0; }
+.speech-settings legend { font-weight: 700; }
+.speech-settings:disabled { opacity: 0.6; }
+.speech-settings section + section { border-top: 1px solid var(--border); padding-top: 0.85rem; }
+.speech-settings .config-group-copy h4, .speech-settings .config-group-copy p { margin: 0; }
+.configuration-fields .config-help, .configuration-fields .muted { color: var(--muted); font-size: 0.875rem; font-weight: 400; }
+.configuration-fields .checkbox-line { display: flex; align-items: center; gap: 0.4rem; }
 .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); gap: 0.85rem; width: 100%; }
 label { display: grid; gap: 0.25rem; width: 100%; font-weight: 600; }
 .toolbar label { width: auto; }

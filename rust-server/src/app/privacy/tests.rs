@@ -4,23 +4,52 @@ use serde_json::json;
 /// A voice-only room relays microphone audio without generating transcript records.
 #[test]
 fn voice_relay_alone_adds_no_transcript_storage_or_external_service() {
-    let facts = privacy_config_facts(&json!({"voice": {"enabled": true}}));
+    let facts = privacy_config_facts(&json!({"communication": {"mode": "speech"}}));
     let report = build_report(&[facts], Some("voice"));
     assert!(report.external_services.is_empty());
     assert!(report
         .not_retained
         .iter()
         .any(|item| item.category == "Raw microphone audio"));
-    assert!(!report
+    assert!(!report.storage.iter().any(|item| matches!(
+        item.category.as_str(),
+        "Final voice transcripts" | "Typed participant messages"
+    )));
+    assert!(report
+        .exports
+        .included_fields
+        .iter()
+        .any(|section| section.section == "Message event"
+            && section.description.contains("produces no message events")));
+}
+
+/// Agent text remains in speech conversations even if recognition and synthesis are disabled.
+#[test]
+fn speech_agent_messages_are_reported_independently_of_transcription() {
+    let facts = privacy_config_facts(&json!({
+        "communication": {"mode": "speech"},
+        "agents": {"mode": "human_vs_agent"}
+    }));
+    let report = build_report(&[facts], Some("speech-agent"));
+    assert!(report
         .storage
         .iter()
-        .any(|item| item.category == "Final voice transcripts"));
+        .any(|item| item.category == "Agent messages"));
+    let message = report
+        .exports
+        .included_fields
+        .iter()
+        .find(|section| section.section == "Message event")
+        .unwrap();
+    assert!(message.description.contains("software-agent messages"));
+    assert!(!message.description.contains("participant-typed messages"));
 }
 
 /// A provider used for two purposes appears once per data flow across all covered experiments.
 #[test]
 fn installation_report_deduplicates_services_by_provider_and_purpose() {
     let configuration = json!({
+        "communication": {"mode": "speech"},
         "transcription": {"enabled": true, "provider": "speech"},
         "tts": {"enabled": true, "provider": "speech"}
     });

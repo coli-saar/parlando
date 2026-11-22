@@ -3,6 +3,7 @@
 // responses update shared dashboard state, which the view renders with the formatting
 // helpers.
 
+import { bindSpeechSettings, COMMUNICATION_MODE_FIELD, configAt, readConfigFields, renderSpeechSettings, renderStandardConfigField, setConfigAt } from './communication-config.js';
 import { state } from './admin-dashboard-state.js';
 import { isSpeechBundle, sessionTimeline, roleBadge, escapeHtml, experimentDisplayStatus, fmtClockTime, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, participantDeletionPrompt, plannedProgressLayout, sessionEndCauseRows, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
 import { absoluteParticipantUrl, adminFetch, SelectionRequests, experimentRuntimeApi, participantUrlCanOpen } from './admin-dashboard-api.js';
@@ -1233,27 +1234,9 @@ const PARLANDO_CONFIG_SECTIONS = [
     { path: 'direct.participant_information_url', label: 'Participant-information URL', help: 'Public document describing the study and its data handling.', type: 'url' },
     { path: 'direct.consents', label: 'Consent items', help: 'Statements presented before participation. Accepted items are recorded with their exact presentation hash.', type: 'consents' }
   ]},
-  { title: 'Voice transport', description: 'Live browser audio carried through Parlando. This is independent of speech recognition.', fields: [
-    { path: 'voice.enabled', label: 'Enable voice transport', help: 'Allow participants to send and receive live audio. Parlando relays audio but does not store the raw recording.', type: 'boolean' },
-    { path: 'voice.jitter_buffer_ms', label: 'Playback jitter buffer (ms)', help: 'Audio buffered before playback.', type: 'number', min: 20, max: 5000 },
-    { path: 'voice.post_completion_seconds', label: 'Post-game voice time (seconds)', help: 'Time participants may keep talking after an ordinarily completed game.', type: 'number', min: 1, max: 3600 },
-  ]},
-  { title: 'Speech recognition', description: 'Optional Speechmatics conversion of participant speech into text.', fields: [
-    { path: 'transcription.enabled', label: 'Enable speech recognition', help: 'Send live participant audio to Speechmatics and make recognized text available to the game and agents.', type: 'boolean' },
-    { path: 'transcription.model', label: 'Recognition model', help: 'Enhanced favors recognition quality; Standard is the lighter operating point.', type: 'select', options: [['enhanced', 'Enhanced'], ['standard', 'Standard']] },
-    { path: 'transcription.language', label: 'Spoken language', help: 'Speechmatics language code for the expected participant speech, for example en or de.' },
-    { path: 'speechmatics.realtime_url', label: 'Speechmatics realtime URL', help: 'Exact regional or private WebSocket endpoint that receives participant audio.' },
-    { path: 'speechmatics.max_delay', label: 'Maximum transcript delay (seconds)', help: 'Maximum recognition delay; larger values may improve accuracy at the cost of responsiveness.', type: 'decimal', min: 0.1 },
-    { path: 'speechmatics.enable_partials', label: 'Show partial transcripts', help: 'Deliver provisional text while the participant is still speaking.', type: 'boolean' },
-    { path: 'speechmatics.end_of_utterance_silence_trigger', label: 'End-of-utterance silence (seconds)', help: 'Silence used to close an utterance.', type: 'decimal', min: 0.1 }
-  ]},
-  { title: 'Text to speech', description: 'Optional ElevenLabs speech synthesis for agent messages.', fields: [
-    { path: 'tts.enabled', label: 'Enable text to speech', help: 'Synthesize agent messages with ElevenLabs and publish the audio through voice transport.', type: 'boolean' },
-    { path: 'tts.model', label: 'Synthesis model', help: 'Choose the ElevenLabs balance of latency, language coverage, and expressiveness.', type: 'select', options: [['eleven_flash_v2_5', 'Flash v2.5'], ['eleven_flash_v2', 'Flash v2'], ['eleven_multilingual_v2', 'Multilingual v2'], ['eleven_v3', 'Eleven v3']] },
-    { path: 'tts.voice_id', label: 'ElevenLabs voice id', help: 'Stable ElevenLabs identifier of the voice used for agent speech.' },
-    { path: 'tts.voice_name', label: 'Voice display name', help: 'Human-readable voice label exposed to the participant client.' },
-    { path: 'tts.base_url', label: 'ElevenLabs base URL', help: 'Exact WebSocket service origin that receives agent message text.' }
-  ]},
+  { title: 'Communication', description: 'Choose how participants communicate in this experiment.', fields: [
+    COMMUNICATION_MODE_FIELD
+  ], speechSettings: true },
   { title: 'Prolific study and completion paths', description: 'Link this experiment to exactly one Prolific study. Create six completion paths under Prolific → Data collection → Completion paths, then copy each Prolific-generated code into its matching field. Parlando never generates completion codes. Private intake identifiers never enter exports.', fields: [
     { type: 'prolific-setup-url', label: 'URL for Prolific study setup', help: 'Copy this URL into Prolific before linking the study here. It contains Prolific placeholders and accepts participants only while this experiment is running through Prolific.' },
     { path: 'recruitment.prolific.enabled', label: 'Enable Prolific intake', help: 'Require and privately retain the PROLIFIC_PID, STUDY_ID, and SESSION_ID URL parameters.', type: 'boolean' },
@@ -1272,23 +1255,9 @@ const PARLANDO_CONFIG_SECTIONS = [
     { path: 'capacity.max_active_sessions', label: 'Maximum active sessions', help: 'Maximum sessions that have paired participants or otherwise occupy active runtime capacity.', type: 'number', min: 1 },
     { path: 'capacity.max_waiting_sessions', label: 'Maximum waiting sessions', help: 'Maximum unmatched participant sessions waiting for a compatible partner.', type: 'number', min: 1 },
     { path: 'capacity.max_unattached_participants', label: 'Maximum unattached participants', help: 'Maximum issued participant identities that have not yet joined a session.', type: 'number', min: 1 },
-    { path: 'capacity.max_transcription_streams', label: 'Maximum recognition streams', help: 'Maximum simultaneous participant audio streams sent to speech recognition.', type: 'number', min: 1 },
     { path: 'capacity.storage_reserve_megabytes', label: 'Disk reserve (MB)', help: 'Pause new session admission when available disk space falls below this reserve.', type: 'number', min: 1 }
   ]}
 ];
-
-// Returns one nested configuration value without evaluating a user-controlled expression.
-function configAt(config, path) {
-  return path.split('.').reduce((value, key) => value == null ? undefined : value[key], config);
-}
-
-// Writes one nested configuration value while preserving unedited server-owned defaults.
-function setConfigAt(config, path, value) {
-  const segments = path.split('.');
-  let target = config;
-  segments.slice(0, -1).forEach(segment => { target = target[segment] ||= {}; });
-  target[segments.at(-1)] = value;
-}
 
 // Renders the curated Parlando editor, game YAML, and write-only secret controls.
 function renderConfigurationForm(config, gameYaml = '{}\n') {
@@ -1297,7 +1266,9 @@ function renderConfigurationForm(config, gameYaml = '{}\n') {
   const sections = PARLANDO_CONFIG_SECTIONS.map(section => `
     <section class="config-group">
       <header class="config-group-copy"><h3>${escapeHtml(section.title)}</h3><p class="muted small">${escapeHtml(section.description)}</p></header>
-      <div class="config-fields">${section.fields.map(field => renderConfigField(field, config)).join('')}</div>
+      <div class="config-fields">${section.fields.map(field => renderConfigField(field, config)).join('')}
+        ${section.speechSettings ? renderSpeechSettings(config) : ''}
+      </div>
     </section>`).join('');
   configForm.innerHTML = `${activationWarning}${sections}
     <section class="config-group">
@@ -1323,6 +1294,7 @@ function renderConfigurationForm(config, gameYaml = '{}\n') {
     control.addEventListener('input', refreshDraftActivationWarning);
     control.addEventListener('change', refreshDraftActivationWarning);
   });
+  bindSpeechSettings(configForm);
   renderGameSecrets();
   refreshDraftActivationWarning();
 }
@@ -1334,19 +1306,9 @@ function renderConfigField(field, config) {
     return `<div class="config-field"><span>${escapeHtml(field.label)}</span><div class="setup-url-control"><input type="text" readonly value="${escapeHtml(value)}" aria-label="${escapeHtml(field.label)}"><button class="secondary" data-copy-prolific-setup-url type="button">${icon('copy')}Copy setup URL</button></div><span class="config-help">${escapeHtml(field.help)}</span></div>`;
   }
   const value = configAt(config, field.path);
-  const help = field.help ? `<span class="config-help">${escapeHtml(field.help)}</span>` : '';
-  let control;
   if (field.type === 'consents') return renderConsentEditor(field, Array.isArray(value) ? value : []);
   if (field.type === 'agents') return renderAgentEditor(field, value || {});
-  if (field.type === 'boolean') return `<label class="config-field config-boolean"><span class="checkbox-line"><input data-config-path="${escapeHtml(field.path)}" data-config-type="boolean" type="checkbox" ${value ? 'checked' : ''}><span>${escapeHtml(field.label)}</span></span>${help}</label>`;
-  else if (field.type === 'number') control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="number" type="number" value="${escapeHtml(value)}" ${field.min != null ? `min="${field.min}"` : ''} ${field.max != null ? `max="${field.max}"` : ''} step="${field.step || '1'}">`;
-  else if (field.type === 'optional-number') control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="optional-number" type="number" value="${escapeHtml(value ?? '')}" ${field.min != null ? `min="${field.min}"` : ''} ${field.max != null ? `max="${field.max}"` : ''} step="${field.step || '1'}">`;
-  else if (field.type === 'decimal') control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="number" type="text" inputmode="decimal" pattern="-?[0-9]+(?:\\.[0-9]+)?" value="${escapeHtml(value)}" placeholder="1.2" title="Use a decimal point, for example 1.2">`;
-  else if (field.type === 'select') control = `<select data-config-path="${escapeHtml(field.path)}" data-config-type="string">${field.options.map(([option, label]) => `<option value="${escapeHtml(option)}" ${value === option ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select>`;
-  else if (field.type === 'json') control = `<textarea data-config-path="${escapeHtml(field.path)}" data-config-type="json" rows="${field.rows || 5}" spellcheck="false">${escapeHtml(JSON.stringify(value, null, 2))}</textarea>`;
-  else if (field.type === 'completion-code') control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="string" type="text" maxlength="64" pattern="[A-Za-z0-9]*" value="${escapeHtml(value ?? '')}" autocomplete="off">`;
-  else control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="string" type="${field.type === 'url' ? 'url' : 'text'}" value="${escapeHtml(value ?? '')}">`;
-  return `<label class="config-field"><span>${escapeHtml(field.label)}</span>${control}${help}</label>`;
+  return renderStandardConfigField(field, config);
 }
 
 // Copies the inactive-safe URL template used to configure one linked Prolific study.
@@ -1608,24 +1570,10 @@ function refreshDraftActivationWarning() {
   items.textContent = state.activationIssues.join(' ');
 }
 
-// Reconstructs typed Parlando JSON while leaving game YAML and credentials separate.
+// Reconstructs Parlando JSON, retaining speech values even when Typed disables their controls.
 function configurationFromForm() {
   const config = structuredClone(state.configValue || {});
-  configForm.querySelectorAll('[data-config-path]').forEach(control => {
-    let value;
-    if (control.dataset.configType === 'boolean') value = control.checked;
-    else if (control.dataset.configType === 'optional-number') {
-      value = control.value.trim() === '' ? null : Number(control.value);
-      if (value !== null && !Number.isFinite(value)) throw new Error(`${control.dataset.configPath} must be a number`);
-    }
-    else if (control.dataset.configType === 'number') {
-      value = Number(control.value);
-      if (!Number.isFinite(value)) throw new Error(`${control.dataset.configPath} must be a number written with a decimal point`);
-    }
-    else if (control.dataset.configType === 'json') value = JSON.parse(control.value);
-    else value = control.value;
-    setConfigAt(config, control.dataset.configPath, value);
-  });
+  readConfigFields(configForm, config);
   configForm.querySelectorAll('[data-consent-editor]').forEach(editor => {
     const items = Array.from(editor.querySelectorAll('.consent-item')).map(item => ({
       id: item.querySelector('[data-consent-field="id"]').value.trim(),

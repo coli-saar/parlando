@@ -1,5 +1,5 @@
 import { ParticipantClient, type ExperimentInfo } from "@coli-saar/parlando-client";
-import { ParticipantApp, type GameSnapshot } from "@coli-saar/parlando-client/react";
+import { CommunicationWidget, ParticipantApp, type GameSnapshot } from "@coli-saar/parlando-client/react";
 
 const client = new ParticipantClient({ baseUrl: "https://study.example/e/test" });
 const experiment: Promise<ExperimentInfo> = client.getExperiment();
@@ -12,4 +12,4 @@ export function Consumer({ snapshot }: { snapshot: GameSnapshot<{ turn: number }
   );
 }
 
-export const App = () => <ParticipantApp<{ turn: number }, { type: "pass" }> renderGame={(snapshot) => <Consumer snapshot={snapshot} />} />;
+export const App = () => <ParticipantApp<{ turn: number }, { type: "pass" }> communicationPlacement="game" renderGame={(snapshot) => <><Consumer snapshot={snapshot} /><CommunicationWidget /></>} />;

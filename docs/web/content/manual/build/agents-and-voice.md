@@ -6,6 +6,8 @@ title: Attach a remote agent
 
 An agent occupies one player role. It receives that role's observations and sends the same actions a human can submit. Use a service that implements the action and observation types of the exact game build you are studying.
 
+A dialogue-aware agent implements `observe_message(sender, text)` for both communication modes. Typed messages and final speech transcripts reach the same callback. Return a message response for the participant to read in typed mode or hear when speech synthesis is configured. The experiment operator [configures communication](voice/).
+
 ## Try a Beacon Relay agent
 
 Install the [Parlando Agent SDK](https://pypi.org/project/parlando-agent-sdk/) in a Python environment.

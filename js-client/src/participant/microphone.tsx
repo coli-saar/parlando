@@ -74,7 +74,7 @@ export function VoicePreparationControls({
 
 /** @internal Reports whether the standard application should prepare voice. */
 export function isVoiceEnabled(config: ExperimentInfo | null): boolean {
-  return Boolean(config?.voice?.enabled);
+  return config?.communication.mode === "speech";
 }
 
 /** @internal Returns concrete microphone inputs, excluding the synthetic default-device alias. */

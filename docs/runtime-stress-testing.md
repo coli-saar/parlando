@@ -4,35 +4,44 @@
 game-WebSocket, and audio-WebSocket endpoints. It uses a temporary file-backed
 SQLite database and the same Ratatui dashboard as `audio-stress-tui`.
 
-The executable supports human-human and human-agent sessions. Both paths use
-participant creation, consent, room admission, one-use game and audio tickets,
-readiness, typed messages, accepted actions, and canonical PCM frames every 20
-ms. Human-human runs verify every relayed audio payload byte-for-byte.
-Human-agent runs create a session-local agent through the normal factory and
-callback lifecycle, feed human audio to deterministic local ASR, synthesize
-agent messages with deterministic local TTS, and receive the agent speech over
-the participant's real audio WebSocket. The local providers deliberately add
-small asynchronous delays but require no credentials or paid calls.
+Each run creates one experiment. Choose its communication mode with
+`--communication typed` or `--communication speech` (the default), and its
+seats with `--pairing human-human` or `--pairing human-agent`. In each
+combination the harness admits participants, opens game sockets, plays the
+bundled game, reconnects a subset of rooms, and submits a finishing move.
+
+| Communication | Human–human | Human–agent |
+| --- | --- | --- |
+| Typed | Both seats send text through the game WebSocket. The harness checks that each message reaches the intended room and partner. | The human sends a room-specific message and receives the agent's reply through the same socket. |
+| Speech | Both seats send PCM frames every 20 ms. The harness verifies relayed frames byte-for-byte. | Local recognition turns human audio into text for the agent. Local synthesis turns its replies into audio that the harness verifies on the participant's audio socket. |
+
+Typed runs require only game sockets. Speech runs start deterministic local
+provider processes and need no external credentials.
 
 Every run has four phases in fixed 1:4:3:2 proportions:
 
 | Phase | Acceptance duration | Behavior |
 | --- | ---: | --- |
 | Ramp | 1 minute | Pace admissions up to target concurrency |
-| Steady | 4 minutes | Sustain game, message, action, ASR, TTS, and audio traffic |
-| Churn | 3 minutes | Replace both WebSockets for a deterministic quarter of sessions |
+| Steady | 4 minutes | Sustain game actions and the selected communication workload |
+| Churn | 3 minutes | Reconnect the game socket for a deterministic quarter of sessions and reconnect the audio socket in speech mode |
 | Drain | 2 minutes | Stop traffic, send terminal actions, close sockets, and collect evidence |
 
 The same proportions are retained for shortened runs, so a 60-second smoke run
 uses 6/24/18/12 seconds. The minimum override is 10 seconds.
 
-Run a short non-interactive smoke test:
+Run a short typed-chat smoke test from the repository root:
 
 ```sh
-cd rust-server-tests
-cargo run --features stress-tui --bin runtime-stress -- \
-  --pairing human-agent --sessions 2 --seconds 20 --headless \
-  --output /tmp/parlando-runtime-stress
+cargo stress --communication typed --pairing human-agent \
+  --sessions 4 --seconds 20 --headless
+```
+
+To exercise the whole matrix, run the four conditions consecutively. This
+keeps each condition's traffic and measurements in its own report.
+
+```sh
+make test-runtime-communication
 ```
 
 Run the interactive dashboard with more sessions:
@@ -51,6 +60,15 @@ writes a JSON report containing the resolved workload, correctness counters,
 reconnects, ASR/TTS counts, steady-phase action latency, SQLite row
 counts, pre-checkpoint main/WAL/SHM bytes, checkpointed bytes per game, and the
 healthy concurrency lower bound established by that run.
+
+For typed runs, compare `workload.typed_messages_sent`,
+`workload.typed_messages_verified`, and `database.typed_messages`. A passing
+run reconciles all three, checks a two-way exchange in every room, and
+verifies that every game completed. In human–agent runs,
+`workload.typed_agent_replies_verified` counts replies matched to a specific
+human message. The agent's initial greeting also appears in
+`database.agent_messages`. Typed runs require zero speech events and zero
+final transcripts in SQLite.
 
 Run human-human and human-agent profiles separately on the intended host. A
 successful target is an evidence-backed lower bound for that exact fixture,
