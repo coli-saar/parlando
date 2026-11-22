@@ -1,4 +1,4 @@
 interface:
   display_name: "Generate Parlando Game"
-  short_description: "Implement and package Parlando games in Rust."
+  short_description: "Implement and package Parlando games and optional Rust agents."
   default_prompt: "Use $generate-parlando-game to implement my supplied game rules in Rust, connect the participant UI, and verify the WASM package."

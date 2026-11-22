@@ -6,6 +6,11 @@ title: Attach a remote agent
 
 An agent occupies one player role. It receives that role's observations and sends the same actions a human can submit. Use a service that implements the action and observation types of the exact game build you are studying.
 
+This page uses the Python gRPC SDK. For a Rust policy running inside the
+Parlando host, [build an agent ZIP](packages/#build-an-agent-zip) and upload
+it after the game. The [Rust policy example](https://github.com/coli-saar/parlando/blob/main/docs/agents.md#write-a-typed-rust-agent)
+plays the same Beacon starter used below.
+
 A dialogue-aware agent implements `observe_message(sender, text)` for both communication modes. Typed messages and final speech transcripts reach the same callback. Return a message response for the participant to read in typed mode or hear when speech synthesis is configured. The experiment operator [configures communication](voice/).
 
 ## Try a Beacon Relay agent

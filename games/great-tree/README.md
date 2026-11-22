@@ -21,7 +21,7 @@ experiment. The game settings give Crown to seat A by default. Set
 
 ## Build or run a headless experiment
 
-`./run.sh --build-only` builds the portable package in `dist/parlando`. The
+`./run.sh --build-only` builds the portable package in `dist/great-tree-0.1.0.zip`. The
 generic host supports human pairs and remote agents with that package. The
 project's headless launcher registers the authored agents and runs them against
 the same built component.

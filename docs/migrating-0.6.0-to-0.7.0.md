@@ -2,13 +2,35 @@
 
 Upgrade the server, game tooling and browser assets together. Version 0.7.0 runs games as WebAssembly components and makes the participant communication channel an explicit experiment setting. Preserve the old deployment and its database backup so that you can reproduce historical sessions with their original game build.
 
+## Share Rust types between games and agents
+
+Use the same `parlando-game-sdk` dependency for each executable. Existing
+games can keep importing `Game`, `GameValue` and `Role` from the crate
+root. For a local agent, import `Agent`, `Observation`, `RespondReason`
+and `Response` from `parlando_game_sdk::agent`. A policy can use the game's
+existing action and view types, or derive `GameValue` for its own compatible
+types. Export each executable separately with `parlando_game_sdk::export!`
+for a game and `parlando_game_sdk::export_agent!` for an agent. Build and
+deploy the two ZIPs independently. Upload the game before its agent and
+select the game revision after both uploads. See the [typed Rust example](agents.md#write-a-typed-rust-agent)
+and the [deployment walkthrough](agents.md#run-a-local-wasm-agent).
+
 ## Build the game and browser client
 
 Use the 0.7.0 versions of `parlando` and `@coli-saar/parlando-client`. Use matching versions of the Rust game SDK and derive crate, or the Python game and agent SDKs, wherever your project depends on them. For an unreleased candidate, use the candidate artifacts. After publication, install the coordinated versions from their registries.
 
-Start a reference project with `parlando new <game-id> --lang rust` or `--lang python`. Move game mechanics into the session-owned component. For Rust games the public `Game` trait lives in `parlando_game_sdk`. Projects using the earlier component SDK should rename `parlando-component-sdk` to `parlando-game-sdk` and replace `ComponentWire` and `ComponentDecode` with the `GameValue` derive. Build for the v4 game world. Custom Rust hosts load games with `LoadedGame`. Local agents receive `ComponentValue` observations, and Rust reward functions receive their configuration once through `configure`. See the [component interface](component-games.md) and [agent integration guide](agents.md).
+Start a reference project with `parlando new <game-id> --lang rust` or `--lang python`. Move game mechanics into the session-owned component. For Rust games the public `Game` trait lives in `parlando_game_sdk`. Projects using the earlier component SDK should rename `parlando-component-sdk` to `parlando-game-sdk` and replace `ComponentWire` and `ComponentDecode` with the `GameValue` derive. Build for the v4 game world. Custom Rust hosts load games with `LoadedGame`. Typed agents receive the view type declared by their policy, and Rust reward functions receive their configuration once through `configure`. See the [component interface](component-games.md) and [agent integration guide](agents.md).
 
-Run `parlando test`, `parlando build`, then `parlando check --manifest dist/parlando/game.yaml`. Deploy the resulting package as a fresh revision. Retain the exact component used to record each session you wish to replay. See [package a game](web/content/manual/build/packages.md).
+Run `parlando test` and `parlando build`. Pass the ZIP path printed by the build to `parlando check --package`. Deploy the resulting package as a fresh revision. Retain the exact component used to record each session you wish to replay. See [package a game](web/content/manual/build/packages.md).
+
+## Start the server and open intake
+
+Start the server with `parlando serve --store DIRECTORY`, then use `parlando
+deploy` to upload the package. Select its revision for an experiment with
+`parlando select` and use `parlando intake` when you are ready to admit
+participants. Both local pilots and shared deployments use these steps. See the
+[local pilot walkthrough](web/content/manual/start/getting-started.md#start-a-local-server)
+and [shared host guide](web/content/manual/deploy/host.md).
 
 ## Select the communication mode
 

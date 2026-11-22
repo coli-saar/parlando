@@ -23,7 +23,21 @@ impl ExperimentRunner {
         let reward = self.validate_spec(&spec)?;
         let output = PathBuf::from(&spec.output.directory);
 
-        let spec_hash = hash_serializable(&spec)?;
+        // A changed policy binary invalidates cached results even when its settings
+        // and semantic version are identical. Native and remote runs retain their identity.
+        let policy_artifacts: BTreeMap<_, _> = spec
+            .agents
+            .values()
+            .filter_map(|config| {
+                let digest = self.agent_factories.get(&config.factory)?.wasm_sha256()?;
+                Some((&config.factory, digest))
+            })
+            .collect();
+        let spec_hash = if policy_artifacts.is_empty() {
+            hash_serializable(&spec)?
+        } else {
+            hash_serializable(&(&spec, policy_artifacts))?
+        };
         let artifacts = RunArtifacts::open(
             &output,
             &self.game.id,

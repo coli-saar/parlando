@@ -19,9 +19,11 @@ use parlando::{
         build_router,
         remote_agent_pb::{
             agent_service_server::{AgentService, AgentServiceServer},
+            decision_reason::Kind as DecisionReasonKind,
             AgentResponse as PbAgentResponse, CreateAgentRequest, CreateAgentResponse,
-            FinishRequest, ObserveMessageRequest, ObserveResponse, ObserveTransitionRequest,
-            RespondRequest, RespondResponse, ShutdownRequest, ShutdownResponse, StartRequest,
+            FinishRequest, ObserveMessageRequest, ObserveRequest, ObserveResponse,
+            ObserveTransitionRequest, RespondRequest, RespondResponse, ShutdownRequest,
+            ShutdownResponse, StartRequest,
         },
         AgentsConfig, AgentsMode, AudioChunk, ConsentItemConfig, DatabaseConfig, DirectConfig,
         ExperimentConfig, ExperimentIdentityConfig, HumanVsAgentConfig, ServeOptions,
@@ -123,6 +125,7 @@ struct MockRemoteAgentState {
     create_requests: Mutex<Vec<CreateAgentRequest>>,
     start_requests: Mutex<Vec<StartRequest>>,
     respond_requests: Mutex<Vec<RespondRequest>>,
+    observe_requests: Mutex<Vec<ObserveRequest>>,
     finish_requests: Mutex<Vec<FinishRequest>>,
 }
 
@@ -154,6 +157,21 @@ impl AgentService for MockRemoteAgentService {
     ) -> std::result::Result<TonicResponse<ObserveResponse>, Status> {
         self.state
             .start_requests
+            .lock()
+            .unwrap()
+            .push(request.into_inner());
+        Ok(TonicResponse::new(ObserveResponse {
+            session_logs: Vec::new(),
+        }))
+    }
+
+    /// Receives one role-specific delivery from the host.
+    async fn observe(
+        &self,
+        request: TonicRequest<ObserveRequest>,
+    ) -> std::result::Result<TonicResponse<ObserveResponse>, Status> {
+        self.state
+            .observe_requests
             .lock()
             .unwrap()
             .push(request.into_inner());
@@ -207,6 +225,7 @@ impl AgentService for MockRemoteAgentService {
             response: Some(PbAgentResponse {
                 message: (decision_count == 1).then(|| "hello from remote grpc".to_string()),
                 action: Some(dummy_action_struct(decision_count > 1)),
+                wakeup: None,
             }),
             session_logs: Vec::new(),
         }))
@@ -852,6 +871,28 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
     assert_eq!(respond_requests[0].agent_id, "remote-agent-1");
     assert!(!respond_requests[0].available_actions_provided);
     assert!(respond_requests[0].available_actions.is_empty());
+    assert_eq!(
+        respond_requests[0].reason.as_ref().unwrap().kind(),
+        DecisionReasonKind::SessionStarted
+    );
+    assert_eq!(
+        respond_requests[1].reason.as_ref().unwrap().kind(),
+        DecisionReasonKind::AfterObservation
+    );
+    let observe_requests = remote.state.observe_requests.lock().unwrap().clone();
+    let transitions = observe_requests
+        .iter()
+        .filter_map(|request| {
+            request
+                .transition
+                .as_ref()
+                .map(|transition| (request, transition))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(transitions.len(), 2);
+    assert!(transitions
+        .iter()
+        .all(|(request, transition)| transition.actor == "B" && request.message.is_none()));
     let finish_requests = remote.state.finish_requests.lock().unwrap().clone();
     assert_eq!(finish_requests.len(), 1);
     assert_eq!(finish_requests[0].agent_id, "remote-agent-1");

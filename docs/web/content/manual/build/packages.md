@@ -4,10 +4,10 @@ title: Package a game for deployment
 
 # Package a game for deployment
 
-A deployable package is the output of `parlando build`. It contains the game rules the host executes and the files participants load in their browsers. Copy the whole `dist/parlando/` directory when moving a build to another machine.
+For the Beacon starter, `parlando build` creates **`dist/beacon-0.1.0.zip`**, a single file containing the game metadata, the WebAssembly rules, and any browser assets. The filename combines the game ID and version from the project’s `game.yaml`. After the compiler and browser logs, the final line gives the absolute path to the ZIP. Pass that file to `parlando deploy --package` or select it in the dashboard to upload the build.
 
 ```text
-dist/parlando/
+dist/beacon-0.1.0.zip
   game.yaml
   game.wasm
   client/
@@ -15,7 +15,7 @@ dist/parlando/
     assets/
 ```
 
-The built manifest declares a game ID, display name, version, and paths relative to the package directory.
+The built manifest declares a game ID, display name, version, and paths relative to the archive root.
 
 ```yaml
 id: beacon
@@ -25,17 +25,44 @@ component: game.wasm
 client_dist: client
 ```
 
-The project-level `game.yaml` points to build inputs and outputs. The manifest inside `dist/parlando/` describes the finished artifact. Pass the built manifest when you want to validate the exact package you will send.
+The project-level `game.yaml` points to build inputs and outputs. The manifest at the root of `dist/beacon-0.1.0.zip` describes the finished artifact. Pass the ZIP when you want to validate the exact package you will send.
 
 ```sh
 parlando test
 parlando build
-parlando check --manifest dist/parlando/game.yaml --json
+parlando check --package dist/beacon-0.1.0.zip --json
 ```
+
+## Build an agent ZIP
+
+An agent has its own manifest and archive. The manifest names the game it
+targets and the factory ID exported by the policy. Use `cargo_manifest` to build
+from Rust source, with `features` for any policy-specific Cargo features.
+
+```yaml
+game: counterweight-hotel
+id: counterweight_hotel.porter
+name: Hotel porter
+version: 11.0.0
+cargo_manifest: server/Cargo.toml
+features: [agent-component]
+```
+
+```sh
+parlando build --manifest agent.yaml
+parlando check --package dist/agent-counterweight_hotel.porter-11.0.0.zip
+```
+
+For a prebuilt policy, use `component: policies/porter.wasm` in place of the
+Cargo fields. The agent ZIP contains `agent.yaml` and `agent.wasm`. Deploy
+the game ZIP first, then upload the agent ZIP with the same game's upload
+credential. See [write a typed Rust agent](https://github.com/coli-saar/parlando/blob/main/docs/agents.md#write-a-typed-rust-agent)
+for a complete Beacon policy or [attach a remote agent](agents-and-voice/)
+for a separate service.
 
 ## Package identity
 
-The game ID groups releases of the same game. Set a human-readable version when you change the rules or participant experience. The host computes a **package revision** from every package path and its bytes. A JavaScript change yields a new package revision even when the mechanics component stays identical. Use the revision returned at upload when selecting a package for an experiment.
+The game ID groups releases of the same game. Set a human-readable version when you change the rules or participant experience. The host computes a **package revision** from every package path and its bytes. A change to a browser asset yields a new game package revision. Use the revision returned at upload when selecting a package for an experiment.
 
 An experiment on a shared host retains its package revision and configuration for the life of its ID. A changed package or configuration gets a fresh experiment ID. Earlier results retain their original rules and browser build.
 
@@ -43,6 +70,6 @@ An experiment on a shared host retains its package revision and configuration fo
 
 Supply a WebAssembly component exporting the `game` world of `parlando:game@4.0.0`, with no host imports. A raw core WASM module needs to be wrapped as a component before Parlando can load it. The component provides the schema, initialization, action and recovery operations defined by that world. Rust and Python starter builds already provide these exports.
 
-Supply browser files with a production `index.html` and relative asset URLs. A headless-only package can omit `client_dist`. Keep participant assets under their declared directory and reserve `api`, `ws`, `admin`, and `health` for the host. Include only generated runtime files. Deployment accepts the manifest, the mechanics component, and declared browser assets.
+Supply browser files with a production `index.html` and relative asset URLs. A headless-only package can omit `client_dist`. Keep participant assets under their declared directory and reserve `api`, `ws`, `admin`, and `health` for the host. Include only generated runtime files. A game ZIP contains its manifest, game component, and declared browser assets.
 
 [Deploy the built package](../deploy/) after the exact artifact passes the loader check.

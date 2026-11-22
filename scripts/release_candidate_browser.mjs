@@ -95,4 +95,39 @@ async function play(url) {
   }
 }
 
-await play(process.argv[2]);
+/** Plays one human seat and checks that the installed policy supplies the partner's pulses. */
+async function playAgent(url) {
+  const browser = await chromium.launch();
+  try {
+    const page = await enter(browser, url);
+    await expect(page.getByRole("heading", { name: "Beacon Relay" })).toBeVisible();
+    await expectTypedControls(page);
+    const charge = page.getByRole("progressbar");
+    const pulse = page.getByRole("button", { name: "Add one tick" });
+    const target = Number(await charge.getAttribute("max"));
+    expect([4, 5, 6]).toContain(target);
+    await expect(charge).toHaveAttribute("value", "0");
+    for (let before = 0; before < target; before += 2) {
+      await expect(pulse).toBeEnabled();
+      await pulse.click();
+      if (before + 2 < target) {
+        // Only one human action was sent. The second tick must come from seat B.
+        await expect(charge).toHaveAttribute("value", String(before + 2));
+      }
+      if (before === 0) {
+        const conversation = page.getByRole("list", { name: "Text conversation" });
+        await expect(conversation.getByText("One tick from the Beacon partner.", { exact: true })).toHaveCount(1);
+      }
+    }
+    await expect(page.getByText(`Beacon activated at ${target} ticks.`)).toBeVisible();
+    await expectTypedControls(page);
+  } finally {
+    await browser.close();
+  }
+}
+
+if (process.argv.includes("--agent")) {
+  await playAgent(process.argv[2]);
+} else {
+  await play(process.argv[2]);
+}

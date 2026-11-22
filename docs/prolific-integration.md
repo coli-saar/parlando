@@ -42,7 +42,7 @@ codes must be present and distinct.
 
 ## Configure a single-game installation
 
-Use this workflow on a game served with `parlando serve`. The shared host's dashboard does not provision Prolific credentials.
+Use a custom single-game host built with the Rust `Server` API for this workflow. The deployment host started with `parlando serve` has no dashboard for provisioning Prolific credentials.
 
 An administrator configures two installation-level values in the Parlando dashboard:
 

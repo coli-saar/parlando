@@ -16,16 +16,21 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-async-trait = { version = "0.1", optional = true }
 clap = { version = "4", features = ["derive", "env"], optional = true }
 parlando = { path = "../../../rust-server", optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 [features]
-bundled-agents = ["dep:async-trait", "dep:clap", "dep:parlando", "dep:tokio", "dep:tracing-subscriber"]
+agent-component = []
+bundled-agents = ["dep:clap", "dep:parlando", "dep:tokio", "dep:tracing-subscriber"]
 
 [[bin]]
 name = "counterweight-hotel-with-agents"
 path = "src/bin/with_agents.rs"
+required-features = ["bundled-agents"]
+
+[[bin]]
+name = "counterweight-hotel-headless"
+path = "src/bin/headless.rs"
 required-features = ["bundled-agents"]

@@ -307,13 +307,9 @@ impl MemoryState {
 pub(super) enum AgentObservation {
     /// Starts decision processing after the session's activation has been committed.
     Activated,
-    /// Accepted action plus role-specific state snapshot after the action.
-    Action {
-        actor: PlayerRole,
-        action: ComponentValue,
-        resulting_observation: ComponentValue,
+    /// One committed role-specific delivery with any terminal result.
+    Delivery {
+        observation: crate::agent::Observation,
         completion: Option<ComponentValue>,
     },
-    /// Conversation message with its sender role.
-    Message { speaker: PlayerRole, text: String },
 }

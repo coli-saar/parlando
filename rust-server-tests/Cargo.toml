@@ -13,6 +13,7 @@ async-trait = "0.1"
 axum = { version = "0.7", features = ["ws", "macros"] }
 futures-util = "0.3"
 base64 = "0.22"
+zip = { version = "7.4", default-features = false }
 chrono = "0.4"
 libc = "0.2"
 parlando = { path = "../rust-server", features = ["internal-tools"] }

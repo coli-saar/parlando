@@ -321,3 +321,77 @@ async fn agent_runtime_stops_invalid_agents_cleanly() {
     }));
     server.abort();
 }
+
+/// A live agent can request a one-shot decision without waiting for participant input.
+#[tokio::test]
+async fn agent_runtime_delivers_a_one_shot_wakeup() {
+    use crate::agent::{Decision, Reason, WakeupRequest};
+
+    struct WakeupAgent;
+
+    #[async_trait]
+    impl Agent for WakeupAgent {
+        /// Requests one timer and emits a chat message when it fires.
+        async fn decide(&mut self, reason: Reason) -> Result<Decision> {
+            match reason {
+                Reason::SessionStarted => Ok(Decision {
+                    wakeup: Some(WakeupRequest::After(Duration::from_millis(10))),
+                    ..Decision::default()
+                }),
+                Reason::WakeupDue => Ok(Decision {
+                    message: Some("woke up".to_owned()),
+                    ..Decision::default()
+                }),
+                reason => panic!("unexpected decision reason: {reason:?}"),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl AgentFactory for WakeupAgent {
+        /// Describes the timer fixture without additional options.
+        fn definition(&self) -> AgentDefinition {
+            test_agent_definition()
+        }
+
+        /// Creates one timer fixture for the session.
+        async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent + Send>> {
+            Ok(Box::new(WakeupAgent))
+        }
+
+        /// Returns stable timer fixture provenance.
+        fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
+            test_agent_identity()
+        }
+    }
+
+    let router = build_router(
+        live_game(),
+        human_vs_agent_config(),
+        ServeOptions {
+            agent_factory: Some(Arc::new(WakeupAgent)),
+            ..ServeOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    let (human, room) = create_human_vs_agent_room(router.clone(), "Human").await;
+    let (base_url, server) = spawn_test_server(router.clone()).await;
+    let (mut socket, _) = connect_async(game_socket_url(&router, &base_url, &room, &human).await)
+        .await
+        .unwrap();
+    let _ = read_participant_state(&mut socket, "active").await;
+    let _ = tokio::time::timeout(Duration::from_secs(1), read_ws_type(&mut socket, "message"))
+        .await
+        .expect("the timer must generate a message without participant activity");
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(80),
+            read_ws_type(&mut socket, "message")
+        )
+        .await
+        .is_err(),
+        "the timer must fire only once"
+    );
+    server.abort();
+}

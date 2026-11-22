@@ -87,6 +87,7 @@ impl ResolvedSeat {
     pub(super) fn result_identity(&self) -> ResultAgent {
         ResultAgent {
             key: self.name.clone(),
+            wasm_sha256: self.factory.wasm_sha256().map(str::to_owned),
             factory: self.factory_id.clone(),
             name: self.identity.name.clone(),
             version: self.identity.version.clone(),

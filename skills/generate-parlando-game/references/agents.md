@@ -1,30 +1,100 @@
 # Agent integration
 
-Build the requested policy against the action and observation types of the
-game package it will play. An agent occupies one seat and receives that
-seat's view. Keep the policy in its own per-session instance. Use the latest
-observation delivered by `start` or `observe_transition` in `respond`.
-Returned actions go through the game's normal validation.
+An agent controls one seat and receives the same role-private view and shared
+completion as a participant. Use the game's accepted actions and the other
+player's messages as policy inputs. Keep private policy state per session and
+use the recorded seed for reproducible choices. The game validates every
+proposed action.
 
-Implement `observe_message(sender, text)` for policies that respond to dialogue. The server delivers typed messages and finalized speech transcripts through this callback. Return text replies in either mode. The experiment owns speech recognition and synthesis.
+## Write a typed Rust policy
 
-For a shared host, run the agent as a remote gRPC service and select
-`remote_grpc` in the experiment configuration. Use the public
-`parlando_agent_sdk` Python API for a Python service and follow the
+Use the same `parlando-game-sdk` dependency as the game. Share the game's
+Rust action, view and completion definitions, with `GameValue` derived for
+the compact payloads. Against a non-Rust game, declare equivalent Rust types
+with the same compact layouts. Import `Role` and the derive from
+`parlando_game_sdk`, and import the policy API from
+`parlando_game_sdk::agent`.
+
+Implement `Agent` with `#[parlando_game_sdk::agent::async_trait]` and
+declare `Config`, `Action`, `View` and `Completion`. Declare the policy ID,
+name, implementation version and configuration fields in `definition`.
+The ID and name must match the agent package manifest. The implementation
+version identifies the policy. The manifest version identifies the archive
+release.
+
+- Construct one fresh policy in `init(InitContext)` using the typed settings,
+  assigned role and recorded seed. Use `start` to receive the initial view.
+- In `observe`, handle the optional accepted transition before the optional
+  partner message. A transition carries the actor, action and this seat's
+  resulting view. Use `LazyView<T>` only when the policy can ignore complete
+  views on some transitions, and call `decode()` on the branches that use them.
+- Implement `respond(RespondReason)` using `Response::action`,
+  `Response::message`, `Response::action_and_message` or
+  `Response::default()` to yield. When a response includes a move and text,
+  the runtime sends the message only after it accepts the move. The live
+  runtime can deliver chat text or finalized speech transcripts and can
+  schedule a wakeup requested with `wake_after`. For headless experiments,
+  let the experiment schedule supply decisions and return no wakeup request.
+- Use `finish` for terminal completion and `shutdown` to release resources.
+
+In the policy's Rust `cdylib` crate, invoke
+`parlando_game_sdk::agent::export_agent!(Policy)` at crate root. When the
+policy and mechanics share a crate, use a project feature to select one export
+per build. A separate agent crate needs no SDK feature. The import-free WASM
+callback must complete in one poll. Use the remote gRPC option for network
+inference or other work that needs an asynchronous service.
+
+## Build and exercise separate archives
+
+Create `agent.yaml` next to the project. Use the target game's ID and the
+policy's own stable ID, display name and semantic archive version:
+
+```yaml
+game: last-screening
+id: last_screening.operator
+name: Screening partner
+version: 1.0.0
+cargo_manifest: server/Cargo.toml
+features: [agent-component]
+```
+
+The example uses a feature because the game and policy share this crate.
+Omit `features` for an independent policy crate without a feature gate. For
+an existing WASM component, use `component: path/to/agent.wasm` instead of
+the Cargo fields. Paths resolve relative to the manifest.
+
+Run native policy tests and build the independent agent ZIP. The exact
+native test features are defined by the project:
+
+```sh
+cargo test --manifest-path server/Cargo.toml --features agent-component --lib
+parlando build --manifest agent.yaml
+parlando check --package dist/agent-last_screening.operator-1.0.0.zip
+```
+
+The archive check validates the agent component interface and its declared
+identity. Exercise compatibility and behavior by configuring both seats with
+the intended factory IDs and running a seeded headless experiment:
+
+```sh
+parlando run experiment.yaml --package dist/last-screening-0.1.0.zip \
+  --agent dist/agent-last_screening.operator-1.0.0.zip
+```
+
+Check completed sessions, accepted and rejected actions, message order and
+terminal outcomes. Use a full trace when verifying parity across native and
+WASM execution. For a live pilot, test the relevant role, dialogue and
+presentation timing in the browser. Upload the game ZIP first and the agent
+ZIP separately, then pin the intended revisions through experiment selection.
+See [deployment](config-deployment.md) for the package and authority workflow.
+
+## Use a remote gRPC service
+
+For a policy running in an independent process, select `remote_grpc` and
+configure its endpoint and settings in the experiment. The Python service can
+use the public `parlando_agent_sdk` package. It receives transitions and
+partner messages through `observe_transition` and `observe_message`.
+Use `Response.action_with_message` for a move with text, and return `None`
+to yield. Keep model-provider credentials in the agent process. Follow the
 [remote-agent guide](https://coli-saar.github.io/parlando/manual/build/agents-and-voice/)
-for the endpoint configuration and transport authentication. Model-provider
-secrets stay in the agent process. Keep agent settings compatible with the
-selected game package. Use `Response.action_with_message` to send both a
-move and dialogue in a single Python response.
-
-For an explicitly requested in-process Rust policy, use the public
-`parlando::agent::Agent` and `Factory` APIs with a custom host that loads
-the same game component. The Rust response constructors are
-`Response::action`, `Response::message`, and
-`Response::action_and_message`. In either integration, return no response
-when the policy declines to act, and release per-session resources in
-`shutdown` as needed.
-
-Test the agent against the pinned game interface. Use
-[`parlando run`](https://coli-saar.github.io/parlando/manual/build/agent-agent/)
-for agent-only evaluations when those are requested.
+for endpoint authentication and service setup.

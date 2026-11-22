@@ -18,24 +18,36 @@ use anyhow::{bail, ensure, Context, Result};
 use axum::{
     body::to_bytes,
     extract::{Path as RoutePath, Request, State},
-    http::{header::AUTHORIZATION, HeaderMap, StatusCode},
+    http::{
+        header::{AUTHORIZATION, CONTENT_TYPE},
+        HeaderMap, StatusCode,
+    },
     response::Response,
     routing::{get, put},
     Json, Router,
 };
 use fs2::FileExt;
-use package::{validate_id, validate_revision, PackageManifest, Upload, UPLOAD_LIMIT};
+use package::{
+    validate_id, validate_revision, AgentManifest, Package, PackageManifest, UPLOAD_LIMIT,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 use tower::ServiceExt;
 
-pub use package::Deployment;
+pub use package::{
+    check_agent_package, check_archive, is_agent_package, load_agent_package, validate_agent_id,
+    write_agent_archive, write_package_archive, Deployment,
+};
 
-use crate::component::WasmMetering;
+use crate::{
+    component::{LoadedGame, WasmMetering},
+    GameMetadata,
+};
 
+const PACKAGE_CONTENT_TYPE: &str = "application/zip";
 const CONTROL_LIMIT: usize = 256 * 1024;
 
 /// Names the storage and authority configuration of one long-running deployment host.
@@ -46,8 +58,8 @@ pub struct HostOptions {
     pub public_url: String,
     /// Independent upload tokens indexed by the exact game ID each token may publish.
     pub grants: BTreeMap<String, String>,
-    /// Operator credential for pinning releases and operating experiments.
-    pub admin_token: String,
+    /// Optional operator bearer credential. Omit it to disable bearer-authorized experiment management.
+    pub admin_token: Option<String>,
 }
 
 /// Host-owned experiment settings bound to one exact package revision.
@@ -62,7 +74,23 @@ pub struct ExperimentSelection {
     pub config: Value,
 }
 
+/// Immutable agent package revisions offered when this game experiment was selected.
+type AgentPins = BTreeMap<String, String>;
+
+/// Each installed game revision has its own catalog of compatible local agents.
+type AgentCatalog = BTreeMap<String, AgentPins>;
+
+/// Persists the exact local policies alongside the operator's game selection.
+#[derive(Deserialize, Serialize)]
+struct StoredSelection {
+    #[serde(flatten)]
+    selection: ExperimentSelection,
+    #[serde(default)]
+    agents: AgentPins,
+}
+
 struct HostedExperiment {
+    agents: AgentPins,
     selection: ExperimentSelection,
     participant: Router,
     admin: Router,
@@ -74,10 +102,11 @@ struct Host {
     store: PathBuf,
     public_url: String,
     grants: BTreeMap<String, [u8; 32]>,
-    admin_token: [u8; 32],
+    admin_token: Option<[u8; 32]>,
     dashboard: Option<dashboard::Dashboard>,
     experiments: RwLock<HashMap<String, HostedExperiment>>,
     selection_lock: Mutex<()>,
+    agent_install: Arc<Mutex<()>>,
     uploads: Arc<Semaphore>,
     _store_lock: File,
 }
@@ -110,20 +139,84 @@ pub async fn serve_configured(
     admin_url: Option<String>,
     wasm_metering: WasmMetering,
 ) -> Result<()> {
-    let public_url = checked_origin(&options.public_url)?;
+    let listener = tokio::net::TcpListener::bind(address).await?;
+    serve_on_listener(listener, options, admin_url, wasm_metering, || {}).await
+}
+
+/// Serves a deployment host on an already bound TCP listener. This allows callers to use
+/// the assigned port in public URLs. The readiness callback runs once after configuration
+/// and stored experiments have loaded, immediately before the server begins accepting requests.
+pub async fn serve_on_listener(
+    listener: tokio::net::TcpListener,
+    options: HostOptions,
+    admin_url: Option<String>,
+    wasm_metering: WasmMetering,
+    on_ready: impl FnOnce(),
+) -> Result<()> {
+    run_host(listener, options, admin_url, false, wasm_metering, |_| {
+        on_ready()
+    })
+    .await
+}
+
+/// Starts the local administrator dashboard on a loopback listener. The administrator origin
+/// must be localhost on the listener's assigned port. On an empty account store, the readiness
+/// callback receives a private, per-process token for creating the first operator. Otherwise it
+/// receives None and existing accounts can sign in. The token is intended for the local terminal.
+pub async fn serve_local_dashboard_on_listener(
+    listener: tokio::net::TcpListener,
+    options: HostOptions,
+    admin_url: String,
+    wasm_metering: WasmMetering,
+    on_ready: impl FnOnce(Option<&str>),
+) -> Result<()> {
+    let bind = listener.local_addr()?;
     ensure!(
-        !options.grants.is_empty() || admin_url.is_some(),
-        "configure a game upload grant or an administrator origin"
+        bind.ip().is_loopback(),
+        "local dashboard setup requires a loopback listener"
     );
-    validate_token(&options.admin_token)?;
-    let admin_token = token_digest(&options.admin_token);
+    ensure!(
+        checked_origin(&admin_url)?
+            == checked_origin(&format!("http://localhost:{}", bind.port()))?
+            && checked_origin(&options.public_url)? == checked_origin(&format!("http://{bind}"))?,
+        "local dashboard setup requires local administrator and participant origins"
+    );
+    run_host(
+        listener,
+        options,
+        Some(admin_url),
+        true,
+        wasm_metering,
+        on_ready,
+    )
+    .await
+}
+
+/// Restores a store and signals readiness once the requested serving mode is fully initialized.
+async fn run_host(
+    listener: tokio::net::TcpListener,
+    options: HostOptions,
+    admin_url: Option<String>,
+    local_setup: bool,
+    wasm_metering: WasmMetering,
+    on_ready: impl FnOnce(Option<&str>),
+) -> Result<()> {
+    let public_url = checked_origin(&options.public_url)?;
+    let admin_token = options
+        .admin_token
+        .as_deref()
+        .map(|token| -> Result<_> {
+            validate_token(token)?;
+            Ok(token_digest(token))
+        })
+        .transpose()?;
     let mut grants = BTreeMap::new();
     for (game, token) in options.grants {
         validate_id(&game)?;
         validate_token(&token)?;
         let digest = token_digest(&token);
         ensure!(
-            digest != admin_token && !grants.values().any(|value| *value == digest),
+            Some(digest) != admin_token && !grants.values().any(|value| *value == digest),
             "operator and game upload tokens must all be distinct"
         );
         grants.insert(game, digest);
@@ -136,9 +229,13 @@ pub async fn serve_configured(
         .write(true)
         .open(store.join(".host.lock"))?;
     FileExt::try_lock_exclusive(&lock).context("another deployment host is using this store")?;
-    let dashboard = match admin_url {
+    let mut dashboard = match admin_url {
         Some(origin) => Some(dashboard::Dashboard::open(&store, &public_url, &origin).await?),
         None => None,
+    };
+    let setup_token = match dashboard.as_mut() {
+        Some(dashboard) if local_setup => dashboard.enable_local_setup().await?,
+        _ => None,
     };
     let mut host = Host {
         wasm_metering,
@@ -149,19 +246,22 @@ pub async fn serve_configured(
         dashboard,
         experiments: RwLock::new(HashMap::new()),
         selection_lock: Mutex::new(()),
+        agent_install: Arc::new(Mutex::new(())),
         uploads: Arc::new(Semaphore::new(2)),
         _store_lock: lock,
     };
     host.load_experiments().await?;
     let router = Router::new()
         .route("/health", get(|| async { Json(json!({"status":"ok"})) }))
+        .route("/api/hosting/packages", put(dashboard_upload))
         .route("/api/hosting/packages/:game", put(upload))
         .route("/api/hosting/experiments/:id", put(select_experiment))
         .merge(dashboard::routes())
         .fallback(dispatch)
         .with_state(Arc::new(host));
-    let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(address = %listener.local_addr()?, "started Parlando deployment host");
+    on_ready(setup_token.as_deref());
+    drop(setup_token);
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
@@ -187,9 +287,9 @@ impl Host {
                 .file_stem()
                 .and_then(|stem| stem.to_str())
                 .context("invalid stored selection filename")?;
-            let selection = serde_json::from_slice(&fs::read(&path)?)?;
+            let stored: StoredSelection = serde_json::from_slice(&fs::read(&path)?)?;
             let experiment = self
-                .build_experiment(id, selection)
+                .build_experiment(id, stored.selection, Some(stored.agents))
                 .await
                 .with_context(|| format!("restoring hosted experiment {id}"))?;
             self.experiments.get_mut().insert(id.to_owned(), experiment);
@@ -202,6 +302,7 @@ impl Host {
         &self,
         id: &str,
         selection: ExperimentSelection,
+        pinned: Option<AgentPins>,
     ) -> Result<HostedExperiment> {
         validate_id(id)?;
         validate_id(&selection.game)?;
@@ -215,12 +316,40 @@ impl Host {
             .join(&selection.revision);
         let revision = selection.revision.clone();
         let metering = self.wasm_metering;
-        let (loaded_game, metadata, client_dist) = tokio::task::spawn_blocking(move || {
-            let manifest = PackageManifest::read(&directory).context("opening selected package")?;
-            let (loaded_game, metadata) = manifest.load(&directory, &revision, metering)?;
-            Ok::<_, anyhow::Error>((loaded_game, metadata, manifest.client(&directory)))
-        })
-        .await??;
+        let store = self.store.clone();
+        let game_id = selection.game.clone();
+        let (loaded_game, metadata, agents, pins, client_dist) =
+            tokio::task::spawn_blocking(move || {
+                let manifest =
+                    PackageManifest::read(&directory).context("opening selected package")?;
+                let (loaded_game, metadata) = manifest.load(&directory, &revision, metering)?;
+                let pins = match pinned {
+                    Some(pins) => pins,
+                    None => read_agent_catalog(&store, &game_id)?
+                        .remove(&revision)
+                        .unwrap_or_default(),
+                };
+                let mut factories = Vec::with_capacity(pins.len());
+                for (id, digest) in &pins {
+                    package::validate_agent_id(id)?;
+                    validate_revision(digest)?;
+                    let path = store.join("agents").join(&game_id).join(id).join(digest);
+                    factories.push(AgentManifest::read(&path)?.load(
+                        &path,
+                        &loaded_game,
+                        &game_id,
+                        metering,
+                    )?);
+                }
+                Ok::<_, anyhow::Error>((
+                    loaded_game,
+                    metadata,
+                    factories,
+                    pins,
+                    manifest.client(&directory),
+                ))
+            })
+            .await??;
         ensure!(
             metadata.id == selection.game,
             "selected package has the wrong game ID"
@@ -242,8 +371,9 @@ impl Host {
         config.server.public_base_url = format!("{}/e/{id}", self.public_url);
         config.server.client_dist_path = client_dist;
         let (participant, admin, state) =
-            crate::app::build_deployed_experiment(loaded_game, config, metadata).await?;
+            crate::app::build_deployed_experiment(loaded_game, config, metadata, agents).await?;
         Ok(HostedExperiment {
+            agents: pins,
             selection,
             participant,
             admin,
@@ -265,18 +395,54 @@ async fn upload(
     .await?;
     validate_id(&game).map_err(bad_request)?;
     let request = Request::from_parts(parts, body);
-    dashboard::audited(
-        &host,
-        &actor,
-        "upload",
-        &game,
-        install_upload(&host, &game, request),
-    )
+    dashboard::audited(&host, &actor, "upload", &game, async {
+        let (package, permit) = read_upload(&host, request).await?;
+        if package.game() != game {
+            return Err(bad_request("package game ID does not match upload scope"));
+        }
+        install_upload(&host, package, permit).await
+    })
     .await
 }
 
-/// Bounds the upload body and installs the validated package off the request executor.
-async fn install_upload(host: &Host, game: &str, request: Request) -> HttpResult<Json<Deployment>> {
+/// Authorizes a dashboard session and installs the archive in its declared game scope.
+async fn dashboard_upload(
+    State(host): State<Arc<Host>>,
+    request: Request,
+) -> HttpResult<Json<Deployment>> {
+    let (parts, body) = request.into_parts();
+    let actor = dashboard::authorize(&host, &parts, None, String::new).await?;
+    match read_upload(&host, Request::from_parts(parts, body)).await {
+        Ok((package, permit)) => {
+            let game = package.game().to_owned();
+            dashboard::audited(
+                &host,
+                &actor,
+                "upload",
+                &game,
+                install_upload(&host, package, permit),
+            )
+            .await
+        }
+        Err(error) => {
+            dashboard::audited(&host, &actor, "upload", "packages", async { Err(error) }).await
+        }
+    }
+}
+
+/// Bounds upload time, wire size, and concurrent decoding before handing a package to installation.
+async fn read_upload(host: &Host, request: Request) -> HttpResult<(Package, OwnedSemaphorePermit)> {
+    if request
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_none_or(|value| !value.eq_ignore_ascii_case(PACKAGE_CONTENT_TYPE))
+    {
+        return Err((
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "upload must have content type application/zip".to_owned(),
+        ));
+    }
     let permit = host.uploads.clone().try_acquire_owned().map_err(|_| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -295,13 +461,33 @@ async fn install_upload(host: &Host, game: &str, request: Request) -> HttpResult
             "upload exceeds body limit or is incomplete".to_owned(),
         )
     })?;
+    tokio::task::spawn_blocking(move || -> Result<_> { Ok((Package::decode(&bytes)?, permit)) })
+        .await
+        .map_err(internal)?
+        .map_err(bad_request)
+}
+
+/// Installs the validated package off the request executor while holding its concurrency slot.
+async fn install_upload(
+    host: &Host,
+    package: Package,
+    permit: OwnedSemaphorePermit,
+) -> HttpResult<Json<Deployment>> {
     let dir = host.store.clone();
     let metering = host.wasm_metering;
-    let game = game.to_owned();
+    // Concurrent updates to one catalog must preserve every installed factory.
+    let catalog_guard = if package.agent_id().is_some() {
+        Some(host.agent_install.clone().lock_owned().await)
+    } else {
+        None
+    };
     let receipt = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let upload: Upload = serde_json::from_slice(&bytes).context("invalid package envelope")?;
-        upload.install(&dir, &game, metering)
+        let _catalog_guard = catalog_guard;
+        if package.agent_id().is_some() {
+            return install_agent_for_game(&dir, package, metering);
+        }
+        package.install(&dir, metering)
     })
     .await
     .map_err(internal)?
@@ -316,7 +502,7 @@ async fn select_experiment(
     request: Request,
 ) -> HttpResult<Json<Value>> {
     let (parts, body) = request.into_parts();
-    let actor = dashboard::authorize(&host, &parts, Some(&host.admin_token), || {
+    let actor = dashboard::authorize(&host, &parts, host.admin_token.as_ref(), || {
         "host-operator-token".into()
     })
     .await?;
@@ -373,10 +559,18 @@ async fn pin_experiment(host: Arc<Host>, id: String, request: Request) -> HttpRe
             return Ok(());
         }
         let experiment = host
-            .build_experiment(&experiment_id, selection)
+            .build_experiment(&experiment_id, selection, None)
             .await
             .map_err(bad_request)?;
-        persist_selection(&host.store, &experiment_id, &experiment.selection).map_err(internal)?;
+        persist_json(
+            &host.store.join("selections"),
+            &experiment_id,
+            &StoredSelection {
+                selection: experiment.selection.clone(),
+                agents: experiment.agents.clone(),
+            },
+        )
+        .map_err(internal)?;
         host.experiments
             .write()
             .await
@@ -422,7 +616,7 @@ async fn dispatch(State(host): State<Arc<Host>>, request: Request) -> HttpResult
     };
     let actor = if admin {
         Some(
-            dashboard::authorize(&host, &parts, Some(&host.admin_token), || {
+            dashboard::authorize(&host, &parts, host.admin_token.as_ref(), || {
                 "host-operator-token".into()
             })
             .await?,
@@ -467,11 +661,80 @@ async fn dispatch(State(host): State<Arc<Host>>, request: Request) -> HttpResult
     }
 }
 
-/// Writes an operator selection atomically so startup never sees a half-written experiment.
-fn persist_selection(store: &Path, id: &str, selection: &ExperimentSelection) -> Result<()> {
+/// Reads the compatible agents that can be pinned for new experiments on this game.
+fn read_agent_catalog(store: &Path, game: &str) -> Result<AgentCatalog> {
+    let path = store.join("agent-catalog").join(format!("{game}.json"));
+    match fs::read(&path) {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(AgentCatalog::new()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Binds an independent policy to compatible installed revisions before publishing it.
+/// A retry can also bind the same artifact to a game revision deployed since its last upload.
+fn install_agent_for_game(
+    store: &Path,
+    package: Package,
+    metering: WasmMetering,
+) -> Result<Deployment> {
+    let game = package.game().to_owned();
+    let id = package
+        .agent_id()
+        .context("expected an agent ZIP")?
+        .to_owned();
+    let revisions = store.join("packages").join(&game);
+    ensure!(
+        revisions.is_dir(),
+        "deploy game {game:?} before deploying its agents"
+    );
+    let digest = package.revision();
+    let mut catalog = read_agent_catalog(store, &game)?;
+    let mut compatible = None;
+    let mut matched = false;
+    let mut mismatch = None;
+    for entry in fs::read_dir(revisions)? {
+        let entry = entry?;
+        let revision = entry.file_name().to_string_lossy().into_owned();
+        if validate_revision(&revision).is_err() || !entry.file_type()?.is_dir() {
+            continue;
+        }
+        if catalog.get(&revision).and_then(|pins| pins.get(&id)) == Some(&digest) {
+            matched = true;
+            continue;
+        }
+        let path = entry.path();
+        let (loaded, _) = PackageManifest::read(&path)?.load(&path, &revision, metering)?;
+        let check = match &compatible {
+            Some(check) => check,
+            None => compatible.insert(package.agent_compatibility(metering)?),
+        };
+        match check(&loaded) {
+            Ok(_) => {
+                catalog
+                    .entry(revision)
+                    .or_default()
+                    .insert(id.clone(), digest.clone());
+                matched = true;
+            }
+            Err(err) => mismatch = Some(err),
+        }
+    }
+    if !matched {
+        return Err(mismatch
+            .unwrap_or_else(|| anyhow::anyhow!("no installed revision of {game:?}"))
+            .context("agent is incompatible with the deployed game"));
+    }
+    let receipt = package.install_agent(store)?;
+    persist_json(&store.join("agent-catalog"), &game, &catalog)?;
+    Ok(receipt)
+}
+
+/// Publishes a complete selection or catalog so a restart always observes a consistent document.
+fn persist_json(directory: &Path, id: &str, value: &impl Serialize) -> Result<()> {
     use std::io::Write as _;
 
-    let directory = store.join("selections");
+    fs::create_dir_all(directory)?;
     let temporary = directory.join(format!(".selection-{}", uuid::Uuid::new_v4()));
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
@@ -479,7 +742,7 @@ fn persist_selection(store: &Path, id: &str, selection: &ExperimentSelection) ->
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     let result = (|| -> Result<()> {
         let mut file = options.open(&temporary)?;
-        serde_json::to_writer(&mut file, selection)?;
+        serde_json::to_writer(&mut file, value)?;
         file.flush()?;
         file.sync_all()?;
         fs::rename(&temporary, directory.join(format!("{id}.json")))?;
@@ -492,19 +755,34 @@ fn persist_selection(store: &Path, id: &str, selection: &ExperimentSelection) ->
     result
 }
 
-/// Sends a built package using a game-scoped upload token to an HTTPS host.
-pub async fn deploy(host: &str, directory: &Path, token: &str) -> Result<Deployment> {
-    let manifest = PackageManifest::read(directory)?;
-    let game = manifest.id();
-    let payload = Upload::read(directory, &manifest)?;
-    control_request(
-        host,
-        "PUT",
-        &format!("packages/{game}"),
-        token,
-        Some(&payload),
-    )
-    .await
+/// Validates a built game ZIP and sends its original bytes with a game-scoped upload token.
+/// This registers the immutable revision on a deployment host without selecting an experiment.
+pub async fn deploy(host: &str, archive: &Path, token: &str) -> Result<Deployment> {
+    deploy_archive(host, archive, |_| Ok(token.to_owned())).await
+}
+
+/// Looks up the saved upload credential for the manifest in a built ZIP and deploys that archive.
+/// The game ID used for credential resolution is read from the same ZIP bytes that are sent.
+pub async fn deploy_with_saved_credentials(host: &str, archive: &Path) -> Result<Deployment> {
+    deploy_archive(host, archive, |game| credentials::upload_token(host, game)).await
+}
+
+/// Authenticates for the game declared in the checked archive, then sends its original ZIP bytes.
+async fn deploy_archive(
+    host: &str,
+    archive: &Path,
+    token: impl FnOnce(&str) -> Result<String>,
+) -> Result<Deployment> {
+    let path = archive.to_owned();
+    let (game, bytes) = tokio::task::spawn_blocking(move || -> Result<_> {
+        let (package, bytes) = Package::read_archive(&path)?;
+        Ok((package.game().to_owned(), bytes))
+    })
+    .await??;
+    let request = management_request(host, "PUT", &format!("packages/{game}"), &token(&game)?)?
+        .header(CONTENT_TYPE, PACKAGE_CONTENT_TYPE)
+        .body(bytes);
+    management_response(request).await
 }
 
 /// Calls a host management route without forwarding credentials to redirect targets.
@@ -515,6 +793,20 @@ pub async fn control_request<T: Serialize + ?Sized, R: serde::de::DeserializeOwn
     token: &str,
     body: Option<&T>,
 ) -> Result<R> {
+    let mut request = management_request(host, method, path, token)?;
+    if let Some(body) = body {
+        request = request.json(body);
+    }
+    management_response(request).await
+}
+
+/// Applies the shared origin, credential, redirect, and timeout rules for management requests.
+fn management_request(
+    host: &str,
+    method: &str,
+    path: &str,
+    token: &str,
+) -> Result<reqwest::RequestBuilder> {
     validate_token(token)?;
     let host = checked_origin(host)?;
     let client = reqwest::Client::builder()
@@ -523,10 +815,13 @@ pub async fn control_request<T: Serialize + ?Sized, R: serde::de::DeserializeOwn
         .timeout(Duration::from_secs(180))
         .build()?;
     let url = format!("{host}/api/hosting/{path}");
-    let mut request = client.request(method.parse()?, url).bearer_auth(token);
-    if let Some(body) = body {
-        request = request.json(body);
-    }
+    Ok(client.request(method.parse()?, url).bearer_auth(token))
+}
+
+/// Decodes a management receipt or reports a host rejection with its status and detail.
+async fn management_response<R: serde::de::DeserializeOwned>(
+    request: reqwest::RequestBuilder,
+) -> Result<R> {
     let response = request.send().await?;
     let status = response.status();
     if !status.is_success() {
@@ -541,9 +836,20 @@ pub fn checked_origin(host: &str) -> Result<String> {
     credentials::origin(host)
 }
 
-/// Reads the game ID needed to look up an upload credential for a built package.
-pub fn package_game(directory: &Path) -> Result<String> {
-    Ok(PackageManifest::read(directory)?.id().to_owned())
+/// Validates a built ZIP and returns its declared game ID for credential resolution.
+pub fn package_game(archive: &Path) -> Result<String> {
+    Ok(Package::read_archive(archive)?.0.game().to_owned())
+}
+
+/// Compiles the component from a built ZIP and validates its ABI and game schema with the selected
+/// Wasm metering. The returned metadata identifies the canonical package revision and component.
+pub fn load_package(archive: &Path, metering: WasmMetering) -> Result<(LoadedGame, GameMetadata)> {
+    Package::read_archive(archive)?.0.load(metering)
+}
+
+/// Validates a game identifier before using it in a package filename or management URL.
+pub fn validate_game_id(id: &str) -> Result<()> {
+    validate_id(id)
 }
 
 /// Validates an experiment identifier before including it in a management URL.

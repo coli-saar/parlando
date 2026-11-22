@@ -20,6 +20,8 @@
 !rust-server/templates/**
 !parlando-game-sdk/
 !parlando-game-sdk/Cargo.toml
+!parlando-game-sdk/examples/
+!parlando-game-sdk/examples/**
 !parlando-game-sdk/src/
 !parlando-game-sdk/src/**
 !parlando-game-sdk/wit/

@@ -10,8 +10,8 @@
 
 All six packages use one release version. Publish every package at that
 version, including SDKs whose source code has no changes since the previous
-release. On crates.io, `parlando-game-derive` must be available before
-`parlando-game-sdk`, which in turn must be available before `parlando`.
+release. On crates.io, publish `parlando-game-derive`, `parlando-game-sdk`,
+and `parlando` in that order.
 On PyPI, `parlando-python-sdk` supplies the game API imported as
 `parlando_game_sdk`, and `parlando-agent-sdk` supplies the remote agent API.
 
@@ -22,9 +22,8 @@ installation paths, while this page defines the coordinated release.
 
 Run `make check-release-versions` to verify that the six manifests, the Rust
 SDK dependency pins and the npm lockfile agree. Check the latest published
-versions on crates.io, npm, and PyPI. When moving from an earlier
-server-and-client release to the first six-package release, use the existing
-server and client versions to establish the baseline.
+versions on crates.io, npm, and PyPI. Use the existing server and client
+versions to establish the baseline for a package's first release.
 
 Unless the maintainer selects another version, add one to the patch component:
 
@@ -45,8 +44,7 @@ Set the shared version in the six package manifests:
 - `js-client/package.json` and the root entries in `js-client/package-lock.json`;
 - `parlando-python-sdk/pyproject.toml` and `parlando-agent-sdk/pyproject.toml`.
 
-Keep the server's dependency on `parlando-game-sdk` and the SDK's dependency
-on `parlando-game-derive` pinned to the exact shared version. Update first-party
+Pin dependencies between the three Parlando crates to the exact shared version. Update first-party
 consumer manifests that declare released Parlando packages. Refresh lockfiles
 with the package manager. If an npm consumer lockfile requires the new
 version to exist on npm, record that as a deferred post-publication step.
@@ -128,6 +126,16 @@ directions, check that each message appears once in each browser, and verify
 that the client never requests the microphone. Both participants then play
 the game to completion. Reloading one browser verifies that the result persists.
 
+The rehearsal also builds a standalone Beacon agent against the packaged
+`parlando-game-sdk`. The installed CLI builds and checks its independent
+agent ZIP, then runs it in both seats of a headless Rust Beacon game with
+default fuel metering and again with metering disabled. Both runs use the same
+three seeds and request no timed wakeups. Each must reach the expected completion and
+record the packaged policy's WASM digest for both seats. On the loopback
+host, the CLI installs the game first, uploads the agent separately, and
+selects it for a human–agent experiment. Chromium plays with that policy.
+A failed agent check prevents the candidate from being saved.
+
 The rehearsal installs `componentize-py` and Playwright as test dependencies.
 Set `PLAYWRIGHT_BROWSERS_PATH` to reuse a compatible Chromium installation.
 The rehearsal may fetch public dependencies and runs without registry
@@ -200,8 +208,8 @@ make publish PYTHON=.local/release-venv/bin/python
 ```
 
 The command verifies the saved candidate's version, artifact checksums, and
-package inputs before uploading. It publishes the Rust derive crate, Rust
-Game SDK, and server in dependency order, then uploads the exact tested npm
+package inputs before uploading. It publishes the Rust derive crate, shared Rust
+SDK, and server in dependency order, then uploads the exact tested npm
 tarball and Python distributions. Cargo creates fresh crates.io archives from
 the verified inputs and validates their registry dependency resolution. A
 failed upload stops the sequence. Run the candidate target again if the package

@@ -1,6 +1,7 @@
 import { bindSpeechSettings, COMMUNICATION_FIELD_PATHS, COMMUNICATION_MODE_FIELD, configAt, readConfigFields, renderSpeechSettings, renderStandardConfigField, setConfigAt } from "./communication-config.js";
 
 const API = "/api/hosting";
+const SETUP_STORAGE_KEY = "parlando.hosting.setup";
 const SESSION_LIMIT = 10_000;
 const UPLOAD_LIMIT = 64 * 1024 * 1024;
 const LIFECYCLE_ACTIONS = {
@@ -29,19 +30,53 @@ const state = {
 const byId = id => document.getElementById(id);
 const experimentForm = byId("experiment-form");
 const communicationConfig = byId("communication-config");
+let setupToken = readSetupToken();
+
+// Reads the current link or a credential retained for a reload in this tab.
+function readSetupToken() {
+  const fragment = new URLSearchParams(location.hash.slice(1));
+  const hasLink = fragment.has("setup");
+  let token = hasLink ? fragment.get("setup") : null;
+  if (hasLink) history.replaceState(null, "", location.pathname + location.search);
+  try {
+    if (!hasLink) token = sessionStorage.getItem(SETUP_STORAGE_KEY);
+    if (!/^[a-f0-9]{64}$/i.test(token)) {
+      sessionStorage.removeItem(SETUP_STORAGE_KEY);
+      return null;
+    }
+    if (hasLink) sessionStorage.setItem(SETUP_STORAGE_KEY, token);
+  } catch {
+    // Setup still works on this page when the browser blocks storage.
+    if (!/^[a-f0-9]{64}$/i.test(token)) return null;
+  }
+  return token;
+}
+
+// Erases the credential used by this view without touching a newer one in storage.
+function clearSetupToken() {
+  try {
+    if (sessionStorage.getItem(SETUP_STORAGE_KEY) === setupToken) {
+      sessionStorage.removeItem(SETUP_STORAGE_KEY);
+    }
+  } catch {
+    // A browser that blocks storage can still clear the in-memory credential.
+  }
+  setupToken = null;
+}
 
 // Sends hosting requests to the operator origin and reports server validation messages.
-async function request(path, { method = "GET", body, data = "json" } = {}) {
+async function request(path, { method = "GET", body, data = "json", contentType = "application/json", bearer } = {}) {
   const generation = state.generation;
   const headers = new Headers();
   if (method !== "GET" && state.account) {
     headers.set("X-CSRF-Token", state.account.csrf_token);
   }
-  if (body !== undefined) headers.set("Content-Type", "application/json");
+  if (bearer) headers.set("Authorization", `Bearer ${bearer}`);
+  if (body !== undefined) headers.set("Content-Type", contentType);
   const response = await fetch(API + path, {
     method,
     headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined || contentType !== "application/json" ? body : JSON.stringify(body),
     credentials: "same-origin",
     cache: "no-store",
   });
@@ -54,7 +89,9 @@ async function request(path, { method = "GET", body, data = "json" } = {}) {
       setAccount(null);
       throw new Error("Your session expired. Sign in again.");
     }
-    throw new Error(message || `Request failed (HTTP ${response.status}).`);
+    throw Object.assign(new Error(message || `Request failed (HTTP ${response.status}).`), {
+      status: response.status,
+    });
   }
   if (response.status === 204) return;
   if (data === "response") return response;
@@ -126,8 +163,10 @@ function digest(value) {
 function setAccount(account) {
   state.generation++;
   state.account = account;
+  if (account) clearSetupToken();
   const operator = account?.role === "operator";
-  byId("sign-in").hidden = !!account;
+  byId("setup").hidden = !!account || !setupToken;
+  byId("sign-in").hidden = !!account || !!setupToken;
   byId("identity").hidden = !account;
   byId("workspace").hidden = !account;
   byId("operator").hidden = !operator;
@@ -148,7 +187,7 @@ function setAccount(account) {
   byId("reset-password").hidden = true;
   for (const form of document.querySelectorAll("form")) form.reset();
   communicationConfig.replaceChildren();
-  if (!account) byId("login").elements.username.focus();
+  if (!account) byId(setupToken ? "setup-form" : "login").elements.username.focus();
 }
 
 // Reads the optional game scope from the dashboard URL.
@@ -176,10 +215,10 @@ async function refreshDashboard() {
   const games = byId("game-rows");
   const builds = state.games.flatMap(game => game.revisions.map(build => {
     const use = action("Create experiment", () => configure(game.id, build.revision));
-    return row([gameLink(game.id), build.version, digest(build.revision), use]);
+    return row([gameLink(game.id), build.version, digest(build.revision), Object.keys(build.agents ?? {}).join(", ") || "—", use]);
   }));
   if (builds.length) games.replaceChildren(...builds);
-  else emptyTable(games, 4, "No game builds have been uploaded.");
+  else emptyTable(games, 5, "No game builds have been uploaded.");
   const experiments = byId("experiment-rows");
   const entries = state.experiments.map(experiment => {
     const manage = action("Manage", () => openExperiment(experiment.id));
@@ -359,56 +398,6 @@ async function exportCorpus(format) {
   }
 }
 
-// Mirrors the server's portable package path rules before any files leave the browser.
-function validPackagePath(path) {
-  return path.length <= 512 && path.split("/").every(part =>
-    /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/.test(part) && !part.endsWith("."));
-}
-
-// Encodes a selected file without passing a large byte array as function arguments.
-function base64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result.slice(reader.result.indexOf(",") + 1));
-    reader.onerror = () => reject(new Error(`Could not read ${file.name}.`));
-    reader.readAsDataURL(file);
-  });
-}
-
-// Checks the selected folder and encodes only declared package files for upload.
-async function packageFiles(directory, component, client) {
-  if (!validPackagePath(component) || (client && !validPackagePath(client))) {
-    throw new Error("Use relative package paths such as game.wasm or client.");
-  }
-  if (!directory.length || directory.length > 4096) throw new Error("Choose a package of up to 4096 files.");
-  const paths = new Set();
-  const entries = [];
-  let encodedSize = 0;
-  for (const file of directory) {
-    const relative = file.webkitRelativePath;
-    const path = relative.slice(relative.indexOf("/") + 1);
-    const asset = client && path.startsWith(`${client}/`) ? path.slice(client.length + 1) : "";
-    if (!validPackagePath(path) || paths.has(path.toLowerCase()) ||
-        (path !== "game.yaml" && path !== component && !asset) ||
-        (asset && /^(api|ws|admin|health)(\/|$)/i.test(asset))) {
-      throw new Error(`Unexpected package file "${path}". Choose a directory containing only the prepared game build.`);
-    }
-    paths.add(path.toLowerCase());
-    entries.push([path, file]);
-    encodedSize += 4 * Math.ceil(file.size / 3) + path.length + 8;
-  }
-
-  const names = new Set(entries.map(([path]) => path));
-  if (!names.has("game.yaml") || !names.has(component) ||
-      (client && !names.has(`${client}/index.html`))) {
-    throw new Error("The package needs game.yaml, the component, and index.html if a participant app is declared.");
-  }
-  if (encodedSize + 12 > UPLOAD_LIMIT) throw new Error("The encoded package exceeds the 64 MiB upload limit.");
-  const files = Object.create(null);
-  for (const [path, file] of entries) files[path] = await base64(file);
-  return files;
-}
-
 // Refreshes account and audit views for operators.
 async function refreshOperator() {
   const [{ accounts }, { events }] = await Promise.all([request("/accounts"), request("/audit")]);
@@ -472,14 +461,40 @@ function onSubmit(id, submit) {
   });
 }
 
+// Exchanges operator credentials for a cookie-backed dashboard session.
+async function signIn(credentials) {
+  await request("/auth/login", { method: "POST", body: credentials, data: "response" });
+  await openDashboard();
+}
+
+// Creates the first operator with the setup credential and then signs in.
+onSubmit("setup-form", async form => {
+  const { username, password } = form.elements;
+  const credentials = { username: username.value, password: password.value };
+  try {
+    await request("/auth/setup", { method: "POST", body: credentials, data: "response", bearer: setupToken });
+  } catch (error) {
+    if (error.status === 401 || error.status === 409) {
+      clearSetupToken();
+      setAccount(null);
+    }
+    throw error;
+  }
+  clearSetupToken();
+  setAccount(null);
+  byId("login").elements.username.value = credentials.username;
+  await signIn(credentials);
+  notice("Operator account created.");
+});
+
 onSubmit("login", async form => {
   const { username, password } = form.elements;
+  const credentials = { username: username.value, password: password.value };
   try {
-    await request("/auth/login", { method: "POST", body: { username: username.value, password: password.value }, data: "response" });
+    await signIn(credentials);
   } finally {
     password.value = "";
   }
-  await openDashboard();
 });
 
 onSubmit("experiment-form", async form => {
@@ -510,20 +525,20 @@ onSubmit("experiment-form", async form => {
   notice(`Experiment ${experimentId} is ready to configure for intake.`);
 });
 
+// Sends the ZIP to the server, which validates its contents and reads its manifest.
 onSubmit("publish-form", async form => {
-  const { id, component, client, directory } = form.elements;
-  const generation = state.generation;
-  const game = id.value;
-  notice("Preparing the game package…");
-  const files = await packageFiles(directory.files, component.value, client.value);
-  if (state.generation !== generation) return;
-  notice("Uploading and validating the game build…");
-  const result = await request(`/packages/${encodeURIComponent(game)}`, { method: "PUT", body: { files } });
+  const [archive] = form.elements.archive.files;
+  if (!archive || !/\.zip$/i.test(archive.name)) throw new Error("Choose a game build ZIP file.");
+  if (archive.size > UPLOAD_LIMIT) throw new Error("The ZIP exceeds the 64 MiB upload limit.");
+  const game = dashboardGame();
+  const path = game ? `/packages/${encodeURIComponent(game)}` : "/packages";
+  notice("Uploading and validating the build ZIP…");
+  const result = await request(path, { method: "PUT", body: archive, contentType: "application/zip" });
   form.reset();
   byId("publish-game").open = false;
   await refreshDashboard();
-  configure(result.game, result.revision);
-  notice(`Uploaded ${result.game} ${result.version} (${result.revision.slice(0, 12)}).`);
+  if (!result.agent) configure(result.game, result.revision);
+  notice(`Uploaded ${result.agent ?? result.game} ${result.version} (${result.revision.slice(0, 12)}).`);
 });
 
 onSubmit("export", form => exportCorpus(form.elements.format.value));
@@ -573,17 +588,19 @@ onClick("session-events", () => loadSessionRecord("/events"));
 onClick("session-replay", () => loadSessionRecord("/replay"));
 onClick("load-operator", refreshOperator);
 onClick("cancel-reset", closePasswordReset);
-experimentForm.elements.game.addEventListener("change", updateRevisionOptions);
-
-// Recognizes the standard participant app path produced by parlando build.
-byId("publish-form").elements.directory.addEventListener("change", event => {
-  const input = event.currentTarget;
-  const client = input.form.elements.client;
-  if (!client.value || client.value === "client") {
-    const standardClient = [...input.files].some(file => /^[^/]+\/client\/index\.html$/.test(file.webkitRelativePath));
-    client.value = standardClient ? "client" : "";
-  }
+// Clears a stale or unwanted first-run credential and shows ordinary sign-in.
+onClick("cancel-setup", () => {
+  clearSetupToken();
+  setAccount(null);
 });
+// Opening another setup link in the same tab replaces the previous credential.
+window.addEventListener("hashchange", () => {
+  if (!new URLSearchParams(location.hash.slice(1)).has("setup")) return;
+  setupToken = readSetupToken();
+  if (state.account) clearSetupToken();
+  else setAccount(null);
+});
+experimentForm.elements.game.addEventListener("change", updateRevisionOptions);
 
 // Loads the cookie-backed identity before requesting any account-protected data.
 async function openDashboard() {

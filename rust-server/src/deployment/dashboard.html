@@ -18,6 +18,17 @@
 
   <main>
     <p id="notice" role="status" hidden></p>
+    <section id="setup" class="panel narrow" aria-labelledby="setup-title" hidden>
+      <h1 id="setup-title">Create the first operator</h1>
+      <form method="post" id="setup-form">
+        <label>Username <input name="username" autocomplete="username" required></label>
+        <label>Password <input name="password" type="password" autocomplete="new-password" required></label>
+        <div class="toolbar">
+          <button class="primary">Create operator</button>
+          <button id="cancel-setup" type="button">Go to sign-in</button>
+        </div>
+      </form>
+    </section>
     <section id="sign-in" class="panel narrow" aria-labelledby="sign-in-title" hidden>
       <h1 id="sign-in-title">Sign in to hosting</h1>
       <form method="post" id="login">
@@ -99,20 +110,15 @@
       <section id="games" class="panel" aria-labelledby="games-title">
         <h2 id="games-title">Games and builds</h2>
         <div class="scroll"><table>
-          <thead><tr><th scope="col">Game</th><th scope="col">Version</th><th scope="col">Revision</th><th scope="col">Use build</th></tr></thead>
+          <thead><tr><th scope="col">Game</th><th scope="col">Version</th><th scope="col">Revision</th><th scope="col">Local agents</th><th scope="col">Use build</th></tr></thead>
           <tbody id="game-rows"></tbody>
         </table></div>
 
         <details id="publish-game">
-          <summary>Upload a game build</summary>
-          <p>Choose the <code>dist/parlando</code> directory produced by <code>parlando build</code>, or another prepared package directory. Use the game ID, component path, and optional participant app path from its <code>game.yaml</code>.</p>
+          <summary>Upload a game or agent build</summary>
+          <p>Choose a build ZIP from <code>dist/</code>. Upload the game before uploading its agents.</p>
           <form id="publish-form">
-            <div class="fields">
-              <label>Game ID <input name="id" pattern="[a-z0-9][a-z0-9_\-]{0,63}" required></label>
-              <label>Component path <input name="component" value="game.wasm" required></label>
-              <label>Participant app path (optional) <input name="client" placeholder="client"></label>
-            </div>
-            <label>Package directory <input name="directory" type="file" webkitdirectory multiple required></label>
+            <label>Build ZIP <input name="archive" type="file" accept=".zip" required></label>
             <button class="primary">Upload build</button>
           </form>
         </details>

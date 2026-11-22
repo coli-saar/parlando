@@ -19,7 +19,7 @@ async fn main() -> Result<()> {
         "['Space Game', 'The Great Tree', 'Counterweight Hotel', 'The Last Screening']",
         env!("CARGO_PKG_VERSION"),
     )?
-    .agent(PorterFactory)?
+    .agent(PorterFactory::new()?)?
     .serve((args.host, args.port).into())
     .await
 }

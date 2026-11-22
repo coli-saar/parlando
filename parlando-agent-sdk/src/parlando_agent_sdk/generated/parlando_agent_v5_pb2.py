@@ -23,39 +23,52 @@ _sym_db = _symbol_database.Default()
 
 
 from google.protobuf import struct_pb2 as google_dot_protobuf_dot_struct__pb2
+from google.protobuf import duration_pb2 as google_dot_protobuf_dot_duration__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x17parlando_agent_v5.proto\x12\x11parlando.agent.v5\x1a\x1cgoogle/protobuf/struct.proto\"\x87\x01\n\x12\x43reateAgentRequest\x12\x0c\n\x04role\x18\x01 \x01(\t\x12\x0c\n\x04seed\x18\x02 \x01(\x04\x12\'\n\x06\x63onfig\x18\x03 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x1a\n\rcheckpoint_id\x18\x04 \x01(\tH\x00\x88\x01\x01\x42\x10\n\x0e_checkpoint_id\"=\n\x13\x43reateAgentResponse\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\x14\n\x0csession_logs\x18\x02 \x03(\t\"N\n\x0cStartRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12,\n\x0bobservation\x18\x02 \x01(\x0b\x32\x17.google.protobuf.Struct\"\x92\x01\n\x18ObserveTransitionRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\r\n\x05\x61\x63tor\x18\x02 \x01(\t\x12\'\n\x06\x61\x63tion\x18\x03 \x01(\x0b\x32\x17.google.protobuf.Struct\x12,\n\x0bobservation\x18\x04 \x01(\x0b\x32\x17.google.protobuf.Struct\"G\n\x15ObserveMessageRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\x0e\n\x06sender\x18\x02 \x01(\t\x12\x0c\n\x04text\x18\x03 \x01(\t\"N\n\rFinishRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12+\n\ncompletion\x18\x02 \x01(\x0b\x32\x17.google.protobuf.Struct\"\'\n\x0fObserveResponse\x12\x14\n\x0csession_logs\x18\x01 \x03(\t\"z\n\x0eRespondRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\"\n\x1a\x61vailable_actions_provided\x18\x02 \x01(\x08\x12\x32\n\x11\x61vailable_actions\x18\x03 \x03(\x0b\x32\x17.google.protobuf.Struct\"j\n\rAgentResponse\x12\x14\n\x07message\x18\x01 \x01(\tH\x00\x88\x01\x01\x12,\n\x06\x61\x63tion\x18\x02 \x01(\x0b\x32\x17.google.protobuf.StructH\x01\x88\x01\x01\x42\n\n\x08_messageB\t\n\x07_action\"m\n\x0fRespondResponse\x12\x37\n\x08response\x18\x01 \x01(\x0b\x32 .parlando.agent.v5.AgentResponseH\x00\x88\x01\x01\x12\x14\n\x0csession_logs\x18\x02 \x03(\tB\x0b\n\t_response\"#\n\x0fShutdownRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\"(\n\x10ShutdownResponse\x12\x14\n\x0csession_logs\x18\x01 \x03(\t2\xf7\x04\n\x0c\x41gentService\x12\\\n\x0b\x43reateAgent\x12%.parlando.agent.v5.CreateAgentRequest\x1a&.parlando.agent.v5.CreateAgentResponse\x12L\n\x05Start\x12\x1f.parlando.agent.v5.StartRequest\x1a\".parlando.agent.v5.ObserveResponse\x12\x64\n\x11ObserveTransition\x12+.parlando.agent.v5.ObserveTransitionRequest\x1a\".parlando.agent.v5.ObserveResponse\x12^\n\x0eObserveMessage\x12(.parlando.agent.v5.ObserveMessageRequest\x1a\".parlando.agent.v5.ObserveResponse\x12N\n\x06\x46inish\x12 .parlando.agent.v5.FinishRequest\x1a\".parlando.agent.v5.ObserveResponse\x12P\n\x07Respond\x12!.parlando.agent.v5.RespondRequest\x1a\".parlando.agent.v5.RespondResponse\x12S\n\x08Shutdown\x12\".parlando.agent.v5.ShutdownRequest\x1a#.parlando.agent.v5.ShutdownResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x17parlando_agent_v5.proto\x12\x11parlando.agent.v5\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1egoogle/protobuf/duration.proto\"\x87\x01\n\x12\x43reateAgentRequest\x12\x0c\n\x04role\x18\x01 \x01(\t\x12\x0c\n\x04seed\x18\x02 \x01(\x04\x12\'\n\x06\x63onfig\x18\x03 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x1a\n\rcheckpoint_id\x18\x04 \x01(\tH\x00\x88\x01\x01\x42\x10\n\x0e_checkpoint_id\"=\n\x13\x43reateAgentResponse\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\x14\n\x0csession_logs\x18\x02 \x03(\t\"N\n\x0cStartRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12,\n\x0bobservation\x18\x02 \x01(\x0b\x32\x17.google.protobuf.Struct\"\x92\x01\n\x18ObserveTransitionRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\r\n\x05\x61\x63tor\x18\x02 \x01(\t\x12\'\n\x06\x61\x63tion\x18\x03 \x01(\x0b\x32\x17.google.protobuf.Struct\x12,\n\x0bobservation\x18\x04 \x01(\x0b\x32\x17.google.protobuf.Struct\"G\n\x15ObserveMessageRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\x0e\n\x06sender\x18\x02 \x01(\t\x12\x0c\n\x04text\x18\x03 \x01(\t\"N\n\rFinishRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12+\n\ncompletion\x18\x02 \x01(\x0b\x32\x17.google.protobuf.Struct\"\xb6\x02\n\x0eObserveRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12@\n\ntransition\x18\x02 \x01(\x0b\x32,.parlando.agent.v5.ObserveRequest.Transition\x12:\n\x07message\x18\x03 \x01(\x0b\x32).parlando.agent.v5.ObserveRequest.Message\x1ak\n\nTransition\x12\r\n\x05\x61\x63tor\x18\x01 \x01(\t\x12\'\n\x06\x61\x63tion\x18\x02 \x01(\x0b\x32\x17.google.protobuf.Struct\x12%\n\x04view\x18\x03 \x01(\x0b\x32\x17.google.protobuf.Struct\x1a\'\n\x07Message\x12\x0e\n\x06sender\x18\x01 \x01(\t\x12\x0c\n\x04text\x18\x02 \x01(\t\"\'\n\x0fObserveResponse\x12\x14\n\x0csession_logs\x18\x01 \x03(\t\"\xd7\x01\n\x0e\x44\x65\x63isionReason\x12\x34\n\x04kind\x18\x01 \x01(\x0e\x32&.parlando.agent.v5.DecisionReason.Kind\x12\x16\n\x0erejection_code\x18\x02 \x01(\t\"w\n\x04Kind\x12\x0f\n\x0bUNSPECIFIED\x10\x00\x12\x13\n\x0fSESSION_STARTED\x10\x01\x12\x15\n\x11\x41\x46TER_OBSERVATION\x10\x02\x12\r\n\tSCHEDULED\x10\x03\x12\x0e\n\nWAKEUP_DUE\x10\x04\x12\x13\n\x0f\x41\x43TION_REJECTED\x10\x05\"X\n\rWakeupRequest\x12*\n\x05\x61\x66ter\x18\x01 \x01(\x0b\x32\x19.google.protobuf.DurationH\x00\x12\x10\n\x06\x63\x61ncel\x18\x02 \x01(\x08H\x00\x42\t\n\x07request\"\xad\x01\n\x0eRespondRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\x12\"\n\x1a\x61vailable_actions_provided\x18\x02 \x01(\x08\x12\x32\n\x11\x61vailable_actions\x18\x03 \x03(\x0b\x32\x17.google.protobuf.Struct\x12\x31\n\x06reason\x18\x04 \x01(\x0b\x32!.parlando.agent.v5.DecisionReason\"\x9c\x01\n\rAgentResponse\x12\x14\n\x07message\x18\x01 \x01(\tH\x00\x88\x01\x01\x12,\n\x06\x61\x63tion\x18\x02 \x01(\x0b\x32\x17.google.protobuf.StructH\x01\x88\x01\x01\x12\x30\n\x06wakeup\x18\x03 \x01(\x0b\x32 .parlando.agent.v5.WakeupRequestB\n\n\x08_messageB\t\n\x07_action\"m\n\x0fRespondResponse\x12\x37\n\x08response\x18\x01 \x01(\x0b\x32 .parlando.agent.v5.AgentResponseH\x00\x88\x01\x01\x12\x14\n\x0csession_logs\x18\x02 \x03(\tB\x0b\n\t_response\"#\n\x0fShutdownRequest\x12\x10\n\x08\x61gent_id\x18\x01 \x01(\t\"(\n\x10ShutdownResponse\x12\x14\n\x0csession_logs\x18\x01 \x03(\t2\xc9\x05\n\x0c\x41gentService\x12\\\n\x0b\x43reateAgent\x12%.parlando.agent.v5.CreateAgentRequest\x1a&.parlando.agent.v5.CreateAgentResponse\x12L\n\x05Start\x12\x1f.parlando.agent.v5.StartRequest\x1a\".parlando.agent.v5.ObserveResponse\x12P\n\x07Observe\x12!.parlando.agent.v5.ObserveRequest\x1a\".parlando.agent.v5.ObserveResponse\x12\x64\n\x11ObserveTransition\x12+.parlando.agent.v5.ObserveTransitionRequest\x1a\".parlando.agent.v5.ObserveResponse\x12^\n\x0eObserveMessage\x12(.parlando.agent.v5.ObserveMessageRequest\x1a\".parlando.agent.v5.ObserveResponse\x12N\n\x06\x46inish\x12 .parlando.agent.v5.FinishRequest\x1a\".parlando.agent.v5.ObserveResponse\x12P\n\x07Respond\x12!.parlando.agent.v5.RespondRequest\x1a\".parlando.agent.v5.RespondResponse\x12S\n\x08Shutdown\x12\".parlando.agent.v5.ShutdownRequest\x1a#.parlando.agent.v5.ShutdownResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'parlando_agent_v5_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_CREATEAGENTREQUEST']._serialized_start=77
-  _globals['_CREATEAGENTREQUEST']._serialized_end=212
-  _globals['_CREATEAGENTRESPONSE']._serialized_start=214
-  _globals['_CREATEAGENTRESPONSE']._serialized_end=275
-  _globals['_STARTREQUEST']._serialized_start=277
-  _globals['_STARTREQUEST']._serialized_end=355
-  _globals['_OBSERVETRANSITIONREQUEST']._serialized_start=358
-  _globals['_OBSERVETRANSITIONREQUEST']._serialized_end=504
-  _globals['_OBSERVEMESSAGEREQUEST']._serialized_start=506
-  _globals['_OBSERVEMESSAGEREQUEST']._serialized_end=577
-  _globals['_FINISHREQUEST']._serialized_start=579
-  _globals['_FINISHREQUEST']._serialized_end=657
-  _globals['_OBSERVERESPONSE']._serialized_start=659
-  _globals['_OBSERVERESPONSE']._serialized_end=698
-  _globals['_RESPONDREQUEST']._serialized_start=700
-  _globals['_RESPONDREQUEST']._serialized_end=822
-  _globals['_AGENTRESPONSE']._serialized_start=824
-  _globals['_AGENTRESPONSE']._serialized_end=930
-  _globals['_RESPONDRESPONSE']._serialized_start=932
-  _globals['_RESPONDRESPONSE']._serialized_end=1041
-  _globals['_SHUTDOWNREQUEST']._serialized_start=1043
-  _globals['_SHUTDOWNREQUEST']._serialized_end=1078
-  _globals['_SHUTDOWNRESPONSE']._serialized_start=1080
-  _globals['_SHUTDOWNRESPONSE']._serialized_end=1120
-  _globals['_AGENTSERVICE']._serialized_start=1123
-  _globals['_AGENTSERVICE']._serialized_end=1754
+  _globals['_CREATEAGENTREQUEST']._serialized_start=109
+  _globals['_CREATEAGENTREQUEST']._serialized_end=244
+  _globals['_CREATEAGENTRESPONSE']._serialized_start=246
+  _globals['_CREATEAGENTRESPONSE']._serialized_end=307
+  _globals['_STARTREQUEST']._serialized_start=309
+  _globals['_STARTREQUEST']._serialized_end=387
+  _globals['_OBSERVETRANSITIONREQUEST']._serialized_start=390
+  _globals['_OBSERVETRANSITIONREQUEST']._serialized_end=536
+  _globals['_OBSERVEMESSAGEREQUEST']._serialized_start=538
+  _globals['_OBSERVEMESSAGEREQUEST']._serialized_end=609
+  _globals['_FINISHREQUEST']._serialized_start=611
+  _globals['_FINISHREQUEST']._serialized_end=689
+  _globals['_OBSERVEREQUEST']._serialized_start=692
+  _globals['_OBSERVEREQUEST']._serialized_end=1002
+  _globals['_OBSERVEREQUEST_TRANSITION']._serialized_start=854
+  _globals['_OBSERVEREQUEST_TRANSITION']._serialized_end=961
+  _globals['_OBSERVEREQUEST_MESSAGE']._serialized_start=963
+  _globals['_OBSERVEREQUEST_MESSAGE']._serialized_end=1002
+  _globals['_OBSERVERESPONSE']._serialized_start=1004
+  _globals['_OBSERVERESPONSE']._serialized_end=1043
+  _globals['_DECISIONREASON']._serialized_start=1046
+  _globals['_DECISIONREASON']._serialized_end=1261
+  _globals['_DECISIONREASON_KIND']._serialized_start=1142
+  _globals['_DECISIONREASON_KIND']._serialized_end=1261
+  _globals['_WAKEUPREQUEST']._serialized_start=1263
+  _globals['_WAKEUPREQUEST']._serialized_end=1351
+  _globals['_RESPONDREQUEST']._serialized_start=1354
+  _globals['_RESPONDREQUEST']._serialized_end=1527
+  _globals['_AGENTRESPONSE']._serialized_start=1530
+  _globals['_AGENTRESPONSE']._serialized_end=1686
+  _globals['_RESPONDRESPONSE']._serialized_start=1688
+  _globals['_RESPONDRESPONSE']._serialized_end=1797
+  _globals['_SHUTDOWNREQUEST']._serialized_start=1799
+  _globals['_SHUTDOWNREQUEST']._serialized_end=1834
+  _globals['_SHUTDOWNRESPONSE']._serialized_start=1836
+  _globals['_SHUTDOWNRESPONSE']._serialized_end=1876
+  _globals['_AGENTSERVICE']._serialized_start=1879
+  _globals['_AGENTSERVICE']._serialized_end=2592
 # @@protoc_insertion_point(module_scope)

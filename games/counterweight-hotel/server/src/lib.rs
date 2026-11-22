@@ -394,10 +394,10 @@ pub enum FreightStatus {
 /// A role's complete view of the coupled lifts. Partner fields contain only
 /// information visible from this wing and the entry on its private ledger.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, parlando_game_sdk::GameValue)]
-pub struct Observation {
+pub struct Observation<Text = std::borrow::Cow<'static, str>> {
     pub wing: Wing,
     pub route: Route,
-    pub route_title: std::borrow::Cow<'static, str>,
+    pub route_title: Text,
     pub floor: u8,
     pub partner_floor: u8,
     pub release_floor: Option<u8>,
@@ -451,6 +451,11 @@ impl Hotel {
     /// floors describe rack selection independently of whether the action is available.
     /// Freight readiness tracks the manifest independently of bridge docking and lock state.
     fn observation(s: &State, r: PlayerRole) -> Observation {
+        Self::project(s, r)
+    }
+
+    /// Shares the named wire layout between borrowed game output and owned policy inputs.
+    fn project<Text: From<&'static str>>(s: &State, r: PlayerRole) -> Observation<Text> {
         let seat = usize::from(r == PlayerRole::B);
         let peer = 1 - seat;
         let wings = [Wing::East, Wing::West];
@@ -572,6 +577,7 @@ impl parlando_game_sdk::Game for Hotel {
     }
 }
 
+#[cfg(not(all(feature = "agent-component", target_arch = "wasm32")))]
 parlando_game_sdk::export!(Hotel);
 
 #[cfg(test)]
@@ -1102,10 +1108,18 @@ mod tests {
     }
 }
 
-#[cfg(all(feature = "bundled-agents", not(target_arch = "wasm32")))]
-#[path = "../../../support/agent_response.rs"]
-mod agent_response;
-#[cfg(all(feature = "bundled-agents", not(target_arch = "wasm32")))]
+#[cfg(any(
+    all(feature = "bundled-agents", not(target_arch = "wasm32")),
+    all(feature = "agent-component", any(target_arch = "wasm32", test)),
+))]
 mod porter;
+
 #[cfg(all(feature = "bundled-agents", not(target_arch = "wasm32")))]
-pub use porter::PorterFactory;
+pub use porter::Porter;
+
+/// Registers the game's authored native policy with Parlando.
+#[cfg(all(feature = "bundled-agents", not(target_arch = "wasm32")))]
+pub type PorterFactory = parlando::agent::native::TypedAgentFactory<Porter>;
+
+#[cfg(all(feature = "agent-component", target_arch = "wasm32"))]
+parlando_game_sdk::export_agent!(porter::Porter);

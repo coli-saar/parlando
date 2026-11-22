@@ -12,10 +12,25 @@ reinforcement learning. Human–human and human–agent sessions remain
 event-driven: humans act whenever they send input. The activation schedule
 described here applies only when both players are software agents.
 
+## Select local agent artifacts
+
+Pass each agent ZIP to `parlando run` with a separate `--agent` option. Name
+its factory ID in the experiment's `agents` mapping. An existing WASM policy
+component also works with `--agent`.
+
+```sh
+parlando run experiment.yaml --package dist/counterweight-hotel-0.1.0.zip \
+  --agent dist/agent-counterweight_hotel.porter-11.0.0.zip
+```
+
+The runner checks each policy's action, completion, and seat view against
+the game. Each local WASM seat's result records the policy component's
+SHA-256 digest.
+
 ## Run a small evaluation
 
 A headless experiment uses a built game component and a YAML file. If the
-experiment uses remote policies for evaluation, run it with `parlando run` from
+experiment uses WASM or remote policies for evaluation, run it with `parlando run` from
 your game project. To register in-process policies or a learner, write a small
 Rust launcher that loads the component and registers the factories named in the
 YAML.

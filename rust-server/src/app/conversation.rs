@@ -298,9 +298,15 @@ pub(super) async fn commit_conversation_message(
         state.context.installation.telemetry.record_chat_accepted();
     }
     if let Some(permit) = delivery {
-        permit.send(AgentObservation::Message {
-            speaker: sender_role,
-            text: message.text.clone(),
+        permit.send(AgentObservation::Delivery {
+            observation: crate::agent::Observation {
+                transition: None,
+                message: Some(crate::agent::Message {
+                    sender: sender_role,
+                    text: message.text.clone(),
+                }),
+            },
+            completion: None,
         });
     }
     Ok(message)

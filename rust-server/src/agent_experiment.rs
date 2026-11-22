@@ -196,7 +196,15 @@ impl ExperimentRunner {
     /// Executes an already parsed specification. Its metering mode applies to every
     /// session, including training and validation, before any artifacts are opened.
     pub async fn run_file(mut self, spec: ExperimentFile) -> Result<ExperimentRunSummary> {
-        self.loaded_game = self.loaded_game.with_metering(spec.wasm_metering())?;
+        let metering = spec.wasm_metering();
+        self.loaded_game = self.loaded_game.with_metering(metering)?;
+        for configured in spec.agents.values() {
+            if let Some(factory) = self.agent_factories.get_mut(&configured.factory) {
+                if let Some(replacement) = factory.with_host_wasm_metering(metering)? {
+                    *factory = replacement;
+                }
+            }
+        }
         for (key, reference) in &spec.secrets {
             if !self.secrets.contains_key(key) {
                 let value = std::env::var(&reference.environment).with_context(|| {

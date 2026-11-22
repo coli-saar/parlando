@@ -2,8 +2,9 @@
 
 use super::*;
 use parlando::deployment::{self, Deployment, ExperimentSelection, HostOptions};
-use reqwest::header::{COOKIE, ORIGIN, SET_COOKIE};
+use reqwest::header::{CONTENT_TYPE, COOKIE, ORIGIN, SET_COOKIE};
 use reqwest::{Client, Method, Response};
+use std::io::{Cursor, Write};
 use tokio::{task::JoinHandle, time::timeout};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -38,7 +39,7 @@ impl TestHost {
                 ("fixture-a".to_owned(), UPLOAD_A.to_owned()),
                 ("fixture-b".to_owned(), UPLOAD_B.to_owned()),
             ]),
-            admin_token: ADMIN.into(),
+            admin_token: Some(ADMIN.into()),
         };
         let task = match admin_url {
             Some(admin_url) => tokio::spawn(deployment::serve_with_dashboard(
@@ -83,6 +84,18 @@ impl TestHost {
             request = request.json(&body);
         }
         request.send().await.unwrap()
+    }
+
+    /// Uploads an archive with a game-scoped credential and a caller-selected package path.
+    async fn upload(&self, path: &str, credential: &str, bytes: Vec<u8>) -> Response {
+        self.client
+            .put(format!("{}{path}", self.origin))
+            .bearer_auth(credential)
+            .header(CONTENT_TYPE, "application/zip")
+            .body(bytes)
+            .send()
+            .await
+            .unwrap()
     }
 
     /// Pins the requested revision and materializes the response for assertion.
@@ -205,7 +218,7 @@ async fn check_json(response: Response) -> Value {
 }
 
 /// Writes one ordinary deployable fixture with revision-identifying participant assets.
-fn create_package(path: &Path, game: &str, asset: &str) {
+fn create_package(path: &Path, game: &str, asset: &str) -> PathBuf {
     std::fs::create_dir_all(path.join("client/assets")).unwrap();
     let fixture = std::env::var_os("PARLANDO_TEST_COMPONENT").expect("set PARLANDO_TEST_COMPONENT");
     std::fs::copy(fixture, path.join("game.wasm")).unwrap();
@@ -223,6 +236,25 @@ fn create_package(path: &Path, game: &str, asset: &str) {
     .unwrap();
     std::fs::write(path.join("client/assets/app.js"), asset).unwrap();
     std::fs::write(path.join("client/favicon.ico"), "fixture icon").unwrap();
+    let archive = path.with_extension("zip");
+    deployment::write_package_archive(path, &archive).unwrap();
+    archive
+}
+
+/// Encodes crafted ZIP paths and inputs without the production writer's package checks.
+fn crafted_zip(members: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (path, data) in members {
+        writer
+            .start_file(
+                *path,
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored),
+            )
+            .unwrap();
+        writer.write_all(data).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
 }
 
 /// Signs in on the admin origin and keeps the cookie separate from the session response.
@@ -348,8 +380,7 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
         );
     }
 
-    let cli_package = directory.path().join("fixture-a");
-    create_package(&cli_package, "fixture-a", "CLI game");
+    let cli_package = create_package(&directory.path().join("fixture-a"), "fixture-a", "CLI game");
     let cli_deployment = deployment::deploy(&host.origin, &cli_package, UPLOAD_A)
         .await
         .unwrap();
@@ -367,26 +398,24 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
             .status(),
         StatusCode::NOT_FOUND
     );
-    let browser_package = directory.path().join("browser-fixture");
-    create_package(&browser_package, "browser-fixture", "browser game");
-    let files = [
-        "game.yaml",
-        "game.wasm",
-        "client/index.html",
-        "client/assets/app.js",
-        "client/favicon.ico",
-    ]
-    .into_iter()
-    .map(|path| {
-        let contents = std::fs::read(browser_package.join(path)).unwrap();
-        (
-            path,
-            base64::engine::general_purpose::STANDARD.encode(contents),
-        )
-    })
-    .collect::<BTreeMap<_, _>>();
-    let upload = json!({"files": files});
-    let upload_path = "/packages/browser-fixture";
+    let browser_package = create_package(
+        &directory.path().join("browser-fixture"),
+        "browser-fixture",
+        "browser game",
+    );
+    let upload = std::fs::read(browser_package).unwrap();
+    let upload_path = "/packages";
+    assert_eq!(
+        request(Method::PUT, upload_path)
+            .bearer_auth(UPLOAD_A)
+            .header(CONTENT_TYPE, "application/zip")
+            .body(upload.clone())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED,
+    );
     for (origin, csrf_token) in [
         (None, Some(csrf)),
         (Some(host.origin.as_str()), Some(csrf)),
@@ -399,7 +428,12 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
         if let Some(csrf_token) = csrf_token {
             rejected = rejected.header("x-csrf-token", csrf_token);
         }
-        let response = rejected.json(&json!({})).send().await.unwrap();
+        let response = rejected
+            .header(CONTENT_TYPE, "application/zip")
+            .body(upload.clone())
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
     let browser_deployment = check_json(
@@ -407,7 +441,8 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
             .header(COOKIE, &cookie)
             .header(ORIGIN, &admin_origin)
             .header("x-csrf-token", csrf)
-            .json(&upload)
+            .header(CONTENT_TYPE, "application/zip")
+            .body(upload)
             .send()
             .await
             .unwrap(),
@@ -698,10 +733,13 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
 async fn deployment_publishes_immutable_packages_and_routes_sessions_to_their_pin() {
     let directory = tempfile::tempdir().unwrap();
     let store = directory.path().join("host");
-    let package_a = directory.path().join("fixture-a");
-    let package_b = directory.path().join("fixture-b");
-    create_package(&package_a, "fixture-a", "first revision");
-    create_package(&package_b, "fixture-b", "second game");
+    let source_a = directory.path().join("fixture-a");
+    let package_a = create_package(&source_a, "fixture-a", "first revision");
+    let package_b = create_package(
+        &directory.path().join("fixture-b"),
+        "fixture-b",
+        "second game",
+    );
     let address = reserve_address().await.unwrap();
     let host = TestHost::start(address, &store, None).await;
     let uploads = format!("{PATH}/packages");
@@ -718,33 +756,53 @@ async fn deployment_publishes_immutable_packages_and_routes_sessions_to_their_pi
             .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
+    assert_eq!(
+        host.request(Method::PUT, &first_scope, Some(UPLOAD_A), Some(json!({})))
+            .await
+            .status(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
+    let mut duplicate = crafted_zip(&[("game.yaml", b"one"), ("fake.yaml", b"two")]);
+    let mut offset = 0;
+    while let Some(index) = duplicate[offset..]
+        .windows(9)
+        .position(|name| name == b"fake.yaml")
+    {
+        offset += index;
+        duplicate[offset..offset + 9].copy_from_slice(b"game.yaml");
+        offset += 9;
+    }
     for invalid in [
-        json!({"files":{"../escape":"ZA=="}}),
-        json!({"files":{"game.yaml":"!!!"}}),
-        json!({"files":{"Client/a":"YQ==","client/b":"Yg=="}}),
-        json!({"files":{
-            "game.yaml": base64::engine::general_purpose::STANDARD.encode("id: fixture-a\nname: Fixture\nversion: 1.0.0\ncomponent: invalid.wasm\n"),
-            "invalid.wasm":"aW52YWxpZA=="
-        }}),
+        b"This is not a zip".to_vec(),
+        crafted_zip(&[("../escape", b"contents")]),
+        crafted_zip(&[("game.yaml", b"!!!")]),
+        crafted_zip(&[("Client/a", b"one"), ("client/b", b"two")]),
+        crafted_zip(&[("client", b"one"), ("client/b", b"two")]),
+        crafted_zip(&[
+            (
+                "game.yaml",
+                b"id: fixture-a\nname: Fixture\nversion: 1.0.0\ncomponent: invalid.wasm\n",
+            ),
+            ("invalid.wasm", b"invalid"),
+        ]),
+        duplicate,
+        std::fs::read(&package_b).unwrap(),
     ] {
-        let response = host
-            .request(Method::PUT, &first_scope, Some(UPLOAD_A), Some(invalid))
-            .await;
+        let response = host.upload(&first_scope, UPLOAD_A, invalid).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
     assert!(!directory.path().join("escape").exists());
 
     for relative in [".env", "client/assets/.env", "unrelated.txt"] {
-        let unwanted = package_a.join(relative);
+        let unwanted = source_a.join(relative);
         std::fs::write(&unwanted, "deployment-secret-sentinel").unwrap();
-        // An unreachable target distinguishes local rejection from server validation.
-        let error = deployment::deploy("http://127.0.0.1:1", &package_a, UPLOAD_A)
-            .await
-            .unwrap_err();
+        let rejected_archive = directory.path().join("rejected.zip");
+        let error = deployment::write_package_archive(&source_a, &rejected_archive).unwrap_err();
         assert!(
             error.to_string().contains("package path")
                 || error.to_string().contains("unexpected file")
         );
+        assert!(!rejected_archive.exists());
         std::fs::remove_file(unwanted).unwrap();
     }
 
@@ -755,6 +813,24 @@ async fn deployment_publishes_immutable_packages_and_routes_sessions_to_their_pi
     let (first, retry) = (first.unwrap(), retry.unwrap());
     assert_eq!(first.revision, retry.revision);
     assert_eq!(first.component_sha256, retry.component_sha256);
+    let reordered_members = [
+        "client/favicon.ico",
+        "client/assets/app.js",
+        "game.wasm",
+        "client/index.html",
+        "game.yaml",
+    ]
+    .map(|path| (path, std::fs::read(source_a.join(path)).unwrap()));
+    let members = reordered_members
+        .iter()
+        .map(|(path, bytes)| (*path, bytes.as_slice()))
+        .collect::<Vec<_>>();
+    let reordered = check_json(
+        host.upload(&first_scope, UPLOAD_A, crafted_zip(&members))
+            .await,
+    )
+    .await;
+    assert_eq!(reordered["revision"], first.revision);
     assert_eq!(
         std::fs::read_dir(store.join("packages/fixture-a"))
             .unwrap()
@@ -813,8 +889,12 @@ async fn deployment_publishes_immutable_packages_and_routes_sessions_to_their_pi
     );
 
     let (participant, room) = host.seat("one").await;
-    create_package(&package_a, "fixture-a", "changed revision");
-    let replacement = deployment::deploy(&host.origin, &package_a, UPLOAD_A)
+    let replacement_package = create_package(
+        &directory.path().join("replacement"),
+        "fixture-a",
+        "changed revision",
+    );
+    let replacement = deployment::deploy(&host.origin, &replacement_package, UPLOAD_A)
         .await
         .unwrap();
     assert_ne!(first.revision, replacement.revision);

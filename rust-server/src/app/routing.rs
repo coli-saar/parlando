@@ -181,6 +181,7 @@ pub(crate) async fn build_deployed_experiment(
     loaded_game: LoadedGame,
     config: ExperimentConfig,
     metadata: GameMetadata,
+    wasm_agents: Vec<crate::agent::wasm::WasmAgentFactory>,
 ) -> Result<(Router, Router, Arc<AppState>)> {
     let id = config
         .experiment
@@ -191,7 +192,10 @@ pub(crate) async fn build_deployed_experiment(
     validate_game_config_contains_no_secrets(&config.game)?;
     parse_game_config(&loaded_game, &config.game)?;
     let dist = config.server.client_dist_path.clone();
-    let mut agents = Vec::new();
+    let mut agents: Vec<crate::agents::SharedAgentFactory> = wasm_agents
+        .into_iter()
+        .map(|factory| Arc::new(factory) as crate::agents::SharedAgentFactory)
+        .collect();
     crate::server::register_default_remote_agent(&mut agents);
     let options = crate::server::experiment_serve_options(&agents, &config)?;
     let installation =

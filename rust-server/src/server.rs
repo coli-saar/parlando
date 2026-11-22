@@ -62,7 +62,8 @@ impl Server {
 
     /// Registers one compiled agent implementation for dashboard selection.
     pub fn agent(mut self, factory: impl AgentFactory) -> Result<Self> {
-        let factory: Arc<dyn AgentFactory> = Arc::new(factory);
+        let prepared = factory.with_host_wasm_metering(self.loaded_game.metering())?;
+        let factory = prepared.unwrap_or_else(|| Arc::new(factory));
         let definition = factory.definition();
         definition.validate()?;
         let id = definition.id;

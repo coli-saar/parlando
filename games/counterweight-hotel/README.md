@@ -55,10 +55,13 @@ A route combines a starting position, bridge locations, initial ballast and an o
 
 Install Rust's `wasm32-unknown-unknown` target, `wasm-tools`, and Node.js.
 The launcher builds the component and its browser application, then starts the
-shared host with **Hotel porter** available. Add `--build-only` to build
-`dist/parlando` without serving it. The portable package can also run with
-`parlando serve --manifest dist/parlando/game.yaml` for human pairs and remote
-agents.
+game's custom host with **Hotel porter** available. Add `--build-only` to build
+`dist/counterweight-hotel-0.1.0.zip`. The portable package also supports human pairs and remote
+agents on a deployment host. Follow the [local pilot walkthrough](../../docs/web/content/manual/start/getting-started.md#start-a-local-server)
+with game ID `counterweight-hotel`. To start the deployment host from the
+launcher, set the upload and operator tokens as in the walkthrough and pass
+`--without-bundled-agents`. It stores packages and experiment data under
+`.local/host` by default.
 
 The default port is `8081` and the database is `.local/component.sqlite`.
 Override them with `PORT` and `PARLANDO_DATABASE_URL`. To exercise the seeded

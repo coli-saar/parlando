@@ -6,7 +6,7 @@ maintainers package, verify, and publish the CLI and SDKs.
 | Registry | Package | Purpose |
 | --- | --- | --- |
 | crates.io | `parlando` | Installs the CLI and provides the library for custom hosts. |
-| crates.io | `parlando-game-sdk`, `parlando-game-derive` | Build Rust game components. |
+| crates.io | `parlando-game-sdk`, `parlando-game-derive` | Build Rust games and typed agents for native or WebAssembly execution. |
 | npm | `@coli-saar/parlando-client` | Supplies the browser participant application and client bindings. |
 | PyPI | `parlando-python-sdk` | Builds Python game components through the Python SDK. |
 | PyPI | `parlando-agent-sdk` | Runs the Python service for a remote agent. |

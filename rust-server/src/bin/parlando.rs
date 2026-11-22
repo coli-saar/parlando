@@ -1,5 +1,7 @@
 //! Author, validate, build, and run a component game from a local project.
 
+#[path = "parlando/agent_project.rs"]
+mod agent_project;
 #[path = "parlando/project.rs"]
 mod project;
 #[path = "parlando/remote.rs"]
@@ -7,14 +9,16 @@ mod remote;
 #[path = "parlando/scenarios.rs"]
 mod scenarios;
 
-use anyhow::{ensure, Result};
+use agent_project::AgentManifest;
+use anyhow::Result;
 use clap::{error::ErrorKind, Parser, Subcommand, ValueEnum};
-use parlando::{
-    agent::grpc::RemoteAgent, component::WasmMetering, ExperimentFile, ExperimentRunner, Server,
-};
+use parlando::{agent::grpc::RemoteAgent, deployment, ExperimentFile, ExperimentRunner};
 use project::Manifest;
 use serde_json::{json, Value};
-use std::{net::SocketAddr, path::PathBuf, process::ExitCode};
+use std::{
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 
 /// The public CLI can produce one structured result for each invocation.
 #[derive(Parser)]
@@ -44,47 +48,38 @@ enum Command {
         #[arg(long)]
         sdk_path: Option<PathBuf>,
     },
-    /// Compile the game and stage a deployable package under dist/parlando.
+    /// Compile a game or local agent and create its deployable ZIP in dist/.
     Build {
         #[arg(long, default_value = "game.yaml")]
         manifest: PathBuf,
     },
-    /// Check the project and verify that the game can load.
+    /// Verify a game or agent project or a built ZIP archive.
     Check {
-        #[arg(long, default_value = "game.yaml")]
-        manifest: PathBuf,
+        /// Project manifest, defaulting to game.yaml.
+        #[arg(long, conflicts_with = "package")]
+        manifest: Option<PathBuf>,
+        /// Game or agent ZIP archive produced by parlando build.
+        #[arg(long)]
+        package: Option<PathBuf>,
     },
     /// Run native tests and the game scenarios in game.yaml.
     Test {
         #[arg(long, default_value = "game.yaml")]
         manifest: PathBuf,
     },
-    /// Start a live game installation and its administrative dashboard.
-    Serve {
-        #[arg(long, default_value = "game.yaml")]
-        manifest: PathBuf,
-        /// Guest execution budget for this installation.
-        #[arg(long, value_enum, default_value = "fuel")]
-        wasm_metering: WasmMetering,
-        /// Listener address, including the port.
-        #[arg(long, default_value = "127.0.0.1:8000")]
-        bind: SocketAddr,
-        /// SQLite database URL for this installation.
-        #[arg(long)]
-        database_url: Option<String>,
-        /// Override the package's compiled participant application.
-        #[arg(long)]
-        client_dist: Option<PathBuf>,
-        /// Public origin when the service is behind a proxy.
-        #[arg(long)]
-        public_url: Option<String>,
-    },
     /// Run or resume an agent–agent evaluation.
     Run {
         /// Agent experiment YAML.
         experiment: PathBuf,
-        #[arg(long, default_value = "game.yaml")]
-        manifest: PathBuf,
+        /// Local agent ZIP or prebuilt WASM component. May be repeated.
+        #[arg(long = "agent")]
+        agents: Vec<PathBuf>,
+        /// Project manifest to compile or load directly.
+        #[arg(long, conflicts_with = "package")]
+        manifest: Option<PathBuf>,
+        /// Built ZIP archive, defaulting to the game ID and version in game.yaml.
+        #[arg(long)]
+        package: Option<PathBuf>,
     },
     #[command(flatten)]
     Remote(remote::RemoteCommand),
@@ -105,15 +100,31 @@ impl Command {
             Self::Build { .. } => "build",
             Self::Check { .. } => "check",
             Self::Test { .. } => "test",
-            Self::Serve { .. } => "serve",
             Self::Run { .. } => "run",
             Self::Remote(command) => command.name(),
         }
     }
 }
 
+/// Carries the terminal summary and the stable machine-readable result of one command.
+#[derive(Debug)]
+struct Report {
+    message: String,
+    data: Value,
+}
+
+impl Report {
+    /// Keeps both renderings together where the command knows what its result means.
+    fn new(message: impl Into<String>, data: Value) -> Self {
+        Self {
+            message: message.into(),
+            data,
+        }
+    }
+}
+
 /// Returns the result payload and whether a completed evaluation succeeded.
-async fn execute(command: Command) -> Result<(Value, bool)> {
+async fn execute(command: Command) -> Result<(Report, bool)> {
     let result = match command {
         Command::New {
             name,
@@ -121,50 +132,84 @@ async fn execute(command: Command) -> Result<(Value, bool)> {
             path,
             sdk_path,
         } => project::scaffold(&name, lang, path.as_deref(), sdk_path.as_deref())?,
-        Command::Build { manifest } => Manifest::read(&manifest)?.build()?,
-        Command::Check { manifest } => Manifest::read(&manifest)?.check()?,
-        Command::Test { manifest } => Manifest::read(&manifest)?.test()?,
-        Command::Serve {
-            manifest,
-            bind,
-            wasm_metering,
-            database_url,
-            client_dist,
-            public_url,
-        } => {
-            let project = Manifest::read(&manifest)?;
-            let (loaded_game, metadata) = project.load_with_metering(wasm_metering)?;
-            let mut server = Server::new(loaded_game, metadata)?;
-            if let Some(database_url) = database_url {
-                server = server.database_url(database_url);
+        Command::Build { manifest } => {
+            if agent_project::is_agent_manifest(&manifest)? {
+                AgentManifest::read(&manifest)?.build()?
+            } else {
+                Manifest::read(&manifest)?.build()?
             }
-            if let Some(client_dist) = client_dist.or_else(|| project.client_dist()) {
-                ensure!(
-                    client_dist.join("index.html").is_file(),
-                    "participant app {} requires an index.html",
-                    client_dist.display()
-                );
-                server = server.participant_app(client_dist);
-            }
-            if let Some(public_url) = public_url {
-                server = server.public_url(public_url);
-            }
-            eprintln!("Starting Parlando on {bind}");
-            server.serve(bind).await?;
-            json!({"bind": bind})
         }
+        Command::Check {
+            package: Some(package),
+            ..
+        } => {
+            let mut details =
+                deployment::check_archive(&package, parlando::component::WasmMetering::Fuel)?;
+            let message = match details["kind"].as_str() {
+                Some("agent") => format!(
+                    "Agent package check passed for {}.",
+                    details["id"].as_str().unwrap_or("the policy")
+                ),
+                _ => format!(
+                    "Package check passed for {}.",
+                    details["game"].as_str().unwrap_or("the game")
+                ),
+            };
+            details["package"] = json!(package);
+            Report::new(message, details)
+        }
+        Command::Check {
+            manifest,
+            package: None,
+        } => {
+            let manifest = manifest.as_deref().unwrap_or(Path::new("game.yaml"));
+            if agent_project::is_agent_manifest(manifest)? {
+                AgentManifest::read(manifest)?.check()?
+            } else {
+                Manifest::read(manifest)?.check()?
+            }
+        }
+        Command::Test { manifest } => Manifest::read(&manifest)?.test()?,
         Command::Run {
             manifest,
             experiment,
+            package,
+            agents,
         } => {
             let experiment = ExperimentFile::read(experiment).await?;
-            let (loaded_game, metadata) =
-                Manifest::read(&manifest)?.load_with_metering(experiment.wasm_metering())?;
-            let summary = ExperimentRunner::new(metadata, loaded_game)?
-                .agent(RemoteAgent::new())?
-                .run_file(experiment)
-                .await?;
-            return Ok((serde_json::to_value(&summary)?, summary.failed == 0));
+            let metering = experiment.wasm_metering();
+            let (loaded_game, metadata) = match manifest {
+                Some(manifest) => Manifest::read(&manifest)?.load_with_metering(metering)?,
+                None => deployment::load_package(&project::resolve_archive(package)?, metering)?,
+            };
+            let mut factories = Vec::new();
+            for path in agents {
+                let factory = if path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+                {
+                    deployment::load_agent_package(&path, &loaded_game, &metadata.id, metering)?
+                } else {
+                    parlando::agent::wasm::WasmAgentFactory::load_with_metering(
+                        &path,
+                        &loaded_game,
+                        metering,
+                    )?
+                };
+                factories.push(factory);
+            }
+            let mut runner =
+                ExperimentRunner::new(metadata, loaded_game)?.agent(RemoteAgent::new())?;
+            for factory in factories {
+                runner = runner.agent(factory)?;
+            }
+            let summary = runner.run_file(experiment).await?;
+            let report = Report::new(format!(
+                "Run {} finished: {} planned, {} completed, {} failed, {} skipped.\nCheckpoints: {}\nResults: {}",
+                summary.run_id, summary.planned, summary.completed, summary.failed, summary.skipped,
+                summary.checkpoints, summary.output_directory.display()
+            ), serde_json::to_value(&summary)?);
+            return Ok((report, summary.failed == 0));
         }
         Command::Remote(command) => remote::execute(command).await?,
     };
@@ -200,9 +245,12 @@ async fn main() -> ExitCode {
     match execute(args.command).await {
         Ok((result, ok)) => {
             if args.json {
-                println!("{}", json!({"ok": ok, "command": name, "result": result}));
+                println!(
+                    "{}",
+                    json!({"ok": ok, "command": name, "result": result.data})
+                );
             } else {
-                println!("{result:#}");
+                println!("{}", result.message);
             }
             if ok {
                 ExitCode::SUCCESS

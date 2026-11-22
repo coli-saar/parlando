@@ -71,12 +71,15 @@ pub(in crate::app) fn prepare_agent_construction(
     let identity = factory.identity(&settings)?;
     identity.validate()?;
     let fingerprint = configuration_fingerprint(&definition.id, &settings)?;
-    let metadata = json!({
+    let mut metadata = json!({
         "agent_name": identity.name,
         "agent_version": identity.version,
         "factory": definition.id,
         "configuration_fingerprint": fingerprint,
     });
+    if let Some(digest) = factory.wasm_sha256() {
+        metadata["wasm_sha256"] = json!(digest);
+    }
     let external_id = format!("{}@{}#{}", identity.name, identity.version, fingerprint);
     Ok(PreparedAgentConstruction {
         session_seed,

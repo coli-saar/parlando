@@ -17,7 +17,7 @@ else
     umask 077
     mkdir -p /data/parlando
 fi
-set -- host --bind "0.0.0.0:${PORT:-8000}" --store /data/parlando
+set -- serve --bind "0.0.0.0:${PORT:-8000}" --store /data/parlando
 public_url=${PARLANDO_PUBLIC_URL:-${RENDER_EXTERNAL_URL:-}}
 if [ -z "$public_url" ] && [ -n "${RAILWAY_PUBLIC_DOMAIN:-}" ]; then
     public_url="https://$RAILWAY_PUBLIC_DOMAIN"

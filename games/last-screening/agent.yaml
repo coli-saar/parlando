@@ -1,0 +1,6 @@
+game: last-screening
+id: last_screening.operator
+name: Screening partner
+version: 1.0.0
+cargo_manifest: server/Cargo.toml
+features: [agent-component]

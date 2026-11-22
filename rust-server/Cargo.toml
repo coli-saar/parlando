@@ -54,6 +54,8 @@ tempfile = { version = "3" }
 
 wasmtime = { version = "36.0.23", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
 
+zip = { version = "7.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = { version = "3" }
 

@@ -1,11 +1,11 @@
 //! Project manifests, guest compilation, and browser packaging.
 
-use super::{scenarios, Language};
+use super::{scenarios, Language, Report};
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use fs2::FileExt;
 use parlando::{
     component::{LoadedGame, WasmMetering},
-    GameMetadata,
+    deployment, GameMetadata,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -24,7 +24,8 @@ pub(super) struct Manifest {
     id: String,
     name: String,
     version: semver::Version,
-    component: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    component: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cargo_manifest: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -75,8 +76,17 @@ impl Manifest {
         let mut manifest: Self = serde_yaml::from_slice(&input)
             .with_context(|| format!("decoding {}", path.display()))?;
         ensure!(
-            !manifest.component.as_os_str().is_empty(),
-            "manifest requires a component path"
+            manifest
+                .component
+                .as_ref()
+                .is_none_or(|path| !path.as_os_str().is_empty()),
+            "manifest component path cannot be empty"
+        );
+        ensure!(
+            manifest.cargo_manifest.is_some()
+                || manifest.python.is_some()
+                || manifest.component.is_some(),
+            "manifest requires a component path or game source"
         );
         ensure!(
             manifest.cargo_manifest.is_none() || manifest.python.is_none(),
@@ -89,22 +99,30 @@ impl Manifest {
         Ok(manifest)
     }
 
-    /// Locates participant files for a packaged installation.
-    pub(super) fn client_dist(&self) -> Option<PathBuf> {
+    /// Resolves an existing participant build relative to the project manifest.
+    fn client_dist(&self) -> Option<PathBuf> {
         self.client_dist.as_ref().map(|path| self.root.join(path))
     }
 
-    /// Loads the canonical public game identity and its configured built component.
-    pub(super) fn load(&self) -> Result<(LoadedGame, GameMetadata)> {
-        self.load_with_metering(WasmMetering::Fuel)
+    /// Resolves the executable input for a manifest that uses a prebuilt component.
+    fn component_path(&self) -> Result<&Path> {
+        self.component
+            .as_deref()
+            .context("manifest requires a component path")
     }
 
-    /// Loads a built game with the operator-selected execution budget.
+    /// Compiles or loads the project game with the operator-selected execution budget.
     pub(super) fn load_with_metering(
         &self,
         metering: WasmMetering,
     ) -> Result<(LoadedGame, GameMetadata)> {
-        self.load_component(&self.root.join(&self.component), metering)
+        if self.cargo_manifest.is_none() && self.python.is_none() {
+            return self.load_component(&self.root.join(self.component_path()?), metering);
+        }
+        let temporary = tempfile::tempdir()?;
+        let component = temporary.path().join("game.wasm");
+        self.compile_component(&component)?;
+        self.load_component(&component, metering)
     }
 
     /// Binds an executable's digest to the declared game identity.
@@ -140,73 +158,15 @@ impl Manifest {
         Ok(cargo)
     }
 
-    /// Builds one Rust cdylib and wraps the core module with the guest's embedded WIT metadata.
+    /// Builds the game component without enabling policy-specific Cargo features.
     fn compile_rust(&self, component: &Path) -> Result<()> {
-        let manifest_path = self
-            .root
-            .join(
-                self.cargo_manifest
-                    .as_ref()
-                    .context("manifest requires cargo_manifest")?,
-            )
-            .canonicalize()
-            .context("locating the Rust game manifest")?;
-        let output = self
-            .cargo("build")?
-            .args([
-                "--lib",
-                "--release",
-                "--target",
-                "wasm32-unknown-unknown",
-                "--message-format=json-render-diagnostics",
-            ])
-            .stdin(Stdio::null())
-            .stderr(Stdio::inherit())
-            .output()
-            .context("starting cargo to build the Rust game")?;
-        let mut candidates = Vec::new();
-        for line in String::from_utf8(output.stdout)?.lines() {
-            let message: Value =
-                serde_json::from_str(line).context("decoding Cargo JSON output")?;
-            match message["reason"].as_str() {
-                Some("compiler-message") => {
-                    if let Some(diagnostic) = message["message"]["rendered"].as_str() {
-                        eprint!("{diagnostic}");
-                    }
-                }
-                Some("compiler-artifact")
-                    if message["manifest_path"]
-                        .as_str()
-                        .is_some_and(|path| Path::new(path) == manifest_path) =>
-                {
-                    if let Some(files) = message["filenames"].as_array() {
-                        candidates.extend(
-                            files
-                                .iter()
-                                .filter_map(Value::as_str)
-                                .map(PathBuf::from)
-                                .filter(|path| path.extension().is_some_and(|ext| ext == "wasm")),
-                        );
-                    }
-                }
-                _ => {}
-            }
-        }
-        ensure!(
-            output.status.success(),
-            "Cargo component build exited with {}",
-            output.status
-        );
-        let [artifact] = candidates.as_slice() else {
-            bail!("the Rust game must build exactly one WebAssembly cdylib");
-        };
-        run(
-            build_tool("wasm-tools")
-                .args(["component", "new"])
-                .arg(artifact)
-                .arg("-o")
-                .arg(component),
-            "wasm-tools component new",
+        compile_rust_component(
+            &self.root,
+            self.cargo_manifest
+                .as_deref()
+                .context("manifest requires cargo_manifest")?,
+            &[],
+            component,
         )
     }
 
@@ -246,18 +206,24 @@ impl Manifest {
     }
 
     /// Validates native compilation, the guest ABI and schema, and any declared scenario file.
-    pub(super) fn check(&self) -> Result<Value> {
+    pub(super) fn check(&self) -> Result<Report> {
         if self.cargo_manifest.is_some() {
             run(&mut self.cargo("check")?, "cargo check")?;
         }
-        let temporary = tempfile::tempdir()?;
-        let loaded_game = self.for_validation(temporary.path())?;
+        let loaded_game = self.for_validation()?;
         let scenarios = self.read_scenarios()?;
-        Ok(json!({"component_sha256": loaded_game.digest(), "scenarios": scenarios.len()}))
+        Ok(Report::new(
+            format!(
+                "Game check passed for {}. Scenarios found: {}.",
+                self.id,
+                scenarios.len()
+            ),
+            json!({"component_sha256": loaded_game.digest(), "scenarios": scenarios.len()}),
+        ))
     }
 
     /// Verifies native unit tests and runs the same executable the live host would load.
-    pub(super) fn test(&self) -> Result<Value> {
+    pub(super) fn test(&self) -> Result<Report> {
         let native = if self.cargo_manifest.is_some() {
             run(&mut self.cargo("test")?, "cargo test")?;
             true
@@ -280,26 +246,27 @@ impl Manifest {
         } else {
             false
         };
-        let temporary = tempfile::tempdir()?;
-        let loaded_game = self.for_validation(temporary.path())?;
+        let loaded_game = self.for_validation()?;
         let scenarios = self.read_scenarios()?;
         for scenario in &scenarios {
             scenario.run(&loaded_game)?;
         }
-        Ok(
+        let native_status = if native { "passed" } else { "not run" };
+        Ok(Report::new(
+            format!("Tests finished for {}.\nNative tests: {native_status}\nComponent scenarios passed: {}", self.id, scenarios.len()),
             json!({"native_tests_run": native, "component_scenarios_passed": scenarios.len(), "component_sha256": loaded_game.digest()}),
-        )
+        ))
     }
 
-    /// Uses fresh source for validation when offered and packaged bytes otherwise.
-    fn for_validation(&self, temporary: &Path) -> Result<LoadedGame> {
-        let component = temporary.join("game.wasm");
-        let (loaded_game, _) = if self.compile_component(&component)? {
-            self.load_component(&component, WasmMetering::Fuel)?
-        } else if self.client_project.is_some() {
-            self.load()?
-        } else {
+    /// Checks declared assets for a standalone component and loads the game.
+    fn for_validation(&self) -> Result<LoadedGame> {
+        let (loaded_game, _) = if self.cargo_manifest.is_none()
+            && self.python.is_none()
+            && self.client_project.is_none()
+        {
             self.load_component(&self.validate_package_assets()?, WasmMetering::Fuel)?
+        } else {
+            self.load_with_metering(WasmMetering::Fuel)?
         };
         Ok(loaded_game)
     }
@@ -313,7 +280,7 @@ impl Manifest {
         if let Some(scenarios) = &self.scenarios {
             self.package_asset(scenarios, false)?;
         }
-        self.package_asset(&self.component, false)
+        self.package_asset(self.component_path()?, false)
     }
 
     /// Requires a relative asset path whose resolved target belongs to this package.
@@ -361,11 +328,20 @@ impl Manifest {
         }
     }
 
+    /// Resolves the specific archive this manifest builds, including the full game version.
+    pub(super) fn archive_path(&self) -> Result<PathBuf> {
+        deployment::validate_game_id(&self.id)?;
+        Ok(self
+            .root
+            .join("dist")
+            .join(format!("{}-{}.zip", self.id, self.version)))
+    }
+
     /// Stages a verified package, then replaces the previous package under a build lock.
-    pub(super) fn build(&self) -> Result<Value> {
+    pub(super) fn build(&self) -> Result<Report> {
+        let package = self.archive_path()?;
         let output = self.root.join("dist");
         fs::create_dir_all(&output)?;
-        let package = output.join("parlando");
         let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -373,13 +349,13 @@ impl Manifest {
             .open(output.join(".parlando-build.lock"))?;
         lock.lock_exclusive()
             .context("locking the package output directory")?;
-        let previous = previous_package(&package, &self.id)?;
+        check_output_path(&package, &self.id)?;
         let temporary = tempfile::tempdir_in(&output)?;
         let staging = temporary.path().join("staging");
         fs::create_dir(&staging)?;
         let component = staging.join("game.wasm");
         if !self.compile_component(&component)? {
-            fs::copy(self.root.join(&self.component), &component)?;
+            fs::copy(self.root.join(self.component_path()?), &component)?;
         }
         let (loaded_game, _) = self.load_component(&component, WasmMetering::Fuel)?;
 
@@ -419,79 +395,149 @@ impl Manifest {
             id: self.id.clone(),
             name: self.name.clone(),
             version: self.version.clone(),
-            component: "game.wasm".into(),
+            component: Some("game.wasm".into()),
             cargo_manifest: None,
             python: None,
             client_project: None,
             client_dist: client_dir.map(|_| "client".into()),
             scenarios: None,
-            root: package.clone(),
+            root: staging.clone(),
         };
         fs::write(
             staging.join("game.yaml"),
             serde_yaml::to_string(&built_manifest)?,
         )?;
-        let backup = temporary.path().join("previous");
-        if previous {
-            fs::rename(&package, &backup).context("moving the previous package out of the way")?;
-        }
-        if let Err(error) = fs::rename(staging, &package) {
-            if previous {
-                if let Err(restore) = fs::rename(&backup, &package) {
-                    let preserved = temporary.keep();
-                    bail!("publishing package failed: {error}; restoring previous package failed: {restore}; previous package at {}", preserved.join("previous").display());
-                }
-            }
-            return Err(error).context("publishing the staged package");
-        }
-        Ok(
-            json!({"package": package, "manifest": package.join("game.yaml"), "component_sha256": loaded_game.digest()}),
-        )
+        let archive = temporary.path().join("package.zip");
+        deployment::write_package_archive(&staging, &archive)?;
+        fs::rename(archive, &package).context("publishing the package archive")?;
+        let client_entry = if built_manifest.client_dist.is_some() {
+            "\n  client/     Browser application and assets"
+        } else {
+            ""
+        };
+        Ok(Report::new(
+            format!(
+                "\nBuild complete for {} {}.\n  game.yaml   Package metadata\n  game.wasm   Game component{client_entry}\n\nZIP archive is ready for deployment.\n{}",
+                self.id,
+                self.version,
+                package.display()
+            ),
+            json!({"package": package, "component_sha256": loaded_game.digest()}),
+        ))
     }
 }
 
-/// Allows replacement only when the destination is a previously staged package for this game.
-fn previous_package(directory: &Path, game_id: &str) -> Result<bool> {
-    let kind = match fs::symlink_metadata(directory) {
+/// Builds one Rust cdylib and wraps the core module with its embedded WIT metadata.
+pub(super) fn compile_rust_component(
+    root: &Path,
+    manifest_path: &Path,
+    features: &[String],
+    component: &Path,
+) -> Result<()> {
+    let manifest_path = root
+        .join(manifest_path)
+        .canonicalize()
+        .context("locating the Rust component manifest")?;
+    let mut cargo = build_tool("cargo");
+    cargo
+        .current_dir(root)
+        .args(["build", "--manifest-path"])
+        .arg(&manifest_path);
+    if !features.is_empty() {
+        cargo.arg("--features").arg(features.join(","));
+    }
+    let output = cargo
+        .args([
+            "--lib",
+            "--release",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--message-format=json-render-diagnostics",
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::inherit())
+        .output()
+        .context("starting cargo to build the Rust component")?;
+    let mut candidates = Vec::new();
+    for line in String::from_utf8(output.stdout)?.lines() {
+        let message: Value = serde_json::from_str(line).context("decoding Cargo JSON output")?;
+        match message["reason"].as_str() {
+            Some("compiler-message") => {
+                if let Some(diagnostic) = message["message"]["rendered"].as_str() {
+                    eprint!("{diagnostic}");
+                }
+            }
+            Some("compiler-artifact")
+                if message["manifest_path"]
+                    .as_str()
+                    .is_some_and(|path| Path::new(path) == manifest_path) =>
+            {
+                if let Some(files) = message["filenames"].as_array() {
+                    candidates.extend(
+                        files
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(PathBuf::from)
+                            .filter(|path| path.extension().is_some_and(|ext| ext == "wasm")),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    ensure!(
+        output.status.success(),
+        "Cargo component build exited with {}",
+        output.status
+    );
+    let [artifact] = candidates.as_slice() else {
+        bail!("the Rust component must build exactly one WebAssembly cdylib");
+    };
+    run(
+        build_tool("wasm-tools")
+            .args(["component", "new"])
+            .arg(artifact)
+            .arg("-o")
+            .arg(component),
+        "wasm-tools component new",
+    )
+}
+
+/// Resolves a supplied archive or the exact release declared by the current project.
+pub(super) fn resolve_archive(package: Option<PathBuf>) -> Result<PathBuf> {
+    match package {
+        Some(package) => Ok(package),
+        None => Manifest::read(Path::new("game.yaml"))
+            .context("pass --package to use a ZIP outside a Parlando project")?
+            .archive_path(),
+    }
+}
+
+/// Protects existing files by allowing replacement only for a package of this game.
+fn check_output_path(package: &Path, game_id: &str) -> Result<()> {
+    let kind = match fs::symlink_metadata(package) {
         Ok(metadata) => metadata.file_type(),
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error).context("inspecting the package output path"),
     };
     ensure!(
-        kind.is_dir(),
-        "package output {} must be a directory",
-        directory.display()
+        kind.is_file(),
+        "package output {} must be a regular file",
+        package.display()
     );
-    let previous = Manifest::read(&directory.join("game.yaml"))
-        .with_context(|| format!("output directory {} already exists", directory.display()))?;
     ensure!(
-        previous.id == game_id
-            && previous.component == Path::new("game.wasm")
-            && previous.cargo_manifest.is_none()
-            && previous.python.is_none()
-            && previous.client_project.is_none()
-            && previous.scenarios.is_none()
-            && previous
-                .client_dist
-                .as_deref()
-                .is_none_or(|path| path == Path::new("client")),
-        "output directory {} is not a built package for game {game_id:?}",
-        directory.display()
+        !deployment::is_agent_package(package)?,
+        "output file {} is an agent package",
+        package.display()
     );
-    for entry in fs::read_dir(directory)? {
-        let entry = entry?;
-        let known = match entry.file_name().to_str() {
-            Some("game.yaml" | "game.wasm") => entry.file_type()?.is_file(),
-            Some("client") => previous.client_dist.is_some() && entry.file_type()?.is_dir(),
-            _ => false,
-        };
-        ensure!(
-            known,
-            "unrecognized package output {}",
-            entry.path().display()
-        );
-    }
-    Ok(true)
+    let previous = deployment::package_game(package)
+        .with_context(|| format!("output file {} already exists", package.display()))?;
+    ensure!(
+        previous == game_id,
+        "output file {} belongs to game {previous:?}, expected game {game_id:?}",
+        package.display()
+    );
+    Ok(())
 }
 
 /// Copies only regular, self-contained files into a package.
@@ -655,20 +701,57 @@ impl Language {
     }
 }
 
+/// Locates the release-specific asset directory next to the running CLI.
+fn bundled_assets(executable: &Path) -> Option<PathBuf> {
+    Some(
+        executable
+            .parent()?
+            .join("share")
+            .join("parlando")
+            .join(env!("CARGO_PKG_VERSION")),
+    )
+}
+
 /// Resolves an SDK bundled with a portable CLI or supplied by a source checkout.
 fn installed_sdk(language: &Language) -> Option<PathBuf> {
-    let bundled = env::current_exe().ok().and_then(|path| {
+    let executable = env::current_exe().ok();
+    let versioned = executable
+        .as_deref()
+        .and_then(bundled_assets)
+        .map(|directory| directory.join(language.sdk_name()));
+    let portable = executable.and_then(|path| {
         path.parent()
             .map(|directory| directory.join("share").join(language.sdk_name()))
     });
     let checkout = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join(language.sdk_name());
-    bundled
+    versioned
         .into_iter()
+        .chain(portable)
         .chain([checkout])
         .filter_map(|path| path.canonicalize().ok())
         .find(|path| language.contains_sdk(path))
+}
+
+/// Vendors the matching browser tarball when supplied beside the CLI.
+fn client_dependency(output: &Path) -> Result<String> {
+    let version = env!("CARGO_PKG_VERSION");
+    let archive = format!("coli-saar-parlando-client-{version}.tgz");
+    let bundled = env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(bundled_assets)
+        .map(|directory| directory.join(&archive))
+        .filter(|path| path.is_file());
+    let Some(source) = bundled else {
+        return Ok(version.to_owned());
+    };
+    let vendor = output.join("vendor");
+    fs::create_dir_all(&vendor)?;
+    fs::copy(&source, vendor.join(&archive))
+        .with_context(|| format!("copying the bundled browser client {}", source.display()))?;
+    Ok(format!("file:../vendor/{archive}"))
 }
 
 /// Creates a self-contained project structure without overwriting any existing destination.
@@ -677,7 +760,7 @@ pub(super) fn scaffold(
     language: Language,
     output: Option<&Path>,
     sdk: Option<&Path>,
-) -> Result<Value> {
+) -> Result<Report> {
     ensure!(
         !name.is_empty() && name.len() <= 64 && name.starts_with(|c: char| c.is_ascii_lowercase())
             && name.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'),
@@ -724,6 +807,7 @@ pub(super) fn scaffold(
         Language::Rust => RUST_TEMPLATE,
         Language::Python => PYTHON_TEMPLATE,
     };
+    let client_dependency = client_dependency(output)?;
     for (relative, template) in template.iter().chain(SHARED_TEMPLATE) {
         let path = output.join(relative);
         fs::create_dir_all(
@@ -733,10 +817,19 @@ pub(super) fn scaffold(
         let content = template
             .replace("__GAME_ID__", name)
             .replace("__SDK_DEPENDENCY__", &dependency)
-            .replace("__CLIENT_VERSION__", env!("CARGO_PKG_VERSION"));
+            .replace("__SDK_VERSION__", env!("CARGO_PKG_VERSION"))
+            .replace("__CLIENT_DEPENDENCY__", &client_dependency);
         fs::write(path, content)?;
     }
-    Ok(json!({"project": output, "manifest": output.join("game.yaml")}))
+    let manifest = output.join("game.yaml");
+    Ok(Report::new(
+        format!(
+            "Created game project in {}.\nManifest: {}",
+            output.display(),
+            manifest.display()
+        ),
+        json!({"project": output, "manifest": manifest}),
+    ))
 }
 
 /// Copies the SDK sources required by a movable starter, excluding local build and test state.

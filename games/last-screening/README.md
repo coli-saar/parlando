@@ -14,7 +14,7 @@ games/last-screening/run.sh
 
 Open [the local dashboard](http://127.0.0.1:8080/admin/experiments), create an experiment with two human players, and activate it. The game settings are `{}`. Give the participant URL to both players. On one computer, use two separate browser profiles or a regular window and a private window. Text conversation works with the default setup. Configure voice in the dashboard if desired.
 
-The launcher builds the portable game package under `dist/parlando` and binds
+The launcher builds the portable game package under `dist/last-screening-0.1.0.zip` and binds
 the host to loopback. Set `HOST` to bind to a reachable address, or `PORT`
 to change the port. The default database is `.local/component.sqlite` inside
 the game directory.

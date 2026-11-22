@@ -18,6 +18,6 @@ communication:
   mode: speech
 ```
 
-Select **Speech** to edit audio transport, Speechmatics transcription, and ElevenLabs synthesis settings. Switching to **Typed** preserves those values for the next time you select **Speech**. Provider credentials belong in **Game settings** on a single-game installation started with `parlando serve`. The shared host currently has no dashboard for provisioning provider keys.
+Select **Speech** to edit audio transport, Speechmatics transcription, and ElevenLabs synthesis settings. Switching to **Typed** preserves those values for the next time you select **Speech**. Provider credentials belong in **Game settings** on a custom single-game host built with the Rust `Server` API. The deployment host started with `parlando serve` has no dashboard for provisioning provider keys.
 
 Pilot the chosen mode in two independent browser profiles. For typed sessions, exchange a message in each direction. For speech, check microphone permission, mute, partner playback, and reconnect using the public participant address. If transcription is enabled, check the final text in a research export. Explain any external processing in your [participant information](../run/consent-privacy/).

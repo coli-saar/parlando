@@ -14,10 +14,12 @@ The host loads compiled packages. Build tools belong on game authors' machines o
 
 ## Start and expose the service
 
-For a loopback trial, set `PARLANDO_HOST_ADMIN_TOKEN` in the host process environment to a long random value. Start the service from a writable directory.
+For a local pilot, run `parlando serve` in the host directory and open the administrator link printed in the terminal. The same `/admin` page lets you create the first operator account in a new store and sign in to an existing store.
+
+To test an explicitly configured pair of origins, set `PARLANDO_HOST_ADMIN_TOKEN` in the host process environment to a long random value. Start the service from a writable directory.
 
 ```sh
-parlando host --bind 127.0.0.1:8000 --store ./parlando-host \
+parlando serve --bind 127.0.0.1:8000 --store ./parlando-host \
   --public-url http://127.0.0.1:8000 --admin-url http://localhost:8000
 ```
 
@@ -25,7 +27,7 @@ The two names reach the same listener. They count as different browser origins, 
 
 For a public host, use HTTPS on both hostnames, route them to the service, and preserve the requested Host header and WebSocket upgrades. Set `--public-url` to the participant origin and `--admin-url` to the administrator origin. Use a single host process for the persistent store. Check `/health` on the running service, then open `/admin` on the administrator origin.
 
-## Create the first operator
+## Create the first operator on a configured host
 
 In the operator shell, set `PARLANDO_ADMIN_URL` to the configured administrator origin and provide the bootstrap token in `PARLANDO_HOST_ADMIN_TOKEN`. Run this from an interactive terminal with Python 3 for the password prompt. It creates a named operator called `operator`.
 
@@ -63,9 +65,9 @@ Use a password of at least 12 bytes. Sign in at `/admin` and create an experimen
 
 ## Grant machine uploads
 
-The dashboard supports browser uploads with an experimenter account. To enable CLI or automated uploads, pass `--grants GRANTS_FILE` to `parlando host`. Use a protected JSON file mapping game IDs to distinct random tokens. Keep those tokens separate from the host administrator token. Provision one token for each game a client needs to upload. Restart the host after changing the file.
+The dashboard supports browser uploads with an experimenter account. To enable CLI or automated uploads, pass `--grants GRANTS_FILE` to `parlando serve`. Use a protected JSON file mapping game IDs to distinct random tokens. Keep those tokens separate from the host administrator token. Provision one token for each game a client needs to upload. Restart the host after changing the file.
 
-`parlando host` can also run without the browser dashboard. Supply the grants file or set `PARLANDO_DEPLOY_GAME` and `PARLANDO_DEPLOY_TOKEN` for a single game. Use the operator token to select packages and change intake through the CLI. See [deploy to a shared host](../).
+`parlando serve` can also run without the browser dashboard. Specify the public origin with `--public-url` and omit the administrator origin. Supply the grants file or set `PARLANDO_DEPLOY_GAME` and `PARLANDO_DEPLOY_TOKEN` for a single game. Use the operator token to select packages and change intake through the CLI. See [deploy to a shared host](../).
 
 ## Retain the store
 

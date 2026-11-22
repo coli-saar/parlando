@@ -17,18 +17,14 @@ From the directory containing `experiments/c-last-token`, run:
 cargo install --locked parlando --bin parlando
 cargo install --locked --no-default-features --features c wit-bindgen-cli --version 0.57.1
 experiments/c-last-token/build.sh
-npm --prefix experiments/c-last-token/client ci
-npm --prefix experiments/c-last-token/client run build
-parlando \
-  serve --manifest experiments/c-last-token/game.yaml \
-  --database-url sqlite:///./experiments/c-last-token/build/last-token.sqlite \
-  --client-dist experiments/c-last-token/client/dist
+parlando build --manifest experiments/c-last-token/game.yaml
 ```
 
-Open [the local Parlando dashboard](http://127.0.0.1:8000/admin). Create an
-administrator, create an experiment with the default game configuration
-(`{}`), and start it for local testing. Open its participant link in two
-independent browser contexts and enter the waiting room from both.
+The build packages the compiled C component and the React application in
+`experiments/c-last-token/dist/c-last-token-1.0.0.zip`. Follow the [local pilot walkthrough](web/content/manual/start/getting-started.md#start-a-local-server)
+using that package path and game ID `c-last-token`. Select the revision for
+an experiment with the default configuration, then open testing intake and
+enter from two independent browser profiles.
 
 ## Check the game and reproduce the benchmark
 

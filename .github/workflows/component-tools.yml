@@ -41,7 +41,7 @@ jobs:
           .venv/bin/python -m pip install componentize-py==0.25.1
           ../parlando-bin/parlando test --json
           ../parlando-bin/parlando build --json
-          ../parlando-bin/parlando check --manifest dist/parlando/game.yaml --json
+          ../parlando-bin/parlando check --package dist/python-pilot-0.1.0.zip --json
       - uses: actions/upload-artifact@v4
         with:
           name: parlando-${{ matrix.platform }}

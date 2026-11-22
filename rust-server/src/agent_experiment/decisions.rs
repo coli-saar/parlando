@@ -13,7 +13,7 @@ use super::session::{
 };
 use super::spec::TraceLevel;
 use super::training::TrajectoryStep;
-use crate::agents::{Agent, AgentResponse};
+use crate::agents::{Agent, AgentResponse, Message, Observation, Reason, Transition};
 use crate::component::{ComponentValue, GameFrame, GameSession};
 use crate::game::{ActionRejection, PlayerRole};
 use anyhow::anyhow;
@@ -59,6 +59,7 @@ pub(super) async fn drive_session(
             },
         )?;
     let mut role = schedule.first();
+    let mut pending_rejections = [None, None];
     let deadline = Instant::now() + plan.limits.session_timeout();
 
     loop {
@@ -81,13 +82,25 @@ pub(super) async fn drive_session(
         } else {
             (None, input.map(TraceInput::Decision))
         };
-        let response = timeout(
+        let reason = pending_rejections[role_index(role)]
+            .take()
+            .map_or(Reason::Scheduled, Reason::ActionRejected);
+        let decision = timeout(
             plan.limits.callback_timeout(),
-            agents[role_index(role)].respond(),
+            agents[role_index(role)].decide(reason.clone()),
         )
         .await
         .map_err(|_| callback_timeout_failure("respond", role))?
         .map_err(|error| callback_failure("respond", role, error))?;
+
+        if decision.wakeup.is_some() {
+            return Err(callback_failure(
+                "respond",
+                role,
+                anyhow!("wakeup requests are supported only in live sessions"),
+            ));
+        }
+        let response = AgentResponse::from_decision(decision);
 
         if learner_input.is_some() && !matches!(response, Some(AgentResponse::Action(_))) {
             return Err(SessionFailure {
@@ -121,7 +134,10 @@ pub(super) async fn drive_session(
                     .await?
                 {
                     ActionAttempt::Accepted(completion) => completed = completion,
-                    ActionAttempt::Rejected(error) => rejection = Some(error),
+                    ActionAttempt::Rejected(error) => {
+                        pending_rejections[role_index(role)] = Some(error.code.clone());
+                        rejection = Some(error);
+                    }
                 }
             } else if let Some(message) = message {
                 deliver_message(agents, role, message, plan.limits.callback_timeout()).await?;
@@ -131,6 +147,7 @@ pub(super) async fn drive_session(
         record_trace(
             result,
             role,
+            reason,
             response.as_ref(),
             rejection.as_ref(),
             trace_input,
@@ -205,21 +222,28 @@ impl DecisionExecution<'_> {
             }
         };
         self.result.accepted_actions += 1;
+        let completion = next.completion();
+        let message = message.filter(|_| completion.is_none());
         for role in [PlayerRole::A, PlayerRole::B] {
             let observation = next.observation(role);
             timeout(
                 self.plan.limits.callback_timeout(),
-                self.agents[role_index(role)].observe_transition(
-                    actor,
-                    action.clone(),
-                    observation,
-                ),
+                self.agents[role_index(role)].observe(Observation {
+                    transition: Some(Transition {
+                        actor,
+                        action: action.clone(),
+                        view: observation,
+                    }),
+                    message: message.filter(|_| role != actor).map(|text| Message {
+                        sender: actor,
+                        text: text.to_owned(),
+                    }),
+                }),
             )
             .await
             .map_err(|_| callback_timeout_failure("observe_transition", role))?
             .map_err(|error| callback_failure("observe_transition", role, error))?;
         }
-        let completion = next.completion();
         self.record_trajectory(
             &next,
             actor,
@@ -231,17 +255,8 @@ impl DecisionExecution<'_> {
             },
         );
         *state = next;
-        if completion.is_none() {
-            if let Some(message) = message {
-                deliver_message(
-                    self.agents,
-                    actor,
-                    message,
-                    self.plan.limits.callback_timeout(),
-                )
-                .await?;
-                self.result.messages += 1;
-            }
+        if message.is_some() {
+            self.result.messages += 1;
         }
         Ok(ActionAttempt::Accepted(completion))
     }
@@ -310,6 +325,7 @@ impl DecisionExecution<'_> {
 fn record_trace(
     result: &mut SessionResult,
     role: PlayerRole,
+    reason: Reason,
     response: Option<&AgentResponse>,
     rejection: Option<&ActionRejection>,
     input: Option<TraceInput>,
@@ -335,6 +351,7 @@ fn record_trace(
     trace.push(DecisionTrace {
         decision: result.decisions,
         role,
+        reason,
         response,
         rejection: rejection.cloned(),
         input,

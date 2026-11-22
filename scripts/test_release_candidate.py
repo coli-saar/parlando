@@ -17,6 +17,7 @@ import time
 import tomllib
 from urllib.error import URLError
 from urllib.request import ProxyHandler, build_opener
+from zipfile import ZipFile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +32,10 @@ PYTHON_SDKS = (
     ("parlando-agent-sdk", "parlando_agent_sdk"),
 )
 GAMES = {"rust": "release-rust", "python": "release-python"}
+AGENT_ID = "release.beacon"
+AGENT_NAME = "Release Beacon partner"
+AGENT_MESSAGE = "One tick from the Beacon partner."
+AGENT_FIXTURE = ROOT / "scripts/release_candidate_agent.rs"
 JS_GENERATED = ("node_modules", "dist", "coverage", ".local")
 PYTHON_GENERATED = (".venv", "dist", "build", "*.egg-info", "__pycache__", ".pytest_cache", ".benchmarks")
 
@@ -104,7 +109,12 @@ def digest(path):
 
 def release_sources(env):
     """Fingerprint package inputs so a stale rehearsal cannot authorize publication."""
-    files = {ROOT / ".cargo/config.toml"}
+    files = {
+        ROOT / ".cargo/config.toml",
+        Path(__file__).resolve(),
+        AGENT_FIXTURE,
+        ROOT / "scripts/release_candidate_browser.mjs",
+    }
     for _, source in CRATES:
         files.update((ROOT / source / relative).resolve() for relative in cargo_inputs(source, env))
     package_trees = [("js-client", JS_GENERATED), *((name, PYTHON_GENERATED) for name, _ in PYTHON_SDKS)]
@@ -255,11 +265,140 @@ def build_games(work, binary, client, version, env):
         package["dependencies"][CLIENT] = f"file:{client}"
         client_manifest.write_text(json.dumps(package, indent=2) + "\n", encoding="utf-8")
         run(binary, "test", cwd=project, env=env)
-        run(binary, "build", cwd=project, env=env)
-        run(binary, "check", "--manifest", "dist/parlando/game.yaml", cwd=project, env=env)
+        built = json.loads(run(binary, "build", "--json", cwd=project, env=env, capture=True))
+        archive = Path(built["result"]["package"])
+        if archive != project.resolve() / "dist" / f"{game}-0.1.0.zip" or not archive.is_file():
+            raise RuntimeError(f"Unexpected starter archive: {archive}")
+        run(binary, "check", "--package", archive, cwd=project, env=env)
         installed = project / "client/node_modules" / CLIENT / "package.json"
         if json.loads(installed.read_text(encoding="utf-8"))["version"] != version:
             raise RuntimeError(f"{game} did not install the candidate browser client")
+
+
+def build_and_run_agent(work, binary, version, env):
+    """Compile a standalone Rust policy with the extracted SDK and run both seats."""
+    project = work / "beacon-policy"
+    (project / "src").mkdir(parents=True)
+    shutil.copyfile(AGENT_FIXTURE, project / "src/lib.rs")
+    (project / "Cargo.toml").write_text(
+        "[package]\n"
+        'name = "release-beacon-policy"\n'
+        'version = "0.1.0"\n'
+        'edition = "2021"\n'
+        "\n[lib]\n"
+        'crate-type = ["cdylib"]\n'
+        "\n[dependencies]\n"
+        f'parlando-game-sdk = "={version}"\n'
+        'serde = { version = "1", features = ["derive"] }\n',
+        encoding="utf-8",
+    )
+    metadata = json.loads(run(
+        "cargo", "metadata", "--format-version", "1", cwd=project, env=env, capture=True,
+    ))
+    sdk_manifest = work / "crates" / f"parlando-game-sdk-{version}" / "Cargo.toml"
+    resolved_sdk = [
+        Path(package["manifest_path"]).resolve() for package in metadata["packages"]
+        if package["name"] == "parlando-game-sdk"
+    ]
+    if resolved_sdk != [sdk_manifest.resolve()]:
+        raise RuntimeError(f"Standalone policy resolved a different game SDK: {resolved_sdk}")
+    run("cargo", "check", "--locked", cwd=project, env=env)
+    manifest = project / "agent.yaml"
+    manifest.write_text(json.dumps({
+        "game": GAMES["rust"], "id": AGENT_ID, "name": AGENT_NAME,
+        "version": "0.1.0", "cargo_manifest": "Cargo.toml",
+    }) + "\n", encoding="utf-8")
+    built = json.loads(run(
+        binary, "build", "--manifest", manifest, "--json",
+        cwd=project, env=env, capture=True,
+    ))["result"]
+    archive = Path(built["package"])
+    if archive != project / "dist" / f"agent-{AGENT_ID}-0.1.0.zip":
+        raise RuntimeError(f"Unexpected standalone policy archive: {archive}")
+    with ZipFile(archive) as package:
+        if set(package.namelist()) != {"agent.yaml", "agent.wasm"}:
+            raise RuntimeError("Policy archive must contain an agent manifest and its own component")
+        policy_digest = hashlib.sha256(package.read("agent.wasm")).hexdigest()
+    checked = json.loads(run(
+        binary, "check", "--package", archive, "--json", cwd=project, env=env, capture=True,
+    ))["result"]
+    if (
+        checked["kind"], checked["game"], checked["id"], checked["agent_version"],
+        checked["component_sha256"], built["component_sha256"],
+    ) != ("agent", GAMES["rust"], AGENT_ID, "1", policy_digest, policy_digest):
+        raise RuntimeError(f"Unexpected standalone policy inspection: {checked}")
+
+    run_agent_experiments(work, project, binary, archive, policy_digest, env)
+    return archive
+
+
+def run_agent_experiments(work, project, binary, archive, policy_digest, env):
+    """Check both shared metering modes with the same three deterministic seeds."""
+    seeds = [0, 1, 2]
+    game = work / GAMES["rust"] / "dist" / f"{GAMES['rust']}-0.1.0.zip"
+    for mode in ("fuel", "none"):
+        output = project / f"results-{mode}"
+        spec = project / f"experiment-{mode}.yaml"
+        spec.write_text(json.dumps({
+            "schema": "parlando-agent-experiment/v1",
+            "game": {"id": GAMES["rust"]},
+            "agents": {"policy": {"factory": AGENT_ID}},
+            "sessions": {
+                "scenarios": [{"name": "seeded-beacon", "config": {}, "seeds": seeds}],
+                "seats": {"player_a": "policy", "player_b": "policy"},
+            },
+            "schedule": {"kind": "alternate_every_response", "first": "player_a"},
+            "execution": {"wasm_metering": mode},
+            "output": {"directory": str(output), "trace": "full"},
+        }) + "\n", encoding="utf-8")
+        summary = json.loads(run(
+            binary, "run", spec, "--package", game, "--agent", archive, "--json",
+            cwd=project, env=env, capture=True, timeout=60,
+        ))["result"]
+        if (summary["completed"], summary["failed"]) != (len(seeds), 0):
+            raise RuntimeError(f"Unexpected standalone policy run summary for {mode}: {summary}")
+        results = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in (output / "results").glob("*.json")
+        ]
+        if sorted(result["game_seed"] for result in results) != seeds:
+            raise RuntimeError(f"Standalone policy run did not record the three seeds for {mode}")
+        for result in results:
+            check_agent_result(result, policy_digest)
+        print(f"Completed three headless Beacon sessions with WASM metering {mode}", flush=True)
+
+
+def check_agent_result(result, policy_digest):
+    """Verify the exact Beacon trace and packaged policy provenance in one session."""
+    target = 4 + result["game_seed"] % 3
+    if (
+        result["status"], result["completion"],
+        result["accepted_actions"], result["rejected_actions"], result["messages"],
+    ) != ("completed", {"activated_at": target}, target, 0, 1):
+        raise RuntimeError(f"Unexpected Beacon outcome or counters: {result}")
+    agents = {
+        (agent["role"], agent["factory"], agent["name"], agent["version"], agent["wasm_sha256"])
+        for agent in result["agents"]
+    }
+    if agents != {
+        (role, AGENT_ID, AGENT_NAME, "1", policy_digest) for role in ("A", "B")
+    }:
+        raise RuntimeError(f"Unexpected Beacon policy provenance: {agents}")
+    trace = result["trace"]
+    if len(trace) != target:
+        raise RuntimeError(f"Beacon should need exactly {target} decisions: {trace}")
+    for charge, row in enumerate(trace):
+        role = "A" if charge % 2 == 0 else "B"
+        response = {"type": "action", "action": {"ticks": 1}}
+        if charge == 1:
+            response.update(type="action_and_message", message=AGENT_MESSAGE)
+        if (
+            row["role"], row["reason"], row["response"], row["rejection"], row["input"]["observation"],
+        ) != (
+            role, "scheduled", response, None,
+            {"charge": charge, "target": target, "your_turn": True},
+        ):
+            raise RuntimeError(f"Unexpected Beacon decision at charge {charge}: {row}")
 
 
 def wait_for_host(host, origin):
@@ -293,7 +432,7 @@ def local_host(work, binary, env):
     }
     log = work / "host.log"
     with log.open("w", encoding="utf-8") as output, subprocess.Popen(
-        [binary, "host", "--bind", address, "--public-url", origin,
+        [binary, "serve", "--bind", address, "--public-url", origin,
          "--store", work / "host", "--grants", grant_file],
         cwd=work, env=credentials, stdout=output, stderr=subprocess.STDOUT,
     ) as host:
@@ -312,7 +451,7 @@ def local_host(work, binary, env):
                     host.kill()
 
 
-def play_games(work, binary, env):
+def play_games(work, binary, agent_package, env):
     """Pin both starters in Typed mode and run the two-browser communication and gameplay gate."""
     browser = work / "browser"
     browser.mkdir()
@@ -328,22 +467,59 @@ def play_games(work, binary, env):
         for game in GAMES.values():
             deploy_env = {**credentials, "PARLANDO_DEPLOY_TOKEN": grants[game]}
             receipt = json.loads(run(
-                binary, "deploy", "--server", origin, "--package", "dist/parlando", "--json",
+                binary, "deploy", "--host", origin, "--json",
                 cwd=work / game, env=deploy_env, capture=True, timeout=60,
             ))["result"]
             pin = json.loads(run(
-                binary, "select", "--server", origin, "--experiment", game, "--game", game,
+                binary, "select", "--host", origin, "--experiment", game, "--game", game,
                 "--revision", receipt["revision"], "--config", typed_config, "--json",
                 cwd=work, env=credentials, capture=True, timeout=60,
             ))["result"]
             if pin["url"] != f"{origin}/e/{game}/" or pin["revision"] != receipt["revision"]:
                 raise RuntimeError(f"Unexpected experiment pin for {game}: {pin}")
             run(
-                binary, "intake", "--server", origin, "--experiment", game, "testing",
+                binary, "intake", "--host", origin, "--experiment", game, "testing",
                 cwd=work, env=credentials, timeout=60,
             )
             run("node", "release_candidate_browser.mjs", pin["url"], cwd=browser, env=env, timeout=60)
             print(f"Completed {game} with two-way Typed chat in Chromium", flush=True)
+            if game == GAMES["rust"]:
+                play_hosted_agent(
+                    work, binary, browser, origin, receipt["revision"],
+                    agent_package, deploy_env, credentials, env,
+                )
+
+
+def play_hosted_agent(work, binary, browser, origin, game_revision, package, deploy_env, credentials, env):
+    """Install an agent ZIP after the game and verify real live turns in a separate experiment."""
+    game = GAMES["rust"]
+    deployed = json.loads(run(
+        binary, "deploy", "--host", origin, "--package", package, "--json",
+        cwd=work, env=deploy_env, capture=True, timeout=60,
+    ))["result"]
+    with ZipFile(package) as archive:
+        policy_digest = hashlib.sha256(archive.read("agent.wasm")).hexdigest()
+    if (deployed["game"], deployed["component_sha256"]) != (game, policy_digest):
+        raise RuntimeError(f"Host registered the wrong policy component: {deployed}")
+    config = work / "agent-experiment.yaml"
+    config.write_text(json.dumps({
+        "communication": {"mode": "typed"},
+        "agents": {"mode": "human_vs_agent", "human_vs_agent": {"factory": AGENT_ID}},
+    }) + "\n", encoding="utf-8")
+    experiment_id = "release-beacon-agent"
+    pin = json.loads(run(
+        binary, "select", "--host", origin, "--experiment", experiment_id, "--game", game,
+        "--revision", game_revision, "--config", config, "--json",
+        cwd=work, env=credentials, capture=True, timeout=60,
+    ))["result"]
+    if (pin["url"], pin["revision"]) != (f"{origin}/e/{experiment_id}/", game_revision):
+        raise RuntimeError(f"Unexpected agent-backed experiment pin: {pin}")
+    run(
+        binary, "intake", "--host", origin, "--experiment", experiment_id, "testing",
+        cwd=work, env=credentials, timeout=60,
+    )
+    run("node", "release_candidate_browser.mjs", pin["url"], "--agent", cwd=browser, env=env, timeout=60)
+    print("Completed hosted Beacon Relay against the standalone Rust policy in Chromium", flush=True)
 
 
 def main():
@@ -374,7 +550,8 @@ def main():
         venv = install_python(work, artifacts, packaged_server, version, env)
         env["VIRTUAL_ENV"] = str(venv)
         build_games(work, binary, client, version, env)
-        play_games(work, binary, env)
+        agent_package = build_and_run_agent(work, binary, version, env)
+        play_games(work, binary, agent_package, env)
         if args.output:
             save_verified(args.output.resolve(), artifacts, version, sources)
     print(f"Parlando {version} release candidate passed")

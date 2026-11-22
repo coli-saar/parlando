@@ -17,8 +17,7 @@ Its `Game` trait supplies the six payload types and session operations,
 provides the WIT exports. For Python, the
 [Python Game SDK](https://pypi.org/project/parlando-python-sdk/) supplies
 the same interface through a typed `Game` subclass and its `mechanics` adapter.
-Run `parlando check --manifest dist/parlando/game.yaml` against the staged
-artifact to verify it with the actual host loader.
+Pass the ZIP printed by `parlando build` to `parlando check --package` to verify it with the actual host loader.
 
 ## Implement deterministic turns
 
@@ -202,9 +201,8 @@ each guest call 50 million Wasmtime fuel units and limits each linear memory
 to 64 MiB, with at most four memories and 64 core Wasm instances per guest
 store. A guest trap, including fuel exhaustion, is an execution failure.
 
-Use `parlando serve --wasm-metering none` for a local game or
-`parlando host --wasm-metering none` for all games on a shared host to remove
-the per-call fuel budget. Memory and instance limits still apply. An unmetered
+Use `parlando serve --wasm-metering none` to remove the per-call fuel budget
+for every game on the server. Memory and instance limits still apply. An unmetered
 game can loop indefinitely inside a call. For headless evaluations, select the
 mode in the [agent–agent experiment YAML](agent-agent-and-rl-experiments.md#choose-the-game-components-execution-budget).
 

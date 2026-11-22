@@ -51,8 +51,9 @@ test-rust:
 
 # Builds the guest fixtures and runs the component compatibility suite.
 test-components:
+	cmp "$(RUST_GAME_SDK_DIR)/wit/agent/agent.wit" "$(RUST_SERVER_DIR)/wit/agent/agent.wit"
+	cargo test --locked --manifest-path "$(RUST_GAME_SDK_DIR)/Cargo.toml"
 	cargo test --locked --manifest-path "$(STRESS_FIXTURE_DIR)/Cargo.toml"
-	cargo test --locked --manifest-path "$(PARLANDO_DIR)/parlando-game-sdk/Cargo.toml"
 	mkdir -p "$(COMPONENT_TEST_DIR)"
 	cargo build --locked --release --manifest-path "$(STRESS_FIXTURE_DIR)/Cargo.toml" \
 	  --target wasm32-unknown-unknown --target-dir "$(COMPONENT_TEST_DIR)/cargo" --features test-traps --lib --example sdk-encoding-trap

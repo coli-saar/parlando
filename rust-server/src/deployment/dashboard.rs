@@ -15,15 +15,17 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
+use rand::{rngs::OsRng, RngCore};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use super::{
     accounts::{
-        AccountInputError, AccountStore, DashboardSession, PasswordWorkBusy,
+        Account, AccountInputError, AccountStore, DashboardSession, PasswordWorkBusy,
         SESSION_DURATION_SECONDS,
     },
-    bad_request, checked_origin, internal, not_found, require_token, validate_id,
+    bad_request, checked_origin, internal, not_found, require_token, token_digest, validate_id,
     validate_revision, Host, HttpResult, PackageManifest,
 };
 use std::sync::Arc;
@@ -34,7 +36,9 @@ pub(super) struct Dashboard {
     origin: String,
     authority: String,
     public_authority: String,
+    cookie_name: String,
     secure: bool,
+    local_setup_digest: Option<[u8; 32]>,
 }
 
 impl Dashboard {
@@ -50,13 +54,31 @@ impl Dashboard {
         );
         let public_authority = authority(public_url)?.to_owned();
         let authority = authority(&origin)?.to_owned();
+        let secure = admin.scheme() == "https";
         Ok(Self {
             accounts: AccountStore::open(store).await?,
+            cookie_name: session_cookie_name(&admin),
             origin,
             authority,
             public_authority,
-            secure: admin.scheme() == "https",
+            secure,
+            local_setup_digest: None,
         })
+    }
+
+    /// Issues a one-time setup credential for an empty account database and retains only its digest.
+    pub(super) async fn enable_local_setup(&mut self) -> Result<Option<String>> {
+        if self.local_setup_digest.is_some() || !self.accounts.is_empty().await? {
+            return Ok(None);
+        }
+        let mut bytes = [0; 32];
+        OsRng.try_fill_bytes(&mut bytes)?;
+        let token: String = bytes
+            .into_iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        self.local_setup_digest = Some(token_digest(&token));
+        Ok(Some(token))
     }
 
     /// Checks the browser-supplied origin before processing credential or state changes.
@@ -67,21 +89,12 @@ impl Dashboard {
         Err(forbidden("Invalid administrator origin"))
     }
 
-    /// Uses a host-only cookie, with prefix enforcement on production HTTPS.
-    fn cookie_name(&self) -> &'static str {
-        if self.secure {
-            "__Host-parlando_host"
-        } else {
-            "parlando_host"
-        }
-    }
-
     /// Formats the session or removal cookie using the same attributes.
     fn cookie(&self, token: &str, max_age: u64) -> HttpResult<HeaderValue> {
         let secure = if self.secure { "Secure; " } else { "" };
         HeaderValue::from_str(&format!(
             "{}={token}; Path=/; Max-Age={max_age}; {secure}HttpOnly; SameSite=Strict",
-            self.cookie_name()
+            self.cookie_name
         ))
         .map_err(internal)
     }
@@ -119,7 +132,25 @@ impl Dashboard {
             .filter_map(|value| value.to_str().ok())
             .flat_map(|value| value.split(';'))
             .filter_map(|pair| pair.trim().split_once('='))
-            .find_map(|(name, token)| (name == self.cookie_name()).then_some(token))
+            .find_map(|(name, token)| (name == self.cookie_name).then_some(token))
+    }
+}
+
+/// Names the host-only cookie for a canonical origin. Cookies ignore ports, so
+/// alternate-port dashboards need distinct names. Default ports retain their
+/// existing names, including browser prefix enforcement on HTTPS.
+fn session_cookie_name(admin: &reqwest::Url) -> String {
+    let base = if admin.scheme() == "https" {
+        "__Host-parlando_host"
+    } else {
+        "parlando_host"
+    };
+    match admin.port() {
+        Some(_) => {
+            let origin = admin.origin().ascii_serialization();
+            format!("{base}_{:x}", Sha256::digest(origin.as_bytes()))
+        }
+        None => base.to_owned(),
     }
 }
 
@@ -135,6 +166,7 @@ pub(super) fn routes() -> Router<Arc<Host>> {
             get(communication_config_javascript),
         )
         .route("/admin/dashboard.css", get(stylesheet))
+        .route("/api/hosting/auth/setup", post(setup))
         .route("/api/hosting/auth/login", post(login))
         .route("/api/hosting/auth/logout", post(logout))
         .route("/api/hosting/auth/session", get(session))
@@ -367,6 +399,33 @@ struct SignIn {
     password: String,
 }
 
+/// Creates the initial operator after checking the administrator authority, origin, and setup token.
+async fn setup(
+    State(host): State<Arc<Host>>,
+    request: Request,
+) -> HttpResult<(StatusCode, Json<Account>)> {
+    let (parts, body) = request.into_parts();
+    let dashboard = admin(&host, &parts)?;
+    dashboard.verify_origin(&parts.headers)?;
+    require_token(&parts.headers, dashboard.local_setup_digest.as_ref())?;
+    let Json(input) = parse_json::<SignIn>(parts, body, &host).await?;
+    let account = audited(&host, "local-setup", "setup-account", "dashboard", async {
+        dashboard
+            .accounts
+            .create_first_operator(&input.username, input.password)
+            .await
+            .map_err(account_error)?
+            .ok_or_else(|| {
+                (
+                    StatusCode::CONFLICT,
+                    "The dashboard already has an account.".to_owned(),
+                )
+            })
+    })
+    .await?;
+    Ok((StatusCode::CREATED, Json(account)))
+}
+
 /// Creates a browser session after checking origin and verifying the password.
 async fn login(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Response> {
     let (parts, body) = request.into_parts();
@@ -428,16 +487,20 @@ async fn index(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Js
             .map(|(id, experiment)| {
                 (
                     id.clone(),
-                    (experiment.selection.clone(), experiment.state.clone()),
+                    (
+                        experiment.selection.clone(),
+                        experiment.agents.clone(),
+                        experiment.state.clone(),
+                    ),
                 )
             })
             .collect::<BTreeMap<_, _>>()
     };
     let mut rows = Vec::with_capacity(experiments.len());
-    for (id, (selection, state)) in experiments {
+    for (id, (selection, agents, state)) in experiments {
         rows.push(
             json!({"id": id, "game": selection.game, "revision": selection.revision,
-            "config": selection.config, "status": state.hosted_intake_status().await,
+            "config": selection.config, "agents":agents, "status": state.hosted_intake_status().await,
             "participant_url": format!("{}/e/{id}/", host.public_url)}),
         );
     }
@@ -463,6 +526,7 @@ fn package_index(store: &Path) -> Result<Vec<Value>> {
             continue;
         }
         let mut revisions = BTreeMap::new();
+        let agents = super::read_agent_catalog(store, &id)?;
         for revision in fs::read_dir(game.path())? {
             let revision = revision?;
             let name = revision.file_name().to_string_lossy().into_owned();
@@ -472,7 +536,7 @@ fn package_index(store: &Path) -> Result<Vec<Value>> {
             let manifest = PackageManifest::read(&revision.path())?;
             revisions.insert(
                 name.clone(),
-                json!({"revision":name,"version":manifest.version()}),
+                json!({"revision":name,"version":manifest.version(),"agents":agents.get(&name)}),
             );
         }
         games.insert(
@@ -487,7 +551,7 @@ fn package_index(store: &Path) -> Result<Vec<Value>> {
 async fn operator<'a>(host: &'a Host, parts: &Parts) -> HttpResult<(&'a Dashboard, String)> {
     let dashboard = admin(host, parts)?;
     if parts.headers.contains_key(AUTHORIZATION) {
-        require_token(&parts.headers, Some(&host.admin_token))?;
+        require_token(&parts.headers, host.admin_token.as_ref())?;
         return Ok((dashboard, "host-operator-token".into()));
     }
     let session = dashboard.browser_session(parts).await?;
@@ -639,4 +703,20 @@ fn unauthorized() -> (StatusCode, String) {
 /// Signals that an authenticated request failed an authority check.
 fn forbidden(message: &str) -> (StatusCode, String) {
     (StatusCode::FORBIDDEN, message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Checks port isolation and compatibility with default-port cookies.
+    #[test]
+    fn session_cookie_names_isolate_dashboard_ports() {
+        let name = |origin| session_cookie_name(&reqwest::Url::parse(origin).unwrap());
+        assert_ne!(name("http://localhost:3000"), name("http://localhost:3001"));
+        assert_eq!(name("http://localhost:3000"), name("http://LOCALHOST:3000"));
+        assert_eq!(name("http://localhost:80"), "parlando_host");
+        assert_eq!(name("https://lab.example:443"), "__Host-parlando_host");
+        assert!(name("https://lab.example:8443").starts_with("__Host-parlando_host_"));
+    }
 }

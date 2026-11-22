@@ -151,12 +151,20 @@ fn restores_a_checkpoint_and_rejects_before_capturing_frame() {
 /// Detects ABI drift between the authoring SDK and the host in a checkout.
 #[test]
 fn packaged_wit_matches_the_host() {
-    let host_wit =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../rust-server/wit/game.wit");
-    if host_wit.exists() {
-        assert_eq!(
-            std::fs::read(host_wit).unwrap(),
-            include_bytes!("../../wit/game.wit")
-        );
+    let host = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../rust-server");
+    if host.join("Cargo.toml").exists() {
+        for (path, sdk_bytes) in [
+            ("game.wit", include_bytes!("../../wit/game.wit").as_slice()),
+            (
+                "agent/agent.wit",
+                include_bytes!("../../wit/agent/agent.wit").as_slice(),
+            ),
+        ] {
+            assert_eq!(
+                std::fs::read(host.join("wit").join(path)).unwrap(),
+                sdk_bytes,
+                "{path}"
+            );
+        }
     }
 }

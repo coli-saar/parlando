@@ -21,7 +21,10 @@ use tonic::{
 use crate::component::ComponentValue;
 use crate::{
     agent_experiment::{CheckpointId, RLAgent, RLTrainingContext, TrainingBatch, TrajectoryStep},
-    agents::{Agent, AgentContext, AgentFactory, AgentIdentity, AgentResponse},
+    agents::{
+        Agent, AgentContext, AgentFactory, AgentIdentity, Decision, Observation, Reason,
+        WakeupRequest,
+    },
     game::{AgentConfigField, AgentConfigValue, AgentDefinition, PlayerRole, StringFormat},
 };
 
@@ -37,7 +40,8 @@ pub mod learner_pb {
 
 use pb::{
     agent_service_client::AgentServiceClient, CreateAgentRequest, FinishRequest,
-    ObserveMessageRequest, ObserveTransitionRequest, RespondRequest, ShutdownRequest, StartRequest,
+    ObserveMessageRequest, ObserveRequest, ObserveTransitionRequest, RespondRequest,
+    ShutdownRequest, StartRequest,
 };
 
 /// Configuration for a remote gRPC agent backend.
@@ -398,6 +402,52 @@ impl Agent for RemoteAgentInstance {
         Ok(())
     }
 
+    /// Sends both facets of one committed delivery in the same request.
+    async fn observe(&mut self, observation: Observation) -> Result<()> {
+        let request_timeout = self.config.request_timeout;
+        let (client, agent_id) = self.active()?;
+        let transition = observation
+            .transition
+            .as_ref()
+            .map(|transition| {
+                Ok::<_, anyhow::Error>(pb::observe_request::Transition {
+                    actor: transition.actor.as_str().to_owned(),
+                    action: Some(component_to_struct(transition.action.clone())?),
+                    view: Some(component_to_struct(transition.view.clone())?),
+                })
+            })
+            .transpose()?;
+        let message = observation
+            .message
+            .as_ref()
+            .map(|message| pb::observe_request::Message {
+                sender: message.sender.as_str().to_owned(),
+                text: message.text.clone(),
+            });
+        let request = ObserveRequest {
+            agent_id,
+            transition,
+            message,
+        };
+        let response = tokio::time::timeout(request_timeout, client.observe(request))
+            .await
+            .context("remote agent observe timed out")?;
+        match response {
+            Ok(response) => self.record_remote_logs(response.into_inner().session_logs),
+            Err(error) if error.code() == tonic::Code::Unimplemented => {
+                if let Some(transition) = observation.transition {
+                    self.observe_transition(transition.actor, transition.action, transition.view)
+                        .await?;
+                }
+                if let Some(message) = observation.message {
+                    self.observe_message(message.sender, message.text).await?;
+                }
+            }
+            Err(error) => return Err(error).context("remote agent observe failed"),
+        }
+        Ok(())
+    }
+
     /// Sends an accepted action and resulting observation to the remote agent.
     async fn observe_transition(
         &mut self,
@@ -460,12 +510,13 @@ impl Agent for RemoteAgentInstance {
         Ok(())
     }
 
-    /// Optionally asks the remote agent for a response.
-    async fn respond(&mut self) -> Result<Option<AgentResponse>> {
+    /// Delivers the decision trigger and reads the resulting action, chat, or wakeup.
+    async fn decide(&mut self, reason: Reason) -> Result<Decision> {
         let request_timeout = self.config.request_timeout;
         let (client, agent_id) = self.active()?;
         let request = RespondRequest {
             agent_id,
+            reason: Some(reason_to_proto(reason)),
             ..Default::default()
         };
         let response = tokio::time::timeout(request_timeout, client.respond(request))
@@ -474,7 +525,11 @@ impl Agent for RemoteAgentInstance {
             .context("remote agent respond failed")?
             .into_inner();
         self.record_remote_logs(response.session_logs);
-        response.response.map(proto_to_agent_response).transpose()
+        Ok(response
+            .response
+            .map(proto_to_decision)
+            .transpose()?
+            .unwrap_or_default())
     }
 
     /// Releases the corresponding remote server instance on normal completion or cancellation.
@@ -519,18 +574,48 @@ impl RemoteAgentInstance {
     }
 }
 
-/// Converts a protobuf agent response into a typed Rust response.
-fn proto_to_agent_response(response: pb::AgentResponse) -> Result<AgentResponse> {
+/// Encodes the exact decision trigger without exposing any session state.
+fn reason_to_proto(reason: Reason) -> pb::DecisionReason {
+    use pb::decision_reason::Kind;
+    let (kind, rejection_code) = match reason {
+        Reason::SessionStarted => (Kind::SessionStarted, String::new()),
+        Reason::AfterObservation => (Kind::AfterObservation, String::new()),
+        Reason::Scheduled => (Kind::Scheduled, String::new()),
+        Reason::WakeupDue => (Kind::WakeupDue, String::new()),
+        Reason::ActionRejected(code) => (Kind::ActionRejected, code),
+    };
+    pb::DecisionReason {
+        kind: kind as i32,
+        rejection_code,
+    }
+}
+
+/// Validates a timer update and converts the protobuf decision into host outputs.
+fn proto_to_decision(response: pb::AgentResponse) -> Result<Decision> {
+    use pb::wakeup_request::Request;
     let action = response
         .action
         .map(|action| ComponentValue::from_typed(&struct_to_json(action)))
         .transpose()?;
-    match (action, response.message) {
-        (Some(action), Some(message)) => Ok(AgentResponse::action_and_message(action, message)),
-        (Some(action), None) => Ok(AgentResponse::action(action)),
-        (None, Some(message)) => Ok(AgentResponse::message(message)),
-        (None, None) => bail!("remote agent returned an empty response"),
-    }
+    let wakeup = match response.wakeup {
+        None => None,
+        Some(wakeup) => Some(match wakeup.request {
+            Some(Request::After(delay)) => {
+                anyhow::ensure!(
+                    delay.seconds >= 0 && (0..1_000_000_000).contains(&delay.nanos),
+                    "remote agent returned an invalid wakeup delay"
+                );
+                WakeupRequest::After(Duration::new(delay.seconds as u64, delay.nanos as u32))
+            }
+            Some(Request::Cancel(true)) => WakeupRequest::Cancel,
+            _ => bail!("remote agent returned an invalid wakeup request"),
+        }),
+    };
+    Ok(Decision {
+        action,
+        message: response.message,
+        wakeup,
+    })
 }
 
 /// Converts a component value to the object representation used by remote callbacks.
