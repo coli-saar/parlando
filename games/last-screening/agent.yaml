@@ -3,4 +3,9 @@ id: last_screening.operator
 name: Screening partner
 version: 1.0.0
 cargo_manifest: server/Cargo.toml
-features: [agent-component]
+features:
+- agent-component
+dependency:
+  source: dist/last-screening-0.1.0.zip
+  version: 0.1.0
+  sha256: eec7298405b018c3a571c81ef89b8beebd95b142b02a0e1b885edf185c5995b5

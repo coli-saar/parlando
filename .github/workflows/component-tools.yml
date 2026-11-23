@@ -60,10 +60,9 @@ jobs:
       - name: Start container with a persistent volume
         run: |
           docker run -d --name parlando-test -p 127.0.0.1:8000:8000 -v parlando-data:/data \
-            -e PARLANDO_ADMIN_URL=http://localhost:8000 \
             -e PARLANDO_PUBLIC_URL=http://127.0.0.1:8000 parlando-host:build
           curl --fail --retry 15 --retry-connrefused http://127.0.0.1:8000/health
-          curl --fail http://localhost:8000/api/hosting/auth/setup | jq -e '.available == true'
+          curl --fail http://127.0.0.1:8000/api/hosting/auth/setup | jq -e '.available == true'
       - uses: actions/upload-artifact@v4
         with:
           name: parlando-host-linux-x86_64

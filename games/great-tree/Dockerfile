@@ -16,7 +16,9 @@ RUN cargo build --release --locked --manifest-path games/great-tree/server/Cargo
 
 FROM node:22-bookworm-slim AS client
 WORKDIR /app
-COPY games/great-tree/client/ ./
+COPY js-client/ js-client/
+COPY games/great-tree/client/ games/great-tree/client/
+WORKDIR /app/games/great-tree/client
 RUN npm ci --no-audit --no-fund && npm run build
 
 FROM debian:bookworm-slim
@@ -27,7 +29,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=builder /app/target/release/great-tree-with-agents /usr/local/bin/
 COPY --from=builder /app/game.wasm ./game.wasm
-COPY --from=client /app/dist ./client-dist
+COPY --from=client /app/games/great-tree/client/dist ./client-dist
 ENV PORT=8000 PARLANDO_CLIENT_DIST=/app/client-dist PARLANDO_DATABASE_URL=sqlite:////home/parlando/great-tree-component.sqlite RUST_LOG=info
 EXPOSE 8000
 USER parlando

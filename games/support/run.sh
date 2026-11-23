@@ -18,18 +18,11 @@ for option in "$@"; do
   esac
 done
 
-export npm_config_cache="${NPM_CACHE:-$repo_dir/.local/npm-cache}"
-if [[ -z ${PARLANDO_BIN:-} ]]; then
-  run_cli=(cargo run --quiet --manifest-path "$repo_dir/rust-server/Cargo.toml" --bin parlando --)
-else
-  run_cli=("$PARLANDO_BIN")
-fi
+source "$repo_dir/games/support/packages.sh"
+build_packages "$game_dir" "$bundled_agents"
 if [[ "$serve" == false ]]; then
-  exec "${run_cli[@]}" build --manifest "$game_dir/game.yaml"
+  exit 0
 fi
-package=$("${run_cli[@]}" build --manifest "$game_dir/game.yaml" --json | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["package"])')
-printf 'Built game archive: %s\n' "$package"
-
 
 mkdir -p .local
 host=${HOST:-127.0.0.1}

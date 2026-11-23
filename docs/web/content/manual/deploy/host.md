@@ -4,7 +4,7 @@ title: Operate a shared host
 
 # Operate a shared host
 
-Install the CLI on a machine that can stay running. A single host can serve many games and experiments. It needs a persistent directory, a public participant address, and a separate administrator hostname for the browser dashboard.
+Install the CLI on a machine that can stay running. A single host can serve many games and experiments. It needs a persistent directory and a public address. Trusted games and the dashboard can share that address.
 
 ```sh
 cargo install --locked parlando --bin parlando
@@ -25,7 +25,7 @@ parlando serve --bind 127.0.0.1:8000 --store ./parlando-host \
 
 The two names reach the same listener. They count as different browser origins, keeping uploaded participant JavaScript away from the dashboard's authority.
 
-For a public host, use HTTPS on both hostnames, route them to the service, and preserve the requested Host header and WebSocket upgrades. Set `--public-url` to the participant origin and `--admin-url` to the administrator origin. Use a single host process for the persistent store. Check `/health` on the running service, then open `/admin` on the administrator origin.
+For a public host, use HTTPS and preserve the requested Host header and WebSocket upgrades. To serve trusted games and the dashboard together, pass the same origin to `--public-url` and `--admin-url`. To isolate uploaded game JavaScript from the dashboard, assign the dashboard its own hostname. Use a single host process for the persistent store. Open `/admin` on the dashboard origin after startup.
 
 ## Create the first administrator on a configured host
 

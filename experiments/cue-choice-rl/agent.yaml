@@ -1,0 +1,11 @@
+game: cue-choice
+id: cue_choice.dealer
+name: Cue Choice dealer
+version: 1.0.0
+cargo_manifest: server/Cargo.toml
+features:
+- agent-component
+dependency:
+  source: dist/cue-choice-0.1.0.zip
+  version: 0.1.0
+  sha256: d875854f50c87c94fd455ae61fb84fd5283329b15cc8261b46a316882c554f5a

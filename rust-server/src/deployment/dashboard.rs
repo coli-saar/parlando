@@ -1,4 +1,4 @@
-//! Hosts lab accounts and their operator UI on a dedicated web origin.
+//! Hosts lab accounts and their operator UI on the configured web origin.
 
 use std::{future::Future, path::Path};
 
@@ -39,15 +39,16 @@ pub(super) struct Dashboard {
 }
 
 impl Dashboard {
-    /// Opens lab accounts on the administrator hostname, isolated from participant apps.
+    /// Opens lab accounts on the configured dashboard origin. Trusted games may share that origin.
     pub async fn open(store: &Path, public_url: &str, admin_url: &str) -> Result<Self> {
         let origin = checked_origin(admin_url)?;
         let admin = reqwest::Url::parse(&origin)?;
         let public = reqwest::Url::parse(public_url)?;
         ensure!(
-            admin.host_str().map(|value| value.trim_end_matches('.'))
-                != public.host_str().map(|value| value.trim_end_matches('.')),
-            "the administrator origin requires a different hostname from the participant origin"
+            origin == public_url
+                || admin.host_str().map(|value| value.trim_end_matches('.'))
+                    != public.host_str().map(|value| value.trim_end_matches('.')),
+            "use the same origin or give the administrator site a different hostname"
         );
         let public_authority = authority(public_url)?.to_owned();
         let authority = authority(&origin)?.to_owned();
@@ -197,7 +198,7 @@ fn admin<'a>(host: &'a Host, parts: &Parts) -> HttpResult<&'a Dashboard> {
         .ok_or_else(not_found)
 }
 
-/// Identifies requests to the separate administrator origin before game dispatch.
+/// Identifies requests to the configured administrator origin before game dispatch.
 pub(super) fn administrator_origin_allowed(host: &Host, parts: &Parts) -> bool {
     admin(host, parts).is_ok()
 }
@@ -209,7 +210,7 @@ pub(super) async fn game_session(host: &Host, parts: &Parts) -> HttpResult<(Stri
     Ok((actor_name(&session), session.csrf))
 }
 
-/// Keeps uploaded applications off the dashboard hostname.
+/// Restricts participant routes to the public authority, which may also serve the dashboard.
 pub(super) fn participant_origin_allowed(host: &Host, parts: &Parts) -> bool {
     let Some(dashboard) = &host.dashboard else {
         return true;

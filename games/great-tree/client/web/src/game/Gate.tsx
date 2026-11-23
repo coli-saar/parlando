@@ -7,7 +7,8 @@ export interface GateProps {
   state: GateState;
   /** "gold" for Crown's sun gates, "cyan" for Root's water gates. */
   palette?: "gold" | "cyan";
-  onClick: () => void;
+  /** Absent when the host supplies a read-only view. */
+  onClick?: () => void;
 }
 
 const FILL: Record<GateState, Record<"gold" | "cyan", string>> = {
@@ -36,22 +37,23 @@ export function Gate({ x, y, rotation, state, palette = "gold", onClick }: GateP
   const fill = FILL[state][palette];
   const glowing = state === "open";
   const frozen = state === "frozen";
+  const disabled = frozen || !onClick;
   return (
     <g
       role="button"
-      aria-disabled={frozen || undefined}
-      tabIndex={frozen ? -1 : 0}
+      aria-disabled={disabled || undefined}
+      tabIndex={disabled ? -1 : 0}
       aria-label="gate"
       transform={`translate(${x},${y}) rotate(${rotation})`}
-      onClick={frozen ? undefined : onClick}
+      onClick={disabled ? undefined : onClick}
       onKeyDown={
-        frozen
+        disabled
           ? undefined
           : (event) => {
               if (event.key === "Enter" || event.key === " ") onClick();
             }
       }
-      style={{ cursor: frozen ? "default" : "pointer", outline: frozen ? "none" : undefined }}
+      style={{ cursor: disabled ? "default" : "pointer", outline: disabled ? "none" : undefined }}
     >
       {glowing && (
         <circle r={14} fill={palette === "gold" ? "#fff2c0" : "#bff0ff"} opacity={0.32} />

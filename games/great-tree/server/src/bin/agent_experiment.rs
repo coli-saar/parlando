@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
         }),
     };
     let summary = ExperimentRunner::new(metadata, game)?
-        .agent(IdleAgentFactory)?
+        .agent(IdleAgentFactory::new()?)?
         .agent(LlmAgentFactory)?
         .agent(RootBotAgentFactory)?
         .agent(RemoteAgent::new())?

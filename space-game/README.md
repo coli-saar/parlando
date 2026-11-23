@@ -26,7 +26,7 @@ database. The default database is `.local/component.sqlite`.
 ## Package the game
 
 `make build` writes `dist/space-game-0.1.0.zip` with the manifest, component, and browser
-bundle. Upload this ZIP to a running deployment host with `parlando deploy`. For the authored agent, use `make run`.
+bundle. Upload this ZIP to a running deployment host with `parlando deploy`. The same build writes `dist/agent-space_game.back_and_forth-1.0.0.zip`. Upload it after the game to make **Back and forth** available on the shared host.
 
 ## Solo voice test
 

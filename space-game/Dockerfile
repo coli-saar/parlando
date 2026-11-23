@@ -16,7 +16,9 @@ RUN cargo build --release --locked --manifest-path space-game/server/Cargo.toml 
 
 FROM node:22-bookworm-slim AS client
 WORKDIR /app
-COPY space-game/client/ ./
+COPY js-client/ js-client/
+COPY space-game/client/ space-game/client/
+WORKDIR /app/space-game/client
 RUN npm ci --no-audit --no-fund && npm run build
 
 FROM debian:bookworm-slim
@@ -27,7 +29,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=builder /app/target/release/space-game-with-agents /usr/local/bin/
 COPY --from=builder /app/game.wasm ./game.wasm
-COPY --from=client /app/dist ./client-dist
+COPY --from=client /app/space-game/client/dist ./client-dist
 ENV PORT=8000 PARLANDO_CLIENT_DIST=/app/client-dist PARLANDO_DATABASE_URL=sqlite:////data/space-game-component.sqlite RUST_LOG=info
 EXPOSE 8000
 USER parlando

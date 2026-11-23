@@ -1,6 +1,8 @@
 //! Typed policy decisions are converted to wire values at the host callback boundary.
 
+#[cfg(all(feature = "bundled-agents", not(target_arch = "wasm32")))]
 use parlando::agent;
+#[cfg(all(feature = "bundled-agents", not(target_arch = "wasm32")))]
 use parlando::component::ComponentValue;
 use serde::Serialize;
 
@@ -31,6 +33,7 @@ impl<A: Serialize> Response<A> {
     }
 
     /// Serializes the typed operation using its public wire representation.
+    #[cfg(all(feature = "bundled-agents", not(target_arch = "wasm32")))]
     pub(crate) fn into_wire(self) -> anyhow::Result<agent::Response> {
         Ok(match self {
             Self::Action(action) => agent::Response::action(ComponentValue::from_typed(&action)?),
@@ -39,5 +42,18 @@ impl<A: Serialize> Response<A> {
                 agent::Response::action_and_message(ComponentValue::from_typed(&action)?, message)
             }
         })
+    }
+}
+
+impl<A> From<Response<A>> for parlando_game_sdk::agent::Response<A> {
+    /// Carries a decision from the strategy to the component callback.
+    fn from(value: Response<A>) -> Self {
+        match value {
+            Response::Action(action) => Self::action(action),
+            Response::Message(text) => Self::message(text),
+            Response::ActionAndMessage { action, message } => {
+                Self::action_and_message(action, message)
+            }
+        }
     }
 }

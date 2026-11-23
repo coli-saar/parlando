@@ -7,7 +7,7 @@ import asyncio
 from typing import Any
 
 import grpc
-from parlando_agent_sdk import Agent, Context, Learner, Response, add_agent_service, add_learner_service
+from parlando_agent_sdk import Agent, Context, Decision, Learner, Observation, Reason, add_agent_service, add_learner_service
 
 from .runtime import LearnerRuntime, RandomBackend
 
@@ -31,21 +31,16 @@ class CueChoiceAgent(Agent):
         """Stores the initial learner observation."""
         self._observation = observation
 
-    async def observe_transition(
-        self, actor: str, action: dict[str, Any], observation: dict[str, Any]
-    ) -> None:
-        """Advances the policy's role-safe observation after an accepted action."""
-        del actor, action
-        self._observation = observation
+    async def observe(self, observation: Observation) -> None:
+        """Keep the learner's role-safe view across action and chat deliveries."""
+        if observation.transition is not None:
+            self._observation = observation.transition.view
 
-    async def respond(
-        self, available_actions: list[dict[str, Any]] | None
-    ) -> Response | None:
-        """Returns one legal action when the runner activates this agent."""
-        del available_actions
+    async def decide(self, reason: Reason) -> Decision:
+        """Choose among the moves offered by the most recent learner view."""
         legal_actions = self._observation.get("available_actions")
         if not legal_actions:
-            return None
+            return Decision()
         action = await self._runtime.choose(
             self._checkpoint,
             self._observation,
@@ -53,7 +48,7 @@ class CueChoiceAgent(Agent):
             self._seed,
             self._temperature,
         )
-        return Response.action(action)
+        return Decision(action=action)
 
 
 class CueChoiceLearner(Learner):

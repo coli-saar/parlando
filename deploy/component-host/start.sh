@@ -11,13 +11,10 @@ run_parlando() {
 if [ "$#" -gt 0 ]; then
     run_parlando "$@"
 fi
-# A Railway host must retain its store across pushes and support authenticated uploads.
-if [ -n "${RAILWAY_ENVIRONMENT_ID:-}" ]; then
-    if [ "${RAILWAY_VOLUME_MOUNT_PATH:-}" != /data ]; then
-        echo "Mount a Railway volume at /data before starting Parlando." >&2
-        exit 1
-    fi
-    : "${PARLANDO_ADMIN_URL:?Set the separate administrator HTTPS origin}"
+# Railway redeployments need the same persistent store.
+if [ -n "${RAILWAY_ENVIRONMENT_ID:-}" ] && [ "${RAILWAY_VOLUME_MOUNT_PATH:-}" != /data ]; then
+    echo "Mount a Railway volume at /data before starting Parlando." >&2
+    exit 1
 fi
 # Only initialize this application's directory inside the provider-owned volume.
 if [ "$(id -u)" = 0 ]; then
@@ -32,5 +29,5 @@ if [ -z "$public_url" ] && [ -n "${RAILWAY_PUBLIC_DOMAIN:-}" ]; then
     public_url="https://$RAILWAY_PUBLIC_DOMAIN"
 fi
 : "${public_url:?Set PARLANDO_PUBLIC_URL to the public HTTPS origin of this host}"
-set -- "$@" --public-url "$public_url"
+set -- "$@" --public-url "$public_url" --admin-url "${PARLANDO_ADMIN_URL:-$public_url}"
 run_parlando "$@"

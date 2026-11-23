@@ -3,7 +3,7 @@ import { CrownView } from "./game/CrownView";
 import { RootView } from "./game/RootView";
 import type { GreatTreeAction, GreatTreeCompletion, GreatTreeObservation } from "./game/types";
 
-type Snapshot = GameSnapshot<GreatTreeObservation, GreatTreeAction>;
+type Snapshot = Pick<GameSnapshot<GreatTreeObservation, GreatTreeAction>, "observation" | "interactionEnabled" | "act">;
 
 export function App() {
   return (
@@ -16,6 +16,7 @@ export function App() {
   );
 }
 
+/** Renders the role view and offers its controls only during an interactive session. */
 export function ActiveGreatTree({ snapshot }: { snapshot: Snapshot }) {
   const observation = snapshot.observation;
   return (
@@ -25,12 +26,12 @@ export function ActiveGreatTree({ snapshot }: { snapshot: Snapshot }) {
         {observation.role === "crown" ? (
           <CrownView
             limbs={observation.limbs}
-            onSetSun={(limb, lit) => snapshot.act({ type: "setSun", limb, lit })}
+            onSetSun={snapshot.interactionEnabled ? (limb, lit) => snapshot.act({ type: "setSun", limb, lit }) : undefined}
           />
         ) : (
           <RootView
             roots={observation.roots}
-            onSetFlow={(root, open) => snapshot.act({ type: "setFlow", root, open })}
+            onSetFlow={snapshot.interactionEnabled ? (root, open) => snapshot.act({ type: "setFlow", root, open }) : undefined}
           />
         )}
       </div>

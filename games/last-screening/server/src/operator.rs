@@ -1,5 +1,5 @@
 //! Deterministic cooperative partner. Its inputs are its own observation,
-//! messages from the other player, and the runtime's legal-action catalogue.
+//! including its legal actions, and messages from the other player.
 
 #[cfg(test)]
 use crate::Screening;

@@ -25,6 +25,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tracing = { version = "0.1", optional = true }
 
 [features]
+idle = []
+root-bot = []
 bundled-agents = ["dep:async-trait", "dep:clap", "dep:parlando", "dep:tokio", "dep:tracing-subscriber", "dep:reqwest", "dep:tracing"]
 
 [[bin]]
@@ -33,6 +35,7 @@ path = "src/bin/with_agents.rs"
 required-features = ["bundled-agents"]
 
 [dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
 parlando = { path = "../../../rust-server", features = ["internal-tools"] }
 serde_yaml = "0.9"
 

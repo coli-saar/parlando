@@ -12,7 +12,7 @@ From the Parlando repository root, run:
 games/counterweight-hotel/run.sh
 ```
 
-Open the [hotel dashboard](http://127.0.0.1:8081/admin/experiments). On a fresh installation, create the administrator and an experiment. Use **Human vs human** for a pair or **Human vs agent** with **Hotel porter** for one guest. Enable live voice for a human pair. Each guest selects **Prepare voice** in the lobby and grants microphone access. Either guest can mute at any time, and text chat stays available. The local solo demo uses a text porter. The default game configuration `{}` selects **Bridge Escape**. To play **Rescue Supplies** as a separate game, set the experiment’s game YAML to `route: rescue_supplies`. The porter settings are `{}` for either route. Activate the experiment and open its participant link. On one computer, two humans can use separate browser profiles. The dashboard and its participant URLs share the same host, port, and database. After restarting the server, activate the desired experiment again.
+Open the [hotel dashboard](http://127.0.0.1:8081/admin/experiments). On a fresh installation, create the administrator and an experiment. Use **Human vs human** for a pair or **Human vs agent** with **Hotel porter** for one guest. Enable live voice for a human pair. Each guest selects **Prepare voice** in the lobby and grants microphone access. Either guest can mute at any time. Select typed communication for text chat. The local solo demo uses a text porter. The default game configuration `{}` selects **Bridge Escape**. To play **Rescue Supplies** as a separate game, set the experiment’s game YAML to `route: rescue_supplies`. The porter settings are `{}` for either route. Activate the experiment and open its participant link. On one computer, two humans can use separate browser profiles. The dashboard and its participant URLs share the same host, port, and database. After restarting the server, activate the desired experiment again.
 
 ## Explore the hotel
 
@@ -73,18 +73,7 @@ cargo test --manifest-path games/counterweight-hotel/server/Cargo.toml --feature
 
 ## Package the hotel porter policy
 
-From this game directory, use a Parlando CLI that supports `agent set-game`.
-Build the game ZIP and pin it in the agent manifest.
-
-```sh
-parlando build
-parlando agent set-game dist/counterweight-hotel-0.1.0.zip --manifest agent.yaml
-parlando build --manifest agent.yaml
-```
-
-The agent build checks the policy's compact layouts against the pinned game
-and writes its own ZIP under `dist/`. Run `agent set-game` again after
-rebuilding the game archive so the policy uses the new ZIP's checksum.
+Run `./run.sh --build-only` from this game directory. The launcher builds the game, records its ZIP path, version and SHA-256 in `agent.yaml`, and builds the compatible policy ZIP. Upload the game ZIP before its agent ZIP. To produce only the game, pass `--without-bundled-agents --build-only`.
 
 ## Landscape credits
 

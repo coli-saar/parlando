@@ -5906,3 +5906,15 @@ Use Railway's branch autodeploy with the root railway.json and existing shared-h
 ## First administrator setup on a shared host
 
 Local and Railway dashboards use the same first-visitor claim on the admin origin. The atomic first-account insert closes setup across simultaneous requests and restarts. The admin must claim a fresh volume immediately. CLI pairing withholds its sign-in URL until an account exists. Account sign-in authorizes game uploads and activation, and account administration requires an admin browser session. This replaces the infrastructure bearer secret and uses the existing account schema.
+
+## Railway shared-origin hosting for trusted games
+
+Default the container dashboard to its resolved public URL. Railway supplies the public domain at runtime. Route the shared origin using the existing management and experiment paths and continue checking the configured authority, browser origin, session and CSRF values. Uploaded game clients share the browser privileges of signed-in users on that origin. The operator accepts this trust model. An explicitly configured separate admin hostname retains origin isolation for other deployments.
+
+## First-party game and agent package builds
+
+Build each game ZIP first. Source its browser SDK from this checkout so the host and participant runtime agree before a coordinated release. The browser projects use relative npm dependencies and build the SDK during their own prebuild. Docker stages preserve the same relative layout. The game launcher pins each local agent manifest to the archive reported by the CLI before building its independent ZIP. A single agent may live beside its game. Great Tree has separate agent directories so either agent can be built or installed on its own. Pins identify archive bytes, so a rebuild with different assets or toolchains requires refreshing the pin.
+
+Space Game's movement agent requests host wakeups during live play and follows the runner's decisions during headless play. Root Bot shares its behavior between its component and its logged native implementation. Great Tree's OpenAI agent uses the native host's network and secret facilities. Cue Choice's Python learner uses the remote service interface, while its dealer can run in the same training coordinator from a ZIP or a native factory. Neither the learner nor the OpenAI backend can perform external I/O inside an import-free component. Last Token's Python build keeps its component inside the project directory so the same package path passes project validation and builds the ZIP.
+
+The packaged checks cover seven game archives and six agent archives. Cue Choice exercised the packaged dealer with a random Python learner through checkpoint creation and held-out validation. Hotel and Screening self-play reached game completion. Space Game's two movement agents exchanged accepted moves and chat until the evaluation's message limit. They do not operate the station equipment needed for a mission win. Great Tree also uses the participant SDK's interaction flag to disable gate input during replay and reconnection.

@@ -59,7 +59,7 @@ pub(super) enum RemoteCommand {
         /// Externally visible origin used to construct participant URLs.
         #[arg(long)]
         public_url: Option<String>,
-        /// Dashboard origin on a different hostname from the participant site.
+        /// Dashboard origin. Use the public origin for trusted games or a separate dashboard hostname.
         #[arg(long)]
         admin_url: Option<String>,
     },

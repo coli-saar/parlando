@@ -220,7 +220,7 @@ fn crafted_zip(members: &[(&str, &[u8])]) -> Vec<u8> {
     writer.finish().unwrap().into_inner()
 }
 
-/// Claims a new dashboard in the browser and checks that the public host cannot claim it.
+/// Claims a new dashboard in the browser and checks that another authority cannot claim it.
 async fn claim_admin(host: &TestHost, admin: &str) -> (String, Value) {
     let claim = |base: &str, origin: &str| {
         host.client
@@ -229,12 +229,17 @@ async fn claim_admin(host: &TestHost, admin: &str) -> (String, Value) {
             .json(&json!({"username":"admin","password":ADMIN_PASSWORD}))
             .send()
     };
+    let wrong_origin = if admin == host.origin {
+        format!("http://localhost:{}", host.address.port())
+    } else {
+        host.origin.clone()
+    };
     assert_eq!(
-        claim(&host.origin, &host.origin).await.unwrap().status(),
+        claim(&wrong_origin, &wrong_origin).await.unwrap().status(),
         StatusCode::NOT_FOUND
     );
     assert_eq!(
-        claim(admin, &host.origin).await.unwrap().status(),
+        claim(admin, &wrong_origin).await.unwrap().status(),
         StatusCode::FORBIDDEN
     );
     assert_eq!(
@@ -658,7 +663,7 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
         "second game",
     );
     let address = reserve_address().await.unwrap();
-    let admin_origin = format!("http://localhost:{}", address.port());
+    let admin_origin = format!("http://{address}");
     let host = TestHost::start(address, &store, Some(admin_origin.clone())).await;
     let (operator_cookie, operator_session) = claim_admin(&host, &admin_origin).await;
     let operator_csrf = operator_session["csrf_token"].as_str().unwrap();
@@ -995,7 +1000,7 @@ async fn deployment_restores_independent_agents_for_the_current_build() {
         include_bytes!("../../../../rust-server/src/agent_experiment/tests/counter-policy.wasm");
     let root = tempfile::tempdir().unwrap();
     let address = reserve_address().await.unwrap();
-    let admin = format!("http://localhost:{}", address.port());
+    let admin = format!("http://{address}");
     let host = TestHost::start(address, root.path(), Some(admin.clone())).await;
     let (cookie, session) = claim_admin(&host, &admin).await;
     let token = pair_cli(&host, &admin, &cookie, &session).await;

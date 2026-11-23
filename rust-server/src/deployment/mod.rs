@@ -118,10 +118,10 @@ pub async fn serve(address: SocketAddr, options: HostOptions) -> Result<()> {
     serve_configured(address, options, None, WasmMetering::Fuel).await
 }
 
-/// Runs a deployment host with named dashboard accounts on a separate web origin.
+/// Runs a deployment host with named accounts on the configured dashboard origin.
 ///
-/// The administrator hostname must differ from the public participant hostname.
-/// Route both hostnames to this listener and preserve the original HTTP authority.
+/// Use the public origin for trusted games or a separate hostname to isolate game scripts.
+/// Route the configured origins to this listener and preserve the original HTTP authority.
 pub async fn serve_with_dashboard(
     address: SocketAddr,
     options: HostOptions,
@@ -132,7 +132,7 @@ pub async fn serve_with_dashboard(
 
 /// Starts a deployment host with an operator-selected guest execution budget.
 /// The policy covers upload validation, new game builds, and restored builds.
-/// An optional administrator origin enables the separate browser dashboard.
+/// An optional administrator origin enables the browser dashboard.
 pub async fn serve_configured(
     address: SocketAddr,
     options: HostOptions,

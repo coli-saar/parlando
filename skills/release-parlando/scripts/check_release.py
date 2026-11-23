@@ -96,6 +96,15 @@ def direct_parlando_version(value: object) -> str | None:
     return None
 
 
+def uses_checkout_client(root: Path, manifest: Path, dependency: object) -> bool:
+    """Identify local game clients that build the browser SDK from this checkout."""
+    return (
+        isinstance(dependency, str)
+        and dependency.startswith("file:")
+        and (manifest.parent / dependency[5:]).resolve() == (root / "js-client").resolve()
+    )
+
+
 def check_consumers(root: Path, version: str, errors: list[str]) -> None:
     """Check all first-party manifests that directly consume either Parlando package."""
     for path in sorted(root.rglob("Cargo.toml")):
@@ -113,9 +122,6 @@ def check_consumers(root: Path, version: str, errors: list[str]) -> None:
     for path in sorted(root.rglob("package.json")):
         if any(part in {"target", "node_modules"} for part in path.parts):
             continue
-        if path == root / "client-server-tests/browser/package.json":
-            # This unpublished fixture deliberately consumes the local package under test.
-            continue
         document = read_json(path)
         for section_name in ("dependencies", "devDependencies", "peerDependencies"):
             section = document.get(section_name)
@@ -123,8 +129,10 @@ def check_consumers(root: Path, version: str, errors: list[str]) -> None:
                 continue
             declared = section["@coli-saar/parlando-client"]
             if path == root / CLIENT_TEMPLATE:
-                record_equal(errors, str(path), declared, "__CLIENT_VERSION__")
-            elif declared not in (version, f"^{version}"):
+                record_equal(errors, str(path), declared, "__CLIENT_DEPENDENCY__")
+            elif declared not in (version, f"^{version}") and not (
+                document.get("private") is True and uses_checkout_client(root, path, declared)
+            ):
                 errors.append(f"{path} {section_name}: expected client version {version}, found {declared!r}")
 
 
@@ -139,15 +147,14 @@ def check_published_consumer_lockfiles(root: Path, version: str, errors: list[st
     for package_path in sorted(root.rglob("package.json")):
         if any(part in {"target", "node_modules"} for part in package_path.parts):
             continue
-        if package_path == root / "client-server-tests/browser/package.json":
-            # The unpublished browser fixture must exercise the local package under test.
-            continue
         if package_path == root / CLIENT_TEMPLATE:
             # The CLI substitutes its release version when creating the project.
             continue
         package = read_json(package_path)
         dependencies = package.get("dependencies")
         if not isinstance(dependencies, dict) or package_name not in dependencies:
+            continue
+        if package.get("private") is True and uses_checkout_client(root, package_path, dependencies[package_name]):
             continue
         lock_path = package_path.with_name("package-lock.json")
         if not lock_path.exists():

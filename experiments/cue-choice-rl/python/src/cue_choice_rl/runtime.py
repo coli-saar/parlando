@@ -21,7 +21,7 @@ class PolicyBackend(Protocol):
         seed: int,
         temperature: float,
     ) -> dict[str, Any]:
-        """Chooses one action from the runner-provided legal actions."""
+        """Chooses one action from the legal actions in the learner’s view."""
 
     def train(
         self, update_id: str, base_checkpoint_id: str, steps: list[dict[str, Any]], settings: dict[str, Any]

@@ -8,16 +8,13 @@ separately compiled React participant client.
 
 ## Build and play
 
-Install the Parlando CLI and get the Last Token example files. Building this
-example requires Zig, `wasm-tools`, Node.js, npm, and the C WIT binding generator.
+Build the example from the Parlando checkout with Cargo, Zig, `wasm-tools`, Node.js, npm, and the C WIT binding generator. The build script uses the CLI and browser SDK from the checkout.
 
 From the directory containing `experiments/c-last-token`, run:
 
 ```sh
-cargo install --locked parlando --bin parlando
 cargo install --locked --no-default-features --features c wit-bindgen-cli --version 0.57.1
 experiments/c-last-token/build.sh
-parlando build --manifest experiments/c-last-token/game.yaml
 ```
 
 The build packages the compiled C component and the React application in

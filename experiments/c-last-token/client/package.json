@@ -3,10 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "prebuild": "npm --prefix ../../../js-client run build:for-game",
     "build": "tsc --noEmit && vite build --base ./"
   },
   "dependencies": {
-    "@coli-saar/parlando-client": "0.6.0",
+    "@coli-saar/parlando-client": "file:../../../js-client",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

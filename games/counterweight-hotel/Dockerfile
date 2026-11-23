@@ -17,7 +17,9 @@ RUN cargo build --release --locked --manifest-path games/counterweight-hotel/ser
 
 FROM node:22-bookworm-slim AS client
 WORKDIR /app
-COPY games/counterweight-hotel/client/web/ ./
+COPY js-client/ js-client/
+COPY games/counterweight-hotel/client/web/ games/counterweight-hotel/client/web/
+WORKDIR /app/games/counterweight-hotel/client/web
 RUN npm ci --no-audit --no-fund && npm run build
 
 FROM debian:bookworm-slim
@@ -28,7 +30,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=builder /app/target/release/counterweight-hotel-with-agents /usr/local/bin/
 COPY --from=builder /app/game.wasm ./game.wasm
-COPY --from=client /app/dist ./client-dist
+COPY --from=client /app/games/counterweight-hotel/client/web/dist ./client-dist
 ENV PORT=8000 PARLANDO_CLIENT_DIST=/app/client-dist PARLANDO_DATABASE_URL=sqlite:////home/parlando/hotel-component.sqlite RUST_LOG=info
 EXPOSE 8000
 USER parlando

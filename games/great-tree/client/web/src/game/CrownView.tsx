@@ -9,7 +9,7 @@ import { ALL_LIMB_IDS } from "./types";
 
 export interface CrownViewProps {
   limbs: LimbView[];
-  onSetSun: (limb: LimbId, lit: boolean) => void;
+  onSetSun?: (limb: LimbId, lit: boolean) => void;
 }
 
 /**
@@ -196,7 +196,7 @@ export function CrownView({ limbs, onSetSun }: CrownViewProps) {
                 rotation={geometry.gate.rotation}
                 state={gateState}
                 palette="gold"
-                onClick={() => onSetSun(id, !view.sun)}
+                onClick={onSetSun && (() => onSetSun(id, !view.sun))}
               />
             </g>
           );

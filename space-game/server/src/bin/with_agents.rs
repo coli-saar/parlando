@@ -1,4 +1,4 @@
-//! Optional launcher for the ['Space Game', 'The Great Tree', 'Counterweight Hotel', 'The Last Screening'] component and its authored agent policies.
+//! Optional launcher for the Space Game component and its authored agent policies.
 
 use anyhow::Result;
 use clap::Parser;
@@ -14,12 +14,8 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let args = launch::Launch::parse();
-    args.server(
-        "space-game",
-        "['Space Game', 'The Great Tree', 'Counterweight Hotel', 'The Last Screening']",
-        env!("CARGO_PKG_VERSION"),
-    )?
-    .agent(BackAndForthAgentFactory)?
-    .serve((args.host, args.port).into())
-    .await
+    args.server("space-game", "Space Game", env!("CARGO_PKG_VERSION"))?
+        .agent(BackAndForthAgentFactory::new()?)?
+        .serve((args.host, args.port).into())
+        .await
 }

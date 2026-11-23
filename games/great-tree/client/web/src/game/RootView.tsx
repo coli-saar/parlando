@@ -9,7 +9,7 @@ import { ALL_ROOT_IDS } from "./types";
 
 export interface RootViewProps {
   roots: RootViewData[];
-  onSetFlow: (root: RootId, open: boolean) => void;
+  onSetFlow?: (root: RootId, open: boolean) => void;
 }
 
 /**
@@ -206,7 +206,7 @@ export function RootView({ roots, onSetFlow }: RootViewProps) {
               rotation={geometry.gate.rotation}
               state={gateState}
               palette="cyan"
-              onClick={() => onSetFlow(id, !view.running)}
+              onClick={onSetFlow && (() => onSetFlow(id, !view.running))}
             />
           </g>
         );

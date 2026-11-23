@@ -3,4 +3,9 @@ id: counterweight_hotel.porter
 name: Hotel porter
 version: 11.0.0
 cargo_manifest: server/Cargo.toml
-features: [agent-component]
+features:
+- agent-component
+dependency:
+  source: dist/counterweight-hotel-0.1.0.zip
+  version: 0.1.0
+  sha256: 828b88c9be4e518a883837c80c179ca88dbcb369e14c55e880c15601dfc19dab

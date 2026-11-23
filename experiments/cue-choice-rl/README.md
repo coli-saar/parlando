@@ -56,17 +56,13 @@ cue-choice-learner --backend qwen --device auto
 ```
 
 Build the game with the Rust `wasm32-unknown-unknown` target and `wasm-tools`.
-From the repository root, wrap the compiled game and pass the component to the
-coordinator:
+From the repository root, build the game and dealer ZIPs. The training coordinator loads the game package and registers the dealer and the Python learner. For a shared host, upload the game first, followed by the dealer ZIP from the same `dist/` directory.
 
 ```bash
-cargo build --manifest-path experiments/cue-choice-rl/server/Cargo.toml \
-  --release --lib --target wasm32-unknown-unknown
-wasm-tools component new \
-  experiments/cue-choice-rl/server/target/wasm32-unknown-unknown/release/parlando_cue_choice_rl.wasm \
-  -o /tmp/cue-choice.wasm
+experiments/cue-choice-rl/build.sh
 cargo run --manifest-path experiments/cue-choice-rl/server/Cargo.toml -- \
-  --component /tmp/cue-choice.wasm experiments/cue-choice-rl/experiment.yaml
+  --package experiments/cue-choice-rl/dist/cue-choice-0.1.0.zip \
+  --agent experiments/cue-choice-rl/dist/agent-cue_choice.dealer-1.0.0.zip experiments/cue-choice-rl/experiment.yaml
 ```
 
 This specification writes to `artifacts/qwen-component-run` and saves models

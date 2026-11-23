@@ -21,8 +21,7 @@ experiment. The game settings give Crown to seat A by default. Set
 
 ## Build or run a headless experiment
 
-`./run.sh --build-only` builds the portable package in `dist/great-tree-0.1.0.zip`. The
-generic host supports human pairs and remote agents with that package. The
+`./run.sh --build-only` builds the portable package in `dist/great-tree-0.1.0.zip`. It also pins the game in each agent manifest and writes the **Idle** and **Root Bot** ZIPs under `agents/idle/dist/` and `agents/root-bot/dist/`. Upload the game first, followed by the agents you want available on the shared host. The
 project's headless launcher registers the authored agents and runs them against
 the same built component.
 

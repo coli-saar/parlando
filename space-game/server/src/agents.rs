@@ -1,59 +1,22 @@
-use crate::agent_response::Response;
-use parlando::component::ComponentValue;
-use std::time::{Duration, Instant};
-
-use anyhow::Result;
-use async_trait::async_trait;
-use parlando::{
-    agent::{
-        Agent, Context as AgentContext, Definition as AgentDefinition, Factory as AgentFactory,
-        Identity as AgentIdentity,
-    },
-    PlayerRole,
+//! Back and forth uses the same typed callbacks for native and component play.
+use crate::game::state_engine::{SpaceAction, SpaceCompletion, SpaceObservation};
+use parlando_game_sdk::agent::{
+    async_trait, Agent, Definition, InitContext, Observation, RespondReason, Response, Result,
 };
+use parlando_game_sdk::Role as PlayerRole;
 use rand::{rngs::StdRng, Rng, SeedableRng};
-use serde_json::Value;
+use std::time::Duration;
 
-use crate::game::state_engine::{SpaceAction, SpaceObservation};
-
-/// Factory for the simple deterministic Space Game back-and-forth agent.
-pub struct BackAndForthAgentFactory;
-
-#[async_trait]
-impl AgentFactory for BackAndForthAgentFactory {
-    fn definition(&self) -> AgentDefinition {
-        AgentDefinition {
-            id: "space_game.back_and_forth".to_string(),
-            name: "Back and forth".to_string(),
-            description:
-                "Built-in deterministic Space Game agent for local experiments and testing."
-                    .to_string(),
-            config_fields: Vec::new(),
-        }
-    }
-
-    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
-        Ok(Box::new(BackAndForthAgent::new(
-            context.role.as_str().to_string(),
-            context.seed,
-        )))
-    }
-
-    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
-        Ok(AgentIdentity {
-            name: "BackAndForthAgent".to_string(),
-            version: "1".to_string(),
-        })
-    }
-}
+/// The movement agent has no dashboard settings.
+#[derive(serde::Deserialize)]
+pub struct Config {}
 
 /// Deterministic Space Game agent that moves, comments, and answers visible-world questions.
 pub struct BackAndForthAgent {
     role: String,
     rng: StdRng,
     step_index: usize,
-    last_step_at: Instant,
-    last_other_position: Option<(i64, i64)>,
+    cooling_down: bool,
     pending_step: bool,
     other_player_moved: bool,
     utterances: Vec<&'static str>,
@@ -68,8 +31,7 @@ impl BackAndForthAgent {
             role,
             rng: StdRng::seed_from_u64(seed),
             step_index: 0,
-            last_step_at: Instant::now() - Duration::from_secs(60),
-            last_other_position: None,
+            cooling_down: false,
             pending_step: true,
             other_player_moved: false,
             utterances: vec![
@@ -222,52 +184,76 @@ impl BackAndForthAgent {
     }
 }
 
-impl BackAndForthAgent {
-    /// Receives the first role-safe world snapshot after agent initialization.
-    async fn start(&mut self, initial_observation: SpaceObservation) -> Result<()> {
-        self.update_other_player_position(&initial_observation);
-        self.current_observation = Some(initial_observation);
-        Ok(())
-    }
+#[async_trait]
+impl Agent for BackAndForthAgent {
+    type Config = Config;
+    type Action = SpaceAction;
+    type View = SpaceObservation;
+    type Completion = SpaceCompletion;
 
-    /// Updates movement behavior and the latest role-safe world snapshot after an action.
-    async fn observe_transition(
-        &mut self,
-        actor: PlayerRole,
-        _action: SpaceAction,
-        resulting_observation: SpaceObservation,
-    ) -> Result<()> {
-        if actor.as_str() != self.role {
-            self.pending_step = true;
-            self.other_player_moved = true;
+    /// Identifies the agent for native and uploaded games.
+    fn definition() -> Definition {
+        Definition {
+            id: "space_game.back_and_forth",
+            name: "Back and forth",
+            version: "1",
+            description:
+                "Moves in response to its partner and answers questions about its visible station.",
+            config_fields: "[]",
         }
-        self.update_other_player_position(&resulting_observation);
-        self.current_observation = Some(resulting_observation);
+    }
+
+    /// Seeds one seat's route and choice of messages.
+    async fn init(context: InitContext<Config>) -> Result<Self> {
+        Ok(Self::new(context.role.as_str().into(), context.seed))
+    }
+
+    /// Retains the current role-private snapshot for station questions.
+    async fn start(&mut self, view: SpaceObservation) -> Result<()> {
+        self.current_observation = Some(view);
         Ok(())
     }
 
-    /// Queues a typed or spoken participant utterance for a message-only response.
-    async fn observe_message(&mut self, speaker: PlayerRole, text: String) -> Result<()> {
-        if speaker.as_str() != self.role && !text.trim().is_empty() {
-            self.pending_question = Some((speaker, text));
+    /// Reacts to partner moves and answers questions against the latest view.
+    async fn observe(&mut self, event: Observation<SpaceAction, SpaceObservation>) -> Result<()> {
+        if let Some(transition) = event.transition {
+            if transition.actor.as_str() != self.role {
+                self.pending_step = true;
+                self.other_player_moved = true;
+            }
+            self.start(transition.view).await?;
+        }
+        if let Some(message) = event.message {
+            if message.sender.as_str() != self.role && !message.text.trim().is_empty() {
+                self.pending_question = Some((message.sender, message.text));
+            }
         }
         Ok(())
     }
 
-    /// Answers a pending question before considering the agent's next movement.
-    async fn respond(&mut self) -> Result<Option<Response<SpaceAction>>> {
+    /// Uses the live host timer to space moves. A headless schedule supplies its own pacing.
+    async fn respond(&mut self, reason: RespondReason) -> Result<Response<SpaceAction>> {
+        let live = matches!(
+            reason,
+            RespondReason::SessionStarted
+                | RespondReason::AfterObservation
+                | RespondReason::WakeupDue
+        );
+        if matches!(reason, RespondReason::WakeupDue | RespondReason::Scheduled) {
+            self.cooling_down = false;
+        }
         if let Some((speaker, question)) = self.pending_question.take() {
-            return Ok(Some(Response::message(
-                self.answer_world_question(speaker, &question),
-            )));
+            let response = Response::message(self.answer_world_question(speaker, &question));
+            return Ok(if live && self.pending_step && !self.cooling_down {
+                response.wake_after(Duration::ZERO)
+            } else {
+                response
+            });
         }
-        if !self.pending_step {
-            return Ok(None);
+        if !self.pending_step || self.cooling_down {
+            return Ok(Response::default());
         }
-        if self.last_step_at.elapsed() < Duration::from_secs(1) {
-            return Ok(None);
-        }
-        self.last_step_at = Instant::now();
+        self.cooling_down = live;
         self.pending_step = false;
         let directions: &[&str] = if self.role == "A" {
             &["left", "right"]
@@ -286,43 +272,17 @@ impl BackAndForthAgent {
         } else {
             None
         };
-        Ok(Some(match message {
+        let response = match message {
             Some(message) => Response::action_and_message(action, message),
             None => Response::action(action),
-        }))
+        };
+        Ok(if live {
+            response.wake_after(Duration::from_secs(1))
+        } else {
+            response
+        })
     }
 }
-#[async_trait]
-impl Agent for BackAndForthAgent {
-    /// Delivers the decoded starting view to the policy.
-    async fn start(&mut self, view: ComponentValue) -> Result<()> {
-        Self::start(self, view.decode()?).await
-    }
-
-    /// Delivers the accepted action and this seat's decoded view.
-    async fn observe_transition(
-        &mut self,
-        actor: PlayerRole,
-        action: ComponentValue,
-        view: ComponentValue,
-    ) -> Result<()> {
-        Self::observe_transition(self, actor, action.decode()?, view.decode()?).await
-    }
-
-    /// Delivers chat without modifying game state.
-    async fn observe_message(&mut self, actor: PlayerRole, text: String) -> Result<()> {
-        Self::observe_message(self, actor, text).await
-    }
-
-    /// Encodes a typed policy decision for the shared component host.
-    async fn respond(&mut self) -> Result<Option<parlando::agent::Response>> {
-        Self::respond(self)
-            .await?
-            .map(Response::into_wire)
-            .transpose()
-    }
-}
-
 /// Formats a binary component state for a spoken German status response.
 fn on_off(value: bool) -> &'static str {
     if value {
@@ -350,171 +310,123 @@ fn ready_not(value: bool) -> &'static str {
     }
 }
 
-impl BackAndForthAgent {
-    // Stores the other player's current position for future observations.
-    fn update_other_player_position(&mut self, observation: &SpaceObservation) {
-        let position = if self.role == "A" {
-            observation.players.b.position
-        } else {
-            observation.players.a.position
-        };
-        self.last_other_position = Some((position.x, position.y));
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use parlando::{agent::Context as AgentContext, PlayerRole};
-
-    use crate::game::state_engine::initial_state;
-
     use super::*;
+    use crate::game::state_engine::initial_state;
+    use parlando_game_sdk::agent::{Message, Transition};
 
-    /// Projects native rules and adapts the host seat for a policy test.
-    fn observation(
-        state: &crate::game::state_engine::SpaceGameState,
-        role: PlayerRole,
-    ) -> SpaceObservation {
-        let role = match role {
-            PlayerRole::A => parlando_game_sdk::Role::A,
-            PlayerRole::B => parlando_game_sdk::Role::B,
-        };
-        crate::SpaceGame::observation(state, role)
-    }
-
-    #[test]
-    fn space_game_agent_uses_identity_version_one() {
-        let identity = BackAndForthAgentFactory.identity(&Value::Null).unwrap();
-        assert_eq!(identity.version, "1");
-    }
-
-    fn init_context(role: PlayerRole) -> AgentContext {
-        AgentContext {
+    /// Starts an independent agent using the same callbacks as a packaged policy.
+    async fn started_agent(role: PlayerRole) -> BackAndForthAgent {
+        let mut agent = BackAndForthAgent::init(InitContext {
+            config: Config {},
             role,
             seed: 1,
-            settings: Value::Null,
-            factory_secrets: parlando::SecretValues::default(),
-            agent_instance_secrets: parlando::SecretValues::default(),
-            logger: parlando::SessionLogger::testing(),
-        }
-    }
-
-    /// Creates and starts one test agent for the given role.
-    async fn started_agent(role: PlayerRole) -> BackAndForthAgent {
-        let mut agent = BackAndForthAgent::new(role.as_str().to_string(), 1);
+        })
+        .await
+        .unwrap();
         agent
-            .start(observation(&initial_state(), role))
+            .start(crate::SpaceGame::observation(&initial_state(), role))
             .await
             .unwrap();
         agent
     }
 
-    #[tokio::test]
-    async fn back_and_forth_factory_returns_fresh_agents() {
-        let factory = BackAndForthAgentFactory;
-        let mut first = factory.create(init_context(PlayerRole::A)).await.unwrap();
-        let mut second = factory.create(init_context(PlayerRole::A)).await.unwrap();
-        let initial =
-            ComponentValue::from_typed(&observation(&initial_state(), PlayerRole::A)).unwrap();
-        first.start(initial.clone()).await.unwrap();
-        second.start(initial).await.unwrap();
-
-        let first_result = first.respond().await.unwrap().unwrap();
-        let second_result = second.respond().await.unwrap().unwrap();
-
-        assert!(matches!(
-            first_result,
-            parlando::agent::Response::Action(action) if matches!(action.decode::<SpaceAction>().unwrap(), SpaceAction::MoveStep { direction, .. } if direction == "left")
-        ));
-        assert!(matches!(
-            second_result,
-            parlando::agent::Response::Action(action) if matches!(action.decode::<SpaceAction>().unwrap(), SpaceAction::MoveStep { direction, .. } if direction == "left")
-        ));
+    /// Delivers a message from the other seat.
+    async fn ask(agent: &mut BackAndForthAgent, text: &str) -> String {
+        agent
+            .observe(Observation {
+                transition: None,
+                message: Some(Message {
+                    sender: PlayerRole::A,
+                    text: text.into(),
+                }),
+            })
+            .await
+            .unwrap();
+        let response = agent
+            .respond(RespondReason::AfterObservation)
+            .await
+            .unwrap();
+        assert!(response.action.is_none());
+        response.message.unwrap()
     }
 
     #[tokio::test]
     async fn back_and_forth_agent_speaks_when_other_player_moves() {
         let mut agent = started_agent(PlayerRole::B).await;
-        let _ = agent.respond().await.unwrap();
-        agent.last_step_at = Instant::now() - Duration::from_secs(60);
-        let mut moved_state = initial_state();
-        moved_state.players.a.position.x += 1;
-        let second_observation = observation(&moved_state, PlayerRole::B);
+        let first = agent.respond(RespondReason::SessionStarted).await.unwrap();
+        assert!(first.action.is_some());
+        assert!(first.wakeup.is_some());
+        let view = crate::SpaceGame::observation(&initial_state(), PlayerRole::B);
         agent
-            .observe_transition(
-                PlayerRole::A,
-                SpaceAction::MoveStep {
-                    player: "A".to_string(),
-                    direction: "right".to_string(),
-                },
-                second_observation,
-            )
+            .observe(Observation {
+                message: None,
+                transition: Some(Transition {
+                    actor: PlayerRole::A,
+                    action: SpaceAction::MoveStep {
+                        player: "A".into(),
+                        direction: "right".into(),
+                    },
+                    view,
+                }),
+            })
             .await
             .unwrap();
-
-        let result = agent.respond().await.unwrap().unwrap();
-
-        assert!(matches!(
-            result,
-            Response::ActionAndMessage { action: SpaceAction::MoveStep { direction, .. }, ref message }
-                if direction == "down" && !message.is_empty()
-        ));
+        assert!(agent
+            .respond(RespondReason::AfterObservation)
+            .await
+            .unwrap()
+            .action
+            .is_none());
+        let next = agent.respond(RespondReason::WakeupDue).await.unwrap();
+        assert!(
+            matches!(next.action, Some(SpaceAction::MoveStep { direction, .. }) if direction == "down")
+        );
+        assert!(next.message.is_some());
+        assert!(agent
+            .respond(RespondReason::WakeupDue)
+            .await
+            .unwrap()
+            .action
+            .is_none());
     }
 
+    /// Every fresh session starts at the first step of the selected seat's route.
     #[tokio::test]
-    async fn back_and_forth_agent_does_not_chain_after_its_own_move() {
-        let observation = observation(&initial_state(), PlayerRole::B);
-        let mut agent = started_agent(PlayerRole::B).await;
-        let first_result = agent.respond().await.unwrap();
-        assert!(matches!(first_result, Some(Response::Action(_))));
-        agent.last_step_at = Instant::now() - Duration::from_secs(60);
-        agent
-            .observe_transition(
-                PlayerRole::B,
-                SpaceAction::MoveStep {
-                    player: "B".to_string(),
-                    direction: "up".to_string(),
-                },
-                observation,
-            )
-            .await
-            .unwrap();
+    async fn fresh_agents_start_their_own_routes() {
+        for (role, first) in [
+            (PlayerRole::A, "left"),
+            (PlayerRole::B, "up"),
+            (PlayerRole::A, "left"),
+        ] {
+            let mut agent = started_agent(role).await;
+            let response = agent.respond(RespondReason::SessionStarted).await.unwrap();
+            assert!(
+                matches!(response.action, Some(SpaceAction::MoveStep { direction, .. }) if direction == first)
+            );
+        }
+    }
 
-        assert!(agent.respond().await.unwrap().is_none());
+    /// Headless sessions reject timer requests and control scheduling themselves.
+    #[tokio::test]
+    async fn scheduled_move_has_no_live_wakeup() {
+        let mut agent = started_agent(PlayerRole::A).await;
+        let response = agent.respond(RespondReason::Scheduled).await.unwrap();
+        assert!(response.action.is_some());
+        assert!(response.wakeup.is_none());
     }
 
     #[tokio::test]
     async fn back_and_forth_agent_answers_spoken_world_questions_without_moving() {
         let mut agent = started_agent(PlayerRole::B).await;
-        let _ = agent.respond().await.unwrap();
-        agent
-            .observe_message(PlayerRole::A, "Wo bist du?".to_string())
-            .await
-            .unwrap();
-
-        let response = agent.respond().await.unwrap().unwrap();
-
         assert_eq!(
-            response,
-            Response::Message("Ich bin im Raum valve bei Position 9, 6.".to_string())
+            ask(&mut agent, "Wo bist du?").await,
+            "Ich bin im Raum valve bei Position 9, 6."
         );
-    }
-
-    #[tokio::test]
-    async fn back_and_forth_agent_reports_visible_launch_blockers() {
-        let mut agent = started_agent(PlayerRole::B).await;
-        agent
-            .observe_message(PlayerRole::A, "Sind wir startbereit?".to_string())
-            .await
-            .unwrap();
-
-        let response = agent.respond().await.unwrap().unwrap();
-        let Response::Message(message) = response else {
-            panic!("expected a message-only response")
-        };
-
-        assert!(message.contains("Noch nicht startbereit"));
-        assert!(message.contains("stabile Energie"));
-        assert!(message.contains("stabiler Sauerstoff"));
+        let blockers = ask(&mut agent, "Sind wir startbereit?").await;
+        assert!(blockers.contains("Noch nicht startbereit"));
+        assert!(blockers.contains("stabile Energie"));
+        assert!(blockers.contains("stabiler Sauerstoff"));
     }
 }

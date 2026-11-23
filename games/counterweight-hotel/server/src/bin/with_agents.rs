@@ -1,4 +1,4 @@
-//! Optional launcher for the ['Space Game', 'The Great Tree', 'Counterweight Hotel', 'The Last Screening'] component and its authored agent policies.
+//! Optional launcher for the Counterweight Hotel component and its authored agent policies.
 
 use anyhow::Result;
 use clap::Parser;
@@ -16,7 +16,7 @@ async fn main() -> Result<()> {
     let args = launch::Launch::parse();
     args.server(
         "counterweight-hotel",
-        "['Space Game', 'The Great Tree', 'Counterweight Hotel', 'The Last Screening']",
+        "Counterweight Hotel",
         env!("CARGO_PKG_VERSION"),
     )?
     .agent(PorterFactory::new()?)?

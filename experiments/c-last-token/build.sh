@@ -17,3 +17,6 @@ if grep -q '^ *import ' build/last-token.wit; then
   cat build/last-token.wit >&2
   exit 1
 fi
+
+source "../../games/support/packages.sh"
+build_packages "$PWD" false

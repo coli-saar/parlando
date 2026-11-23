@@ -207,6 +207,7 @@ impl CueChoiceState {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[cfg(not(feature = "agent-component"))]
 parlando_game_sdk::export!(CueChoiceState);
 
 #[cfg(test)]

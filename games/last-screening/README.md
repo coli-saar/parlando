@@ -31,31 +31,15 @@ Drag inside the scene to look around. Click a lantern or fly rail to inspect it,
 
 *Moonrise at Bell Rock* calls for the moon framed by the window. *Midnight Crossing* keeps the same window lit while the ship moves behind the tower and emerges on the other side. Both players must pass through their own exit to finish.
 
-## Choose a Parlando source
+## Build locally
 
-| Command | Rust runtime | Browser SDK |
-| --- | --- | --- |
-| `./run.sh` or `./run.sh --local` | Sibling `rust-server/` | Sibling `js-client/` |
-| `./run.sh --published` | crates.io `parlando 0.6.0` | npm `@coli-saar/parlando-client 0.6.0` |
-
-Run those commands from this directory. Add `--build-only` to compile without starting the server. `PORT` changes the listener port. `PARLANDO_DATABASE_URL` changes the database location. The compiled browser assets are in `client/web/dist/`. Switching source updates Cargo’s resolved lockfile. The local build installs the sibling SDK without changing the registry manifest or lockfile.
+Run `./run.sh --build-only` to build both ZIPs using this checkout's Rust and browser SDKs. The browser build also writes its assets to `client/web/dist/`.
 
 For a single-seat visual preview, build once, then run `npm run dev` from `client/web/` and open `/?preview` on the printed Vite URL. The preview offers a choice of room and reel and lets you operate that seat’s equipment. Live two-player sessions run through the participant URL.
 
 ## Package the screening partner policy
 
-From this game directory, use a Parlando CLI that supports `agent set-game`.
-Build the game ZIP and pin it in the agent manifest.
-
-```sh
-parlando build
-parlando agent set-game dist/last-screening-0.1.0.zip --manifest agent.yaml
-parlando build --manifest agent.yaml
-```
-
-The agent build checks the policy's compact layouts against the pinned game
-and writes its own ZIP under `dist/`. Run `agent set-game` again after
-rebuilding the game archive so the policy uses the new ZIP's checksum.
+Run `./run.sh --build-only` from this game directory. The launcher builds the game, records its ZIP path, version and SHA-256 in `agent.yaml`, and builds the compatible policy ZIP. Upload the game ZIP before its agent ZIP. To produce only the game, pass `--without-bundled-agents --build-only`.
 
 ## Author another reel
 
