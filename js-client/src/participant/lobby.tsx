@@ -26,6 +26,35 @@ export function StartupShell({
 }) {
   return (
     <section className="lobby-panel">
+      <style>{`
+        @layer parlando {
+          .lobby-panel .voice-preflight, .lobby-panel .consent-list {
+            display: grid;
+            gap: .75rem;
+            margin-block: 1rem;
+          }
+          .lobby-panel .voice-preflight {
+            padding: 1rem;
+            border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+            border-radius: .75rem;
+          }
+          .lobby-panel .voice-preflight > div:first-child,
+          .lobby-panel .consent-row > span { display: grid; gap: .2rem; }
+          .lobby-panel .voice-preflight > button { justify-self: start; }
+          .lobby-panel .voice-preflight select {
+            box-sizing: border-box;
+            min-width: 0;
+            max-width: 100%;
+            padding: .4rem .6rem;
+            border: 1px solid currentColor;
+            border-radius: .4rem;
+            font: inherit;
+            color: inherit;
+            background-color: transparent;
+          }
+          .lobby-panel .consent-row { display: flex; align-items: baseline; gap: .5rem; }
+        }
+      `}</style>
       <div className="lobby-heading">
         <p className="platform-label">
           <img

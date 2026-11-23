@@ -62,7 +62,7 @@ export function VoicePreparationControls({
           ))}
         </select>
       )}
-      {voicePreflight.micProbeActive && <MicrophoneLevelMeter active={voicePreflight.micProbeActive} label="Level" level={voicePreflight.micLevel} />}
+      <MicrophoneLevelMeter active={voicePreflight.micProbeActive} label="Level" level={voicePreflight.micLevel} />
       {!voicePreflight.ready && !voicePreflight.preparing && (
         <button disabled={!enabled} onClick={() => void onPrepareVoice("")} type="button">
           Prepare voice

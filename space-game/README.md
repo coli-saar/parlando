@@ -8,29 +8,24 @@ browser displays those observations and sends actions through Parlando.
 ![Space Game participant interface with role-specific information, action
 controls, station state, and communication](../docs/images/space-game-interface.jpg)
 
-## Start the game
+## Build and deploy
 
-Install Rust's `wasm32-unknown-unknown` target, `wasm-tools`, and Node.js.
-Then run from this directory.
+From this directory, build the packages, then upload them to a running Parlando server. The build requires Rust’s `wasm32-unknown-unknown` target, `wasm-tools`, Python 3, and Node.js. Replace `lab` with your server URL or configured alias.
 
-```bash
-make run
+```sh
+./build.sh
+parlando login --server lab
+./deploy.sh --host lab
+parlando activate --host lab --game space-game
 ```
 
-Open the dashboard at `http://127.0.0.1:8000/admin`. On a fresh installation,
-create the administrator, then create and activate an experiment. Share its
-participant URL with players. The launcher includes the **Back and forth**
-agent. Set `PORT` to change the port or `PARLANDO_DATABASE_URL` to select a
-database. The default database is `.local/component.sqlite`.
+Sign in once per server. The deploy script uploads the game first, followed by its agents. Omit `--host` to use your CLI’s default server. Open the game from **Games** in the server dashboard to configure an experiment and start intake.
 
-## Package the game
-
-`make build` writes `dist/space-game-0.1.0.zip` with the manifest, component, and browser
-bundle. Upload this ZIP to a running deployment host with `parlando deploy`. The same build writes `dist/agent-space_game.back_and_forth-1.0.0.zip`. Upload it after the game to make **Back and forth** available on the shared host.
+The upload includes the **Back and forth** agent. You can also use `make build` and `make deploy HOST=lab`.
 
 ## Solo voice test
 
-Start the game with `make run`. In an inactive experiment, configure the following settings.
+In an inactive experiment, configure the following settings.
 
 - `agents.mode = human_vs_agent`
 - `agents.human_vs_agent.factory = space_game.back_and_forth`
@@ -60,7 +55,7 @@ Game-specific UI should stay here. For example, the station map, inventory/actio
 
 ## Runtime expectation
 
-The client expects a Parlando-compatible server that exposes experiment-scoped `/e/{experiment_id}/api/*` and WebSocket routes. In local runs, the launcher serves the browser files from the ZIP’s `client/` directory.
+The client expects a Parlando-compatible server that exposes experiment-scoped `/e/{experiment_id}/api/*` and WebSocket routes. The host serves the browser files from the ZIP’s `client/` directory.
 
 ## Deploy to Railway
 

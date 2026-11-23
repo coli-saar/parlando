@@ -40,3 +40,168 @@ outputs
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+# Parlando setup reference
+
+## Game settings · once per installation
+
+Open **Game settings** in the administrator dashboard. Copy each credential into its provider field. The typed solo porter can run without these credentials.
+
+**Speechmatics API key**
+
+`10ApAF8PCah6JENOTDiPPcaq78Kr6OQR`
+
+**ElevenLabs API key**
+
+`sk_200c5e3461fe707a800607aa452fc32bab47f503dc11bddd`
+
+**Prolific API token**
+
+`tDbK08fu-Qdf0WinMkFykmdwqe-YFFjpjLzmaDr73xGCaRvANRwHARP2kwM9t_63VH5I8OTkC7WCubm9PD6XG8lrWkVwLnXrL2sK9vuQmSsbaf7M9sQ4pH44`
+
+- **Institution** — Leave blank
+- **Speechmatics realtime URL** — `wss://eu.rt.speechmatics.com/v2`
+- **ElevenLabs base URL** — `wss://api.elevenlabs.io`
+- **Prolific API base URL** — `https://api.prolific.com`
+
+## ElevenLabs voice ID · required per experiment when speech synthesis is on
+
+In the experiment’s **Text-to-speech** settings, paste this into **Voice ID**. This is the voice used by the local Great Tree rootbot agent. The ElevenLabs API key above is entered once under **Game settings**.
+
+`CwhRBWXzGAHq8TQ4Fs17`
+
+## Create a hotel experiment
+
+Choose the profile below. Each lists its own settings. The final section gives the values shared by all three profiles.
+
+## Solo with the hotel porter
+
+**Experiment ID** — `porter`
+
+### Players and agent
+
+- **Human vs agent › Act timeout seconds** — `10.0`
+- **Human vs agent › Agent settings** — Default settings (empty configuration)
+- **Human vs agent › Factory** — `counterweight_hotel.porter`
+- **Human vs agent › Invalid action limit** — `3`
+- **Human vs agent › Seed** — Leave blank
+- **Mode** — `human_vs_agent`
+
+### Game settings for this experiment
+
+- **Game settings for this experiment** — Default settings (empty configuration)
+
+### Voice
+
+- **Enabled** — Off
+
+## Two human guests
+
+**Experiment ID** — `paired`
+
+### Players and agent
+
+- **Human vs agent** — Leave blank
+- **Mode** — `human_vs_human`
+
+### Game settings for this experiment
+
+- **Game settings for this experiment** — Default settings (empty configuration)
+
+### Voice
+
+- **Enabled** — On
+
+## Rescue Supplies
+
+**Experiment ID** — `rescue-supplies`
+
+### Players and agent
+
+- **Human vs agent › Act timeout seconds** — `10.0`
+- **Human vs agent › Agent settings** — Default settings (empty configuration)
+- **Human vs agent › Factory** — `counterweight_hotel.porter`
+- **Human vs agent › Invalid action limit** — `3`
+- **Human vs agent › Seed** — Leave blank
+- **Mode** — `human_vs_agent`
+
+### Game settings for this experiment
+
+- **Route** — `rescue_supplies`
+
+### Voice
+
+- **Enabled** — Off
+
+## Shared settings for all three profiles
+
+### Capacity
+
+- **Max active sessions** — `30`
+- **Max transcription streams** — `32`
+- **Max unattached participants** — `120`
+- **Max waiting sessions** — `60`
+- **Storage reserve megabytes** — `256`
+
+### Direct participation
+
+- **Consents** — None
+- **Enabled** — On
+- **Participant information URL** — Leave blank
+- **Participant information version** — Leave blank
+
+### Privacy
+
+- **Contract version** — `2`
+
+### Progress
+
+- **Planned sessions** — Leave blank
+
+### Recruitment
+
+- **Prolific › Completion paths › Completed** — Leave blank
+- **Prolific › Completion paths › Game did not start** — Leave blank
+- **Prolific › Completion paths › No consent** — Leave blank
+- **Prolific › Completion paths › Participation ended early** — Leave blank
+- **Prolific › Completion paths › Partner left** — Leave blank
+- **Prolific › Completion paths › Technical failure** — Leave blank
+- **Prolific › Enabled** — Off
+- **Prolific › Study ID** — Leave blank
+
+### Session
+
+- **Reconnect grace seconds** — `15`
+- **Session IDle timeout seconds** — `1800`
+- **Session max lifetime seconds** — `14400`
+- **Waiting session timeout seconds** — `600`
+
+### Speechmatics
+
+- **Enable partials** — On
+- **End of utterance silence trigger** — `1.2`
+- **Max delay** — `2.0`
+- **Realtime URL** — `wss://eu.rt.speechmatics.com/v2`
+
+### Transcription
+
+- **Enabled** — Off
+- **Language** — `en-US`
+- **Model** — `enhanced`
+- **Provider** — `speechmatics`
+
+### Text-to-speech
+
+- **Base URL** — `wss://api.elevenlabs.io`
+- **Enabled** — Off
+- **Model** — `eleven_flash_v2_5`
+- **Output format** — `pcm_24000`
+- **Provider** — `elevenlabs`
+- **Voice ID** — Leave blank while text-to-speech is off. When enabled, use the ElevenLabs voice ID above.
+- **Voice name** — Leave blank
+
+### Voice
+
+- **Frame duration ms** — `20`
+- **Jitter buffer ms** — `100`
+- **Post completion seconds** — `60`
+- **Sample rate hz** — `24000`

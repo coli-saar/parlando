@@ -4,15 +4,20 @@ An avalanche has buried the valley stairs and severed the hotel’s steam main. 
 
 ![The East suite in a live game](east-suite.jpg)
 
-## Start a game
+## Build and deploy
 
-From the Parlando repository root, run:
+From this directory, build the packages, then upload them to a running Parlando server. The build requires Rust’s `wasm32-unknown-unknown` target, `wasm-tools`, Python 3, and Node.js. Replace `lab` with your server URL or configured alias.
 
 ```sh
-games/counterweight-hotel/run.sh
+./build.sh
+parlando login --server lab
+./deploy.sh --host lab
+parlando activate --host lab --game counterweight-hotel
 ```
 
-Open the [hotel dashboard](http://127.0.0.1:8081/admin/experiments). On a fresh installation, create the administrator and an experiment. Use **Human vs human** for a pair or **Human vs agent** with **Hotel porter** for one guest. Enable live voice for a human pair. Each guest selects **Prepare voice** in the lobby and grants microphone access. Either guest can mute at any time. Select typed communication for text chat. The local solo demo uses a text porter. The default game configuration `{}` selects **Bridge Escape**. To play **Rescue Supplies** as a separate game, set the experiment’s game YAML to `route: rescue_supplies`. The porter settings are `{}` for either route. Activate the experiment and open its participant link. On one computer, two humans can use separate browser profiles. The dashboard and its participant URLs share the same host, port, and database. After restarting the server, activate the desired experiment again.
+Sign in once per server. The deploy script uploads the game first, followed by its agents. Omit `--host` to use your CLI’s default server. Open the game from **Games** in the server dashboard to configure an experiment and start intake.
+
+Use **Human vs human** for a pair or **Human vs agent** with **Hotel porter** for one guest. Enable live voice for a human pair. Each guest selects **Prepare voice** in the lobby and grants microphone access. Either guest can mute at any time. Select typed communication for text chat. The local solo demo uses a text porter. The default game configuration `{}` selects **Bridge Escape**. To play **Rescue Supplies** as a separate game, set the experiment’s game YAML to `route: rescue_supplies`. The porter settings are `{}` for either route. Activate the experiment and open its participant link. On one computer, two humans can use separate browser profiles.
 
 ## Explore the hotel
 
@@ -51,29 +56,14 @@ The route definitions in [the Rust game](server/src/lib.rs) specify the East car
 
 A route combines a starting position, bridge locations, initial ballast and an optional freight pickup and manifest. The same cable, brake key, gate seals and porter policy serve each route.
 
-## Build and storage
+## Test the hotel and porter
 
-Install Rust's `wasm32-unknown-unknown` target, `wasm-tools`, and Node.js.
-The launcher builds the component and its browser application, then starts the
-game's custom host with **Hotel porter** available. Add `--build-only` to build
-`dist/counterweight-hotel-0.1.0.zip`. The portable package also supports human pairs and remote
-agents on a deployment host. Follow the [local pilot walkthrough](../../docs/web/content/manual/start/getting-started.md#start-a-local-server)
-with game ID `counterweight-hotel`. To start the deployment host from the
-launcher, pass
-`--without-bundled-agents`. It stores packages and experiment data under
-`.local/host` by default.
-
-The default port is `8081` and the database is `.local/component.sqlite`.
-Override them with `PORT` and `PARLANDO_DATABASE_URL`. To exercise the seeded
+To exercise the seeded
 routes and porter policy from the repository root, run:
 
 ```sh
 cargo test --manifest-path games/counterweight-hotel/server/Cargo.toml --features bundled-agents
 ```
-
-## Package the hotel porter policy
-
-Run `./run.sh --build-only` from this game directory. The launcher builds the game, records its ZIP path, version and SHA-256 in `agent.yaml`, and builds the compatible policy ZIP. Upload the game ZIP before its agent ZIP. To produce only the game, pass `--without-bundled-agents --build-only`.
 
 ## Landscape credits
 

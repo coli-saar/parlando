@@ -12,5 +12,4 @@ if grep -q '^ *import ' build/last-token-python.wit; then
   exit 1
 fi
 
-source "../../../games/support/packages.sh"
-build_packages "$PWD" false
+exec python3 "../../../games/support/packages.py" "$PWD" build "$@"

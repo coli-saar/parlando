@@ -13,13 +13,13 @@ To run your own server from GitHub, follow [Deploy Parlando on Railway](railway/
 Ask your host administrator for the administrator site URL and an individual account. Build your game locally and sign in. Experimenter accounts can access the games and experiments on this host.
 
 1. In **Games**, expand **Deploy or update a game**, select `dist/beacon-0.1.0.zip`, and choose **Deploy game**. Parlando reads the game ID from the archive. The IDs `admin`, `api`, and `health` are reserved for host routes.
-2. Choose **Activate** in the `beacon` row. On a phone, open **Manage** to see the game’s actions. Open the **Beacon Relay** link to go to the Beacon Relay dashboard at `/beacon` on the administrator origin.
+2. Sign in with `parlando login --server SERVER_URL` and run `parlando activate --host SERVER_URL --game beacon`, using your host URL for `SERVER_URL`. Open the **Beacon Relay** link to go to the Beacon Relay dashboard at `/beacon` on the administrator origin.
 3. Choose **New experiment**, enter an ID such as `beacon-pilot`, and confirm with **Create experiment**. Configure the [study condition](../run/configuration/) in that dashboard.
 4. Choose **Start experiment** and start **Local preview** to pilot. Open the participant URL in two independent browser profiles. Inspect the resulting sessions, then choose **Stop**. Use **Official intake** when the study is ready for participants.
 
 ## Update a deployed game
 
-Stop testing, pause open intake, and let existing sessions finish. Use **Update** in the game's row to upload a ZIP with the same game ID. Parlando replaces the package and keeps the game's research database. It rejects replacement or deactivation while an experiment is running or has sessions still in progress. **Deactivate** disables participant access for the entire game.
+Stop testing, pause open intake, and let existing sessions finish. Use **Update** in the game's row to upload a ZIP with the same game ID. Parlando replaces the package and keeps the game's research database. It rejects replacement or deactivation while an experiment is running or has sessions still in progress. The `parlando deactivate` command disables participant access for the entire game.
 
 After updating a game, select the existing experiment and start a local preview to check its configuration with the new build. Compatible settings can be used immediately with the same experiment ID and participant URL. If the updated game rejects a setting, edit the configuration while the experiment is inactive and save the corrected values. Each session records the game version it ran.
 

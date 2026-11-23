@@ -198,40 +198,6 @@ function stacked(primary, secondary) {
   return group;
 }
 
-// Keeps game actions directly accessible on desktop and behind a local disclosure on phones.
-function gameManagement(game) {
-  const controls = document.createElement("div");
-  controls.className = "toolbar";
-  const update = action("Update", () => openUpdate(game));
-  update.setAttribute("aria-label", `Update ${game.id}`);
-  const lifecycleLabel = game.active ? "Deactivate" : "Activate";
-  const lifecycle = action(lifecycleLabel, async () => {
-    await request(`/games/${encodeURIComponent(game.id)}/${lifecycleLabel.toLowerCase()}`, {
-      method: "POST", data: "response",
-    });
-    await refreshGames();
-    notice(`${game.name} ${game.active ? "deactivated" : "activated"}.`);
-  });
-  lifecycle.setAttribute("aria-label", `${lifecycleLabel} ${game.id}`);
-  controls.append(update, lifecycle);
-  const group = document.createElement("div");
-  group.className = "game-management";
-  const toggle = document.createElement("button");
-  toggle.type = "button";
-  toggle.className = "manage-toggle";
-  toggle.textContent = "Manage";
-  toggle.setAttribute("aria-label", `Manage ${game.name}`);
-  toggle.setAttribute("aria-expanded", "false");
-  controls.id = `manage-${game.id}`;
-  toggle.setAttribute("aria-controls", controls.id);
-  toggle.addEventListener("click", () => {
-    const open = toggle.getAttribute("aria-expanded") === "true";
-    toggle.setAttribute("aria-expanded", String(!open));
-  });
-  group.append(toggle, controls);
-  return group;
-}
-
 // Builds a game row and its adjacent, individually identifiable installed policies.
 function gameRows(game, uploaded) {
   const link = document.createElement("a");
@@ -244,7 +210,9 @@ function gameRows(game, uploaded) {
   const identity = document.createElement("div");
   identity.className = "game-identity";
   identity.append(stacked(link, game.id));
-  const parent = row([identity, stacked(game.version, digest(game.revision)), status, gameManagement(game)]);
+  const update = action("Update", () => openUpdate(game));
+  update.setAttribute("aria-label", `Update ${game.id}`);
+  const parent = row([identity, stacked(game.version, digest(game.revision)), status, update]);
   parent.className = "game-row";
   if (!game.agents.length) return [parent];
 

@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { ParticipantConnection, type LiveSession } from "../participantConnection.js";
 import { AudioSessionController } from "../audio/audioSessionController.js";
 import { errorMessage, experimentAllowsIntake, requiredConsentsAccepted } from "../helpers.js";
-import { TranscriptionProgress } from "../voiceComponents.js";
+import { MicrophoneLevelMeter, TranscriptionProgress } from "../voiceComponents.js";
 import { ParticipantClient, type ExperimentInfo } from "../protocol.js";
 import { type CommunicationPlacement, type GameSnapshot } from "./types.js";
 import { CommunicationContext, CommunicationWidget } from "./communicationWidget.js";
@@ -271,6 +271,7 @@ export function ParticipantAppRuntime<
         {enabled && (
           <div className="voice-preflight">
             <div><strong>Voice chat</strong>{" "}<span>{status.message}</span></div>
+            <MicrophoneLevelMeter active={voicePreflight.micProbeActive} label="Level" level={voicePreflight.micLevel} />
             <details>
               <summary>Voice connection details</summary>
               <TranscriptionProgress connected={session.synchronization === "connected"} status={status} />

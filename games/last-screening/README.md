@@ -4,24 +4,24 @@ Two operators are locked inside the Orpheum. From the booth, the projectionist l
 
 ![The projection booth during Midnight Crossing](booth.jpg)
 
-## Play together
+## Build and deploy
 
-Install Rust’s `wasm32-unknown-unknown` target, `wasm-tools`, and Node.js. Then run this command from the repository root.
+From this directory, build the packages, then upload them to a running Parlando server. The build requires Rust’s `wasm32-unknown-unknown` target, `wasm-tools`, Python 3, and Node.js. Replace `lab` with your server URL or configured alias.
 
 ```sh
-games/last-screening/run.sh
+./build.sh
+parlando login --server lab
+./deploy.sh --host lab
+parlando activate --host lab --game last-screening
 ```
 
-Open [the local dashboard](http://127.0.0.1:8080/admin/experiments), create an experiment with two human players, and activate it. The game settings are `{}`. Give the participant URL to both players. On one computer, use two separate browser profiles or a regular window and a private window. Text conversation works with the default setup. Configure voice in the dashboard if desired.
+Sign in once per server. The deploy script uploads the game first, followed by its agents. Omit `--host` to use your CLI’s default server. Open the game from **Games** in the server dashboard to configure an experiment and start intake.
 
-The launcher builds the portable game package under `dist/last-screening-0.1.0.zip` and binds
-the host to loopback. Set `HOST` to bind to a reachable address, or `PORT`
-to change the port. The default database is `.local/component.sqlite` inside
-the game directory.
+The game settings are `{}`. Give the participant URL to both players. On one computer, use two separate browser profiles or a regular window and a private window. Text conversation works with the default setup. Configure voice in the dashboard if desired.
 
 ## Play solo with the screening partner
 
-Start the same server and create a separate experiment in the dashboard. Set **Participant pairing** to **Human vs agent**, choose **Screening partner**, save the configuration, and activate the experiment. Open its participant URL in one browser window. The launcher registers this partner with the shared host. The policy needs no model, API key, or separate process.
+Create a separate experiment in the dashboard. Set **Participant pairing** to **Human vs agent**, choose **Screening partner**, save the configuration, and activate the experiment. Open its participant URL in one browser window. The policy needs no model, API key, or separate process.
 
 With the default game settings you operate the projection booth. To play backstage, set the game YAML to `projectionist_seat: b` before activation. At the start of each reel, read the partner’s mark in the intercom and reply with the number on your own cue card. For example, if your card says *Tower at 4*, send `4`. The partner then works its equipment while you operate yours. Exchange marks again when the cue sheet turns.
 
@@ -33,13 +33,9 @@ Drag inside the scene to look around. Click a lantern or fly rail to inspect it,
 
 ## Build locally
 
-Run `./run.sh --build-only` to build both ZIPs using this checkout's Rust and browser SDKs. The browser build also writes its assets to `client/web/dist/`.
+The build writes the browser assets to `client/web/dist/`.
 
 For a single-seat visual preview, build once, then run `npm run dev` from `client/web/` and open `/?preview` on the printed Vite URL. The preview offers a choice of room and reel and lets you operate that seat’s equipment. Live two-player sessions run through the participant URL.
-
-## Package the screening partner policy
-
-Run `./run.sh --build-only` from this game directory. The launcher builds the game, records its ZIP path, version and SHA-256 in `agent.yaml`, and builds the compatible policy ZIP. Upload the game ZIP before its agent ZIP. To produce only the game, pass `--without-bundled-agents --build-only`.
 
 ## Author another reel
 

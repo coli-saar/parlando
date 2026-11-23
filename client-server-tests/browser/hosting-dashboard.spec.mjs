@@ -164,14 +164,13 @@ test('sign-in resumes a local game dashboard address and ignores external destin
   await expect(page).toHaveURL('http://hosting.test/admin?next=%2F%2Fexample.com');
 });
 
-test('Games deploys and updates packages, manages activation, and opens the game dashboard', async ({ page }) => {
+test('Games deploys and updates packages and opens the game dashboard', async ({ page }) => {
   const id = 'example';
   const name = 'Example Game';
   const first = { id, name, agents: [], version: '1.0.0', revision: 'a'.repeat(64), active: false };
   const second = { ...first, version: '2.0.0', revision: 'b'.repeat(64) };
   const zip = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 255]);
   const uploads = [];
-  const lifecycle = [];
   let game;
   await page.route('http://hosting.test/**', async route => {
     const request = route.request();
@@ -195,11 +194,6 @@ test('Games deploys and updates packages, manages activation, and opens the game
       }
       game = path.endsWith('/example') ? second : first;
       return route.fulfill({ json: { ...game, game: id } });
-    }
-    if (path.startsWith('/api/hosting/games/example/') && request.method() === 'POST') {
-      lifecycle.push({ path, csrf });
-      game = { ...game, active: path.endsWith('/activate') };
-      return route.fulfill({ json: { active: game.active } });
     }
     if (path === '/example') return route.fulfill({ body: 'Game dashboard destination' });
     await route.fulfill({ status: 404 });
@@ -261,20 +255,9 @@ test('Games deploys and updates packages, manages activation, and opens the game
   await expect(policy).toBeVisible();
 
   await page.setViewportSize({ width: 320, height: 720 });
-  const manage = page.getByRole('button', { name: 'Manage Example Game' });
-  await expect(page.getByRole('button', { name: 'Activate example' })).toBeHidden();
-  await manage.click();
-  await expect(manage).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByRole('button', { name: 'Update example' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^(de)?activate/i, includeHidden: true })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(320);
-  await page.getByRole('button', { name: 'Activate example' }).click();
-  await expect(page.getByRole('cell', { name: 'Active', exact: true })).toBeVisible();
-  await manage.click();
-  await page.getByRole('button', { name: 'Deactivate example' }).click();
-  await expect(page.getByRole('cell', { name: 'Inactive', exact: true })).toBeVisible();
-  expect(lifecycle).toEqual([
-    { path: '/api/hosting/games/example/activate', csrf: 'test-csrf' },
-    { path: '/api/hosting/games/example/deactivate', csrf: 'test-csrf' },
-  ]);
 
   await page.getByRole('link', { name: 'Example Game', exact: true }).click();
   await expect(page).toHaveURL('http://hosting.test/example');

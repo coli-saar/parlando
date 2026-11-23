@@ -20,9 +20,7 @@ const styles = `
   .parlando-communication-form,.parlando-communication-controls{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem}
   .parlando-communication-form input{flex:1;min-width:8rem}
   .parlando-communication :where(input,button){font:inherit}
-  .parlando-communication .parlando-session-tools-voice,.parlando-communication .mic-meter{display:grid;gap:.25rem}
-  .parlando-communication .mic-meter-track{overflow:hidden;border:1px solid currentColor;border-radius:1rem;height:.5rem}
-  .parlando-communication .mic-meter-track span{display:block;height:100%;background:var(--parlando-communication-meter-color,currentColor);transform-origin:left}
+  .parlando-communication .parlando-session-tools-voice{display:grid;gap:.25rem}
   .parlando-communication-error{margin:0}
 `;
 

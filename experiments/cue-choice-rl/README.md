@@ -56,7 +56,7 @@ cue-choice-learner --backend qwen --device auto
 ```
 
 Build the game with the Rust `wasm32-unknown-unknown` target and `wasm-tools`.
-From the repository root, build the game and dealer ZIPs. The training coordinator loads the game package and registers the dealer and the Python learner. For a shared host, upload the game first, followed by the dealer ZIP from the same `dist/` directory.
+From the repository root, build the game and dealer ZIPs. The training coordinator loads the game package and registers the dealer and the Python learner. To upload the game and dealer to an existing server after the build, sign in with `parlando login --server lab` and use `experiments/cue-choice-rl/deploy.sh --host lab` from the repository root. Substitute your server URL or alias for `lab`.
 
 ```bash
 experiments/cue-choice-rl/build.sh

@@ -1,20 +1,19 @@
 SHELL := /bin/bash
 
 SPACE_GAME_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
-HOST ?= 127.0.0.1
-PORT ?= 8000
+HOST ?= default
 
-.PHONY: all build run clean
+.PHONY: all build deploy clean
 
 all: build
 
-# Build the WebAssembly component and browser client into a portable package.
+# Build the game and Back and forth agent archives.
 build:
-	"$(SPACE_GAME_DIR)/run.sh" --build-only
+	"$(SPACE_GAME_DIR)/build.sh"
 
-# Serve the package with the authored Back and Forth agent.
-run:
-	HOST="$(HOST)" PORT="$(PORT)" "$(SPACE_GAME_DIR)/run.sh"
+# Upload the most recent build to the chosen Parlando server.
+deploy:
+	"$(SPACE_GAME_DIR)/deploy.sh" --host "$(HOST)"
 
 # Remove output built by the component CLI.
 clean:

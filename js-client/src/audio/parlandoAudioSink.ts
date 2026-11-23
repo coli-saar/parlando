@@ -33,9 +33,10 @@ export class ParlandoAudioSink implements LocalAudioSink {
     try {
       const audio = new AudioContext();
       this.audioContext = audio;
+      // Worklets load as same-origin modules even when the bundler could inline a small asset.
       await Promise.all([
-        audio.audioWorklet.addModule(new URL("./captureWorklet.js", import.meta.url)),
-        audio.audioWorklet.addModule(new URL("./playbackWorklet.js", import.meta.url))
+        audio.audioWorklet.addModule(new URL("./captureWorklet.js?no-inline", import.meta.url)),
+        audio.audioWorklet.addModule(new URL("./playbackWorklet.js?no-inline", import.meta.url))
       ]);
       await audio.resume();
       this.stream = input.createMediaStream("parlando-audio");

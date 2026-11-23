@@ -24,6 +24,24 @@ export function MicrophoneLevelMeter({
   const normalizedLevel = Number.isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
   return (
     <div className={`mic-meter ${muted ? "muted" : "live"}`}>
+      <style>{`
+        @layer parlando {
+          .mic-meter { display: grid; gap: .25rem; min-width: 0; }
+          .mic-meter-track {
+            display: block;
+            height: .5rem;
+            overflow: hidden;
+            border: 1px solid currentColor;
+            border-radius: 1rem;
+          }
+          .mic-meter-track > span {
+            display: block;
+            height: 100%;
+            background: var(--parlando-communication-meter-color, currentColor);
+            transform-origin: left;
+          }
+        }
+      `}</style>
       <span>{label}</span>
       <div className="mic-meter-track" aria-hidden="true">
         <span style={{ transform: `scaleX(${active ? normalizedLevel : 0})` }} />

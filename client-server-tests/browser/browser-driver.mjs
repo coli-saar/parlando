@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
 /** Reads the scenario request supplied by the Rust coordinator. */
@@ -56,11 +57,30 @@ function countdownSeconds(text) {
 
 /** Prepares Playwright's fake microphone and confirms the participant may enter. */
 async function prepareVoice(participant) {
+  const panel = participant.page.locator(".voice-preflight");
+  const title = await panel.getByText("Voice chat", { exact: true }).boundingBox();
+  const status = await panel.locator("strong + span").boundingBox();
+  if (!title || !status || (status.y < title.y + title.height && status.x <= title.x + title.width)) {
+    throw new Error("voice heading and preparation status run together");
+  }
+  await panel.locator(".mic-meter-track").waitFor({ state: "visible" });
   await participant.page.getByRole("button", { name: "Prepare voice" }).click();
+  await checkLiveLobbyMeter(participant.page);
   await participant.page.waitForFunction(() => {
     const button = [...document.querySelectorAll("button")]
       .find((candidate) => candidate.textContent?.trim() === "Enter waiting room");
     return button instanceof HTMLButtonElement && !button.disabled;
+  }, undefined, { timeout: 10_000 });
+}
+
+/** Confirms the shared lobby meter visibly responds to the fake microphone. */
+async function checkLiveLobbyMeter(page) {
+  await page.waitForFunction(() => {
+    const track = document.querySelector(".voice-preflight .mic-meter-track");
+    const fill = track?.firstElementChild;
+    return track && fill && track.clientHeight > 0 && track.clientWidth > 0
+      && fill.getBoundingClientRect().width > 0 && fill.getBoundingClientRect().height > 0
+      && getComputedStyle(fill).backgroundColor !== "rgba(0, 0, 0, 0)";
   }, undefined, { timeout: 10_000 });
 }
 
@@ -367,9 +387,15 @@ async function farewellVoice(browser, origin) {
   const b = await openParticipant(browser, gameCommunicationUrl(origin), ["microphone"]);
   const pair = { a, b };
   try {
+    // Exercise the shipped Beacon Relay theme alongside the unthemed SDK defaults on B.
+    await a.page.addStyleTag({ path: fileURLToPath(new URL("../../rust-server/templates/rust/client/beacon.css", import.meta.url)) });
     await prepareVoice(a);
     await prepareVoice(b);
     await enter(a.page);
+    await a.page.getByRole("heading", { name: "Waiting for another participant" }).waitFor();
+    await checkLiveLobbyMeter(a.page);
+    // Voice transport must load its worklets on the first seat while the partner is still outside.
+    await a.page.locator(".voice-preflight").getByText("Microphone live", { exact: true }).waitFor({ timeout: 15_000 });
     await enter(b.page);
     await a.page.getByRole("heading", { name: "Contract game" }).waitFor();
     await b.page.getByRole("heading", { name: "Contract game" }).waitFor();
