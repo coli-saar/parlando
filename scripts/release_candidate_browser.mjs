@@ -162,11 +162,12 @@ async function play(adminOrigin, publicOrigin, game) {
   }
 }
 
-/** Authorizes the actual CLI process used by the release rehearsal. */
-async function approveCli(url) {
+/** Claims the fresh host or approves the CLI through an existing dashboard account. */
+async function visitDashboard(url, authorize) {
   const browser = await chromium.launch();
   try {
     const page = await signIn(browser, url);
+    if (!authorize) return;
     await expect(page.getByLabel("Terminal code")).toBeHidden();
     await page.getByRole("button", { name: "Authorize CLI" }).click();
     await expect(page.getByRole("status")).toContainText("CLI deployment authorized");
@@ -210,6 +211,7 @@ async function playAgent(adminOrigin, publicOrigin, game, agentId) {
   }
 }
 
-if (process.argv[2] === "login") await approveCli(readFileSync(0, "utf8").trim());
+if (process.argv[2] === "setup") await visitDashboard(process.argv[3], false);
+else if (process.argv[2] === "login") await visitDashboard(readFileSync(0, "utf8").trim(), true);
 else if (process.argv[5]) await playAgent(...process.argv.slice(2));
 else await play(...process.argv.slice(2));

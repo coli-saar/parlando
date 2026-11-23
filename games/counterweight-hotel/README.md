@@ -59,7 +59,7 @@ game's custom host with **Hotel porter** available. Add `--build-only` to build
 `dist/counterweight-hotel-0.1.0.zip`. The portable package also supports human pairs and remote
 agents on a deployment host. Follow the [local pilot walkthrough](../../docs/web/content/manual/start/getting-started.md#start-a-local-server)
 with game ID `counterweight-hotel`. To start the deployment host from the
-launcher, set the upload and operator tokens as in the walkthrough and pass
+launcher, pass
 `--without-bundled-agents`. It stores packages and experiment data under
 `.local/host` by default.
 
@@ -90,13 +90,6 @@ rebuilding the game archive so the policy uses the new ZIP's checksum.
 
 The Alpine skyline wraps the original alpenglow mountain artwork around the hotel.
 
-## Deploy on Render
+## Deploy to Railway
 
-The hotel Blueprint builds the component, the host with **Hotel porter**, and the participant client. One Free web service serves both. Its local SQLite database lives in the container user’s home directory. Render discards local files on spin-down, restart, or redeploy, including the administrator account, experiments, and session records.
-
-1. Push the hotel and its build inputs to a branch Render can access. In the Render dashboard choose **New → Blueprint**, connect the repository, select that branch, and enter `games/counterweight-hotel/render.yaml` as the Blueprint path. The Docker context is the repository root.
-2. Confirm the service shows Free compute and deploy. Once `/health` passes, open the service URL followed by `/admin` and create the first administrator before sharing the URL.
-3. Create an experiment named `porter` with **Human vs agent**, **Hotel porter**, and typed chat. Use `{}` for the game and porter settings. Activate it and open `/e/porter/`. For two guests, create and activate `paired` with **Human vs human**. Use the participant link shown by the dashboard.
-4. For speech, enter provider credentials in **Game settings** and configure voice in the experiment. After a reset, repeat administrator setup and recreate or import your experiments before activating them. Re-enter provider credentials for voice.
-
-The repository’s [shared host guide](../../docs/web/content/manual/deploy/host.md) covers storage, administrator setup, and backups.
+Build the game ZIP from this directory and upload it to your shared host. See [Deploy Parlando on Railway](../../docs/web/content/manual/deploy/railway.md) for server setup, package uploads, and game activation.

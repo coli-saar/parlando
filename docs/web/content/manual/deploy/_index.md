@@ -6,6 +6,8 @@ title: Deploy to a shared host
 
 A shared Parlando host serves one current WASM package per game. Activate a game to make participant access available. Use its game dashboard to create experiments and start or stop their individual runs. You can deploy and activate games without restarting the host.
 
+To run your own server from GitHub, follow [Deploy Parlando on Railway](railway/).
+
 ## Deploy from the dashboard
 
 Ask your host administrator for the administrator site URL and an individual account. Build your game locally and sign in. Experimenter accounts can access the games and experiments on this host.
@@ -52,7 +54,7 @@ parlando build
 parlando deploy --host http://127.0.0.1:8000 dist/beacon-0.1.0.zip
 ```
 
-Record the package revision printed by the command. For scripts, add `--json` and read `result.revision`. Changing the account password or disabling the account revokes its saved CLI credentials. Activation and deactivation require the host administrator token. Set `PARLANDO_HOST_ADMIN_TOKEN` and set `PARLANDO_HOST_ADMIN_ORIGIN` to the service origin before using the CLI for those operations.
+Record the package revision printed by the command. For scripts, add `--json` and read `result.revision`. Changing the account password or disabling the account revokes its saved CLI credentials. Activation and deactivation use the same CLI sign-in as uploads.
 
 ```sh
 parlando activate --host http://127.0.0.1:8000 --game beacon

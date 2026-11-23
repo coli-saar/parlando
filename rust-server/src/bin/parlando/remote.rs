@@ -3,7 +3,7 @@
 use std::{env, net::SocketAddr, path::PathBuf};
 
 use super::{project, Report};
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result};
 use clap::Subcommand;
 use parlando::deployment::{self, credentials, HostOptions};
 use serde_json::{json, Value};
@@ -46,7 +46,6 @@ pub(super) enum RemoteCommand {
     ///
     /// With the default loopback origins, open the dashboard link printed at startup.
     /// To set the dashboard origin explicitly, pass --admin-url or set PARLANDO_ADMIN_URL.
-    /// For an explicit dashboard origin, set PARLANDO_HOST_ADMIN_TOKEN.
     Serve {
         /// Local TCP address, typically behind an HTTPS reverse proxy.
         #[arg(long, default_value = "127.0.0.1:8000")]
@@ -146,21 +145,12 @@ pub(super) async fn execute(command: RemoteCommand) -> Result<Report> {
             let use_local_dashboard = bind.ip().is_loopback() && public_url.is_none();
             let public_url = public_url.unwrap_or_else(|| format!("http://{bind}"));
             let admin_url = admin_url.or_else(|| env::var("PARLANDO_ADMIN_URL").ok());
-            let management_configured =
-                admin_url.is_some() || env::var_os("PARLANDO_HOST_ADMIN_TOKEN").is_some();
-            let admin_token = management_configured
-                .then(|| required_env("PARLANDO_HOST_ADMIN_TOKEN"))
-                .transpose()?;
-            let local_dashboard = use_local_dashboard && admin_url.is_none();
-            let admin_url = admin_url
-                .or_else(|| local_dashboard.then(|| format!("http://localhost:{}", bind.port())));
+            let admin_url = admin_url.or_else(|| {
+                use_local_dashboard.then(|| format!("http://localhost:{}", bind.port()))
+            });
             let store = std::path::absolute(store)?;
             let store_display = store.display().to_string();
-            let options = HostOptions {
-                store,
-                public_url,
-                admin_token,
-            };
+            let options = HostOptions { store, public_url };
             let dashboard_url = admin_url
                 .as_ref()
                 .map(|origin| format!("{}/admin", origin.trim_end_matches('/')));
@@ -172,22 +162,8 @@ pub(super) async fn execute(command: RemoteCommand) -> Result<Report> {
                     eprintln!("Set --admin-url to enable dashboard sign-in and game uploads.");
                 }
             };
-            match admin_url {
-                Some(origin) if local_dashboard => {
-                    deployment::serve_local_dashboard_on_listener(
-                        listener,
-                        options,
-                        origin,
-                        wasm_metering,
-                        ready,
-                    )
-                    .await?;
-                }
-                origin => {
-                    deployment::serve_on_listener(listener, options, origin, wasm_metering, ready)
-                        .await?;
-                }
-            }
+            deployment::serve_on_listener(listener, options, admin_url, wasm_metering, ready)
+                .await?;
             Ok(Report::new(
                 format!("Deployment host on {bind} stopped."),
                 json!({"status": "stopped", "bind": bind}),
@@ -198,11 +174,11 @@ pub(super) async fn execute(command: RemoteCommand) -> Result<Report> {
     }
 }
 
-/// Applies the requested availability to the game using the host administrator credential.
+/// Applies the requested availability to the game using the signed-in account.
 async fn change_game_availability(target: GameTarget, active: bool) -> Result<Report> {
     deployment::validate_game_id(&target.game)?;
     let origin = credentials::resolve_host(&target.host)?;
-    let token = admin_token(&origin)?;
+    let token = credentials::upload_token(&origin)?;
     let action = if active { "activate" } else { "deactivate" };
     let response: Value = deployment::control_request(
         &origin,
@@ -217,21 +193,4 @@ async fn change_game_availability(target: GameTarget, active: bool) -> Result<Re
         format!("Game {} is {status}.", target.game),
         response,
     ))
-}
-
-/// Retrieves an explicitly configured secret without exposing its value in a failure.
-fn required_env(key: &str) -> Result<String> {
-    let value = env::var(key).with_context(|| format!("set {key}"))?;
-    ensure!(!value.trim().is_empty(), "{key} is empty");
-    Ok(value)
-}
-
-/// Ensures an ambient operator token is only sent to its configured origin.
-fn admin_token(origin: &str) -> Result<String> {
-    let expected = required_env("PARLANDO_HOST_ADMIN_ORIGIN")?;
-    ensure!(
-        deployment::checked_origin(&expected)? == origin,
-        "administrator credential belongs to another server"
-    );
-    required_env("PARLANDO_HOST_ADMIN_TOKEN")
 }

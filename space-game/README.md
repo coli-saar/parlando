@@ -62,12 +62,6 @@ Game-specific UI should stay here. For example, the station map, inventory/actio
 
 The client expects a Parlando-compatible server that exposes experiment-scoped `/e/{experiment_id}/api/*` and WebSocket routes. In local runs, the launcher serves the browser files from the ZIP’s `client/` directory.
 
-## Deploy on Render
+## Deploy to Railway
 
-The Space Game includes a production [`Dockerfile`](Dockerfile) and a complete
-[`render.yaml`](render.yaml) Blueprint. Together they build the WebAssembly component, the host with the authored agent, and the
-browser client, attach persistent storage for SQLite, and configure Render's
-database-aware health check.
-
-For the shared deployment service and its package workflow, see
-[Deploy to a shared host](../docs/web/content/manual/deploy/_index.md).
+Build the game ZIP from this directory and upload it to your shared host. See [Deploy Parlando on Railway](../docs/web/content/manual/deploy/railway.md) for server setup, package uploads, and game activation.

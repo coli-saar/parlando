@@ -1,8 +1,0 @@
-services:
-  - type: web
-    name: parlando-counterweight-hotel
-    runtime: docker
-    plan: free
-    dockerfilePath: ./games/counterweight-hotel/Dockerfile
-    dockerContext: .
-    healthCheckPath: /health

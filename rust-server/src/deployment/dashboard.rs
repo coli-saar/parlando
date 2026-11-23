@@ -1,10 +1,10 @@
 //! Hosts lab accounts and their operator UI on a dedicated web origin.
 
-use std::{future::Future, net::SocketAddr, path::Path};
+use std::{future::Future, path::Path};
 
 use anyhow::{ensure, Context, Result};
 use axum::{
-    extract::{ConnectInfo, DefaultBodyLimit, Path as RoutePath, Request, State},
+    extract::{DefaultBodyLimit, Path as RoutePath, Request, State},
     http::{
         header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, COOKIE, HOST, ORIGIN, SET_COOKIE},
         request::Parts,
@@ -24,7 +24,7 @@ use super::{
         Account, AccountInputError, AccountStore, DashboardSession, PasswordWorkBusy,
         SESSION_DURATION_SECONDS,
     },
-    bad_request, checked_origin, internal, not_found, require_token, Host, HttpResult,
+    bad_request, checked_origin, internal, not_found, Host, HttpResult,
 };
 use std::sync::Arc;
 
@@ -36,18 +36,11 @@ pub(super) struct Dashboard {
     public_authority: String,
     cookie_name: String,
     secure: bool,
-    local_setup: bool,
 }
 
 impl Dashboard {
-    /// Opens lab accounts for a separate origin. The listener must have been validated
-    /// for local setup before enabling browser creation of the first account.
-    pub async fn open(
-        store: &Path,
-        public_url: &str,
-        admin_url: &str,
-        local_setup: bool,
-    ) -> Result<Self> {
+    /// Opens lab accounts on the administrator hostname, isolated from participant apps.
+    pub async fn open(store: &Path, public_url: &str, admin_url: &str) -> Result<Self> {
         let origin = checked_origin(admin_url)?;
         let admin = reqwest::Url::parse(&origin)?;
         let public = reqwest::Url::parse(public_url)?;
@@ -66,17 +59,7 @@ impl Dashboard {
             authority,
             public_authority,
             secure,
-            local_setup,
         })
-    }
-
-    /// Restricts browser setup to local mode and the loopback TCP peer supplied by Axum.
-    fn allows_local_setup(&self, parts: &Parts) -> bool {
-        self.local_setup
-            && parts
-                .extensions
-                .get::<ConnectInfo<SocketAddr>>()
-                .is_some_and(|ConnectInfo(peer)| peer.ip().is_loopback())
     }
 
     /// Checks the browser-supplied origin before processing credential or state changes.
@@ -234,24 +217,8 @@ pub(super) fn participant_origin_allowed(host: &Host, parts: &Parts) -> bool {
     matches_authority(parts, &dashboard.public_authority)
 }
 
-/// Resolves a CLI bearer token or an individual browser account.
-pub(super) async fn authorize(
-    host: &Host,
-    parts: &Parts,
-    expected: Option<&[u8; 32]>,
-    machine_actor: impl FnOnce() -> String,
-) -> HttpResult<String> {
-    if parts.headers.contains_key(AUTHORIZATION) {
-        require_token(&parts.headers, expected)?;
-        return Ok(machine_actor());
-    }
-    let dashboard = admin(host, parts).map_err(|_| unauthorized())?;
-    let session = dashboard.browser_session(parts).await?;
-    Ok(actor_name(&session))
-}
-
 /// Accepts an account-bound deployment token or the existing authenticated dashboard session.
-pub(super) async fn upload_actor(host: &Host, parts: &Parts) -> HttpResult<String> {
+pub(super) async fn management_actor(host: &Host, parts: &Parts) -> HttpResult<String> {
     if let Some(header) = parts.headers.get(AUTHORIZATION) {
         let token = header
             .to_str()
@@ -277,6 +244,13 @@ pub(super) async fn upload_actor(host: &Host, parts: &Parts) -> HttpResult<Strin
 /// Opens a short-lived device request and directs the CLI to this host's configured dashboard.
 async fn cli_start(State(host): State<Arc<Host>>) -> HttpResult<Json<Value>> {
     let dashboard = host.dashboard.as_ref().ok_or_else(not_found)?;
+    // Pairing advertises the admin URL. Publish it only after the first admin has claimed the host.
+    if dashboard.accounts.is_empty().await.map_err(internal)? {
+        return Err((
+            StatusCode::CONFLICT,
+            "Create the first administrator before signing in with the CLI.".into(),
+        ));
+    }
     let (device, code) = dashboard
         .accounts
         .start_cli_login()
@@ -507,16 +481,15 @@ struct SignIn {
     password: String,
 }
 
-/// Tells the administrator dashboard whether a local browser can create the first operator.
+/// Tells the administrator dashboard whether the first administrator account is still unclaimed.
 async fn setup_status(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Json<Value>> {
     let (parts, _) = request.into_parts();
     let dashboard = admin(&host, &parts)?;
-    let available = dashboard.allows_local_setup(&parts)
-        && dashboard.accounts.is_empty().await.map_err(internal)?;
+    let available = dashboard.accounts.is_empty().await.map_err(internal)?;
     Ok(Json(json!({ "available": available })))
 }
 
-/// Creates the initial operator for a loopback peer on the configured administrator origin.
+/// Creates the first administrator on the configured dashboard origin while the store is empty.
 async fn setup(
     State(host): State<Arc<Host>>,
     request: Request,
@@ -524,23 +497,26 @@ async fn setup(
     let (parts, body) = request.into_parts();
     let dashboard = admin(&host, &parts)?;
     dashboard.verify_origin(&parts.headers)?;
-    if !dashboard.allows_local_setup(&parts) {
-        return Err(unauthorized());
-    }
     let Json(input) = parse_json::<SignIn>(parts, body, &host).await?;
-    let account = audited(&host, "local-setup", "setup-account", "dashboard", async {
-        dashboard
-            .accounts
-            .create_first_operator(&input.username, input.password)
-            .await
-            .map_err(account_error)?
-            .ok_or_else(|| {
-                (
-                    StatusCode::CONFLICT,
-                    "The dashboard already has an account.".to_owned(),
-                )
-            })
-    })
+    let account = audited(
+        &host,
+        "first-admin-setup",
+        "setup-account",
+        "dashboard",
+        async {
+            dashboard
+                .accounts
+                .create_first_operator(&input.username, input.password)
+                .await
+                .map_err(account_error)?
+                .ok_or_else(|| {
+                    (
+                        StatusCode::CONFLICT,
+                        "The dashboard already has an account.".to_owned(),
+                    )
+                })
+        },
+    )
     .await?;
     Ok((StatusCode::CREATED, Json(account)))
 }
@@ -617,13 +593,9 @@ async fn index(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Js
     })))
 }
 
-/// Requires an operator session or the infrastructure bootstrap token.
+/// Requires a signed-in operator to administer host accounts.
 async fn operator<'a>(host: &'a Host, parts: &Parts) -> HttpResult<(&'a Dashboard, String)> {
     let dashboard = admin(host, parts)?;
-    if parts.headers.contains_key(AUTHORIZATION) {
-        require_token(&parts.headers, host.admin_token.as_ref())?;
-        return Ok((dashboard, "host-operator-token".into()));
-    }
     let session = dashboard.browser_session(parts).await?;
     if session.account.role != "operator" {
         return Err(forbidden("Administrator role required"));
@@ -778,35 +750,6 @@ fn forbidden(message: &str) -> (StatusCode, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Setup trusts the serving mode and the connection address supplied by Axum.
-    #[tokio::test]
-    async fn setup_requires_local_mode_and_loopback_peer() {
-        let store = tempfile::tempdir().unwrap();
-        let mut dashboard = Dashboard::open(
-            store.path(),
-            "http://127.0.0.1:3000",
-            "http://localhost:3000",
-            true,
-        )
-        .await
-        .unwrap();
-        let (mut parts, _) = Request::new(axum::body::Body::empty()).into_parts();
-        parts
-            .headers
-            .insert("x-forwarded-for", HeaderValue::from_static("127.0.0.1"));
-        assert!(!dashboard.allows_local_setup(&parts));
-        parts
-            .extensions
-            .insert(ConnectInfo("192.0.2.1:5000".parse::<SocketAddr>().unwrap()));
-        assert!(!dashboard.allows_local_setup(&parts));
-        parts
-            .extensions
-            .insert(ConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
-        assert!(dashboard.allows_local_setup(&parts));
-        dashboard.local_setup = false;
-        assert!(!dashboard.allows_local_setup(&parts));
-    }
 
     /// Checks port isolation and compatibility with default-port cookies.
     #[test]

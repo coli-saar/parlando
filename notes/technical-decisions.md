@@ -5898,3 +5898,11 @@ The hosting list groups games by a divider before each game and a branch beside 
 Agent rows show identity and release only. Presence under a game already conveys installation. On phones these fields share one row, while the parent disclosure aligns with the game title independently of wrapped metadata.
 
 The hosting dashboard renders one table body per game so the same game and agent rows form a card on phones and remain column-aligned on desktop. Phone cards put update and activation under Manage to leave room for release metadata at narrow widths. Upload, refresh, and game navigation remain directly accessible.
+
+## 2026-11-23 — Railway GitHub deployments for the shared host
+
+Use Railway's branch autodeploy with the root railway.json and existing shared-host image. This keeps GitHub pushes responsible for server updates and leaves game and WASM policy releases with Parlando's authenticated upload API. One replica owns the SQLite store. On Railway the entrypoint requires the volume at /data and dashboard configuration before serving, since a healthy empty or upload-disabled host would give operators a misleading deployment signal. Volume handoff interrupts service during redeployment. GitHub installation access, domains, DNS, volume attachment, and secrets are environment-specific. Retire the Render blueprints and provider URL fallback. Existing Render resources and research records require a separate operator cutover.
+
+## First administrator setup on a shared host
+
+Local and Railway dashboards use the same first-visitor claim on the admin origin. The atomic first-account insert closes setup across simultaneous requests and restarts. The admin must claim a fresh volume immediately. CLI pairing withholds its sign-in URL until an account exists. Account sign-in authorizes game uploads and activation, and account administration requires an admin browser session. This replaces the infrastructure bearer secret and uses the existing account schema.

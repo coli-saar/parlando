@@ -129,7 +129,7 @@ impl AgentManifest {
     pub(super) async fn check(&self, test: bool) -> Result<Report> {
         let game = self.refresh(WasmMetering::Fuel).await?;
         if let Some(manifest) = self.cargo_manifest.as_ref().filter(|_| test) {
-            let mut cargo = project::build_tool("cargo");
+            let mut cargo = std::process::Command::new("cargo");
             cargo
                 .current_dir(&self.root)
                 .args(["test", "--manifest-path"])

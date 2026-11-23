@@ -555,8 +555,7 @@ def local_host(work, binary, env):
     origin = f"http://{address}"
     admin_origin = f"http://localhost:{port}"
     credentials = {
-        **env, "PARLANDO_HOST_ADMIN_TOKEN": secrets.token_urlsafe(32),
-        "PARLANDO_HOST_ADMIN_ORIGIN": origin,
+        **env,
         "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost",
     }
     credentials.pop("PARLANDO_ADMIN_URL", None)
@@ -615,6 +614,8 @@ def play_games(work, binary, agent_package, env):
     run("node", "ensure-browser.mjs", cwd=browser, env=env)
     browser_env = {**env, "PARLANDO_REHEARSAL_PASSWORD": secrets.token_urlsafe(32)}
     with local_host(work, binary, env) as (origin, admin_origin, credentials):
+        run("node", "release_candidate_browser.mjs", "setup", f"{admin_origin}/admin",
+            cwd=browser, env=browser_env, timeout=60)
         authorize_cli(binary, origin, admin_origin, browser, browser_env)
         for game in GAMES.values():
             receipt = json.loads(run(

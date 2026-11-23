@@ -22,10 +22,7 @@ use anyhow::{bail, ensure, Context, Result};
 use axum::{
     body::to_bytes,
     extract::{Path as RoutePath, Request, State},
-    http::{
-        header::{AUTHORIZATION, CONTENT_TYPE},
-        HeaderMap, Method, StatusCode,
-    },
+    http::{header::CONTENT_TYPE, Method, StatusCode},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post, put},
     Json, Router,
@@ -42,8 +39,6 @@ use package::{
 };
 use serde::Serialize;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 
 use crate::{
@@ -63,8 +58,6 @@ pub struct HostOptions {
     pub store: PathBuf,
     /// External HTTPS origin. Loopback origins can use HTTP for local installation tests.
     pub public_url: String,
-    /// Optional operator bearer credential. Omit it to disable bearer-authorized game management.
-    pub admin_token: Option<String>,
 }
 
 /// Public package metadata for one policy pinned to the currently hosted game build.
@@ -109,7 +102,6 @@ struct Host {
     wasm_metering: WasmMetering,
     store: PathBuf,
     public_url: String,
-    admin_token: Option<[u8; 32]>,
     dashboard: Option<dashboard::Dashboard>,
     games: RwLock<HashMap<String, Arc<RwLock<HostedGame>>>>,
     // Only upload operations insert into the game map. Dispatch and activation synchronize
@@ -161,60 +153,7 @@ pub async fn serve_on_listener(
     wasm_metering: WasmMetering,
     on_ready: impl FnOnce(),
 ) -> Result<()> {
-    run_host(listener, options, admin_url, false, wasm_metering, on_ready).await
-}
-
-/// Starts the local administrator dashboard on a loopback listener. The administrator origin
-/// must be localhost on the listener's assigned port. The dashboard offers first-operator setup
-/// to local browsers while the account store is empty. The readiness callback runs once before
-/// the listener starts accepting requests.
-pub async fn serve_local_dashboard_on_listener(
-    listener: tokio::net::TcpListener,
-    options: HostOptions,
-    admin_url: String,
-    wasm_metering: WasmMetering,
-    on_ready: impl FnOnce(),
-) -> Result<()> {
-    let bind = listener.local_addr()?;
-    ensure!(
-        bind.ip().is_loopback(),
-        "local dashboard setup requires a loopback listener"
-    );
-    ensure!(
-        checked_origin(&admin_url)?
-            == checked_origin(&format!("http://localhost:{}", bind.port()))?
-            && checked_origin(&options.public_url)? == checked_origin(&format!("http://{bind}"))?,
-        "local dashboard setup requires local administrator and participant origins"
-    );
-    run_host(
-        listener,
-        options,
-        Some(admin_url),
-        true,
-        wasm_metering,
-        on_ready,
-    )
-    .await
-}
-
-/// Restores a store and signals readiness once the requested serving mode is fully initialized.
-async fn run_host(
-    listener: tokio::net::TcpListener,
-    options: HostOptions,
-    admin_url: Option<String>,
-    local_setup: bool,
-    wasm_metering: WasmMetering,
-    on_ready: impl FnOnce(),
-) -> Result<()> {
     let public_url = checked_origin(&options.public_url)?;
-    let admin_token = options
-        .admin_token
-        .as_deref()
-        .map(|token| -> Result<_> {
-            validate_token(token)?;
-            Ok(token_digest(token))
-        })
-        .transpose()?;
     fs::create_dir_all(&options.store)?;
     let store = options.store.canonicalize()?;
     let lock = OpenOptions::new()
@@ -224,16 +163,13 @@ async fn run_host(
         .open(store.join(".host.lock"))?;
     FileExt::try_lock_exclusive(&lock).context("another deployment host is using this store")?;
     let dashboard = match admin_url {
-        Some(origin) => {
-            Some(dashboard::Dashboard::open(&store, &public_url, &origin, local_setup).await?)
-        }
+        Some(origin) => Some(dashboard::Dashboard::open(&store, &public_url, &origin).await?),
         None => None,
     };
     let mut host = Host {
         wasm_metering,
         store,
         public_url,
-        admin_token,
         dashboard,
         games: RwLock::new(HashMap::new()),
         publication_lock: Mutex::new(()),
@@ -426,7 +362,7 @@ async fn upload(
     request: Request,
 ) -> HttpResult<Json<Deployment>> {
     let (parts, body) = request.into_parts();
-    let actor = dashboard::upload_actor(&host, &parts).await?;
+    let actor = dashboard::management_actor(&host, &parts).await?;
     validate_hosted_game_id(&game).map_err(bad_request)?;
     let request = Request::from_parts(parts, body);
     dashboard::audited(&host, &actor, "upload", &game, async {
@@ -445,7 +381,7 @@ async fn dashboard_upload(
     request: Request,
 ) -> HttpResult<Json<Deployment>> {
     let (parts, body) = request.into_parts();
-    let actor = dashboard::upload_actor(&host, &parts).await?;
+    let actor = dashboard::management_actor(&host, &parts).await?;
     match read_upload(&host, Request::from_parts(parts, body)).await {
         Ok((package, permit)) => {
             let game = package.game().to_owned();
@@ -671,10 +607,7 @@ async fn set_activation(
     active: bool,
 ) -> HttpResult<Json<Value>> {
     let (parts, _) = request.into_parts();
-    let actor = dashboard::authorize(&host, &parts, host.admin_token.as_ref(), || {
-        "host-operator-token".into()
-    })
-    .await?;
+    let actor = dashboard::management_actor(&host, &parts).await?;
     let operation = if active { "activate" } else { "deactivate" };
     dashboard::audited(&host, &actor, operation, &id, async {
         let game = host.game(&id).await.ok_or_else(not_found)?;
@@ -928,29 +861,6 @@ pub fn validate_token(token: &str) -> Result<()> {
         "deployment tokens require 32–256 printable, non-space ASCII characters"
     );
     Ok(())
-}
-
-/// Enforces exact bearer-token authentication using constant-time digest comparison.
-fn require_token(headers: &HeaderMap, expected: Option<&[u8; 32]>) -> HttpResult<()> {
-    let accepted = headers
-        .get(AUTHORIZATION)
-        .and_then(|header| header.to_str().ok())
-        .and_then(|header| header.strip_prefix("Bearer "))
-        .zip(expected)
-        .is_some_and(|(token, expected)| bool::from(token_digest(token).ct_eq(expected)));
-    if accepted {
-        Ok(())
-    } else {
-        Err((
-            StatusCode::UNAUTHORIZED,
-            "valid deployment credential required".to_owned(),
-        ))
-    }
-}
-
-/// Hashes credentials for comparison without retaining the configured plaintext in host state.
-fn token_digest(token: &str) -> [u8; 32] {
-    Sha256::digest(token.as_bytes()).into()
 }
 
 /// Returns a generic unknown deployment route response.

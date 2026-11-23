@@ -149,7 +149,7 @@ impl Manifest {
             .cargo_manifest
             .as_ref()
             .context("manifest requires cargo_manifest")?;
-        let mut cargo = build_tool("cargo");
+        let mut cargo = Command::new("cargo");
         cargo
             .current_dir(&self.root)
             .arg(subcommand)
@@ -367,13 +367,13 @@ impl Manifest {
                 "install"
             };
             run(
-                build_tool("npm")
+                Command::new("npm")
                     .current_dir(&project)
                     .args([install, "--no-audit", "--no-fund"]),
                 "installing browser dependencies",
             )?;
             run(
-                build_tool("npm")
+                Command::new("npm")
                     .current_dir(&project)
                     .args(["run", "build"]),
                 "building the browser client",
@@ -438,7 +438,7 @@ pub(super) fn compile_rust_component(
         .join(manifest_path)
         .canonicalize()
         .context("locating the Rust component manifest")?;
-    let mut cargo = build_tool("cargo");
+    let mut cargo = Command::new("cargo");
     cargo
         .current_dir(root)
         .args(["build", "--manifest-path"])
@@ -494,7 +494,7 @@ pub(super) fn compile_rust_component(
         bail!("the Rust component must build exactly one WebAssembly cdylib");
     };
     run(
-        build_tool("wasm-tools")
+        Command::new("wasm-tools")
             .args(["component", "new"])
             .arg(artifact)
             .arg("-o")
@@ -569,13 +569,6 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Builds trusted project code without passing the CLI's deployment authority to child processes.
-pub(super) fn build_tool(program: impl AsRef<std::ffi::OsStr>) -> Command {
-    let mut command = Command::new(program);
-    command.env_remove("PARLANDO_HOST_ADMIN_TOKEN");
-    command
-}
-
 /// Selects the project's virtual environment, the active environment, or a tool on PATH.
 fn python_tool(root: &Path, program: &str) -> Command {
     let local = root.join(".venv");
@@ -587,7 +580,7 @@ fn python_tool(root: &Path, program: &str) -> Command {
     if let Some(environment) = environment {
         let prefix = if cfg!(windows) { "Scripts" } else { "bin" };
         let executable = format!("{program}{}", env::consts::EXE_SUFFIX);
-        let mut command = build_tool(environment.join(prefix).join(executable));
+        let mut command = Command::new(environment.join(prefix).join(executable));
         command.current_dir(root).env("VIRTUAL_ENV", environment);
         command
     } else {
@@ -596,7 +589,7 @@ fn python_tool(root: &Path, program: &str) -> Command {
         } else {
             program
         };
-        let mut command = build_tool(program);
+        let mut command = Command::new(program);
         command.current_dir(root);
         command
     }

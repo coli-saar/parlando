@@ -8,7 +8,7 @@ use std::io::{Cursor, Write};
 use tokio::{task::JoinHandle, time::timeout};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-const ADMIN: &str = "operator-only-credential-for-deployment-tests";
+const ADMIN_PASSWORD: &str = "browser-operator-credential";
 const PATH: &str = "/api/hosting";
 // Deployment and restart can compile several real components in an unoptimized test build.
 // Use the production control client's request budget during parallel CI runs.
@@ -33,7 +33,6 @@ impl TestHost {
         let options = HostOptions {
             store: store.into(),
             public_url: origin.clone(),
-            admin_token: Some(ADMIN.into()),
         };
         let task = match admin_url {
             Some(admin_url) => tokio::spawn(deployment::serve_with_dashboard(
@@ -221,6 +220,40 @@ fn crafted_zip(members: &[(&str, &[u8])]) -> Vec<u8> {
     writer.finish().unwrap().into_inner()
 }
 
+/// Claims a new dashboard in the browser and checks that the public host cannot claim it.
+async fn claim_admin(host: &TestHost, admin: &str) -> (String, Value) {
+    let claim = |base: &str, origin: &str| {
+        host.client
+            .post(format!("{base}{PATH}/auth/setup"))
+            .header(ORIGIN, origin)
+            .json(&json!({"username":"admin","password":ADMIN_PASSWORD}))
+            .send()
+    };
+    assert_eq!(
+        claim(&host.origin, &host.origin).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        claim(admin, &host.origin).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        host.request(Method::POST, &format!("{PATH}/cli/start"), None, None)
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        claim(admin, admin).await.unwrap().status(),
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        claim(admin, admin).await.unwrap().status(),
+        StatusCode::CONFLICT
+    );
+    browser_login(&host.client, admin, "admin", ADMIN_PASSWORD).await
+}
+
 /// Signs in on the admin origin and keeps the cookie separate from the session response.
 async fn browser_login(
     client: &Client,
@@ -305,13 +338,17 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
             status
         );
     }
+    let (operator_cookie, operator_session) = claim_admin(&host, &admin_origin).await;
+    let operator_csrf = operator_session["csrf_token"].as_str().unwrap();
     let accounts = "/accounts";
     let password = "initial-experimenter-password";
     let replacement_password = "replacement-experimenter-password";
     let login_body = json!({"username":"researcher","password":password});
     let account = check_json(
         request(Method::POST, accounts)
-            .bearer_auth(ADMIN)
+            .header(COOKIE, &operator_cookie)
+            .header(ORIGIN, &admin_origin)
+            .header("x-csrf-token", operator_csrf)
             .json(&login_body)
             .send()
             .await
@@ -431,24 +468,6 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
     )
     .await;
     assert_eq!(dashboard["games"].as_array().unwrap().len(), 2);
-    let operator_password = "browser-operator-credential";
-    let operator = check_json(
-        request(Method::POST, accounts)
-            .bearer_auth(ADMIN)
-            .json(&json!({
-                "username": "operator",
-                "password": operator_password,
-                "role": "operator"
-            }))
-            .send()
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(operator["role"], "operator");
-    let (operator_cookie, operator_session) =
-        browser_login(client, &admin_origin, "operator", operator_password).await;
-    let operator_csrf = operator_session["csrf_token"].as_str().unwrap();
     let colleague_password = "independent-experimenter-password";
     let colleague = check_json(
         request(Method::POST, accounts)
@@ -491,7 +510,9 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
     let (second_cookie, _) = browser_login(client, &admin_origin, "researcher", password).await;
     let update = |body: Value| {
         request(Method::PUT, &account_path)
-            .bearer_auth(ADMIN)
+            .header(COOKIE, &operator_cookie)
+            .header(ORIGIN, &admin_origin)
+            .header("x-csrf-token", operator_csrf)
             .json(&body)
     };
     assert!(update(json!({"password":replacement_password}))
@@ -576,13 +597,13 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
     .await;
     let events = audit["events"].as_array().unwrap();
     let researcher = format!("account:{account_id}:researcher");
-    let operator_id = operator["id"].as_i64().unwrap();
-    let operator_actor = format!("account:{operator_id}:operator");
+    let operator_id = operator_session["id"].as_i64().unwrap();
+    let operator_actor = format!("account:{operator_id}:admin");
     let reset_target = account_id.to_string();
     for (actor, operation, target) in [
         (researcher.as_str(), "upload", "browser-fixture"),
         (researcher.as_str(), "upload", "fixture-a"),
-        ("host-operator-token", "reset-password", &reset_target),
+        (operator_actor.as_str(), "reset-password", &reset_target),
         (operator_actor.as_str(), "create-account", "colleague"),
         (operator_actor.as_str(), "disable-account", &reset_target),
     ] {
@@ -598,9 +619,8 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
     for credential in [
         password,
         replacement_password,
-        operator_password,
+        ADMIN_PASSWORD,
         colleague_password,
-        ADMIN,
         csrf,
     ] {
         assert!(!audit.contains(credential));
@@ -608,13 +628,8 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
     host.stop().await;
 
     let restarted = TestHost::start(address, &store, Some(admin_origin.clone())).await;
-    let (cookie, _) = browser_login(
-        &restarted.client,
-        &admin_origin,
-        "operator",
-        operator_password,
-    )
-    .await;
+    let (cookie, _) =
+        browser_login(&restarted.client, &admin_origin, "admin", ADMIN_PASSWORD).await;
     let after = check_json(
         restarted
             .client
@@ -645,10 +660,14 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
     let address = reserve_address().await.unwrap();
     let admin_origin = format!("http://localhost:{}", address.port());
     let host = TestHost::start(address, &store, Some(admin_origin.clone())).await;
+    let (operator_cookie, operator_session) = claim_admin(&host, &admin_origin).await;
+    let operator_csrf = operator_session["csrf_token"].as_str().unwrap();
     let create_user = |name: &str| {
         host.client
             .post(format!("{admin_origin}{PATH}/accounts"))
-            .bearer_auth(ADMIN)
+            .header(COOKIE, &operator_cookie)
+            .header(ORIGIN, &admin_origin)
+            .header("x-csrf-token", operator_csrf)
             .json(&json!({"username":name,"password":"two-user-race-password"}))
     };
     for username in ["researcher", "deployer"] {
@@ -673,11 +692,7 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
     let first_scope = format!("{uploads}/fixture-a");
     let other_scope = format!("{uploads}/fixture-b");
 
-    for (scope, token) in [
-        (&first_scope, None),
-        (&other_scope, Some("unrecognized")),
-        (&first_scope, Some(ADMIN)),
-    ] {
+    for (scope, token) in [(&first_scope, None), (&other_scope, Some("unrecognized"))] {
         let response = host
             .request(Method::PUT, scope, token, Some(json!({})))
             .await;
@@ -772,7 +787,7 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
     };
     let activate = format!("{PATH}/games/fixture-a/activate");
     check_json(
-        host.request(Method::POST, &activate, Some(ADMIN), None)
+        host.request(Method::POST, &activate, Some(&token), None)
             .await,
     )
     .await;
@@ -878,7 +893,7 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
         host.request(
             Method::POST,
             &format!("{PATH}/games/fixture-a/deactivate"),
-            Some(ADMIN),
+            Some(&token),
             None
         )
         .await
@@ -952,7 +967,7 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
             .request(
                 Method::POST,
                 &format!("{PATH}/games/fixture-a/deactivate"),
-                Some(ADMIN),
+                Some(&token),
                 None,
             )
             .await,
@@ -982,18 +997,7 @@ async fn deployment_restores_independent_agents_for_the_current_build() {
     let address = reserve_address().await.unwrap();
     let admin = format!("http://localhost:{}", address.port());
     let host = TestHost::start(address, root.path(), Some(admin.clone())).await;
-    let password = "independent-policy-test-password";
-    check_json(
-        host.client
-            .post(format!("{admin}{PATH}/accounts"))
-            .bearer_auth(ADMIN)
-            .json(&json!({"username":"operator","password":password}))
-            .send()
-            .await
-            .unwrap(),
-    )
-    .await;
-    let (cookie, session) = browser_login(&host.client, &admin, "operator", password).await;
+    let (cookie, session) = claim_admin(&host, &admin).await;
     let token = pair_cli(&host, &admin, &cookie, &session).await;
     let scope = format!("{PATH}/packages/tiny");
     let policy = crafted_zip(&[

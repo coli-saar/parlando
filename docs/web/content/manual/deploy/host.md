@@ -16,7 +16,7 @@ The host loads compiled packages. Build tools belong on game authors' machines o
 
 For a local pilot, run `parlando serve` in the host directory and open the administrator link printed in the terminal. The same `/admin` page lets you create the first administrator account in a new store and sign in to an existing store.
 
-To test an explicitly configured pair of origins, set `PARLANDO_HOST_ADMIN_TOKEN` in the host process environment to a long random value. Start the service from a writable directory.
+To test an explicitly configured pair of origins, start the service from a writable directory.
 
 ```sh
 parlando serve --bind 127.0.0.1:8000 --store ./parlando-host \
@@ -29,45 +29,15 @@ For a public host, use HTTPS on both hostnames, route them to the service, and p
 
 ## Create the first administrator on a configured host
 
-In your shell, set `PARLANDO_ADMIN_URL` to the configured administrator origin and provide the bootstrap token in `PARLANDO_HOST_ADMIN_TOKEN`. Run this from an interactive terminal with Python 3 for the password prompt. It creates an administrator account with the username `admin`.
+Open `/admin` on the administrator hostname immediately after first startup. Choose your username and a password of at least 12 bytes. The first visitor to complete the form claims the host. Once an account exists, setup closes and stays closed across restarts using the same store.
 
-```sh
-python3 - <<'PY'
-import getpass
-import json
-import os
-import urllib.request
-
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args, **kwargs):
-        return None
-
-origin = os.environ["PARLANDO_ADMIN_URL"].rstrip("/")
-request = urllib.request.Request(
-    origin + "/api/hosting/accounts",
-    headers={
-        "Authorization": "Bearer " + os.environ["PARLANDO_HOST_ADMIN_TOKEN"],
-        "Content-Type": "application/json",
-    },
-    data=json.dumps({
-        "username": "admin",
-        "password": getpass.getpass("Administrator password: "),
-        "role": "operator",
-    }).encode(),
-    method="POST",
-)
-with urllib.request.build_opener(NoRedirect).open(request) as response:
-    print("Created", json.load(response)["username"])
-PY
-```
-
-Use a password of at least 12 bytes. Sign in at `/admin` and open **Users** to create an experimenter account for each colleague. Experimenters share access to every game and experiment.
+Sign in at `/admin` and open **Users** to create an experimenter account for each colleague. Experimenters share access to every game and experiment.
 
 Administrators use **Users** to create accounts, reset passwords, and disable accounts. A reset or disable revokes that account's current dashboard sessions. Expand **Audit history** on the same page to review recorded operations.
 
 ## Authorize CLI deployments
 
-Enable the dashboard and create an account for each person who deploys games. Operators and experimenters can sign in from the CLI and upload any game to this host. Account password resets and account disabling also revoke that account’s CLI credentials. See [deploy with the CLI](../#deploy-with-the-cli) for the browser sign-in steps.
+Enable the dashboard and create an account for each person who deploys games. Admins and experimenters can sign in from the CLI and upload any game to this host. Account password resets and account disabling also revoke that account’s CLI credentials. See [deploy with the CLI](../#deploy-with-the-cli) for the browser sign-in steps.
 
 ## Retain the store
 

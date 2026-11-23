@@ -54,7 +54,7 @@ its research data from a malicious authenticated administrator.
 
 ## Accepted product choices that are not security findings
 
-### The first visitor may create the administrator on custom single-game hosts
+### The first visitor may create the administrator on a fresh installation
 
 A fresh custom single-game installation using the Rust `Server` builder lets the first
 visitor to `/admin` create its administrator credential. This is the supported bootstrap ceremony. The operator
@@ -71,8 +71,7 @@ singleton atomically.
 ### The shared host has a separate administrative origin
 
 For `parlando serve`, configure the dashboard on a hostname distinct from the
-participant hostname. The host operator provisions the first named account
-using the operator token. Experimenter accounts share access to the host's
+participant hostname. The admin claims the first account at `/admin` immediately after first startup and before sharing access. Once claimed, the store requires sign-in across redeployments. Experimenter accounts share access to the host's
 games and research data. Participant apps on a shared origin must belong to
 publishers trusted for that origin. A WASM game runs inside the host's
 component sandbox, while its browser assets execute in participants' browsers.

@@ -216,8 +216,8 @@ assessment for a corpus candidate.
 ## Operational checklist
 
 - Back up the SQLite file before migration, deletion, or redeployment.
-- Put hosted deployments on persistent storage; the Render example uses
-  `sqlite:////data/parlando.sqlite` on a 10 GB disk.
+- Keep the entire shared host store on persistent storage. The Railway container
+  writes packages, accounts, and game databases under `/data/parlando`.
 - Record agent type and version so exports distinguish experimental policies.
 - Treat process health and active intake as separate monitoring signals.
 - Protect administrator routes at the deployment boundary as defense in depth;
