@@ -567,7 +567,7 @@ fn session_json(session: &DashboardSession) -> Value {
            "role": session.account.role, "csrf_token": session.csrf})
 }
 
-/// Lists the deployed games and their activation state for a signed-in lab member.
+/// Lists the deployed games and their installed agents for a signed-in lab member.
 async fn index(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Json<Value>> {
     let (parts, _) = request.into_parts();
     admin(&host, &parts)?.browser_session(&parts).await?;
@@ -583,7 +583,6 @@ async fn index(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Js
                 "name": deployment.name,
                 "version": deployment.version,
                 "revision": deployment.revision,
-                "active": game.active,
                 "agents": game.agents,
             }),
         ));

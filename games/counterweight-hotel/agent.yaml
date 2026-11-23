@@ -8,4 +8,4 @@ features:
 dependency:
   source: dist/counterweight-hotel-0.1.0.zip
   version: 0.1.0
-  sha256: 828b88c9be4e518a883837c80c179ca88dbcb369e14c55e880c15601dfc19dab
+  sha256: a209ae0183df6574eae95703ff79fdd5984054aba26f59a6d9709149c99fed95

@@ -52,7 +52,7 @@ Open the administrator URL printed in the terminal. On the default local listene
 ## Deploy the game and start a pilot
 
 1. In **Games**, expand **Deploy or update a game** and select the ZIP printed by your build. Choose **Deploy game**.
-2. Sign in with `parlando login --server http://127.0.0.1:8000`, then run `parlando activate --host http://127.0.0.1:8000 --game beacon`. Click the `beacon` game ID to open the game dashboard at `/beacon` on the administrator origin.
+2. Click the `beacon` game ID to open the game dashboard at `/beacon` on the administrator origin.
 3. In the experiment catalogue, choose **New experiment**, enter `beacon-pilot`, and select **Create experiment**. The default condition pairs two humans with typed chat.
 4. In **Start experiment**, choose **Start** under **Local preview**. Copy the participant URL. On the default host it is `http://127.0.0.1:8000/e/beacon~beacon-pilot/`.
 
@@ -80,7 +80,6 @@ Press Ctrl+C in the server terminal when you finish. Restart with the same store
 | Start a server | `parlando serve` |
 | Sign in for CLI uploads | `parlando login --server SERVER_URL` |
 | Upload a package | `parlando deploy --host SERVER_URL --package dist/beacon-0.1.0.zip` |
-| Enable or disable a deployed game | `parlando activate --host SERVER_URL --game GAME` or `parlando deactivate --host SERVER_URL --game GAME` |
 
 Use `parlando COMMAND --help` for options. Build commands read `game.yaml`
 in the working directory unless you pass `--manifest`. Commands print readable

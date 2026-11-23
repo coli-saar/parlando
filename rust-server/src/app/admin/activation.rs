@@ -85,7 +85,6 @@ pub(in crate::app) async fn admin_experiment(
 /// Updates a durable experiment lifecycle status.
 pub(in crate::app) async fn admin_update_experiment_status(
     State(state): State<Arc<AppState>>,
-    hosted: Option<Extension<crate::app::routing::HostedGameActive>>,
     Json(request): Json<AdminUpdateExperimentStatusRequest>,
 ) -> Result<Json<Value>, AppError> {
     let _mount_guard = lock_runtime_router_build(&state.context, &state.experiment_id).await;
@@ -96,12 +95,6 @@ pub(in crate::app) async fn admin_update_experiment_status(
         ));
     }
     let lifecycle = ExperimentLifecycle::parse(&request.status)?;
-    if lifecycle.allows_intake() && hosted.is_some_and(|hosted| !hosted.0 .0) {
-        return Err(AppError::new(
-            StatusCode::CONFLICT,
-            "Activate the game before opening experiment intake.",
-        ));
-    }
     if lifecycle.allows_intake() {
         if let Err(issue) = &state.game_config {
             return Err(AppError::new(

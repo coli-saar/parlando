@@ -4,7 +4,7 @@ title: Deploy to a shared host
 
 # Deploy to a shared host
 
-A shared Parlando host serves one current WASM package per game. Activate a game to make participant access available. Use its game dashboard to create experiments and start or stop their individual runs. You can deploy and activate games without restarting the host.
+A shared Parlando host serves one current WASM package per game. Each experiment controls its own participant intake. Use its game dashboard to create experiments and start or stop their individual runs. You can deploy games without restarting the host.
 
 To run your own server from GitHub, follow [Deploy Parlando on Railway](railway/).
 
@@ -13,13 +13,13 @@ To run your own server from GitHub, follow [Deploy Parlando on Railway](railway/
 Ask your host administrator for the administrator site URL and an individual account. Build your game locally and sign in. Experimenter accounts can access the games and experiments on this host.
 
 1. In **Games**, drop `dist/beacon-0.1.0.zip` onto the rectangle above the games table to upload it immediately. To choose a file manually, click the rectangle, select the ZIP, and confirm with **Upload package**. Parlando reads the game ID from the archive. The IDs `admin`, `api`, and `health` are reserved for host routes.
-2. Sign in with `parlando login --server SERVER_URL` and run `parlando activate --host SERVER_URL --game beacon`, using your host URL for `SERVER_URL`. Open the **Beacon Relay** link to go to the Beacon Relay dashboard at `/beacon` on the administrator origin.
+2. Open the **Beacon Relay** link to go to the Beacon Relay dashboard at `/beacon` on the administrator origin.
 3. Choose **New experiment**, enter an ID such as `beacon-pilot`, and confirm with **Create experiment**. Configure the [study condition](../run/configuration/) in that dashboard.
 4. Choose **Start experiment** and start **Local preview** to pilot. Open the participant URL in two independent browser profiles. Inspect the resulting sessions, then choose **Stop**. Use **Official intake** when the study is ready for participants.
 
 ## Update a deployed game
 
-Stop testing, pause open intake, and let existing sessions finish. Drop the new ZIP onto the same rectangle in **Games** to upload it. Use the same game ID in the package manifest. Parlando replaces the package and keeps the game's research database. It rejects replacement or deactivation while an experiment is running or has sessions still in progress. The `parlando deactivate` command disables participant access for the entire game.
+Stop testing, pause open intake, and let existing sessions finish. Drop the new ZIP onto the same rectangle in **Games** to upload it. Use the same game ID in the package manifest. Parlando replaces the package and keeps the game's research database. It rejects replacement while an experiment is running or has sessions still in progress.
 
 After updating a game, select the existing experiment and start a local preview to check its configuration with the new build. Compatible settings can be used immediately with the same experiment ID and participant URL. If the updated game rejects a setting, edit the configuration while the experiment is inactive and save the corrected values. Each session records the game version it ran.
 
@@ -35,7 +35,7 @@ lab: https://parlando.example.org
 default: local
 ```
 
-With this configuration, `parlando login` and `parlando deploy` target the local server. To deploy to the lab, run `parlando login --server lab` once and use `parlando deploy --host lab`. An explicit URL or alias overrides the default for that command. The same default applies to `activate` and `deactivate`.
+With this configuration, `parlando login` and `parlando deploy` target the local server. To deploy to the lab, run `parlando login --server lab` once and use `parlando deploy --host lab`. An explicit URL or alias overrides the default for that command.
 
 ## Deploy with the CLI
 
@@ -54,13 +54,10 @@ parlando build
 parlando deploy --host http://127.0.0.1:8000 dist/beacon-0.1.0.zip
 ```
 
-Record the package revision printed by the command. For scripts, add `--json` and read `result.revision`. Changing the account password or disabling the account revokes its saved CLI credentials. Activation and deactivation use the same CLI sign-in as uploads.
+Record the package revision printed by the command. For scripts, add `--json` and read `result.revision`. Changing the account password or disabling the account revokes its saved CLI credentials.
 
-```sh
-parlando activate --host http://127.0.0.1:8000 --game beacon
-```
 
-To withdraw the game after its experiments and sessions finish, run `parlando deactivate --host http://127.0.0.1:8000 --game beacon`. Use the game dashboard for experiment creation and study intake. Keep all credentials out of game files and prompts.
+Use the game dashboard for experiment creation and study intake. Keep all credentials out of game files and prompts.
 
 
 ## Upload a local agent

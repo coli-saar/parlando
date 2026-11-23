@@ -100,8 +100,7 @@ parlando deploy --host "$HOST" --package dist/last-screening-0.1.0.zip
 parlando deploy --host "$HOST" --package dist/agent-last_screening.operator-1.0.0.zip
 ```
 
-The host registers the policy under its target game ID. Activate
-the game and open its dashboard from **Games**. Create an experiment or
+The host registers the policy under its target game ID. Open its dashboard from **Games**. Create an experiment or
 open an inactive one. In **Configuration**, set **Participant pairing** to
 **Human vs agent**, choose `last_screening.operator` as **Agent factory**,
 and save the configuration. Start a **Local preview** and play one seat.

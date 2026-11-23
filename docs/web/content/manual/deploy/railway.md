@@ -34,4 +34,4 @@ parlando deploy --host "$server" dist/agent-counterweight_hotel.porter-11.0.0.zi
 
 For other releases, use the ZIP paths printed by the builds. The agent is compiled against the pinned game ZIP. Upload the game first and its agent second. After replacing a game, deploy the matching agent again. Stop the game's experiments and let sessions finish before replacing either package.
 
-On the administrator site, open **Games**, expand **Counterweight Hotel**, and verify that **Hotel porter** appears. Activate the game, open its dashboard, and create an experiment. In **Configuration**, choose **Human vs agent** and **Hotel porter**. Start a **Local preview** and open the participant link to check the pairing before opening official intake.
+On the administrator site, open **Games**, expand **Counterweight Hotel**, and verify that **Hotel porter** appears. Open its dashboard and create an experiment. In **Configuration**, choose **Human vs agent** and **Hotel porter**. Start a **Local preview** and open the participant link to check the pairing before opening official intake.

@@ -167,7 +167,7 @@ test('sign-in resumes a local game dashboard address and ignores external destin
 test('Games deploys and updates packages and opens the game dashboard', async ({ page }) => {
   const id = 'example';
   const name = 'Example Game';
-  const first = { id, name, agents: [], version: '1.0.0', revision: 'a'.repeat(64), active: false };
+  const first = { id, name, agents: [], version: '1.0.0', revision: 'a'.repeat(64) };
   const second = { ...first, version: '2.0.0', revision: 'b'.repeat(64) };
   const zip = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 255]);
   const uploads = [];
@@ -254,6 +254,10 @@ test('Games deploys and updates packages and opens the game dashboard', async ({
   expect(uploads).toHaveLength(4);
   expect(uploads[3].body).toEqual(zip);
   await expect(policy).toHaveClass(/uploaded-agent/);
+  const release = await policy.getByRole('cell').last().boundingBox();
+  const table = await page.locator('#game-list').boundingBox();
+  await expect(page.getByRole('columnheader', { name: 'Status' })).toHaveCount(0);
+  expect(release.x + release.width).toBeCloseTo(table.x + table.width, 0);
   await expect(page.getByRole('cell', {name: 'example.baseline'})).toBeVisible();
   await toggle.click();
   await expect(policy).toBeHidden();

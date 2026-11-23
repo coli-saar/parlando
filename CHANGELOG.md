@@ -34,8 +34,7 @@ For the upcoming 0.7.0 release, see the [migration guide](docs/migrating-0.6.0-t
   and the dashboard accept the same ZIP, including its manifest, Wasm component
   and optional participant assets.
 - Start the local or shared host with `parlando serve --store DIRECTORY`. Use
-  `parlando deploy` to install or replace a game package and `parlando activate`
-  or `parlando deactivate` to control participant access for that game. Manage
+  `parlando deploy` to install or replace a game package. Manage
   experiment creation, intake, replay, and export in the game dashboard. The
   CLI prints readable results by default and supports `--json` for scripts.
 - Component games use the v4 WIT world. The host reads the guest's schema once

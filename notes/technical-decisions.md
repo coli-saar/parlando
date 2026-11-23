@@ -5960,3 +5960,11 @@ Beacon's request policy matches “charge the beacon” as a complete finalized 
 The Games dashboard presents a standalone drop target above the table. Dropping a ZIP starts deployment immediately. Clicking the target still opens the picker and review dialog. Both paths share validation and submission. Both new packages and revisions use the manifest-directed upload endpoint, so the games table needs no per-row Update action.
 
 The shared speech widget no longer renders the remoteAudio receipt flag as “heard” or “silent.” This flag records transport activity independently of the microphone level or recognition of a command. The browser relay test observes incoming binary audio frames at both seats directly; the public audio status remains available to callers.
+
+The dashboard agent release cell spans the Release and Status columns because activation status belongs to the game. This gives the upload highlight a painted cell across the entire row while retaining the two-item mobile layout.
+
+The New experiment dialog uses the dashboard’s existing stacked field layout. The ID label names the input explicitly, and its help and validation message sit directly below it. Empty validation feedback takes no layout space.
+
+## Deployed games and experiment intake
+
+A successful deployment mounts the game and its experiment routes. Experiment lifecycle alone controls new participant admission. The host no longer reads or writes per-game active marker files. Old markers have no effect. This removes the second availability decision from the API, CLI, and games list. Existing session and package replacement guards still protect live work. No database schema changes are needed.

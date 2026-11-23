@@ -168,10 +168,6 @@ where
         .fallback_service(runtime_service))
 }
 
-/// Carries the deployment's lifecycle decision into an authenticated status mutation.
-#[derive(Clone, Copy)]
-pub(super) struct HostedGameActive(pub(super) bool);
-
 /// Owns the current published component and all experiments in one game database.
 pub(crate) struct HostedRuntime {
     game_id: String,
@@ -182,11 +178,7 @@ pub(crate) struct HostedRuntime {
 
 impl HostedRuntime {
     /// Dispatches only participant paths, keeping account and experiment management separate.
-    pub(crate) async fn dispatch_participant(
-        &self,
-        mut request: Request,
-        active: bool,
-    ) -> Response {
+    pub(crate) async fn dispatch_participant(&self, mut request: Request) -> Response {
         let original = request.uri();
         if let Some(token) = ReplayGrants::credential(&self.game_id, original.path()) {
             if request.method() != Method::GET {
@@ -202,22 +194,6 @@ impl HostedRuntime {
         else {
             return StatusCode::NOT_FOUND.into_response();
         };
-        if !active {
-            let (experiment_id, suffix) = experiment_path
-                .split_once('/')
-                .unwrap_or((experiment_path, ""));
-            if suffix.starts_with("api/") || suffix.starts_with("ws/") {
-                return StatusCode::NOT_FOUND.into_response();
-            }
-            if suffix.is_empty()
-                && !self
-                    .replays
-                    .authorizes_shell(&self.game_id, experiment_id, original)
-                    .await
-            {
-                return StatusCode::NOT_FOUND.into_response();
-            }
-        }
         if !experiment_path.contains('/') {
             let query = original
                 .query()
@@ -235,7 +211,6 @@ impl HostedRuntime {
         &self,
         mut request: Request,
         csrf_token: String,
-        active: bool,
     ) -> Response {
         let Some(path) = self.game_relative_path(&request) else {
             return StatusCode::NOT_FOUND.into_response();
@@ -266,7 +241,6 @@ impl HostedRuntime {
             created_at: 0,
             last_seen_at: 0,
         });
-        request.extensions_mut().insert(HostedGameActive(active));
         let runtime_request = path.starts_with("/api/admin/runtime/");
         replace_request_path(&mut request, &path);
         if runtime_request {

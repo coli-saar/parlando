@@ -6,7 +6,7 @@ use super::{project, Report};
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use parlando::deployment::{self, credentials, HostOptions};
-use serde_json::{json, Value};
+use serde_json::json;
 
 /// Deployment commands exposed at the main Parlando CLI level.
 #[derive(Subcommand)]
@@ -63,26 +63,6 @@ pub(super) enum RemoteCommand {
         #[arg(long)]
         admin_url: Option<String>,
     },
-    /// Enable participant access to a deployed game.
-    Activate(GameTarget),
-    /// Disable participant access to a game once its experiments have stopped.
-    Deactivate(GameTarget),
-}
-
-/// Identifies a deployed game and the host responsible for its availability.
-#[derive(clap::Args)]
-pub(super) struct GameTarget {
-    /// Parlando server URL (e.g. http://127.0.0.1:8000) or alias from ~/.parlando/servers.yaml.
-    #[arg(
-        long,
-        alias = "server",
-        value_name = "URL_OR_ALIAS",
-        default_value = "default"
-    )]
-    host: String,
-    /// Game ID declared in the deployed ZIP.
-    #[arg(long)]
-    game: String,
 }
 
 impl RemoteCommand {
@@ -92,8 +72,6 @@ impl RemoteCommand {
             Self::Login { .. } => "login",
             Self::Deploy { .. } => "deploy",
             Self::Serve { .. } => "serve",
-            Self::Activate(_) => "activate",
-            Self::Deactivate(_) => "deactivate",
         }
     }
 }
@@ -169,28 +147,5 @@ pub(super) async fn execute(command: RemoteCommand) -> Result<Report> {
                 json!({"status": "stopped", "bind": bind}),
             ))
         }
-        RemoteCommand::Activate(target) => change_game_availability(target, true).await,
-        RemoteCommand::Deactivate(target) => change_game_availability(target, false).await,
     }
-}
-
-/// Applies the requested availability to the game using the signed-in account.
-async fn change_game_availability(target: GameTarget, active: bool) -> Result<Report> {
-    deployment::validate_game_id(&target.game)?;
-    let origin = credentials::resolve_host(&target.host)?;
-    let token = credentials::upload_token(&origin)?;
-    let action = if active { "activate" } else { "deactivate" };
-    let response: Value = deployment::control_request(
-        &origin,
-        "POST",
-        &format!("games/{}/{action}", target.game),
-        &token,
-        None::<&Value>,
-    )
-    .await?;
-    let status = if active { "active" } else { "inactive" };
-    Ok(Report::new(
-        format!("Game {} is {status}.", target.game),
-        response,
-    ))
 }

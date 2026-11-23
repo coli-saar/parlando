@@ -16,7 +16,6 @@ From this directory, build the packages, then upload them to a running Parlando 
 ./build.sh
 parlando login --server lab
 ./deploy.sh --host lab
-parlando activate --host lab --game space-game
 ```
 
 Sign in once per server. The deploy script uploads the game first, followed by its agents. Omit `--host` to use your CLI’s default server. Open the game from **Games** in the server dashboard to configure an experiment and start intake.
@@ -59,4 +58,4 @@ The client expects a Parlando-compatible server that exposes experiment-scoped `
 
 ## Deploy to Railway
 
-Build the game ZIP from this directory and upload it to your shared host. See [Deploy Parlando on Railway](../docs/web/content/manual/deploy/railway.md) for server setup, package uploads, and game activation.
+Build the game ZIP from this directory and upload it to your shared host. See [Deploy Parlando on Railway](../docs/web/content/manual/deploy/railway.md) for server setup and package uploads.

@@ -311,7 +311,13 @@ textarea { min-height: 92px; resize: vertical; width: 100%; }
 dialog { border: 0; border-radius: 8px; box-shadow: 0 18px 60px rgba(20,34,45,.32); max-width: 620px; padding: 0; width: calc(100% - 32px); }
 dialog::backdrop { background: rgba(20,34,45,.35); }
 .dialog-form { display: grid; gap: 16px; padding: 24px; }
-.dialog-actions { display: flex; gap: 10px; justify-content: flex-end; }
+#createExperimentDialog { max-width: 440px; }
+.dialog-form h2 { margin: 0; }
+.dialog-form label { font-weight: 600; }
+.dialog-form input { min-width: 0; }
+#createExperimentError { color: var(--danger); }
+#createExperimentError:empty { display: none; }
+.dialog-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
 .validation-row { align-items: center; display: flex; gap: 10px; }
 .validation-result.valid { color: var(--parlando-green); }
 .validation-result.invalid { color: var(--danger); }

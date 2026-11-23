@@ -184,13 +184,10 @@ function gameRows(game, uploaded) {
   link.href = `/${encodeURIComponent(game.id)}`;
   link.textContent = game.name;
 
-  const status = document.createElement("span");
-  status.className = game.active ? "game-status active" : "game-status";
-  status.textContent = game.active ? "Active" : "Inactive";
   const identity = document.createElement("div");
   identity.className = "game-identity";
   identity.append(stacked(link, game.id));
-  const parent = row([identity, stacked(game.version, digest(game.revision)), status]);
+  const parent = row([identity, stacked(game.version, digest(game.revision))]);
   parent.className = "game-row";
   if (!game.agents.length) return [parent];
 
@@ -223,7 +220,7 @@ function gameRows(game, uploaded) {
   return [parent, ...children];
 }
 
-// Loads the currently deployed package and activation state for each game.
+// Loads the currently deployed package for each game.
 async function refreshGames() {
   const sequence = ++state.gamesRequest;
   const { games } = await request("/dashboard");
@@ -237,7 +234,7 @@ async function refreshGames() {
     group.setAttribute("aria-label", game.name);
     group.append(...gameRows(game, uploaded));
   }
-  if (!games.length) emptyTable(table.createTBody(), 3, "No games have been deployed.");
+  if (!games.length) emptyTable(table.createTBody(), 2, "No games have been deployed.");
   const revealed = table.querySelector(".uploaded-agent");
   if (revealed && !byId("games").hidden) {
     revealed.focus({ preventScroll: true });

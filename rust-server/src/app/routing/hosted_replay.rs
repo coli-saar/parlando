@@ -44,27 +44,6 @@ impl ReplayGrants {
         Uuid::parse_str(token).ok()
     }
 
-    /// Allows an inactive game's renderer to open only for a matching, unexpired grant.
-    pub(super) async fn authorizes_shell(
-        &self,
-        game_id: &str,
-        experiment_id: &str,
-        uri: &http::Uri,
-    ) -> bool {
-        let Ok(Query(query)) = Query::<HashMap<String, String>>::try_from_uri(uri) else {
-            return false;
-        };
-        let Some(token) = query
-            .get("parlandoReplay")
-            .and_then(|path| Self::credential(game_id, path))
-        else {
-            return false;
-        };
-        self.0.lock().await.get(&token).is_some_and(|grant| {
-            grant.experiment_id == experiment_id && Instant::now() < grant.expires_at
-        })
-    }
-
     /// Mints a bounded, non-cacheable, one-use link after the host validates the request.
     pub(super) async fn issue(
         &self,

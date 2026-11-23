@@ -77,9 +77,6 @@ summary { cursor: pointer; color: var(--accent); font-weight: 700; }
 details form { margin-top: 0.75rem; }
 .scroll { overflow-x: auto; }
 /* Match the experiment dashboard's active and inactive markers. */
-.game-status { display: inline-flex; align-items: center; gap: 6px; }
-.game-status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--parlando-ochre); }
-.game-status.active::before { background: var(--parlando-green); }
 
 table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; text-align: left; }
 th, td { padding: 0.55rem; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
@@ -262,12 +259,11 @@ th { background: var(--surface); color: var(--muted); }
   #games tbody tr { display: grid; align-items: center; padding-inline: 0.75rem; }
   #games tbody td { border: 0; }
   #games .game-row {
-    grid-template-columns: minmax(0, 1fr) auto; row-gap: 0.3rem; padding-block: 0.2rem 0.4rem;
+    grid-template-columns: minmax(0, 1fr); row-gap: 0.3rem; padding-block: 0.2rem 0.4rem;
   }
   #games .game-row td { padding: 0; }
   #games .game-row td:first-child { grid-area: 1 / 1; }
   #games .game-row td:nth-child(2) { grid-area: 2 / 1; }
-  #games .game-row td:nth-child(3) { grid-area: 1 / 2; justify-self: end; align-self: start; line-height: 44px; }
   .game-identity { align-items: flex-start; gap: 0.25rem; }
   .game-identity > .package-stack:only-child { margin-left: calc(44px + 0.25rem); }
   .game-identity .package-stack > span { display: flex; align-items: center; min-height: 44px; }
@@ -280,7 +276,6 @@ th { background: var(--surface); color: var(--muted); }
     display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.6rem; color: var(--muted);
   }
   #games .revision { white-space: nowrap; }
-  .game-status { font-size: 0.9rem; }
   /* Keep identity and release on the same line, even with a wrapped package name. */
   #games .agent-row { grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem; }
   #games .agent-row td { padding: 0.4rem 0; }

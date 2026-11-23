@@ -41,7 +41,7 @@ Enable the dashboard and create an account for each person who deploys games. Ad
 
 ## Retain the store
 
-Back up the entire store while the service is stopped. Include the current packages, game research databases, and the dashboard account and audit database. Store backups and provider credentials in access-controlled locations. Game activation persists across restarts. Reopen the experiments you intend to run after the host restarts.
+Back up the entire store while the service is stopped. Include the current packages, game research databases, and the dashboard account and audit database. Store backups and provider credentials in access-controlled locations. Reopen the experiments you intend to run after the host restarts.
 
 When upgrading a schema-16 installation to the server with `communication.mode`, plan the change offline. Map the old `voice.enabled` value in each experiment and its configuration revisions to `speech` for true or `typed` for false. Preserve recorded events, including typed messages from older voice-enabled sessions. See the [0.7.0 migration guide](https://github.com/coli-saar/parlando/blob/main/docs/migrating-0.6.0-to-0.7.0.md).
 

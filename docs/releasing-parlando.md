@@ -120,13 +120,13 @@ and resolves the Rust SDK and derive dependencies from their candidate archives.
 The starter clients install the npm tarball. A fresh virtual environment
 installs both Python SDK wheels and runs their tests. The installed CLI creates,
 tests, and builds the Rust and Python Beacon Relay starters, then deploys
-and activates each on a loopback host. Chromium signs in on the administrator
+each on a loopback host. Chromium signs in on the administrator
 origin, opens the game dashboard, and starts a local preview. For each starter,
 two independent Chromium sessions exchange messages in both
 directions, check that each message appears once in each browser, and verify
 that the client never requests the microphone. Both participants then play
 the game to completion. Reloading one browser verifies that the result persists.
-The dashboard stops the preview before the CLI deactivates the game.
+The dashboard stops the preview after the session ends.
 
 The rehearsal also builds a standalone Beacon agent against the packaged
 `parlando-game-sdk`. The installed CLI builds and checks its independent

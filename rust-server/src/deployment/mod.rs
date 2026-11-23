@@ -24,7 +24,7 @@ use axum::{
     extract::{Path as RoutePath, Request, State},
     http::{header::CONTENT_TYPE, Method, StatusCode},
     response::{IntoResponse, Redirect, Response},
-    routing::{get, post, put},
+    routing::{get, put},
     Json, Router,
 };
 use fs2::FileExt;
@@ -38,7 +38,7 @@ use package::{
     UPLOAD_LIMIT,
 };
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::json;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 
 use crate::{
@@ -69,12 +69,11 @@ struct HostedAgent {
     revision: String,
 }
 
-/// Owns the current runtime and participant availability for one deployed game.
+/// Owns the current runtime for one deployed game.
 struct HostedGame {
     deployment: Deployment,
     agents: Vec<HostedAgent>,
     build: PathBuf,
-    active: bool,
     runtime: crate::app::HostedRuntime,
     websocket_upgrades: Arc<AtomicUsize>,
 }
@@ -104,7 +103,7 @@ struct Host {
     public_url: String,
     dashboard: Option<dashboard::Dashboard>,
     games: RwLock<HashMap<String, Arc<RwLock<HostedGame>>>>,
-    // Only upload operations insert into the game map. Dispatch and activation synchronize
+    // Only upload operations insert into the game map. Requests synchronize
     // against the selected game's lock and do not need this publication lock.
     publication_lock: Mutex<()>,
     uploads: Arc<Semaphore>,
@@ -181,8 +180,6 @@ pub async fn serve_on_listener(
         .route("/health", get(|| async { Json(json!({"status":"ok"})) }))
         .route("/api/hosting/packages", put(dashboard_upload))
         .route("/api/hosting/packages/:game", put(upload))
-        .route("/api/hosting/games/:game/activate", post(activate))
-        .route("/api/hosting/games/:game/deactivate", post(deactivate))
         .merge(dashboard::routes())
         .fallback(dispatch)
         .with_state(Arc::new(host));
@@ -198,7 +195,7 @@ pub async fn serve_on_listener(
 }
 
 impl Host {
-    /// Restores each game's committed build and participant availability before serving requests.
+    /// Restores each game's committed build before serving requests.
     async fn load_games(&mut self) -> Result<()> {
         for path in [
             self.store.join("selections"),
@@ -223,12 +220,11 @@ impl Host {
             let Some((revision, build)) = recover_build(&entry.path())? else {
                 continue;
             };
-            let mut game = self
+            let game = self
                 .build_game(id, revision, build, None)
                 .await
                 .with_context(|| format!("restoring hosted game {id}"))?;
             game.runtime.recover_interrupted().await?;
-            game.active = self.game_directory(id).join("active").try_exists()?;
             self.games
                 .get_mut()
                 .insert(id.to_owned(), Arc::new(RwLock::new(game)));
@@ -343,7 +339,6 @@ impl Host {
             deployment,
             agents: policies,
             build,
-            active: false,
             runtime,
             websocket_upgrades: Arc::new(AtomicUsize::new(0)),
         })
@@ -487,14 +482,11 @@ async fn install_upload(
         .await
         .map_err(internal)?
         .map_err(internal)?;
-        let mut replacement = host
+        let replacement = host
             .build_game(&id, revision.clone(), staged.directory.clone(), None)
             .await
             .map_err(bad_request)?;
         let receipt = replacement.deployment.clone();
-        if let Some(current) = &existing {
-            replacement.active = current.active;
-        }
         let durable = staged.publish(&revision).map_err(internal)?;
         match &mut existing {
             Some(current) => {
@@ -544,7 +536,7 @@ async fn install_agent(
     require_idle(current).await?;
     pins.insert(agent, receipt.revision.clone());
     let package = Arc::new(package);
-    let mut replacement = host
+    let replacement = host
         .build_game(
             &current.deployment.game,
             current.deployment.revision.clone(),
@@ -559,7 +551,6 @@ async fn install_agent(
         .await
         .map_err(internal)?
         .map_err(internal)?;
-    replacement.active = current.active;
     publish_agent_pins(&current.build, &pins).map_err(internal)?;
     *current = replacement;
     Ok(Json(receipt))
@@ -587,58 +578,6 @@ fn publish_agent_pins(build: &Path, pins: &AgentPins) -> Result<()> {
     Ok(())
 }
 
-/// Enables participant requests for the selected game.
-async fn activate(
-    State(host): State<Arc<Host>>,
-    RoutePath(id): RoutePath<String>,
-    request: Request,
-) -> HttpResult<Json<Value>> {
-    set_activation(host, id, request, true).await
-}
-
-/// Disables participant requests once the selected game's experiments and sessions have stopped.
-async fn deactivate(
-    State(host): State<Arc<Host>>,
-    RoutePath(id): RoutePath<String>,
-    request: Request,
-) -> HttpResult<Json<Value>> {
-    set_activation(host, id, request, false).await
-}
-
-/// Updates participant availability under the same lock used to replace a running runtime.
-async fn set_activation(
-    host: Arc<Host>,
-    id: String,
-    request: Request,
-    active: bool,
-) -> HttpResult<Json<Value>> {
-    let (parts, _) = request.into_parts();
-    let actor = dashboard::management_actor(&host, &parts).await?;
-    let operation = if active { "activate" } else { "deactivate" };
-    dashboard::audited(&host, &actor, operation, &id, async {
-        let game = host.game(&id).await.ok_or_else(not_found)?;
-        let mut game = game.write().await;
-        if game.active != active {
-            if !active {
-                require_idle(&game).await?;
-            }
-            let directory = host.game_directory(&id);
-            let marker = directory.join("active");
-            if active {
-                File::create(marker).map_err(internal)?;
-            } else {
-                fs::remove_file(marker).map_err(internal)?;
-            }
-            game.active = active;
-            if let Err(error) = File::open(directory).and_then(|directory| directory.sync_all()) {
-                tracing::error!(%error, game = id, "could not flush game activation change");
-            }
-        }
-        Ok(Json(json!({ "active": game.active })))
-    })
-    .await
-}
-
 /// Confirms that lifecycle state and draining sessions permit replacing or retiring a runtime.
 async fn require_idle(game: &HostedGame) -> HttpResult<()> {
     if let Some(reason) = game.runtime.replacement_blocker().await.map_err(internal)? {
@@ -653,7 +592,7 @@ async fn require_idle(game: &HostedGame) -> HttpResult<()> {
     Ok(())
 }
 
-/// Dispatches game-scoped requests while excluding runtime replacement and deactivation.
+/// Dispatches game-scoped requests while excluding runtime replacement.
 async fn dispatch(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Response> {
     let (parts, body) = request.into_parts();
     let path = parts.uri.path();
@@ -705,9 +644,7 @@ async fn dispatch(State(host): State<Arc<Host>>, request: Request) -> HttpResult
             tokio::spawn(async move {
                 let _host_lease = host_lease;
                 let game = game.read().await;
-                game.runtime
-                    .dispatch_admin(request, csrf_token, game.active)
-                    .await
+                game.runtime.dispatch_admin(request, csrf_token).await
             })
             .await
             .map_err(internal)
@@ -746,10 +683,7 @@ async fn dispatch_participant(
             .extensions_mut()
             .insert(UpgradeLease::new(&game.websocket_upgrades));
     }
-    Ok(game
-        .runtime
-        .dispatch_participant(request, game.active)
-        .await)
+    Ok(game.runtime.dispatch_participant(request).await)
 }
 
 /// Reserves the host's own route names while accepting normal package game identifiers.

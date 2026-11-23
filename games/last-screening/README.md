@@ -12,7 +12,6 @@ From this directory, build the packages, then upload them to a running Parlando 
 ./build.sh
 parlando login --server lab
 ./deploy.sh --host lab
-parlando activate --host lab --game last-screening
 ```
 
 Sign in once per server. The deploy script uploads the game first, followed by its agents. Omit `--host` to use your CLI’s default server. Open the game from **Games** in the server dashboard to configure an experiment and start intake.

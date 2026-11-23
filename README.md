@@ -14,7 +14,6 @@ The games in this checkout each provide `build.sh` and `deploy.sh`. For example,
 ./build.sh
 parlando login --server lab
 ./deploy.sh --host lab
-parlando activate --host lab --game great-tree
 ```
 
 Use your server URL or alias in place of `lab`. Login is needed once per server. The deployment uploads the ZIPs from the last build, game first, then agents. Use `./build.sh --game-only` for a game-only upload, or omit `--host` to deploy to the CLI’s default server.

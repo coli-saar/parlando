@@ -19,8 +19,7 @@ experiments/c-last-token/build.sh
 
 The build packages the compiled C component and the React application in
 `experiments/c-last-token/dist/c-last-token-1.0.0.zip`. Use `experiments/c-last-token/deploy.sh --host lab` to upload it to a server after signing in with `parlando login --server lab`. Substitute your server URL or alias for `lab`. The Python variant has its own `build.sh` and `deploy.sh` in `experiments/c-last-token/python/`. Follow the [local pilot walkthrough](web/content/manual/start/getting-started.md#start-a-local-server)
-using that package path and game ID `c-last-token`. Activate the game and
-create an experiment with the default configuration. Start a local preview
+using that package path and game ID `c-last-token`. Create an experiment with the default configuration. Start a local preview
 and enter from two independent browser profiles.
 
 ## Check the game and reproduce the benchmark

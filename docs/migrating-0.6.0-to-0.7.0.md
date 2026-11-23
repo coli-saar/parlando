@@ -36,12 +36,11 @@ Keep the tarball at the path recorded in the lockfile for reproducible builds. T
 
 In a speech experiment with a software partner, prepare the microphone and verify the selected device name and a moving level meter. Enter the waiting room. When transcription gates startup, the human’s audio connection must reach provider readiness and the agent must finish initialization. Both seats can already show a connection during this interval. Reloading the waiting room requires preparing the browser microphone again. For Beacon, select `beacon.tick_on_request`, take the opening turn, and say “charge the beacon.” Verify the agent adds one tick after the finalized transcript and returns the turn. A speech experiment that allows entry without preparing voice and shows no voice panel can indicate a client that still reads `voice.enabled`. Rebuild and deploy a new game revision using the matching SDK.
 
-## Deploy and activate the game
+## Deploy the game
 
 Start the server with `parlando serve --store DIRECTORY`. Sign in at the
-administrator origin and deploy the ZIP from **Games**. Activate the game, then
-click its ID to reach the game dashboard. Create and configure your experiment
-there. You can also use `parlando deploy` and `parlando activate` with the
+administrator origin and deploy the ZIP from **Games**. Click its ID to reach the game dashboard. Create and configure your experiment
+there. You can also use `parlando deploy` with the
 corresponding CLI credentials. See the
 [local pilot walkthrough](web/content/manual/start/getting-started.md#start-a-local-server)
 and the [shared host guide](web/content/manual/deploy/host.md).

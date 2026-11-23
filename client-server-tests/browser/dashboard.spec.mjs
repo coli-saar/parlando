@@ -276,6 +276,21 @@ test('the hosted game dashboard validates IDs and creates experiments in its own
   const id = dialog.getByRole('textbox', { name: 'Experiment ID' });
   const submit = dialog.getByRole('button', { name: 'Create experiment' });
   await expect(id).toBeFocused();
+  for (const width of [1200, 320]) {
+    await page.setViewportSize({ width, height: 800 });
+    const label = await dialog.locator('label[for="newExperimentId"]').boundingBox();
+    const field = await id.boundingBox();
+    const help = await page.locator('#newExperimentIdHelp').boundingBox();
+    const action = await submit.boundingBox();
+    expect(label.x).toBe(field.x);
+    expect(help.x).toBe(field.x);
+    expect(field.y).toBeGreaterThan(label.y + label.height);
+    expect(help.y).toBeGreaterThan(field.y + field.height);
+    expect(action.y).toBeGreaterThan(help.y + help.height);
+    expect(action.x + action.width).toBeCloseTo(field.x + field.width, 0);
+    expect(action.x + action.width).toBeLessThan(width);
+  }
+  await page.setViewportSize({ width: 1200, height: 800 });
   await id.fill('bad id');
   await submit.click();
   await expect(dialog.getByRole('alert')).toContainText('ASCII letters');

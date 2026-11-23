@@ -610,7 +610,7 @@ def authorize_cli(binary, origin, admin_origin, browser, env):
 
 
 def play_games(work, binary, agent_package, env):
-    """Deploy and activate both starters, then pilot them through the game dashboards."""
+    """Deploy both starters, then pilot them through the game dashboards."""
     browser = work / "browser"
     browser.mkdir()
     fixtures = ROOT / "client-server-tests/browser"
@@ -650,12 +650,6 @@ def play_games(work, binary, agent_package, env):
                     digest = hashlib.sha256(archive.read("agent.wasm")).hexdigest()
                 if (deployed["game"], deployed["component_sha256"]) != (game, digest):
                     raise RuntimeError(f"Host registered the wrong agent: {deployed}")
-            activation = json.loads(run(
-                binary, "activate", "--host", origin, "--game", game, "--json",
-                cwd=work, env=credentials, capture=True, timeout=60,
-            ))["result"]
-            if activation["active"] is not True:
-                raise RuntimeError(f"Candidate host did not activate {game}: {activation}")
             run(
                 "node", "release_candidate_browser.mjs", admin_origin, origin, game,
                 cwd=browser, env=browser_env, timeout=60,
@@ -666,10 +660,6 @@ def play_games(work, binary, agent_package, env):
                     cwd=browser, env=browser_env, timeout=60,
                 )
                 print("Completed hosted Beacon Relay against the standalone Rust agent", flush=True)
-            run(
-                binary, "deactivate", "--host", origin, "--game", game,
-                cwd=work, env=credentials, timeout=60,
-            )
             print(f"Completed {game} with two-way Typed chat in Chromium", flush=True)
 
 

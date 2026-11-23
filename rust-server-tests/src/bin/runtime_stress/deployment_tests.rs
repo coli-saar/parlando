@@ -790,12 +790,6 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
             .header(ORIGIN, &admin_origin)
             .header("x-csrf-token", identity["csrf_token"].as_str().unwrap())
     };
-    let activate = format!("{PATH}/games/fixture-a/activate");
-    check_json(
-        host.request(Method::POST, &activate, Some(&token), None)
-            .await,
-    )
-    .await;
     check_json(
         manage("experiments")
             .json(&json!({"experiment_id":"Beacon-Trial"}))
@@ -804,6 +798,14 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
             .unwrap(),
     )
     .await;
+    // A deployed game serves the experiment immediately, but registration requires open intake.
+    let registration_path = "/e/fixture-a~Beacon-Trial/api/participants";
+    assert_eq!(
+        host.request(Method::POST, registration_path, None, Some(json!({})))
+            .await
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
     let lifecycle = "runtime/Beacon-Trial/experiment/status";
     let replace_package = create_package(
         &directory.path().join("replacement"),
@@ -887,22 +889,17 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
             .unwrap(),
     )
     .await;
+    assert_eq!(
+        host.request(Method::POST, registration_path, None, Some(json!({})))
+            .await
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
     // Closing intake leaves existing sessions on their original engine.
     assert_eq!(
         host.upload(&first_scope, &token, different_bytes.clone())
             .await
             .status(),
-        StatusCode::CONFLICT
-    );
-    assert_eq!(
-        host.request(
-            Method::POST,
-            &format!("{PATH}/games/fixture-a/deactivate"),
-            Some(&token),
-            None
-        )
-        .await
-        .status(),
         StatusCode::CONFLICT
     );
     let leave = host
@@ -967,27 +964,6 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
     .await;
     assert_eq!(cfg["experiment_status"], "inactive");
     assert_eq!(cfg["game_name"], "fixture-a");
-    check_json(
-        restarted
-            .request(
-                Method::POST,
-                &format!("{PATH}/games/fixture-a/deactivate"),
-                Some(&token),
-                None,
-            )
-            .await,
-    )
-    .await;
-    assert!(!restarted
-        .request(
-            Method::GET,
-            "/e/fixture-a~Beacon-Trial/api/config",
-            None,
-            None
-        )
-        .await
-        .status()
-        .is_success());
     restarted.stop().await;
 }
 
