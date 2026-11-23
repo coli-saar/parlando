@@ -37,6 +37,5 @@ parlando deploy --host "$HOST" --package "$AGENT_PACKAGE" --json
 
 Record both returned revisions. In the game dashboard, choose the installed
 factory in the experiment's configuration and verify the pairing in a local
-preview. After updating the game, upload the agent ZIP again for the new
-game revision. For an external service, choose `remote_grpc` and configure
+preview. Game updates retain installed agents and validate their payload layouts. For an external service, choose `remote_grpc` and configure
 its endpoint in the experiment.

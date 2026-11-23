@@ -5936,3 +5936,7 @@ Beacon Relay’s theme provided the landing card but left voice preparation to t
 ## Serve voice worklets as same-origin modules
 
 Beacon Relay’s deployed Vite bundle inlined the small capture worklet as a data URL. Parlando’s participant Content Security Policy allows same-origin scripts and rejects that module when the voice transport starts. The microphone permission check and local level probe can both succeed before this failure. The shared audio sink marks both worklet URLs with Vite’s no-inline asset query. This keeps their URLs relative to the game bundle at any experiment mount path and prevents a change in either processor’s size from affecting whether it can load. Each module now needs its own asset request. Existing deployed games pick up the fix when their browser assets are rebuilt and deployed.
+
+## Preserve hosted agents across game deployments (2026-11-23)
+
+A fresh build previously started with an empty agent registry. Stage the current registrations alongside the new game and validate them before publishing the build pointer. This keeps game and agent versions independent, preserves exact agent revisions across restarts, and lets a failed compatibility check leave the previous build available. Registrations already lost under the former behavior can be restored by uploading the selected agent archives again.

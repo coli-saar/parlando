@@ -991,9 +991,9 @@ async fn deployment_replaces_idle_games_and_protects_live_runs() {
     restarted.stop().await;
 }
 
-/// Verifies that the active game build owns its independently uploaded policy registry.
+/// Verifies that game updates and host restarts preserve independently uploaded agents.
 #[tokio::test]
-async fn deployment_restores_independent_agents_for_the_current_build() {
+async fn deployment_preserves_agents_across_game_updates() {
     const GAME: &[u8] =
         include_bytes!("../../../../rust-server/src/agent_experiment/tests/headless.wasm");
     const AGENT: &[u8] =
@@ -1058,13 +1058,18 @@ async fn deployment_restores_independent_agents_for_the_current_build() {
     assert_eq!(dashboard_agents(&host).await, expected_agents);
     host.stop().await;
 
-    let host = TestHost::start(address, root.path(), Some(admin)).await;
+    let host = TestHost::start(address, root.path(), Some(admin.clone())).await;
     assert!(has_policy(&host).await);
     assert_eq!(dashboard_agents(&host).await, expected_agents);
     let second = check_json(host.upload(&scope, &token, game("1.0.1")).await).await;
     assert_ne!(first["revision"], second["revision"]);
-    assert!(!has_policy(&host).await);
-    assert_eq!(dashboard_agents(&host).await, json!([]));
+    assert!(has_policy(&host).await);
+    assert_eq!(dashboard_agents(&host).await, expected_agents);
+    host.stop().await;
+
+    let host = TestHost::start(address, root.path(), Some(admin)).await;
+    assert!(has_policy(&host).await);
+    assert_eq!(dashboard_agents(&host).await, expected_agents);
     assert_eq!(
         check_json(host.upload(&scope, &token, policy).await).await,
         receipt

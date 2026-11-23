@@ -75,14 +75,14 @@ parlando deploy --host "$PARLANDO_SERVER" \
   dist/agent-counterweight_hotel.porter-11.0.0.zip
 ```
 
-The host installs the policy for the current game package revision. On **Games**,
+The host installs the policy under its target game ID. On **Games**,
 select the disclosure arrow beside the game name to see its installed agents. A dashboard
 upload opens that list and highlights the uploaded agent. In the
 game dashboard, open an inactive experiment's **Configuration**. Set
 **Participant pairing** to **Human vs agent** and choose the uploaded policy in
 **Agent factory**. Save the configuration and start a **Local preview** before
-opening intake. After updating the game package, upload its agent ZIP again
-for the new revision. Record both package revisions with the study.
+opening intake. Game and agent versions are independent. Game updates retain installed
+agents and must pass their payload layout checks. Record both package revisions with the study.
 
 ## Upload through REST
 

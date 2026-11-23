@@ -356,8 +356,13 @@ impl Package {
         install
     }
 
-    /// Prepares a complete build directory for validation and runtime construction.
-    pub(super) fn stage(self, parent: &Path, revision: &str) -> Result<StagedBuild> {
+    /// Stages the game and its existing agent registrations together for validation and publication.
+    pub(super) fn stage(
+        self,
+        parent: &Path,
+        revision: &str,
+        pins: &super::AgentPins,
+    ) -> Result<StagedBuild> {
         fs::create_dir_all(parent)?;
         // A failed or interrupted previous attempt has no committed pointer to this revision.
         let directory = parent.join(format!(".build-{revision}"));
@@ -375,6 +380,11 @@ impl Package {
                 .write(true)
                 .open(target)?;
             file.write_all(&bytes)?;
+            file.sync_all()?;
+        }
+        if !pins.is_empty() {
+            let file = fs::File::create_new(staged.directory.join(super::AGENT_PINS_FILE))?;
+            serde_json::to_writer(&file, pins)?;
             file.sync_all()?;
         }
         sync_directory(&staged.directory)?;

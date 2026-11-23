@@ -473,10 +473,16 @@ async fn install_upload(
                 .and_then(|directory| directory.sync_all())
                 .map_err(internal)?;
         }
+        let pins = existing
+            .as_ref()
+            .map(|current| read_agent_pins(&current.build))
+            .transpose()
+            .map_err(internal)?
+            .unwrap_or_default();
         let staged = tokio::task::spawn_blocking({
             let package_dir = package_dir.clone();
             let revision = revision.clone();
-            move || package.stage(&package_dir, &revision)
+            move || package.stage(&package_dir, &revision, &pins)
         })
         .await
         .map_err(internal)?
