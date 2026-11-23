@@ -17,7 +17,7 @@ body { margin: 0; min-height: 100vh; }
 .app-header { background: #fff; border-bottom: 1px solid var(--border); }
 .header-row {
   min-height: 64px;
-  padding: 0.75rem max(1rem, calc((100% - 72rem) / 2));
+  padding: 0.75rem max(4vw, calc((100% - 94rem) / 2));
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -30,7 +30,7 @@ nav {
   gap: 4px;
   background: var(--surface);
   border-top: 1px solid var(--border);
-  padding: 0 max(1rem, calc((100% - 72rem) / 2));
+  padding: 0 max(4vw, calc((100% - 94rem) / 2));
 }
 nav a {
   border-bottom: 2px solid transparent;
@@ -41,7 +41,7 @@ nav a {
 }
 nav a:hover { border-bottom-color: var(--accent); color: var(--accent); }
 nav a[aria-current="page"], nav a[aria-current="location"] { border-bottom-color: var(--accent); color: var(--accent); }
-#workspace { max-width: 74rem; margin: 1.5rem auto 4rem; padding: 0 1rem; }
+#workspace { width: 92%; max-width: 94rem; margin: 2.4rem auto 4rem; }
 .page-title { justify-content: space-between; margin-bottom: 1rem; }
 .page-title h1 { margin: 0; overflow-wrap: anywhere; }
 .panel { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: clamp(0.85rem, 3vw, 1.5rem); margin-bottom: 1rem; }
@@ -84,10 +84,64 @@ details form { margin-top: 0.75rem; }
 table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; text-align: left; }
 th, td { padding: 0.55rem; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
 th { background: var(--surface); color: var(--muted); }
+.header-row { justify-content: start; }
+.header-row nav { background: transparent; border: 0; padding: 0; margin-left: 1.5rem; }
+.header-row #identity { margin-left: auto; }
+#account-role::before { content: " · "; }
+.short-upload-label, .manage-toggle { display: none; }
+#workspace .page-title { margin-bottom: 1.25rem; }
+.page-title h1 { font-size: 1.85rem; letter-spacing: -0.035em; }
+#games.panel { padding: 0; overflow: hidden; }
+#games table { margin: 0; }
+#games th, #games td { padding: 0.85rem 1.2rem; vertical-align: middle; }
+#games th { font-size: 0.85rem; }
+#games th:first-child { width: 46%; }
+#games th:last-child, #games td:nth-child(4) { text-align: right; }
+#games td:last-child .toolbar { justify-content: flex-end; flex-wrap: nowrap; gap: 0.45rem; }
+/* Each game starts a group. Agent rows share its surface and connect to its disclosure. */
+#games tbody td { border-bottom: 0; }
+#games tbody + tbody { border-top: 1px solid var(--border); }
+#publish-game { padding: 1rem 1.2rem; border-bottom: 1px solid var(--border); }
+.game-identity { display: flex; align-items: center; gap: 0.9rem; }
+.package-stack { display: grid; gap: 0.12rem; }
+.package-stack small { color: var(--muted); font: 0.82rem/1.4 ui-monospace, monospace; }
+.package-stack a { font-size: 1.06rem; font-weight: 650; text-decoration: none; }
+.package-stack a:hover { text-decoration: underline; }
+.game-identity > .package-stack:only-child { margin-left: calc(32px + 0.9rem); }
+
+.agent-toggle {
+  display: inline-grid; place-items: center; width: 32px; height: 32px; flex: 0 0 32px;
+  padding: 0; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--accent); font-size: 0.875rem;
+}
+.agent-toggle::before {
+  content: ""; width: 0.5rem; height: 0.5rem; box-sizing: content-box;
+  border: solid currentColor; border-width: 0 2px 2px 0;
+  transform: rotate(-45deg); transition: transform 120ms ease;
+}
+.agent-toggle[aria-expanded="true"] { background: var(--selected); }
+.agent-toggle[aria-expanded="true"]::before { transform: translateY(-2px) rotate(45deg); }
+@media (prefers-reduced-motion: reduce) { .agent-toggle::before { transition: none; } }
+#games .agent-row td { padding-block: 0.55rem; }
+#games .agent-row td:first-child { position: relative; padding-left: calc(32px + 2.9rem); }
+.agent-row td:first-child::before, .agent-row td:first-child::after {
+  content: ""; position: absolute; left: calc(1.2rem + 16px);
+}
+.agent-row td:first-child::before { top: 0; bottom: 0; border-left: 1px solid #cbd2d8; }
+.agent-row td:first-child::after { top: 50%; width: 1.8rem; border-top: 1px solid #cbd2d8; }
+.agent-row:last-child td:first-child::before { bottom: 50%; }
+.agent-row td:first-child .package-stack > span { font-weight: 600; }
+.uploaded-agent { animation: agent-arrival 5s ease-out; }
+@keyframes agent-arrival {
+  0%, 70% { background: var(--selected); box-shadow: inset 3px 0 var(--accent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .uploaded-agent { animation: none; box-shadow: inset 3px 0 var(--accent); }
+}
 .revision { font-size: 0.84rem; }
 #upload-target { margin: 0; }
 #upload-target:empty { display: none; }
-#notice { position: sticky; top: 0.5rem; z-index: 1; max-width: 72rem; margin-inline: auto; width: calc(100% - 2rem); padding: 0.65rem 0.85rem; background: var(--selected); border: 1px solid var(--border); border-radius: 6px; overflow-wrap: anywhere; }
+#notice { position: sticky; top: 0.5rem; z-index: 1; max-width: 94rem; margin-inline: auto; width: 92%; padding: 0.65rem 0.85rem; background: var(--selected); border: 1px solid var(--border); border-radius: 6px; overflow-wrap: anywhere; }
 #notice.error { color: var(--parlando-brick); background: #fff8f7; border-color: #efc3bf; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
@@ -163,4 +217,77 @@ th { background: var(--surface); color: var(--muted); }
   .auth-brand img { width: 48px; padding: 4px; border-radius: 8px; }
   .auth-panel { padding: 30px 26px 34px; }
   .auth-panel h1 { font-size: 24px; }
+}
+
+/* Each phone card is one table row group, including its game controls and expanded agents. */
+@media (max-width: 720px) {
+  .header-row { gap: 0.7rem; }
+  .header-row .brand img { width: 96px; }
+  .header-row #identity { flex: 1; min-width: 0; justify-content: flex-end; flex-wrap: nowrap; }
+  #signed-in-as { display: grid; min-width: 0; text-align: right; overflow-wrap: anywhere; }
+  #account-name { font-weight: 600; }
+  #account-role { font-size: 0.84rem; color: var(--muted); }
+  #account-role::before { content: none; }
+  .header-row nav { order: 1; width: 100%; margin-left: 0; }
+  .header-row nav:has(#users-nav[hidden]) { display: none; }
+  #workspace { width: calc(100% - 2rem); margin-top: 1.4rem; }
+  #workspace .page-title { margin-bottom: 1rem; gap: 0.5rem; }
+  .page-actions { gap: 0.4rem; }
+  .page-actions button, #logout { min-height: 44px; }
+  .wide-upload-label { display: none; }
+  .short-upload-label { display: inline; }
+  #games.panel { background: transparent; border: 0; overflow: visible; }
+  #games .scroll { overflow: visible; }
+  #games table { display: grid; gap: 0.75rem; }
+  #games tbody, #publish-game {
+    display: block; border: 1px solid var(--border); border-radius: 9px; background: white;
+  }
+  #games tbody { padding-block: 0.45rem; }
+  #publish-game { margin-bottom: 0.75rem; }
+  #publish-form, #publish-form label { min-width: 0; }
+  #games thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  #games tbody tr { display: grid; align-items: center; padding-inline: 0.75rem; }
+  #games tbody td { border: 0; }
+  #games .game-row {
+    grid-template-columns: minmax(0, 1fr) auto auto; row-gap: 0.3rem; padding-block: 0.2rem 0.4rem;
+  }
+  #games .game-row td { padding: 0; }
+  #games .game-row td:first-child { grid-area: 1 / 1 / 2 / 3; }
+  #games .game-row td:nth-child(2) { grid-area: 2 / 1; }
+  #games .game-row td:nth-child(3) { grid-area: 1 / 3; justify-self: end; align-self: start; line-height: 44px; }
+  #games .game-row td:nth-child(4), .game-management { display: contents; }
+  .manage-toggle { grid-area: 2 / 2 / 3 / 4; justify-self: end; }
+  .game-management .toolbar { grid-area: 3 / 1 / 4 / -1; }
+  .game-identity { align-items: flex-start; gap: 0.25rem; }
+  .game-identity > .package-stack:only-child { margin-left: calc(44px + 0.25rem); }
+  .game-identity .package-stack > span { display: flex; align-items: center; min-height: 44px; }
+  .game-identity .package-stack { gap: 0; }
+  .game-identity .package-stack small { margin-top: -6px; }
+  .agent-toggle { width: 44px; height: 44px; flex-basis: 44px; border-color: transparent; }
+  .agent-toggle[aria-expanded="true"] { background: transparent; }
+  #games .game-row td:nth-child(2) { padding-left: calc(44px + 0.25rem); }
+  #games .game-row td:nth-child(2) .package-stack {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.6rem; color: var(--muted);
+  }
+  #games .revision { white-space: nowrap; }
+  .manage-toggle {
+    display: inline-flex; align-items: center; gap: 0.55rem; min-height: 44px;
+    color: var(--accent); border-color: transparent; font-size: 0.9rem;
+  }
+  .manage-toggle::after {
+    content: ""; width: 0.4rem; height: 0.4rem; border: solid currentColor;
+    border-width: 0 1.5px 1.5px 0; transform: translateY(-2px) rotate(45deg);
+  }
+  .manage-toggle[aria-expanded="true"]::after { transform: rotate(225deg); }
+  .manage-toggle[aria-expanded="false"] + .toolbar { display: none; }
+  #games .game-row .toolbar button { min-height: 44px; padding-inline: 0.55rem; font-size: 0.9rem; }
+  .game-status { font-size: 0.9rem; }
+  /* Keep identity and release on the same line, even with a wrapped package name. */
+  #games .agent-row { grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem; }
+  #games .agent-row td { padding: 0.4rem 0; }
+  #games .agent-row td:first-child { padding-left: calc(44px + 0.9rem); }
+  #games .agent-row td:nth-child(2) { text-align: right; }
+  .agent-row td:first-child::before, .agent-row td:first-child::after { left: 22px; }
+  .agent-row td:first-child::after { width: 1.5rem; }
+  #games td[colspan] { padding: 0.75rem; }
 }

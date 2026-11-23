@@ -2,6 +2,67 @@
 
 An agent controls `PlayerRole::A` or `PlayerRole::B` under exactly the same game rules and information boundary as a human. It receives role-specific observations, accepted actions, messages from the other player, and the same shared completion delivered to human players. It never receives authoritative state or frontend events.
 
+## Start a standalone agent project
+
+A standalone Rust agent pins a game ZIP in `agent.yaml`. Parlando loads
+the WebAssembly component from that ZIP and calls `describe()` to generate
+the Rust bindings. It uses the same packaged game to validate and evaluate
+the policy.
+
+With the Beacon source project in `beacon/`, run these commands from its
+parent directory:
+
+```sh
+parlando build --manifest beacon/game.yaml
+parlando agent new beacon.tick_on_request --game beacon/dist/beacon-0.1.0.zip --name "Beacon Tick on Request"
+cd beacon.tick_on_request
+parlando check
+```
+
+The new directory defaults to the agent ID. Use `--path` to choose another directory.
+
+If you already have a released game ZIP, pass its path or HTTP(S) URL to
+`--game`.
+
+The dashboard shows **Beacon Tick on Request**. Experiments select this policy
+by its factory ID, `beacon.tick_on_request`.
+
+The scaffold generates game types in `src/game.rs` and an editable policy in
+`src/lib.rs`. For Beacon, the policy greets its partner and asks them to send
+`tick` in chat. Each request authorizes one tick on the agent’s turn. Requests
+received early wait for a legal turn. Games with other action or view types
+start with a policy that yields until you implement its decisions.
+
+Keep the policy's exported ID and name in sync with `agent.yaml`.
+Its `bindings` field gives the path of the generated module relative to
+the manifest. If you move the module, update that field and the Rust module
+declaration. For a policy with its own wire types, omit `bindings`.
+
+Parlando verifies the game archive against its recorded SHA-256 and checks
+the policy against that game. Use `parlando check`
+to validate the project or `parlando build` to
+validate it and write an agent ZIP.
+
+The `build`, `check`, and `test` commands look for `game.yaml` and then
+`agent.yaml` in the current directory. In a directory containing both,
+use `--manifest agent.yaml` to select the policy.
+
+### Update the pinned game
+
+To test a game change, build a new game ZIP first. From the policy
+project, pin the new archive and check the policy:
+
+```sh
+parlando agent set-game ../beacon/dist/beacon-0.1.1.zip
+parlando check
+```
+
+`set-game` records the new archive's version and digest in `agent.yaml`
+and refreshes the configured bindings. Update `src/lib.rs` if the schema
+changes the types your policy uses. To return to the previous build, run
+`set-game` with the original archive. Keep local ZIPs available at their
+recorded paths. Parlando caches downloaded ZIPs in the policy project.
+
 ## Run a local WASM agent
 
 A local agent controls one seat in the host process. Its own project
@@ -24,6 +85,7 @@ place of the Cargo manifest and features. Paths resolve relative to
 Build and check it from the agent project:
 
 ```sh
+parlando agent set-game dist/last-screening-0.1.0.zip
 parlando build --manifest agent.yaml
 parlando check --package dist/agent-last_screening.operator-1.0.0.zip
 ```
@@ -182,8 +244,10 @@ version: 0.1.0
 cargo_manifest: Cargo.toml
 ```
 
-Install the Rust `wasm32-unknown-unknown` target and `wasm-tools`, then run
-`parlando build --manifest agent.yaml`. Parlando invokes Cargo and wraps
+Install the Rust `wasm32-unknown-unknown` target and `wasm-tools`. Run
+`parlando agent set-game PATH_TO_BEACON_ZIP` from the policy directory to
+record the game dependency, then run `parlando build --manifest agent.yaml`.
+Parlando invokes Cargo and wraps
 the emitted module as a component. The output is
 `dist/agent-beacon.one_tick-0.1.0.zip`. Follow the [ZIP deployment steps
 above](#run-a-local-wasm-agent) with the Beacon game ZIP and

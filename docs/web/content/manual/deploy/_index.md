@@ -11,7 +11,7 @@ A shared Parlando host serves one current WASM package per game. Activate a game
 Ask your host administrator for the administrator site URL and an individual account. Build your game locally and sign in. Experimenter accounts can access the games and experiments on this host.
 
 1. In **Games**, expand **Deploy or update a game**, select `dist/beacon-0.1.0.zip`, and choose **Deploy game**. Parlando reads the game ID from the archive. The IDs `admin`, `api`, and `health` are reserved for host routes.
-2. Choose **Activate** in the `beacon` row. Open the **Game ID** link to go to the Beacon Relay dashboard at `/beacon` on the administrator origin.
+2. Choose **Activate** in the `beacon` row. On a phone, open **Manage** to see the game’s actions. Open the **Beacon Relay** link to go to the Beacon Relay dashboard at `/beacon` on the administrator origin.
 3. Choose **New experiment**, enter an ID such as `beacon-pilot`, and confirm with **Create experiment**. Configure the [study condition](../run/configuration/) in that dashboard.
 4. Choose **Start experiment** and start **Local preview** to pilot. Open the participant URL in two independent browser profiles. Inspect the resulting sessions, then choose **Stop**. Use **Official intake** when the study is ready for participants.
 
@@ -49,7 +49,7 @@ Both dashboard roles can deploy any game on the server, including its first vers
 
 ```sh
 parlando build
-parlando deploy --host http://127.0.0.1:8000 --package dist/beacon-0.1.0.zip
+parlando deploy --host http://127.0.0.1:8000 dist/beacon-0.1.0.zip
 ```
 
 Record the package revision printed by the command. For scripts, add `--json` and read `result.revision`. Changing the account password or disabling the account revokes its saved CLI credentials. Activation and deactivation require the host administrator token. Set `PARLANDO_HOST_ADMIN_TOKEN` and set `PARLANDO_HOST_ADMIN_ORIGIN` to the service origin before using the CLI for those operations.
@@ -70,10 +70,12 @@ dashboard, or use the CLI after signing in to the same host.
 
 ```sh
 parlando deploy --host "$PARLANDO_SERVER" \
-  --package dist/agent-counterweight_hotel.porter-11.0.0.zip
+  dist/agent-counterweight_hotel.porter-11.0.0.zip
 ```
 
-The host installs the policy for the current game package revision. In the
+The host installs the policy for the current game package revision. On **Games**,
+select the disclosure arrow beside the game name to see its installed agents. A dashboard
+upload opens that list and highlights the uploaded agent. In the
 game dashboard, open an inactive experiment's **Configuration**. Set
 **Participant pairing** to **Human vs agent** and choose the uploaded policy in
 **Agent factory**. Save the configuration and start a **Local preview** before

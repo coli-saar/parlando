@@ -505,12 +505,20 @@ pub(super) fn compile_rust_component(
 
 /// Resolves a supplied archive or the exact release declared by the current project.
 pub(super) fn resolve_archive(package: Option<PathBuf>) -> Result<PathBuf> {
-    match package {
-        Some(package) => Ok(package),
+    let archive = match package {
+        Some(package) => package,
         None => Manifest::read(Path::new("game.yaml"))
             .context("pass --package to use a ZIP outside a Parlando project")?
-            .archive_path(),
-    }
+            .archive_path()?,
+    };
+    let metadata = fs::metadata(&archive)
+        .with_context(|| format!("locating package {}", archive.display()))?;
+    ensure!(
+        metadata.is_file(),
+        "expected a ZIP file at {}",
+        archive.display()
+    );
+    Ok(archive)
 }
 
 /// Protects existing files by allowing replacement only for a package of this game.
@@ -562,7 +570,7 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
 }
 
 /// Builds trusted project code without passing the CLI's deployment authority to child processes.
-fn build_tool(program: impl AsRef<std::ffi::OsStr>) -> Command {
+pub(super) fn build_tool(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut command = Command::new(program);
     command.env_remove("PARLANDO_HOST_ADMIN_TOKEN");
     command
@@ -595,7 +603,7 @@ fn python_tool(root: &Path, program: &str) -> Command {
 }
 
 /// Runs a noninteractive tool, reserving stdout for the CLI result.
-fn run(command: &mut Command, description: &str) -> Result<()> {
+pub(super) fn run(command: &mut Command, description: &str) -> Result<()> {
     let output = command
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
@@ -757,6 +765,47 @@ fn client_dependency(output: &Path) -> Result<String> {
     Ok(format!("file:../vendor/{archive}"))
 }
 
+/// The source of a scaffold's SDK dependency, selected before creating the project.
+pub(super) enum ScaffoldSdk {
+    Checkout(PathBuf),
+    Bundled(PathBuf),
+    Registry,
+}
+
+impl ScaffoldSdk {
+    /// Validates an explicit SDK path or locates the matching bundled language SDK.
+    pub(super) fn select(language: &Language, sdk: Option<&Path>) -> Result<Self> {
+        if let Some(path) = sdk {
+            let path = path.canonicalize().context("locating the local game SDK")?;
+            ensure!(
+                language.contains_sdk(&path),
+                "SDK path requires {}",
+                language.sdk_marker()
+            );
+            return Ok(Self::Checkout(path));
+        }
+        Ok(installed_sdk(language).map_or(Self::Registry, Self::Bundled))
+    }
+
+    /// Writes a movable bundled SDK when available and renders its dependency for the template.
+    pub(super) fn install(self, language: &Language, root: &Path) -> Result<String> {
+        let dependency = match self {
+            Self::Registry => None,
+            Self::Checkout(path) => Some(path),
+            Self::Bundled(source) => {
+                let vendor = Path::new("vendor").join(language.sdk_name());
+                let destination = root.join(&vendor);
+                match language {
+                    Language::Rust => vendor_rust_sdk(&source, &destination)?,
+                    Language::Python => vendor_python_sdk(&source, &destination)?,
+                }
+                Some(vendor)
+            }
+        };
+        language.sdk_dependency(dependency.as_deref())
+    }
+}
+
 /// Creates a self-contained project structure without overwriting any existing destination.
 pub(super) fn scaffold(
     name: &str,
@@ -770,27 +819,7 @@ pub(super) fn scaffold(
         "game ID must start with a lowercase letter and use up to 64 lowercase letters, digits, and dashes"
     );
     let output = output.unwrap_or_else(|| Path::new(name));
-    let selected_sdk = sdk
-        .map(|path| -> Result<PathBuf> {
-            let path = path.canonicalize().context("locating the local game SDK")?;
-            ensure!(
-                language.contains_sdk(&path),
-                "SDK path requires {}",
-                language.sdk_marker()
-            );
-            Ok(path)
-        })
-        .transpose()?;
-    let bundled_sdk = if selected_sdk.is_none() {
-        installed_sdk(&language)
-    } else {
-        None
-    };
-    let vendor_path = Path::new("vendor").join(language.sdk_name());
-    let dependency_path = selected_sdk
-        .as_deref()
-        .or_else(|| bundled_sdk.as_ref().map(|_| vendor_path.as_path()));
-    let dependency = language.sdk_dependency(dependency_path)?;
+    let sdk = ScaffoldSdk::select(&language, sdk)?;
     if let Some(parent) = output.parent().filter(|path| !path.as_os_str().is_empty()) {
         ensure!(
             parent.is_dir(),
@@ -799,13 +828,7 @@ pub(super) fn scaffold(
         );
     }
     fs::create_dir(output).with_context(|| format!("creating project {}", output.display()))?;
-    if let Some(sdk) = bundled_sdk {
-        let destination = output.join(vendor_path);
-        match language {
-            Language::Rust => vendor_rust_sdk(&sdk, &destination)?,
-            Language::Python => vendor_python_sdk(&sdk, &destination)?,
-        }
-    }
+    let dependency = sdk.install(&language, output)?;
     let template = match language {
         Language::Rust => RUST_TEMPLATE,
         Language::Python => PYTHON_TEMPLATE,
@@ -847,7 +870,7 @@ fn vendor_rust_sdk(source: &Path, destination: &Path) -> Result<()> {
         );
         fs::copy(from, destination.join(manifest))?;
     }
-    for directory in ["src", "derive/src", "wit"] {
+    for directory in ["src", "derive/src", "wit", "examples"] {
         let from = source.join(directory);
         ensure!(
             fs::symlink_metadata(&from)?.is_dir(),

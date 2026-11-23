@@ -308,6 +308,8 @@ def build_and_run_agent(work, binary, version, env):
         "game": GAMES["rust"], "id": AGENT_ID, "name": AGENT_NAME,
         "version": "0.1.0", "cargo_manifest": "Cargo.toml",
     }) + "\n", encoding="utf-8")
+    game = work / GAMES["rust"] / "dist" / f"{GAMES['rust']}-0.1.0.zip"
+    run(binary, "agent", "set-game", game, cwd=project, env=env)
     built = json.loads(run(
         binary, "build", "--manifest", manifest, "--json",
         cwd=project, env=env, capture=True,
@@ -329,7 +331,135 @@ def build_and_run_agent(work, binary, version, env):
         raise RuntimeError(f"Unexpected standalone policy inspection: {checked}")
 
     run_agent_experiments(work, project, binary, archive, policy_digest, env)
+    run_agent_dependency_experiments(work, binary, archive, env)
     return archive
+
+
+def run_agent_dependency_experiments(work, binary, partner, env):
+    """Use generated bindings with pinned ZIPs and explicitly switch game builds."""
+    project = work / "dependency-policy"
+    agent_id = "release.generated"
+    game = work / GAMES["rust"]
+    archive = work / "pinned-beacon.zip"
+    shutil.copyfile(game / "dist" / f"{GAMES['rust']}-0.1.0.zip", archive)
+    created = json.loads(run(
+        binary, "agent", "new", agent_id, "--game", archive, "--path", project, "--json",
+        cwd=work, env=env, capture=True,
+    ))["result"]
+    manifest = project / "agent.yaml"
+    pinned = created["dependency"]
+    if pinned["sha256"] != hashlib.sha256(archive.read_bytes()).hexdigest():
+        raise RuntimeError("Creating the agent did not pin its game ZIP's SHA-256")
+
+    hidden = game.with_name("offline-beacon")
+    game.rename(hidden)
+    try:
+        run(binary, "check", "--manifest", manifest, cwd=project, env=env)
+        run(binary, "build", "--manifest", manifest, cwd=project, env=env)
+        run_dependency_experiment(binary, project, manifest, partner, agent_id, "archive", 4, env)
+    finally:
+        hidden.rename(game)
+
+    rules = game / "src/lib.rs"
+    original = rules.read_text(encoding="utf-8")
+    target = "target: 4 + (seed % 3) as u8,"
+    if original.count(target) != 1:
+        raise RuntimeError("Unexpected Beacon target initialization")
+    bindings = project / "src/game.rs"
+    released_bindings = bindings.read_bytes()
+    draft = game / "rehearsal-draft.yaml"
+    try:
+        updated = build_beacon_draft(
+            binary, game, draft, "0.1.1",
+            original.replace(target, "target: 7 + (seed % 3) as u8,"), env,
+        )
+        run(binary, "agent", "set-game", updated, cwd=project, env=env)
+        if hashlib.sha256(updated.read_bytes()).hexdigest().encode() not in manifest.read_bytes():
+            raise RuntimeError("Switching game builds did not update the recorded SHA-256")
+        run_dependency_experiment(binary, project, manifest, partner, agent_id, "updated", 7, env)
+        incompatible = build_beacon_draft(
+            binary, game, draft, "0.1.2", original.replace("ticks", "strength"), env,
+        )
+        run(binary, "agent", "set-game", incompatible, cwd=project, env=env)
+        if b"pub strength:" not in bindings.read_bytes():
+            raise RuntimeError("Selecting a ZIP with a new schema did not refresh the action binding")
+        obsolete = subprocess.run(
+            [binary, "check", "--manifest", manifest], cwd=project, env=env,
+            text=True, capture_output=True,
+        )
+        if obsolete.returncode != 1 or "has no field named `ticks`" not in obsolete.stderr:
+            raise RuntimeError(f"Expected the old action field to fail compilation: {obsolete.stderr}")
+        restored = json.loads(run(
+            binary, "agent", "set-game", archive, "--json",
+            cwd=project, env=env, capture=True,
+        ))["result"]
+        if bindings.read_bytes() != released_bindings:
+            raise RuntimeError("Selecting the original ZIP did not restore its bindings")
+        run_dependency_experiment(binary, project, manifest, partner, agent_id, "restored", 4, env)
+        if restored["dependency"] != pinned:
+            raise RuntimeError("Selecting the original ZIP did not restore its game dependency")
+    finally:
+        rules.write_text(original, encoding="utf-8")
+        draft.unlink(missing_ok=True)
+
+
+def build_beacon_draft(binary, game, manifest, version, rules, env):
+    """Build a headless Beacon ZIP from modified rules with a distinct game version."""
+    (game / "src/lib.rs").write_text(rules, encoding="utf-8")
+    manifest.write_text(json.dumps({
+        "id": GAMES["rust"], "name": "Beacon Relay", "version": version,
+        "cargo_manifest": "Cargo.toml",
+    }) + "\n", encoding="utf-8")
+    build = json.loads(run(
+        binary, "build", "--manifest", manifest, "--json",
+        cwd=game, env=env, capture=True,
+    ))["result"]
+    return Path(build["package"])
+
+
+def run_dependency_experiment(binary, project, manifest, partner, agent_id, mode, target, env):
+    """Check that the project-selected game completes with its policy and a sibling ZIP."""
+    output = project / f"results-{mode}"
+    spec = project / f"experiment-{mode}.yaml"
+    spec.write_text(json.dumps({
+        "schema": "parlando-agent-experiment/v1",
+        "game": {"id": GAMES["rust"]},
+        "agents": {"generated": {"factory": agent_id}, "partner": {"factory": AGENT_ID}},
+        "sessions": {
+            "scenarios": [{"name": "seeded-beacon", "config": {}, "seeds": [0]}],
+            "seats": {"player_a": "generated", "player_b": "partner"},
+        },
+        "schedule": {"kind": "alternate_every_response", "first": "player_a"},
+        "output": {"directory": str(output), "trace": "full"},
+    }) + "\n", encoding="utf-8")
+    summary = json.loads(run(
+        binary, "run", spec, "--manifest", manifest, "--agent", partner, "--json",
+        cwd=project, env=env, capture=True,
+    ))["result"]
+    if (summary["completed"], summary["failed"]) != (1, 0):
+        raise RuntimeError(f"Unexpected dependency run summary for {mode}: {summary}")
+    results = list((output / "results").glob("*.json"))
+    if len(results) != 1:
+        raise RuntimeError(f"Unexpected result files for {mode}: {results}")
+    result = json.loads(results[0].read_text(encoding="utf-8"))
+    trace = result["trace"]
+    opening = trace[0]["response"]
+    if trace[0]["role"] != "A" or opening["type"] != "message" or "tick" not in opening["message"]:
+        raise RuntimeError(f"Generated Beacon partner did not open with tick instructions: {opening}")
+    requests = 0
+    for turn in trace[1:]:
+        response = turn["response"]
+        if turn["role"] == "B" and response.get("message") == "tick":
+            requests += 1
+        if turn["role"] == "A" and response["type"] != "yield":
+            if requests == 0 or response != {"type": "action", "action": {"ticks": 1}}:
+                raise RuntimeError(f"Unexpected generated policy decision: {turn}")
+            requests -= 1
+    seats = {(agent["role"], agent["factory"]) for agent in result["agents"]}
+    if (result["completion"], seats) != (
+        {"activated_at": target}, {("A", agent_id), ("B", AGENT_ID)},
+    ):
+        raise RuntimeError(f"Unexpected Beacon result with {mode}: {result}")
 
 
 def run_agent_experiments(work, project, binary, archive, policy_digest, env):

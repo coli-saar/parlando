@@ -5866,3 +5866,35 @@ CLI host aliases live in ~/.parlando/servers.yaml so the manual, help and lookup
 CLI login links carry the short-lived approval code in the URL fragment. This identifies the requesting process across browser sign-in without typing a code or opening a local callback port. Approval requires an explicit authenticated click. Only the CLI holds the separate secret needed to retrieve the credential. Links from other people can identify their CLI, hence the prompt to approve only a login the user initiated.
 
 The CLI approval page uses a compact card with a plain statement of the permission granted and a single explicit approval action. The header identifies the signed-in account.
+
+## Installing WASM agents on the account-based deployment host
+
+Game and agent authors share the Rust SDK, but deploy their packages independently. The host accepts an agent ZIP through the same authenticated upload endpoint as a game ZIP and records its policy revision against the installed game build. Replacing a policy requires the runtime to be idle. Persisting the registration lets the host reconstruct its agent factories after restart, while attaching it to the game build avoids silently applying a policy to a changed game schema.
+
+Experiment operators choose Human vs agent and a factory in the game dashboard, save the configuration revision, and start intake there. The package rehearsal exercises this flow through the installed CLI and Chromium after testing the policy under both headless metering modes.
+
+## Independent agent projects and game dependency changes
+
+A participant in a shared task can start from the organizer's game ZIP. An agent project records the game ID plus its dependency locator and exact version in `agent.yaml`. The same entry holds the required SHA-256 of the archive bytes. Keeping the locator and digest together lets a single file replacement update the release pin. Local ZIPs are verified on use. URL releases are cached by digest for subsequent offline builds. All agent project builds resolve a game ZIP. Game authors can build a new local ZIP and select it with `parlando agent set-game`; a release server is optional. This adds an explicit packaging step during joint development and ensures participants and authors both discover the interface from the packaged WASM.
+
+The resolver returns one loaded executable and its metadata. Binding generation uses the component's validated schema for actions, both role views and completion. Headless runs from the agent manifest compile the policy against that schema and give the same loaded game to the runner. This preserves the distinction between a schema-compatible change and a behavior change. The runtime keeps its existing package compatibility rules and checks the exported policy against the game.
+
+The scaffold currently emits Rust and keeps the policy separate from its generated module. Local and downloaded ZIPs use the same package loader regardless of the game's implementation language. The optional bindings path belongs to the agent manifest so other layouts and projects that maintain their own wire types can use the same dependency workflow. A new agent language needs its own policy scaffolding and codec generator. A matching game-language SDK or the game's source tree is unnecessary when consuming a release ZIP.
+
+Agent authoring commands share the `parlando agent` namespace. Creation uses `agent new` alongside `agent set-game`. The game scaffold keeps `parlando new NAME`, including when the game ID is `agent`.
+
+Project build, check, and test use an explicit manifest when supplied, otherwise searching the working directory for game.yaml followed by agent.yaml. The order preserves existing game commands for games with a colocated policy, while standalone policies need no manifest flag. Agent creation uses the project ID as its destination when --path is omitted, matching game creation.
+
+The hosting dashboard lists agent package IDs, names, versions, and revisions from the same ordered pins used to construct each hosted game runtime. Keeping this metadata with the runtime makes installs and game revision changes visible together and avoids rescanning the package store for each dashboard request. The browser keeps expansion state within the signed-in view and uses the successful upload receipt to reveal the specific agent revision.
+
+A fresh agent scaffold uses the packaged action and seat-A observation declarations to select the tick-on-request policy when it can construct the single unsigned ticks field and read the boolean your_turn field. This works for renamed Beacon starters and across game languages. Other games retain the editable generic policy. The display name defaults to title-cased words from the factory ID and can be overridden with --name. Scaffolding writes the same name to the manifest and exported definition so the existing package identity check covers both dashboard surfaces.
+
+The deploy command accepts the package ZIP as its positional argument. The existing --package option and no-argument game release lookup remain supported. Clap rejects combining the two explicit forms before the CLI accesses host credentials.
+
+The hosting Games view uses a shared package column for human-readable names and stable IDs, and a release column for versions and revisions. A dedicated leading disclosure expands agent rows. Narrow screens reflow the same rows and actions into two lines. Upload and refresh live in the page toolbar, with the upload form opening above the list.
+
+The hosting list groups games by a divider before each game and a branch beside its agents. Parent and child rows share a white surface so a persistent fill never competes with the temporary upload highlight.
+
+Agent rows show identity and release only. Presence under a game already conveys installation. On phones these fields share one row, while the parent disclosure aligns with the game title independently of wrapped metadata.
+
+The hosting dashboard renders one table body per game so the same game and agent rows form a card on phones and remain column-aligned on desktop. Phone cards put update and activation under Manage to leave room for release metadata at narrow widths. Upload, refresh, and game navigation remain directly accessible.

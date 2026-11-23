@@ -607,6 +607,7 @@ async fn index(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Js
                 "version": deployment.version,
                 "revision": deployment.revision,
                 "active": game.active,
+                "agents": game.agents,
             }),
         ));
     }

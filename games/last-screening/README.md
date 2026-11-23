@@ -42,6 +42,21 @@ Run those commands from this directory. Add `--build-only` to compile without st
 
 For a single-seat visual preview, build once, then run `npm run dev` from `client/web/` and open `/?preview` on the printed Vite URL. The preview offers a choice of room and reel and lets you operate that seat’s equipment. Live two-player sessions run through the participant URL.
 
+## Package the screening partner policy
+
+From this game directory, use a Parlando CLI that supports `agent set-game`.
+Build the game ZIP and pin it in the agent manifest.
+
+```sh
+parlando build
+parlando agent set-game dist/last-screening-0.1.0.zip --manifest agent.yaml
+parlando build --manifest agent.yaml
+```
+
+The agent build checks the policy's compact layouts against the pinned game
+and writes its own ZIP under `dist/`. Run `agent set-game` again after
+rebuilding the game archive so the policy uses the new ZIP's checksum.
+
 ## Author another reel
 
 Edit the production score in [server/src/production.rs](server/src/production.rs). Each reel has an ID, a list of conditions that must remain true throughout the reel, and a nonempty sequence of frames. Every frame names a phase and a condition on the current picture. The stage must also match the two cue marks, which the server deals separately for each reel from the session seed.

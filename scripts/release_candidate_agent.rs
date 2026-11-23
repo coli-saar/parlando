@@ -37,6 +37,8 @@ pub struct Outcome {
 /// A policy that charges one tick on every turn.
 pub struct BeaconPartner {
     view: Option<View>,
+    requests_ticks: bool,
+    first_request_pending: bool,
 }
 
 #[async_trait]
@@ -59,7 +61,11 @@ impl Agent for BeaconPartner {
 
     /// Allocates policy state before the game provides its first view.
     async fn init(_context: InitContext<Config>) -> Result<Self> {
-        Ok(Self { view: None })
+        Ok(Self {
+            view: None,
+            requests_ticks: false,
+            first_request_pending: false,
+        })
     }
 
     /// Stores the initial view, including permission to act first.
@@ -70,6 +76,14 @@ impl Agent for BeaconPartner {
 
     /// Updates turn permission and charge from each accepted transition.
     async fn observe(&mut self, observation: Observation<Pulse, View>) -> Result<()> {
+        if observation
+            .message
+            .as_ref()
+            .is_some_and(|message| message.text.contains("“tick”"))
+        {
+            self.requests_ticks = true;
+            self.first_request_pending = true;
+        }
         if let Some(transition) = observation.transition {
             if transition.view.charge == 2
                 && transition.view.your_turn
@@ -89,6 +103,16 @@ impl Agent for BeaconPartner {
 
     /// Plays one legal tick or yields until the game's next update.
     async fn respond(&mut self, _reason: RespondReason) -> Result<Response<Pulse>> {
+        if self.requests_ticks {
+            let first = std::mem::take(&mut self.first_request_pending);
+            return Ok(if self.view.as_ref().is_some_and(|view| view.your_turn) {
+                Response::action_and_message(Pulse { ticks: 1 }, "tick")
+            } else if first {
+                Response::message("tick")
+            } else {
+                Response::default()
+            });
+        }
         match &self.view {
             Some(view) if view.your_turn && view.charge == 1 => Ok(Response::action_and_message(
                 Pulse { ticks: 1 },

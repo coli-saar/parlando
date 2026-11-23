@@ -19,7 +19,8 @@ use crate::{
     GameMetadata,
 };
 
-pub(super) const UPLOAD_LIMIT: usize = 64 * 1024 * 1024;
+/// Maximum compressed size of either a game or an agent ZIP.
+pub const UPLOAD_LIMIT: usize = 64 * 1024 * 1024;
 const EXPANDED_LIMIT: usize = 64 * 1024 * 1024;
 const FILE_LIMIT: usize = 4096;
 const MANIFEST_LIMIT: usize = 64 * 1024;
@@ -56,8 +57,8 @@ pub(super) struct PackageManifest {
 pub(super) struct AgentManifest {
     game: String,
     id: String,
-    name: String,
-    version: semver::Version,
+    pub(super) name: String,
+    pub(super) version: semver::Version,
     component: String,
 }
 
@@ -87,14 +88,9 @@ enum EntryKind {
 }
 
 impl Package {
-    /// Opens an ordinary local archive and bounds its size even if it changes during the read.
+    /// Reads and decodes an ordinary local package while retaining its original ZIP bytes.
     pub(super) fn read_archive(path: &Path) -> Result<(Self, Vec<u8>)> {
-        let metadata = fs::metadata(path).with_context(|| format!("opening {}", path.display()))?;
-        ensure!(metadata.is_file(), "package must be a ZIP file");
-        let file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
-        ensure!(file.metadata()?.is_file(), "package must be a ZIP file");
-        let mut bytes = Vec::new();
-        file.take(UPLOAD_LIMIT as u64 + 1).read_to_end(&mut bytes)?;
+        let bytes = read_package_bytes(path)?;
         Ok((Self::decode(&bytes)?, bytes))
     }
 
@@ -215,9 +211,14 @@ impl Package {
 
     /// Returns the policy ID when the archive contains an independent agent.
     pub(super) fn agent_id(&self) -> Option<&str> {
+        self.agent_manifest().map(|manifest| manifest.id.as_str())
+    }
+
+    /// Supplies the package metadata displayed for a validated hosted policy.
+    pub(super) fn agent_manifest(&self) -> Option<&AgentManifest> {
         match &self.manifest {
             Manifest::Game(_) => None,
-            Manifest::Agent(manifest) => Some(&manifest.id),
+            Manifest::Agent(manifest) => Some(manifest),
         }
     }
 
@@ -848,6 +849,22 @@ pub fn write_agent_archive(directory: &Path, archive: &Path) -> Result<()> {
     write_archive(directory, archive, |directory| {
         AgentManifest::read(directory).map(Manifest::Agent)
     })
+}
+
+/// Reads the bytes of a regular local package file with the ZIP size limit.
+/// Call a package loader to validate the archive and its executable.
+pub fn read_package_bytes(path: &Path) -> Result<Vec<u8>> {
+    let metadata = fs::metadata(path).with_context(|| format!("opening {}", path.display()))?;
+    ensure!(metadata.is_file(), "package must be a ZIP file");
+    let file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    ensure!(file.metadata()?.is_file(), "package must be a ZIP file");
+    let mut bytes = Vec::new();
+    file.take(UPLOAD_LIMIT as u64 + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() <= UPLOAD_LIMIT,
+        "package exceeds the ZIP size limit"
+    );
+    Ok(bytes)
 }
 
 /// Validates a ZIP and identifies whether it contains an independent agent.

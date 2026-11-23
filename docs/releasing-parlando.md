@@ -137,6 +137,14 @@ record the packaged policy's WASM digest for both seats. On the loopback
 host, the CLI installs the game first and uploads the agent separately.
 The dashboard selects the agent factory for a human–agent experiment, and
 Chromium plays with that policy.
+
+A second Beacon policy uses the generated game bindings. It runs alongside
+the first agent with a pinned game ZIP while the source is unavailable.
+Selecting another ZIP changes the completion target. A third ZIP changes
+the action schema. The CLI regenerates the bindings, and the policy's
+obsolete action fails to compile. Selecting the original ZIP restores its
+bindings and completion target.
+
 A failed agent check prevents the candidate from being saved.
 
 The rehearsal installs `componentize-py` and Playwright as test dependencies.

@@ -37,6 +37,12 @@ parlando check --package dist/beacon-0.1.0.zip --json
 
 ## Build an agent ZIP
 
+To start a standalone Rust policy, use `parlando agent new ID --game PATH`.
+Pass the path or HTTP(S) URL of a game ZIP to pin the exact archive in the
+agent manifest. See [start a
+standalone agent project](https://github.com/coli-saar/parlando/blob/main/docs/agents.md#start-a-standalone-agent-project)
+for a Beacon example and commands to change the dependency.
+
 An agent has its own manifest and archive. The manifest names the game it
 targets and the factory ID exported by the policy. Use `cargo_manifest` to build
 from Rust source, with `features` for any policy-specific Cargo features.
@@ -51,6 +57,7 @@ features: [agent-component]
 ```
 
 ```sh
+parlando agent set-game PATH_TO_HOTEL_ZIP
 parlando build --manifest agent.yaml
 parlando check --package dist/agent-counterweight_hotel.porter-11.0.0.zip
 ```

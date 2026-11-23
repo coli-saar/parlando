@@ -24,8 +24,11 @@ Use the starter and the documentation for the project's Parlando release to esta
 ## Add a policy when requested
 
 Use the same Rust SDK to write a typed policy against the game's compact
-action, role-private view, and completion. Build a separate agent ZIP from
-`agent.yaml` and exercise it against the game ZIP in a seeded experiment.
+action, role-private view, and completion. Build the game ZIP first and
+pin it with `parlando agent new <agent-id> --game "$PACKAGE"` for a new
+standalone policy or `parlando agent set-game "$PACKAGE"` for an existing
+agent manifest. Build the separate agent ZIP and exercise it against the
+pinned game in a seeded experiment.
 Use the built-in remote gRPC adapter for a separately hosted policy. Follow
 [agent integration](references/agents.md) for implementation and validation.
 

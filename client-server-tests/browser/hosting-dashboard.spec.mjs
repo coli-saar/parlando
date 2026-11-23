@@ -167,7 +167,7 @@ test('sign-in resumes a local game dashboard address and ignores external destin
 test('Games deploys and updates packages, manages activation, and opens the game dashboard', async ({ page }) => {
   const id = 'example';
   const name = 'Example Game';
-  const first = { id, name, version: '1.0.0', revision: 'a'.repeat(64), active: false };
+  const first = { id, name, agents: [], version: '1.0.0', revision: 'a'.repeat(64), active: false };
   const second = { ...first, version: '2.0.0', revision: 'b'.repeat(64) };
   const zip = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 255]);
   const uploads = [];
@@ -188,6 +188,11 @@ test('Games deploys and updates packages, manages activation, and opens the game
     if ((path === '/api/hosting/packages' || path === '/api/hosting/packages/example') && request.method() === 'PUT') {
       uploads.push({ path, csrf, contentType: request.headers()['content-type'], body: request.postDataBuffer() });
       if (uploads.length === 1) return route.fulfill({ status: 400, body: 'Invalid game ZIP' });
+      if (uploads.length === 4) {
+        const agent = { id: 'example.partner', name: 'Partner', version: '1.0.0', revision: 'd'.repeat(64) };
+        game = { ...game, agents: [{ ...agent, id: 'example.baseline', name: 'Baseline' }, agent] };
+        return route.fulfill({ json: { ...agent, game: game.id, agent: agent.id } });
+      }
       game = path.endsWith('/example') ? second : first;
       return route.fulfill({ json: { ...game, game: id } });
     }
@@ -233,8 +238,37 @@ test('Games deploys and updates packages, manages activation, and opens the game
     '/api/hosting/packages/example',
   ].map(path => ({ path, csrf: 'test-csrf', contentType: 'application/zip', body: zip })));
 
+  await page.getByText('Upload a game or agent', { exact: true }).click();
+  await input.setInputFiles({ ...file, name: 'agent.zip' });
+  await upload.click();
+  const toggle = page.getByRole('button', { name: '2 agents for example' });
+  const policy = page.getByRole('row').filter({ hasText: 'example.partner' });
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(policy).toBeFocused();
+  await expect(policy.getByText('Partner', { exact: true })).toBeVisible();
+  await expect(notice).toHaveText('Deployed Partner 1.0.0 (dddddddddddd).');
+  await expect(policy).toHaveClass(/uploaded-agent/);
+  await expect(page.getByRole('cell', {name: 'example.baseline'})).toBeVisible();
+  await toggle.click();
+  await expect(policy).toBeHidden();
+  await toggle.press('Enter');
+  await expect(policy).toBeVisible();
+  await page.getByRole('button', { name: 'Refresh' }).click();
+  await expect(policy).toBeVisible();
+  await page.reload();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await toggle.click();
+  await expect(policy).toBeVisible();
+
+  await page.setViewportSize({ width: 320, height: 720 });
+  const manage = page.getByRole('button', { name: 'Manage Example Game' });
+  await expect(page.getByRole('button', { name: 'Activate example' })).toBeHidden();
+  await manage.click();
+  await expect(manage).toHaveAttribute('aria-expanded', 'true');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(320);
   await page.getByRole('button', { name: 'Activate example' }).click();
   await expect(page.getByRole('cell', { name: 'Active', exact: true })).toBeVisible();
+  await manage.click();
   await page.getByRole('button', { name: 'Deactivate example' }).click();
   await expect(page.getByRole('cell', { name: 'Inactive', exact: true })).toBeVisible();
   expect(lifecycle).toEqual([
@@ -242,7 +276,7 @@ test('Games deploys and updates packages, manages activation, and opens the game
     { path: '/api/hosting/games/example/deactivate', csrf: 'test-csrf' },
   ]);
 
-  await page.getByRole('link', { name: 'example', exact: true }).click();
+  await page.getByRole('link', { name: 'Example Game', exact: true }).click();
   await expect(page).toHaveURL('http://hosting.test/example');
 });
 

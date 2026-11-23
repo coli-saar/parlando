@@ -14,6 +14,17 @@ described here applies only when both players are software agents.
 
 ## Select local agent artifacts
 
+From a standalone policy project with a [game dependency](agents.md#start-a-standalone-agent-project),
+run the evaluation against that dependency:
+
+```sh
+parlando run experiment.yaml --manifest agent.yaml
+```
+
+This command builds the policy and registers its factory. Use the ID
+from `agent.yaml` as the factory in the experiment file. The run uses
+the exact game ZIP pinned in `agent.yaml`.
+
 Pass each agent ZIP to `parlando run` with a separate `--agent` option. Name
 its factory ID in the experiment's `agents` mapping. An existing WASM policy
 component also works with `--agent`.

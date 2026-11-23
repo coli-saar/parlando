@@ -1039,18 +1039,28 @@ async fn deployment_restores_independent_agents_for_the_current_build() {
                 .any(|definition| definition["id"] == "tiny.agent")
         }
     };
+    let dashboard_url = format!("{admin}{PATH}/dashboard");
+    let dashboard_agents = |host: &TestHost| {
+        let request = host.client.get(&dashboard_url).header(COOKIE, &cookie);
+        async move { check_json(request.send().await.unwrap()).await["games"][0]["agents"].clone() }
+    };
+    let expected_agents = json!([{"id": "tiny.agent", "name": "Counter policy fixture", "version": "1.0.0", "revision": receipt["revision"]}]);
     assert!(has_policy(&host).await);
+    assert_eq!(dashboard_agents(&host).await, expected_agents);
     host.stop().await;
 
     let host = TestHost::start(address, root.path(), Some(admin)).await;
     assert!(has_policy(&host).await);
+    assert_eq!(dashboard_agents(&host).await, expected_agents);
     let second = check_json(host.upload(&scope, &token, game("1.0.1")).await).await;
     assert_ne!(first["revision"], second["revision"]);
     assert!(!has_policy(&host).await);
+    assert_eq!(dashboard_agents(&host).await, json!([]));
     assert_eq!(
         check_json(host.upload(&scope, &token, policy).await).await,
         receipt
     );
     assert!(has_policy(&host).await);
+    assert_eq!(dashboard_agents(&host).await, expected_agents);
     host.stop().await;
 }

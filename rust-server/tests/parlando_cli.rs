@@ -223,3 +223,72 @@ fn build_rejects_an_unsafe_game_id() {
     assert!(!root.join("dist").exists());
     assert!(!root.join("escaped-1.0.0.zip").exists());
 }
+
+/// An unpinned policy cannot be compiled, tested, or checked, even with a prebuilt agent component.
+#[test]
+fn agent_projects_require_a_game_package_before_loading_the_policy() {
+    let root = tempfile::tempdir().unwrap();
+    let binary = Path::new(env!("CARGO_BIN_EXE_parlando"));
+    fs::write(
+        root.path().join("agent.yaml"),
+        "game: beacon\nid: beacon.partner\nname: Partner\nversion: 1.0.0\ncomponent: missing.wasm\n",
+    )
+    .unwrap();
+    for command in ["build", "test", "check"] {
+        let output = invoke(binary, root.path(), &[command, "--json"]);
+        let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(!output.status.success());
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("require a pinned game ZIP"));
+    }
+}
+
+/// Explicit selection takes precedence, while colocating a policy preserves a game's default commands.
+#[test]
+fn colocated_manifests_default_to_the_game() {
+    let root = tempfile::tempdir().unwrap();
+    let binary = Path::new(env!("CARGO_BIN_EXE_parlando"));
+    fs::write(root.path().join("game.yaml"), "id: 123").unwrap();
+    fs::write(root.path().join("agent.yaml"), "game: beacon").unwrap();
+    for command in ["build", "check", "test"] {
+        let default = invoke(binary, root.path(), &[command, "--json"]);
+        let game = invoke(
+            binary,
+            root.path(),
+            &[command, "--manifest", "game.yaml", "--json"],
+        );
+        let agent = invoke(
+            binary,
+            root.path(),
+            &[command, "--manifest", "agent.yaml", "--json"],
+        );
+        assert!(!default.status.success());
+        assert_eq!(default.stdout, game.stdout);
+        assert_ne!(default.stdout, agent.stdout);
+    }
+}
+
+/// Both explicit deploy forms resolve the same ZIP, and conflicting inputs fail before upload.
+#[test]
+fn deploy_accepts_one_explicit_archive() {
+    let root = tempfile::tempdir().unwrap();
+    let binary = Path::new(env!("CARGO_BIN_EXE_parlando"));
+    for args in [
+        vec!["deploy", "missing.zip"],
+        vec!["deploy", "--package", "missing.zip"],
+    ] {
+        let result = invoke(binary, root.path(), &args);
+        assert_eq!(result.status.code(), Some(1));
+        assert!(String::from_utf8(result.stderr)
+            .unwrap()
+            .contains("locating package missing.zip"));
+    }
+    let conflict = invoke(
+        binary,
+        root.path(),
+        &["deploy", "one.zip", "--package", "two.zip"],
+    );
+    assert_eq!(conflict.status.code(), Some(2));
+}

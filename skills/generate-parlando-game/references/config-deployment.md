@@ -22,8 +22,10 @@ experiments and sessions have stopped. Game activation through the CLI requires
 host administrator credentials. Follow [Deploy to a shared host](https://coli-saar.github.io/parlando/manual/deploy/)
 for credential setup and operator commands.
 
-For a local WASM policy, build a separate agent ZIP with
-`parlando build --manifest agent.yaml` and check it with
+For a local WASM policy, set `GAME_PACKAGE` to the built game ZIP path.
+Pin it with `parlando agent set-game "$GAME_PACKAGE" --manifest agent.yaml`,
+then build a separate agent ZIP with `parlando build --manifest agent.yaml`.
+Set `AGENT_PACKAGE` to the agent ZIP path and run
 `parlando check --package "$AGENT_PACKAGE"`. Upload the game ZIP first.
 Use the same account to upload the agent ZIP to the same host while the
 game's experiments are stopped and its sessions have finished:

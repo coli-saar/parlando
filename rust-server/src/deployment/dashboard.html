@@ -13,15 +13,16 @@
   <header class="app-header">
     <div class="header-row">
       <a class="brand" href="/admin"><img src="/admin/assets/parlando-wordmark.svg" width="110" alt="Parlando"></a>
-      <div id="identity" class="toolbar" hidden>
-        <span id="signed-in-as"></span>
-        <button id="logout" type="button">Sign out</button>
-      </div>
-    </div>
     <nav id="workspace-nav" aria-label="Workspace" hidden>
       <a id="games-nav" href="/admin">Games</a>
       <a id="users-nav" href="/admin#users" hidden>Users</a>
     </nav>
+      <div id="identity" class="toolbar" hidden>
+        <span id="signed-in-as"><span id="account-name"></span><span id="account-role"></span></span>
+        <button id="logout" type="button">Sign out</button>
+      </div>
+    </div>
+
   </header>
 
   <main>
@@ -66,17 +67,14 @@
     <div id="workspace" hidden>
       <div class="page-title toolbar">
         <h1 id="page-title" tabindex="-1">Games</h1>
-        <button id="refresh" type="button">Refresh</button>
+        <div class="toolbar page-actions">
+          <button id="refresh" type="button">Refresh</button>
+          <button class="primary" id="open-upload" type="button" aria-controls="publish-game" aria-expanded="false"><span class="wide-upload-label">Upload a game or agent</span><span class="short-upload-label">Upload ZIP</span></button>
+        </div>
       </div>
 
       <section id="games" class="panel" aria-labelledby="page-title">
-        <div class="scroll"><table>
-          <thead><tr><th scope="col">Game ID</th><th scope="col">Name</th><th scope="col">Version</th><th scope="col">Revision</th><th scope="col">Status</th><th scope="col">Manage</th></tr></thead>
-          <tbody id="game-rows"></tbody>
-        </table></div>
-
-        <details id="publish-game">
-          <summary>Upload a game or agent</summary>
+        <div id="publish-game" hidden>
           <p>Choose a ZIP from <code>dist/</code>. Upload the game before uploading its agents.</p>
           <form id="publish-form">
             <p id="upload-target"></p>
@@ -86,7 +84,10 @@
               <button id="cancel-update" type="button" hidden>Cancel update</button>
             </div>
           </form>
-        </details>
+        </div>
+        <div class="scroll"><table id="game-list">
+          <thead><tr><th scope="col">Game or agent</th><th scope="col">Release</th><th scope="col">Status</th><th scope="col">Manage</th></tr></thead>
+        </table></div>
       </section>
 
       <section id="users" class="panel" aria-labelledby="page-title" hidden>

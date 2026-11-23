@@ -42,6 +42,11 @@ For a local policy, add `--agent PATH` once per [agent ZIP](packages/#build-an-a
 In the experiment YAML, set each agent's `factory` to the policy's ID.
 A prebuilt WASM agent component also works with `--agent`.
 
+From a standalone agent project with a game dependency, use
+`parlando run evaluation.yaml --manifest agent.yaml`. Parlando loads the
+project's game dependency and registers the policy built from the manifest.
+Set the factory in the YAML to the policy's ID.
+
 Each session has separate agent instances, even when both seats use the same service. The command reports counts for completed, failed and skipped sessions. Review the output files and investigate failed sessions before aggregating results.
 
 Rerun the same specification and component with the same output directory to resume an interrupted evaluation. Completed result files stay in place and finalized failures remain recorded. Use a new directory for another sample or any changed component or specification.

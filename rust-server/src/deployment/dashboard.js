@@ -5,6 +5,9 @@ const state = {
   account: null,
   generation: 0,
   uploadGame: null,
+  expandedGames: new Set(),
+  gamesRequest: 0,
+  uploadedAgent: null,
   resetAccountId: null,
 };
 
@@ -116,6 +119,8 @@ function roleLabel(role) {
 // Shows the authenticated workspace or the available sign-in form and clears account-specific data.
 function setAccount(account, setupAvailable = false) {
   state.generation++;
+  state.expandedGames.clear();
+  state.uploadedAgent = null;
   state.account = account;
   const admin = account?.role === "operator";
   byId("auth").hidden = !!account;
@@ -131,11 +136,13 @@ function setAccount(account, setupAvailable = false) {
   byId("workspace").hidden = !account || cliLogin;
   byId("workspace-nav").hidden = !account || cliLogin;
   byId("users-nav").hidden = !admin;
-  byId("signed-in-as").textContent = account ? `${account.username} · ${roleLabel(account.role)}` : "";
+  byId("account-name").textContent = account?.username ?? "";
+  byId("account-role").textContent = account ? roleLabel(account.role) : "";
 
   resetUpload();
   state.resetAccountId = null;
-  for (const id of ["game-rows", "account-rows", "audit-rows", "reset-title"]) {
+  for (const group of Array.from(byId("game-list").tBodies)) group.remove();
+  for (const id of ["account-rows", "audit-rows", "reset-title"]) {
     byId(id).replaceChildren();
   }
   byId("reset-password").hidden = true;
@@ -155,10 +162,18 @@ function showingUsers() {
 // Resets the upload to deployment from any package and discards the selected file.
 function resetUpload() {
   state.uploadGame = null;
+  setUploadOpen(false);
   byId("publish-form").reset();
   byId("upload-target").textContent = "";
   byId("cancel-update").hidden = true;
   byId("submit-upload").textContent = "Upload package";
+}
+
+// Keeps the upload panel and its disclosure state in sync for both upload entry points.
+function setUploadOpen(open) {
+  byId("publish-game").hidden = !open;
+  byId("open-upload").setAttribute("aria-expanded", String(open));
+  if (open) byId("publish-form").elements.archive.focus();
 }
 
 // Scopes the upload to the selected game so the server can reject a mismatched ZIP.
@@ -168,16 +183,23 @@ function openUpdate(game) {
   byId("upload-target").textContent = `Updating ${game.name} (${game.id}).`;
   byId("cancel-update").hidden = false;
   byId("submit-upload").textContent = "Upload package";
-  byId("publish-game").open = true;
-  byId("publish-form").elements.archive.focus();
+  setUploadOpen(true);
 }
 
-// Builds a game row with the installed package and host-level lifecycle controls.
-function gameRow(game) {
-  const link = document.createElement("a");
-  link.href = `/${encodeURIComponent(game.id)}`;
-  link.textContent = game.id;
+// Pairs a prominent package name with its stable ID, or a version with its revision.
+function stacked(primary, secondary) {
+  const group = document.createElement("div");
+  group.className = "package-stack";
+  const title = document.createElement("span");
+  title.append(primary);
+  const detail = document.createElement("small");
+  detail.append(secondary);
+  group.append(title, detail);
+  return group;
+}
 
+// Keeps game actions directly accessible on desktop and behind a local disclosure on phones.
+function gameManagement(game) {
   const controls = document.createElement("div");
   controls.className = "toolbar";
   const update = action("Update", () => openUpdate(game));
@@ -192,18 +214,89 @@ function gameRow(game) {
   });
   lifecycle.setAttribute("aria-label", `${lifecycleLabel} ${game.id}`);
   controls.append(update, lifecycle);
+  const group = document.createElement("div");
+  group.className = "game-management";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "manage-toggle";
+  toggle.textContent = "Manage";
+  toggle.setAttribute("aria-label", `Manage ${game.name}`);
+  toggle.setAttribute("aria-expanded", "false");
+  controls.id = `manage-${game.id}`;
+  toggle.setAttribute("aria-controls", controls.id);
+  toggle.addEventListener("click", () => {
+    const open = toggle.getAttribute("aria-expanded") === "true";
+    toggle.setAttribute("aria-expanded", String(!open));
+  });
+  group.append(toggle, controls);
+  return group;
+}
+
+// Builds a game row and its adjacent, individually identifiable installed policies.
+function gameRows(game, uploaded) {
+  const link = document.createElement("a");
+  link.href = `/${encodeURIComponent(game.id)}`;
+  link.textContent = game.name;
+
   const status = document.createElement("span");
   status.className = game.active ? "game-status active" : "game-status";
   status.textContent = game.active ? "Active" : "Inactive";
-  return row([link, game.name, game.version, digest(game.revision), status, controls]);
+  const identity = document.createElement("div");
+  identity.className = "game-identity";
+  identity.append(stacked(link, game.id));
+  const parent = row([identity, stacked(game.version, digest(game.revision)), status, gameManagement(game)]);
+  parent.className = "game-row";
+  if (!game.agents.length) return [parent];
+
+  const children = game.agents.map(agent => {
+    const child = row([stacked(agent.name, agent.id), stacked(agent.version, digest(agent.revision))]);
+    child.className = "agent-row";
+    child.hidden = !state.expandedGames.has(game.id);
+    if (uploaded?.game === game.id && uploaded.agent === agent.id && uploaded.revision === agent.revision) {
+      child.classList.add("uploaded-agent");
+      child.tabIndex = -1;
+    }
+    return child;
+  });
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "agent-toggle";
+  const count = game.agents.length === 1 ? "1 agent" : `${game.agents.length} agents`;
+  toggle.setAttribute("aria-label", `${count} for ${game.id}`);
+  toggle.title = count;
+  identity.querySelector("small").append(` · ${count}`);
+  toggle.setAttribute("aria-expanded", String(state.expandedGames.has(game.id)));
+  toggle.addEventListener("click", () => {
+    const open = !state.expandedGames.has(game.id);
+    if (open) state.expandedGames.add(game.id);
+    else state.expandedGames.delete(game.id);
+    toggle.setAttribute("aria-expanded", String(open));
+    for (const child of children) child.hidden = !open;
+  });
+  identity.prepend(toggle);
+  return [parent, ...children];
 }
 
 // Loads the currently deployed package and activation state for each game.
 async function refreshGames() {
+  const sequence = ++state.gamesRequest;
   const { games } = await request("/dashboard");
-  const rows = byId("game-rows");
-  if (games.length) rows.replaceChildren(...games.map(gameRow));
-  else emptyTable(rows, 6, "No games have been deployed.");
+  if (sequence !== state.gamesRequest) return;
+  const uploaded = state.uploadedAgent;
+  state.uploadedAgent = null;
+  const table = byId("game-list");
+  for (const group of Array.from(table.tBodies)) group.remove();
+  for (const game of games) {
+    const group = table.createTBody();
+    group.setAttribute("aria-label", game.name);
+    group.append(...gameRows(game, uploaded));
+  }
+  if (!games.length) emptyTable(table.createTBody(), 4, "No games have been deployed.");
+  const revealed = table.querySelector(".uploaded-agent");
+  if (revealed && !byId("games").hidden) {
+    revealed.focus({ preventScroll: true });
+    revealed.scrollIntoView({ block: "nearest" });
+  }
 }
 
 // Refreshes the Users list and its account controls.
@@ -252,6 +345,7 @@ async function openWorkspaceView({ focus = false } = {}) {
   byId("page-title").textContent = title;
   document.title = `${title} · Parlando`;
   byId("games").hidden = users;
+  byId("open-upload").hidden = users;
   byId("users").hidden = !users;
   if (!users) byId("audit-history").open = false;
   byId("games-nav").setAttribute("aria-current", users ? "false" : "page");
@@ -352,9 +446,12 @@ onSubmit("publish-form", async form => {
   notice("Uploading and validating the build ZIP…");
   const result = await request(path, { method: "PUT", body: archive, contentType: "application/zip" });
   resetUpload();
-  byId("publish-game").open = false;
+  if (result.agent) {
+    state.expandedGames.add(result.game);
+    state.uploadedAgent = result;
+  }
   await refreshGames();
-  notice(`Deployed ${result.agent || result.name || result.game} ${result.version} (${result.revision.slice(0, 12)}).`);
+  notice(`Deployed ${result.name || result.agent || result.game} ${result.version} (${result.revision.slice(0, 12)}).`);
 });
 
 onSubmit("account-form", async form => {
@@ -393,6 +490,11 @@ onClick("logout", async () => {
   await request("/auth/logout", { method: "POST", data: "response" });
   setAccount(null);
   notice("Signed out.");
+});
+onClick("open-upload", () => {
+  const open = byId("publish-game").hidden;
+  resetUpload();
+  setUploadOpen(open);
 });
 onClick("refresh", () => showingUsers() ? refreshUsersView() : refreshGames());
 onClick("cancel-update", resetUpload);

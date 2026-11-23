@@ -32,8 +32,9 @@ use axum::{
 };
 use fs2::FileExt;
 pub use package::{
-    check_agent_package, check_archive, is_agent_package, load_agent_package, validate_agent_id,
-    write_agent_archive, write_package_archive, Deployment,
+    check_agent_package, check_archive, is_agent_package, load_agent_package, read_package_bytes,
+    validate_agent_id, write_agent_archive, write_package_archive, Deployment,
+    UPLOAD_LIMIT as PACKAGE_ZIP_LIMIT,
 };
 use package::{
     recover_build, validate_id, validate_revision, AgentManifest, Package, PackageManifest,
@@ -66,9 +67,19 @@ pub struct HostOptions {
     pub admin_token: Option<String>,
 }
 
+/// Public package metadata for one policy pinned to the currently hosted game build.
+#[derive(Serialize)]
+struct HostedAgent {
+    id: String,
+    name: String,
+    version: semver::Version,
+    revision: String,
+}
+
 /// Owns the current runtime and participant availability for one deployed game.
 struct HostedGame {
     deployment: Deployment,
+    agents: Vec<HostedAgent>,
     build: PathBuf,
     active: bool,
     runtime: crate::app::HostedRuntime,
@@ -308,31 +319,60 @@ impl Host {
         let store = self.store.clone();
         let game_id = id.to_owned();
         let directory = build.clone();
-        let (loaded_game, metadata, agents, client_dist) = tokio::task::spawn_blocking(move || {
-            let manifest = PackageManifest::read(&directory).context("opening game package")?;
-            let (loaded_game, metadata) = manifest.load(&directory, &package_revision, metering)?;
-            let (pins, candidate) = match candidate {
-                Some((pins, package)) => (pins, Some(package)),
-                None => (read_agent_pins(&directory)?, None),
-            };
-            let agents = pins
-                .into_iter()
-                .map(|(id, revision)| {
+        let (loaded_game, metadata, agents, policies, client_dist) =
+            tokio::task::spawn_blocking(move || {
+                let manifest = PackageManifest::read(&directory).context("opening game package")?;
+                let (loaded_game, metadata) =
+                    manifest.load(&directory, &package_revision, metering)?;
+                let (pins, candidate) = match candidate {
+                    Some((pins, package)) => (pins, Some(package)),
+                    None => (read_agent_pins(&directory)?, None),
+                };
+                let mut agents = Vec::with_capacity(pins.len());
+                let mut policies = Vec::with_capacity(pins.len());
+                for (id, revision) in pins {
                     validate_agent_id(&id)?;
                     validate_revision(&revision)?;
-                    if let Some(package) = candidate
+                    let installed;
+                    let (manifest, factory) = if let Some(package) = candidate
                         .as_ref()
-                        .filter(|package| package.agent_id() == Some(id.as_str()))
+                        .filter(|p| p.agent_id() == Some(id.as_str()))
                     {
-                        return package.load_agent(&loaded_game, &game_id, metering);
-                    }
-                    let path = store.join("agents").join(&game_id).join(&id).join(revision);
-                    AgentManifest::read(&path)?.load(&path, &loaded_game, &game_id, &id, metering)
-                })
-                .collect::<Result<Vec<_>>>()?;
-            Ok::<_, anyhow::Error>((loaded_game, metadata, agents, manifest.client(&directory)))
-        })
-        .await??;
+                        (
+                            package
+                                .agent_manifest()
+                                .context("expected an agent package")?,
+                            package.load_agent(&loaded_game, &game_id, metering)?,
+                        )
+                    } else {
+                        let path = store
+                            .join("agents")
+                            .join(&game_id)
+                            .join(&id)
+                            .join(&revision);
+                        installed = AgentManifest::read(&path)?;
+                        (
+                            &installed,
+                            installed.load(&path, &loaded_game, &game_id, &id, metering)?,
+                        )
+                    };
+                    policies.push(HostedAgent {
+                        id,
+                        revision,
+                        name: manifest.name.clone(),
+                        version: manifest.version.clone(),
+                    });
+                    agents.push(factory);
+                }
+                Ok::<_, anyhow::Error>((
+                    loaded_game,
+                    metadata,
+                    agents,
+                    policies,
+                    manifest.client(&directory),
+                ))
+            })
+            .await??;
         ensure!(metadata.id == id, "installed package has the wrong game ID");
         let deployment = Deployment {
             game: id.to_owned(),
@@ -365,6 +405,7 @@ impl Host {
         File::open(&game_directory)?.sync_all()?;
         Ok(HostedGame {
             deployment,
+            agents: policies,
             build,
             active: false,
             runtime,
@@ -861,7 +902,16 @@ pub fn package_game(archive: &Path) -> Result<String> {
 /// Compiles the component from a built ZIP and validates its ABI and game schema with the selected
 /// Wasm metering. The returned metadata identifies the canonical package revision and component.
 pub fn load_package(archive: &Path, metering: WasmMetering) -> Result<(LoadedGame, GameMetadata)> {
-    Package::read_archive(archive)?.0.load(metering)
+    load_package_bytes(&read_package_bytes(archive)?, metering)
+}
+
+/// Compiles a game directly from the supplied ZIP bytes and validates its ABI and schema with the
+/// selected Wasm metering. The metadata and executable both refer to the supplied archive.
+pub fn load_package_bytes(
+    archive: &[u8],
+    metering: WasmMetering,
+) -> Result<(LoadedGame, GameMetadata)> {
+    Package::decode(archive)?.load(metering)
 }
 
 /// Validates a game identifier before using it in a package filename or management URL.

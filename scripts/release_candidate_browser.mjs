@@ -31,9 +31,9 @@ async function signIn(browser, url) {
 /** Opens the deployed game and starts a local pilot for the two participant profiles. */
 async function startPreview(browser, adminOrigin, game, agentId) {
   const page = await signIn(browser, `${adminOrigin}/admin`);
-  const row = page.getByRole("row").filter({ has: page.getByRole("link", { name: game, exact: true }) });
+  const row = page.getByRole("row").filter({ has: page.locator(`a[href="/${encodeURIComponent(game)}"]`) });
   await expect(row.getByRole("cell", { name: "Active", exact: true })).toBeVisible();
-  await row.getByRole("link", { name: game, exact: true }).click();
+  await row.getByRole("link").click();
   await expect(page).toHaveURL(`${adminOrigin}/${game}`);
   await expect(page.locator("#gameName")).toHaveText("Beacon Relay");
   const experiment = agentId ? "with-agent" : game;

@@ -71,6 +71,21 @@ routes and porter policy from the repository root, run:
 cargo test --manifest-path games/counterweight-hotel/server/Cargo.toml --features bundled-agents
 ```
 
+## Package the hotel porter policy
+
+From this game directory, use a Parlando CLI that supports `agent set-game`.
+Build the game ZIP and pin it in the agent manifest.
+
+```sh
+parlando build
+parlando agent set-game dist/counterweight-hotel-0.1.0.zip --manifest agent.yaml
+parlando build --manifest agent.yaml
+```
+
+The agent build checks the policy's compact layouts against the pinned game
+and writes its own ZIP under `dist/`. Run `agent set-game` again after
+rebuilding the game archive so the policy uses the new ZIP's checksum.
+
 ## Landscape credits
 
 The Alpine skyline wraps the original alpenglow mountain artwork around the hotel.

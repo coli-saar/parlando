@@ -36,7 +36,10 @@ pub(super) enum RemoteCommand {
         )]
         host: String,
         /// Game or agent ZIP produced by parlando build. Defaults to the game release in game.yaml.
-        #[arg(long)]
+        #[arg(value_name = "ZIP")]
+        archive: Option<PathBuf>,
+        /// Supply the ZIP as a named option.
+        #[arg(long, value_name = "ZIP", conflicts_with = "archive")]
         package: Option<PathBuf>,
     },
     /// Start a deployment host for games and their dashboards.
@@ -107,8 +110,12 @@ pub(super) async fn execute(command: RemoteCommand) -> Result<Report> {
                 json!({"server": origin}),
             ))
         }
-        RemoteCommand::Deploy { host, package } => {
-            let package = project::resolve_archive(package)?;
+        RemoteCommand::Deploy {
+            host,
+            archive,
+            package,
+        } => {
+            let package = project::resolve_archive(archive.or(package))?;
             let origin = credentials::resolve_host(&host)?;
             let receipt = deployment::deploy_with_saved_credentials(&origin, &package).await?;
             let mut data = serde_json::to_value(&receipt)?;

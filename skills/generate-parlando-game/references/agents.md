@@ -10,8 +10,9 @@ proposed action.
 
 Use the same `parlando-game-sdk` dependency as the game. Share the game's
 Rust action, view and completion definitions, with `GameValue` derived for
-the compact payloads. Against a non-Rust game, declare equivalent Rust types
-with the same compact layouts. Import `Role` and the derive from
+the compact payloads when both are in one crate. For an independent policy
+crate, build the game ZIP and use `parlando agent new <agent-id> --game "$PACKAGE"`
+to generate Rust types from the game's schema, including Python games. Import `Role` and the derive from
 `parlando_game_sdk`, and import the policy API from
 `parlando_game_sdk::agent`.
 
@@ -63,17 +64,21 @@ Omit `features` for an independent policy crate without a feature gate. For
 an existing WASM component, use `component: path/to/agent.wasm` instead of
 the Cargo fields. Paths resolve relative to the manifest.
 
-Run native policy tests and build the independent agent ZIP. The exact
-native test features are defined by the project:
+Run native policy tests and build the independent agent ZIP. Build the game
+first and use `set-game` to record its archive version and checksum in the
+agent manifest. The project defines which features its native tests need.
 
 ```sh
 cargo test --manifest-path server/Cargo.toml --features agent-component --lib
+parlando build
+parlando agent set-game dist/last-screening-0.1.0.zip --manifest agent.yaml
 parlando build --manifest agent.yaml
 parlando check --package dist/agent-last_screening.operator-1.0.0.zip
 ```
 
+The build checks the policy's compact payload layouts against the pinned game.
 The archive check validates the agent component interface and its declared
-identity. Exercise compatibility and behavior by configuring both seats with
+identity. Exercise behavior by configuring both seats with
 the intended factory IDs and running a seeded headless experiment:
 
 ```sh
