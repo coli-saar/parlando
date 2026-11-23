@@ -3,6 +3,7 @@ name = "parlando-game-derive"
 version = "0.7.0"
 edition = "2021"
 license = "MIT"
+repository = "https://github.com/coli-saar/parlando"
 description = "GameValue derive for the Parlando Game SDK"
 
 [lib]

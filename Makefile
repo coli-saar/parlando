@@ -9,15 +9,17 @@ STRESS_FIXTURE_DIR := $(RUST_SERVER_TESTS_DIR)/stress-fixture
 CLIENT_SERVER_TESTS_DIR := $(PARLANDO_DIR)/client-server-tests
 JS_CLIENT_DIR := $(PARLANDO_DIR)/js-client
 RUST_GAME_SDK_DIR := $(PARLANDO_DIR)/parlando-game-sdk
-PYTHON_GAME_SDK_DIR := $(PARLANDO_DIR)/parlando-python-sdk
 PYTHON_AGENT_SDK_DIR := $(PARLANDO_DIR)/parlando-agent-sdk
 PYTHON_TEST_VENV := $(PARLANDO_DIR)/.local/python-test-venv
 PYTHON_TEST := $(PYTHON_TEST_VENV)/bin/python
 NPM_CACHE ?= $(PARLANDO_DIR)/.local/npm-cache
 PYTHON ?= python3
-RELEASE_CANDIDATES := $(PARLANDO_DIR)/target/release-candidates
+RELEASE_VENV := $(PARLANDO_DIR)/.local/release-venv
+RELEASE_PYTHON ?= $(if $(filter command line environment,$(origin PYTHON)),$(PYTHON),$(if $(wildcard $(RELEASE_VENV)/bin/python),$(RELEASE_VENV)/bin/python,$(PYTHON)))
+RELEASE_DIST := $(PARLANDO_DIR)/target/release-packages
+RELEASE_VERSION = $(shell node -p 'require("$(JS_CLIENT_DIR)/package.json").version')
+CLIENT_TARBALL = $(RELEASE_DIST)/coli-saar-parlando-client-$(RELEASE_VERSION).tgz
 RELEASE_REHEARSAL := $(PARLANDO_DIR)/scripts/test_release_candidate.py
-verified_release = "$(PYTHON)" "$(RELEASE_REHEARSAL)" --verified "$(RELEASE_CANDIDATES)"
 
 .PHONY: all test test-rust test-components test-js-client test-client-server test-browser-e2e test-prolific-e2e test-e2e test-e2e-logging test-python install-local install-js-client package-local package-rust-server-local package-js-client-local
 
@@ -158,35 +160,30 @@ publish-dry-run: check-release-versions publish-rust-derive-dry-run publish-rust
                  publish-python-game-sdk-dry-run publish-python-agent-sdk-dry-run
 
 publish-rust-derive-dry-run:
-	"$(PYTHON)" "$(PARLANDO_DIR)/scripts/release_crate.py" "$(RUST_GAME_SDK_DIR)/derive/Cargo.toml"
+	"$(RELEASE_PYTHON)" "$(PARLANDO_DIR)/scripts/release_crate.py" "$(RUST_GAME_SDK_DIR)/derive/Cargo.toml"
 
 publish-rust-sdk-dry-run:
-	"$(PYTHON)" "$(PARLANDO_DIR)/scripts/release_crate.py" "$(RUST_GAME_SDK_DIR)/Cargo.toml"
+	"$(RELEASE_PYTHON)" "$(PARLANDO_DIR)/scripts/release_crate.py" "$(RUST_GAME_SDK_DIR)/Cargo.toml"
 
 publish-rust-server-dry-run:
-	"$(PYTHON)" "$(PARLANDO_DIR)/scripts/release_crate.py" "$(RUST_SERVER_DIR)/Cargo.toml"
+	"$(RELEASE_PYTHON)" "$(PARLANDO_DIR)/scripts/release_crate.py" "$(RUST_SERVER_DIR)/Cargo.toml"
 
-publish-js-client-dry-run:
-	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" publish --dry-run
-
-publish-python-game-sdk-dry-run publish-python-agent-sdk-dry-run:
-	bash "$(PARLANDO_DIR)/scripts/release-python-package.sh" "$(PYTHON)" "$(PYTHON_RELEASE_SOURCE)"
-
-# Run the full test matrix before saving a candidate for publication.
-test-release-candidate: check-release-versions check-release-tools
-	$(MAKE) test
-	$(MAKE) test-e2e
+# Exercise the complete candidate in disposable consumer projects.
+test-release-candidate: publish-dry-run check-release-tools
+	$(MAKE) test PYTHON="$(RELEASE_PYTHON)"
+	$(MAKE) test-e2e PYTHON="$(RELEASE_PYTHON)"
 	$(MAKE) test-components
 	$(MAKE) test-runtime-communication
-	npm_config_cache="$(NPM_CACHE)" "$(PYTHON)" "$(RELEASE_REHEARSAL)" --output "$(RELEASE_CANDIDATES)"
+	cargo build --locked --release --all-features --manifest-path "$(RUST_SERVER_DIR)/Cargo.toml"
+	hugo --source "$(PARLANDO_DIR)/docs/web" --destination "$(PARLANDO_DIR)/target/release-manual" --panicOnWarning --printPathWarnings
+	npm_config_cache="$(NPM_CACHE)" "$(RELEASE_PYTHON)" "$(RELEASE_REHEARSAL)" --packages "$(RELEASE_DIST)"
 
 # Serial sub-makes preserve publication order and stop on a failed upload even with make -j.
 publish: check-release-versions check-release-tools
-	@set -e; bundle=$$($(verified_release)); \
-	$(MAKE) publish-rust; \
-	$(MAKE) publish-js-client RELEASE_BUNDLE="$$bundle"; \
-	$(MAKE) publish-python-game-sdk RELEASE_BUNDLE="$$bundle"; \
-	$(MAKE) publish-python-agent-sdk RELEASE_BUNDLE="$$bundle"
+	$(MAKE) publish-rust
+	$(MAKE) publish-js-client
+	$(MAKE) publish-python-game-sdk
+	$(MAKE) publish-python-agent-sdk
 
 publish-rust:
 	$(MAKE) publish-rust-derive
@@ -195,12 +192,12 @@ publish-rust:
 
 # Require every package to carry the coordinated release version.
 check-release-versions:
-	"$(PYTHON)" "$(PARLANDO_DIR)/skills/release-parlando/scripts/check_release.py" --packages-only
+	"$(RELEASE_PYTHON)" "$(PARLANDO_DIR)/skills/release-parlando/scripts/check_release.py" --packages-only
 
-# Check the Python upload tools before starting uploads to any registry.
+# Verify the installed release tools before packaging or uploading.
 check-release-tools:
-	"$(PYTHON)" -m build --version
-	"$(PYTHON)" -m twine --version
+	"$(RELEASE_PYTHON)" -m build --version
+	"$(RELEASE_PYTHON)" -m twine --version
 
 publish-rust-derive:
 	cd "$(RUST_GAME_SDK_DIR)/derive" && cargo publish --registry crates-io
@@ -211,18 +208,33 @@ publish-rust-sdk:
 publish-rust-server:
 	cd "$(RUST_SERVER_DIR)" && cargo publish --registry crates-io
 
-publish-js-client:
-	@set -e; bundle="$(RELEASE_BUNDLE)"; \
-	if [ -z "$$bundle" ]; then bundle=$$($(verified_release)); fi; \
-	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" publish "$$bundle"/coli-saar-parlando-client-*.tgz --access public
+# Both release workflows rebuild their packages. Stage only the package inputs in a fresh directory.
+.PHONY: pack-js-client pack-python-game-sdk pack-python-agent-sdk
+pack-js-client:
+	@mkdir -p "$(RELEASE_DIST)"
+	@set -eu; stage=$$(mktemp -d "$(RELEASE_DIST)/client.XXXXXX"); trap 'rm -rf "$$stage"' EXIT; \
+	cp -R "$(JS_CLIENT_DIR)"/{package.json,package-lock.json,tsconfig.json,README.md,src} "$$stage/"; \
+	cd "$$stage"; npm --cache "$(NPM_CACHE)" ci --include=dev --no-audit --no-fund; \
+	npm --cache "$(NPM_CACHE)" pack; mv ./*.tgz "$(RELEASE_DIST)/"
 
-# Build from the corresponding source tree for each Python dry run.
-publish-python-game-sdk-dry-run: PYTHON_RELEASE_SOURCE := $(PYTHON_GAME_SDK_DIR)
-publish-python-agent-sdk-dry-run: PYTHON_RELEASE_SOURCE := $(PYTHON_AGENT_SDK_DIR)
+pack-python-game-sdk: SDK := parlando-python-sdk
+pack-python-agent-sdk: SDK := parlando-agent-sdk
+pack-python-game-sdk pack-python-agent-sdk: check-release-tools
+	@mkdir -p "$(RELEASE_DIST)"
+	@set -eu; stage=$$(mktemp -d "$(RELEASE_DIST)/python.XXXXXX"); trap 'rm -rf "$$stage"' EXIT; \
+	cp -R "$(PARLANDO_DIR)/$(SDK)"/{pyproject.toml,README.md,src,tests} "$$stage/"; \
+	"$(RELEASE_PYTHON)" -m build "$$stage"; \
+	"$(RELEASE_PYTHON)" -m twine check --strict "$$stage"/dist/*; \
+	mv "$$stage"/dist/* "$(RELEASE_DIST)/"
 
-publish-python-game-sdk: PYTHON_ARTIFACT := parlando_python_sdk
-publish-python-agent-sdk: PYTHON_ARTIFACT := parlando_agent_sdk
+publish-js-client publish-js-client-dry-run: pack-js-client
+publish-js-client-dry-run: NPM_RELEASE_FLAGS := --dry-run
+publish-js-client publish-js-client-dry-run:
+	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" publish "$(CLIENT_TARBALL)" --access public $(NPM_RELEASE_FLAGS)
+
+publish-python-game-sdk publish-python-game-sdk-dry-run: pack-python-game-sdk
+publish-python-agent-sdk publish-python-agent-sdk-dry-run: pack-python-agent-sdk
+publish-python-game-sdk: SDK_DIST := parlando_python_sdk
+publish-python-agent-sdk: SDK_DIST := parlando_agent_sdk
 publish-python-game-sdk publish-python-agent-sdk:
-	@set -e; bundle="$(RELEASE_BUNDLE)"; \
-	if [ -z "$$bundle" ]; then bundle=$$($(verified_release)); fi; \
-	"$(PYTHON)" -m twine upload --repository pypi "$$bundle"/$(PYTHON_ARTIFACT)-*.tar.gz "$$bundle"/$(PYTHON_ARTIFACT)-*.whl
+	"$(RELEASE_PYTHON)" -m twine upload --repository pypi "$(RELEASE_DIST)/$(SDK_DIST)-$(RELEASE_VERSION)"{.tar.gz,-py3-none-any.whl}
