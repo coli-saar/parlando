@@ -4,14 +4,15 @@
 //! affected-session check and transaction to SQLite. A preview describes the impact at the
 //! time of that read.
 
-#[cfg(test)]
-use crate::app::corpus::retain_export_sessions;
 use crate::app::{
-    admin_experiment_id, corpus_experiment_export, export_csv, json, redact_secret_fields,
-    AdminExperimentScope, AppError, AppState, Arc, Deserialize, ExperimentSnapshot, Extension,
-    HeaderValue, IntoResponse, Json, Path, Query, Response, Result, State, StatusCode, Value,
+    admin_experiment_id,
+    corpus_download::{download_corpus, CorpusFormat},
+    json, AdminExperimentScope, AppError, AppState, Arc, Deserialize, Extension, HeaderValue,
+    IntoResponse, Json, Path, Query, Response, Result, State, StatusCode, Value,
     CONTENT_DISPOSITION, CONTENT_TYPE, CORPUS_EXPORT_SCHEMA_V1,
 };
+#[cfg(test)]
+use crate::app::{corpus::retain_export_sessions, redact_secret_fields, ExperimentSnapshot};
 
 #[derive(Clone, Debug, Deserialize)]
 pub(in crate::app) struct AdminExportQuery {
@@ -53,69 +54,40 @@ pub(in crate::app) async fn admin_export(
     Query(query): Query<AdminExportQuery>,
 ) -> Result<Response, AppError> {
     let experiment_id = admin_experiment_id(&state, scope.as_ref());
-    let raw = load_export(&state, &experiment_id).await?;
-    let mut value = match query.variant.as_deref().unwrap_or("corpus") {
-        "corpus" => corpus_experiment_export(raw, &state.context.config.privacy.contract_version)
-            .map_err(|error| AppError::new(StatusCode::CONFLICT, error.to_string()))?,
+    let format = CorpusFormat::parse(query.format.as_deref())?;
+    let store = &state.context.installation.store;
+    let (bytes, body) = match query.variant.as_deref().unwrap_or("corpus") {
+        "corpus" => {
+            tracing::info!(experiment_id, "administrator requested corpus export");
+            let read = store.corpus_read(&experiment_id).await?;
+            download_corpus(
+                read,
+                &experiment_id,
+                &state.context.config.privacy.contract_version,
+                format,
+            )
+            .await?
+        }
         #[cfg(test)]
         "full" => {
-            let mut snapshot = raw;
-            retain_export_sessions(&mut snapshot, false);
-            serde_json::to_value(snapshot).map_err(anyhow::Error::from)?
+            let mut snapshot = load_export(&state, &experiment_id).await?;
+            retain_export_sessions(&mut snapshot);
+            let mut value = serde_json::to_value(snapshot).map_err(anyhow::Error::from)?;
+            redact_secret_fields(&mut value);
+            let encoded = serde_json::to_string(&value).map_err(anyhow::Error::from)?;
+            (encoded.len() as u64, axum::body::Body::from(encoded))
         }
         other => {
             return Err(AppError::bad_request(format!(
                 "Unsupported export variant {other:?}."
-            )))
+            )));
         }
     };
-    tracing::info!(experiment_id, "administrator requested corpus export");
-    redact_secret_fields(&mut value);
-    if value
-        .get("data_inventory")
-        .and_then(|inventory| inventory.get("events"))
-        .and_then(Value::as_u64)
-        .is_some_and(|events| events > 100_000)
-    {
-        return Err(AppError::new(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "Export exceeds the 100,000 event limit.",
-        ));
-    }
-    let (content_type, body) = match query.format.as_deref().unwrap_or("json") {
-        "json" => (
-            "application/json; charset=utf-8",
-            serde_json::to_string(&value).map_err(|error| {
-                AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-            })?,
-        ),
-        "yaml" | "yml" => (
-            "application/yaml; charset=utf-8",
-            serde_yaml::to_string(&value).map_err(|error| {
-                AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-            })?,
-        ),
-        "csv" => ("text/csv; charset=utf-8", export_csv(&value)),
-        other => {
-            return Err(AppError::bad_request(format!(
-                "Unsupported export format {other:?}."
-            )))
-        }
-    };
-    if body.len() > 32 * 1024 * 1024 {
-        return Err(AppError::new(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "Export exceeds the 32 MiB response limit.",
-        ));
-    }
-    let extension = match query.format.as_deref().unwrap_or("json") {
-        "yaml" | "yml" => "yaml",
-        "csv" => "csv",
-        _ => "json",
-    };
+    let (extension, content_type) = format.media_type();
     Ok((
         [
             ("content-type", content_type),
+            ("content-length", &bytes.to_string()),
             ("cache-control", "no-store"),
             ("x-content-type-options", "nosniff"),
             (
@@ -205,6 +177,7 @@ pub(in crate::app) async fn admin_delete_participant_data(
 }
 
 /// Loads the administrator export and checks its lifecycle at the same snapshot.
+#[cfg(test)]
 async fn load_export(
     state: &Arc<AppState>,
     experiment_id: &str,

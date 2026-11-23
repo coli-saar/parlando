@@ -149,6 +149,11 @@ export function isSpeechBundle(bundle) {
   return bundle.kind === 'transcript' || (bundle.kind === 'conversation' && bundle.origin === 'agent' && bundle.spoken === true);
 }
 
+// Identifies participant and agent messages, including speech transcripts.
+export function isMessageBundle(bundle) {
+  return bundle.kind === 'transcript' || bundle.kind === 'conversation';
+}
+
 // Uses one chronological layout; token mode only expands recorded speech entries.
 export function sessionTimeline(bundles, view = 'utterances', renderBundle = timelineBundleText) {
   if (!bundles.length) return '<div class="empty">No action or message events recorded yet.</div>';
@@ -161,7 +166,7 @@ export function sessionTimeline(bundles, view = 'utterances', renderBundle = tim
     || a.bundle.first_index - b.bundle.first_index || a.index - b.index);
   const rows = [];
   for (const entry of entries) {
-    const message = ['transcript', 'conversation'].includes(entry.bundle.kind);
+    const message = isMessageBundle(entry.bundle);
     const previous = rows.at(-1);
     if (message && previous?.message && previous.time === entry.time) previous.entries.push(entry);
     else rows.push({ time: entry.time, message, entries: [entry] });
@@ -177,14 +182,15 @@ function timelineBundleText(bundle) {
   return escapeHtml(bundle.text || bundle.title || '');
 }
 
-// Renders tokens and whole messages with the same edge-aligned speaker bubble.
+// Renders tokens and whole messages with the same speaker colors.
 function conversationBubble({ token, bundle, unavailable }) {
   const timing = token || bundle.utterance_timing;
   const duration = timing?.end_ms != null && timing?.start_ms != null ? timing.end_ms - timing.start_ms : null;
   const parent = `Utterance #${bundle.first_index}: ${bundle.text || ''}`;
   const title = token ? `${token.kind} · ${fmtGameTime(token.start_ms)}–${fmtGameTime(token.end_ms)} · ${duration} ms${token.confidence == null ? '' : ` · confidence ${token.confidence}`} · ${parent}` : parent;
   const end = duration == null ? '' : `→ ${escapeHtml(fmtGameTime(timing.end_ms))} · ${duration} ms`;
-  return `<article class="speech-bubble speaker-${bundle.role === 'B' ? 'b' : 'a'}${token ? ' speech-token' : ''}${token?.kind === 'punctuation' ? ' punctuation' : ''}"${token ? ' tabindex="0"' : ''} title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">
+  const speaker = bundle.role === 'A' ? 'a' : bundle.role === 'B' ? 'b' : 'system';
+  return `<article class="speech-bubble speaker-${speaker}${token ? ' speech-token' : ''}${token?.kind === 'punctuation' ? ' punctuation' : ''}"${token ? ' tabindex="0"' : ''} title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">
     <div>${escapeHtml(token ? token.text : bundle.text || '')}</div>
     <div class="muted small">${end}${unavailable && end ? ' · ' : ''}${token?.kind === 'punctuation' ? ' · punctuation' : ''}${unavailable ? 'Token timings unavailable' : ''}</div>
   </article>`;

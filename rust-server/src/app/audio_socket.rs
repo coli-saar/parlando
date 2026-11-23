@@ -9,15 +9,22 @@
 use super::{
     authenticated_participant_id, commit_final_transcript, json, mark_participant_audio_ready,
     maybe_start_game, now_iso, participant_role, publish_transcription_readiness,
-    session_accepts_audio, session_is_active, touch_transport_activity, validate_websocket_origin,
-    voice_message, websocket_path, AppError, AppState, Arc, AudioFrame, AudioOutbound,
-    AudioSessionPlanResponse, AudioSessionRequest, ConnectionLiveness, Deserialize, Duration,
-    Extension, FuturesStreamExt, HeaderMap, Instant, Json, Message, Mutex, OnceLock,
+    session_accepts_audio, session_is_active, session_transition_lock, touch_transport_activity,
+    validate_websocket_origin, voice_message, websocket_path, AppError, AppState, Arc, AudioFrame,
+    AudioOutbound, AudioSessionPlanResponse, AudioSessionRequest, ConnectionLiveness, Deserialize,
+    Duration, Extension, FuturesStreamExt, HeaderMap, Instant, Json, Message, Mutex, OnceLock,
     ParticipantPrincipal, Path, Query, Response, Result, SinkExt, State, TranscriptionEvent,
     TranscriptionInput, TranscriptionSessionContext, UpgradePurpose, UpgradeTicketClaims,
     WebSocket, WebSocketUpgrade, AUDIO_CHANNELS, AUDIO_FRAME_DURATION_MS, AUDIO_PROTOCOL_VERSION,
     AUDIO_SAMPLE_RATE,
 };
+
+use super::readiness::{
+    clear_forming_audio_ready, report_transcription_failure, TranscriptionFailure,
+};
+
+/// Startup budget covers connecting and receiving the provider's readiness acknowledgement.
+const TRANSCRIPTION_START_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Issues the participant's audio connection plan for this session.
 pub(super) async fn audio_session(
@@ -109,6 +116,34 @@ pub(super) async fn audio_socket(
         }))
 }
 
+/// Connects one provider stream and waits for its explicit readiness acknowledgement.
+async fn start_transcription(
+    state: &AppState,
+    role: &str,
+) -> Result<Option<crate::transcription::TranscriptionSessionHandle>> {
+    let Some(provider) = state.transcription_provider.as_ref() else {
+        if super::speechmatics_readiness_required(&state.context.config) {
+            anyhow::bail!("required transcription provider is unavailable");
+        }
+        return Ok(None);
+    };
+    let mut session = provider
+        .start_session(TranscriptionSessionContext {
+            role: role.to_string(),
+            language: state.context.config.transcription.language.clone(),
+            model: state.context.config.transcription.model.clone(),
+        })
+        .await?;
+    while let Some(event) = session.events.recv().await {
+        match event {
+            TranscriptionEvent::Ready => return Ok(Some(session)),
+            TranscriptionEvent::Failed(error) => anyhow::bail!("{error}"),
+            TranscriptionEvent::FinalUtterance(_) => {}
+        }
+    }
+    anyhow::bail!("transcription stream closed before becoming ready")
+}
+
 /// Relays browser PCM and consumes normalized server-side transcription events.
 async fn audio_websocket_loop(
     state: Arc<AppState>,
@@ -119,6 +154,13 @@ async fn audio_websocket_loop(
     let role = claims.role.clone();
     let participant_session_id = claims.participant_session_id.clone();
     let connection_key = format!("{public_session_id}:{role}");
+    let Some(transition_lock) = session_transition_lock(&state, &public_session_id).await else {
+        return;
+    };
+    let transition_guard = transition_lock.lock().await;
+    if !session_accepts_audio(&state, &public_session_id).await {
+        return;
+    }
     let liveness = Arc::new(ConnectionLiveness::new());
     let (connection_generation, mut shutdown, replaced) = state
         .audio_connections
@@ -131,6 +173,8 @@ async fn audio_websocket_loop(
         .audio_sessions
         .connect(&public_session_id, &role)
         .await;
+    clear_forming_audio_ready(&state, &public_session_id, &participant_session_id).await;
+    drop(transition_guard);
     let (mut sender, mut incoming) = socket.split();
     let send_task = tokio::spawn(async move {
         while let Some(outbound) = outbound.recv().await {
@@ -144,64 +188,86 @@ async fn audio_websocket_loop(
         }
     });
 
-    let transcription = if let Some(provider) = state.transcription_provider.clone() {
-        match tokio::time::timeout(
-            Duration::from_secs(10),
-            provider.start_session(TranscriptionSessionContext {
-                role: role.clone(),
-                language: state.context.config.transcription.language.clone(),
-                model: state.context.config.transcription.model.clone(),
-            }),
-        )
-        .await
-        {
-            Ok(Ok(session)) => Some(session),
-            Ok(Err(error)) => {
-                tracing::warn!(%error, %public_session_id, "could not start transcription session");
-                state
-                    .audio_sessions
-                    .send_control(
-                        &public_session_id,
-                        &role,
-                        json!({"type":"transcriptionStatus","ready":false,"message":"ASR unavailable"}).to_string(),
-                    )
-                    .await;
-                None
-            }
-            Err(_) => {
-                tracing::warn!(%public_session_id, "timed out starting transcription session");
-                state.audio_sessions.send_control(
-                    &public_session_id,
-                    &role,
-                    json!({"type":"transcriptionStatus","ready":false,"message":"ASR startup timed out"}).to_string(),
-                ).await;
-                None
-            }
-        }
-    } else {
-        None
-    };
-    let transcription_input = transcription.as_ref().map(|session| session.input.clone());
+    // Relay browser audio independently while the per-socket provider starts.
+    let transcription_input = Arc::new(OnceLock::new());
     let transcription_stream_started_at = Arc::new(OnceLock::<String>::new());
     let transcription_clock = Arc::new(Mutex::new(
         crate::transcription::clock::TranscriptionClock::default(),
     ));
-    let event_task = transcription.map(|mut session| {
+    let mut event_task = {
         let state = state.clone();
         let public_session_id = public_session_id.clone();
         let role = role.clone();
         let participant_session_id = participant_session_id.clone();
+        let transcription_input = transcription_input.clone();
         let transcription_stream_started_at = transcription_stream_started_at.clone();
         let transcription_clock = transcription_clock.clone();
+        let generation = generation.clone();
+        let transition_lock = transition_lock.clone();
         tokio::spawn(async move {
+            let startup = tokio::time::timeout(
+                TRANSCRIPTION_START_TIMEOUT,
+                start_transcription(&state, &role),
+            )
+            .await;
+            let result = match startup {
+                Ok(result) => result.map_err(|error| {
+                    tracing::warn!(%error, %public_session_id, %role, "could not start transcription session");
+                    TranscriptionFailure::Unavailable
+                }),
+                Err(_) => {
+                    tracing::warn!(%public_session_id, %role, "timed out starting transcription session");
+                    Err(TranscriptionFailure::Timeout)
+                }
+            };
+            let mut transcription = match result {
+                Ok(session) => session,
+                Err(failure) => {
+                    report_transcription_failure(
+                        &state,
+                        &public_session_id,
+                        &participant_session_id,
+                        &role,
+                        &generation,
+                        failure,
+                    )
+                    .await;
+                    return;
+                }
+            };
+            if transcription.is_some() || !state.context.config.transcription_active() {
+                {
+                    let _guard = transition_lock.lock().await;
+                    if !state
+                        .audio_sessions
+                        .is_current(&public_session_id, &role, &generation)
+                        .await
+                    {
+                        return;
+                    }
+                    if let Some(session) = &transcription {
+                        let _ = transcription_input.set(session.input.clone());
+                    }
+                    mark_participant_audio_ready(
+                        &state,
+                        &public_session_id,
+                        &participant_session_id,
+                    )
+                    .await;
+                }
+                let _ = state
+                    .session_bus(&public_session_id)
+                    .await
+                    .send(voice_message(&state, &public_session_id).await);
+                maybe_start_game(state.clone(), &public_session_id).await;
+                publish_transcription_readiness(&state, &public_session_id, &role).await;
+            }
+            let Some(session) = &mut transcription else {
+                return;
+            };
             while let Some(event) = session.events.recv().await {
                 match event {
-                    TranscriptionEvent::Ready => {
-                        mark_participant_audio_ready(&state, &public_session_id, &participant_session_id).await;
-                        let _ = state.session_bus(&public_session_id).await.send(voice_message(&state, &public_session_id).await);
-                        maybe_start_game(state.clone(), &public_session_id).await;
-                        publish_transcription_readiness(&state, &public_session_id, &role).await;
-                    }
+                    TranscriptionEvent::Ready => {}
                     TranscriptionEvent::FinalUtterance(utterance) => {
                         let mut clock = transcription_clock.lock().await;
                         let provider_start = utterance.start_time_ms;
@@ -218,28 +284,35 @@ async fn audio_websocket_loop(
                             tracing::warn!(%public_session_id, "transcription result arrived without an audio-stream clock origin");
                             continue;
                         };
-                        if let Err(error) = commit_final_transcript(&state, &public_session_id, &participant_session_id, stream_started_at, utterance).await {
+                        if let Err(error) = commit_final_transcript(
+                            &state,
+                            &public_session_id,
+                            &participant_session_id,
+                            stream_started_at,
+                            utterance,
+                        )
+                        .await
+                        {
                             tracing::warn!(error = %error.message, %public_session_id, "failed to commit final transcript");
                         }
                     }
                     TranscriptionEvent::Failed(error) => {
-                        state.audio_sessions.send_control(&public_session_id, &role, json!({"type":"transcriptionStatus","ready":false,"message":"ASR error"}).to_string()).await;
-                        tracing::warn!(%error, %public_session_id, "transcription session failed");
+                        tracing::warn!(%error, %public_session_id, %role, "transcription session failed");
+                        break;
                     }
                 }
             }
+            report_transcription_failure(
+                &state,
+                &public_session_id,
+                &participant_session_id,
+                &role,
+                &generation,
+                TranscriptionFailure::StreamFailed,
+            )
+            .await;
         })
-    });
-    if transcription_input.is_none() && !state.context.config.transcription_active() {
-        mark_participant_audio_ready(&state, &public_session_id, &participant_session_id).await;
-        let _ = state
-            .session_bus(&public_session_id)
-            .await
-            .send(voice_message(&state, &public_session_id).await);
-        maybe_start_game(state.clone(), &public_session_id).await;
-        publish_transcription_readiness(&state, &public_session_id, &role).await;
-    }
-
+    };
     let mut last_activity_touch = Instant::now();
     let media_started = Instant::now();
     let mut first_timestamp_ms = None;
@@ -297,10 +370,8 @@ async fn audio_websocket_loop(
                         .relay_partner(&public_session_id, &role, bytes)
                         .await;
                     state.context.installation.telemetry.record_audio_frame();
-                    if transcription_input.is_some()
-                        && session_is_active(&state, &public_session_id).await
-                    {
-                        if let Some(input) = &transcription_input {
+                    if let Some(input) = transcription_input.get() {
+                        if session_is_active(&state, &public_session_id).await {
                             let received_at = now_iso();
                             let timestamp_ms = frame.timestamp_ms;
                             let mut clock = transcription_clock.lock().await;
@@ -338,7 +409,28 @@ async fn audio_websocket_loop(
             _ => {}
         }
     }
-    if let Some(input) = transcription_input {
+    {
+        let _guard = transition_lock.lock().await;
+        if state
+            .audio_sessions
+            .is_current(&public_session_id, &role, &generation)
+            .await
+        {
+            clear_forming_audio_ready(&state, &public_session_id, &participant_session_id).await;
+        }
+        state
+            .audio_sessions
+            .disconnect(&public_session_id, &role, &generation)
+            .await;
+        state
+            .audio_connections
+            .unregister(&connection_key, &connection_generation)
+            .await;
+    }
+    // Release the browser transport before allowing the provider to drain final results.
+    send_task.abort();
+    drop(incoming);
+    if let Some(input) = transcription_input.get() {
         let _ = tokio::time::timeout(
             Duration::from_secs(2),
             input.send(TranscriptionInput::Finish),
@@ -348,22 +440,12 @@ async fn audio_websocket_loop(
     if dropped_audio_frames > 0 {
         tracing::debug!(dropped_audio_frames, %public_session_id, "browser audio frames were dropped");
     }
-    state
-        .audio_sessions
-        .disconnect(&public_session_id, &role, &generation)
-        .await;
-    state
-        .audio_connections
-        .unregister(&connection_key, &connection_generation)
-        .await;
-    send_task.abort();
-    if let Some(task) = event_task {
-        let mut task = task;
-        if tokio::time::timeout(Duration::from_secs(5), &mut task)
+    // An unacknowledged provider has no input to finish. Cancel its pending startup now.
+    if transcription_input.get().is_none()
+        || tokio::time::timeout(Duration::from_secs(5), &mut event_task)
             .await
             .is_err()
-        {
-            task.abort();
-        }
+    {
+        event_task.abort();
     }
 }

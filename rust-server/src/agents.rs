@@ -3,7 +3,7 @@
 //! agent receives observations and messages before decisions. A decision may yield, send
 //! text, propose an action, or do both. The runtime submits proposed actions to the game.
 
-use std::sync::Arc;
+use std::{future::Future, sync::Arc, time::Duration};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -14,6 +14,30 @@ use crate::canonical_json::canonical_value;
 use crate::component::ComponentValue;
 use crate::game::{AgentDefinition, PlayerRole, SecretValues};
 use crate::SessionLogger;
+
+tokio::task_local! {
+    /// Absolute deadline of the callback currently being polled by this runtime.
+    static CALLBACK_DEADLINE: Option<tokio::time::Instant>;
+}
+
+/// Enforces the caller's budget and makes the same deadline available to transport adapters.
+pub(crate) async fn with_callback_timeout<F: Future>(
+    budget: Duration,
+    callback: F,
+) -> std::result::Result<F::Output, tokio::time::error::Elapsed> {
+    let deadline = tokio::time::Instant::now().checked_add(budget);
+    tokio::time::timeout(budget, CALLBACK_DEADLINE.scope(deadline, callback)).await
+}
+
+/// Returns the remaining budget for an outbound RPC, including time spent connecting.
+pub(crate) fn remaining_callback_time() -> Option<Duration> {
+    CALLBACK_DEADLINE
+        .try_with(|deadline| {
+            deadline.map(|instant| instant.saturating_duration_since(tokio::time::Instant::now()))
+        })
+        .ok()
+        .flatten()
+}
 
 /// Stable semantic identity recorded for participants created by an agent factory.
 #[derive(Clone, Debug, Eq, PartialEq)]

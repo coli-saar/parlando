@@ -4,15 +4,23 @@
 //! experiment and its linked rows from one SQLite read snapshot. Game-owned JSON travels as
 //! structured values. An invalid stored value fails the read.
 
+#[cfg(test)]
+use super::session_queries::SessionEventSqlRow;
 use super::{
-    session_queries::{stored_event_from_sql_row, SessionEventSqlRow},
-    SqliteExperimentStore, StoredSessionEvent,
+    session_queries::stored_event_from_sql_row, SqliteExperimentStore, StoredSessionEvent,
 };
 use crate::protocol::SessionEnd;
 use anyhow::{Context, Result};
+use futures_util::{stream::BoxStream, TryStreamExt};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use sqlx::{Row, SqlitePool};
+#[cfg(test)]
+use serde_json::json;
+use serde_json::Value;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+#[cfg(test)]
+use sqlx::SqlitePool;
+use sqlx::{Row, Sqlite, Transaction};
+use std::time::Duration;
 
 /// The session fields used by both the dashboard detail and the corpus projector.
 #[derive(Debug, Deserialize, Serialize)]
@@ -33,6 +41,7 @@ pub(crate) struct ExportSession {
     pub session_end: Option<SessionEnd>,
 }
 
+#[cfg(test)]
 /// Related storage records from one read transaction. Game payloads remain opaque.
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct ExperimentSnapshot {
@@ -59,6 +68,7 @@ impl SqliteExperimentStore {
         )
     }
 
+    #[cfg(test)]
     /// Retrieves the experiment and its linked research records at a single instant.
     pub(crate) async fn export_snapshot(&self, experiment_id: &str) -> Result<ExperimentSnapshot> {
         read_export_snapshot(&self.pool, experiment_id).await
@@ -85,37 +95,39 @@ async fn read_sessions(
         .fetch_all(connection)
         .await?
         .into_iter()
-        .map(|row| {
-            let session_id = row.try_get("session_id")?;
-            let end: Option<String> = row.try_get("session_end_json")?;
-            Ok(ExportSession {
-                experiment_id: row.try_get("experiment_id")?,
-                session_id,
-                public_session_id: row.try_get("public_session_id")?,
-                dialogue_id: row.try_get("dialogue_id")?,
-                mode: row.try_get("mode")?,
-                lifecycle: row.try_get("lifecycle")?,
-                purpose: row.try_get("purpose")?,
-                config_revision: row.try_get("config_revision")?,
-                game_version: row.try_get("game_version")?,
-                created_at: row.try_get("created_at")?,
-                started_at: row.try_get("started_at")?,
-                ended_at: row.try_get("ended_at")?,
-                completion: parse_optional_json(
-                    row.try_get("completion_json")?,
-                    &format!("session {session_id} completion_json"),
-                )?,
-                session_end: end
-                    .map(|raw| serde_json::from_str(&raw))
-                    .transpose()
-                    .with_context(|| {
-                        format!("session {session_id} has invalid session_end_json")
-                    })?,
-            })
-        })
+        .map(export_session_from_row)
         .collect()
 }
 
+/// Decodes the shared session projection and validates its structured columns.
+fn export_session_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ExportSession> {
+    let session_id = row.try_get("session_id")?;
+    let end: Option<String> = row.try_get("session_end_json")?;
+    Ok(ExportSession {
+        experiment_id: row.try_get("experiment_id")?,
+        session_id,
+        public_session_id: row.try_get("public_session_id")?,
+        dialogue_id: row.try_get("dialogue_id")?,
+        mode: row.try_get("mode")?,
+        lifecycle: row.try_get("lifecycle")?,
+        purpose: row.try_get("purpose")?,
+        config_revision: row.try_get("config_revision")?,
+        game_version: row.try_get("game_version")?,
+        created_at: row.try_get("created_at")?,
+        started_at: row.try_get("started_at")?,
+        ended_at: row.try_get("ended_at")?,
+        completion: parse_optional_json(
+            row.try_get("completion_json")?,
+            &format!("session {session_id} completion_json"),
+        )?,
+        session_end: end
+            .map(|raw| serde_json::from_str(&raw))
+            .transpose()
+            .with_context(|| format!("session {session_id} has invalid session_end_json"))?,
+    })
+}
+
+#[cfg(test)]
 /// Reads the linked rows at a single SQLite snapshot, in durable session and event order.
 async fn read_export_snapshot(
     pool: &SqlitePool,
@@ -316,4 +328,239 @@ fn parse_optional_json(raw: Option<String>, label: &str) -> Result<Option<Value>
         serde_json::from_str(&value).with_context(|| format!("{label} contains invalid JSON"))
     })
     .transpose()
+}
+
+/// Owns an export's private SQLite connection and the read transaction established on it.
+/// Its streams retain at most SQLite's bounded row queue and one projected record at a time.
+pub(crate) struct CorpusRead {
+    transaction: Transaction<'static, Sqlite>,
+    experiment_id: String,
+}
+
+/// Counts records using the same eligibility rules as the export streams.
+#[derive(Default)]
+pub(crate) struct CorpusInventory {
+    pub participants: i64,
+    pub sessions: i64,
+    pub actions: i64,
+    pub messages: i64,
+    pub logs: i64,
+}
+
+const SESSION_COLUMNS: &str = "experiment_id, session_id, public_session_id, dialogue_id, mode,
+    lifecycle, purpose, config_revision, game_version, created_at, started_at, ended_at,
+    completion_json, session_end_json";
+
+/// Reusable SQL relations for corpus eligibility and the pseudonymous participant registry.
+const CORPUS_SESSIONS: &str = "select session_id from sessions
+    where experiment_id = ?1 and purpose <> 'testing' and started_at is not null";
+const CORPUS_PARTICIPANTS: &str = "select distinct sp.participant_id from session_participants sp
+    join eligible on eligible.session_id = sp.session_id where sp.experiment_id = ?1";
+const SEMANTIC_EVENTS: &str = "(event_type in ('game_action_accepted', 'conversation_message')
+    or (event_type = 'log' and game_time_ms >= 0))";
+
+impl SqliteExperimentStore {
+    /// Opens a dedicated read-only WAL connection for one download, without queuing behind writers.
+    pub(crate) async fn corpus_read(&self, experiment_id: &str) -> Result<CorpusRead> {
+        let mut transaction = if let Some(path) = self.database_path.as_ref() {
+            let options = path
+                .to_str()
+                .expect("SQLite path comes from a database URL")
+                .parse::<SqliteConnectOptions>()?
+                .read_only(true)
+                .busy_timeout(Duration::from_secs(5))
+                .row_buffer_size(8)
+                .pragma("temp_store", "FILE");
+            SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await?
+                .begin()
+                .await?
+        } else {
+            // A literal in-memory store can only be read on its original connection.
+            self.pool.begin().await?
+        };
+        // SQLite's main database stays read-only. The temporary index only contains one
+        // session's alignments and supports merging them without an in-memory map.
+        sqlx::query("create temp table export_timings(message_id text primary key, metadata text) without rowid")
+            .execute(&mut *transaction).await?;
+        Ok(CorpusRead {
+            transaction,
+            experiment_id: experiment_id.to_owned(),
+        })
+    }
+}
+
+impl CorpusRead {
+    /// Establishes the WAL snapshot on the first main-database read.
+    pub(crate) async fn experiment(&mut self) -> Result<Option<(String, String, Value)>> {
+        let row: Option<(String, String, String)> = sqlx::query_as(
+            "select status, game_version, config_json from experiments where experiment_id = ?",
+        )
+        .bind(&self.experiment_id)
+        .fetch_optional(&mut *self.transaction)
+        .await?;
+        row.map(|(status, version, config)| Ok((status, version, serde_json::from_str(&config)?)))
+            .transpose()
+    }
+
+    /// Counts only eligible sessions, participants and semantic events, inside the export snapshot.
+    pub(crate) async fn inventory(&mut self) -> Result<CorpusInventory> {
+        let sql = format!(
+            "with eligible as ({CORPUS_SESSIONS}), participants as ({CORPUS_PARTICIPANTS})
+            select (select count(*) from participants), (select count(*) from eligible),
+                   count(case when event_type = 'game_action_accepted' then 1 end),
+                   count(case when event_type = 'conversation_message' then 1 end),
+                   count(case when event_type = 'log' then 1 end)
+            from session_events join eligible using (session_id)
+            where experiment_id = ?1 and {SEMANTIC_EVENTS}"
+        );
+        let (participants, sessions, actions, messages, logs) = sqlx::query_as(&sql)
+            .bind(&self.experiment_id)
+            .fetch_one(&mut *self.transaction)
+            .await?;
+        Ok(CorpusInventory {
+            participants,
+            sessions,
+            actions,
+            messages,
+            logs,
+        })
+    }
+
+    /// Streams pseudonymous registry rows in durable participant order.
+    pub(crate) fn participants(
+        &mut self,
+    ) -> BoxStream<'_, Result<(Option<String>, String, Option<Value>)>> {
+        let rows = sqlx::query_as::<_, (Option<String>, String, Option<String>, i64)>(
+            "select p.research_id, p.participant_kind, p.metadata_json, p.participant_id
+            from participants p where p.participant_id in (
+                select sp.participant_id from session_participants sp join sessions s
+                  on s.experiment_id = sp.experiment_id and s.session_id = sp.session_id
+                where sp.experiment_id = ?1
+                  and s.purpose <> 'testing' and s.started_at is not null
+            ) order by p.participant_id",
+        )
+        .bind(&self.experiment_id)
+        .fetch(&mut *self.transaction)
+        .map_err(anyhow::Error::from)
+        .and_then(|(id, kind, metadata, internal_id)| async move {
+            Ok((
+                id,
+                kind,
+                parse_optional_json(
+                    metadata,
+                    &format!("participant {internal_id} metadata_json"),
+                )?,
+            ))
+        });
+        Box::pin(rows)
+    }
+
+    /// Advances the session keyset without holding a session cursor across nested queries.
+    pub(crate) async fn next_session(
+        &mut self,
+        after: Option<i64>,
+    ) -> Result<Option<ExportSession>> {
+        let mut sql = sqlx::QueryBuilder::new(format!(
+            "select {SESSION_COLUMNS} from sessions where purpose <> 'testing'
+            and started_at is not null and experiment_id = "
+        ));
+        sql.push_bind(&self.experiment_id);
+        if let Some(after) = after {
+            sql.push(" and session_id > ").push_bind(after);
+        }
+        sql.push(" order by session_id limit 1")
+            .build()
+            .fetch_optional(&mut *self.transaction)
+            .await?
+            .map(export_session_from_row)
+            .transpose()
+    }
+
+    /// Reads up to three rows, enough to detect an invalid assignment count.
+    pub(crate) async fn assignments(
+        &mut self,
+        session_id: i64,
+    ) -> Result<Vec<(Option<String>, String)>> {
+        Ok(sqlx::query_as(
+            "select p.research_id, sp.role from session_participants sp
+            join participants p using (participant_id)
+            where sp.experiment_id = ? and sp.session_id = ? order by sp.role limit 3",
+        )
+        .bind(&self.experiment_id)
+        .bind(session_id)
+        .fetch_all(&mut *self.transaction)
+        .await?)
+    }
+
+    /// Replaces the disk-backed timing index with the last alignment for each message ID.
+    pub(crate) async fn index_timings(&mut self, session_id: i64) -> Result<()> {
+        sqlx::query("delete from temp.export_timings")
+            .execute(&mut *self.transaction)
+            .await?;
+        sqlx::query(
+            "insert or replace into temp.export_timings
+            select payload_json ->> 'message_id', payload_json -> 'metadata'
+            from session_events where experiment_id = ? and session_id = ?
+            and event_type = 'conversation_speech_timing'
+            and json_type(payload_json, '$.message_id') = 'text'
+            and json_type(payload_json, '$.metadata') is not null
+            order by event_index",
+        )
+        .bind(&self.experiment_id)
+        .bind(session_id)
+        .execute(&mut *self.transaction)
+        .await?;
+        Ok(())
+    }
+    /// Streams semantic events with their eligible actor and the most recent speech timing.
+    pub(crate) fn events(
+        &mut self,
+        session_id: i64,
+    ) -> BoxStream<'_, Result<(StoredSessionEvent, Option<String>, Option<Value>)>> {
+        let rows = sqlx::query(
+            "select e.*, p.research_id, t.metadata as timing_metadata
+            from session_events e
+            left join participants p on p.participant_id = e.actor_participant_id and (
+                exists (
+                    select 1 from session_participants sp
+                    where sp.experiment_id = e.experiment_id and sp.session_id = e.session_id
+                      and sp.participant_id = p.participant_id
+                ) or exists (
+                    select 1 from session_participants sp join sessions s
+                      on s.experiment_id = sp.experiment_id and s.session_id = sp.session_id
+                    where sp.experiment_id = e.experiment_id and sp.participant_id = p.participant_id
+                      and s.purpose <> 'testing' and s.started_at is not null
+                )
+            )
+            left join temp.export_timings t on t.message_id = case
+                when e.event_type = 'conversation_message' and json_type(e.payload_json, '$.id') = 'text'
+                then e.payload_json ->> 'id' end
+            where e.experiment_id = ? and e.session_id = ?
+              and (event_type in ('game_action_accepted', 'conversation_message')
+                   or (event_type = 'log' and game_time_ms >= 0))
+            order by event_index"
+        )
+        .bind(&self.experiment_id).bind(session_id).fetch(&mut *self.transaction)
+        .map_err(anyhow::Error::from)
+        .and_then(|row| async move {
+            let event = stored_event_from_sql_row((
+                row.try_get("event_id")?, row.try_get("experiment_id")?, row.try_get("session_id")?,
+                row.try_get("event_index")?, row.try_get("event_type")?, row.try_get("actor_participant_id")?,
+                row.try_get("actor_role")?, row.try_get("payload_json")?, row.try_get("game_state_json")?,
+                row.try_get("game_time_ms")?,
+            ))?;
+            let timing = parse_optional_json(row.try_get("timing_metadata")?, "speech timing metadata")?;
+            Ok((event, row.try_get("research_id")?, timing))
+        });
+        Box::pin(rows)
+    }
+
+    /// Frees the read snapshot and its temporary table before a client receives the artifact.
+    pub(crate) async fn finish(self) -> Result<()> {
+        self.transaction.rollback().await?;
+        Ok(())
+    }
 }

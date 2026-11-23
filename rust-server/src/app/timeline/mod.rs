@@ -10,7 +10,9 @@ use std::collections::{HashMap, HashSet};
 mod display;
 mod grouping;
 use display::*;
+#[cfg(test)]
 pub(super) use grouping::admin_event_bundles;
+pub(super) use grouping::page_event_bundles;
 /// Builds a compact timeline from durable events that matter during monitoring.
 pub(super) fn important_admin_events(
     events: Vec<crate::storage::StoredSessionEvent>,
@@ -73,6 +75,7 @@ fn is_important_admin_event(event: &crate::storage::StoredSessionEvent) -> bool 
             | "session_created"
             | "session_expired"
             | "transcript_segment"
+            | "transcription_start_failed"
             | "voice_diagnostic"
     )
 }
@@ -149,6 +152,7 @@ fn admin_event_title(event_type: &str, payload: &Value) -> &'static str {
         "session_created" => "Session created",
         "session_expired" => "Session expired",
         "transcript_segment" => "Transcript segment",
+        "transcription_start_failed" => "Transcription setup failed",
         "voice_diagnostic" => "Voice diagnostic",
         _ => "Event",
     }
@@ -169,6 +173,14 @@ fn admin_event_text(event_type: &str, payload: &Value) -> Option<String> {
             .get("error")
             .and_then(Value::as_str)
             .map(str::to_string),
+        "transcription_start_failed" => Some(
+            if payload["reason"] == "transcription_start_timeout" {
+                "Speechmatics did not acknowledge recognition before the startup deadline."
+            } else {
+                "Speechmatics could not start recognition."
+            }
+            .to_string(),
+        ),
         "session_abandoned" | "session_expired" => payload
             .get("reason")
             .and_then(Value::as_str)

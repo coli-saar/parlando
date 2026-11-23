@@ -7,10 +7,18 @@ use super::*;
 /// Groups durable events into display rows without changing the underlying history.
 /// Interleaved actions retain separate bundles, and identical transcript text
 /// from distinct utterances must remain distinguishable in the timeline.
+#[cfg(test)]
 pub(in crate::app) fn admin_event_bundles(events: &[AdminEventSummary]) -> Vec<Value> {
+    page_event_bundles(events, false)
+}
+
+/// Groups one dashboard page using any terminal boundary from an earlier page.
+pub(in crate::app) fn page_event_bundles(
+    events: &[AdminEventSummary],
+    mut terminal_event_seen: bool,
+) -> Vec<Value> {
     let mut bundles = Vec::<AdminEventBundle>::new();
     let mut open_bundles = HashMap::<String, usize>::new();
-    let mut terminal_event_seen = false;
     for event in events
         .iter()
         .filter(|event| show_admin_event_in_timeline(event))

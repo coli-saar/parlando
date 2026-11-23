@@ -12,6 +12,11 @@ The experiment ID identifies the condition. The package revision identifies the 
 
 Review the session's lifecycle and participant outcomes before counting completions. A session may end because the task completed, a participant left, time ran out, or a technical problem occurred. The session view includes testing sessions and conditions that ended before gameplay. These can help diagnose the participant procedure even when they are outside the research corpus.
 
+The session log uses blue for role A, orange for role B, and a neutral badge for
+system events. Turn on **Messages only** to read text and voice transcripts
+without actions or system events. In sessions with recorded speech, switch from
+**Utterances** to **Tokens** to see word timings where available.
+
 ## Download the research corpus
 
 Open **Export**, choose JSON, YAML, or CSV, and select **Download export**. The export includes research sessions that entered gameplay. It carries participant and dialogue labels for pseudonymous analysis, actions, available conversation records, and outcome information. Testing sessions and operational details stay in the dashboard.

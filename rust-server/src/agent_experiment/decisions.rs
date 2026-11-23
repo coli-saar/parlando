@@ -13,12 +13,12 @@ use super::session::{
 };
 use super::spec::TraceLevel;
 use super::training::TrajectoryStep;
+use crate::agents::with_callback_timeout;
 use crate::agents::{Agent, AgentResponse, Message, Observation, Reason, Transition};
 use crate::component::{ComponentValue, GameFrame, GameSession};
 use crate::game::{ActionRejection, PlayerRole};
 use anyhow::anyhow;
 use std::time::Instant;
-use tokio::time::timeout;
 
 /// Starts both agents with role-specific observations, then asks one scheduled agent
 /// per decision. Completion on the last permitted move wins over the action limit.
@@ -33,7 +33,7 @@ pub(super) async fn drive_session(
 ) -> std::result::Result<SessionOutcome, SessionFailure> {
     for role in [PlayerRole::A, PlayerRole::B] {
         let observation = state.observation(role);
-        timeout(
+        with_callback_timeout(
             plan.limits.callback_timeout(),
             agents[role_index(role)].start(observation),
         )
@@ -85,7 +85,7 @@ pub(super) async fn drive_session(
         let reason = pending_rejections[role_index(role)]
             .take()
             .map_or(Reason::Scheduled, Reason::ActionRejected);
-        let decision = timeout(
+        let decision = with_callback_timeout(
             plan.limits.callback_timeout(),
             agents[role_index(role)].decide(reason.clone()),
         )
@@ -226,7 +226,7 @@ impl DecisionExecution<'_> {
         let message = message.filter(|_| completion.is_none());
         for role in [PlayerRole::A, PlayerRole::B] {
             let observation = next.observation(role);
-            timeout(
+            with_callback_timeout(
                 self.plan.limits.callback_timeout(),
                 self.agents[role_index(role)].observe(Observation {
                     transition: Some(Transition {

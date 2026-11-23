@@ -6,9 +6,10 @@
 //! announce it.
 
 use super::{
-    expire_if_due_locked, json, reserve_agent_delivery, send_role_assignment,
-    session_ready_for_game, session_transition_lock, voice_message, AgentObservation, AppState,
-    Arc, SessionLifecycle, SessionParticipant,
+    broadcast_participant_states, expire_if_due_locked, expire_live_session_locked, json,
+    persist_session_event, reserve_agent_delivery, send_role_assignment, session_ready_for_game,
+    session_transition_lock, speechmatics_readiness_required, voice_message, AgentObservation,
+    AppState, Arc, SessionLifecycle, SessionParticipant,
 };
 
 /// Marks one participant's session-local audio/STT setup as complete.
@@ -27,6 +28,119 @@ pub(super) async fn mark_participant_audio_ready(
     };
     if changed {
         tracing::debug!(%public_session_id, %participant_session_id, "participant transcription initialized");
+    }
+}
+
+/// Invalidates a forming seat's previous acknowledgement while the room is locked.
+pub(super) async fn clear_forming_audio_ready(
+    state: &Arc<AppState>,
+    public_session_id: &str,
+    participant_session_id: &str,
+) {
+    if !speechmatics_readiness_required(&state.context.config) {
+        return;
+    }
+    let mut memory = state.memory.write().await;
+    if let Some(participant) = memory
+        .sessions
+        .get_mut(public_session_id)
+        .filter(|session| session.lifecycle() == &SessionLifecycle::Forming)
+        .and_then(|session| session.participants.get_mut(participant_session_id))
+    {
+        participant.clear_audio_ready();
+    }
+}
+
+/// Safe failure codes and browser status descriptions for required transcription setup.
+#[derive(Clone, Copy)]
+pub(super) enum TranscriptionFailure {
+    Unavailable,
+    Timeout,
+    StreamFailed,
+}
+
+impl TranscriptionFailure {
+    /// Describes a provider failure without exposing the provider's response to participants.
+    fn description(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Unavailable => ("transcription_start_failed", "ASR unavailable"),
+            Self::Timeout => ("transcription_start_timeout", "ASR startup timed out"),
+            Self::StreamFailed => ("transcription_start_failed", "ASR error"),
+        }
+    }
+}
+
+/// Reports a current stream failure and ends a forming game if its browser seat requires ASR.
+pub(super) async fn report_transcription_failure(
+    state: &Arc<AppState>,
+    public_session_id: &str,
+    participant_session_id: &str,
+    role: &str,
+    generation: &str,
+    failure: TranscriptionFailure,
+) {
+    let Some(transition_lock) = session_transition_lock(state, public_session_id).await else {
+        return;
+    };
+    let _guard = transition_lock.lock().await;
+    if !state
+        .audio_sessions
+        .is_current(public_session_id, role, generation)
+        .await
+    {
+        return;
+    }
+    let (reason, message) = failure.description();
+    state
+        .audio_sessions
+        .send_control(
+            public_session_id,
+            role,
+            json!({"type":"transcriptionStatus","ready":false,"message":message}).to_string(),
+        )
+        .await;
+    let required = speechmatics_readiness_required(&state.context.config)
+        && state
+            .memory
+            .read()
+            .await
+            .sessions
+            .get(public_session_id)
+            .is_some_and(|session| {
+                session.lifecycle() == &SessionLifecycle::Forming
+                    && session
+                        .participants
+                        .get(participant_session_id)
+                        .is_some_and(SessionParticipant::uses_browser_audio)
+            });
+    if !required {
+        return;
+    }
+
+    clear_forming_audio_ready(state, public_session_id, participant_session_id).await;
+    match expire_if_due_locked(state, public_session_id).await {
+        Ok(false) => {}
+        Ok(true) => return,
+        Err(error) => {
+            tracing::error!(%error, public_session_id, role, "could not evaluate transcription setup deadline");
+            return;
+        }
+    }
+    persist_session_event(
+        state,
+        public_session_id,
+        Some(participant_session_id),
+        "transcription_start_failed",
+        json!({"reason": reason}),
+        None,
+    )
+    .await;
+    match expire_live_session_locked(state, public_session_id, reason).await {
+        Ok(true) => broadcast_participant_states(state, public_session_id).await,
+        Ok(false) => {}
+        Err(error) => {
+            tracing::error!(%error, public_session_id, role, "could not end failed transcription setup");
+        }
     }
 }
 

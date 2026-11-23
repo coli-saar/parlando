@@ -62,7 +62,6 @@ use crate::{
     },
     identity::{new_id, session_code},
     protocol::*,
-    storage::ExperimentSnapshot,
     storage::{
         experiment_store_from_url, generated_experiment_id, now_iso, ConsentDeclarationRecord,
         ExperimentRecord, GameSettingsUpdate, ParticipantRecord, ProlificSubmissionRecord,
@@ -399,7 +398,9 @@ use admin::*;
 mod privacy;
 use privacy::*;
 mod timeline;
-use timeline::{admin_event_bundles, important_admin_events};
+#[cfg(test)]
+use timeline::admin_event_bundles;
+use timeline::important_admin_events;
 mod experiment_config;
 use experiment_config::{
     apply_experiment_secrets, apply_game_provider_secrets, apply_provider_endpoint_defaults,
@@ -436,8 +437,11 @@ use admin_login::administrator_cookie;
 use admin_login::{admin_entry, admin_login, admin_login_page, admin_logout, admin_setup};
 
 mod corpus;
+mod corpus_download;
 mod lifecycle;
-use corpus::{corpus_experiment_export, export_csv, CORPUS_EXPORT_SCHEMA_V1};
+#[cfg(test)]
+use crate::storage::ExperimentSnapshot;
+use corpus::CORPUS_EXPORT_SCHEMA_V1;
 #[cfg(test)]
 use corpus::{export_transcript_tokens, retain_export_sessions};
 use lifecycle::{require_open_experiment, ExperimentLifecycle};

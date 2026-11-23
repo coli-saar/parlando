@@ -53,9 +53,6 @@ struct RemoteGrpcAgentConfig {
     /// Optional YAML mapping forwarded to the remote process as structured settings.
     #[serde(default)]
     pub config_yaml: String,
-    /// Per-request timeout for create and act calls.
-    #[serde(skip, default = "default_request_timeout")]
-    pub request_timeout: Duration,
     #[serde(skip)]
     auth_token: Option<String>,
 }
@@ -67,7 +64,6 @@ impl fmt::Debug for RemoteGrpcAgentConfig {
             .debug_struct("RemoteGrpcAgentConfig")
             .field("endpoint", &self.endpoint)
             .field("config_yaml", &self.config_yaml)
-            .field("request_timeout", &self.request_timeout)
             .field(
                 "auth_token",
                 &self.auth_token.as_ref().map(|_| "[REDACTED]"),
@@ -76,30 +72,31 @@ impl fmt::Debug for RemoteGrpcAgentConfig {
     }
 }
 
-/// Returns the default timeout used for individual remote-agent requests.
-fn default_request_timeout() -> Duration {
-    Duration::from_secs(5)
-}
-
 #[derive(Clone)]
-struct RemoteAuthInterceptor {
+struct RemoteRequestInterceptor {
     authorization: Option<MetadataValue<Ascii>>,
 }
 
-impl Interceptor for RemoteAuthInterceptor {
-    /// Adds the configured bearer credential to every remote-agent RPC.
+impl Interceptor for RemoteRequestInterceptor {
+    /// Forwards authentication and the time remaining in the caller’s callback budget.
     fn call(&mut self, mut request: Request<()>) -> std::result::Result<Request<()>, Status> {
         if let Some(authorization) = self.authorization.clone() {
             request
                 .metadata_mut()
                 .insert("authorization", authorization);
         }
+        if let Some(remaining) = crate::agents::remaining_callback_time() {
+            // The wire format permits at most eight digits of hours.
+            if remaining.as_secs() / 3600 <= 99_999_999 {
+                request.set_timeout(remaining);
+            }
+        }
         Ok(request)
     }
 }
 
 type AuthenticatedAgentClient =
-    AgentServiceClient<InterceptedService<Channel, RemoteAuthInterceptor>>;
+    AgentServiceClient<InterceptedService<Channel, RemoteRequestInterceptor>>;
 
 /// Agent factory that adapts a gRPC service to Parlando's normal in-process trait.
 pub struct RemoteAgent;
@@ -187,16 +184,16 @@ async fn create_remote_instance(
         .transpose()
         .context("remote-agent bearer token is not valid metadata")?;
     let mut client =
-        AgentServiceClient::with_interceptor(channel, RemoteAuthInterceptor { authorization });
+        AgentServiceClient::with_interceptor(channel, RemoteRequestInterceptor { authorization });
     let request = CreateAgentRequest {
         role: context.role.as_str().to_string(),
         seed: context.seed,
         config: Some(json_to_struct(config.structured_settings()?)?),
         checkpoint_id: checkpoint.map(|value| value.as_str().to_string()),
     };
-    let response = tokio::time::timeout(config.request_timeout, client.create_agent(request))
+    let response = client
+        .create_agent(request)
         .await
-        .context("remote agent create timed out")?
         .context("remote agent create failed")?
         .into_inner();
     for entry in response.session_logs {
@@ -206,7 +203,6 @@ async fn create_remote_instance(
         bail!("remote agent returned an empty agent_id");
     }
     Ok(Box::new(RemoteAgentInstance {
-        config,
         init_context: context,
         state: RemoteAgentState::Active {
             client: Box::new(client),
@@ -281,7 +277,7 @@ impl RLAgent for RemoteAgent {
             .transpose()?;
         let mut client = learner_pb::learner_service_client::LearnerServiceClient::with_interceptor(
             channel,
-            RemoteAuthInterceptor { authorization },
+            RemoteRequestInterceptor { authorization },
         );
         let request = learner_pb::TrainRequest {
             update_id: batch.update_id,
@@ -294,9 +290,9 @@ impl RLAgent for RemoteAgent {
                 .collect::<Result<_>>()?,
             settings: Some(json_to_struct(config.structured_settings()?)?),
         };
-        let response = tokio::time::timeout(config.request_timeout, client.train(request))
+        let response = client
+            .train(request)
             .await
-            .context("remote learner train timed out")?
             .context("remote learner train failed")?
             .into_inner();
         CheckpointId::new(response.checkpoint_id)
@@ -330,7 +326,6 @@ impl RemoteGrpcAgentConfig {
 
 /// Per-session remote gRPC agent instance.
 pub struct RemoteAgentInstance {
-    config: RemoteGrpcAgentConfig,
     init_context: AgentContext,
     state: RemoteAgentState,
 }
@@ -386,15 +381,14 @@ fn validate_remote_endpoint(endpoint: &str, has_auth_token: bool) -> Result<()> 
 impl Agent for RemoteAgentInstance {
     /// Delivers the first observation after the remote process has created the agent.
     async fn start(&mut self, initial_observation: ComponentValue) -> Result<()> {
-        let request_timeout = self.config.request_timeout;
         let (client, agent_id) = self.active()?;
         let request = StartRequest {
             agent_id,
             observation: Some(component_to_struct(initial_observation)?),
         };
-        let logs = tokio::time::timeout(request_timeout, client.start(request))
+        let logs = client
+            .start(request)
             .await
-            .context("remote agent start timed out")?
             .context("remote agent start failed")?
             .into_inner()
             .session_logs;
@@ -404,7 +398,6 @@ impl Agent for RemoteAgentInstance {
 
     /// Sends both facets of one committed delivery in the same request.
     async fn observe(&mut self, observation: Observation) -> Result<()> {
-        let request_timeout = self.config.request_timeout;
         let (client, agent_id) = self.active()?;
         let transition = observation
             .transition
@@ -429,9 +422,7 @@ impl Agent for RemoteAgentInstance {
             transition,
             message,
         };
-        let response = tokio::time::timeout(request_timeout, client.observe(request))
-            .await
-            .context("remote agent observe timed out")?;
+        let response = client.observe(request).await;
         match response {
             Ok(response) => self.record_remote_logs(response.into_inner().session_logs),
             Err(error) if error.code() == tonic::Code::Unimplemented => {
@@ -455,7 +446,6 @@ impl Agent for RemoteAgentInstance {
         action: ComponentValue,
         observation: ComponentValue,
     ) -> Result<()> {
-        let request_timeout = self.config.request_timeout;
         let (client, agent_id) = self.active()?;
         let request = ObserveTransitionRequest {
             agent_id,
@@ -463,9 +453,9 @@ impl Agent for RemoteAgentInstance {
             action: Some(component_to_struct(action)?),
             observation: Some(component_to_struct(observation)?),
         };
-        let logs = tokio::time::timeout(request_timeout, client.observe_transition(request))
+        let logs = client
+            .observe_transition(request)
             .await
-            .context("remote agent observe_transition timed out")?
             .context("remote agent observe_transition failed")?
             .into_inner()
             .session_logs;
@@ -475,16 +465,15 @@ impl Agent for RemoteAgentInstance {
 
     /// Sends a conversation utterance to the remote agent.
     async fn observe_message(&mut self, sender: PlayerRole, text: String) -> Result<()> {
-        let request_timeout = self.config.request_timeout;
         let (client, agent_id) = self.active()?;
         let request = ObserveMessageRequest {
             agent_id,
             sender: sender.as_str().to_string(),
             text,
         };
-        let logs = tokio::time::timeout(request_timeout, client.observe_message(request))
+        let logs = client
+            .observe_message(request)
             .await
-            .context("remote agent observe_message timed out")?
             .context("remote agent observe_message failed")?
             .into_inner()
             .session_logs;
@@ -494,15 +483,14 @@ impl Agent for RemoteAgentInstance {
 
     /// Sends the shared terminal result to the remote agent before shutdown.
     async fn finish(&mut self, completion: ComponentValue) -> Result<()> {
-        let request_timeout = self.config.request_timeout;
         let (client, agent_id) = self.active()?;
         let request = FinishRequest {
             agent_id,
             completion: Some(component_to_struct(completion)?),
         };
-        let logs = tokio::time::timeout(request_timeout, client.finish(request))
+        let logs = client
+            .finish(request)
             .await
-            .context("remote agent finish timed out")?
             .context("remote agent finish failed")?
             .into_inner()
             .session_logs;
@@ -512,16 +500,15 @@ impl Agent for RemoteAgentInstance {
 
     /// Delivers the decision trigger and reads the resulting action, chat, or wakeup.
     async fn decide(&mut self, reason: Reason) -> Result<Decision> {
-        let request_timeout = self.config.request_timeout;
         let (client, agent_id) = self.active()?;
         let request = RespondRequest {
             agent_id,
             reason: Some(reason_to_proto(reason)),
             ..Default::default()
         };
-        let response = tokio::time::timeout(request_timeout, client.respond(request))
+        let response = client
+            .respond(request)
             .await
-            .context("remote agent respond timed out")?
             .context("remote agent respond failed")?
             .into_inner();
         self.record_remote_logs(response.session_logs);
@@ -542,16 +529,12 @@ impl Agent for RemoteAgentInstance {
         else {
             return Ok(());
         };
-        let request_timeout = self.config.request_timeout;
-        let logs = tokio::time::timeout(
-            request_timeout,
-            client.shutdown(ShutdownRequest { agent_id }),
-        )
-        .await
-        .context("remote agent shutdown timed out")?
-        .context("remote agent shutdown failed")?
-        .into_inner()
-        .session_logs;
+        let logs = client
+            .shutdown(ShutdownRequest { agent_id })
+            .await
+            .context("remote agent shutdown failed")?
+            .into_inner()
+            .session_logs;
         self.record_remote_logs(logs);
         Ok(())
     }
@@ -751,6 +734,32 @@ mod tests {
         });
         let converted = struct_to_json(json_to_struct(original.clone()).unwrap());
         assert_eq!(converted, original);
+    }
+
+    /// The gRPC wire deadline exists only while the caller is enforcing a callback budget.
+    #[tokio::test]
+    async fn remote_interceptor_forwards_only_the_callers_deadline() {
+        let mut interceptor = RemoteRequestInterceptor {
+            authorization: None,
+        };
+        let unbounded = interceptor.call(Request::new(())).unwrap();
+        assert!(!unbounded.metadata().contains_key("grpc-timeout"));
+
+        let wire_timeout = crate::agents::with_callback_timeout(Duration::from_secs(12), async {
+            let request = interceptor.call(Request::new(())).unwrap();
+            request
+                .metadata()
+                .get("grpc-timeout")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned()
+        })
+        .await
+        .unwrap();
+        let (value, unit) = wire_timeout.split_at(wire_timeout.len() - 1);
+        assert_eq!(unit, "u");
+        assert!((10_000_000..=12_000_000).contains(&value.parse::<u64>().unwrap()));
     }
 
     #[test]

@@ -166,6 +166,16 @@ async fn admin_sessions_api_reads_actions_from_database() {
     .await;
     assert_eq!(invalid_filter_status, StatusCode::BAD_REQUEST);
 
+    let (search_status, search) = admin_json_request(
+        router.clone(),
+        http::Method::POST,
+        "/api/admin/sessions/search?lifecycle=running",
+        json!({"prolific_pid_suffix": "a21"}),
+    )
+    .await;
+    assert_eq!(search_status, StatusCode::OK);
+    assert_eq!(search["sessions"], json!([]));
+
     let (detail_status, detail) = admin_json_request(
         router.clone(),
         http::Method::GET,

@@ -195,7 +195,7 @@ async fn generated_and_recognized_speech_keep_audio_clock_timings_end_to_end() {
             vec![if index < 15 { 7 } else { 9 }; crate::audio::AUDIO_FRAME_BYTES]
         );
     }
-    let export = wait_for_tts_diagnostic(router, "tts_message_completed").await;
+    let export = wait_for_tts_diagnostic(router.clone(), "tts_message_completed").await;
     let started_at =
         chrono::DateTime::parse_from_rfc3339(export["sessions"][0]["started_at"].as_str().unwrap())
             .unwrap()
@@ -247,7 +247,7 @@ async fn generated_and_recognized_speech_keep_audio_clock_timings_end_to_end() {
         "fixture must exercise delayed synthesis"
     );
     let bundles = admin_event_bundles(&important_admin_events(events));
-    let corpus = corpus_experiment_export(serde_json::from_value(export).unwrap(), "2").unwrap();
+    let corpus = assert_corpus_session(router, "playing").await;
     let corpus_messages = corpus["experiment"]["sessions"][0]["events"]
         .as_array()
         .unwrap();

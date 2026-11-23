@@ -6,7 +6,9 @@
 //! committed records to the dashboard and corpus projector.
 
 mod export;
-pub(crate) use export::{ExperimentSnapshot, ExportSession};
+#[cfg(test)]
+pub(crate) use export::ExperimentSnapshot;
+pub(crate) use export::{CorpusInventory, CorpusRead, ExportSession};
 
 mod admin_auth;
 mod events;

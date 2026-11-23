@@ -55,12 +55,12 @@ export class SelectionRequests {
     this.#requests.delete(resource);
   }
 
-  // Shares an identical pending read so regular polls cannot starve a slow response.
-  json(resource, state, url, apply, options) {
+  // Shares identical pending reads, including POST when the caller confirms it is read-only.
+  json(resource, state, url, apply, options, readOnly = !options?.method || options.method === 'GET') {
     const pending = this.#requests.get(resource);
-    const sharedUrl = options?.method && options.method !== 'GET' ? null : url;
-    if (sharedUrl && pending?.url === sharedUrl) return pending.promise;
-    const ticket = { url: sharedUrl };
+    const key = readOnly ? JSON.stringify([options?.method || 'GET', url, options?.body]) : null;
+    if (key && pending?.key === key) return pending.promise;
+    const ticket = { key };
     this.#requests.set(resource, ticket);
     ticket.promise = this.#load(ticket, resource, state, url, apply, options);
     return ticket.promise;

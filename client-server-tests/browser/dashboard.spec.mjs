@@ -63,7 +63,11 @@ test('dashboard keeps late experiment lists and session details out of the selec
       await route.fulfill({ json: { sessions } });
     } else if (path.endsWith('/sessions/2')) {
       await slowDetail.wait();
-      await route.fulfill({ json: { session: sessions[0], event_bundles: [{ title: 'Selected room event', first_index: 1, kind: 'action' }] } });
+      await route.fulfill({ json: { session: sessions[0], last_index: 200, older_before: 101, event_bundles: [{ title: 'Selected room event', first_index: 160, kind: 'action' }] } });
+    } else if (path.endsWith('/sessions/2/events')) {
+      const older = new URL(route.request().url()).searchParams.get('before') === '101';
+      const event = { title: older ? 'First page event' : 'Newest event', first_index: older ? 1 : 201, kind: 'action' };
+      await route.fulfill({ json: { last_index: older ? 100 : 201, older_before: older ? null : 102, event_bundles: [event] } });
     } else if (path.endsWith('/sessions/3/events')) {
       await slowEvents.wait();
       await route.fulfill({ json: { event_bundles: [{ title: 'Stale event', first_index: 1, kind: 'action' }] } });
@@ -110,6 +114,13 @@ test('dashboard keeps late experiment lists and session details out of the selec
   await page.locator('[data-tab="sessions"]').click();
   await expect(page.locator('#timeline')).toContainText('Selected room event');
   await expect(page.locator('#timeline')).not.toContainText('Stale event');
+  await page.getByRole('button', { name: 'Older events' }).click();
+  await expect(page.locator('#timeline')).toContainText('First page event');
+  await expect(page.getByRole('button', { name: 'Older events' })).toBeDisabled();
+  await page.clock.runFor(1_600);
+  await expect(page.locator('#timeline')).toContainText('First page event');
+  await page.getByRole('button', { name: 'Newer events' }).click();
+  await expect(page.locator('#timeline')).toContainText('Newest event');
 });
 
 test('deletion blocks unfinished sessions, honors cancellation and removes deleted rows after confirmation', async ({ page }) => {
@@ -162,6 +173,73 @@ test('deletion blocks unfinished sessions, honors cancellation and removes delet
   await expect(page.locator('[data-session="7"]')).toHaveCount(0);
   await expect(remove).toBeHidden();
   expect(deletions).toBe(1);
+});
+
+test('Prolific suffix search opens a matching session with an aligned messages-only timeline', async ({ page }) => {
+  const entry = experiment('prolific-study');
+  const recent = session(10, 'Recent session');
+  const matched = session(7, 'Matched older session');
+  const eventBundles = [
+    { kind: 'conversation', role: 'A', text: 'Typed greeting', first_index: 1, game_time_ms: 100 },
+    { kind: 'action', role: 'B', title: 'Game action', first_index: 2, game_time_ms: 200 },
+    { kind: 'transcript', role: 'B', text: 'Spoken reply', first_index: 3, game_time_ms: 300,
+      tokens: [{ kind: 'word', text: 'Spoken', start_ms: 300, end_ms: 400 }] },
+    { kind: 'session_completed', title: 'System event', first_index: 4, game_time_ms: 400 },
+  ];
+  await page.route('http://dashboard.test/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (files[path]) {
+      const [name, contentType] = files[path];
+      return route.fulfill({ path: fileURLToPath(new URL(name, assets)), contentType });
+    }
+    let data = {};
+    if (path === '/api/admin/experiments') data = { experiments: [entry], game: { name: 'Fixture', version: '1.0' } };
+    else if (path.endsWith('/config')) data = { experiment: { ...entry, config: {} } };
+    else if (path.endsWith('/sessions')) data = { sessions: [recent] };
+    else if (path.endsWith('/sessions/search')) data = { sessions: [matched] };
+    else if (path.endsWith('/sessions/10')) data = { session: recent };
+    else if (path.endsWith('/sessions/7')) data = { session: matched, event_bundles: eventBundles, last_index: 4 };
+    else if (path.endsWith('/events')) data = { unchanged: true };
+    return route.fulfill({ json: data });
+  });
+  await page.goto('http://dashboard.test/admin/');
+  await expect(page.locator('#sessionList')).toContainText('Recent session');
+  const suffixInput = page.getByRole('searchbox', { name: 'Prolific participant ID' });
+  await suffixInput.fill(' a21 ');
+  const searchResponse = page.waitForResponse(response => response.url().includes('/sessions/search?'));
+  await suffixInput.press('Enter');
+  const request = (await searchResponse).request();
+  expect(request.method()).toBe('POST');
+  expect(new URL(request.url()).pathname).toBe('/api/admin/runtime/prolific-study/sessions/search');
+  expect(request.url()).not.toContain('a21');
+  expect(request.postDataJSON()).toEqual({ prolific_pid_suffix: 'a21' });
+  await expect(page.locator('#sessionList')).toContainText('Matched older session');
+  await expect(page.locator('#sessionList')).not.toContainText('Recent session');
+
+  const timeline = page.locator('#timeline');
+  const cards = timeline.locator('article');
+  await expect(cards).toHaveCount(4);
+  const leftEdges = await cards.evaluateAll(elements => elements.map(element => element.getBoundingClientRect().left));
+  expect(new Set(leftEdges).size).toBe(1);
+  for (const role of ['a', 'b']) {
+    const badge = timeline.locator(`.role-${role}`).first();
+    const background = await badge.evaluate(element => getComputedStyle(element).backgroundColor);
+    await expect(timeline.locator(`.speech-bubble.speaker-${role}`)).toHaveCSS('background-color', background);
+  }
+  const messagesOnly = page.getByRole('checkbox', { name: 'Messages only' });
+  await messagesOnly.check();
+  await expect(cards).toHaveCount(2);
+  await expect(timeline).toContainText('Typed greeting');
+  await expect(timeline).toContainText('Spoken reply');
+  await page.getByRole('combobox', { name: 'Speech view' }).selectOption('tokens');
+  await expect(timeline.locator('.speech-token')).toHaveText(/Spoken/);
+  await expect(timeline).not.toContainText('Game action');
+  await expect(timeline).not.toContainText('System event');
+  await messagesOnly.uncheck();
+  await expect(timeline).toContainText('Game action');
+  await page.getByRole('button', { name: 'Clear', exact: true }).click();
+  await expect(suffixInput).toHaveValue('');
+  await expect(page.locator('#sessionList')).toContainText('Recent session');
 });
 
 test('typed communication disables speech settings and preserves their values when saved', async ({ page }) => {

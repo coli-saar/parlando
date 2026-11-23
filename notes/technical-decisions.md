@@ -5972,3 +5972,29 @@ A successful deployment mounts the game and its experiment routes. Experiment li
 ## Deployment dashboard at the administrator origin root
 
 The deployment host serves setup and sign-in at `/` on the configured administrator origin. The CLI prints this address and uses the same page for device approval and game sign-in redirects. Game workspaces keep their game-ID paths. Custom single-game servers keep their separate dashboard entry because their participant client can occupy the root. Old deployment dashboard bookmarks must use the root URL.
+
+## 2026-11-23 · Agent callback deadlines and participant observations
+
+Remote agent callbacks previously had a second five-second timer inside the gRPC adapter. A headless run could fail a model response even when the experiment explicitly allowed more time. The live runtime and headless runner now enforce their own callback and shutdown budgets. A task-local absolute deadline lets the gRPC interceptor forward only the remaining budget, including time already spent connecting or making an earlier RPC for the same callback. This preserves the public agent/factory interfaces. Calls made without a caller deadline, including learner updates, impose no transport deadline. Future operations that require a deadline should set it at the operation owner.
+
+Issue #2 concerned the retired stateChanged.events surface. The current contract sends each role its own complete observation, including on the terminal transition. The two-browser contract test checks both actual recipient payloads before the terminal snapshots. Reconciliation restores the current role view. A game that needs a durable visible activity history can include that history in the view.
+
+## 2026-11-23 · Bounded dashboard timeline reads
+
+Session detail and every live poll previously materialized all durable events, including recovery checkpoints. The monitor now pages on the session's durable event index, groups only the current window of 100 raw records, and fetches alignment and successful synthesis records for its conversation messages. The raw event index provides a stable cursor even when the window contains hidden diagnostics. Older/newer controls navigate the history. Following the latest page uses the indexed high-water mark to skip unchanged polls. The monitor omits checkpoint blobs; replay continues to use the durable records. A bundle whose steps cross a page boundary is shown separately on each affected page. Speech alignment and post-terminal classification retain their session-wide meaning.
+
+## 2026-11-23 · Uncapped corpus downloads from a consistent snapshot
+
+A downloaded corpus is one consistent read across the eligible sessions, participants, events, and alignments. Each export from a file-backed database uses its own read-only WAL connection. The reader streams the participant registry and semantic events, keysets through sessions, and indexes the current session’s alignments in a temporary SQLite table. All three formats redact each projected record before serialization. A private temporary file allows validation to finish before the HTTP response is sent and releases the read snapshot before a slow client consumes the body. Temporary disk use grows with the download size, and the WAL can grow while preparation is in progress. The explicit in-memory SQLite mode keeps its connection and holds it through preparation. The normal server concurrency policy applies without an export-specific cap. The export route allows preparations that exceed the ordinary HTTP deadline.
+
+In an isolated HTTP fixture, two concurrent 120,000-event downloads completed at 56.09 MiB each. The server completed 202 concurrent administrative writes (median 9.09 ms). Sampled server RSS during the pair peaked at 57.3 MiB from a 53.4 MiB pre-request baseline on this machine. These measurements describe the fixture and sampling interval, not an allocation ceiling.
+
+## 2026-11-23 · Speech transcription readiness during room formation
+
+Required browser transcription is ready only when the provider acknowledges recognition. A ten-second audio startup budget now covers the acknowledgement as well as connecting to the provider. Provider rejection and a missing acknowledgement produce distinct participant-facing reasons and an actor-attributed event in the session log. Failure of the current stream during formation ends the room through the existing technical-failure outcome, subject to any previously due session expiry. Replacing a socket invalidates its readiness and prevents an obsolete stream’s outcome from ending its successor. Voice relay remains available independently during setup. After activation, provider loss updates the audio status and the existing game can continue. Mock-provider tests cover a concurrent healthy pair, explicit rejection, missing acknowledgement and replacement.
+
+## 2026-11-23 · Dashboard session search, navigation, and log display
+
+Researchers following a Prolific participant can submit a literal suffix to the authenticated session search for their selected experiment. A POST body keeps entered identifiers out of request URLs. Filtering happens in SQLite before pagination, uses retained verified submission records, and returns ordinary session summaries. Suffix collisions can yield multiple sessions. The same lifecycle filter applies with or without a search.
+
+The session timeline uses consistent role colors and left-aligned entries across conversation, actions, and system records. Messages-only visibility is independent of the utterance/token presentation. Workspace navigation groups the frequently used session-monitoring views together. Prolific guidance identifies the study ID by the segment following /studies/ and explains that validation checks the submitted codes and assigned actions. Provider display labels remain researcher-defined.

@@ -29,7 +29,7 @@ use parlando::{
         ExperimentConfig, ExperimentIdentityConfig, HumanVsAgentConfig, ServeOptions,
         SpeechmaticsConfig, StreamingTtsProvider, TranscriptionConfig,
     },
-    PlayerRole,
+    ExperimentRunner, GameMetadata, PlayerRole,
 };
 use prost_types::{value::Kind, Struct, Value as ProstValue};
 use serde_json::{json, Value};
@@ -131,6 +131,7 @@ struct MockRemoteAgentState {
 
 #[derive(Clone)]
 struct MockRemoteAgentService {
+    first_response_delay: Duration,
     state: Arc<MockRemoteAgentState>,
 }
 
@@ -221,6 +222,9 @@ impl AgentService for MockRemoteAgentService {
             requests.push(request.into_inner());
             requests.len()
         };
+        if decision_count == 1 {
+            tokio::time::sleep(self.first_response_delay).await;
+        }
         Ok(TonicResponse::new(RespondResponse {
             response: Some(PbAgentResponse {
                 message: (decision_count == 1).then(|| "hello from remote grpc".to_string()),
@@ -266,9 +270,11 @@ impl Drop for MockGrpcServer {
     }
 }
 
-async fn spawn_mock_remote_agent() -> Result<MockGrpcServer> {
+/// Starts a gRPC peer that delays its first decision by the given duration.
+async fn spawn_mock_remote_agent(first_response_delay: Duration) -> Result<MockGrpcServer> {
     let state = Arc::new(MockRemoteAgentState::default());
     let service = MockRemoteAgentService {
+        first_response_delay,
         state: state.clone(),
     };
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -690,6 +696,14 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
         json!({"type": "action", "action": {"type": "mark", "finish": true}}),
     )
     .await?;
+    for (socket, role) in [(&mut socket_a, "A"), (&mut socket_b, "B")] {
+        let transition = read_ws_type(socket, "transition").await?;
+        assert_eq!(transition["actor"], "A");
+        assert_eq!(
+            transition["observation"],
+            json!({"role": role, "actions": 1, "done": true})
+        );
+    }
     let completed_a = read_participant_state(&mut socket_a, "ended").await?;
     let completed_b = read_participant_state(&mut socket_b, "ended").await?;
     assert_eq!(completed_a["result"]["completion"]["done"], true);
@@ -783,10 +797,58 @@ async fn mock_browser_typed_agent_conversation_ignores_the_speech_provider() -> 
     Ok(())
 }
 
+/// Drives slow real gRPC decisions through the headless runner and checks both sides of its deadline.
+#[tokio::test]
+async fn remote_decisions_use_the_headless_callback_budget() -> Result<()> {
+    for (budget, expected_status) in [(12, "completed"), (1, "failed")] {
+        let remote = spawn_mock_remote_agent(Duration::from_secs(6)).await?;
+        let temp = TempDir::new()?;
+        let spec = temp.path().join("experiment.yaml");
+        let output = temp.path().join("run");
+        let plan = json!({
+            "schema": "parlando-agent-experiment/v1",
+            "game": {"id": "contract"},
+            "agents": {"slow": {"factory": "remote_grpc", "settings": {"endpoint": remote.endpoint}}},
+            "sessions": {
+                "scenarios": [{"name": "deadline", "config": {}, "seeds": [7]}],
+                "seats": {"player_a": "slow", "player_b": "slow"}
+            },
+            "schedule": {"kind": "alternate_every_response", "first": "player_a"},
+            "limits": {"callback_timeout_seconds": budget, "session_timeout_seconds": 30},
+            "output": {"directory": output, "trace": "decisions"}
+        });
+        std::fs::write(&spec, serde_json::to_vec(&plan)?)?;
+        let game =
+            LoadedGame::from_bytes(include_bytes!("../stress-fixture/embedded/contract.wasm"))?;
+        let runner = ExperimentRunner::new(
+            GameMetadata {
+                id: "contract".into(),
+                name: "Contract".into(),
+                version: semver::Version::new(1, 0, 0),
+                build_manifest: json!({}),
+            },
+            game,
+        )?
+        .agent(RemoteAgent::new())?;
+        runner.run_yaml(&spec).await?;
+        let artifact = std::fs::read_dir(output.join("results"))?
+            .next()
+            .unwrap()?
+            .path();
+        let result: Value = serde_json::from_slice(&std::fs::read(artifact)?)?;
+        assert_eq!(result["status"], expected_status, "{result}");
+        if expected_status == "failed" {
+            assert_eq!(result["failure_role"], "A");
+            assert_eq!(result["failure_phase"], "respond");
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_persistence(
 ) -> Result<()> {
-    let remote = spawn_mock_remote_agent().await?;
+    let remote = spawn_mock_remote_agent(Duration::ZERO).await?;
     let factory = Arc::new(RemoteAgent::new());
     let mut experiment_config = config(AgentsMode::HumanVsAgent);
     experiment_config

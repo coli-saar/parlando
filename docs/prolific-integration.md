@@ -66,7 +66,10 @@ study. This URL is available before the Parlando experiment starts and contains 
 `{{%PROLIFIC_PID%}}`, `{{%STUDY_ID%}}`, and `{{%SESSION_ID%}}` placeholders. It admits participants
 only after the corresponding provider-backed Parlando run starts.
 
-Create six completion codes in Prolific before activating the Parlando experiment:
+Create six completion paths in Prolific before activating the Parlando experiment.
+Use the built-in **No consent** path and choose **Custom** for outcomes without a
+matching preset. The following labels help you identify paths in Prolific.
+Parlando identifies paths by their codes and verifies the required actions.
 
 1. Completed — **Automatically approve**.
 2. Partner left — **Automatically approve**.
@@ -80,7 +83,10 @@ not use a screen-out action. A returned submission remains visible in Prolific, 
 can apply the study's payment policy. Parlando does not create a payment queue, calculate a waiting
 amount, or call a bonus endpoint.
 
-Return to Parlando, enable Prolific intake, enter the new study's exact ID, and copy the six codes
+Get the exact study ID from the segment immediately after `/studies/` in the study URL.
+Organization URLs can include a workspace segment before `/studies/`.
+
+Return to Parlando, enable Prolific intake, enter the study ID, and copy the six codes
 into their corresponding fields. Saving the experiment configuration retrieves the study and its
 project. Parlando retains a structurally valid revision even when this provider check reports a
 problem, so the exact draft remains available for correction. Test through Prolific and Official

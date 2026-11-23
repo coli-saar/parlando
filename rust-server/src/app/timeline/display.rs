@@ -80,7 +80,8 @@ fn admin_bundle_problem_reason(bundle: &AdminEventBundle<'_>) -> Option<String> 
     }
     if let Some(text) = bundle.events.iter().find_map(|event| {
         let text = admin_event_text_value(event).to_ascii_lowercase();
-        (text.contains("fail")
+        (event.event_type == "transcription_start_failed"
+            || text.contains("fail")
             || text.contains("error")
             || text.contains("reject")
             || (!bundle.after_terminal_event && text.contains("disconnect")))
