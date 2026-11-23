@@ -451,12 +451,12 @@ def run_dependency_experiment(binary, project, manifest, partner, agent_id, mode
     result = json.loads(results[0].read_text(encoding="utf-8"))
     trace = result["trace"]
     opening = trace[0]["response"]
-    if trace[0]["role"] != "A" or opening["type"] != "message" or "tick" not in opening["message"]:
+    if trace[0]["role"] != "A" or opening["type"] != "message" or "charge the beacon" not in opening["message"]:
         raise RuntimeError(f"Generated Beacon partner did not open with tick instructions: {opening}")
     requests = 0
     for turn in trace[1:]:
         response = turn["response"]
-        if turn["role"] == "B" and response.get("message") == "tick":
+        if turn["role"] == "B" and response.get("message") == "charge the beacon":
             requests += 1
         if turn["role"] == "A" and response["type"] != "yield":
             if requests == 0 or response != {"type": "action", "action": {"ticks": 1}}:

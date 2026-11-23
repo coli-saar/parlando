@@ -69,24 +69,27 @@
         <h1 id="page-title" tabindex="-1">Games</h1>
         <div class="toolbar page-actions">
           <button id="refresh" type="button">Refresh</button>
-          <button class="primary" id="open-upload" type="button" aria-controls="publish-game" aria-expanded="false"><span class="wide-upload-label">Upload a game or agent</span><span class="short-upload-label">Upload ZIP</span></button>
         </div>
       </div>
 
-      <section id="games" class="panel" aria-labelledby="page-title">
-        <div id="publish-game" hidden>
-          <p>Choose a ZIP from <code>dist/</code>. Upload the game before uploading its agents.</p>
+      <section id="games" aria-labelledby="page-title">
+        <button id="package-drop-zone" type="button" aria-haspopup="dialog">
+          Drop a game or agent ZIP here
+          <small>or click to choose a package</small>
+        </button>
+        <dialog id="publish-game" aria-labelledby="upload-title">
           <form id="publish-form">
-            <p id="upload-target"></p>
-            <label>Build ZIP <input name="archive" type="file" accept=".zip" required></label>
+            <h2 id="upload-title">Upload a package</h2>
+            <label>Game or agent ZIP <input name="archive" type="file" accept=".zip" required></label>
+            <p id="upload-notice" role="status" hidden></p>
             <div class="toolbar">
               <button id="submit-upload" class="primary">Upload package</button>
-              <button id="cancel-update" type="button" hidden>Cancel update</button>
+              <button id="cancel-upload" type="button">Cancel</button>
             </div>
           </form>
-        </div>
-        <div class="scroll"><table id="game-list">
-          <thead><tr><th scope="col">Game or agent</th><th scope="col">Release</th><th scope="col">Status</th><th scope="col">Manage</th></tr></thead>
+        </dialog>
+        <div class="panel scroll"><table id="game-list">
+          <thead><tr><th scope="col">Game or agent</th><th scope="col">Release</th><th scope="col">Status</th></tr></thead>
         </table></div>
       </section>
 

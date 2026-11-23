@@ -195,7 +195,7 @@ async function playAgent(adminOrigin, publicOrigin, game, agentId) {
       if (before + 1 < target) {
         await expect(charge).toHaveAttribute("value", String(before + 1));
         await expect(pulse).toBeDisabled();
-        await page.getByRole("textbox", { name: "Message" }).fill("tick");
+        await page.getByRole("textbox", { name: "Message" }).fill("charge the beacon");
         await page.getByRole("button", { name: "Send message" }).click();
         if (before + 2 < target) await expect(charge).toHaveAttribute("value", String(before + 2));
       }

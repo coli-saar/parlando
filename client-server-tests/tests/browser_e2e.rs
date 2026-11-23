@@ -112,7 +112,7 @@ impl parlando::test_support::TranscriptionProvider for ReadyTranscriber {
                         if requested && !sent {
                             let end = frames * 20;
                             let utterance = parlando::test_support::FinalTranscriptUtterance {
-                                start_time_ms: end - 20, end_time_ms: end, text: "Tick.".into(),
+                                start_time_ms: end - 20, end_time_ms: end, text: "Charge the beacon.".into(),
                                 result_ids: vec!["spoken-tick".into()], tokens: vec![],
                             };
                             if events.send(TranscriptionEvent::FinalUtterance(utterance)).await.is_err() { break; }

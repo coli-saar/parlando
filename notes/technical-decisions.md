@@ -5952,3 +5952,11 @@ The participant-facing Beacon policy is beacon.tick_on_request. Its initial gree
 ## Recruitment-specific participant copy
 
 The waiting room uses the admitted seat’s recruitment_source exclusively. Falling back to experiment configuration when the source is missing could instruct a direct participant to return a submission. Terminal codes and links remain driven by the per-seat server handoff. The packaged-game regression checks direct exit copy both on leave and after reload; the older Beacon 0.1.3 bundle fails on its unconditional return instruction.
+
+Beacon's request policy matches “charge the beacon” as a complete finalized utterance or typed message, ignoring case and terminal sentence punctuation. This avoids depending on the single syllable “tick,” reported as “take” in live recognition, while keeping one request per pulse and the existing factory ID. Recognition accuracy still depends on the deployed recognizer.
+
+## Dashboard package drops
+
+The Games dashboard presents a standalone drop target above the table. Dropping a ZIP starts deployment immediately. Clicking the target still opens the picker and review dialog. Both paths share validation and submission. Both new packages and revisions use the manifest-directed upload endpoint, so the games table needs no per-row Update action.
+
+The shared speech widget no longer renders the remoteAudio receipt flag as “heard” or “silent.” This flag records transport activity independently of the microphone level or recognition of a command. The browser relay test observes incoming binary audio frames at both seats directly; the public audio status remains available to callers.

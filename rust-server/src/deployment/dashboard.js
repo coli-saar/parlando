@@ -1,10 +1,9 @@
 const API = "/api/hosting";
 const UPLOAD_LIMIT = 64 * 1024 * 1024;
-// Tracks the signed-in account, the scoped upload, and pending account actions.
+// Tracks the signed-in account, and pending account actions.
 const state = {
   account: null,
   generation: 0,
-  uploadGame: null,
   expandedGames: new Set(),
   gamesRequest: 0,
   uploadedAgent: null,
@@ -54,7 +53,7 @@ async function request(path, { method = "GET", body, data = "json", contentType 
 
 // Publishes progress and errors without interpreting server messages as markup.
 function notice(message, error = false) {
-  const output = byId("notice");
+  const output = byId("publish-game").open ? byId("upload-notice") : byId("notice");
   output.hidden = !message;
   output.textContent = message;
   output.classList.toggle("error", error);
@@ -159,31 +158,12 @@ function showingUsers() {
   return location.hash === "#users" && state.account?.role === "operator";
 }
 
-// Resets the upload to deployment from any package and discards the selected file.
+// Closes package review and clears its staged archive and feedback.
 function resetUpload() {
-  state.uploadGame = null;
-  setUploadOpen(false);
+  byId("publish-game").close();
   byId("publish-form").reset();
-  byId("upload-target").textContent = "";
-  byId("cancel-update").hidden = true;
-  byId("submit-upload").textContent = "Upload package";
-}
-
-// Keeps the upload panel and its disclosure state in sync for both upload entry points.
-function setUploadOpen(open) {
-  byId("publish-game").hidden = !open;
-  byId("open-upload").setAttribute("aria-expanded", String(open));
-  if (open) byId("publish-form").elements.archive.focus();
-}
-
-// Scopes the upload to the selected game so the server can reject a mismatched ZIP.
-function openUpdate(game) {
-  resetUpload();
-  state.uploadGame = game.id;
-  byId("upload-target").textContent = `Updating ${game.name} (${game.id}).`;
-  byId("cancel-update").hidden = false;
-  byId("submit-upload").textContent = "Upload package";
-  setUploadOpen(true);
+  byId("upload-notice").hidden = true;
+  byId("package-drop-zone").classList.remove("dragging");
 }
 
 // Pairs a prominent package name with its stable ID, or a version with its revision.
@@ -210,9 +190,7 @@ function gameRows(game, uploaded) {
   const identity = document.createElement("div");
   identity.className = "game-identity";
   identity.append(stacked(link, game.id));
-  const update = action("Update", () => openUpdate(game));
-  update.setAttribute("aria-label", `Update ${game.id}`);
-  const parent = row([identity, stacked(game.version, digest(game.revision)), status, update]);
+  const parent = row([identity, stacked(game.version, digest(game.revision)), status]);
   parent.className = "game-row";
   if (!game.agents.length) return [parent];
 
@@ -259,7 +237,7 @@ async function refreshGames() {
     group.setAttribute("aria-label", game.name);
     group.append(...gameRows(game, uploaded));
   }
-  if (!games.length) emptyTable(table.createTBody(), 4, "No games have been deployed.");
+  if (!games.length) emptyTable(table.createTBody(), 3, "No games have been deployed.");
   const revealed = table.querySelector(".uploaded-agent");
   if (revealed && !byId("games").hidden) {
     revealed.focus({ preventScroll: true });
@@ -313,7 +291,6 @@ async function openWorkspaceView({ focus = false } = {}) {
   byId("page-title").textContent = title;
   document.title = `${title} · Parlando`;
   byId("games").hidden = users;
-  byId("open-upload").hidden = users;
   byId("users").hidden = !users;
   if (!users) byId("audit-history").open = false;
   byId("games-nav").setAttribute("aria-current", users ? "false" : "page");
@@ -404,15 +381,46 @@ onSubmit("cli-form", async form => {
   notice("CLI deployment authorized. Return to your terminal.");
 });
 
+// Clicking opens package review. Dropping a file starts deployment directly.
+const dropZone = byId("package-drop-zone");
+const uploadDialog = byId("publish-game");
+dropZone.addEventListener("click", () => {
+  uploadDialog.showModal();
+  byId("publish-form").elements.archive.click();
+});
+uploadDialog.addEventListener("cancel", event => {
+  if (event.target !== uploadDialog) return;
+  event.preventDefault();
+  if (!byId("submit-upload").disabled) resetUpload();
+});
+dropZone.addEventListener("dragover", event => {
+  if (!event.dataTransfer.types.includes("Files")) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+  dropZone.classList.add("dragging");
+});
+dropZone.addEventListener("dragleave", event => {
+  if (!dropZone.contains(event.relatedTarget)) dropZone.classList.remove("dragging");
+});
+dropZone.addEventListener("drop", event => {
+  event.preventDefault();
+  dropZone.classList.remove("dragging");
+  const files = event.dataTransfer.files;
+  if (!files.length || dropZone.disabled) return;
+  if (files.length !== 1) {
+    notice("Drop one ZIP package at a time.", true);
+    return;
+  }
+  const archive = files[0];
+  perform(dropZone, () => uploadPackage(archive));
+});
+
 // Sends the ZIP to the server, which validates its contents and reads its manifest.
-onSubmit("publish-form", async form => {
-  const [archive] = form.elements.archive.files;
+async function uploadPackage(archive) {
   if (!archive || !/\.zip$/i.test(archive.name)) throw new Error("Choose a game or agent ZIP file.");
   if (archive.size > UPLOAD_LIMIT) throw new Error("The ZIP exceeds the 64 MiB upload limit.");
-  const game = state.uploadGame;
-  const path = game ? `/packages/${encodeURIComponent(game)}` : "/packages";
   notice("Uploading and validating the build ZIP…");
-  const result = await request(path, { method: "PUT", body: archive, contentType: "application/zip" });
+  const result = await request("/packages", { method: "PUT", body: archive, contentType: "application/zip" });
   resetUpload();
   if (result.agent) {
     state.expandedGames.add(result.game);
@@ -420,7 +428,9 @@ onSubmit("publish-form", async form => {
   }
   await refreshGames();
   notice(`Deployed ${result.name || result.agent || result.game} ${result.version} (${result.revision.slice(0, 12)}).`);
-});
+}
+
+onSubmit("publish-form", form => uploadPackage(form.elements.archive.files[0]));
 
 onSubmit("account-form", async form => {
   const { username, password, role } = form.elements;
@@ -459,13 +469,10 @@ onClick("logout", async () => {
   setAccount(null);
   notice("Signed out.");
 });
-onClick("open-upload", () => {
-  const open = byId("publish-game").hidden;
-  resetUpload();
-  setUploadOpen(open);
-});
 onClick("refresh", () => showingUsers() ? refreshUsersView() : refreshGames());
-onClick("cancel-update", resetUpload);
+onClick("cancel-upload", () => {
+  if (!byId("submit-upload").disabled) resetUpload();
+});
 onClick("cancel-reset", closePasswordReset);
 
 // Reloads the visible view on same-document navigation, including browser Back.

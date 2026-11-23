@@ -79,7 +79,7 @@ impl Agent for BeaconPartner {
         if observation
             .message
             .as_ref()
-            .is_some_and(|message| message.text.contains("“tick”"))
+            .is_some_and(|message| message.text.contains("“charge the beacon”"))
         {
             self.requests_ticks = true;
             self.first_request_pending = true;
@@ -106,9 +106,9 @@ impl Agent for BeaconPartner {
         if self.requests_ticks {
             let first = std::mem::take(&mut self.first_request_pending);
             return Ok(if self.view.as_ref().is_some_and(|view| view.your_turn) {
-                Response::action_and_message(Pulse { ticks: 1 }, "tick")
+                Response::action_and_message(Pulse { ticks: 1 }, "charge the beacon")
             } else if first {
-                Response::message("tick")
+                Response::message("charge the beacon")
             } else {
                 Response::default()
             });

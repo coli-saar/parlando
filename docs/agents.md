@@ -28,8 +28,8 @@ The dashboard shows **Beacon Tick on Request**. Experiments select this policy
 by its factory ID, `beacon.tick_on_request`.
 
 The scaffold generates game types in `src/game.rs` and an editable policy in
-`src/lib.rs`. For Beacon, the policy greets its partner and asks them to say “tick” in speech mode or send
-`tick` in typed chat. Each request authorizes one tick on the agent’s turn. Requests
+`src/lib.rs`. For Beacon, the policy greets its partner and asks them to say “charge the beacon” in speech mode or send
+`charge the beacon` in typed chat. Each request authorizes one tick on the agent’s turn. Requests
 received early wait for a legal turn. Games with other action or view types
 start with a policy that yields until you implement its decisions.
 
@@ -131,9 +131,9 @@ accepting actions still apply.
 
 The generated Beacon policy uses the game’s typed action, private view, and completion. Create it with the `parlando agent new beacon.tick_on_request` command in the walkthrough above. Its implementation lives in `src/lib.rs` and its game bindings live in `src/game.rs`.
 
-The agent keeps the latest turn permission and a count of pending requests. Its opening message tells the participant to say or type “tick.” Each matching partner message queues one request. When the agent owns the turn, it consumes one request and proposes `{ ticks: 1 }`. With no request it waits. In speech mode the message reaches the policy when the transcription provider finalizes the utterance. A participant can ask before the agent’s turn.
+The agent keeps the latest turn permission and a count of pending requests. Its opening message tells the participant to say or type “charge the beacon.” Each matching partner message queues one request. When the agent owns the turn, it consumes one request and proposes `{ ticks: 1 }`. With no request it waits. In speech mode the message reaches the policy when the transcription provider finalizes the utterance. A participant can ask before the agent’s turn.
 
-Build the policy against the Beacon game ZIP, deploy both packages, and select `beacon.tick_on_request` as the experiment’s factory. To pilot the speech interaction, take the first turn, check that the agent waits, say “tick,” and verify that the charge increases by one and the turn returns to you.
+Build the policy against the Beacon game ZIP, deploy both packages, and select `beacon.tick_on_request` as the experiment’s factory. To pilot the speech interaction, take the first turn, check that the agent waits, say “charge the beacon,” and verify that the charge increases by one and the turn returns to you.
 
 ### Use the policy callbacks
 

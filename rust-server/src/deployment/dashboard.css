@@ -88,20 +88,16 @@ th { background: var(--surface); color: var(--muted); }
 .header-row nav { background: transparent; border: 0; padding: 0; margin-left: 1.5rem; }
 .header-row #identity { margin-left: auto; }
 #account-role::before { content: " · "; }
-.short-upload-label { display: none; }
 #workspace .page-title { margin-bottom: 1.25rem; }
 .page-title h1 { font-size: 1.85rem; letter-spacing: -0.035em; }
-#games.panel { padding: 0; overflow: hidden; }
+#games > .panel { padding: 0; overflow: hidden; }
 #games table { margin: 0; }
 #games th, #games td { padding: 0.85rem 1.2rem; vertical-align: middle; }
 #games th { font-size: 0.85rem; }
 #games th:first-child { width: 46%; }
-#games th:last-child, #games td:nth-child(4) { text-align: right; }
-#games td:last-child .toolbar { justify-content: flex-end; flex-wrap: nowrap; gap: 0.45rem; }
 /* Each game starts a group. Agent rows share its surface and connect to its disclosure. */
 #games tbody td { border-bottom: 0; }
 #games tbody + tbody { border-top: 1px solid var(--border); }
-#publish-game { padding: 1rem 1.2rem; border-bottom: 1px solid var(--border); }
 .game-identity { display: flex; align-items: center; gap: 0.9rem; }
 .package-stack { display: grid; gap: 0.12rem; }
 .package-stack small { color: var(--muted); font: 0.82rem/1.4 ui-monospace, monospace; }
@@ -139,8 +135,29 @@ th { background: var(--surface); color: var(--muted); }
   .uploaded-agent { animation: none; box-shadow: inset 3px 0 var(--accent); }
 }
 .revision { font-size: 0.84rem; }
-#upload-target { margin: 0; }
-#upload-target:empty { display: none; }
+#package-drop-zone {
+  display: grid;
+  place-content: center;
+  gap: 0.2rem;
+  width: 100%;
+  min-height: 6rem;
+  margin-bottom: 1.5rem;
+  padding: 1rem;
+  color: var(--accent);
+  border: 2px dashed var(--muted);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+}
+#package-drop-zone small { color: var(--muted); font-weight: 400; }
+#publish-game { width: min(28rem, 92vw); padding: 1.5rem; border: 1px solid var(--border); border-radius: 10px; }
+#publish-game::backdrop { background: rgb(32 38 44 / 35%); }
+#publish-game h2, #upload-notice { margin: 0; }
+#upload-notice.error { color: var(--parlando-brick); }
+#package-drop-zone.dragging, #package-drop-zone:hover, #package-drop-zone:focus-visible {
+  background: var(--selected);
+  border-color: var(--accent);
+}
 #notice { position: sticky; top: 0.5rem; z-index: 1; max-width: 94rem; margin-inline: auto; width: 92%; padding: 0.65rem 0.85rem; background: var(--selected); border: 1px solid var(--border); border-radius: 6px; overflow-wrap: anywhere; }
 #notice.error { color: var(--parlando-brick); background: #fff8f7; border-color: #efc3bf; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -234,28 +251,23 @@ th { background: var(--surface); color: var(--muted); }
   #workspace .page-title { margin-bottom: 1rem; gap: 0.5rem; }
   .page-actions { gap: 0.4rem; }
   .page-actions button, #logout { min-height: 44px; }
-  .wide-upload-label { display: none; }
-  .short-upload-label { display: inline; }
-  #games.panel { background: transparent; border: 0; overflow: visible; }
+  #games > .panel { background: transparent; border: 0; overflow: visible; }
   #games .scroll { overflow: visible; }
   #games table { display: grid; gap: 0.75rem; }
-  #games tbody, #publish-game {
+  #games tbody {
     display: block; border: 1px solid var(--border); border-radius: 9px; background: white;
   }
   #games tbody { padding-block: 0.45rem; }
-  #publish-game { margin-bottom: 0.75rem; }
-  #publish-form, #publish-form label { min-width: 0; }
   #games thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   #games tbody tr { display: grid; align-items: center; padding-inline: 0.75rem; }
   #games tbody td { border: 0; }
   #games .game-row {
-    grid-template-columns: minmax(0, 1fr) auto auto; row-gap: 0.3rem; padding-block: 0.2rem 0.4rem;
+    grid-template-columns: minmax(0, 1fr) auto; row-gap: 0.3rem; padding-block: 0.2rem 0.4rem;
   }
   #games .game-row td { padding: 0; }
-  #games .game-row td:first-child { grid-area: 1 / 1 / 2 / 3; }
+  #games .game-row td:first-child { grid-area: 1 / 1; }
   #games .game-row td:nth-child(2) { grid-area: 2 / 1; }
-  #games .game-row td:nth-child(3) { grid-area: 1 / 3; justify-self: end; align-self: start; line-height: 44px; }
-  #games .game-row td:nth-child(4) { grid-area: 2 / 2 / 3 / 4; justify-self: end; }
+  #games .game-row td:nth-child(3) { grid-area: 1 / 2; justify-self: end; align-self: start; line-height: 44px; }
   .game-identity { align-items: flex-start; gap: 0.25rem; }
   .game-identity > .package-stack:only-child { margin-left: calc(44px + 0.25rem); }
   .game-identity .package-stack > span { display: flex; align-items: center; min-height: 44px; }
@@ -268,7 +280,6 @@ th { background: var(--surface); color: var(--muted); }
     display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.6rem; color: var(--muted);
   }
   #games .revision { white-space: nowrap; }
-  #games .game-row td:nth-child(4) button { min-height: 44px; padding-inline: 0.55rem; font-size: 0.9rem; }
   .game-status { font-size: 0.9rem; }
   /* Keep identity and release on the same line, even with a wrapped package name. */
   #games .agent-row { grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem; }

@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
+import { chromium, expect } from "@playwright/test";
 
 /** Reads the scenario request supplied by the Rust coordinator. */
 async function readRequest() {
@@ -398,6 +398,16 @@ async function farewellVoice(browser, origin) {
   const b = await openParticipant(browser, gameCommunicationUrl(origin), ["microphone"]);
   const pair = { a, b };
   try {
+    // Observe the audio relay directly, without exposing transport diagnostics in the widget.
+    const receivers = new Set();
+    for (const { page } of [a, b]) {
+      page.on("websocket", (socket) => {
+        if (!new URL(socket.url()).pathname.includes("/ws/audio/")) return;
+        socket.on("framereceived", ({ payload }) => {
+          if (Buffer.isBuffer(payload)) receivers.add(page);
+        });
+      });
+    }
     // Exercise the shipped Beacon Relay theme alongside the unthemed SDK defaults on B.
     await a.page.addStyleTag({ path: fileURLToPath(new URL("../../rust-server/templates/rust/client/beacon.css", import.meta.url)) });
     await prepareVoice(a);
@@ -420,10 +430,10 @@ async function farewellVoice(browser, origin) {
     await unmute.waitFor();
     await unmute.click();
     await mute.waitFor();
-    await Promise.any([
-      a.page.getByTestId("remote-audio").filter({ hasText: "heard" }).waitFor({ timeout: 15_000 }),
-      b.page.getByTestId("remote-audio").filter({ hasText: "heard" }).waitFor({ timeout: 15_000 })
-    ]);
+    await expect.poll(() => receivers.size, { timeout: 15_000 }).toBe(2);
+    for (const { page } of [a, b]) {
+      await expect(page.locator(".parlando-communication").getByText(/^(heard|silent)$/i)).toHaveCount(0);
+    }
     await b.page.getByRole("button", { name: "Finish game" }).click();
     await a.page.getByText("Voice chat remains open").waitFor();
     const countdown = a.page.locator(".parlando-farewell-voice");

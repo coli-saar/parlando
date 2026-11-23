@@ -118,7 +118,6 @@ function SpeechCommunication({ preflight, status, setMuted }: {
       </div>
       <MicrophoneLevelMeter active={preflight.micProbeActive} label={preflight.deviceLabel || "Microphone level"} level={preflight.micLevel} muted={muted} />
       <span className="parlando-communication-status" data-testid="voice">{status.message}</span>
-      <span className="parlando-communication-reception" data-testid="remote-audio">{status.remoteAudio ? "heard" : "silent"}</span>
       {status.error && <p className="parlando-communication-error voice-error" role="alert">{status.error}</p>}
     </div>
   );

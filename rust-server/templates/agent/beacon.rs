@@ -64,10 +64,7 @@ impl Agent for Policy {
                 .trim()
                 .trim_end_matches(['!', '.', '?'])
                 .trim_end();
-            if ["tick", "do a tick", "please tick", "tick please"]
-                .iter()
-                .any(|phrase| command.eq_ignore_ascii_case(phrase))
-            {
+            if command.eq_ignore_ascii_case("charge the beacon") {
                 self.pending_ticks = self.pending_ticks.saturating_add(1);
             }
         }
@@ -79,7 +76,7 @@ impl Agent for Policy {
         let mut response = Response::default();
         if self.greeting_pending {
             self.greeting_pending = false;
-            response.message = Some("Say or type “tick” whenever you want me to add one tick to the beacon. If it’s your turn, I’ll wait for mine.".into());
+            response.message = Some("Say or type “charge the beacon” whenever you want me to add one tick to the beacon. If it’s your turn, I’ll wait for mine.".into());
         }
         if self.your_turn && self.pending_ticks > 0 {
             self.pending_ticks -= 1;

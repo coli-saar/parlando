@@ -184,7 +184,7 @@ test('Games deploys and updates packages and opens the game dashboard', async ({
       return route.fulfill({ json: { games: game ? [game] : [] } });
     }
     const csrf = request.headers()['x-csrf-token'];
-    if ((path === '/api/hosting/packages' || path === '/api/hosting/packages/example') && request.method() === 'PUT') {
+    if (path === '/api/hosting/packages' && request.method() === 'PUT') {
       uploads.push({ path, csrf, contentType: request.headers()['content-type'], body: request.postDataBuffer() });
       if (uploads.length === 1) return route.fulfill({ status: 400, body: 'Invalid game ZIP' });
       if (uploads.length === 4) {
@@ -192,7 +192,7 @@ test('Games deploys and updates packages and opens the game dashboard', async ({
         game = { ...game, agents: [{ ...agent, id: 'example.baseline', name: 'Baseline' }, agent] };
         return route.fulfill({ json: { ...agent, game: game.id, agent: agent.id } });
       }
-      game = path.endsWith('/example') ? second : first;
+      game = game ? second : first;
       return route.fulfill({ json: { ...game, game: id } });
     }
     if (path === '/example') return route.fulfill({ body: 'Game dashboard destination' });
@@ -202,8 +202,14 @@ test('Games deploys and updates packages and opens the game dashboard', async ({
   await page.goto('http://hosting.test/admin');
   await expect(page.getByText('No games have been deployed.')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Users' })).toBeHidden();
-  await page.getByText('Upload a game or agent', { exact: true }).click();
-  const input = page.getByLabel('Build ZIP');
+  const zone = page.locator('#package-drop-zone');
+  const dialog = page.getByRole('dialog', { name: 'Upload a package' });
+  const input = page.getByLabel('Game or agent ZIP', { exact: true });
+  await expect(zone).toBeVisible();
+  await expect(dialog).toBeHidden();
+  const zoneBounds = await zone.boundingBox();
+  expect((await page.locator('#game-list').boundingBox()).y).toBeGreaterThan(zoneBounds.y + zoneBounds.height);
+  await zone.click();
   const upload = page.getByRole('button', { name: 'Upload package' });
   const notice = page.getByRole('status');
   await expect(input).toHaveAttribute('accept', '.zip');
@@ -220,27 +226,33 @@ test('Games deploys and updates packages and opens the game dashboard', async ({
   await upload.click();
   await expect(notice).toHaveText('Deployed Example Game 1.0.0 (aaaaaaaaaaaa).');
 
-  await page.getByRole('button', { name: 'Update example' }).click();
-  await expect(input).toBeFocused();
-  await expect(page.getByText('Updating Example Game (example).')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Update example' })).toHaveCount(0);
+  await zone.click();
   await input.setInputFiles(file);
   await upload.click();
   await expect(page.getByRole('cell', { name: '2.0.0' })).toBeVisible();
   expect(uploads).toEqual([
     '/api/hosting/packages',
     '/api/hosting/packages',
-    '/api/hosting/packages/example',
+    '/api/hosting/packages',
   ].map(path => ({ path, csrf: 'test-csrf', contentType: 'application/zip', body: zip })));
 
-  await page.getByText('Upload a game or agent', { exact: true }).click();
-  await input.setInputFiles({ ...file, name: 'agent.zip' });
-  await upload.click();
+  await expect(dialog).toBeHidden();
+  await expect(zone).toBeVisible();
+  await page.locator('#package-drop-zone').evaluate((zone, bytes) => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(new File([new Uint8Array(bytes)], 'agent.zip'));
+    zone.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+  }, Array.from(zip));
+  await expect(dialog).toBeHidden();
   const toggle = page.getByRole('button', { name: '2 agents for example' });
   const policy = page.getByRole('row').filter({ hasText: 'example.partner' });
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   await expect(policy).toBeFocused();
   await expect(policy.getByText('Partner', { exact: true })).toBeVisible();
   await expect(notice).toHaveText('Deployed Partner 1.0.0 (dddddddddddd).');
+  expect(uploads).toHaveLength(4);
+  expect(uploads[3].body).toEqual(zip);
   await expect(policy).toHaveClass(/uploaded-agent/);
   await expect(page.getByRole('cell', {name: 'example.baseline'})).toBeVisible();
   await toggle.click();
@@ -255,7 +267,7 @@ test('Games deploys and updates packages and opens the game dashboard', async ({
   await expect(policy).toBeVisible();
 
   await page.setViewportSize({ width: 320, height: 720 });
-  await expect(page.getByRole('button', { name: 'Update example' })).toBeVisible();
+  await expect(zone).toBeVisible();
   await expect(page.getByRole('button', { name: /^(de)?activate/i, includeHidden: true })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(320);
 
