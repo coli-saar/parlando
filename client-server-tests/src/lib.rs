@@ -85,19 +85,43 @@ async fn spawn_unactivated_server(
     config: &mut ExperimentConfig,
     options: ServeOptions,
 ) -> Result<TestServer> {
+    start_game_router(
+        config,
+        options,
+        include_bytes!("../../rust-server-tests/stress-fixture/embedded/contract.wasm"),
+    )
+    .await
+}
+
+/// Serves a packaged game component and its configured browser distribution in an active experiment.
+pub async fn spawn_packaged_game(
+    mut config: ExperimentConfig,
+    options: ServeOptions,
+    directory: &Path,
+) -> Result<TestServer> {
+    config.server.client_dist_path = Some(directory.join("client").display().to_string());
+    let server = start_game_router(
+        &mut config,
+        options,
+        &std::fs::read(directory.join("game.wasm"))?,
+    )
+    .await?;
+    activate_experiment(&server.base_url).await?;
+    Ok(server)
+}
+
+/// Creates an isolated database and mounts the supplied component in the production router.
+async fn start_game_router(
+    config: &mut ExperimentConfig,
+    options: ServeOptions,
+    wasm: &[u8],
+) -> Result<TestServer> {
     let temp = TempDir::new()?;
     config.database.url = format!(
         "sqlite:///{}",
         temp.path().join("client-server-contract.sqlite").display()
     );
-    let router = build_router(
-        LoadedGame::from_bytes(include_bytes!(
-            "../../rust-server-tests/stress-fixture/embedded/contract.wasm"
-        ))?,
-        config.clone(),
-        options,
-    )
-    .await?;
+    let router = build_router(LoadedGame::from_bytes(wasm)?, config.clone(), options).await?;
     spawn_router(router, temp).await
 }
 
@@ -199,7 +223,9 @@ pub async fn run_browser_driver(server: &TestServer, fixture: Value) -> Result<V
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or_else(|| anyhow!("contract crate has no repository parent"))?;
-    let browser_directory = repository.join("client-server-tests/browser");
+    let browser_directory = std::env::var_os("PARLANDO_BROWSER_DRIVER_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| repository.join("client-server-tests/browser"));
     let mut child = tokio::process::Command::new("node")
         .arg(browser_directory.join("browser-driver.mjs"))
         .current_dir(&browser_directory)

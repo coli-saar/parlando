@@ -104,3 +104,5 @@ Use `Response.action_with_message` for a move with text, and return `None`
 to yield. Keep model-provider credentials in the agent process. Follow the
 [remote-agent guide](https://coli-saar.github.io/parlando/manual/build/agents-and-voice/)
 for endpoint authentication and service setup.
+
+For the Beacon starter, use `beacon.tick_on_request`. Pilot one turn without a request, then say “tick” in a speech experiment or send it in typed chat. Verify that one request produces one legal tick.

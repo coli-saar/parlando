@@ -32,6 +32,7 @@ PYTHON_SDKS = (
     ("parlando-agent-sdk", "parlando_agent_sdk"),
 )
 GAMES = {"rust": "release-rust", "python": "release-python"}
+TICK_AGENT_ID = "beacon.tick_on_request"
 AGENT_ID = "release.beacon"
 AGENT_NAME = "Release Beacon partner"
 AGENT_MESSAGE = "One tick from the Beacon partner."
@@ -114,6 +115,11 @@ def release_sources(env):
         Path(__file__).resolve(),
         AGENT_FIXTURE,
         ROOT / "scripts/release_candidate_browser.mjs",
+        ROOT / "client-server-tests/browser/browser-driver.mjs",
+        ROOT / "client-server-tests/tests/browser_e2e.rs",
+        ROOT / "client-server-tests/src/lib.rs",
+        ROOT / "client-server-tests/Cargo.toml",
+        ROOT / "client-server-tests/Cargo.lock",
     }
     for _, source in CRATES:
         files.update((ROOT / source / relative).resolve() for relative in cargo_inputs(source, env))
@@ -331,14 +337,13 @@ def build_and_run_agent(work, binary, version, env):
         raise RuntimeError(f"Unexpected standalone policy inspection: {checked}")
 
     run_agent_experiments(work, project, binary, archive, policy_digest, env)
-    run_agent_dependency_experiments(work, binary, archive, env)
-    return archive
+    return run_agent_dependency_experiments(work, binary, archive, env)
 
 
 def run_agent_dependency_experiments(work, binary, partner, env):
     """Use generated bindings with pinned ZIPs and explicitly switch game builds."""
     project = work / "dependency-policy"
-    agent_id = "release.generated"
+    agent_id = TICK_AGENT_ID
     game = work / GAMES["rust"]
     archive = work / "pinned-beacon.zip"
     shutil.copyfile(game / "dist" / f"{GAMES['rust']}-0.1.0.zip", archive)
@@ -398,6 +403,8 @@ def run_agent_dependency_experiments(work, binary, partner, env):
         run_dependency_experiment(binary, project, manifest, partner, agent_id, "restored", 4, env)
         if restored["dependency"] != pinned:
             raise RuntimeError("Selecting the original ZIP did not restore its game dependency")
+        built = json.loads(run(binary, "build", "--json", cwd=project, env=env, capture=True))
+        return Path(built["result"]["package"])
     finally:
         rules.write_text(original, encoding="utf-8")
         draft.unlink(missing_ok=True)
@@ -608,11 +615,21 @@ def play_games(work, binary, agent_package, env):
     browser.mkdir()
     fixtures = ROOT / "client-server-tests/browser"
     playwright = json.loads((fixtures / "package.json").read_text())["devDependencies"]["@playwright/test"]
-    for source in (fixtures / "ensure-browser.mjs", ROOT / "scripts/release_candidate_browser.mjs"):
+    for source in (fixtures / "ensure-browser.mjs", fixtures / "browser-driver.mjs", ROOT / "scripts/release_candidate_browser.mjs"):
         shutil.copyfile(source, browser / source.name)
     run("npm", "install", "--no-audit", "--no-fund", f"@playwright/test@{playwright}", cwd=browser, env=env)
     run("node", "ensure-browser.mjs", cwd=browser, env=env)
     browser_env = {**env, "PARLANDO_REHEARSAL_PASSWORD": secrets.token_urlsafe(32)}
+    # Exercise the shipped JS, game and agent together with a local transcription provider.
+    game = GAMES["rust"]
+    extracted = work / "speech-startup"
+    with ZipFile(work / game / "dist" / f"{game}-0.1.0.zip") as archive:
+        archive.extractall(extracted)
+    run("cargo", "test", "--locked", "--test", "browser_e2e", "speech_agent_startup", "--", "--ignored",
+        cwd=ROOT / "client-server-tests", env={
+            **env, "PARLANDO_BROWSER_DRIVER_DIR": str(browser),
+            "PARLANDO_STARTUP_PACKAGE_DIR": str(extracted), "PARLANDO_STARTUP_AGENT": str(agent_package),
+        })
     with local_host(work, binary, env) as (origin, admin_origin, credentials):
         run("node", "release_candidate_browser.mjs", "setup", f"{admin_origin}/admin",
             cwd=browser, env=browser_env, timeout=60)
@@ -645,7 +662,7 @@ def play_games(work, binary, agent_package, env):
             )
             if game == GAMES["rust"]:
                 run(
-                    "node", "release_candidate_browser.mjs", admin_origin, origin, game, AGENT_ID,
+                    "node", "release_candidate_browser.mjs", admin_origin, origin, game, TICK_AGENT_ID,
                     cwd=browser, env=browser_env, timeout=60,
                 )
                 print("Completed hosted Beacon Relay against the standalone Rust agent", flush=True)

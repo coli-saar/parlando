@@ -29,12 +29,14 @@ export function createDefaultAudioController(): AudioSessionController {
 export function VoicePreparationControls({
   audioInputs,
   enabled,
+  allowDeviceChange = true,
   onPrepareVoice,
   selectedAudioInputId,
   voicePreflight = initialVoicePreflight
 }: {
   audioInputs: MediaDeviceInfo[];
   enabled: boolean;
+  allowDeviceChange?: boolean;
   onPrepareVoice: (deviceId?: string) => boolean | void | Promise<boolean | void>;
   selectedAudioInputId: string;
   voicePreflight?: VoicePreflight;
@@ -45,7 +47,7 @@ export function VoicePreparationControls({
       {(voicePreflight.ready || voicePreflight.preparing) && (
         <select
           aria-label="Microphone input"
-          disabled={voicePreflight.preparing || availableMicrophones.length < 2}
+          disabled={!allowDeviceChange || voicePreflight.preparing || availableMicrophones.length < 2}
           onChange={(event) => {
             const deviceId = event.target.value;
             void Promise.resolve(onPrepareVoice(deviceId)).catch(() => undefined);

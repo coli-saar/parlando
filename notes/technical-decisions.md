@@ -5940,3 +5940,15 @@ Beacon Relay’s deployed Vite bundle inlined the small capture worklet as a dat
 ## Preserve hosted agents across game deployments (2026-11-23)
 
 A fresh build previously started with an empty agent registry. Stage the current registrations alongside the new game and validate them before publishing the build pointer. This keeps game and agent versions independent, preserves exact agent revisions across restarts, and lets a failed compatibility check leave the previous build available. Registrations already lost under the former behavior can be restored by uploading the selected agent archives again.
+
+## Detect participant SDK mismatches before packaging
+
+The served Beacon 0.1.3 bundle matched the local ZIP and decoded voice.enabled, while the running experiment returned communication.mode=speech. Both seats could connect without a browser ever opening its audio transport. A transcription-gated session correctly waits for the human's provider readiness and the software seat's start callback. A game version bump does not select the browser SDK; registry and candidate tarballs can even have the same npm version. The build therefore exercises the installed official SDK's public configuration decoder after npm restores the lockfile. Custom clients and prebuilt distributions still need an artifact-level pilot.
+
+The shared waiting room exposes pending audio readiness and lets a reloaded tab prepare its own microphone without registering another seat. The browser regression holds the audio ticket until both connections and a live local meter are observable, reloads the human tab, then permits audio and requires a successful first game action. The external transcription service is represented by its local ready event. The same test accepts an unpacked Beacon ZIP so package selection can be tested independently of the SDK workspace.
+
+The participant-facing Beacon policy is beacon.tick_on_request. Its initial greeting covers speech and typed play. The release rehearsal deploys that generated policy and checks that B holds its turn until a finalized “Tick.” arrives over the transcription path. A separate headless test fixture sends commands to exercise the generated agent. The speech test uses a simulated provider and real browser audio transport, so it checks transcript delivery and agent response independently of acoustic recognition accuracy.
+
+## Recruitment-specific participant copy
+
+The waiting room uses the admitted seat’s recruitment_source exclusively. Falling back to experiment configuration when the source is missing could instruct a direct participant to return a submission. Terminal codes and links remain driven by the per-seat server handoff. The packaged-game regression checks direct exit copy both on leave and after reload; the older Beacon 0.1.3 bundle fails on its unconditional return instruction.

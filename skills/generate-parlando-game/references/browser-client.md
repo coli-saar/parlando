@@ -32,7 +32,7 @@ conversation, audio, replay, and recruitment. Preserve these controls when
 styling the app, including their accessible labels and focus states. Check
 the actual markup from the project's SDK version.
 
-A live game can read `snapshot.recruitmentSource` on client versions that expose it. Values are `direct`, `local_preview` (a simulated Prolific admission), and `prolific`. Replay and unavailable source data yield `null`. The server determines the source during admission, so it survives page reloads and URL cleanup. Keep provider-specific codes and return links in the SDK handoff widget.
+Gate Prolific-specific copy on `snapshot.recruitmentSource === "prolific"`. This is the server-recorded admission source for this participant and survives reload and URL cleanup. Use neutral copy for `direct`, `local_preview`, and `null` (replay or unknown). An experiment’s recruitment settings, URL parameters, and the other player’s admission do not establish this seat’s source. Keep completion codes and return links in the SDK handoff widget. In a packaged-game pilot, leave the waiting room and reload the terminal screen through a direct admission. Verify neutral text throughout. On a Prolific admission, verify the applicable waiting instructions and the return action supplied by the server.
 
 When upgrading a game built with 0.6.0, rebuild its browser assets with the matching client and replace the experiment’s old `voice.enabled` flag with `communication.mode`. A deployed game needs a new package revision for the updated browser assets.
 

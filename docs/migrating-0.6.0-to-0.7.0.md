@@ -23,6 +23,19 @@ Start a reference project with `parlando new <game-id> --lang rust` or `--lang p
 
 Run `parlando test` and `parlando build`. Pass the ZIP path printed by the build to `parlando check --package`. Deploy the resulting ZIP to your host. Retain the exact component used to record each session you wish to replay. See [package a game](web/content/manual/build/packages.md).
 
+### Verify the browser package used by a candidate build
+
+A game version in `game.yaml` identifies the game ZIP. Its browser SDK comes from the client dependency and lockfile. A locally built candidate can share its npm version number with an older published SDK. Install the candidate tarball into the game’s client before building. From the game root, run the following with the actual tarball path.
+
+```sh
+npm --prefix client install /absolute/path/to/coli-saar-parlando-client-VERSION.tgz
+parlando build
+```
+
+Keep the tarball at the path recorded in the lockfile for reproducible builds. The CLI checks that an SDK-backed browser project can decode the server’s typed and speech configurations after npm installs its dependencies. For prebuilt browser distributions, pilot the actual ZIP in the intended experiment mode.
+
+In a speech experiment with a software partner, prepare the microphone and verify the selected device name and a moving level meter. Enter the waiting room. When transcription gates startup, the human’s audio connection must reach provider readiness and the agent must finish initialization. Both seats can already show a connection during this interval. Reloading the waiting room requires preparing the browser microphone again. For Beacon, select `beacon.tick_on_request`, take the opening turn, and say “tick.” Verify the agent adds one tick after the finalized transcript and returns the turn. A speech experiment that allows entry without preparing voice and shows no voice panel can indicate a client that still reads `voice.enabled`. Rebuild and deploy a new game revision using the matching SDK.
+
 ## Deploy and activate the game
 
 Start the server with `parlando serve --store DIRECTORY`. Sign in at the

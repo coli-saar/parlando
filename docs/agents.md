@@ -28,8 +28,8 @@ The dashboard shows **Beacon Tick on Request**. Experiments select this policy
 by its factory ID, `beacon.tick_on_request`.
 
 The scaffold generates game types in `src/game.rs` and an editable policy in
-`src/lib.rs`. For Beacon, the policy greets its partner and asks them to send
-`tick` in chat. Each request authorizes one tick on the agent’s turn. Requests
+`src/lib.rs`. For Beacon, the policy greets its partner and asks them to say “tick” in speech mode or send
+`tick` in typed chat. Each request authorizes one tick on the agent’s turn. Requests
 received early wait for a legal turn. Games with other action or view types
 start with a policy that yields until you implement its decisions.
 
@@ -129,129 +129,11 @@ accepting actions still apply.
 
 ## Write a typed Rust agent
 
-A Rust policy uses `parlando-game-sdk` for the game's wire types and the
-policy callbacks. This example plays either seat in Beacon Relay, the Rust
-starter created by `parlando new beacon --lang rust`. It adds one tick
-whenever its role has the turn.
+The generated Beacon policy uses the game’s typed action, private view, and completion. Create it with the `parlando agent new beacon.tick_on_request` command in the walkthrough above. Its implementation lives in `src/lib.rs` and its game bindings live in `src/game.rs`.
 
-Create a separate Cargo library for the policy. Its `Cargo.toml` declares a
-`cdylib` so the compiler can emit WebAssembly. Use the same SDK version as
-the game. If you build Parlando from a checkout, use the matching local SDK
-path for both crates.
+The agent keeps the latest turn permission and a count of pending requests. Its opening message tells the participant to say or type “tick.” Each matching partner message queues one request. When the agent owns the turn, it consumes one request and proposes `{ ticks: 1 }`. With no request it waits. In speech mode the message reaches the policy when the transcription provider finalizes the utterance. A participant can ask before the agent’s turn.
 
-```toml
-[package]
-name = "beacon-agent"
-version = "0.1.0"
-edition = "2021"
-
-[lib]
-crate-type = ["cdylib"]
-
-[dependencies]
-parlando-game-sdk = "0.7.0"
-serde = { version = "1", features = ["derive"] }
-```
-
-Save this as `src/lib.rs`. The three wire types match the starter. The
-policy stores only the current seat's permission to act.
-
-```rust
-use parlando_game_sdk::{
-    agent::{async_trait, Agent, Definition, InitContext, Observation, RespondReason, Response, Result},
-    export_agent, GameValue,
-};
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct Settings {}
-
-#[derive(GameValue)]
-struct Pulse {
-    ticks: u8,
-}
-
-#[derive(GameValue)]
-struct View {
-    charge: u8,
-    target: u8,
-    your_turn: bool,
-}
-
-#[derive(GameValue)]
-struct Outcome {
-    activated_at: u8,
-}
-
-struct BeaconAgent {
-    your_turn: bool,
-}
-
-#[async_trait]
-impl Agent for BeaconAgent {
-    type Config = Settings;
-    type Action = Pulse;
-    type View = View;
-    type Completion = Outcome;
-
-    fn definition() -> Definition {
-        Definition {
-            id: "beacon.one_tick",
-            name: "One-tick Beacon partner",
-            version: "0.1.0",
-            description: "Adds one tick when it has the turn.",
-            config_fields: "[]",
-        }
-    }
-
-    async fn init(_: InitContext<Settings>) -> Result<Self> {
-        Ok(Self { your_turn: false })
-    }
-
-    async fn start(&mut self, view: View) -> Result<()> {
-        self.your_turn = view.your_turn;
-        Ok(())
-    }
-
-    async fn observe(&mut self, event: Observation<Pulse, View>) -> Result<()> {
-        if let Some(transition) = event.transition {
-            self.your_turn = transition.view.your_turn;
-        }
-        Ok(())
-    }
-
-    async fn respond(&mut self, _: RespondReason) -> Result<Response<Pulse>> {
-        Ok(if self.your_turn {
-            Response::action(Pulse { ticks: 1 })
-        } else {
-            Response::default()
-        })
-    }
-}
-
-export_agent!(BeaconAgent);
-```
-
-Save an `agent.yaml` beside that crate's `Cargo.toml`. Its game ID
-must match the game ZIP and its agent ID and name must match the policy's
-`definition`.
-
-```yaml
-game: beacon
-id: beacon.one_tick
-name: One-tick Beacon partner
-version: 0.1.0
-cargo_manifest: Cargo.toml
-```
-
-Install the Rust `wasm32-unknown-unknown` target and `wasm-tools`. Run
-`parlando agent set-game PATH_TO_BEACON_ZIP` from the policy directory to
-record the game dependency, then run `parlando build --manifest agent.yaml`.
-Parlando invokes Cargo and wraps
-the emitted module as a component. The output is
-`dist/agent-beacon.one_tick-0.1.0.zip`. Follow the [ZIP deployment steps
-above](#run-a-local-wasm-agent) with the Beacon game ZIP and
-`beacon.one_tick` as the experiment's agent factory.
+Build the policy against the Beacon game ZIP, deploy both packages, and select `beacon.tick_on_request` as the experiment’s factory. To pilot the speech interaction, take the first turn, check that the agent waits, say “tick,” and verify that the charge increases by one and the turn returns to you.
 
 ### Use the policy callbacks
 

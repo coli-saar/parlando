@@ -87,7 +87,7 @@ export function ReadinessBoard({ presence, role }: { presence: Presence; role?: 
       {seats.map(seat => (
         <div key={seat} className={presence[seat]?.connected ? "seat-ready" : ""}>
           <strong>{role ? (seat === role ? "You" : "Your partner") : "Player " + seat}</strong>{" "}
-          <span>{presence[seat]?.connected ? "Connected" : "Waiting"}</span>
+          <span>{presence[seat]?.connected ? (presence[seat]?.audioReady === false ? "Connected · preparing audio" : "Connected") : "Waiting"}</span>
         </div>
       ))}
     </div>

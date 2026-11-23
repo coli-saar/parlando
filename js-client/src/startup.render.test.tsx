@@ -415,8 +415,10 @@ describe("ParticipantApp participant state machine", () => {
     expect(client.getGameSession).toHaveBeenCalledTimes(2);
   });
 
-  it("explains a direct waiting deadline without mentioning Prolific payment", async () => {
+  it.each([undefined, "direct", "local_preview"] as const)("keeps waiting guidance neutral for recruitment source %s even on a Prolific experiment", async (source) => {
     const client = api();
+    client.getExperiment.mockResolvedValue({ ...config(), recruitment: { provider: "prolific" } });
+    client.join.mockResolvedValue({ ...waiting, recruitment_source: source });
     render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
@@ -427,10 +429,7 @@ describe("ParticipantApp participant state machine", () => {
 
   it("explains the Prolific return and manual waiting payment", async () => {
     const client = api();
-    client.getExperiment.mockResolvedValue({
-      ...config(),
-      recruitment: { provider: "prolific", decline_url: null }
-    });
+    client.join.mockResolvedValue({ ...waiting, recruitment_source: "prolific" });
     render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));

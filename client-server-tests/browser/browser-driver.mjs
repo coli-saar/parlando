@@ -147,6 +147,16 @@ async function happyPath(browser, origin) {
   }
 }
 
+/** A direct exit must explain the outcome without referring to an external recruitment handoff. */
+async function checkDirectExit(page) {
+  await page.getByRole("heading", { name: "Session ended" }).waitFor();
+  const panel = page.locator(".parlando-session-outcome");
+  const copy = await panel.innerText();
+  if (!/left before a playable game began/i.test(copy) || /prolific|completion path|completion code/i.test(copy)) {
+    throw new Error(`Incorrect direct waiting-room exit: ${copy}`);
+  }
+}
+
 /** Exercises a reliable participant leave before a partner is assigned. */
 async function waitingLeave(browser, origin) {
   const participant = await openParticipant(browser, origin);
@@ -154,8 +164,9 @@ async function waitingLeave(browser, origin) {
     await enter(participant.page);
     await participant.page.getByRole("heading", { name: "Waiting for another participant" }).waitFor();
     await participant.page.getByRole("button", { name: "Leave waiting room" }).click();
-    await participant.page.getByRole("heading", { name: "Session ended" }).waitFor();
-    await participant.page.getByText(/left before a playable game began/i).waitFor();
+    await checkDirectExit(participant.page);
+    await participant.page.reload();
+    await checkDirectExit(participant.page);
     return {
       transitions: ["registered->waiting", "waiting->ended"],
       outcomes: ["left_waiting_room"],
@@ -432,7 +443,70 @@ async function farewellVoice(browser, origin) {
   }
 }
 
+/** Holds the human's audio ticket until both seats are visible, then verifies recovery and play. */
+async function speechAgentStartup(browser, origin) {
+  const { page, context } = await openParticipant(browser, origin, ["microphone"]);
+  try {
+    const enterRoom = page.getByRole("button", { name: "Enter waiting room" });
+    if (await enterRoom.isEnabled()) throw new Error("speech entry permitted before microphone preparation");
+    // Read the actual captured track, including browsers that expose it under a default-device alias.
+    await page.evaluate(() => {
+      const devices = navigator.mediaDevices;
+      const capture = devices.getUserMedia.bind(devices);
+      devices.getUserMedia = async (constraints) => {
+        const stream = await capture(constraints);
+        window.capturedMicrophoneName = stream.getAudioTracks()[0]?.label;
+        return stream;
+      };
+    });
+    await prepareVoice({ page });
+    const input = page.getByRole("combobox", { name: "Microphone input" });
+    const label = await input.locator("option:checked").textContent();
+    const deviceName = await page.evaluate(() => window.capturedMicrophoneName);
+    if (!label?.trim() || !deviceName?.startsWith(label)) throw new Error("microphone selector does not name the captured track");
+
+    // Hold the ticket at the browser boundary so an instant local provider cannot mask the waiting room.
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    await page.route("**/api/sessions/*/audio-session", async (route) => {
+      await gate;
+      await route.continue();
+    });
+    await enter(page);
+    await page.getByRole("heading", { name: "Waiting for another participant" }).waitFor();
+    await page.getByText("Connected · preparing audio", { exact: true }).waitFor();
+    await page.locator(".seat-grid").getByText("Connected", { exact: true }).waitFor();
+    await checkLiveLobbyMeter(page);
+    await page.reload();
+    await page.getByRole("heading", { name: "Waiting for another participant" }).waitFor();
+    await page.getByRole("button", { name: "Prepare voice" }).click();
+    await checkLiveLobbyMeter(page);
+    release();
+    const action = page.getByRole("button", { name: request.fixture.beacon ? "Add one tick" : "Advance", exact: true });
+    await action.click({ timeout: 15_000 });
+    if (request.fixture.beacon) {
+      const charge = page.getByRole("progressbar");
+      await page.waitForFunction(() => document.querySelector("progress")?.value > 0);
+      if (request.fixture.recognizeTick) {
+        if (await charge.getAttribute("value") !== "1" || await action.isEnabled()) {
+          throw new Error("Beacon agent spent a tick before its partner requested one");
+        }
+        const signal = await fetch(request.fixture.recognizeTick, { method: "POST" });
+        if (!signal.ok) throw new Error("could not release the test transcript");
+        await page.waitForFunction(() => document.querySelector("progress")?.value === 2);
+        if (!(await action.isEnabled())) throw new Error("spoken tick did not return the turn to the human");
+      }
+    } else {
+      await page.getByTestId("actions").filter({ hasText: /^1$/ }).waitFor();
+    }
+    return { transitions: ["registered->waiting", "waiting->active"], outcomes: [], endCauses: [] };
+  } finally {
+    await context.close();
+  }
+}
+
 const scenarios = {
+  "speech-agent-startup": speechAgentStartup,
   "happy-path": happyPath,
   "waiting-leave": waitingLeave,
   "waiting-timeout": waitingTimeout,

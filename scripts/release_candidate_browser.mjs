@@ -192,13 +192,12 @@ async function playAgent(adminOrigin, publicOrigin, game, agentId) {
     for (let before = 0; before < target; before += 2) {
       await expect(pulse).toBeEnabled();
       await pulse.click();
-      if (before + 2 < target) {
-        // Only one human action was sent. The second tick must come from seat B.
-        await expect(charge).toHaveAttribute("value", String(before + 2));
-      }
-      if (before === 0) {
-        const conversation = page.getByRole("list", { name: "Text conversation" });
-        await expect(conversation.getByText("One tick from the Beacon partner.", { exact: true })).toHaveCount(1);
+      if (before + 1 < target) {
+        await expect(charge).toHaveAttribute("value", String(before + 1));
+        await expect(pulse).toBeDisabled();
+        await page.getByRole("textbox", { name: "Message" }).fill("tick");
+        await page.getByRole("button", { name: "Send message" }).click();
+        if (before + 2 < target) await expect(charge).toHaveAttribute("value", String(before + 2));
       }
     }
     await expect(page.getByText(`Beacon activated at ${target} ticks.`)).toBeVisible();

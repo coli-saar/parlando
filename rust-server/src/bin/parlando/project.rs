@@ -373,6 +373,12 @@ impl Manifest {
                 "installing browser dependencies",
             )?;
             run(
+                Command::new("node")
+                    .current_dir(&project)
+                    .args(["--input-type=module", "--eval", include_str!("check-client.mjs")]),
+                "checking the installed participant SDK against the server configuration",
+            )?;
+            run(
                 Command::new("npm")
                     .current_dir(&project)
                     .args(["run", "build"]),

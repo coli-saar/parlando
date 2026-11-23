@@ -79,7 +79,7 @@ impl Agent for Policy {
         let mut response = Response::default();
         if self.greeting_pending {
             self.greeting_pending = false;
-            response.message = Some("Send me “tick” in the chat whenever you want me to add one tick to the beacon. If it’s your turn, I’ll wait for mine.".into());
+            response.message = Some("Say or type “tick” whenever you want me to add one tick to the beacon. If it’s your turn, I’ll wait for mine.".into());
         }
         if self.your_turn && self.pending_ticks > 0 {
             self.pending_ticks -= 1;

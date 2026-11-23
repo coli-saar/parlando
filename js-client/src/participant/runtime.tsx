@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { ParticipantConnection, type LiveSession } from "../participantConnection.js";
 import { AudioSessionController } from "../audio/audioSessionController.js";
 import { errorMessage, experimentAllowsIntake, requiredConsentsAccepted } from "../helpers.js";
-import { MicrophoneLevelMeter, TranscriptionProgress } from "../voiceComponents.js";
+import { TranscriptionProgress } from "../voiceComponents.js";
 import { ParticipantClient, type ExperimentInfo } from "../protocol.js";
 import { type CommunicationPlacement, type GameSnapshot } from "./types.js";
 import { CommunicationContext, CommunicationWidget } from "./communicationWidget.js";
@@ -248,6 +248,18 @@ export function ParticipantAppRuntime<
     );
   }
 
+  // A resumed waiting room has a seat credential but needs to prepare this page's microphone.
+  const microphoneControls = (
+    <VoicePreparationControls
+      audioInputs={audioInputs}
+      allowDeviceChange={!session}
+      enabled={enabled}
+      onPrepareVoice={prepareVoice}
+      selectedAudioInputId={selectedAudioInputId}
+      voicePreflight={voicePreflight}
+    />
+  );
+
   if (session) {
     const presence = session.participantState.state === "waiting"
       ? normalizePresence(session.participantState.presence)
@@ -263,7 +275,7 @@ export function ParticipantAppRuntime<
         {session.participantState.state === "waiting" && (
           <WaitingRoomNotice
             deadlineAt={session.participantState.waiting_deadline_at}
-            prolific={(session.participantState.recruitment_source ?? publicConfig.recruitment?.provider) === "prolific"}
+            prolific={session.participantState.recruitment_source === "prolific"}
             startedAt={session.participantState.waiting_started_at}
           />
         )}
@@ -271,7 +283,7 @@ export function ParticipantAppRuntime<
         {enabled && (
           <div className="voice-preflight">
             <div><strong>Voice chat</strong>{" "}<span>{status.message}</span></div>
-            <MicrophoneLevelMeter active={voicePreflight.micProbeActive} label="Level" level={voicePreflight.micLevel} />
+            {microphoneControls}
             <details>
               <summary>Voice connection details</summary>
               <TranscriptionProgress connected={session.synchronization === "connected"} status={status} />
@@ -336,15 +348,9 @@ export function ParticipantAppRuntime<
         <div className="voice-preflight">
           <div>
             <strong>Voice chat</strong>
-            <span>{voicePreflight.ready ? "Microphone ready" : voicePreflight.message}</span>
+            <span>{voicePreflight.message}</span>
           </div>
-          <VoicePreparationControls
-            audioInputs={audioInputs}
-            enabled={enabled}
-            onPrepareVoice={prepareVoice}
-            selectedAudioInputId={selectedAudioInputId}
-            voicePreflight={voicePreflight}
-          />
+          {microphoneControls}
         </div>
       )}
       <div className="lobby-actions lobby-entry-actions">
