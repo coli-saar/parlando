@@ -5968,3 +5968,7 @@ The New experiment dialog uses the dashboard’s existing stacked field layout. 
 ## Deployed games and experiment intake
 
 A successful deployment mounts the game and its experiment routes. Experiment lifecycle alone controls new participant admission. The host no longer reads or writes per-game active marker files. Old markers have no effect. This removes the second availability decision from the API, CLI, and games list. Existing session and package replacement guards still protect live work. No database schema changes are needed.
+
+## Deployment dashboard at the administrator origin root
+
+The deployment host serves setup and sign-in at `/` on the configured administrator origin. The CLI prints this address and uses the same page for device approval and game sign-in redirects. Game workspaces keep their game-ID paths. Custom single-game servers keep their separate dashboard entry because their participant client can occupy the root. Old deployment dashboard bookmarks must use the root URL.

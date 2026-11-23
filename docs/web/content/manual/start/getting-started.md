@@ -47,7 +47,7 @@ mkdir -p ../parlando-host
 
 The server stores packages, experiment data, and dashboard accounts in its working directory. On later starts, use the same directory or pass its path with `--store`.
 
-Open the administrator URL printed in the terminal. On the default local listener it is `http://localhost:8000/admin`. Create your administrator account on the first visit and sign in.
+Open the administrator URL printed in the terminal. On the default local listener it is `http://localhost:8000/`. Create your administrator account on the first visit and sign in.
 
 ## Deploy the game and start a pilot
 

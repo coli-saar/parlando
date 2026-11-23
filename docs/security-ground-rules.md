@@ -70,7 +70,7 @@ singleton atomically.
 
 ### Trusted game clients can share the dashboard origin
 
-On Railway, the dashboard and participant pages share a hostname by default. Publishers on this origin are trusted with the authority of any signed-in admin who opens their game. A separate admin hostname isolates the dashboard when publishers have a different trust level. The admin claims the first account at `/admin` immediately after first startup and before sharing access. Once claimed, the store requires sign-in across redeployments. Experimenter accounts share access to the host's
+On Railway, the dashboard and participant pages share a hostname by default. Publishers on this origin are trusted with the authority of any signed-in admin who opens their game. A separate admin hostname isolates the dashboard when publishers have a different trust level. The admin claims the first account at `/` immediately after first startup and before sharing access. Once claimed, the store requires sign-in across redeployments. Experimenter accounts share access to the host's
 games and research data. Participant apps on a shared origin must belong to
 publishers trusted for that origin. A WASM game runs inside the host's
 component sandbox, while its browser assets execute in participants' browsers.

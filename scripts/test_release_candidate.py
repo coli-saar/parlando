@@ -596,7 +596,7 @@ def authorize_cli(binary, origin, admin_origin, browser, env):
         try:
             prompt = login.stderr.readline()
             url = prompt.strip().removeprefix("Authorize this CLI in your browser: ")
-            if not url.startswith(f"{admin_origin}/admin?cli-login#"):
+            if not url.startswith(f"{admin_origin}/?cli-login#"):
                 raise RuntimeError("CLI did not print the expected authorization link")
             subprocess.run(
                 ["node", "release_candidate_browser.mjs", "login"],
@@ -631,7 +631,7 @@ def play_games(work, binary, agent_package, env):
             "PARLANDO_STARTUP_PACKAGE_DIR": str(extracted), "PARLANDO_STARTUP_AGENT": str(agent_package),
         })
     with local_host(work, binary, env) as (origin, admin_origin, credentials):
-        run("node", "release_candidate_browser.mjs", "setup", f"{admin_origin}/admin",
+        run("node", "release_candidate_browser.mjs", "setup", f"{admin_origin}/",
             cwd=browser, env=browser_env, timeout=60)
         authorize_cli(binary, origin, admin_origin, browser, browser_env)
         for game in GAMES.values():
