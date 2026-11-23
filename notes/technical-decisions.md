@@ -5998,3 +5998,9 @@ Required browser transcription is ready only when the provider acknowledges reco
 Researchers following a Prolific participant can submit a literal suffix to the authenticated session search for their selected experiment. A POST body keeps entered identifiers out of request URLs. Filtering happens in SQLite before pagination, uses retained verified submission records, and returns ordinary session summaries. Suffix collisions can yield multiple sessions. The same lifecycle filter applies with or without a search.
 
 The session timeline uses consistent role colors and left-aligned entries across conversation, actions, and system records. Messages-only visibility is independent of the utterance/token presentation. Workspace navigation groups the frequently used session-monitoring views together. Prolific guidance identifies the study ID by the segment following /studies/ and explains that validation checks the submitted codes and assigned actions. Provider display labels remain researcher-defined.
+
+## 2026-11-23 · Synchronize the speech stress driver with recognizer readiness on reconnect
+
+The speech human–agent fixture emits a transcript after 100 microphone frames reach the mock recognizer. On reconnect, the stress driver counted 100 frames sent while only 99 reached the new recognizer. It then paused microphone input while waiting for the agent to speak. Delaying the reply check still left the recognizer one frame short.
+
+Harness revision 8 waits for a positive transcription readiness control on the replacement audio socket before resuming measured microphone input. Frame pacing restarts at that point so time spent waiting does not produce a burst of frames. This measures the agent reply to a complete fixture utterance and leaves provider startup latency outside that utterance. Speech captured by a real browser during recognizer startup is a separate behavior that this workload does not measure.
