@@ -1,4 +1,9 @@
 //! Narrow server-only client for Prolific study, submission, and signed-launch facts.
+//!
+//! Recruitment intake uses verified launch and submission facts to identify a returning
+//! participant. Experiment activation and progress reporting use study and completion-path
+//! facts. This client owns provider authentication and signing-key caching. Room assignment
+//! and consent remain with intake.
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 

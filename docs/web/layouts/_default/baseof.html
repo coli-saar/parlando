@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="{{ .Description | default site.Params.description }}">
     <title>{{ if not .IsHome }}{{ .Title }} · {{ end }}{{ site.Title }}</title>
+    <link rel="icon" type="image/svg+xml" href="{{ "brand/parlando-mark.svg" | relURL }}">
+    <link rel="stylesheet" href="{{ "brand/palette.css" | relURL }}">
     <link rel="canonical" href="{{ .Permalink }}">
     {{ $styles := resources.Get "css/main.css" | minify | fingerprint }}
     <link rel="stylesheet" href="{{ $styles.RelPermalink }}" integrity="{{ $styles.Data.Integrity }}">
@@ -15,8 +17,7 @@
     <a class="skip-link" href="#main-content">Skip to content</a>
     <header class="site-header">
       <a class="wordmark" href="{{ site.Home.RelPermalink }}" aria-label="Parlando home">
-        <span class="wordmark-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-        <span>Parlando</span>
+        <img src="{{ "brand/parlando-wordmark.svg" | relURL }}" width="116" alt="Parlando">
       </a>
       <nav class="site-links" aria-label="Primary navigation">
         <a{{ if eq .Section "manual" }} aria-current="page"{{ end }} href="{{ "manual/" | relURL }}">Manual</a>

@@ -1,58 +1,40 @@
-# Parlando configuration and deployment reference
+# Package and deploy a game
 
-A generated game process hosts one compiled game and any number of dashboard-managed experiments. Researchers create, clone, activate, and edit experiments at `/admin/experiments`. Do not generate Rust access to the complete experiment configuration and do not make YAML the normal authoring surface.
+The project `game.yaml` declares game identity and build inputs.
+`parlando build` creates the deployable ZIP at `dist/<game-id>-<game-version>.zip`.
+Its manifest points to the exact component and optional built participant
+assets. Set `PACKAGE` to the path printed by the build. Run `parlando check --package "$PACKAGE"` before
+handing off or uploading that ZIP.
 
-## Ownership
+For a [local pilot](https://coli-saar.github.io/parlando/manual/start/getting-started/#start-a-local-server),
+start a server with `parlando serve --store DIRECTORY`, deploy the ZIP in
+**Games**. Open its game ID link and use the game
+dashboard to configure the experiment and start a local preview. Study settings
+such as pairing, consent, intake, communication, and agent selection belong to
+the experiment. Game-owned parameters go in the game's typed configuration.
+Store secrets outside packages, browser assets, and experiment configuration.
 
-The process receives only bootstrap coordinates needed before the dashboard opens:
+For an authorized deployment, use the shared dashboard or
+`parlando deploy --host <origin> --package "$PACKAGE" --json`.
+Sign in once with `parlando login --server SERVER_URL` and choose **Authorize CLI** in the browser. The saved credential can deploy any game on that server. Record the returned revision with
+the study data. A new upload replaces the current package if the game's
+experiments and sessions have stopped. Follow [Deploy to a shared host](https://coli-saar.github.io/parlando/manual/deploy/)
+for credential setup and operator commands.
 
-- listener host and port;
-- SQLite database URL;
-- optional compiled participant-application directory;
-- optional public origin; and
-- provider secrets through private environment or secret storage.
-
-`Game::Config` contains only game-mechanics settings. An agent factory receives only its selected settings. The dashboard/runtime owns participant information and consent copy, access, pairing, capacity, lifecycle limits, privacy, conversation, agents, voice, transcription, and TTS. There is no configurable participant title; the standard application uses functional screen headings and game presentation belongs to the frontend.
-
-Do not model a Parlando `Study`: the runtime hierarchy is Game, Experiment, Session. A broader research study is external.
-
-## Voice
-
-Voice, transcription, and TTS are runtime capabilities, not game decisions. Generated participant applications read narrow `GameSession` capability/status fields and use SDK widgets. Generated servers and clients must not implement audio routes, media framing, provider clients, browser STT/TTS, or credential transport.
-
-Keep provider and remote-agent credentials out of source, process environment,
-frontend variables, experiment exports, and checked-in files. Administrators add
-provider credentials to the explicit Game settings secret store and configure
-non-secret behavior through the dashboard.
-
-## Local run
-
-A generated project should offer one run path, for example:
+For a local WASM policy, set `GAME_PACKAGE` to the built game ZIP path.
+Pin it with `parlando agent set-game "$GAME_PACKAGE" --manifest agent.yaml`,
+then build a separate agent ZIP with `parlando build --manifest agent.yaml`.
+Set `AGENT_PACKAGE` to the agent ZIP path and run
+`parlando check --package "$AGENT_PACKAGE"`. Upload the game ZIP first.
+Use the same account to upload the agent ZIP to the same host while the
+game's experiments are stopped and its sessions have finished:
 
 ```sh
-<game-binary> \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --database-url sqlite:///.local/parlando.sqlite \
-  --client-dist client/dist
+parlando deploy --host "$HOST" --package "$GAME_PACKAGE" --json
+parlando deploy --host "$HOST" --package "$AGENT_PACKAGE" --json
 ```
 
-Useful routes are `/health`, `/admin/experiments`, and the experiment-scoped participant route `/e/{experiment_id}/`.
-
-## Container deployment
-
-Build the participant application, build/install the Rust binary, copy the frontend assets to a stable image path, and start one server process with its database on durable storage. Set bootstrap coordinates with CLI arguments or environment variables supported by the generated binary.
-
-For Render or another platform, mount persistent storage for SQLite and keep provider keys in platform secrets. Use one Parlando process unless sticky routing and process-local live-session ownership have been designed explicitly; audio rooms and one-use credentials are process-local today.
-
-### Render specifically
-
-Follow [`docs/deploying-on-render.md`](../../../docs/deploying-on-render.md); it walks through a full Blueprint deploy end to end. The short version:
-
-- Copy `space-game/Dockerfile` and `space-game/render.yaml` into the generated game's directory and rewrite only the game-specific paths (source dirs, manifest path, binary name, `dockerfilePath`). Keep `dockerContext: .` so the image can still reach the shared `rust-server` and `js-client` packages.
-- The client build stage runs `npm ci`, which requires a committed `package-lock.json`. This repo's root `.gitignore` blanket-ignores `**/package-lock.json` and only un-ignores it per game (see the `!space-game/client/package-lock.json` line). A new game's client needs its own `!<game>/client/package-lock.json` exception added, and the lockfile itself committed — otherwise the Render build fails on `npm ci` with an unhelpful usage dump instead of a missing-lockfile error.
-- Render's free plan does not support attached disks at all (the Blueprint validator rejects a `disk:` block outright). If persistence is optional (a demo/testing deploy), drop the `disk:` block, switch `plan: free`, and point `PARLANDO_DATABASE_URL` at a writable path baked into the image, e.g. the container user's home directory (`sqlite:////home/parlando/parlando.sqlite`) — but say explicitly that the database resets on every restart and inactivity spin-down. If persistence matters, keep `plan: starter` with the `/data` disk as in the Space Game example, and say so is the ~$9.50/mo cost this adds.
-
-## Handoff
-
-Tell the user the exact run command, dashboard URL, database path, participant asset path, required secret variables, and any remote-agent process command. Tell researchers to create and configure experiments in the dashboard instead of editing generated game code.
+Record both returned revisions. In the game dashboard, choose the installed
+factory in the experiment's configuration and verify the pairing in a local
+preview. Game updates retain installed agents and validate their payload layouts. For an external service, choose `remote_grpc` and configure
+its endpoint in the experiment.

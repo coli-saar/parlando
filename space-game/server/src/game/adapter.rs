@@ -1,8 +1,4 @@
-use anyhow::Result;
-use parlando::{
-    ActionRejection, Game, GameFactory, GameInitializationContext, GameSessionContext, PlayerRole,
-    SessionLogger,
-};
+use parlando_game_sdk::{Rejection as ActionRejection, Role as PlayerRole};
 use serde::{Deserialize, Serialize};
 
 use super::state_engine::{
@@ -11,66 +7,24 @@ use super::state_engine::{
 };
 
 /// Game-owned configuration; Space Game currently has no configurable mechanics.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, parlando_game_sdk::GameValue)]
 #[serde(deny_unknown_fields)]
 pub struct SpaceGameConfig {}
 
-#[derive(Clone, Debug)]
-/// Defines the Space Game mechanics used by the reusable Parlando runtime.
+/// Owns the authoritative Space Game state for one session.
 pub struct SpaceGame {
-    /// Session-bound logger.
-    logger: SessionLogger,
+    state: SpaceGameState,
 }
 
-#[cfg(test)]
 impl SpaceGame {
-    /// Creates an isolated mechanics value for unit tests.
-    pub(crate) fn testing() -> Self {
-        SpaceGameFactory
-            .create(GameSessionContext {
-                logger: SessionLogger::testing(),
-            })
-            .expect("test game construction succeeds")
-    }
-}
-
-/// Reusable constructor for session-local Space Game behavior values.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SpaceGameFactory;
-
-impl GameFactory for SpaceGameFactory {
-    type Game = SpaceGame;
-
-    /// Creates Space Game mechanics with a fully bound logger.
-    fn create(&self, context: GameSessionContext) -> Result<SpaceGame> {
-        Ok(SpaceGame {
-            logger: context.logger,
-        })
-    }
-}
-
-impl Game for SpaceGame {
-    type Config = SpaceGameConfig;
-    type State = SpaceGameState;
-    type Action = SpaceAction;
-    type Observation = SpaceObservation;
-    type Completion = SpaceCompletion;
-
-    fn initial_state(
-        &self,
-        _context: GameInitializationContext<'_, Self::Config>,
-    ) -> Result<Self::State> {
-        Ok(initial_state())
-    }
-
+    /// Rejects unauthorized or unavailable commands before applying them.
     fn apply_action(
-        &self,
-        state: &Self::State,
-        action: &Self::Action,
+        state: &SpaceGameState,
+        action: &SpaceAction,
         actor: PlayerRole,
-    ) -> std::result::Result<Self::State, ActionRejection> {
+    ) -> std::result::Result<SpaceGameState, ActionRejection> {
         validate_action(state, action, actor.as_str()).map_err(|error| {
-            let code = if action.player() != Some(actor.as_str()) {
+            let code = if action.player() != actor.as_str() {
                 "wrong_role"
             } else {
                 "action_unavailable"
@@ -78,17 +32,11 @@ impl Game for SpaceGame {
             debug_assert!(!error.to_string().is_empty());
             ActionRejection::new(code)
         })?;
-        let next = apply_action(state, action).map_err(|_| ActionRejection::new("invalid_action"));
-        if next.is_ok() {
-            let _ = self.logger.log(format!(
-                "accepted Space Game action from role {}",
-                actor.as_str()
-            ));
-        }
-        next
+        Ok(apply_action(state, action))
     }
 
-    fn observation(&self, state: &Self::State, player: PlayerRole) -> Self::Observation {
+    /// Projects the same controls as the rules engine and only this seat’s private knowledge.
+    pub(crate) fn observation(state: &SpaceGameState, player: PlayerRole) -> SpaceObservation {
         SpaceObservation {
             players: state.players.clone(),
             fuses: state.fuses.clone(),
@@ -121,18 +69,12 @@ impl Game for SpaceGame {
                 state.knowledge.b.clone()
             },
             log: vec![],
+            actions: available_actions(state, player.as_str()),
         }
     }
 
-    fn available_actions(
-        &self,
-        state: &Self::State,
-        player: PlayerRole,
-    ) -> Option<Vec<Self::Action>> {
-        Some(available_actions(state, player.as_str()))
-    }
-
-    fn completion(&self, state: &Self::State) -> Option<Self::Completion> {
+    /// Reports a launched beacon as the terminal outcome.
+    pub(crate) fn outcome(state: &SpaceGameState) -> Option<SpaceCompletion> {
         state.beacon_launched.then(|| SpaceCompletion {
             beacon_launched: state.beacon_launched,
             systems: derive_systems(state),
@@ -140,6 +82,42 @@ impl Game for SpaceGame {
     }
 }
 
+impl parlando_game_sdk::Game for SpaceGame {
+    type Config = SpaceGameConfig;
+    type Action = SpaceAction;
+    type ViewA<'a> = SpaceObservation;
+    type ViewB<'a> = SpaceObservation;
+    type Completion<'a> = SpaceCompletion;
+    type Metadata<'a> = ();
+
+    /// Deals deterministic state and initializes the session-local projections.
+    fn init(_config: Self::Config, _seed: u64) -> Result<Self, String> {
+        Ok(Self {
+            state: initial_state(),
+        })
+    }
+
+    /// Validates and applies one operation before emitting new observations.
+    fn step(&mut self, actor: PlayerRole, action: Self::Action) -> Result<(), ActionRejection> {
+        self.state = Self::apply_action(&self.state, &action, actor)?;
+        Ok(())
+    }
+
+    /// Projects information visible to the first seat.
+    fn view_a(&self) -> Self::ViewA<'_> {
+        Self::observation(&self.state, PlayerRole::A)
+    }
+
+    /// Projects information visible to the second seat.
+    fn view_b(&self) -> Self::ViewB<'_> {
+        Self::observation(&self.state, PlayerRole::B)
+    }
+
+    /// Reports the game-defined success outcome when reached.
+    fn completion(&self) -> Option<Self::Completion<'_>> {
+        Self::outcome(&self.state)
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

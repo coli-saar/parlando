@@ -1,6 +1,6 @@
 # Run Agent–Agent and Reinforcement-Learning Experiments
 
-Parlando can run two software agents against the same typed `Game` used by live
+Parlando can run two software agents against the same WebAssembly game component used by live
 participants. These headless sessions do not use browsers, WebSockets, the live
 database, or dashboard session IDs. Instead, an `ExperimentRunner` reads a YAML
 file, creates fresh game and agent instances for each planned session, drives
@@ -12,23 +12,52 @@ reinforcement learning. Human–human and human–agent sessions remain
 event-driven: humans act whenever they send input. The activation schedule
 described here applies only when both players are software agents.
 
+## Select local agent artifacts
+
+From a standalone policy project with a [game dependency](agents.md#start-a-standalone-agent-project),
+run the evaluation against that dependency:
+
+```sh
+parlando run experiment.yaml --manifest agent.yaml
+```
+
+This command builds the policy and registers its factory. Use the ID
+from `agent.yaml` as the factory in the experiment file. The run uses
+the exact game ZIP pinned in `agent.yaml`.
+
+Pass each agent ZIP to `parlando run` with a separate `--agent` option. Name
+its factory ID in the experiment's `agents` mapping. An existing WASM policy
+component also works with `--agent`.
+
+```sh
+parlando run experiment.yaml --package dist/counterweight-hotel-0.1.0.zip \
+  --agent dist/agent-counterweight_hotel.porter-11.0.0.zip
+```
+
+The runner checks each policy's action, completion, and seat view against
+the game. Each local WASM seat's result records the policy component's
+SHA-256 digest.
+
 ## Run a small evaluation
 
-An agent experiment consists of a small Rust binary and a YAML file. The binary
-registers the implementations compiled for your game; the YAML selects among
-them and describes the data to run.
-
-Create a binary like this in your game crate:
+A headless experiment uses a built game component and a YAML file. If the
+experiment uses WASM or remote policies for evaluation, run it with `parlando run` from
+your game project. To register in-process policies or a learner, write a small
+Rust launcher that loads the component and registers the factories named in the
+YAML.
 
 ```rust,ignore
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-use parlando::{ExperimentRunner, GameMetadata};
+use parlando::{component::LoadedGame, ExperimentFile, ExperimentRunner, GameMetadata};
 
 #[derive(Parser)]
 struct Arguments {
+    /// Path to a built game component.
+    #[arg(long)]
+    component: PathBuf,
     /// Path to a parlando-agent-experiment/v1 YAML file.
     experiment: PathBuf,
 }
@@ -46,10 +75,12 @@ async fn main() -> Result<()> {
         }),
     };
 
-    let summary = ExperimentRunner::new(metadata, MyGameFactory)?
+    let experiment = ExperimentFile::read(&arguments.experiment).await?;
+    let game = LoadedGame::load_with_metering(&arguments.component, experiment.wasm_metering())?;
+    let summary = ExperimentRunner::new(metadata, game)?
         .agent(CandidateFactory)?
         .agent(BaselineFactory)?
-        .run_yaml(arguments.experiment)
+        .run_file(experiment)
         .await?;
 
     println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -57,8 +88,7 @@ async fn main() -> Result<()> {
 }
 ```
 
-`MyGameFactory`, `CandidateFactory`, and `BaselineFactory` are ordinary
-`GameFactory` and `AgentFactory` implementations. The stable ID returned by
+`CandidateFactory` and `BaselineFactory` implement `agent::Factory`. The stable ID returned by
 each agent factory's `Definition` is the value used by YAML. The runner creates
 two separate session-local agents even when both seats select the same factory.
 
@@ -98,9 +128,10 @@ output:
 ```
 
 Replace the factory IDs and settings with definitions registered by your
-binary. Each scenario's `config` must deserialize as your game's `G::Config`.
-The runner validates every game configuration and agent setting before it
-starts a session.
+binary. The runner validates every scenario’s `config` against the component’s
+declared configuration schema and validates the agent settings before it starts
+a session. The component can apply additional constraints during session
+initialization.
 
 This example expands to six sessions: three seeds in the stated seat assignment
 and three with the seats reversed. Set `mirror_roles: false` when an agent can
@@ -141,7 +172,7 @@ or game action.
 For most turn-based games, use `alternate_after_action`. It lets an agent send
 one or more messages before committing an action. Use
 `alternate_every_response` when every emitted response should consume a turn.
-If neither rule fits, implement `AgentSchedule<G>` in Rust and register it with
+If neither rule fits, implement `AgentSchedule` in Rust and register it with
 `ExperimentRunner::schedule`. YAML should select a compiled policy by name and
 small parameters, not encode a scheduling program.
 
@@ -178,6 +209,19 @@ With `fail_fast: false`, a failed session is finalized and unrelated sessions
 continue. With `fail_fast: true`, the runner stops after a failed session and
 runs sessions sequentially.
 
+### Choose the game component’s execution budget
+
+`execution.wasm_metering` defaults to `fuel`. Wasmtime gives each game component call a fresh budget of 50 million fuel units and traps if the guest exhausts it. For repeated agent–agent sessions with a trusted component, use the following setting to remove fuel accounting from compiled game code:
+
+```yaml
+execution:
+  wasm_metering: none
+```
+
+The setting applies to all sessions in the run, including RL training and validation. The throughput gain depends on how much time the agents spend waiting for inference or I/O versus executing the game. Compare modes using the same scenarios, seeds, agents and concurrency. Use a fresh output directory when switching modes.
+
+An unmetered guest can keep a worker busy indefinitely inside a single game call. Session deadlines and decision limits take effect when control returns to the host. The component’s memory and instance limits apply in both modes.
+
 ## Inspect results and resume a run
 
 The output directory contains:
@@ -189,8 +233,8 @@ results/my-evaluation/
     sha256-<plan-id>.json
 ```
 
-`run.json` identifies one execution of one normalized YAML specification. Each
-session result records its `run_id`, deterministic `plan_id`, scenario, game
+`run.json` identifies the normalized YAML specification and the SHA-256 digest
+of the loaded component. Each session result records its `run_id`, deterministic `plan_id`, scenario, game
 seed, both resolved agent identities and roles, settings fingerprints,
 completion or failure, counters, elapsed time, and the selected trace.
 
@@ -198,8 +242,8 @@ Choose the least expensive trace that answers your question:
 
 - `results` stores no decision trace;
 - `decisions` stores responses and action rejections;
-- `full` also stores the acting role's role-safe observation and available
-  actions.
+- `full` also stores the acting role’s observation. The observation contains
+  a legal-action catalogue if the game publishes one in its view.
 
 Use `full` only when you need model inputs for diagnosis. Role-safe does not
 mean non-sensitive: observations and agent messages may still contain study or
@@ -208,9 +252,9 @@ participant data, so protect the output directory accordingly.
 Running the same YAML against the same output directory resumes the run. Every
 finalized plan is skipped, including a failed plan; Parlando does not retry an
 entire session automatically. Use a new empty output directory when you want a
-new statistical sample. If the YAML, game ID, or game version differs,
-Parlando refuses to reuse the directory rather than mixing incompatible
-results.
+new statistical sample. Resuming requires the same YAML, game ID, game version,
+and component digest. A run manifest from a native game has no component
+digest and requires a new output directory.
 
 ## Supply secrets without writing values to YAML
 
@@ -249,14 +293,14 @@ model, and decides where checkpoints live.
 
 Three additions are required:
 
-1. implement `RewardFunction<G>` for the learning objective;
-2. implement `RLAgent<G>` for checkpoint-pinned inference and training; and
+1. implement `RewardFunction` for the learning objective;
+2. implement `RLAgent` for checkpoint-pinned inference and training; and
 3. register both implementations in the experiment binary.
 
 Registration extends the earlier binary by two calls:
 
 ```rust,ignore
-let summary = ExperimentRunner::new(metadata, MyGameFactory)?
+let summary = ExperimentRunner::new(metadata, game)?
     .agent(BaselineFactory)?
     .rl_agent(MyLearner)?
     .reward(MyReward)?
@@ -270,41 +314,66 @@ session inference and training.
 
 ### Define rewards
 
-Rewards are separate from `Game` because one game may support several learning
-objectives, while evaluation-only games need none. A reward function receives
-the authoritative state transition after an accepted action and returns one
-number for each fixed role:
+A single component can support several learning objectives. A reward function
+receives the component frames before and after an accepted action and returns one
+number for each fixed role. It can read both role views, transition metadata, and
+the shared completion when present. Implement `configure` to parse and validate the
+YAML parameters once during run setup. The same configured reward serves every
+training session in the run.
 
 ```rust,ignore
-use parlando::{PlayerRole, RewardFunction, RoleRewards};
+use parlando::{component::{ComponentValue, GameFrame}, PlayerRole, RewardFunction, RoleRewards};
 
-struct WinLossReward;
+#[derive(serde::Deserialize)]
+struct Completion {
+    winner: Option<String>,
+}
 
-impl RewardFunction<MyGame> for WinLossReward {
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WinLossReward {
+    win: f64,
+}
+
+impl RewardFunction for WinLossReward {
     fn id(&self) -> &'static str { "win_loss" }
     fn version(&self) -> &'static str { "1" }
 
-    fn validate_parameters(&self, parameters: &serde_json::Value) -> anyhow::Result<()> {
-        // Parse and validate any reward-specific YAML values here.
-        Ok(())
+    fn configure(&self, parameters: &serde_json::Value) -> anyhow::Result<Self> {
+        let reward: Self = serde_json::from_value(parameters.clone())?;
+        anyhow::ensure!(reward.win.is_finite() && reward.win > 0.0, "win must be positive");
+        Ok(reward)
     }
 
     fn rewards(
         &self,
-        _before: &MyState,
-        _after: &MyState,
+        _before: &GameFrame,
+        _after: &GameFrame,
         _actor: PlayerRole,
-        _action: &MyAction,
-        completion: Option<&MyCompletion>,
-        _parameters: &serde_json::Value,
+        _action: &ComponentValue,
+        completion: Option<&ComponentValue>,
     ) -> RoleRewards {
-        match completion.and_then(|value| value.winner) {
-            Some(PlayerRole::A) => RoleRewards { player_a: 1.0, player_b: -1.0 },
-            Some(PlayerRole::B) => RoleRewards { player_a: -1.0, player_b: 1.0 },
-            None => RoleRewards { player_a: 0.0, player_b: 0.0 },
+        let winner = completion
+            .and_then(|value| value.decode::<Completion>().ok())
+            .and_then(|value| value.winner);
+        match winner.as_deref() {
+            Some("A") => RoleRewards { player_a: self.win, player_b: -self.win },
+            Some("B") => RoleRewards { player_a: -self.win, player_b: self.win },
+            _ => RoleRewards { player_a: 0.0, player_b: 0.0 },
         }
     }
 }
+```
+
+Register the implementation with `runner.reward(WinLossReward { win: 1.0 })?`
+and select it under `training` in the experiment YAML.
+
+```yaml
+training:
+  reward:
+    kind: win_loss
+    parameters:
+      win: 1.0
 ```
 
 Only the numeric `RoleRewards` enter the trajectory. Authoritative game state
@@ -312,7 +381,7 @@ does not cross the learner boundary.
 
 ### Expose checkpoint-pinned inference and training
 
-`RLAgent<G>` connects checkpoint management to ordinary agents:
+`RLAgent` connects checkpoint management to ordinary agents:
 
 ```rust,ignore
 use parlando::{
@@ -321,7 +390,7 @@ use parlando::{
 };
 
 #[async_trait::async_trait]
-impl RLAgent<MyGame> for MyLearner {
+impl RLAgent for MyLearner {
     fn factory_id(&self) -> &str {
         "my_learner"
     }
@@ -336,7 +405,7 @@ impl RLAgent<MyGame> for MyLearner {
     }
 
     fn factory(&self, checkpoint: &CheckpointId)
-        -> anyhow::Result<std::sync::Arc<dyn AgentFactory<MyGame>>>
+        -> anyhow::Result<std::sync::Arc<dyn AgentFactory>>
     {
         Ok(std::sync::Arc::new(MyCheckpointFactory::new(checkpoint.clone())))
     }
@@ -347,20 +416,19 @@ impl RLAgent<MyGame> for MyLearner {
         base: &CheckpointId,
         batch: TrainingBatch,
     ) -> anyhow::Result<CheckpointId> {
-        // Decode batch.steps, update from `base`, and publish a new checkpoint.
+        // Update from typed batch.steps and publish a new checkpoint.
         train_policy(context, base, batch).await
     }
 }
 ```
 
-`factory(checkpoint)` must return a normal factory pinned to an immutable
-checkpoint. Its agents receive typed, role-safe `G::Observation` values and
-optional available actions, then return typed `G::Action` values. Parlando does
-not define a game-independent observation vector; encoding belongs in your
-learner.
+`factory(checkpoint)` returns an agent factory pinned to an immutable
+checkpoint. Each agent receives its role-specific view and returns actions as
+`ComponentValue`. A component can publish legal moves in the view. The learner
+defines how to encode that view for its model.
 
-`TrainingBatch` contains ordered action transitions for the named learner. Each
-step includes the role-safe observation, available actions, chosen action,
+On resume, Parlando reloads finalized learner steps from the JSON result files
+into `TrainingBatch`. Each step includes the role-safe observation, chosen action,
 acceptance or rejection, per-role reward for accepted actions, next role-safe
 observation, terminal flag, scenario, role, checkpoint, and stable run/plan/
 decision identity. Version 1 captures action decisions only; it does not assign
@@ -491,4 +559,4 @@ complete local example. Its source shows:
 The example uses a Python Qwen/TorchRL learner. The Parlando Python SDK hides
 the protobuf service implementations, so experiment code receives opaque
 configuration and JSON-shaped trajectory steps. Python is not required by the
-runner; an in-process Rust learner can still implement `RLAgent<G>` directly.
+runner; an in-process Rust learner can still implement `RLAgent` directly.

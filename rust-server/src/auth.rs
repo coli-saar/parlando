@@ -1,4 +1,9 @@
 //! Authentication primitives for the administrator and participant trust planes.
+//!
+//! HTTP handlers use participant credentials to identify a session and administrator sessions
+//! to authorize dashboard requests. A socket upgrade exchanges a scoped ticket for transport
+//! claims exactly once. Administrator credentials and session-token digests use the SQLite
+//! store. Participant credentials and upgrade tickets have runtime-owned lifetimes.
 
 use std::collections::{HashMap, HashSet};
 
@@ -28,6 +33,8 @@ const TICKET_LIFETIME_SECONDS: i64 = 60;
 /// The authenticated identity attached to a participant-owned request.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ParticipantPrincipal {
+    /// Installation-local experiment mount that issued the credential.
+    pub mount_id: Option<u64>,
     /// Non-secret participant-session identifier used for internal correlation.
     pub participant_session_id: String,
     /// Credential generation used to revoke outstanding upgrade tickets.
@@ -36,6 +43,7 @@ pub(crate) struct ParticipantPrincipal {
 
 #[derive(Clone, Debug)]
 struct ParticipantCredentialRecord {
+    mount_id: Option<u64>,
     participant_session_id: String,
     generation: u64,
     expires_at: i64,
@@ -60,11 +68,12 @@ impl Default for ParticipantAuthenticator {
 
 impl ParticipantAuthenticator {
     /// Issues a new high-entropy credential and stores only its SHA-256 digest.
-    pub async fn issue(&self, participant_session_id: String) -> String {
+    pub async fn issue(&self, participant_session_id: String, mount_id: u64) -> String {
         let credential = random_token("par_");
         self.records.write().await.insert(
             token_digest(&credential, &self.pepper),
             ParticipantCredentialRecord {
+                mount_id: Some(mount_id),
                 participant_session_id,
                 generation: 1,
                 expires_at: now_timestamp() + PARTICIPANT_LIFETIME_SECONDS,
@@ -84,6 +93,7 @@ impl ParticipantAuthenticator {
             .get(&token_digest(credential, &self.pepper))
             .cloned()?;
         (!record.revoked && record.expires_at > now).then_some(ParticipantPrincipal {
+            mount_id: record.mount_id,
             participant_session_id: record.participant_session_id,
             generation: record.generation,
         })
@@ -94,6 +104,7 @@ impl ParticipantAuthenticator {
         &self,
         participant_session_id: &str,
         generation: u64,
+        mount_id: u64,
     ) -> bool {
         let now = now_timestamp();
         self.records.read().await.values().any(|record| {
@@ -101,32 +112,61 @@ impl ParticipantAuthenticator {
                 && record.expires_at > now
                 && record.participant_session_id == participant_session_id
                 && record.generation == generation
+                && record.mount_id == Some(mount_id)
         })
     }
 
     /// Removes expired credentials and returns sessions with no remaining active credential.
-    pub async fn cleanup(&self) -> HashSet<String> {
+    pub async fn cleanup(&self, mount_id: u64) -> HashSet<String> {
         let now = now_timestamp();
         let mut records = self.records.write().await;
         let expired = records
             .values()
-            .filter(|record| record.revoked || record.expires_at <= now)
+            .filter(|record| {
+                record.mount_id == Some(mount_id) && (record.revoked || record.expires_at <= now)
+            })
             .map(|record| record.participant_session_id.clone())
             .collect::<HashSet<_>>();
-        records.retain(|_, record| !record.revoked && record.expires_at > now);
+        records.retain(|_, record| {
+            (record.mount_id != Some(mount_id) && record.mount_id.is_some())
+                || (!record.revoked && record.expires_at > now)
+        });
         let active = records
             .values()
+            .filter(|record| record.mount_id == Some(mount_id))
             .map(|record| record.participant_session_id.clone())
             .collect::<HashSet<_>>();
         expired.difference(&active).cloned().collect()
     }
 
-    /// Revokes every credential for one abandoned unattached participant session.
-    pub async fn revoke_participant_session(&self, participant_session_id: &str) {
-        self.records
+    /// Moves the remaining credentials of an eligible unassigned registration into reopened intake.
+    pub async fn transfer_registration(&self, participant_session_id: &str, from: u64, to: u64) {
+        for record in self.records.write().await.values_mut().filter(|record| {
+            record.mount_id == Some(from) && record.participant_session_id == participant_session_id
+        }) {
+            record.mount_id = Some(to);
+        }
+    }
+
+    /// Preserves terminal HTTP reconciliation after the mount releases its runtime.
+    pub async fn release_mount(&self, mount_id: u64) {
+        for record in self
+            .records
             .write()
             .await
-            .retain(|_, record| record.participant_session_id != participant_session_id);
+            .values_mut()
+            .filter(|record| record.mount_id == Some(mount_id))
+        {
+            record.mount_id = None;
+        }
+    }
+
+    /// Revokes every credential for one abandoned unattached participant session.
+    pub async fn revoke_participant_session(&self, participant_session_id: &str, mount_id: u64) {
+        self.records.write().await.retain(|_, record| {
+            record.mount_id != Some(mount_id)
+                || record.participant_session_id != participant_session_id
+        });
     }
 }
 
@@ -578,7 +618,7 @@ mod tests {
     #[tokio::test]
     async fn participant_credentials_resolve_to_the_issued_principal() {
         let auth = ParticipantAuthenticator::default();
-        let credential = auth.issue("participant-public-id".to_string()).await;
+        let credential = auth.issue("participant-public-id".to_string(), 0).await;
         assert!(!auth
             .records
             .read()
@@ -625,7 +665,7 @@ mod tests {
         assert!(auth.authenticate("").await.is_none());
         assert!(auth.authenticate("not-an-issued-token").await.is_none());
 
-        let expired = auth.issue("expired".to_string()).await;
+        let expired = auth.issue("expired".to_string(), 0).await;
         auth.records
             .write()
             .await
@@ -634,7 +674,7 @@ mod tests {
             .expires_at = now_timestamp();
         assert!(auth.authenticate(&expired).await.is_none());
 
-        let revoked = auth.issue("revoked".to_string()).await;
+        let revoked = auth.issue("revoked".to_string(), 0).await;
         auth.records
             .write()
             .await
@@ -648,8 +688,8 @@ mod tests {
     #[tokio::test]
     async fn credential_cleanup_preserves_active_sibling_credentials() {
         let auth = ParticipantAuthenticator::default();
-        let expired = auth.issue("shared".to_string()).await;
-        let active = auth.issue("shared".to_string()).await;
+        let expired = auth.issue("shared".to_string(), 0).await;
+        let active = auth.issue("shared".to_string(), 0).await;
         auth.records
             .write()
             .await
@@ -657,7 +697,7 @@ mod tests {
             .unwrap()
             .expires_at = now_timestamp();
 
-        assert!(auth.cleanup().await.is_empty());
+        assert!(auth.cleanup(0).await.is_empty());
         assert!(auth.authenticate(&active).await.is_some());
         auth.records
             .write()
@@ -665,22 +705,25 @@ mod tests {
             .get_mut(&token_digest(&active, &auth.pepper))
             .unwrap()
             .revoked = true;
-        assert_eq!(auth.cleanup().await, HashSet::from(["shared".to_string()]));
+        assert!(auth.cleanup(1).await.is_empty());
+        assert_eq!(auth.cleanup(0).await, HashSet::from(["shared".to_string()]));
     }
 
     /// Confirms revocation removes every capability associated with one participant session.
     #[tokio::test]
     async fn participant_session_revocation_removes_all_credentials() {
         let auth = ParticipantAuthenticator::default();
-        let first = auth.issue("target".to_string()).await;
-        let second = auth.issue("target".to_string()).await;
-        let unrelated = auth.issue("other".to_string()).await;
+        let first = auth.issue("target".to_string(), 0).await;
+        let second = auth.issue("target".to_string(), 0).await;
+        let unrelated = auth.issue("other".to_string(), 0).await;
+        let newer = auth.issue("target".to_string(), 1).await;
 
-        auth.revoke_participant_session("target").await;
+        auth.revoke_participant_session("target", 0).await;
 
         assert!(auth.authenticate(&first).await.is_none());
         assert!(auth.authenticate(&second).await.is_none());
         assert!(auth.authenticate(&unrelated).await.is_some());
+        assert!(auth.authenticate(&newer).await.is_some());
     }
 
     /// Builds claims for ticket-scope tests without obscuring the scope under assertion.

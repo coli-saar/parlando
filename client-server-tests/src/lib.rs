@@ -8,134 +8,16 @@ use std::{path::Path, process::Stdio, time::Duration};
 use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use parlando::{
+    component::LoadedGame,
     test_support::{
-        build_router, AgentsConfig, AgentsMode, ConsentItemConfig, DatabaseConfig, DirectConfig,
-        ExperimentConfig, ExperimentIdentityConfig, ServeOptions, VoiceConfig,
+        build_router, AgentsConfig, AgentsMode, CommunicationMode, ConsentItemConfig,
+        DatabaseConfig, DirectConfig, ExperimentConfig, ExperimentIdentityConfig, ServeOptions,
     },
-    ActionRejection, Game, GameFactory, GameInitializationContext, GameSessionContext, PlayerRole,
 };
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::{io::AsyncWriteExt, net::TcpListener};
-
-/// Complete authoritative state for the contract fixture game.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ContractState {
-    actions: usize,
-    done: bool,
-}
-
-/// Actions chosen to expose accepted, rejected, and completing transitions.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub enum ContractAction {
-    /// Advances the shared counter and optionally completes the game.
-    Mark { finish: bool },
-    /// Exercises a stable game-level rejection without changing state.
-    Reject,
-}
-
-/// Role-specific public projection returned after every accepted action.
-#[derive(Clone, Debug, Serialize)]
-pub struct ContractObservation {
-    role: String,
-    actions: usize,
-    done: bool,
-}
-
-/// Shared completion value delivered to both participant roles.
-#[derive(Clone, Debug, Serialize)]
-pub struct ContractCompletion {
-    done: bool,
-    actions: usize,
-}
-
-/// Stateless game implementation used by every contract scenario.
-#[derive(Clone, Copy)]
-pub struct ContractGame;
-
-/// Creates one independent contract game for each admitted session.
-#[derive(Clone, Copy)]
-pub struct ContractGameFactory;
-
-impl GameFactory for ContractGameFactory {
-    type Game = ContractGame;
-
-    /// Creates the fixture without external resources or nondeterministic setup.
-    fn create(&self, _context: GameSessionContext) -> Result<Self::Game> {
-        Ok(ContractGame)
-    }
-}
-
-impl Game for ContractGame {
-    type Config = Value;
-    type State = ContractState;
-    type Action = ContractAction;
-    type Observation = ContractObservation;
-    type Completion = ContractCompletion;
-
-    /// Starts every scenario from the same incomplete zero-action state.
-    fn initial_state(
-        &self,
-        _context: GameInitializationContext<'_, Self::Config>,
-    ) -> Result<Self::State> {
-        Ok(ContractState {
-            actions: 0,
-            done: false,
-        })
-    }
-
-    /// Applies one accepted marker or returns the fixture's deliberate rejection.
-    fn apply_action(
-        &self,
-        state: &Self::State,
-        action: &Self::Action,
-        _actor: PlayerRole,
-    ) -> std::result::Result<Self::State, ActionRejection> {
-        match action {
-            ContractAction::Reject => Err(ActionRejection::new("fixture_rejected")),
-            ContractAction::Mark { finish } if state.done => {
-                Err(ActionRejection::new("game_complete"))
-            }
-            ContractAction::Mark { finish } => Ok(ContractState {
-                actions: state.actions + 1,
-                done: *finish,
-            }),
-        }
-    }
-
-    /// Projects the shared counter together with only the recipient's role.
-    fn observation(&self, state: &Self::State, player: PlayerRole) -> Self::Observation {
-        ContractObservation {
-            role: player.as_str().to_string(),
-            actions: state.actions,
-            done: state.done,
-        }
-    }
-
-    /// Enumerates all meaningful fixture actions for client affordance checks.
-    fn available_actions(
-        &self,
-        _state: &Self::State,
-        _player: PlayerRole,
-    ) -> Option<Vec<Self::Action>> {
-        Some(vec![
-            ContractAction::Mark { finish: false },
-            ContractAction::Mark { finish: true },
-            ContractAction::Reject,
-        ])
-    }
-
-    /// Completes precisely after an accepted marker requests completion.
-    fn completion(&self, state: &Self::State) -> Option<Self::Completion> {
-        state.done.then_some(ContractCompletion {
-            done: true,
-            actions: state.actions,
-        })
-    }
-}
 
 /// Running live router backed by an isolated temporary SQLite database.
 pub struct TestServer {
@@ -183,7 +65,7 @@ pub fn contract_config() -> ExperimentConfig {
 /// Starts an active production router with the supplied fixture configuration and providers.
 pub async fn spawn_server(
     mut config: ExperimentConfig,
-    options: ServeOptions<ContractGame>,
+    options: ServeOptions,
 ) -> Result<TestServer> {
     let server = spawn_unactivated_server(&mut config, options).await?;
     activate_experiment(&server.base_url).await?;
@@ -193,7 +75,7 @@ pub async fn spawn_server(
 /// Starts an inactive production router so closed-intake behavior can be tested directly.
 pub async fn spawn_inactive_server(
     mut config: ExperimentConfig,
-    options: ServeOptions<ContractGame>,
+    options: ServeOptions,
 ) -> Result<TestServer> {
     spawn_unactivated_server(&mut config, options).await
 }
@@ -201,14 +83,45 @@ pub async fn spawn_inactive_server(
 /// Builds one isolated router without changing its initial inactive lifecycle.
 async fn spawn_unactivated_server(
     config: &mut ExperimentConfig,
-    options: ServeOptions<ContractGame>,
+    options: ServeOptions,
+) -> Result<TestServer> {
+    start_game_router(
+        config,
+        options,
+        include_bytes!("../../rust-server-tests/stress-fixture/embedded/contract.wasm"),
+    )
+    .await
+}
+
+/// Serves a packaged game component and its configured browser distribution in an active experiment.
+pub async fn spawn_packaged_game(
+    mut config: ExperimentConfig,
+    options: ServeOptions,
+    directory: &Path,
+) -> Result<TestServer> {
+    config.server.client_dist_path = Some(directory.join("client").display().to_string());
+    let server = start_game_router(
+        &mut config,
+        options,
+        &std::fs::read(directory.join("game.wasm"))?,
+    )
+    .await?;
+    activate_experiment(&server.base_url).await?;
+    Ok(server)
+}
+
+/// Creates an isolated database and mounts the supplied component in the production router.
+async fn start_game_router(
+    config: &mut ExperimentConfig,
+    options: ServeOptions,
+    wasm: &[u8],
 ) -> Result<TestServer> {
     let temp = TempDir::new()?;
     config.database.url = format!(
         "sqlite:///{}",
         temp.path().join("client-server-contract.sqlite").display()
     );
-    let router = build_router(ContractGameFactory, config.clone(), options).await?;
+    let router = build_router(LoadedGame::from_bytes(wasm)?, config.clone(), options).await?;
     spawn_router(router, temp).await
 }
 
@@ -310,7 +223,9 @@ pub async fn run_browser_driver(server: &TestServer, fixture: Value) -> Result<V
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or_else(|| anyhow!("contract crate has no repository parent"))?;
-    let browser_directory = repository.join("client-server-tests/browser");
+    let browser_directory = std::env::var_os("PARLANDO_BROWSER_DRIVER_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| repository.join("client-server-tests/browser"));
     let mut child = tokio::process::Command::new("node")
         .arg(browser_directory.join("browser-driver.mjs"))
         .current_dir(&browser_directory)
@@ -365,8 +280,5 @@ pub fn enable_browser_fixture(config: &mut ExperimentConfig) -> Result<()> {
 
 /// Enables the production audio route without selecting an external provider.
 pub fn enable_voice(config: &mut ExperimentConfig) {
-    config.voice = VoiceConfig {
-        enabled: true,
-        ..VoiceConfig::default()
-    };
+    config.communication.mode = CommunicationMode::Speech;
 }

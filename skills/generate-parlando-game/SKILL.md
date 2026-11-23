@@ -1,69 +1,47 @@
 ---
 name: generate-parlando-game
-description: Generate Parlando dialogue games using the published parlando runtime and @coli-saar/parlando-client React participant application. Use when creating, porting, or iterating on a Parlando game.
+description: Implement, port, or update a Parlando game from supplied rules using the Parlando CLI, shared Rust SDK, and participant client. Use for technical game creation, optional policy authoring, and packaging from an existing specification.
 ---
 
-# Generate Parlando Game
+# Generate a Parlando game
 
-Current coordinated release: `0.4.3`.
+Implement the supplied game specification. Ask a focused question only when a missing rule or interface detail blocks implementation. Leave decisions about goals, scoring, difficulty, and player experience with the author.
 
-Generate a complete two-player game using published registry packages. Read `references/server-adapter.md` and `references/browser-client.md`; read `references/config-deployment.md` for deployment or dashboard work and `references/agents.md` when agents are requested. These references are authoritative for generation; do not search for a different Parlando API.
+## Start from the installed CLI
 
-## Discover versions
+For a new game, default to Rust and run `parlando new <game-id> --lang rust`. Use `--lang python` when the user requests Python. For an existing project, inspect its `game.yaml`, dependencies, and scenarios, and keep its implementation language unless the user requests a port.
 
-Query crates.io for `parlando` and npm for `@coli-saar/parlando-client`. Use the newest exact version available from both registries, and never mix different coordinated Parlando versions. Only when the user explicitly requests work on an unpublished future release, use the repository's matching manifest versions for release preparation and disclose that external registry builds remain blocked until both packages are published.
+Use the starter and the documentation for the project's Parlando release to establish the SDK API and file layout. Keep the scaffold's matching SDK and browser dependencies. The [experimenter manual](https://coli-saar.github.io/parlando/manual/) covers tool installation and package conventions.
 
-## Clarify only domain choices
+## Implement the mechanics and browser contract
 
-Ask only when missing information changes mechanics: game goal and terminal outcomes, private information for A and B, actions and validation, observations, game-owned configuration, analysis/completion fields, agent behavior, communication/voice needs, or deployment target. Do not ask game authors to choose pairing, session limits, participant-page configuration, provider types, or server internals; the dashboard owns them.
+- Use the public Game SDK to implement session-owned mechanics for roles A and B. Keep private state in the component, derive random behavior from the supplied seed, and reject invalid actions before mutating state or consuming randomness. Actions change task state. Messages use the participant runtime.
+- Define a view for each role. Expose only that role's authorized information and keep the shared completion safe for both roles. See [component mechanics](references/server-adapter.md) for Rust and Python integration and recovery.
+- With the starter's React client, render the view through `ParticipantApp` and send actions through `snapshot.act`. Let the SDK handle participant entry, connections, and terminal handling. The experiment selects typed chat or speech. Keep the default communication widget, or place one `CommunicationWidget` inside the game and style it using the package's CSS hooks. See [browser client integration](references/browser-client.md) for the placement and styling contract.
+- Show Prolific-specific participant copy only for a seat admitted through Prolific. In game UI, use `snapshot.recruitmentSource === "prolific"`. Let `ParticipantApp` render return codes and links from the server-issued handoff. In the packaged game, check both a direct waiting-room exit and a Prolific admission. See the [browser client reference](references/browser-client.md).
+- Keep study settings and secrets in the host's configuration. Use typed game configuration for the game's own parameters. Read [deployment](references/config-deployment.md) when the task includes upload or hosting.
 
-## Non-negotiable boundaries
+## Add a policy when requested
 
-- Exactly two roles exist: `PlayerRole::A` and `PlayerRole::B`. Either can be human or an agent.
-- The Rust runtime alone owns authoritative `State`.
-- Human and automated players receive the same accepted actions and shared `Completion`, together with role-specific `Observation`.
-- Actions alone change state; messages only communicate between players.
-- Games and agents use structured domain data and make no human-presentation assumptions.
-- The Rust server is frontend-neutral. The JS client and React `ParticipantApp` are optional conveniences.
-- Generated code must not use `test_support`, internal modules, provider configuration, storage, routers, or protocol DTOs.
-- Never generate compatibility aliases for `GameAdapter`, events, state delivery, or old agent callbacks.
+Use the same Rust SDK to write a typed policy against the game's compact
+action, role-private view, and completion. Build the game ZIP first and
+pin it with `parlando agent new <agent-id> --game "$PACKAGE"` for a new
+standalone policy or `parlando agent set-game "$PACKAGE"` for an existing
+agent manifest. Build the separate agent ZIP and exercise it against the
+pinned game in a seeded experiment.
+Use the built-in remote gRPC adapter for a separately hosted policy. Follow
+[agent integration](references/agents.md) for implementation and validation.
 
-## Output
+## Validate the package
 
-Generate a Rust server/game crate, a participant application, pure mechanics tests, build/run files, and optional agents. Keep mechanics in pure functions behind a thin `Game` implementation. Use registry dependencies, not local Parlando paths.
+From the game project, run:
 
-## Rust
+```sh
+parlando test
+PACKAGE=$(parlando build --json | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["package"])')
+parlando check --package "$PACKAGE"
+```
 
-Implement a session-owned `Game` with `Config`, `State`, `Action`, `Observation`, and `Completion`; implement seeded `initial_state`, actor-aware `apply_action`, `observation`, optional `available_actions`, optional role-neutral `transition_metadata`, and `completion`. Implement a separate process-owned `GameFactory` that validates configuration and constructs a fresh game from `GameSessionContext` for every session.
+Update the generated scenarios to exercise relevant accepted and rejected actions, both role views, the terminal outcome, and recovery where appropriate. For a local pilot, [start a server, deploy the game, and start a local preview](https://coli-saar.github.io/parlando/manual/start/getting-started/#start-a-local-server). Use the client tarball from the same candidate when working from an unreleased Parlando checkout. A game version bump alone keeps the dependency resolved by npm. Open the packaged participant landing page with the game theme applied. For a speech pilot, check the spacing of the voice status and controls before permission, then prepare a microphone and confirm the shared level meter responds when you speak, both on entry and while the first participant waits for a partner. Preserve the SDK meter and its CSS hooks when theming these screens. For a human–agent speech experiment, pilot that pairing with its configured startup gates. Check the selected microphone name, reload and prepare it again while waiting, then verify activation and the first legal action. For typed entry, confirm the voice controls are absent. If the participant interface changed, verify that actions are disabled outside an active interaction and that the intended view and completion render. Use two independent browser profiles for a two-human pilot.
 
-`apply_action` performs authorization and validation atomically and returns stable `ActionRejection` codes for expected failures. `observation` is the complete player-visible domain model and must filter private data. `transition_metadata` is analysis data for runtime-owned logs, never participant prose.
-
-Start with `Server::new(game_factory, metadata)`, set database and optional participant assets, register optional agent factories with `.agent(...)`, and call `.serve(address)`. Do not construct `ExperimentConfig`, `ServeOptions`, providers, or routers.
-
-## Agents
-
-Implement `agent::Agent<G>` and `agent::Factory<G>`. Factory creation receives role, seed, and agent-owned settings before game delivery. Store the first observation in `start`; observe later accepted actions in `observe_transition`; observe other-player text in `observe_message`; receive the shared terminal result in `finish`; and decide in `respond`.
-
-Return a non-empty `Response::action`, `Response::message`, or `Response::action_and_message`. A message does not change game state. Release per-session resources in `shutdown`. The server includes the remote gRPC factory by default; configure its endpoint and optional YAML settings in the dashboard, and use the Python `Agent`, `Context`, `Response`, and `serve` API for remote implementations. Keep agent credentials in the remote process. Python combines outputs with `Response.action_with_message`.
-
-Do not solve model readiness with game messages. The current construction-ready rule is completion of factory creation; explicit readiness and blocking-load isolation are deferred runtime work.
-
-## Participant application
-
-Use `ParticipantApp` and `GameSession<Observation, Action, Completion>` from `@coli-saar/parlando-client/react`. Render current state from `session.observation`; use the nullable `session.transition` only when the presentation needs the most recent accepted actor and action. Send actions with `sendAction` and player messages with `sendMessage`. Disable game controls unless `session.interactionEnabled` is true. Use the shared `completion`, `voiceEnabled`, `voiceStatus`, and the exported microphone/transcription widgets as needed. `ParticipantApp` owns credential recovery, partner-disconnect pausing, the standard `PartnerReconnectNotice`, recipient-specific terminal outcomes, and recruitment handoff.
-
-Do not read authoritative state, generic events, complete experiment configuration, provider credentials, or peer controller type. Do not build custom audio transport, transcription, TTS, startup lifecycle, or WebSocket message handling when the SDK supplies it.
-
-Do not implement transport-disconnect or recruitment end screens in game code. `ParticipantApp` renders the standard terminal surface and prevents normal controls after every terminal outcome. Completion is determined by Rust `Game::completion`, and its shared payload must be safe for both roles. Put private terminal facts in each role's final observation.
-
-## Configuration and deployment
-
-The dashboard owns experiment creation, participant information and consent copy, pairing, capacity, lifecycle limits, privacy, conversation, agents, voice, transcription, and TTS. Process bootstrap owns listener address, database URL, optional participant asset path, public URL, and provider secrets. Game code owns only `Game::Config`; an agent factory owns only its settings. Do not create a configurable participant title; the standard application uses functional screen headings and the game frontend owns game presentation.
-
-Keep provider secrets in server or remote-agent environment variables. Never place them in frontend code or checked-in experiment data.
-
-## Validate
-
-Run formatting, Rust checks/tests, JS build/tests, and Python tests when used. Test deterministic initialization, every legal/illegal action, A/B observation privacy, success and failure completion, transition metadata shape, messages not changing state, agent lifecycle, disabled controls while `interactionEnabled` is false, and compatibility with the SDK terminal/reconnect UI. Inspect generated code for old names listed in `docs/migrating-0.3.0-to-0.4.0.md`; none may remain.
-
-End with changed files, commands and results, exact run command, dashboard URL, agent commands, deployment notes, and assumptions.
+Report the package path, the checks that ran, and the local serve command. Include deployment results or agent commands when those are part of the request.

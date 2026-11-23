@@ -24,6 +24,8 @@ Consent is an admission guard on `Registered -> Waiting`; it is not a participan
 
 ## HTTP workflow
 
+Read `GET /api/config` before participant entry. Its `communication.mode` selects the session channel. In `typed` mode the participant can enter directly and exchange text in active play. In `speech` mode the participant prepares the microphone before entry and obtains an authenticated audio plan. A typed experiment returns a disabled audio plan without an upgrade token.
+
 1. `POST /api/participants` creates a participant credential.
 2. `POST /api/consent` records required consent decisions.
 3. `POST /api/sessions` joins or reuses a session and returns `{ "participant_state": ... }`.
@@ -44,7 +46,7 @@ Clients may send only:
 
 - `ready`
 - `action`
-- `message`
+- `message` for participant-authored text in typed mode. Sending it in speech mode returns a nonfatal `typed_messages_disabled` error.
 - `heartbeat`
 
 Explicit leave is HTTP-only. Unknown protocol versions or message variants are errors.
@@ -53,7 +55,7 @@ Explicit leave is HTTP-only. Unknown protocol versions or message variants are e
 
 The shared session lifecycle is `forming | running | ended`; pause is an orthogonal availability fact. An ended session stores a structured cause and a result for each human role in the same transaction. Participant `Ended` is the role-specific projection of that shared value.
 
-This distinction prevents session causes such as idle timeout or game completion from being misrepresented as participant states. Dashboard and export records therefore use `lifecycle: "ended"` plus `session_end`, not terminal status strings such as `completed`, `abandoned`, or `expired`.
+The dashboard exposes the durable `lifecycle` and `session_end` values. The research corpus derives its session-level `metadata.status` from those fields. See [Choose an export](data-and-monitoring.md#choose-an-export) for the v1 mapping.
 
 ## Client synchronization
 

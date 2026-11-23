@@ -1,0 +1,7 @@
+id: last-screening
+name: The Last Screening
+version: 0.1.0
+cargo_manifest: server/Cargo.toml
+component: game.wasm
+client_project: client/web
+client_dist: client/web/dist

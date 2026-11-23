@@ -1,0 +1,367 @@
+[
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [],
+    "metadata": {
+      "end_time": 1.36,
+      "start_time": 0.0,
+      "transcript": ""
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [],
+    "metadata": {
+      "end_time": 2.8,
+      "start_time": 1.36,
+      "transcript": ""
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "Amber",
+            "language": "en"
+          }
+        ],
+        "end_time": 3.4,
+        "start_time": 3.0,
+        "type": "word"
+      }
+    ],
+    "metadata": {
+      "end_time": 3.4,
+      "start_time": 2.72,
+      "transcript": "Amber "
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "lantern",
+            "language": "en"
+          }
+        ],
+        "end_time": 3.96,
+        "start_time": 3.4,
+        "type": "word"
+      },
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": ".",
+            "language": "en"
+          }
+        ],
+        "attaches_to": "previous",
+        "end_time": 3.96,
+        "is_eos": true,
+        "start_time": 3.96,
+        "type": "punctuation"
+      }
+    ],
+    "metadata": {
+      "end_time": 5.6,
+      "start_time": 3.4,
+      "transcript": "lantern. "
+    }
+  },
+  {
+    "message": "EndOfUtterance",
+    "format": "2.9",
+    "metadata": {
+      "end_time": 5.68,
+      "start_time": 5.68
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [],
+    "metadata": {
+      "end_time": 7.12,
+      "start_time": 5.68,
+      "transcript": ""
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [],
+    "metadata": {
+      "end_time": 8.56,
+      "start_time": 7.12,
+      "transcript": ""
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [],
+    "metadata": {
+      "end_time": 10.0,
+      "start_time": 8.56,
+      "transcript": ""
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "Indigo",
+            "language": "en"
+          }
+        ],
+        "end_time": 10.4,
+        "start_time": 10.0,
+        "type": "word"
+      },
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": ".",
+            "language": "en"
+          }
+        ],
+        "attaches_to": "previous",
+        "end_time": 10.4,
+        "is_eos": true,
+        "start_time": 10.4,
+        "type": "punctuation"
+      }
+    ],
+    "metadata": {
+      "end_time": 10.4,
+      "start_time": 9.92,
+      "transcript": "Indigo. "
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "Window",
+            "language": "en"
+          }
+        ],
+        "end_time": 10.96,
+        "start_time": 10.44,
+        "type": "word"
+      },
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": ".",
+            "language": "en"
+          }
+        ],
+        "attaches_to": "previous",
+        "end_time": 10.96,
+        "is_eos": true,
+        "start_time": 10.96,
+        "type": "punctuation"
+      }
+    ],
+    "metadata": {
+      "end_time": 12.8,
+      "start_time": 10.4,
+      "transcript": "Window. "
+    }
+  },
+  {
+    "message": "EndOfUtterance",
+    "format": "2.9",
+    "metadata": {
+      "end_time": 12.88,
+      "start_time": 12.88
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [],
+    "metadata": {
+      "end_time": 14.32,
+      "start_time": 12.88,
+      "transcript": ""
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [],
+    "metadata": {
+      "end_time": 15.76,
+      "start_time": 14.32,
+      "transcript": ""
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [],
+    "metadata": {
+      "end_time": 17.2,
+      "start_time": 15.76,
+      "transcript": ""
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [],
+    "metadata": {
+      "end_time": 18.64,
+      "start_time": 17.2,
+      "transcript": ""
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "Silver",
+            "language": "en"
+          }
+        ],
+        "end_time": 20.36,
+        "start_time": 19.88,
+        "type": "word"
+      },
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": ".",
+            "language": "en"
+          }
+        ],
+        "attaches_to": "previous",
+        "end_time": 20.36,
+        "is_eos": true,
+        "start_time": 20.36,
+        "type": "punctuation"
+      }
+    ],
+    "metadata": {
+      "end_time": 20.36,
+      "start_time": 18.56,
+      "transcript": "Silver. "
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "Button",
+            "language": "en"
+          }
+        ],
+        "end_time": 20.92,
+        "start_time": 20.4,
+        "type": "word"
+      },
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": ".",
+            "language": "en"
+          }
+        ],
+        "attaches_to": "previous",
+        "end_time": 20.92,
+        "is_eos": true,
+        "start_time": 20.92,
+        "type": "punctuation"
+      }
+    ],
+    "metadata": {
+      "end_time": 22.16,
+      "start_time": 20.36,
+      "transcript": "Button. "
+    }
+  },
+  {
+    "message": "EndOfUtterance",
+    "format": "2.9",
+    "metadata": {
+      "end_time": 22.24,
+      "start_time": 22.24
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [],
+    "metadata": {
+      "end_time": 23.68,
+      "start_time": 22.24,
+      "transcript": ""
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [],
+    "metadata": {
+      "end_time": 25.12,
+      "start_time": 23.68,
+      "transcript": ""
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [],
+    "metadata": {
+      "end_time": 26.56,
+      "start_time": 25.12,
+      "transcript": ""
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [],
+    "metadata": {
+      "end_time": 27.0,
+      "start_time": 26.56,
+      "transcript": ""
+    }
+  },
+  {
+    "message": "EndOfTranscript"
+  }
+]

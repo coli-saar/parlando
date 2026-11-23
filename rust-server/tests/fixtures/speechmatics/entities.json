@@ -1,0 +1,371 @@
+[
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "Wait",
+            "language": "en"
+          }
+        ],
+        "end_time": 0.44,
+        "start_time": 0.08,
+        "type": "word"
+      },
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": ",",
+            "language": "en"
+          }
+        ],
+        "attaches_to": "previous",
+        "end_time": 0.44,
+        "is_eos": false,
+        "start_time": 0.44,
+        "type": "punctuation"
+      }
+    ],
+    "metadata": {
+      "end_time": 0.44,
+      "start_time": 0.0,
+      "transcript": "Wait, "
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "no",
+            "language": "en"
+          }
+        ],
+        "end_time": 0.76,
+        "start_time": 0.44,
+        "type": "word"
+      },
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": ",",
+            "language": "en"
+          }
+        ],
+        "attaches_to": "previous",
+        "end_time": 0.76,
+        "is_eos": false,
+        "start_time": 0.76,
+        "type": "punctuation"
+      }
+    ],
+    "metadata": {
+      "end_time": 0.76,
+      "start_time": 0.44,
+      "transcript": "no, "
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "actually",
+            "language": "en"
+          }
+        ],
+        "end_time": 1.36,
+        "start_time": 0.8,
+        "type": "word"
+      },
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": ".",
+            "language": "en"
+          }
+        ],
+        "attaches_to": "previous",
+        "end_time": 1.36,
+        "is_eos": true,
+        "start_time": 1.36,
+        "type": "punctuation"
+      }
+    ],
+    "metadata": {
+      "end_time": 1.36,
+      "start_time": 0.76,
+      "transcript": "actually. "
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 0.98,
+            "content": "£17.25",
+            "language": "en"
+          }
+        ],
+        "end_time": 3.44,
+        "entity_class": "money",
+        "spoken_form": [
+          {
+            "alternatives": [
+              {
+                "confidence": 1.0,
+                "content": "Seventeen",
+                "language": "en"
+              }
+            ],
+            "end_time": 1.96,
+            "start_time": 1.4,
+            "type": "word"
+          },
+          {
+            "alternatives": [
+              {
+                "confidence": 1.0,
+                "content": "pounds",
+                "language": "en"
+              }
+            ],
+            "end_time": 2.32,
+            "start_time": 1.96,
+            "type": "word"
+          },
+          {
+            "alternatives": [
+              {
+                "confidence": 0.98,
+                "content": "and",
+                "language": "en"
+              }
+            ],
+            "end_time": 2.48,
+            "start_time": 2.32,
+            "type": "word"
+          },
+          {
+            "alternatives": [
+              {
+                "confidence": 1.0,
+                "content": "twenty",
+                "language": "en"
+              }
+            ],
+            "end_time": 2.8,
+            "start_time": 2.48,
+            "type": "word"
+          },
+          {
+            "alternatives": [
+              {
+                "confidence": 1.0,
+                "content": "five",
+                "language": "en"
+              }
+            ],
+            "end_time": 3.12,
+            "start_time": 2.84,
+            "type": "word"
+          },
+          {
+            "alternatives": [
+              {
+                "confidence": 1.0,
+                "content": "pence",
+                "language": "en"
+              }
+            ],
+            "end_time": 3.44,
+            "start_time": 3.12,
+            "type": "word"
+          }
+        ],
+        "start_time": 1.4,
+        "type": "entity",
+        "written_form": [
+          {
+            "alternatives": [
+              {
+                "confidence": 0.98,
+                "content": "£17.25",
+                "language": "en"
+              }
+            ],
+            "end_time": 3.44,
+            "start_time": 1.4,
+            "type": "word"
+          }
+        ]
+      }
+    ],
+    "metadata": {
+      "end_time": 3.44,
+      "start_time": 1.36,
+      "transcript": "£17.25 "
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "on",
+            "language": "en"
+          }
+        ],
+        "end_time": 3.6,
+        "start_time": 3.44,
+        "type": "word"
+      }
+    ],
+    "metadata": {
+      "end_time": 3.6,
+      "start_time": 3.44,
+      "transcript": "on "
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": "January 21st",
+            "language": "en"
+          }
+        ],
+        "end_time": 5.0,
+        "entity_class": "date",
+        "spoken_form": [
+          {
+            "alternatives": [
+              {
+                "confidence": 1.0,
+                "content": "January",
+                "language": "en"
+              }
+            ],
+            "end_time": 4.04,
+            "start_time": 3.6,
+            "type": "word"
+          },
+          {
+            "alternatives": [
+              {
+                "confidence": 1.0,
+                "content": "twenty",
+                "language": "en"
+              }
+            ],
+            "end_time": 4.44,
+            "start_time": 4.04,
+            "type": "word"
+          },
+          {
+            "alternatives": [
+              {
+                "confidence": 1.0,
+                "content": "first",
+                "language": "en"
+              }
+            ],
+            "end_time": 5.0,
+            "start_time": 4.48,
+            "type": "word"
+          }
+        ],
+        "start_time": 3.6,
+        "type": "entity",
+        "written_form": [
+          {
+            "alternatives": [
+              {
+                "confidence": 1.0,
+                "content": "January",
+                "language": "en"
+              }
+            ],
+            "end_time": 4.3,
+            "start_time": 3.6,
+            "type": "word"
+          },
+          {
+            "alternatives": [
+              {
+                "confidence": 1.0,
+                "content": "21st",
+                "language": "en"
+              }
+            ],
+            "end_time": 5.0,
+            "start_time": 4.3,
+            "type": "word"
+          }
+        ]
+      },
+      {
+        "alternatives": [
+          {
+            "confidence": 1.0,
+            "content": ".",
+            "language": "en"
+          }
+        ],
+        "attaches_to": "previous",
+        "end_time": 5.0,
+        "is_eos": true,
+        "start_time": 5.0,
+        "type": "punctuation"
+      }
+    ],
+    "metadata": {
+      "end_time": 6.32,
+      "start_time": 3.6,
+      "transcript": "January 21st. "
+    }
+  },
+  {
+    "message": "EndOfUtterance",
+    "format": "2.9",
+    "metadata": {
+      "end_time": 6.4,
+      "start_time": 6.4
+    }
+  },
+  {
+    "message": "AddTranscript",
+    "format": "2.9",
+    "results": [],
+    "metadata": {
+      "end_time": 7.08,
+      "start_time": 6.4,
+      "transcript": ""
+    }
+  },
+  {
+    "message": "EndOfTranscript"
+  }
+]

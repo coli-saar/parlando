@@ -1,3 +1,10 @@
+/**
+ * AudioSessionController combines MicrophoneSource preflight readings and LocalAudioSink
+ * updates into the snapshot consumed by the participant UI. It connects the prepared
+ * microphone to a session and owns the requested mute state across reconnects. Transport
+ * teardown can retain the input for the next connection.
+ */
+
 import { MicrophoneSource } from "./microphoneSource.js";
 import type {
   AudioSessionContext,

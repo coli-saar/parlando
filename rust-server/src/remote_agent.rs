@@ -1,9 +1,15 @@
+//! The live runtime and headless runner use this adapter through their ordinary agent and
+//! learner interfaces. It sends role-scoped observations to a remote gRPC instance, decodes
+//! its decisions, and writes returned log entries through the local session logger. The
+//! decision request preserves the distinction between an empty action list and a game that
+//! does not enumerate actions.
+
 use std::{collections::BTreeMap, env, fmt, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use prost_types::{value::Kind, ListValue, NullValue, Struct, Value as ProstValue};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Number, Value};
 use tonic::{
     metadata::{Ascii, MetadataValue},
@@ -12,10 +18,14 @@ use tonic::{
     Request, Status,
 };
 
+use crate::component::ComponentValue;
 use crate::{
     agent_experiment::{CheckpointId, RLAgent, RLTrainingContext, TrainingBatch, TrajectoryStep},
-    agents::{Agent, AgentContext, AgentFactory, AgentIdentity, AgentResponse},
-    game::{AgentConfigField, AgentConfigValue, AgentDefinition, Game, PlayerRole, StringFormat},
+    agents::{
+        Agent, AgentContext, AgentFactory, AgentIdentity, Decision, Observation, Reason,
+        WakeupRequest,
+    },
+    game::{AgentConfigField, AgentConfigValue, AgentDefinition, PlayerRole, StringFormat},
 };
 
 /// Generated protobuf types and gRPC service clients for remote agents.
@@ -30,7 +40,8 @@ pub mod learner_pb {
 
 use pb::{
     agent_service_client::AgentServiceClient, CreateAgentRequest, FinishRequest,
-    ObserveMessageRequest, ObserveTransitionRequest, RespondRequest, ShutdownRequest, StartRequest,
+    ObserveMessageRequest, ObserveRequest, ObserveTransitionRequest, RespondRequest,
+    ShutdownRequest, StartRequest,
 };
 
 /// Configuration for a remote gRPC agent backend.
@@ -108,7 +119,7 @@ impl Default for RemoteAgent {
 }
 
 #[async_trait]
-impl<A: Game> AgentFactory<A> for RemoteAgent {
+impl AgentFactory for RemoteAgent {
     /// Describes the standard remote gRPC agent choice for the dashboard.
     fn definition(&self) -> AgentDefinition {
         AgentDefinition {
@@ -142,8 +153,8 @@ impl<A: Game> AgentFactory<A> for RemoteAgent {
         }
     }
 
-    /// Creates one lazy remote-agent handle for a session participant.
-    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<A> + Send>> {
+    /// Creates one fully initialized remote-agent handle for a session participant.
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         create_remote_instance(context, None).await
     }
 
@@ -158,20 +169,50 @@ impl<A: Game> AgentFactory<A> for RemoteAgent {
 }
 
 /// Creates and initializes a remote agent, optionally pinned to a learner checkpoint.
-async fn create_remote_instance<A: Game>(
+async fn create_remote_instance(
     context: AgentContext,
     checkpoint: Option<CheckpointId>,
-) -> Result<Box<dyn Agent<A> + Send>> {
+) -> Result<Box<dyn Agent + Send>> {
     let config = remote_config_from_settings(&context.settings)?;
-    let mut agent = RemoteAgentInstance {
+    validate_remote_endpoint(&config.endpoint, config.auth_token.is_some())?;
+    let channel = Channel::from_shared(config.endpoint.clone())
+        .context("invalid remote agent endpoint")?
+        .connect()
+        .await
+        .context("failed to connect to remote agent service")?;
+    let authorization = config
+        .auth_token
+        .as_ref()
+        .map(|token| format!("Bearer {token}").parse::<MetadataValue<Ascii>>())
+        .transpose()
+        .context("remote-agent bearer token is not valid metadata")?;
+    let mut client =
+        AgentServiceClient::with_interceptor(channel, RemoteAuthInterceptor { authorization });
+    let request = CreateAgentRequest {
+        role: context.role.as_str().to_string(),
+        seed: context.seed,
+        config: Some(json_to_struct(config.structured_settings()?)?),
+        checkpoint_id: checkpoint.map(|value| value.as_str().to_string()),
+    };
+    let response = tokio::time::timeout(config.request_timeout, client.create_agent(request))
+        .await
+        .context("remote agent create timed out")?
+        .context("remote agent create failed")?
+        .into_inner();
+    for entry in response.session_logs {
+        let _ = context.logger.log(entry);
+    }
+    if response.agent_id.is_empty() {
+        bail!("remote agent returned an empty agent_id");
+    }
+    Ok(Box::new(RemoteAgentInstance {
         config,
         init_context: context,
-        client: None,
-        agent_id: None,
-        checkpoint,
-    };
-    agent.ensure_created().await?;
-    Ok(Box::new(agent))
+        state: RemoteAgentState::Active {
+            client: Box::new(client),
+            agent_id: response.agent_id,
+        },
+    }))
 }
 
 /// Factory view of one immutable checkpoint owned by a remote learner.
@@ -180,25 +221,25 @@ struct RemoteCheckpointFactory {
 }
 
 #[async_trait]
-impl<G: Game> AgentFactory<G> for RemoteCheckpointFactory {
+impl AgentFactory for RemoteCheckpointFactory {
     /// Uses the same transport and opaque configuration schema as [`RemoteAgent`].
     fn definition(&self) -> AgentDefinition {
-        <RemoteAgent as AgentFactory<G>>::definition(&RemoteAgent)
+        <RemoteAgent as AgentFactory>::definition(&RemoteAgent)
     }
 
     /// Creates an inference agent pinned to this factory's checkpoint.
-    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<G> + Send>> {
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         create_remote_instance(context, Some(self.checkpoint.clone())).await
     }
 
     /// Returns the remote implementation identity independently of checkpoint identity.
     fn identity(&self, settings: &Value) -> Result<AgentIdentity> {
-        <RemoteAgent as AgentFactory<G>>::identity(&RemoteAgent, settings)
+        <RemoteAgent as AgentFactory>::identity(&RemoteAgent, settings)
     }
 }
 
 #[async_trait]
-impl<G: Game> RLAgent<G> for RemoteAgent {
+impl RLAgent for RemoteAgent {
     /// Returns the standard remote transport factory selector.
     fn factory_id(&self) -> &str {
         "remote_grpc"
@@ -214,7 +255,7 @@ impl<G: Game> RLAgent<G> for RemoteAgent {
     }
 
     /// Exposes an immutable checkpoint through the ordinary agent factory interface.
-    fn factory(&self, checkpoint: &CheckpointId) -> Result<Arc<dyn AgentFactory<G>>> {
+    fn factory(&self, checkpoint: &CheckpointId) -> Result<Arc<dyn AgentFactory>> {
         Ok(Arc::new(RemoteCheckpointFactory {
             checkpoint: checkpoint.clone(),
         }))
@@ -291,55 +332,16 @@ impl RemoteGrpcAgentConfig {
 pub struct RemoteAgentInstance {
     config: RemoteGrpcAgentConfig,
     init_context: AgentContext,
-    client: Option<AuthenticatedAgentClient>,
-    agent_id: Option<String>,
-    checkpoint: Option<CheckpointId>,
+    state: RemoteAgentState,
 }
 
-impl RemoteAgentInstance {
-    /// Connects to the remote service and sends the create-agent request once.
-    async fn ensure_created(&mut self) -> Result<()> {
-        if self.agent_id.is_some() {
-            return Ok(());
-        }
-        validate_remote_endpoint(&self.config.endpoint, self.config.auth_token.is_some())?;
-        let channel = Channel::from_shared(self.config.endpoint.clone())
-            .context("invalid remote agent endpoint")?
-            .connect()
-            .await
-            .context("failed to connect to remote agent service")?;
-        let authorization = self
-            .config
-            .auth_token
-            .as_ref()
-            .map(|token| format!("Bearer {token}").parse::<MetadataValue<Ascii>>())
-            .transpose()
-            .context("remote-agent bearer token is not valid metadata")?;
-        let mut client =
-            AgentServiceClient::with_interceptor(channel, RemoteAuthInterceptor { authorization });
-        let request = CreateAgentRequest {
-            role: self.init_context.role.as_str().to_string(),
-            seed: self.init_context.seed,
-            config: Some(json_to_struct(self.config.structured_settings()?)?),
-            checkpoint_id: self
-                .checkpoint
-                .as_ref()
-                .map(|value| value.as_str().to_string()),
-        };
-        let response =
-            tokio::time::timeout(self.config.request_timeout, client.create_agent(request))
-                .await
-                .context("remote agent create timed out")?
-                .context("remote agent create failed")?
-                .into_inner();
-        self.record_remote_logs(response.session_logs);
-        if response.agent_id.is_empty() {
-            bail!("remote agent returned an empty agent_id");
-        }
-        self.client = Some(client);
-        self.agent_id = Some(response.agent_id);
-        Ok(())
-    }
+/// Transport resources exist exactly while the remote agent is active.
+enum RemoteAgentState {
+    Active {
+        client: Box<AuthenticatedAgentClient>,
+        agent_id: String,
+    },
+    Shutdown,
 }
 
 /// Rejects cleartext remote-agent transport unless it is confined to loopback development.
@@ -381,28 +383,68 @@ fn validate_remote_endpoint(endpoint: &str, has_auth_token: bool) -> Result<()> 
 }
 
 #[async_trait]
-impl<A> Agent<A> for RemoteAgentInstance
-where
-    A: Game,
-    A::Action: DeserializeOwned + Serialize,
-{
+impl Agent for RemoteAgentInstance {
     /// Delivers the first observation after the remote process has created the agent.
-    async fn start(&mut self, initial_observation: A::Observation) -> Result<()> {
-        self.ensure_created().await?;
+    async fn start(&mut self, initial_observation: ComponentValue) -> Result<()> {
+        let request_timeout = self.config.request_timeout;
+        let (client, agent_id) = self.active()?;
         let request = StartRequest {
-            agent_id: self.agent_id()?,
-            observation: Some(json_to_struct(serde_json::to_value(initial_observation)?)?),
+            agent_id,
+            observation: Some(component_to_struct(initial_observation)?),
         };
-        tokio::time::timeout(self.config.request_timeout, self.client()?.start(request))
+        let logs = tokio::time::timeout(request_timeout, client.start(request))
             .await
             .context("remote agent start timed out")?
             .context("remote agent start failed")?
             .into_inner()
-            .session_logs
-            .into_iter()
-            .for_each(|entry| {
-                let _ = self.init_context.logger.log(entry);
+            .session_logs;
+        self.record_remote_logs(logs);
+        Ok(())
+    }
+
+    /// Sends both facets of one committed delivery in the same request.
+    async fn observe(&mut self, observation: Observation) -> Result<()> {
+        let request_timeout = self.config.request_timeout;
+        let (client, agent_id) = self.active()?;
+        let transition = observation
+            .transition
+            .as_ref()
+            .map(|transition| {
+                Ok::<_, anyhow::Error>(pb::observe_request::Transition {
+                    actor: transition.actor.as_str().to_owned(),
+                    action: Some(component_to_struct(transition.action.clone())?),
+                    view: Some(component_to_struct(transition.view.clone())?),
+                })
+            })
+            .transpose()?;
+        let message = observation
+            .message
+            .as_ref()
+            .map(|message| pb::observe_request::Message {
+                sender: message.sender.as_str().to_owned(),
+                text: message.text.clone(),
             });
+        let request = ObserveRequest {
+            agent_id,
+            transition,
+            message,
+        };
+        let response = tokio::time::timeout(request_timeout, client.observe(request))
+            .await
+            .context("remote agent observe timed out")?;
+        match response {
+            Ok(response) => self.record_remote_logs(response.into_inner().session_logs),
+            Err(error) if error.code() == tonic::Code::Unimplemented => {
+                if let Some(transition) = observation.transition {
+                    self.observe_transition(transition.actor, transition.action, transition.view)
+                        .await?;
+                }
+                if let Some(message) = observation.message {
+                    self.observe_message(message.sender, message.text).await?;
+                }
+            }
+            Err(error) => return Err(error).context("remote agent observe failed"),
+        }
         Ok(())
     }
 
@@ -410,18 +452,16 @@ where
     async fn observe_transition(
         &mut self,
         actor: PlayerRole,
-        action: A::Action,
-        observation: A::Observation,
+        action: ComponentValue,
+        observation: ComponentValue,
     ) -> Result<()> {
-        self.ensure_created().await?;
-        let agent_id = self.agent_id()?;
         let request_timeout = self.config.request_timeout;
-        let client = self.client()?;
+        let (client, agent_id) = self.active()?;
         let request = ObserveTransitionRequest {
             agent_id,
             actor: actor.as_str().to_string(),
-            action: Some(action_to_struct(action)?),
-            observation: Some(json_to_struct(serde_json::to_value(observation)?)?),
+            action: Some(component_to_struct(action)?),
+            observation: Some(component_to_struct(observation)?),
         };
         let logs = tokio::time::timeout(request_timeout, client.observe_transition(request))
             .await
@@ -435,10 +475,8 @@ where
 
     /// Sends a conversation utterance to the remote agent.
     async fn observe_message(&mut self, sender: PlayerRole, text: String) -> Result<()> {
-        self.ensure_created().await?;
-        let agent_id = self.agent_id()?;
         let request_timeout = self.config.request_timeout;
-        let client = self.client()?;
+        let (client, agent_id) = self.active()?;
         let request = ObserveMessageRequest {
             agent_id,
             sender: sender.as_str().to_string(),
@@ -455,49 +493,59 @@ where
     }
 
     /// Sends the shared terminal result to the remote agent before shutdown.
-    async fn finish(&mut self, completion: A::Completion) -> Result<()> {
-        self.ensure_created().await?;
+    async fn finish(&mut self, completion: ComponentValue) -> Result<()> {
+        let request_timeout = self.config.request_timeout;
+        let (client, agent_id) = self.active()?;
         let request = FinishRequest {
-            agent_id: self.agent_id()?,
-            completion: Some(json_to_struct(serde_json::to_value(completion)?)?),
+            agent_id,
+            completion: Some(component_to_struct(completion)?),
         };
-        let logs =
-            tokio::time::timeout(self.config.request_timeout, self.client()?.finish(request))
-                .await
-                .context("remote agent finish timed out")?
-                .context("remote agent finish failed")?
-                .into_inner()
-                .session_logs;
+        let logs = tokio::time::timeout(request_timeout, client.finish(request))
+            .await
+            .context("remote agent finish timed out")?
+            .context("remote agent finish failed")?
+            .into_inner()
+            .session_logs;
         self.record_remote_logs(logs);
         Ok(())
     }
 
-    /// Optionally asks the remote agent for a response.
-    async fn respond(
-        &mut self,
-        available_actions: Option<Vec<A::Action>>,
-    ) -> Result<Option<AgentResponse<A::Action>>> {
-        self.ensure_created().await?;
-        let request = self.decision_request(available_actions)?;
+    /// Delivers the decision trigger and reads the resulting action, chat, or wakeup.
+    async fn decide(&mut self, reason: Reason) -> Result<Decision> {
         let request_timeout = self.config.request_timeout;
-        let response = tokio::time::timeout(request_timeout, self.client()?.respond(request))
+        let (client, agent_id) = self.active()?;
+        let request = RespondRequest {
+            agent_id,
+            reason: Some(reason_to_proto(reason)),
+            ..Default::default()
+        };
+        let response = tokio::time::timeout(request_timeout, client.respond(request))
             .await
             .context("remote agent respond timed out")?
             .context("remote agent respond failed")?
             .into_inner();
         self.record_remote_logs(response.session_logs);
-        response.response.map(proto_to_agent_response).transpose()
+        Ok(response
+            .response
+            .map(proto_to_decision)
+            .transpose()?
+            .unwrap_or_default())
     }
 
     /// Releases the corresponding remote server instance on normal completion or cancellation.
     async fn shutdown(&mut self) -> Result<()> {
-        let Some(agent_id) = self.agent_id.clone() else {
+        let state = std::mem::replace(&mut self.state, RemoteAgentState::Shutdown);
+        let RemoteAgentState::Active {
+            mut client,
+            agent_id,
+        } = state
+        else {
             return Ok(());
         };
         let request_timeout = self.config.request_timeout;
         let logs = tokio::time::timeout(
             request_timeout,
-            self.client()?.shutdown(ShutdownRequest { agent_id }),
+            client.shutdown(ShutdownRequest { agent_id }),
         )
         .await
         .context("remote agent shutdown timed out")?
@@ -505,7 +553,6 @@ where
         .into_inner()
         .session_logs;
         self.record_remote_logs(logs);
-        self.agent_id = None;
         Ok(())
     }
 }
@@ -518,60 +565,62 @@ impl RemoteAgentInstance {
         }
     }
 
-    /// Returns the remote agent id after creation.
-    fn agent_id(&self) -> Result<String> {
-        self.agent_id
-            .clone()
-            .ok_or_else(|| anyhow!("remote agent was not created"))
-    }
-
-    /// Returns the connected gRPC client after creation.
-    fn client(&mut self) -> Result<&mut AuthenticatedAgentClient> {
-        self.client
-            .as_mut()
-            .ok_or_else(|| anyhow!("remote agent client was not connected"))
-    }
-
-    /// Builds a decision request with optional available actions.
-    fn decision_request<Action: Serialize>(
-        &self,
-        available_actions: Option<Vec<Action>>,
-    ) -> Result<RespondRequest> {
-        let available_actions_provided = available_actions.is_some();
-        let available_actions = available_actions
-            .unwrap_or_default()
-            .into_iter()
-            .map(action_to_struct::<Action>)
-            .collect::<Result<Vec<_>>>()?;
-        Ok(RespondRequest {
-            agent_id: self.agent_id()?,
-            available_actions_provided,
-            available_actions,
-        })
+    /// Returns the resources of an agent that has not been shut down.
+    fn active(&mut self) -> Result<(&mut AuthenticatedAgentClient, String)> {
+        match &mut self.state {
+            RemoteAgentState::Active { client, agent_id } => Ok((client, agent_id.clone())),
+            RemoteAgentState::Shutdown => bail!("remote agent has been shut down"),
+        }
     }
 }
 
-/// Converts a protobuf agent response into a typed Rust response.
-fn proto_to_agent_response<Action: DeserializeOwned>(
-    response: pb::AgentResponse,
-) -> Result<AgentResponse<Action>> {
-    let action = response.action.map(struct_to_action).transpose()?;
-    match (action, response.message) {
-        (Some(action), Some(message)) => Ok(AgentResponse::action_and_message(action, message)),
-        (Some(action), None) => Ok(AgentResponse::action(action)),
-        (None, Some(message)) => Ok(AgentResponse::message(message)),
-        (None, None) => bail!("remote agent returned an empty response"),
+/// Encodes the exact decision trigger without exposing any session state.
+fn reason_to_proto(reason: Reason) -> pb::DecisionReason {
+    use pb::decision_reason::Kind;
+    let (kind, rejection_code) = match reason {
+        Reason::SessionStarted => (Kind::SessionStarted, String::new()),
+        Reason::AfterObservation => (Kind::AfterObservation, String::new()),
+        Reason::Scheduled => (Kind::Scheduled, String::new()),
+        Reason::WakeupDue => (Kind::WakeupDue, String::new()),
+        Reason::ActionRejected(code) => (Kind::ActionRejected, code),
+    };
+    pb::DecisionReason {
+        kind: kind as i32,
+        rejection_code,
     }
 }
 
-/// Serializes a typed action into a protobuf struct for the remote boundary.
-fn action_to_struct<Action: Serialize>(action: Action) -> Result<Struct> {
-    json_to_struct(serde_json::to_value(action)?)
+/// Validates a timer update and converts the protobuf decision into host outputs.
+fn proto_to_decision(response: pb::AgentResponse) -> Result<Decision> {
+    use pb::wakeup_request::Request;
+    let action = response
+        .action
+        .map(|action| ComponentValue::from_typed(&struct_to_json(action)))
+        .transpose()?;
+    let wakeup = match response.wakeup {
+        None => None,
+        Some(wakeup) => Some(match wakeup.request {
+            Some(Request::After(delay)) => {
+                anyhow::ensure!(
+                    delay.seconds >= 0 && (0..1_000_000_000).contains(&delay.nanos),
+                    "remote agent returned an invalid wakeup delay"
+                );
+                WakeupRequest::After(Duration::new(delay.seconds as u64, delay.nanos as u32))
+            }
+            Some(Request::Cancel(true)) => WakeupRequest::Cancel,
+            _ => bail!("remote agent returned an invalid wakeup request"),
+        }),
+    };
+    Ok(Decision {
+        action,
+        message: response.message,
+        wakeup,
+    })
 }
 
-/// Deserializes a typed action from a protobuf struct returned by a remote agent.
-fn struct_to_action<Action: DeserializeOwned>(value: Struct) -> Result<Action> {
-    Ok(serde_json::from_value(struct_to_json(value))?)
+/// Converts a component value to the object representation used by remote callbacks.
+fn component_to_struct(value: ComponentValue) -> Result<Struct> {
+    json_to_struct(serde_json::to_value(value)?)
 }
 
 /// Converts a JSON object into a protobuf struct.
@@ -669,9 +718,11 @@ fn trajectory_to_proto(step: TrajectoryStep) -> Result<learner_pb::TrajectorySte
         checkpoint_id: step.checkpoint.as_str().to_string(),
         reward: step.reward,
         reward_version: step.reward_version,
-        observation: Some(json_to_prost(step.observation)?),
-        available_actions: Some(json_to_prost(step.available_actions)?),
-        action: Some(json_to_prost(step.action)?),
+        observation: Some(json_to_prost(serde_json::to_value(step.observation)?)?),
+        available_actions: Some(json_to_prost(serde_json::to_value(
+            step.available_actions,
+        )?)?),
+        action: Some(json_to_prost(serde_json::to_value(step.action)?)?),
         accepted: step.accepted,
         rejection: step
             .rejection
@@ -681,7 +732,7 @@ fn trajectory_to_proto(step: TrajectoryStep) -> Result<learner_pb::TrajectorySte
             player_a: value.player_a,
             player_b: value.player_b,
         }),
-        next_observation: Some(json_to_prost(step.next_observation)?),
+        next_observation: Some(json_to_prost(serde_json::to_value(step.next_observation)?)?),
         terminal: step.terminal,
     })
 }
@@ -689,41 +740,6 @@ fn trajectory_to_proto(step: TrajectoryStep) -> Result<learner_pb::TrajectorySte
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::{Game, PlayerRole};
-
-    struct TestAdapter;
-
-    impl Game for TestAdapter {
-        type Config = Value;
-        type State = Value;
-        type Action = Value;
-        type Observation = Value;
-        type Completion = Value;
-
-        fn initial_state(
-            &self,
-            _context: crate::GameInitializationContext<'_, Self::Config>,
-        ) -> Result<Self::State> {
-            Ok(Value::Null)
-        }
-
-        fn apply_action(
-            &self,
-            state: &Self::State,
-            _action: &Self::Action,
-            _actor: PlayerRole,
-        ) -> std::result::Result<Self::State, crate::ActionRejection> {
-            Ok(state.clone())
-        }
-
-        fn observation(&self, state: &Self::State, _player: PlayerRole) -> Self::Observation {
-            state.clone()
-        }
-
-        fn completion(&self, _state: &Self::State) -> Option<Self::Completion> {
-            None
-        }
-    }
 
     #[test]
     fn json_struct_conversion_preserves_nested_values() {
@@ -740,7 +756,7 @@ mod tests {
     #[test]
     fn remote_identity_is_transport_owned() {
         let factory = RemoteAgent::new();
-        let identity = <RemoteAgent as AgentFactory<TestAdapter>>::identity(
+        let identity = <RemoteAgent as AgentFactory>::identity(
             &factory,
             &serde_json::json!({
                 "endpoint": "http://127.0.0.1:50051",
@@ -756,7 +772,7 @@ mod tests {
     /// The dashboard contract contains only endpoint and optional YAML settings.
     #[test]
     fn remote_dashboard_definition_has_two_non_secret_fields() {
-        let definition = <RemoteAgent as AgentFactory<TestAdapter>>::definition(&RemoteAgent);
+        let definition = <RemoteAgent as AgentFactory>::definition(&RemoteAgent);
         assert_eq!(
             definition
                 .config_fields

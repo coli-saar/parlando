@@ -1,11 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { type PlayerMessage, type VoicePreflight, type VoiceStatus } from "@coli-saar/parlando-client";
-import {
-  MicrophoneLevelMeter,
-  ParticipantApp,
-  MicrophoneMuteButton,
-  type GameSession
-} from "@coli-saar/parlando-client/react";
+import { ParticipantApp, type GameSnapshot } from "@coli-saar/parlando-client/react";
 import {
   cells,
   devices,
@@ -26,51 +20,35 @@ const movementKeys: Record<string, Direction> = {
   arrowright: "right"
 };
 
-/** Removes browser-added USB identifiers from the displayed microphone name. */
-function participantMicrophoneLabel(label: string): string {
-  return label.replace(/\s*[([][0-9a-f]{4}:[0-9a-f]{4}[)\]]\s*$/i, "").trim() || "Microphone";
-}
-
-type SpaceGameSession = GameSession<StationObservation, GameAction>;
+type SpaceGameSnapshot = GameSnapshot<StationObservation, GameAction>;
 
 export function App() {
   return (
     <main className="app-shell">
       <ParticipantApp<StationObservation, GameAction>
-        renderGame={(session) => <ActiveSpaceGame session={session} />}
+        renderGame={(snapshot) => <ActiveSpaceGame snapshot={snapshot} />}
       />
     </main>
   );
 }
 
-function ActiveSpaceGame({ session }: { session: SpaceGameSession }) {
+function ActiveSpaceGame({ snapshot }: { snapshot: SpaceGameSnapshot }) {
   const [preview, setPreview] = useState<ActionPreview | null>(null);
-  const [chatDraft, setChatDraft] = useState("");
-  const state = session.observation;
+  const state = snapshot.observation;
   const systems = state.systems;
-  const serverAvailableActions = session.availableActions ?? [];
-  const assignedRole = session?.role === "A" || session?.role === "B" ? session.role : null;
-  const voiceEnabled = session.voiceEnabled;
-  const status = session.voiceStatus;
-  const voicePreflight = session.voicePreflight;
-  const onlineReady = true;
+  const serverAvailableActions = state.actions;
+  const assignedRole = snapshot.role;
+  const onlineReady = snapshot.interactionEnabled;
   const dispatch = useCallback(
     (action: GameAction) => {
-      session.sendAction(action);
+      snapshot.act(action);
     },
-    [session]
+    [snapshot]
   );
-
-  const submitChat = useCallback(() => {
-    const text = chatDraft.trim();
-    if (!text || !session) return;
-    session.sendMessage(text);
-    setChatDraft("");
-  }, [chatDraft, session]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!session || !onlineReady) return;
+      if (!onlineReady) return;
       const target = event.target as HTMLElement | null;
       if (target?.closest("input, textarea, button")) return;
       const key = event.key.toLowerCase();
@@ -82,7 +60,7 @@ function ActiveSpaceGame({ session }: { session: SpaceGameSession }) {
       }
 
       if (key === "enter" && assignedRole) {
-        const firstAction = session.availableActions?.[0];
+        const firstAction = serverAvailableActions[0];
         if (firstAction) {
           event.preventDefault();
           dispatch(firstAction);
@@ -91,7 +69,7 @@ function ActiveSpaceGame({ session }: { session: SpaceGameSession }) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [assignedRole, dispatch, onlineReady, session, state]);
+  }, [assignedRole, dispatch, onlineReady, serverAvailableActions]);
 
   return (
     <>
@@ -105,17 +83,6 @@ function ActiveSpaceGame({ session }: { session: SpaceGameSession }) {
         <SystemPill label="Door" online={systems.doorAccess} />
         <SystemPill label="Signal" online={systems.signalRouted} />
         <SystemPill label="Cooling" online={systems.coolingRestored} />
-      </section>
-
-      <section className="session-band" aria-label="Online session controls">
-        <div>
-          <p className="eyebrow">Online room</p>
-          <strong>{session.sessionId}</strong>
-          <span>
-            {session.connected ? "Connected" : "Disconnected"} · You are Player {session.role}
-          </span>
-        </div>
-        <button onClick={session.leave}>Leave game</button>
       </section>
 
       <section className={`game-layout ${assignedRole ? `game-layout-${assignedRole.toLowerCase()}` : ""}`}>
@@ -132,16 +99,6 @@ function ActiveSpaceGame({ session }: { session: SpaceGameSession }) {
         <section className="playfield-zone" aria-label="Top-down station playfield">
           <StationPlayfield preview={preview} state={state} systems={systems} />
           <SharedConsole preview={preview} state={state} systems={systems} />
-          <CommunicationPanel
-            chatDraft={chatDraft}
-            conversation={session.conversation}
-            enabled={voiceEnabled}
-            onChatDraftChange={setChatDraft}
-            onSubmitChat={submitChat}
-            onMutedChange={(muted) => void session.setMicrophoneMuted(muted).catch(() => undefined)}
-            voicePreflight={voicePreflight}
-            status={status}
-          />
         </section>
         {assignedRole === "B" && (
           <PlayerPanel
@@ -391,118 +348,6 @@ function SharedConsole({
           ))}
         </ol>
       </div>
-    </section>
-  );
-}
-
-/** Renders Space Game text or voice communication with explicit local mute feedback. */
-export function CommunicationPanel({
-  chatDraft,
-  conversation,
-  enabled,
-  onChatDraftChange,
-  onSubmitChat,
-  onMutedChange,
-  voicePreflight,
-  status
-}: {
-  chatDraft: string;
-  conversation: PlayerMessage[];
-  enabled: boolean;
-  onChatDraftChange: (value: string) => void;
-  onSubmitChat: () => void;
-  onMutedChange: (muted: boolean) => void;
-  voicePreflight: VoicePreflight;
-  status: VoiceStatus;
-}) {
-  const textMessages = conversation.filter((message) => message.input === "text").slice(-6);
-  if (!enabled) {
-    return (
-      <section className="communication-panel" aria-label="Text chat">
-        <div className="communication-header">
-          <div>
-            <p className="eyebrow">Comms</p>
-            <h3>Text chat</h3>
-          </div>
-        </div>
-        <ol className="conversation-list">
-          {textMessages.length === 0 ? (
-            <li className="conversation-empty">No chat yet.</li>
-          ) : (
-            textMessages.map((message) => (
-              <li className={`conversation-message input-${message.input}`} key={message.id}>
-                <span>Player {message.sender}</span>
-                <p>{message.text}</p>
-              </li>
-            ))
-          )}
-        </ol>
-        <form
-          className="chat-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onSubmitChat();
-          }}
-        >
-          <input
-            aria-label="Text chat message"
-            onChange={(event) => onChatDraftChange(event.target.value)}
-            placeholder="Type to your partner"
-            value={chatDraft}
-          />
-          <button disabled={!chatDraft.trim()} type="submit">
-            Send
-          </button>
-        </form>
-      </section>
-    );
-  }
-
-  const microphoneMuted = status.connected && !status.microphoneEnabled;
-  const microphoneLive = status.connected && status.microphoneEnabled;
-  const microphoneStateLabel = microphoneMuted
-    ? "Muted"
-    : microphoneLive
-      ? "Live"
-      : status.connecting
-        ? "Connecting"
-        : "Offline";
-  return (
-    <section className={`communication-panel ${microphoneMuted ? "microphone-muted" : ""}`} aria-label="Voice chat">
-      <div className="communication-header">
-        <div>
-          <p className="eyebrow">Microphone</p>
-        </div>
-        <MicrophoneMuteButton
-          enabled={enabled}
-          onMutedChange={onMutedChange}
-          status={status}
-        />
-      </div>
-      <div className="voice-feedback" aria-label="Voice diagnostics">
-        <div className="meter-stack">
-          <div className="microphone-name-row">
-            <span className="mic-device-label">{participantMicrophoneLabel(voicePreflight.deviceLabel)}</span>
-            <span className={`microphone-name-state ${microphoneStateLabel.toLowerCase()}`}>
-              {microphoneStateLabel}
-            </span>
-          </div>
-          <MicrophoneLevelMeter
-            active={voicePreflight.micProbeActive}
-            label="Level"
-            level={voicePreflight.micLevel}
-            muted={!microphoneLive}
-          />
-          <div
-            aria-live="polite"
-            className={`microphone-status-chip ${microphoneStateLabel.toLowerCase()}`}
-          >
-            <span aria-hidden="true" />
-            {microphoneStateLabel}
-          </div>
-        </div>
-      </div>
-      {status.error && <p className="voice-error" role="alert">{status.error}</p>}
     </section>
   );
 }

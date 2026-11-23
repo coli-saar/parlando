@@ -1,0 +1,4 @@
+id: cue-choice
+name: Cue Choice
+version: 0.1.0
+cargo_manifest: server/Cargo.toml

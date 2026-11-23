@@ -1,3 +1,5 @@
+use crate::agent_response::Response;
+use parlando::component::ComponentValue;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context as _, Result};
@@ -6,244 +8,69 @@ use parlando::{
     agent::{
         Agent, ConfigField as AgentConfigField, Context as AgentContext,
         Definition as AgentDefinition, Factory as AgentFactory, Identity as AgentIdentity,
-        Response,
     },
-    PlayerRole, SessionLogger,
+    PlayerRole,
 };
 use serde_json::{json, Value};
 
-use crate::game::ids::RootId;
-use crate::game::types::{GreatTreeObservation, RootView};
-use crate::{Action, GreatTree};
-
-/// An agent that connects and does nothing: it never proposes an action or sends a message.
-/// Useful for exercising pairing, observation delivery, and the participant client against a
-/// live second player without needing a real playing agent yet.
-pub struct IdleAgent;
+use crate::game::types::GreatTreeObservation;
+use crate::root_bot::RootBotAgent;
+use crate::Action;
 
 #[async_trait]
-impl Agent<GreatTree> for IdleAgent {
-    async fn respond(
-        &mut self,
-        _available_actions: Option<Vec<Action>>,
-    ) -> Result<Option<Response<Action>>> {
-        Ok(None)
-    }
-}
-
-pub struct IdleAgentFactory;
-
-#[async_trait]
-impl AgentFactory<GreatTree> for IdleAgentFactory {
-    fn definition(&self) -> AgentDefinition {
-        AgentDefinition {
-            id: "great_tree.idle".to_string(),
-            name: "Idle".to_string(),
-            description: "Connects and takes no actions or messages.".to_string(),
-            config_fields: Vec::new(),
-        }
+impl Agent for RootBotAgent {
+    /// Delivers the decoded starting view to the policy.
+    async fn start(&mut self, view: ComponentValue) -> Result<()> {
+        Self::start(self, view.decode()?).await
     }
 
-    async fn create(&self, _context: AgentContext) -> Result<Box<dyn Agent<GreatTree> + Send>> {
-        Ok(Box::new(IdleAgent))
-    }
-
-    fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
-        Ok(AgentIdentity {
-            name: "IdleAgent".to_string(),
-            version: "1".to_string(),
-        })
-    }
-}
-
-const ROOT_BOT_ORIENTATION: &str =
-    "I'll open any root that warms up on my side, and keep it open once it's flowing.";
-
-/// Non-LLM agent that plays Root by reacting only to its own observation. Its entire policy:
-/// open any root that is thawed and not already running, and never voluntarily close one.
-///
-/// This is always safe against Root's own 3-hold cap without any eviction logic: Crown can
-/// hold sun on at most 3 limbs at once (Crown's own cap), and the hidden bijection is one limb
-/// per root, so at most 3 roots are ever thawed simultaneously — exactly Root's cap. So a human
-/// Crown can win outright just by holding sun on any 3 limbs at once and waiting.
-///
-/// It never interprets the partner's chat for decisions — `handle_message` only replies with
-/// canned lines triggered by simple keyword matching, purely for the human's benefit.
-pub struct RootBotAgent {
-    logger: SessionLogger,
-    latest_roots: Option<[RootView; 5]>,
-    pending_action: Option<Action>,
-    pending_message: Option<String>,
-}
-
-impl RootBotAgent {
-    /// Creates one session-owned RootBot with its runtime-attributed logger.
-    fn new(logger: SessionLogger) -> Self {
-        Self {
-            logger,
-            latest_roots: None,
-            pending_action: None,
-            pending_message: None,
-        }
-    }
-
-    /// Creates an isolated RootBot for mechanics tests.
-    #[cfg(test)]
-    fn testing() -> Self {
-        Self::new(SessionLogger::testing())
-    }
-
-    /// Records an observational message without letting logging affect play.
-    fn log(&self, message: impl Into<String>) {
-        let _ = self.logger.log(message);
-    }
-
-    /// Opens the first thawed-but-not-running root found, queuing both the action and a status
-    /// message for the next `respond`. A no-op if nothing needs opening.
-    fn react(&mut self, roots: &[RootView; 5]) {
-        self.latest_roots = Some(*roots);
-        for view in roots {
-            if view.thawed && !view.running {
-                let action = Action::SetFlow {
-                    root: view.id,
-                    open: true,
-                };
-                self.log(format!("RootBot queued action: {action:?}"));
-                self.pending_action = Some(action);
-                self.pending_message = Some(format!("Opened {:?} — it's running now.", view.id));
-                return;
-            }
-        }
-        self.log("RootBot observed no thawed root requiring an action");
-    }
-
-    /// Replies to the partner's chat using plain keyword matching — never full comprehension.
-    /// Checked in order: naming a root reports that root's current status; "help"/"stuck"/"?"
-    /// repeats the orientation line; a greeting gets a friendly reply. No match, no reply.
-    fn handle_message(&mut self, text: &str) {
-        let words: Vec<String> = text
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|w| !w.is_empty())
-            .map(|w| w.to_lowercase())
-            .collect();
-
-        for &root in RootId::ALL.iter() {
-            let name = format!("{root:?}").to_lowercase();
-            if words.iter().any(|w| *w == name) {
-                let reply = match self
-                    .latest_roots
-                    .and_then(|roots| roots.iter().find(|view| view.id == root).copied())
-                {
-                    Some(view) if view.running => {
-                        format!("{root:?} is thawed and I've got it open.")
-                    }
-                    Some(_) => format!("{root:?} isn't thawed yet."),
-                    None => format!("I don't have a reading on {root:?} yet."),
-                };
-                self.log(format!("RootBot queued status reply for {root:?}"));
-                self.pending_message = Some(reply);
-                return;
-            }
-        }
-
-        if words.iter().any(|w| w == "help" || w == "stuck") || text.contains('?') {
-            self.log("RootBot queued its orientation reply");
-            self.pending_message = Some(ROOT_BOT_ORIENTATION.to_string());
-            return;
-        }
-
-        if words
-            .iter()
-            .any(|w| w == "hi" || w == "hello" || w == "hey")
-        {
-            self.log("RootBot queued a greeting reply");
-            self.pending_message = Some("Hey! Ready when you are.".to_string());
-        }
-    }
-}
-
-#[async_trait]
-impl Agent<GreatTree> for RootBotAgent {
-    async fn start(&mut self, initial_observation: GreatTreeObservation) -> Result<()> {
-        self.log("RootBot started and queued its orientation message");
-        self.pending_message = Some(ROOT_BOT_ORIENTATION.to_string());
-        if let GreatTreeObservation::Root { roots } = initial_observation {
-            self.react(&roots);
-        } else {
-            self.log("RootBot received a Crown observation and cannot apply its Root policy");
-        }
-        Ok(())
-    }
-
+    /// Delivers the accepted action and this seat's decoded view.
     async fn observe_transition(
         &mut self,
         actor: PlayerRole,
-        action: Action,
-        observation: GreatTreeObservation,
+        action: ComponentValue,
+        view: ComponentValue,
     ) -> Result<()> {
-        self.log(format!(
-            "RootBot observed accepted action from role {}: {action:?}",
-            actor.as_str()
-        ));
-        if let GreatTreeObservation::Root { roots } = observation {
-            self.react(&roots);
-        }
-        Ok(())
+        Self::observe_transition(self, actor, action.decode()?, view.decode()?).await
     }
 
-    async fn observe_message(&mut self, sender: PlayerRole, text: String) -> Result<()> {
-        self.log(format!(
-            "RootBot received message from role {}: {text:?}",
-            sender.as_str()
-        ));
-        self.handle_message(&text);
-        Ok(())
+    /// Delivers chat without modifying game state.
+    async fn observe_message(&mut self, actor: PlayerRole, text: String) -> Result<()> {
+        Self::observe_message(self, actor, text).await
     }
 
-    async fn respond(
-        &mut self,
-        _available_actions: Option<Vec<Action>>,
-    ) -> Result<Option<Response<Action>>> {
-        let action = self.pending_action.take();
-        let message = self.pending_message.take();
-        self.log(format!(
-            "RootBot response: action={}, message={}",
-            action.is_some(),
-            message.is_some()
-        ));
-        Ok(match (action, message) {
-            (Some(action), Some(message)) => Some(Response::action_and_message(action, message)),
-            (Some(action), None) => Some(Response::action(action)),
-            (None, Some(message)) => Some(Response::message(message)),
-            (None, None) => None,
-        })
+    /// Encodes a typed policy decision for the shared component host.
+    async fn respond(&mut self) -> Result<Option<parlando::agent::Response>> {
+        Self::respond(self)
+            .await?
+            .map(Response::into_wire)
+            .transpose()
     }
 }
 
 pub struct RootBotAgentFactory;
 
 #[async_trait]
-impl AgentFactory<GreatTree> for RootBotAgentFactory {
+impl AgentFactory for RootBotAgentFactory {
     fn definition(&self) -> AgentDefinition {
+        let definition = <RootBotAgent as parlando_game_sdk::agent::Agent>::definition();
         AgentDefinition {
-            id: "great_tree.root_bot".to_string(),
-            name: "Root Bot (no LLM)".to_string(),
-            description: "Scripted, non-LLM agent that plays Root: it opens any root that \
-                warms up and keeps it open, so a human Crown can win by holding sun on any \
-                three limbs at once. Sends a few canned chat lines but never reads the \
-                partner's messages for its decisions. Requires no API key."
-                .to_string(),
+            id: definition.id.into(),
+            name: definition.name.into(),
+            description: definition.description.into(),
             config_fields: Vec::new(),
         }
     }
 
-    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<GreatTree> + Send>> {
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         let _ = context.logger.log(format!(
             "RootBot constructed for role {} with seed {}",
             context.role.as_str(),
             context.seed
         ));
-        Ok(Box::new(RootBotAgent::new(context.logger)))
+        Ok(Box::new(RootBotAgent::new(Some(Box::new(move |text| {
+            let _ = context.logger.log(text);
+        })))))
     }
 
     fn identity(&self, _settings: &Value) -> Result<AgentIdentity> {
@@ -495,8 +322,7 @@ and every chat message either of you has sent. Decide what to do next."
     }
 }
 
-#[async_trait]
-impl Agent<GreatTree> for LlmAgent {
+impl LlmAgent {
     async fn start(&mut self, initial_observation: GreatTreeObservation) -> Result<()> {
         self.game_role = Some(match &initial_observation {
             GreatTreeObservation::Crown { .. } => GameRole::Crown,
@@ -540,10 +366,7 @@ impl Agent<GreatTree> for LlmAgent {
         Ok(())
     }
 
-    async fn respond(
-        &mut self,
-        _available_actions: Option<Vec<Action>>,
-    ) -> Result<Option<Response<Action>>> {
+    async fn respond(&mut self) -> Result<Option<Response<Action>>> {
         if !self.should_consider {
             return Ok(None);
         }
@@ -569,11 +392,41 @@ impl Agent<GreatTree> for LlmAgent {
         self.build_response(&raw)
     }
 }
+#[async_trait]
+impl Agent for LlmAgent {
+    /// Delivers the decoded starting view to the policy.
+    async fn start(&mut self, view: ComponentValue) -> Result<()> {
+        Self::start(self, view.decode()?).await
+    }
+
+    /// Delivers the accepted action and this seat's decoded view.
+    async fn observe_transition(
+        &mut self,
+        actor: PlayerRole,
+        action: ComponentValue,
+        view: ComponentValue,
+    ) -> Result<()> {
+        Self::observe_transition(self, actor, action.decode()?, view.decode()?).await
+    }
+
+    /// Delivers chat without modifying game state.
+    async fn observe_message(&mut self, actor: PlayerRole, text: String) -> Result<()> {
+        Self::observe_message(self, actor, text).await
+    }
+
+    /// Encodes a typed policy decision for the shared component host.
+    async fn respond(&mut self) -> Result<Option<parlando::agent::Response>> {
+        Self::respond(self)
+            .await?
+            .map(Response::into_wire)
+            .transpose()
+    }
+}
 
 pub struct LlmAgentFactory;
 
 #[async_trait]
-impl AgentFactory<GreatTree> for LlmAgentFactory {
+impl AgentFactory for LlmAgentFactory {
     fn definition(&self) -> AgentDefinition {
         AgentDefinition {
             id: "great_tree.llm".to_string(),
@@ -609,7 +462,7 @@ impl AgentFactory<GreatTree> for LlmAgentFactory {
         }
     }
 
-    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<GreatTree> + Send>> {
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         let api_key = context
             .factory_secrets
             .get("config.openai_api_key")
@@ -634,13 +487,45 @@ impl AgentFactory<GreatTree> for LlmAgentFactory {
 }
 
 #[cfg(test)]
-mod root_bot_tests {
+mod tests {
     use super::*;
+
+    /// A model tool call produces the same typed action and chat a live seat submits.
+    #[tokio::test]
+    async fn model_decision_matches_the_game_interface() {
+        use parlando_game_sdk::Game;
+        let mut tree = crate::GreatTree::init(Default::default(), 7).unwrap();
+        let mut agent = LlmAgent::new(PlayerRole::A, String::new(), "test".into());
+        Agent::start(
+            &mut agent,
+            ComponentValue::from_typed(&tree.view_a()).unwrap(),
+        )
+        .await
+        .unwrap();
+        let reply = json!({"choices": [{"message": {"tool_calls": [
+            {"function": {"name": "act", "arguments": r#"{"limb":"hook","lit":true}"#}},
+            {"function": {"name": "message", "arguments": r#"{"text":"I lit Hook."}"#}}
+        ]}}]});
+        let decision = agent
+            .build_response(&reply)
+            .unwrap()
+            .unwrap()
+            .into_wire()
+            .unwrap();
+        let parlando::agent::Response::ActionAndMessage { action, message } = decision else {
+            panic!("expected a move and its accompanying message");
+        };
+        tree.step(PlayerRole::A, action.decode().unwrap()).unwrap();
+        assert_eq!(message, "I lit Hook.");
+    }
 
     #[test]
     fn great_tree_agents_expose_their_current_identity_versions() {
         for identity in [
-            IdleAgentFactory.identity(&json!({})).unwrap(),
+            crate::IdleAgentFactory::new()
+                .unwrap()
+                .identity(&json!({}))
+                .unwrap(),
             LlmAgentFactory
                 .identity(&json!({"model": "gpt-4o-mini"}))
                 .unwrap(),
@@ -651,129 +536,5 @@ mod root_bot_tests {
             RootBotAgentFactory.identity(&json!({})).unwrap().version,
             "2"
         );
-    }
-
-    fn roots(thawed_running: [(bool, bool); 5]) -> [RootView; 5] {
-        let mut views = [RootView {
-            id: RootId::Hand,
-            thawed: false,
-            running: false,
-        }; 5];
-        for (view, (id, (thawed, running))) in views
-            .iter_mut()
-            .zip(RootId::ALL.into_iter().zip(thawed_running))
-        {
-            *view = RootView {
-                id,
-                thawed,
-                running,
-            };
-        }
-        views
-    }
-
-    async fn take_response(agent: &mut RootBotAgent) -> Option<Response<Action>> {
-        agent.respond(None).await.unwrap()
-    }
-
-    #[tokio::test]
-    async fn opens_a_newly_thawed_root() {
-        let mut agent = RootBotAgent::testing();
-        agent.react(&roots([
-            (false, false),
-            (true, false), // Knot: thawed, not yet running
-            (false, false),
-            (false, false),
-            (false, false),
-        ]));
-        let response = take_response(&mut agent).await.expect("should open Knot");
-        assert_eq!(
-            response,
-            Response::action_and_message(
-                Action::SetFlow {
-                    root: RootId::Knot,
-                    open: true
-                },
-                "Opened Knot — it's running now.".to_string(),
-            )
-        );
-    }
-
-    #[tokio::test]
-    async fn never_reopens_an_already_running_root() {
-        let mut agent = RootBotAgent::testing();
-        agent.react(&roots([
-            (true, true), // Hand: thawed and already running
-            (false, false),
-            (false, false),
-            (false, false),
-            (false, false),
-        ]));
-        assert_eq!(take_response(&mut agent).await, None);
-    }
-
-    #[tokio::test]
-    async fn never_closes_a_root_on_its_own() {
-        let mut agent = RootBotAgent::testing();
-        agent.react(&roots([
-            (false, true), // Tip: running but no longer thawed
-            (false, false),
-            (false, false),
-            (false, false),
-            (false, false),
-        ]));
-        assert_eq!(
-            take_response(&mut agent).await,
-            None,
-            "must never propose closing a root itself"
-        );
-    }
-
-    #[tokio::test]
-    async fn reports_a_named_roots_status_without_acting_on_it() {
-        let mut agent = RootBotAgent::testing();
-        agent.react(&roots([
-            (false, false),
-            (false, false),
-            (true, true), // Tip: running
-            (false, false),
-            (false, false),
-        ]));
-        take_response(&mut agent).await; // drain the "Opened Tip" response first
-        agent.handle_message("is tip running yet?");
-        let response = take_response(&mut agent)
-            .await
-            .expect("should reply about Tip");
-        assert_eq!(
-            response,
-            Response::message("Tip is thawed and I've got it open.".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn replies_to_a_help_request_with_the_orientation_line() {
-        let mut agent = RootBotAgent::testing();
-        agent.handle_message("I'm stuck, what do I do?");
-        assert_eq!(
-            take_response(&mut agent).await,
-            Some(Response::message(ROOT_BOT_ORIENTATION.to_string()))
-        );
-    }
-
-    #[tokio::test]
-    async fn replies_to_a_greeting() {
-        let mut agent = RootBotAgent::testing();
-        agent.handle_message("hey there!");
-        assert_eq!(
-            take_response(&mut agent).await,
-            Some(Response::message("Hey! Ready when you are.".to_string()))
-        );
-    }
-
-    #[tokio::test]
-    async fn ignores_a_message_with_no_matching_keyword() {
-        let mut agent = RootBotAgent::testing();
-        agent.handle_message("nice weather today");
-        assert_eq!(take_response(&mut agent).await, None);
     }
 }

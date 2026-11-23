@@ -1,0 +1,8 @@
+/* Official Parlando screen colors. Each token corresponds to one tangram tile. */
+:root {
+  --parlando-blue: #004875;
+  --parlando-green: #33684B;
+  --parlando-ochre: #AD790C;
+  --parlando-brick: #A04432;
+  --parlando-plum: #71456E;
+}

@@ -1,0 +1,11 @@
+game: space-game
+id: space_game.back_and_forth
+name: Back and forth
+version: 1.0.0
+cargo_manifest: server/Cargo.toml
+features:
+- agent-component
+dependency:
+  source: dist/space-game-0.1.0.zip
+  version: 0.1.0
+  sha256: 257e8a8e986c3badea93b955c60d3e7693c6cc7ad3257ad04967247794e25dcd

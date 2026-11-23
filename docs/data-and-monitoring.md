@@ -8,45 +8,19 @@ record for analysis.
 
 ## Preserve provenance
 
-Every session records three identifiers that should remain attached during
-analysis:
-
-- the experiment id;
-- the experiment configuration revision; and
-- the exact semantic game version.
-
-The configuration revision identifies the settings in force when the session was
-created. Later dashboard edits create another revision rather than rewriting that
-history. The game version identifies the compiled state machine that interpreted
-the actions.
-
-An experiment from an earlier game version remains inspectable and exportable. It
-cannot be activated under a different version. Cloning copies its configuration
-into a new experiment for the current version; it does not alter the historical
-experiment or its sessions.
+Retain the experiment ID, configuration revision, game version, and component
+digest with session records. On a shared host, retain the selected package
+revision as well. It identifies the component and the participant assets.
+A hosted experiment ID always selects the same game package. Settings saved
+while the experiment is inactive create configuration revisions. Use a new ID
+for a changed build or to run study conditions independently.
 
 ## Monitor an experiment
 
-Open `/admin/experiments`. The dashboard header identifies the compiled game and
-version, and the catalogue lists every experiment stored for that game process.
-Use pinning for experiments that should remain prominent and obsolete status for
-entries that should be retained but de-emphasized.
-
-After selecting an experiment, the dashboard provides:
-
-- lifecycle control;
-- database-backed configuration and revision history;
-- session status and participant roles;
-- a process-local Load page for capacity, transport liveness, throughput, and storage;
-- a compact event timeline for actions, messages, transcripts, and diagnostics;
-- export controls; and
-- counted participant-data deletion.
-
-![Experiment dashboard identifying the compiled Space Game version and its
-experiment catalogue](images/parlando-dashboard.jpg)
-
-The dashboard is deliberately game-scoped. Different compiled games use different
-processes and dashboards, usually distinguished by port or hostname.
+Open the experiment from the game’s **Experiments** list or **Sessions** in a custom single-game
+dashboard. Use the session record, events, and replay to inspect the
+play-through. The custom single-game dashboard also includes load history and
+configuration revision views. See the [experimenter workflow](web/content/manual/run/data-operations.md).
 
 ### Interpret load and liveness
 
@@ -77,12 +51,10 @@ participant from a lost browser.
 
 ### Interpret lifecycle state
 
-An experiment is either `inactive` or `active`. `Active` permits new participant
-and room creation. `Inactive` rejects new intake with HTTP 503.
-
-Every process start resets all experiments to `inactive`. Deactivation also leaves
-existing room and WebSocket activity running, so it is suitable for closing
-recruitment without interrupting participants. It is not a session kill switch.
+Inactive experiments reject new intake. Testing opens pilot intake and keeps
+its sessions out of corpus exports. Active opens research intake. Completing
+or archiving an experiment closes intake and preserves its records. The host
+closes intake on restart. Reopen it when the condition is ready.
 
 ### Interpret the timeline
 
@@ -99,16 +71,14 @@ and arbitrary browser error messages. Sustained underruns may justify increasing
 
 ## Understand what is retained
 
-Collection follows the enabled experiment modality. Accepted actions retain their
-resulting state; typed messages and final transcripts are retained when those
-modalities produce them. Raw audio and new voice diagnostics are not retained.
+Collection follows the enabled experiment modality. The host records accepted actions and can recover state through replay or checkpoints. It retains typed messages and final transcripts when those modalities produce them. Raw audio and new voice diagnostics are not retained.
 
 Other durable records can include:
 
 - participant creation and role assignment;
 - consent declarations and participant-information evidence;
 - accepted and rejected actions;
-- accepted transitions, with their action, role-neutral metadata, and resulting state stored once;
+- accepted transitions with their action and role-neutral metadata;
 - typed and final spoken conversation messages, each stored once with modality metadata;
 - agent startup, proposals, messages, and errors; and
 - bounded TTS operational events.
@@ -145,19 +115,78 @@ explicit identifying information from that participant-authored text.
 ## Choose an export
 
 The dashboard provides one data variant, **Corpus candidate**, in JSON, YAML, and
-CSV. It contains every non-testing session in the experiment. Parlando constructs
+CSV. It contains every research session that entered gameplay. Parlando constructs
 the corpus as a new document from a fixed output-field list; new database fields
 do not enter it automatically.
 
 The corpus retains the experiment-specific participant and dialogue labels so
 repeated exports can be joined. Events and transcript boundaries use the stored
 game clock, in milliseconds from game start; waiting time and session duration
-are derived from lifecycle timestamps. Consent declarations, internal database keys,
+are derived from lifecycle timestamps. A running session has `metadata.status`
+set to `playing` and a null duration. An ended session has its elapsed gameplay
+duration and a status derived from the recorded cause. Normal game completion
+yields `completed`, explicit departure yields `abandoned`, a timeout yields
+`expired`, and infrastructure failure yields `failed`. Logs with timestamps
+before game start remain available in the dashboard session history and fall
+outside the corpus event interval. Consent declarations, internal database keys,
 room and connection identifiers, operational events, administrator data, and
 credentials have no corpus output field.
 
 Use export data for task success, action sequences, utterance counts, timing,
 agent comparisons, transcription diagnostics, and exclusion decisions.
+
+For new recordings, the corpus action event's `state` field is null. Parlando
+records initialization inputs and replays accepted actions. Component games may
+record private recovery checkpoints with individual turns. Replay uses these
+checkpoints when present, and corpus exports omit their contents. Open **Replay** from the session detail to inspect either role's
+view when the game build supports the recorded replay versions.
+
+### Inspect speech and export tokens
+
+The utterance/token selector appears only when a session contains recorded speech.
+Typed-only sessions show the normal conversation log. Agent messages count as
+speech only when audio publication succeeded.
+
+Both session-log views show timestamps and color-coded actor badges on the left
+and conversation bubbles
+against the left edge for A and the right edge for B. Choose **Utterances** to read
+whole messages or **Tokens** to expand spoken messages into individual tokens.
+Speech is ordered by estimated onset and shows its end time and duration; other
+events retain their event time. Game events, logs, setup events, and
+typed messages remain in both views; the same visibility filters apply. The
+Session log header and controls remain visible while you scroll its events. Actions show their
+name in bold followed by inline parameters. Log messages use the same font size
+as other entries, with muted text aligned with their speaker. Game logs have a
+system actor badge. Problems and their reasons remain visible. Each
+word shows its end time and duration; hover or focus for parent-utterance context
+and available recognition confidence. Punctuation has no spoken duration.
+Recordings without token data show a timings-unavailable notice.
+
+A spoken message retains its formatted `text` and optional `utterance_timing`.
+Human transcripts and synthesized agent messages can also contain an ordered
+`tokens` array:
+
+```json
+{"kind":"word","text":"seventeen","start_ms":1400,"end_ms":1960,"confidence":1.0}
+```
+
+Each token has `kind` (`word` or `punctuation`), `text`, `start_ms`, and `end_ms`;
+`confidence` is optional. Token boundaries share the game clock with
+`utterance_timing`. The message's `game_time_ms` records when its final text was
+committed. Human speech can precede that commit; agent speech follows it while
+synthesis runs. Entity normalization can make formatted text differ from the
+sequence of spoken tokens.
+
+Human token timings are ASR estimates. Agent token timings come from the TTS
+provider's character alignment, grouped into words across audio chunks. Their
+speech interval starts when the server begins publishing the generated audio;
+network and browser buffering can shift actual playback. Agent tokens have no
+recognition confidence. Neither source provides manually annotated boundaries.
+
+JSON and YAML preserve tokens under their parent message. CSV uses the same
+nested message value in its `row_json` column. Typed messages have no speech
+timings. Older human and agent messages remain visible in the token view with a
+timings-unavailable notice when their token boundaries were not recorded.
 
 ## Delete participant data
 
@@ -187,8 +216,8 @@ assessment for a corpus candidate.
 ## Operational checklist
 
 - Back up the SQLite file before migration, deletion, or redeployment.
-- Put hosted deployments on persistent storage; the Render example uses
-  `sqlite:////data/parlando.sqlite` on a 10 GB disk.
+- Keep the entire shared host store on persistent storage. The Railway container
+  writes packages, accounts, and game databases under `/data/parlando`.
 - Record agent type and version so exports distinguish experimental policies.
 - Treat process health and active intake as separate monitoring signals.
 - Protect administrator routes at the deployment boundary as defense in depth;

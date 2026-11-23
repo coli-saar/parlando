@@ -1,4 +1,5 @@
-import { chromium } from "playwright";
+import { fileURLToPath } from "node:url";
+import { chromium, expect } from "@playwright/test";
 
 /** Reads the scenario request supplied by the Rust coordinator. */
 async function readRequest() {
@@ -7,9 +8,38 @@ async function readRequest() {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
+/** Selects game-owned placement in the same compiled fixture. */
+function gameCommunicationUrl(origin) {
+  const url = new URL(origin);
+  url.searchParams.set("gameCommunication", "");
+  return url.href;
+}
+
+/** Confirms the runtime rendered one widget, in the expected mode and position. */
+async function checkCommunication(participant, mode, insideGame) {
+  const widget = participant.page.locator(`.parlando-communication[data-mode="${mode}"]`);
+  await widget.waitFor();
+  if (await participant.page.locator(".parlando-communication").count() !== 1) {
+    throw new Error("expected exactly one communication widget");
+  }
+  if (await widget.evaluate((element) => Boolean(element.closest('[data-testid="game-communication"]'))) !== insideGame) {
+    throw new Error("communication widget rendered outside its configured placement");
+  }
+  const muted = widget.getByRole("button", { name: "Mute mic" });
+  const input = widget.getByRole("textbox", { name: "Message" });
+  if (mode === "speech") {
+    await muted.waitFor({ timeout: 15_000 });
+    await widget.locator(".mic-meter-track").waitFor();
+    if (await input.count()) throw new Error("speech mode rendered a typed composer");
+  } else {
+    await input.waitFor();
+    if (await widget.locator(".mic-meter-track").count()) throw new Error("typed mode rendered a microphone meter");
+  }
+}
+
 /** Waits for the reusable client to expose its initial participant entry action. */
-async function openParticipant(browser, origin) {
-  const context = await browser.newContext({ permissions: ["microphone"] });
+async function openParticipant(browser, origin, permissions = []) {
+  const context = await browser.newContext({ permissions });
   const page = await context.newPage();
   await page.goto(origin, { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "Enter waiting room" }).waitFor();
@@ -27,11 +57,30 @@ function countdownSeconds(text) {
 
 /** Prepares Playwright's fake microphone and confirms the participant may enter. */
 async function prepareVoice(participant) {
+  const panel = participant.page.locator(".voice-preflight");
+  const title = await panel.getByText("Voice chat", { exact: true }).boundingBox();
+  const status = await panel.locator("strong + span").boundingBox();
+  if (!title || !status || (status.y < title.y + title.height && status.x <= title.x + title.width)) {
+    throw new Error("voice heading and preparation status run together");
+  }
+  await panel.locator(".mic-meter-track").waitFor({ state: "visible" });
   await participant.page.getByRole("button", { name: "Prepare voice" }).click();
+  await checkLiveLobbyMeter(participant.page);
   await participant.page.waitForFunction(() => {
     const button = [...document.querySelectorAll("button")]
       .find((candidate) => candidate.textContent?.trim() === "Enter waiting room");
     return button instanceof HTMLButtonElement && !button.disabled;
+  }, undefined, { timeout: 10_000 });
+}
+
+/** Confirms the shared lobby meter visibly responds to the fake microphone. */
+async function checkLiveLobbyMeter(page) {
+  await page.waitForFunction(() => {
+    const track = document.querySelector(".voice-preflight .mic-meter-track");
+    const fill = track?.firstElementChild;
+    return track && fill && track.clientHeight > 0 && track.clientWidth > 0
+      && fill.getBoundingClientRect().width > 0 && fill.getBoundingClientRect().height > 0
+      && getComputedStyle(fill).backgroundColor !== "rgba(0, 0, 0, 0)";
   }, undefined, { timeout: 10_000 });
 }
 
@@ -41,9 +90,9 @@ async function enter(page) {
 }
 
 /** Creates two independent browser sessions and waits until the game becomes active. */
-async function activePair(browser, origin) {
+async function activePair(browser, origin, gameCommunication = false) {
   const a = await openParticipant(browser, origin);
-  const b = await openParticipant(browser, origin);
+  const b = await openParticipant(browser, gameCommunication ? gameCommunicationUrl(origin) : origin);
   await enter(a.page);
   await a.page.getByRole("heading", { name: "Waiting for another participant" }).waitFor();
   await enter(b.page);
@@ -59,14 +108,23 @@ async function closePair(pair) {
 
 /** Exercises registration, waiting, pairing, chat, rejection, transition, and completion. */
 async function happyPath(browser, origin) {
-  const pair = await activePair(browser, origin);
+  const pair = await activePair(browser, origin, true);
   try {
     const { a, b } = pair;
+    await checkCommunication(a, "typed", false);
+    await checkCommunication(b, "typed", true);
     if (await a.page.getByTestId("role").textContent() !== "A") throw new Error("first browser was not role A");
     if (await b.page.getByTestId("role").textContent() !== "B") throw new Error("second browser was not role B");
     await a.page.getByLabel("Message").fill("browser-to-browser message");
     await a.page.getByRole("button", { name: "Send message" }).click();
     await b.page.getByTestId("messages").filter({ hasText: "browser-to-browser message" }).waitFor();
+    await b.page.getByLabel("Message").fill("reply from the game sidebar");
+    await b.page.getByRole("button", { name: "Send message" }).click();
+    for (const participant of [a, b]) {
+      const log = participant.page.getByTestId("messages");
+      await log.getByText("reply from the game sidebar", { exact: true }).waitFor();
+      if (await log.getByRole("listitem").count() !== 2) throw new Error("expected one copy of each typed message");
+    }
     await a.page.getByRole("button", { name: "Reject action" }).click();
     await a.page.getByText("Action rejected: fixture_rejected").waitFor();
     if (await a.page.getByTestId("actions").textContent() !== "0") throw new Error("rejection changed A's observation");
@@ -89,6 +147,16 @@ async function happyPath(browser, origin) {
   }
 }
 
+/** A direct exit must explain the outcome without referring to an external recruitment handoff. */
+async function checkDirectExit(page) {
+  await page.getByRole("heading", { name: "Session ended" }).waitFor();
+  const panel = page.locator(".parlando-session-outcome");
+  const copy = await panel.innerText();
+  if (!/left before a playable game began/i.test(copy) || /prolific|completion path|completion code/i.test(copy)) {
+    throw new Error(`Incorrect direct waiting-room exit: ${copy}`);
+  }
+}
+
 /** Exercises a reliable participant leave before a partner is assigned. */
 async function waitingLeave(browser, origin) {
   const participant = await openParticipant(browser, origin);
@@ -96,8 +164,9 @@ async function waitingLeave(browser, origin) {
     await enter(participant.page);
     await participant.page.getByRole("heading", { name: "Waiting for another participant" }).waitFor();
     await participant.page.getByRole("button", { name: "Leave waiting room" }).click();
-    await participant.page.getByRole("heading", { name: "Session ended" }).waitFor();
-    await participant.page.getByText(/left before a playable game began/i).waitFor();
+    await checkDirectExit(participant.page);
+    await participant.page.reload();
+    await checkDirectExit(participant.page);
     return {
       transitions: ["registered->waiting", "waiting->ended"],
       outcomes: ["left_waiting_room"],
@@ -325,22 +394,46 @@ async function technicalFailure(browser, origin) {
 
 /** Exercises real browser media, relay, and the configured post-completion voice deadline. */
 async function farewellVoice(browser, origin) {
-  const a = await openParticipant(browser, origin);
-  const b = await openParticipant(browser, origin);
+  const a = await openParticipant(browser, origin, ["microphone"]);
+  const b = await openParticipant(browser, gameCommunicationUrl(origin), ["microphone"]);
   const pair = { a, b };
   try {
+    // Observe the audio relay directly, without exposing transport diagnostics in the widget.
+    const receivers = new Set();
+    for (const { page } of [a, b]) {
+      page.on("websocket", (socket) => {
+        if (!new URL(socket.url()).pathname.includes("/ws/audio/")) return;
+        socket.on("framereceived", ({ payload }) => {
+          if (Buffer.isBuffer(payload)) receivers.add(page);
+        });
+      });
+    }
+    // Exercise the shipped Beacon Relay theme alongside the unthemed SDK defaults on B.
+    await a.page.addStyleTag({ path: fileURLToPath(new URL("../../rust-server/templates/rust/client/beacon.css", import.meta.url)) });
     await prepareVoice(a);
     await prepareVoice(b);
     await enter(a.page);
+    await a.page.getByRole("heading", { name: "Waiting for another participant" }).waitFor();
+    await checkLiveLobbyMeter(a.page);
+    // Voice transport must load its worklets on the first seat while the partner is still outside.
+    await a.page.locator(".voice-preflight").getByText("Microphone live", { exact: true }).waitFor({ timeout: 15_000 });
     await enter(b.page);
     await a.page.getByRole("heading", { name: "Contract game" }).waitFor();
     await b.page.getByRole("heading", { name: "Contract game" }).waitFor();
     await a.page.getByTestId("voice").filter({ hasText: "Microphone live" }).waitFor({ timeout: 15_000 });
     await b.page.getByTestId("voice").filter({ hasText: "Microphone live" }).waitFor({ timeout: 15_000 });
-    await Promise.any([
-      a.page.getByTestId("remote-audio").filter({ hasText: "heard" }).waitFor({ timeout: 15_000 }),
-      b.page.getByTestId("remote-audio").filter({ hasText: "heard" }).waitFor({ timeout: 15_000 })
-    ]);
+    await checkCommunication(a, "speech", false);
+    await checkCommunication(b, "speech", true);
+    const mute = b.page.getByRole("button", { name: "Mute mic" });
+    await mute.click();
+    const unmute = b.page.getByRole("button", { name: "Unmute mic" });
+    await unmute.waitFor();
+    await unmute.click();
+    await mute.waitFor();
+    await expect.poll(() => receivers.size, { timeout: 15_000 }).toBe(2);
+    for (const { page } of [a, b]) {
+      await expect(page.locator(".parlando-communication").getByText(/^(heard|silent)$/i)).toHaveCount(0);
+    }
     await b.page.getByRole("button", { name: "Finish game" }).click();
     await a.page.getByText("Voice chat remains open").waitFor();
     const countdown = a.page.locator(".parlando-farewell-voice");
@@ -360,7 +453,70 @@ async function farewellVoice(browser, origin) {
   }
 }
 
+/** Holds the human's audio ticket until both seats are visible, then verifies recovery and play. */
+async function speechAgentStartup(browser, origin) {
+  const { page, context } = await openParticipant(browser, origin, ["microphone"]);
+  try {
+    const enterRoom = page.getByRole("button", { name: "Enter waiting room" });
+    if (await enterRoom.isEnabled()) throw new Error("speech entry permitted before microphone preparation");
+    // Read the actual captured track, including browsers that expose it under a default-device alias.
+    await page.evaluate(() => {
+      const devices = navigator.mediaDevices;
+      const capture = devices.getUserMedia.bind(devices);
+      devices.getUserMedia = async (constraints) => {
+        const stream = await capture(constraints);
+        window.capturedMicrophoneName = stream.getAudioTracks()[0]?.label;
+        return stream;
+      };
+    });
+    await prepareVoice({ page });
+    const input = page.getByRole("combobox", { name: "Microphone input" });
+    const label = await input.locator("option:checked").textContent();
+    const deviceName = await page.evaluate(() => window.capturedMicrophoneName);
+    if (!label?.trim() || !deviceName?.startsWith(label)) throw new Error("microphone selector does not name the captured track");
+
+    // Hold the ticket at the browser boundary so an instant local provider cannot mask the waiting room.
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    await page.route("**/api/sessions/*/audio-session", async (route) => {
+      await gate;
+      await route.continue();
+    });
+    await enter(page);
+    await page.getByRole("heading", { name: "Waiting for another participant" }).waitFor();
+    await page.getByText("Connected · preparing audio", { exact: true }).waitFor();
+    await page.locator(".seat-grid").getByText("Connected", { exact: true }).waitFor();
+    await checkLiveLobbyMeter(page);
+    await page.reload();
+    await page.getByRole("heading", { name: "Waiting for another participant" }).waitFor();
+    await page.getByRole("button", { name: "Prepare voice" }).click();
+    await checkLiveLobbyMeter(page);
+    release();
+    const action = page.getByRole("button", { name: request.fixture.beacon ? "Add one tick" : "Advance", exact: true });
+    await action.click({ timeout: 15_000 });
+    if (request.fixture.beacon) {
+      const charge = page.getByRole("progressbar");
+      await page.waitForFunction(() => document.querySelector("progress")?.value > 0);
+      if (request.fixture.recognizeTick) {
+        if (await charge.getAttribute("value") !== "1" || await action.isEnabled()) {
+          throw new Error("Beacon agent spent a tick before its partner requested one");
+        }
+        const signal = await fetch(request.fixture.recognizeTick, { method: "POST" });
+        if (!signal.ok) throw new Error("could not release the test transcript");
+        await page.waitForFunction(() => document.querySelector("progress")?.value === 2);
+        if (!(await action.isEnabled())) throw new Error("spoken tick did not return the turn to the human");
+      }
+    } else {
+      await page.getByTestId("actions").filter({ hasText: /^1$/ }).waitFor();
+    }
+    return { transitions: ["registered->waiting", "waiting->active"], outcomes: [], endCauses: [] };
+  } finally {
+    await context.close();
+  }
+}
+
 const scenarios = {
+  "speech-agent-startup": speechAgentStartup,
   "happy-path": happyPath,
   "waiting-leave": waitingLeave,
   "waiting-timeout": waitingTimeout,

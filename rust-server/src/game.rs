@@ -1,13 +1,15 @@
+//! Game identity, player roles, agent settings, and validation shared by both runners.
+
 use std::{
     collections::{BTreeMap, HashSet},
     fmt,
 };
 
 use anyhow::{bail, Context, Result};
-use serde::{de::DeserializeOwned, Serialize};
+
 use serde_json::Value;
 
-use crate::SessionLogger;
+use crate::component::{ComponentValue, LoadedGame};
 
 /// Describes one configuration input accepted by a compiled agent factory.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -116,26 +118,6 @@ impl fmt::Debug for SecretValues {
             .field("values", &"[REDACTED]")
             .finish()
     }
-}
-
-/// Trusted inputs used to construct a game's initial state.
-pub struct GameInitializationContext<'a, C> {
-    /// Validated typed game configuration.
-    pub config: &'a C,
-    /// Recorded deterministic session seed.
-    pub seed: u64,
-    /// All experiment-owned game secrets, keyed without the `game.` prefix.
-    pub secrets: &'a SecretValues,
-}
-
-/// Session-specific capability supplied while constructing one game value.
-///
-/// Unlike [`GameInitializationContext`], which exists only while the initial
-/// authoritative state is produced, this context contains dependencies that a
-/// game may retain and use throughout its session lifetime.
-pub struct GameSessionContext {
-    /// Logger already bound to this session and the game source.
-    pub logger: SessionLogger,
 }
 
 /// Describes one agent implementation registered with a game server.
@@ -413,7 +395,7 @@ fn normalize_value(field: &AgentConfigField, value: &Value, path: &str) -> Resul
     }
 }
 
-/// Immutable identity of the game implementation compiled into a server process.
+/// Immutable identity and build provenance of a WebAssembly game.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct GameMetadata {
     /// Stable machine-readable identifier shared by releases of this game.
@@ -422,13 +404,14 @@ pub struct GameMetadata {
     pub name: String,
     /// Exact semantic version used to decide whether an experiment can be activated.
     pub version: semver::Version,
-    /// Diagnostic build provenance which does not affect activation compatibility.
+    /// Diagnostic build provenance supplied as a JSON object or null.
+    /// The live server records the loaded component SHA-256 in this object.
     pub build_manifest: Value,
 }
 
 impl GameMetadata {
-    /// Validates the stable process identity before the server opens its dashboard.
-    pub(crate) fn validate(&self) -> Result<()> {
+    /// Checks that the stable game ID is usable in URLs and that the display name is nonempty.
+    pub fn validate(&self) -> Result<()> {
         if self.id.is_empty()
             || self.id.chars().count() > 128
             || !self
@@ -445,60 +428,31 @@ impl GameMetadata {
         }
         Ok(())
     }
-}
 
-/// Identifies one of the two active player roles in a session.
-///
-/// Parlando deliberately models two-player games. Either role may be controlled
-/// by a human participant or an agent; the role does not encode presentation or
-/// participant kind.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
-pub enum PlayerRole {
-    /// The first active player role.
-    A,
-    /// The second active player role.
-    B,
-}
-
-impl PlayerRole {
-    /// Returns the stable wire-format role name.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::A => "A",
-            Self::B => "B",
+    /// Pins build provenance to the executable actually loaded by the runtime.
+    pub(crate) fn pin_component(&mut self, game: &LoadedGame) -> Result<()> {
+        let digest = game.digest();
+        if self.build_manifest.is_null() {
+            self.build_manifest = Value::Object(serde_json::Map::new());
         }
+        let manifest = self
+            .build_manifest
+            .as_object_mut()
+            .context("game build manifest must be an object or null")?;
+        if let Some(recorded) = manifest.get("component_sha256") {
+            anyhow::ensure!(
+                recorded.as_str() == Some(digest),
+                "game build manifest digest does not match the loaded component"
+            );
+        } else {
+            manifest.insert("component_sha256".into(), Value::String(digest.into()));
+        }
+        Ok(())
     }
 }
 
-/// Identifies a participant's runtime seat in a live session.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum Seat {
-    /// The first active player seat.
-    #[serde(rename = "A")]
-    A,
-    /// The second active player seat.
-    #[serde(rename = "B")]
-    B,
-}
-
-impl Seat {
-    /// Returns the stable wire-format seat name.
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::A => "A",
-            Self::B => "B",
-        }
-    }
-
-    /// Converts the runtime seat into the public player role.
-    pub(crate) fn player_role(self) -> PlayerRole {
-        match self {
-            Self::A => PlayerRole::A,
-            Self::B => PlayerRole::B,
-        }
-    }
-}
+/// The SDK seat used by games, agents, participant records, and the host protocol.
+pub use parlando_game_sdk::Role as PlayerRole;
 
 /// Machine-readable reason why a game rule rejected a typed action.
 ///
@@ -528,110 +482,10 @@ impl std::fmt::Display for ActionRejection {
 
 impl std::error::Error for ActionRejection {}
 
-/// Defines one two-player game's deterministic mechanics and role information.
-///
-/// `State`, `Action`, `Observation`, and `Completion` are structured domain data,
-/// not rendered human interfaces. The same observations and actions are consumed
-/// by browser clients and agents. Given the same configuration, seed, state, and
-/// action sequence, an implementation should produce the same results; stochastic
-/// games should initialize their random state from `seed` and store it in `State`.
-pub trait Game: Send + Sync + 'static {
-    /// Game-owned per-experiment configuration edited through the dashboard.
-    type Config: Serialize + DeserializeOwned + Send + Sync + 'static;
-    /// Authoritative game state owned by the runtime and never sent to participants.
-    type State: Serialize + Send + Sync + 'static;
-    /// Structured game operation proposed by either player role.
-    type Action: Serialize + DeserializeOwned + Clone + Send + Sync + 'static;
-    /// Complete game information currently available to one player role.
-    type Observation: Serialize + Send + Sync + 'static;
-    /// Structured terminal result sent to both players and stored for analysis.
-    ///
-    /// This shared value may contain public facts such as the winner and scores.
-    /// Put role-private terminal facts only in that role's final [`Game::Observation`].
-    type Completion: Serialize + Clone + Send + Sync + 'static;
-
-    /// Creates a fresh authoritative state from game configuration and a recorded seed.
-    fn initial_state(
-        &self,
-        context: GameInitializationContext<'_, Self::Config>,
-    ) -> Result<Self::State>;
-
-    /// Applies one typed action or returns an expected machine-readable rule rejection.
-    ///
-    /// Implementations must validate the actor and all state-dependent legality in
-    /// this operation. The method must not perform I/O. Runtime failures such as
-    /// persistence errors are handled separately by the server.
-    fn apply_action(
-        &self,
-        state: &Self::State,
-        action: &Self::Action,
-        actor: PlayerRole,
-    ) -> std::result::Result<Self::State, ActionRejection>;
-
-    /// Returns the complete role-specific information state for one player role.
-    fn observation(&self, state: &Self::State, role: PlayerRole) -> Self::Observation;
-
-    /// Lists a role's discrete action affordances when the game provides a catalogue.
-    ///
-    /// `None` means the action space is not enumerated. `Some(vec![])` means the
-    /// game provides an enumeration and no action is currently available. Every
-    /// submitted action is still checked by `apply_action`.
-    fn available_actions(
-        &self,
-        _state: &Self::State,
-        _role: PlayerRole,
-    ) -> Option<Vec<Self::Action>> {
-        None
-    }
-
-    /// Adds optional role-neutral domain metadata to the durable transition log.
-    ///
-    /// This value is for analysis and dashboard inspection. It must not contain
-    /// viewer-specific prose or assumptions about how a human interface renders
-    /// the transition. Parlando always records the actor and action itself.
-    fn transition_metadata(
-        &self,
-        _before: &Self::State,
-        _after: &Self::State,
-        _action: &Self::Action,
-        _actor: PlayerRole,
-    ) -> Option<Value> {
-        None
-    }
-
-    /// Returns the shared structured terminal result, or `None` while play continues.
-    ///
-    /// The result is delivered unchanged to both players and stored for analysis.
-    /// It may contain public game-specific facts such as winner, win/loss outcome,
-    /// and scores. Put role-private terminal facts in the role's final observation.
-    fn completion(&self, state: &Self::State) -> Option<Self::Completion>;
-}
-
-/// Reusable constructor for session-local values of one compiled game.
-///
-/// The server owns one factory for the life of the process. Each call to
-/// [`GameFactory::create`] receives the context for a newly admitted session and
-/// must return a fresh [`Game`] value owned exclusively by that session.
-pub trait GameFactory: Send + Sync + 'static {
-    /// Session-owned game type created by this reusable factory.
-    type Game: Game;
-
-    /// Creates a game instance which belongs to exactly one execution session.
-    fn create(&self, context: GameSessionContext) -> Result<Self::Game>;
-
-    /// Validates semantic constraints on already-deserialized game configuration.
-    fn validate_config(&self, _config: &<Self::Game as Game>::Config) -> Result<()> {
-        Ok(())
-    }
-}
-
-/// Deserializes and semantically validates one stored game configuration value.
-pub(crate) fn parse_game_config<G: Game>(
-    factory: &dyn GameFactory<Game = G>,
-    value: &Value,
-) -> Result<G::Config> {
-    let config = serde_json::from_value(value.clone())?;
-    factory.validate_config(&config)?;
+/// Checks stored configuration against the schema declared by the selected game.
+pub(crate) fn parse_game_config(game: &LoadedGame, value: &Value) -> Result<ComponentValue> {
+    let config = ComponentValue::from_typed(value)?;
+    game.validate_config(&config)?;
     Ok(config)
 }
 

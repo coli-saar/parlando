@@ -5,19 +5,23 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import sys
 
 
 ROOT = Path(__file__).resolve().parent.parent
-BROWSER_REPORT = ROOT / "client-server-tests" / "target" / "browser-e2e" / "report.md"
-PROLIFIC_ARTIFACTS = ROOT / "rust-server-tests" / "target" / "prolific-tests"
 COMBINED_REPORT = ROOT / "target" / "e2e-report.md"
 
 
-def latest_prolific_report() -> Path | None:
-    """Return the newest durable Prolific report available after the matrix run."""
-    reports = list(PROLIFIC_ARTIFACTS.glob("*/report.json"))
-    return max(reports, key=lambda path: path.stat().st_mtime) if reports else None
+def prolific_report_from_log(log_path: Path) -> Path | None:
+    """Resolve only the report announced by this run's Prolific process."""
+    matches = re.findall(r"^JSON report: (.+)$", log_path.read_text(), re.MULTILINE)
+    if not matches:
+        return None
+    path = Path(matches[-1].strip())
+    if not path.is_absolute():
+        path = ROOT / "rust-server-tests" / path
+    return path
 
 
 def prolific_markdown(path: Path | None) -> str:
@@ -45,30 +49,32 @@ def prolific_markdown(path: Path | None) -> str:
 
 
 def main() -> int:
-    """Write the combined report from every exit status supplied by the shell coordinator."""
-    if len(sys.argv) != 6:
+    """Save one immutable run report and refresh the latest report with links to layer logs."""
+    if len(sys.argv) != 7:
         raise SystemExit(
-            "usage: write_e2e_report.py JS_STATUS RUST_STATUS CONTRACT_STATUS "
+            "usage: write_e2e_report.py RUN_DIRECTORY JS_STATUS RUST_STATUS CONTRACT_STATUS "
             "BROWSER_STATUS PROLIFIC_STATUS"
         )
-    statuses = {
-        "JavaScript client unit, rendering, coverage, and package tests": int(sys.argv[1]),
-        "Rust server unit and integration tests": int(sys.argv[2]),
-        "Live client/server contract tests": int(sys.argv[3]),
-        "Real-browser state-machine matrix": int(sys.argv[4]),
-        "Prolific process-boundary matrix": int(sys.argv[5]),
-    }
-    browser_status = statuses["Real-browser state-machine matrix"]
-    prolific_status = statuses["Prolific process-boundary matrix"]
+    run_dir = Path(sys.argv[1]).resolve()
+    layers = [
+        ("JavaScript client unit, rendering, coverage, and package tests", "javascript"),
+        ("Rust server unit and integration tests", "rust"),
+        ("Live client/server contract tests", "contracts"),
+        ("Real-browser state-machine matrix", "browser"),
+        ("Prolific process-boundary matrix", "prolific"),
+    ]
+    statuses = dict(zip((key for _, key in layers), map(int, sys.argv[2:])))
+    browser_report = run_dir / "browser-report.md"
     browser_text = (
-        BROWSER_REPORT.read_text()
-        if browser_status == 0 and BROWSER_REPORT.is_file()
+        browser_report.read_text()
+        if statuses["browser"] == 0 and browser_report.is_file()
         else "# Parlando browser end-to-end report\n\nNo successful browser report was produced by this run.\n"
     )
     overall = "PASSED" if all(status == 0 for status in statuses.values()) else "FAILED"
     summary = [
-        f"- {name}: {'passed' if status == 0 else 'failed'}"
-        for name, status in statuses.items()
+        f"- {name}: **{'passed' if statuses[key] == 0 else 'failed'}** "
+        f"(exit {statuses[key]}) — [full log]({run_dir / (key + '.log')})"
+        for name, key in layers
     ]
     text = "\n".join(
         [
@@ -76,14 +82,19 @@ def main() -> int:
             "",
             f"Overall result: **{overall}**",
             "",
+            f"Report interpreter: Python {sys.version.split()[0]} (`{sys.executable}`)",
+            "",
             *summary,
             "",
             browser_text.replace("# Parlando browser end-to-end report", "## Real-browser state machine", 1),
-            prolific_markdown(latest_prolific_report()),
+            prolific_markdown(prolific_report_from_log(run_dir / "prolific.log")),
         ]
     )
     COMBINED_REPORT.parent.mkdir(parents=True, exist_ok=True)
+    (run_dir / "report.md").write_text(text)
+    (run_dir / "statuses.json").write_text(json.dumps(statuses, indent=2) + "\n")
     COMBINED_REPORT.write_text(text)
+    print(f"Run report and logs: {run_dir / 'report.md'}")
     print(f"Combined human-readable report: {COMBINED_REPORT}")
     return 0
 

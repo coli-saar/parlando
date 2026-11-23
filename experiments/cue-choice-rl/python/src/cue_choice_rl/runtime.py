@@ -21,7 +21,7 @@ class PolicyBackend(Protocol):
         seed: int,
         temperature: float,
     ) -> dict[str, Any]:
-        """Chooses one action from the runner-provided legal actions."""
+        """Chooses one action from the legal actions in the learner’s view."""
 
     def train(
         self, update_id: str, base_checkpoint_id: str, steps: list[dict[str, Any]], settings: dict[str, Any]
@@ -113,10 +113,11 @@ class LearnerRuntime:
 
 
 def canonical_prompt(observation: dict[str, Any]) -> str:
-    """Encodes a role-safe observation in a stable, game-specific text format."""
+    """Encodes the cue and phase while action selection uses the separate legal set."""
+    features = {key: value for key, value in observation.items() if key != "available_actions"}
     return (
         "Choose the correct cue-choice action. Observation: "
-        + json.dumps(observation, sort_keys=True, separators=(",", ":"))
+        + json.dumps(features, sort_keys=True, separators=(",", ":"))
     )
 
 

@@ -1,122 +1,96 @@
 ---
-title: Design a deployment
+title: Deploy to a shared host
 ---
 
-# Design a deployment
+# Deploy to a shared host
 
-A Parlando deployment is a stateful research instrument, not a stateless copy of a website. The
-participant application can be rebuilt, but the database defines the installation's administrator,
-experiments, revisions, participants, sessions, and evidence. The deployment design should therefore
-begin with state, trust boundaries, and failure behavior rather than with a hosting product.
+A shared Parlando host serves one current WASM package per game. Each experiment controls its own participant intake. Use its game dashboard to create experiments and start or stop their individual runs. You can deploy games without restarting the host.
 
-## Deploy one game
+To run your own server from GitHub, follow [Deploy Parlando on Railway](railway/).
 
-The Linux and container chapters implement the same sequence:
+## Deploy from the dashboard
 
-1. Build the React participant application and Rust game executable from pinned dependencies.
-2. Choose a durable data location outside the replaceable application directory and restrict it to
-   the service account.
-3. Start one Parlando server with the production network and data settings.
-4. Put one HTTPS endpoint in front of the server and verify that it supports Parlando's live
-   connections.
-5. Open `/admin`, create the administrator, restrict administrative access, and enter shared
-   provider credentials under **Game settings**.
-6. Create or restore experiments, but leave participant intake inactive.
-7. From an external browser, run a two-participant Local Preview through entry, pairing, actions,
-   disconnection, reconnection, and completion. Exercise each configured agent and speech provider.
-8. Download an export, create an off-service backup, restore it into another installation,
-   and verify its sessions and export.
-9. Record the game version, source revision or image digest, public origin, database location,
-   provider settings, and experiment revision. Start official intake only after this record and the
-   pilot agree.
+Ask your host administrator for the administrator site URL and an individual account. Build your game locally and sign in. Experimenter accounts can access the games and experiments on this host.
 
-Use [the static Linux package](cross-compiling-for-linux/) when an institution manages the host.
-Use [Docker on Render](render/) for the included container path. The remaining sections explain why
-the steps above use one process, one database, and one secure origin.
+1. In **Games**, drop `dist/beacon-0.1.0.zip` onto the rectangle above the games table to upload it immediately. To choose a file manually, click the rectangle, select the ZIP, and confirm with **Upload package**. Parlando reads the game ID from the archive. The IDs `admin`, `api`, and `health` are reserved for host routes.
+2. Open the **Beacon Relay** link to go to the Beacon Relay dashboard at `/beacon` on the administrator origin.
+3. Choose **New experiment**, enter an ID such as `beacon-pilot`, and confirm with **Create experiment**. Configure the [study condition](../run/configuration/) in that dashboard.
+4. Choose **Start experiment** and start **Local preview** to pilot. Open the participant URL in two independent browser profiles. Inspect the resulting sessions, then choose **Stop**. Use **Official intake** when the study is ready for participants.
 
-## Choose the unit of deployment
+## Update a deployed game
 
-One server serves one compiled game and the experiment catalogue for that game. A second game uses
-a separate server and data store. This boundary keeps task version, experiment
-configuration, and collected records within one identifiable installation.
+Stop testing, pause open intake, and let existing sessions finish. Drop the new ZIP onto the same rectangle in **Games** to upload it. Use the same game ID in the package manifest. Parlando replaces the package and keeps the game's research database. It rejects replacement while an experiment is running or has sessions still in progress.
 
-Use one live server instance per installation. The included deployment patterns do not support
-horizontal scaling, and multiple replicas can break live sessions.
+After updating a game, select the existing experiment and start a local preview to check its configuration with the new build. Compatible settings can be used immediately with the same experiment ID and participant URL. If the updated game rejects a setting, edit the configuration while the experiment is inactive and save the corrected values. Each session records the game version it ran.
 
-Every process start returns experiments to inactive. This is a checkpoint after replacement or
-failure: an administrator must verify the installation before recruitment resumes. Process health
-and participant intake are intentionally different states.
+Keep the exact ZIP and its revision alongside the study records when you need to reproduce earlier results. The host serves the current package after an update.
 
-## Separate bootstrap from study policy
+## Define host aliases
 
-The host supplies only values needed before the dashboard can open:
+Create `~/.parlando/servers.yaml`. Give each server a name and set `default` to the alias you usually use.
 
-| Setting | Purpose |
-| --- | --- |
-| `--host` | Listener interface; production normally uses `0.0.0.0` behind an ingress |
-| `--port` or `PORT` | Listener port |
-| `--database-url` or `PARLANDO_DATABASE_URL` | Durable SQLite location |
-| `--client-dist` or `PARLANDO_CLIENT_DIST` | Compiled participant application |
+```yaml
+local: http://127.0.0.1:8000
+lab: https://parlando.example.org
+default: local
+```
 
-The dashboard owns experiments, consent, pairing, limits, communication, agents, and retention.
-Authenticated **Game settings** own shared institutional values and provider credentials. Keeping
-study policy out of container arguments makes every saved condition versioned and inspectable.
+With this configuration, `parlando login` and `parlando deploy` target the local server. To deploy to the lab, run `parlando login --server lab` once and use `parlando deploy --host lab`. An explicit URL or alias overrides the default for that command.
 
-## Make persistence explicit
+## Deploy with the CLI
 
-Place the database on a persistent writable volume outside any replaceable package directory.
-Ephemeral storage may appear to work until a deployment, restart, or platform spin-down removes the
-administrator, conditions, and collected data.
+Sign in once per server with your dashboard account. For a local server, run:
 
-Persistent storage is still only the live copy. Arrange encrypted off-service backups before
-recruitment, restore one into a separate installation, and verify the dashboard and an export.
-Monitor free space and include backups in access, retention, and deletion procedures.
+```sh
+parlando login --server http://127.0.0.1:8000
+```
 
-## Establish the administrative boundary
+The CLI opens a link for this login request. Sign in to the dashboard and choose **Authorize CLI**. The link expires after five minutes. The terminal saves a persistent credential in macOS Keychain or Linux Secret Service. Linux requires `secret-tool` and an unlocked Secret Service. Use `--no-browser` to open the printed link yourself.
 
-The first visit to a new database creates the administrator. Complete this ceremony before sharing
-or advertising the service address. Use an institutional password manager and a password of at
-least 12 characters.
+Both dashboard roles can deploy any game on the server, including its first version. Run these commands from a game project, using the same server URL for login and deployment.
 
-Restrict administrator network access through dashboard CIDR settings or a trusted ingress. This is
-defense in depth; the dashboard still requires its own session authentication and request
-protections. Store provider secrets only through authenticated settings or the protected remote
-process that uses them.
+```sh
+parlando build
+parlando deploy --host http://127.0.0.1:8000 dist/beacon-0.1.0.zip
+```
 
-## Put one secure origin in front
+Record the package revision printed by the command. For scripts, add `--json` and read `result.revision`. Changing the account password or disabling the account revokes its saved CLI credentials.
 
-Serve the participant application and Parlando from one HTTPS origin. If you use a reverse proxy,
-configure it to support Parlando's long-lived live-session connections. Test entry, play,
-reconnection, and speech through the public address; a page that merely loads is not sufficient.
 
-## Select a packaging route
+Use the game dashboard for experiment creation and study intake. Keep all credentials out of game files and prompts.
 
-The packaging choice changes how the same deployment unit reaches the host:
 
-| Route | Choose it when | It does not provide |
-| --- | --- | --- |
-| Local run | Developing and using Local Preview | Public ingress, service management, durable hosting |
-| Static Linux package | An institution manages the Linux host | Reverse proxy, service manager, database, credentials |
-| Docker service | A container platform manages builds and processes | Automatic persistent storage, backup, or multi-replica state |
+## Upload a local agent
 
-The [Linux package](cross-compiling-for-linux/) combines a static server with compiled participant
-assets. The [Render guide](render/) shows a Docker realization. They share the operating model
-above.
+Build the [agent ZIP](../build/packages/#build-an-agent-zip) and upload it
+after the game ZIP. Stop the game's experiments and let active sessions
+finish before uploading a policy. Use **Games** in the administrator
+dashboard, or use the CLI after signing in to the same host.
 
-## Verify the deployed instrument
+```sh
+parlando deploy --host "$PARLANDO_SERVER" \
+  dist/agent-counterweight_hotel.porter-11.0.0.zip
+```
 
-Before intake, test the public route rather than only the local binary:
+The host installs the policy under its target game ID. On **Games**,
+select the disclosure arrow beside the game name to see its installed agents. A dashboard
+upload opens that list and highlights the uploaded agent. In the
+game dashboard, open an inactive experiment's **Configuration**. Set
+**Participant pairing** to **Human vs agent** and choose the uploaded policy in
+**Agent factory**. Save the configuration and start a **Local preview** before
+opening intake. Game and agent versions are independent. Game updates retain installed
+agents and must pass their payload layout checks. Record both package revisions with the study.
 
-1. `/health` reports success with the intended persistent data location;
-2. administrator setup is complete and access-controlled;
-3. two isolated participants can enter, pair, act, reconnect, and complete;
-4. each remote agent, speech provider, and recruitment path works from its real network boundary;
-5. the corpus candidate downloads and contains the intended fields; and
-6. an off-service backup restores into another installation.
+## Upload through REST
 
-Record the semantic game version, deployed source revision or image digest, database location,
-provider configuration, and final experiment revision with the study. Monitor the first production
-sessions before increasing recruitment.
+Use `parlando deploy` for terminal and CI uploads. A custom client can send
+`PUT /api/hosting/packages/{game_id}` with an account deployment credential in the bearer
+authorization header. Set `Content-Type: application/zip` and send the ZIP bytes as the request body.
+A game upload contains `game.yaml`, the game component, and its declared
+browser assets. An agent upload contains `agent.yaml` and the policy component
+for the same game ID. The host limits both the upload and the combined
+uncompressed entries to 64 MiB. The response includes the package `revision`
+and, for an agent upload, the agent's factory ID. Retrying with the same file
+names and bytes returns the same revision.
 
-Continue with [Cross-compile for Linux](cross-compiling-for-linux/) when deploying to an
-institution-managed host, or [Deploy on Render](render/) for the included Docker realization.
+For installation, accounts, networking, and backups, see [operate a shared host](host/).

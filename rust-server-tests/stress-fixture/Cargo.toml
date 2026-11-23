@@ -1,0 +1,31 @@
+[package]
+name = "parlando-stress-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[features]
+test-traps = []
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+parlando-game-sdk = { path = "../../parlando-game-sdk" }
+wit-bindgen = "0.57.1"
+
+[[example]]
+name = "sdk-encoding-trap"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "contract"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "headless"
+crate-type = ["cdylib"]

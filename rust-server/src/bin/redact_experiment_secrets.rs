@@ -1,4 +1,7 @@
 //! Audits and optionally redacts credential-shaped fields from stored experiment configuration.
+//!
+//! Operators supply a SQLite database. The default run reports proposed edits. With
+//! `--apply`, the utility writes the redacted configurations in one transaction.
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;

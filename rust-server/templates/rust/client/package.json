@@ -1,0 +1,16 @@
+{
+  "name": "__GAME_ID__-client",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build --base ./"
+  },
+  "dependencies": {
+    "@coli-saar/parlando-client": "__CLIENT_DEPENDENCY__",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "vite": "^6.4.0"
+  }
+}

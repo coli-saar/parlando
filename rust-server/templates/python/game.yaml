@@ -1,0 +1,8 @@
+id: __GAME_ID__
+name: Beacon Relay
+version: 0.1.0
+python:
+  module: game
+  sdk_path: __SDK_DEPENDENCY__
+client_project: client
+scenarios: scenarios.yaml

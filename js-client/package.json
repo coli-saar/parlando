@@ -1,6 +1,6 @@
 {
   "name": "@coli-saar/parlando-client",
-  "version": "0.4.3",
+  "version": "0.6.0",
   "type": "module",
   "description": "Reusable browser client SDK for Parlando experiment games.",
   "main": "./dist/index.js",
@@ -22,7 +22,8 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build:for-game": "npm install --no-save --no-audit --no-fund --include=dev && npm run build",
+    "build": "tsc -p tsconfig.json && node -e \"require('node:fs').copyFileSync('src/participant/parlando-mark.svg', 'dist/participant/parlando-mark.svg')\"",
     "test": "vitest run src",
     "test:coverage": "vitest run src --coverage --coverage.thresholds.statements=80 --coverage.thresholds.branches=80 --coverage.thresholds.functions=80 --coverage.thresholds.lines=80",
     "test:package": "tsc --noEmit --strict --module ESNext --moduleResolution Bundler --target ES2022 --jsx react-jsx tests/package-consumer.tsx && node tests/packageSurface.mjs",

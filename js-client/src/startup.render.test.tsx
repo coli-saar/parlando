@@ -6,12 +6,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialVoicePreflight, initialVoiceStatus } from "./audio/types";
 import type { ExperimentInfo, ParticipantOutcome, ParticipantState } from "./protocol";
 import {
-  FarewellVoiceNotice,
-  IdleDeadlineNotice,
-  ParticipantAppTestHarness,
-  WaitingRoomNotice,
-  type GameSession
+  ParticipantApp,
+  ReplayPlayer,
+  type GameSnapshot,
+  type SessionReplay
 } from "./startup";
+import { IdleDeadlineNotice, WaitingRoomNotice } from "./participant/deadlines";
+import { FarewellVoiceNotice } from "./participant/outcome";
+import { VoicePreparationControls } from "./participant/microphone";
+import { replayRequestUrl } from "./participant/replay";
+import { CommunicationWidget } from "./react";
+import { ParticipantAppRuntime } from "./participant/runtime";
 
 class FakeWebSocket extends EventTarget {
   static OPEN = 1;
@@ -33,7 +38,7 @@ const active: ParticipantState<{ view: string }, { type: string }, { score: numb
 };
 
 function config(): ExperimentInfo {
-  return { gameName: "Tiny Game", status: "active", consents: [], voice: { enabled: false } };
+  return { gameName: "Tiny Game", status: "active", consents: [], communication: { mode: "typed" } };
 }
 
 function api() {
@@ -58,19 +63,143 @@ const audio = {
   subscribe: (listener: (value: unknown) => void) => { listener({ voiceStatus: initialVoiceStatus, voicePreflight: initialVoicePreflight }); return () => undefined; }
 };
 
-function game(session: GameSession<{ view: string }, { type: string }, { score: number }>) {
+function game(session: GameSnapshot<{ view: string }, { type: string }>) {
   return <div>
     <span>{session.observation.view}</span>
+    <span>Source: {session.recruitmentSource ?? "unknown"}</span>
     <span>{String(session.interactionEnabled)}</span>
-    <span>Messages: {session.conversation.length}</span>
     <span>Actor: {session.transition?.actor ?? "none"}</span>
-    <span>Player B: {session.presence.B?.connected ? "connected" : "waiting"}</span>
-    <button onClick={session.leave}>Leave</button>
   </div>;
 }
 
 beforeEach(() => { vi.clearAllMocks(); FakeWebSocket.instances = []; vi.stubGlobal("WebSocket", FakeWebSocket); Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { enumerateDevices: vi.fn(async () => []), addEventListener: vi.fn(), removeEventListener: vi.fn() } }); });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+describe("microphone preparation controls", () => {
+  it("prepares the default input and switches only between available named microphones", () => {
+    const prepare = vi.fn();
+    const inputs = ["default", "built-in", "headset"].map((deviceId) => ({
+      kind: "audioinput", deviceId, label: deviceId,
+    } as MediaDeviceInfo));
+    const props = { audioInputs: inputs, enabled: true, onPrepareVoice: prepare, selectedAudioInputId: "built-in" };
+    const { rerender } = render(<VoicePreparationControls {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Prepare voice" }));
+    const ready = { ...initialVoicePreflight, ready: true };
+    rerender(<VoicePreparationControls {...props} voicePreflight={ready} />);
+    const selector = screen.getByRole("combobox", { name: "Microphone input" });
+    expect(screen.getAllByRole("option")).toHaveLength(2);
+    expect(selector).toHaveValue("built-in");
+    fireEvent.change(selector, { target: { value: "headset" } });
+    expect(prepare.mock.calls).toEqual([[""], ["headset"]]);
+    rerender(<VoicePreparationControls {...props} voicePreflight={{ ...ready, preparing: true }} />);
+    expect(selector).toBeDisabled();
+    rerender(<VoicePreparationControls {...props} audioInputs={[inputs[1]]} voicePreflight={ready} />);
+    expect(selector).toBeDisabled();
+  });
+});
+
+describe("administrator replay startup", () => {
+  afterEach(() => { window.history.replaceState(null, "", "/"); });
+
+  it.each([
+    ["http://[", null],
+    ["https://other.example/api/admin/replay", null],
+    ["/api/config", null],
+    ["/api/admin/replay?session=123#frame", "/api/admin/replay?session=123"],
+  ])("validates the dashboard replay address %s", (candidate, expected) => {
+    window.history.replaceState(null, "", "?" + new URLSearchParams({ parlandoReplay: candidate! }));
+    expect(replayRequestUrl()).toBe(expected);
+  });
+
+  it.each([undefined, { mode: "voice" }])("reports invalid replay communication %j before rendering", async (communication) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(Response.json({ communication })));
+    window.history.replaceState(null, "", "?parlandoReplay=/api/admin/replay");
+    render(<ParticipantApp renderGame={game} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      'Replay must specify communication.mode as "typed" or "speech".'
+    );
+  });
+
+  it("loads only the current replay and clears a previous request's error", async () => {
+    const fetchReplay = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchReplay);
+    window.history.replaceState(null, "", "?parlandoReplay=/api/admin/first");
+    fetchReplay.mockResolvedValueOnce(new Response("Replay unavailable", { status: 404 }));
+    const { rerender } = render(<ParticipantApp renderGame={game} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Replay unavailable");
+
+    let finishSecond!: (response: Response) => void;
+    fetchReplay.mockReturnValueOnce(new Promise((resolve) => { finishSecond = resolve; }));
+    window.history.replaceState(null, "", "?parlandoReplay=/api/admin/second");
+    rerender(<ParticipantApp renderGame={game} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Loading replay");
+
+    window.history.replaceState(null, "", "?parlandoReplay=/api/admin/third");
+    fetchReplay.mockResolvedValueOnce(Response.json({ communication: { mode: "typed" }, roles: { A: [], B: [] } }));
+    rerender(<ParticipantApp renderGame={game} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("This replay has no frames.");
+    await act(async () => { finishSecond(new Response("stale failure", { status: 404 })); });
+    expect(screen.getByRole("alert")).toHaveTextContent("This replay has no frames.");
+    expect(fetchReplay.mock.calls.map(([url]) => url)).toEqual([
+      "/api/admin/first", "/api/admin/second", "/api/admin/third",
+    ]);
+  });
+});
+
+describe("ReplayPlayer", () => {
+  it.each([
+    ["typed", "default"],
+    ["speech", "game"],
+  ] as const)("jumps between reconstructed events in %s mode with %s placement", (mode, placement) => {
+    vi.useFakeTimers();
+    const replay: SessionReplay<{ view: string }, { type: string }, { score: number }> = {
+      experiment_id: "demo",
+      session_id: 7,
+      public_session_id: "ROOM1",
+      communication: { mode },
+      compatibility: { state: "1", action: "1", rules: "1" },
+      roles: {
+        A: [
+          { event_index: 1, game_time_ms: 0, observation: { view: "A start" }, available_actions: null, transition: null, conversation: [], completion: null },
+          { event_index: 4, game_time_ms: 800, observation: { view: "A moved" }, available_actions: null, transition: { actor: "B", action: { type: "move" } }, conversation: [{ id: "m1", sender: "A", text: "go", input: mode === "typed" ? "text" : "voice_transcript", createdAt: "" }], completion: null }
+        ],
+        B: [
+          { event_index: 1, game_time_ms: 0, observation: { view: "B start" }, available_actions: null, transition: null, conversation: [], completion: null },
+          { event_index: 4, game_time_ms: 800, observation: { view: "B moved" }, available_actions: null, transition: { actor: "B", action: { type: "move" } }, conversation: [{ id: "m1", sender: "A", text: "go", input: mode === "typed" ? "text" : "voice_transcript", createdAt: "" }], completion: null }
+        ]
+      }
+    };
+    render(<ReplayPlayer
+      communicationPlacement={placement}
+      replay={replay}
+      renderGame={(snapshot) => <>{game(snapshot)}{placement === "game" && <CommunicationWidget />}</>}
+    />);
+    expect(screen.getByText("A start")).toBeInTheDocument();
+    expect(screen.getByText("Source: unknown")).toBeInTheDocument();
+    expect(screen.getByText("false")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Next event" }));
+    expect(screen.getByText("A moved")).toBeInTheDocument();
+    expect(screen.getByText("Actor: B")).toBeInTheDocument();
+    const widget = screen.getByText("go").closest("section")!;
+    expect(widget).toHaveAttribute("data-mode", mode);
+    expect(Boolean(widget.closest(".parlando-replay-surface"))).toBe(placement === "game");
+    expect(widget.querySelector("input, button")).toBeNull();
+    fireEvent.change(screen.getByRole("combobox", { name: "Replay viewpoint" }), { target: { value: "B" } });
+    expect(screen.getByText("B moved")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Play replay" }));
+    expect(screen.getByText("B start")).toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(799); });
+    expect(screen.getByText("B start")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Pause replay" }));
+    act(() => { vi.advanceTimersByTime(800); });
+    expect(screen.getByText("B start")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Play replay" }));
+    act(() => { vi.advanceTimersByTime(800); });
+    expect(screen.getByText("B moved")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next event" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Play replay" })).toBeEnabled();
+  });
+});
 
 describe("ParticipantApp participant state machine", () => {
   it("restores a completed participant directly to the terminal outcome", async () => {
@@ -89,7 +218,7 @@ describe("ParticipantApp participant state machine", () => {
       }
     });
 
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
 
     expect(await screen.findByText(/responses have been recorded/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Enter waiting room" })).not.toBeInTheDocument();
@@ -99,20 +228,73 @@ describe("ParticipantApp participant state machine", () => {
 
   it("moves Waiting to Active only from an authoritative snapshot", async () => {
     const client = api();
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     const socket = FakeWebSocket.instances[0];
     act(() => socket.open());
     expect(screen.queryByText("live")).not.toBeInTheDocument();
-    act(() => socket.message({ protocol_version: 2, type: "participant_state", participant_state: active }));
+    act(() => socket.message({ protocol_version: 2, type: "participant_state", participant_state: { ...active, recruitment_source: "prolific" } }));
+    expect(screen.getByText("Source: prolific")).toBeInTheDocument();
     expect(await screen.findByText("live")).toBeInTheDocument();
     expect(screen.getByText("true")).toBeInTheDocument();
   });
 
+  it("ignores a pending game ticket after the HTTP leave has committed", async () => {
+    const client = api();
+    let release!: (plan: { websocketUrl: string; token: string }) => void;
+    client.getGameSession.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Leave waiting room" }));
+    await waitFor(() => expect(client.leaveSession).toHaveBeenCalledOnce());
+    await act(async () => { release({ websocketUrl: "/unused", token: "late" }); });
+    expect(FakeWebSocket.instances).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Leave waiting room" })).not.toBeInTheDocument();
+  });
+
+  it.each([false, true])("applies farewell voice policy to HTTP terminal reconciliation (farewell %s)", async (farewell) => {
+    const client = api();
+    client.getParticipantState.mockResolvedValueOnce({
+      state: "ended", public_session_id: "ROOM1", role: "A",
+      voice_ends_at: farewell ? "2099-01-01T00:00:00Z" : null,
+      result: { outcome: "completed", reason: "game_completed", final_observation: {}, completion: null, handoff: null }
+    });
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    act(() => FakeWebSocket.instances[0].close());
+    expect(await screen.findByText(/responses have been recorded/i)).toBeInTheDocument();
+    expect(audio.disconnect).toHaveBeenCalledTimes(farewell ? 0 : 1);
+    expect(client.getGameSession).toHaveBeenCalledOnce();
+  });
+
+  it("checks retained game callbacks against the current participant state", async () => {
+    const client = api();
+    let send!: () => void;
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={snapshot => {
+      if (snapshot.interactionEnabled) send = () => snapshot.act({ type: "move" });
+      return game(snapshot);
+    }} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    act(() => {
+      socket.open();
+      socket.message({ protocol_version: 2, type: "participant_state", participant_state: active });
+    });
+    send();
+    act(() => socket.message({ protocol_version: 2, type: "participant_state", participant_state: {
+      ...active, state: "paused", reason: { type: "partner_reconnecting", deadline_at: "2099-01-01T00:00:00Z" }
+    } }));
+    send();
+    expect(client.sendAction).toHaveBeenCalledOnce();
+    expect(client.sendAction).toHaveBeenCalledWith(socket, { type: "move" });
+  });
+
   it("renders Paused while strictly disabling interaction", async () => {
     const client = api();
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     const socket = FakeWebSocket.instances[0]; act(() => socket.open());
@@ -124,11 +306,11 @@ describe("ParticipantApp participant state machine", () => {
 
   it("waits for the HTTP terminal response before closing on leave", async () => {
     const client = api();
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     const socket = FakeWebSocket.instances[0]; act(() => { socket.open(); socket.message({ protocol_version: 2, type: "participant_state", participant_state: active }); });
-    fireEvent.click(await screen.findByRole("button", { name: "Leave" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Leave game" }));
     await waitFor(() => expect(client.leaveSession).toHaveBeenCalledWith("ROOM1"));
     await waitFor(() => expect(socket.close).toHaveBeenCalled());
     expect(await screen.findByText(/left after the game started/i)).toBeInTheDocument();
@@ -136,7 +318,7 @@ describe("ParticipantApp participant state machine", () => {
 
   it("applies every live server update to the public game session", async () => {
     const client = api();
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     const socket = FakeWebSocket.instances[0];
@@ -164,8 +346,8 @@ describe("ParticipantApp participant state machine", () => {
 
     expect(await screen.findByText("moved")).toBeInTheDocument();
     expect(screen.getByText("Actor: B")).toBeInTheDocument();
-    expect(screen.getByText("Messages: 1")).toBeInTheDocument();
-    expect(screen.getByText("Player B: connected")).toBeInTheDocument();
+    expect(screen.getByText("hello")).toBeInTheDocument();
+    expect(screen.getByText(/Player A · Connected/)).toBeInTheDocument();
     expect(audio.updateVoiceStatus).toHaveBeenCalledWith(expect.objectContaining({ transcriptionReady: true }));
 
     act(() => socket.message({ protocol_version: 2, type: "action_rejected", public_session_id: "ROOM1", code: "invalid_action" }));
@@ -183,7 +365,7 @@ describe("ParticipantApp participant state machine", () => {
       consents: [{ id: "research", title: "Research use", body: "Use my responses.", required: true }],
       recruitment: { provider: "prolific", decline_url: "https://app.prolific.com/submissions/complete?cc=DECLINE" }
     });
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
 
     const enter = await screen.findByRole("button", { name: "Enter waiting room" });
     expect(enter).toBeDisabled();
@@ -202,7 +384,7 @@ describe("ParticipantApp participant state machine", () => {
       consents: [{ id: "research", title: "Research use", body: "Use my responses.", required: true }],
       recruitment: { provider: "prolific", decline_url: null }
     });
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
 
     await screen.findByRole("button", { name: "Enter waiting room" });
     expect(screen.queryByRole("button", { name: "Do not consent" })).not.toBeInTheDocument();
@@ -218,7 +400,7 @@ describe("ParticipantApp participant state machine", () => {
     client.getGameSession
       .mockRejectedValueOnce(new TypeError("temporary channel failure"))
       .mockResolvedValueOnce({ websocketUrl: "/ws/game/ROOM1", token: "ticket" });
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
 
     const enter = await screen.findByRole("button", { name: "Enter waiting room" });
     fireEvent.click(enter);
@@ -233,9 +415,11 @@ describe("ParticipantApp participant state machine", () => {
     expect(client.getGameSession).toHaveBeenCalledTimes(2);
   });
 
-  it("explains a direct waiting deadline without mentioning Prolific payment", async () => {
+  it.each([undefined, "direct", "local_preview"] as const)("keeps waiting guidance neutral for recruitment source %s even on a Prolific experiment", async (source) => {
     const client = api();
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    client.getExperiment.mockResolvedValue({ ...config(), recruitment: { provider: "prolific" } });
+    client.join.mockResolvedValue({ ...waiting, recruitment_source: source });
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
 
@@ -245,11 +429,8 @@ describe("ParticipantApp participant state machine", () => {
 
   it("explains the Prolific return and manual waiting payment", async () => {
     const client = api();
-    client.getExperiment.mockResolvedValue({
-      ...config(),
-      recruitment: { provider: "prolific", decline_url: null }
-    });
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    client.join.mockResolvedValue({ ...waiting, recruitment_source: "prolific" });
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
 
@@ -268,7 +449,7 @@ describe("ParticipantApp participant state machine", () => {
     ["lifetime_limit_reached", /absolute lifetime limit/i]
   ])("renders the %s terminal outcome", async (outcome, expectedText) => {
     const client = api();
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     const socket = FakeWebSocket.instances[0];
@@ -286,13 +467,14 @@ describe("ParticipantApp participant state machine", () => {
       });
     });
     expect(await screen.findByText(expectedText)).toBeInTheDocument();
+    expect(screen.queryByText(/prolific/i)).not.toBeInTheDocument();
   });
 
   it("renders game completion and copies the Prolific handoff code", async () => {
     const client = api();
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    render(<ParticipantAppTestHarness
+    render(<ParticipantAppRuntime
       apiClient={client as never}
       createAudioController={() => audio as never}
       renderCompletion={(completion) => <h1>Score: {completion.score}</h1>}
@@ -337,7 +519,7 @@ describe("ParticipantApp participant state machine", () => {
       snapshot: () => ({ voiceStatus: connectedStatus, voicePreflight: initialVoicePreflight }),
       subscribe: (listener: (value: unknown) => void) => { listener({ voiceStatus: connectedStatus, voicePreflight: initialVoicePreflight }); return () => undefined; }
     };
-    render(<ParticipantAppTestHarness apiClient={client as never} createAudioController={() => farewellAudio as never} renderGame={game} />);
+    render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => farewellAudio as never} renderGame={game} />);
     fireEvent.click(await screen.findByRole("button", { name: "Enter waiting room" }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     const socket = FakeWebSocket.instances[0];

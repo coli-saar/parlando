@@ -11,7 +11,6 @@ use parlando::{
 };
 use parlando_client_server_contract_tests::{
     contract_config, enable_browser_fixture, enable_voice, run_browser_driver, spawn_server,
-    ContractGame,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -21,14 +20,14 @@ use serde_json::Value;
 struct Scenario {
     name: &'static str,
     configure: fn(&mut ExperimentConfig),
-    options: fn() -> ServeOptions<ContractGame>,
+    options: fn() -> ServeOptions,
 }
 
 /// Agent factory whose asynchronous construction failure exercises infrastructure termination.
 struct FailingAgentFactory;
 
 #[async_trait]
-impl AgentFactory<ContractGame> for FailingAgentFactory {
+impl AgentFactory for FailingAgentFactory {
     /// Identifies the test-only factory selected by the scenario configuration.
     fn definition(&self) -> AgentDefinition {
         AgentDefinition {
@@ -43,7 +42,7 @@ impl AgentFactory<ContractGame> for FailingAgentFactory {
     async fn create(
         &self,
         _context: AgentContext,
-    ) -> Result<Box<dyn parlando::agent::Agent<ContractGame> + Send>> {
+    ) -> Result<Box<dyn parlando::agent::Agent + Send>> {
         anyhow::bail!("intentional browser end-to-end agent construction failure")
     }
 
@@ -54,6 +53,166 @@ impl AgentFactory<ContractGame> for FailingAgentFactory {
             version: "1".to_string(),
         })
     }
+}
+
+/// A connected software seat that lets the person make the opening move.
+struct WaitingAgent;
+impl parlando::agent::Agent for WaitingAgent {}
+
+#[async_trait]
+impl AgentFactory for WaitingAgent {
+    fn definition(&self) -> AgentDefinition {
+        AgentDefinition {
+            id: "browser.wait".into(),
+            name: "Waiting agent".into(),
+            description: "Accepts startup and waits for the human.".into(),
+            config_fields: vec![],
+        }
+    }
+    async fn create(&self, _: AgentContext) -> Result<Box<dyn parlando::agent::Agent + Send>> {
+        Ok(Box::new(WaitingAgent))
+    }
+    fn identity(&self, _: &Value) -> Result<AgentIdentity> {
+        Ok(AgentIdentity {
+            name: "Waiting agent".into(),
+            version: "1".into(),
+        })
+    }
+}
+
+/// Local stand-in for the provider's recognition-ready event on a real microphone transport.
+struct ReadyTranscriber(Arc<tokio::sync::Notify>);
+#[async_trait]
+impl parlando::test_support::TranscriptionProvider for ReadyTranscriber {
+    async fn start_session(
+        &self,
+        _: parlando::test_support::TranscriptionSessionContext,
+    ) -> Result<parlando::test_support::TranscriptionSessionHandle> {
+        use parlando::test_support::{
+            TranscriptionEvent, TranscriptionInput, TranscriptionSessionHandle,
+        };
+        let (input, mut audio) = tokio::sync::mpsc::channel(16);
+        let (events, output) = tokio::sync::mpsc::channel(1);
+        let request = self.0.clone();
+        tokio::spawn(async move {
+            if events.send(TranscriptionEvent::Ready).await.is_err() {
+                return;
+            }
+            let release = request.notified();
+            tokio::pin!(release);
+            let mut sent = false;
+            let mut requested = false;
+            let mut frames = 0;
+            loop {
+                tokio::select! {
+                    _ = &mut release, if !requested => requested = true,
+                    input = audio.recv() => {
+                        let Some(TranscriptionInput::Audio(_)) = input else { break };
+                        frames += 1;
+                        if requested && !sent {
+                            let end = frames * 20;
+                            let utterance = parlando::test_support::FinalTranscriptUtterance {
+                                start_time_ms: end - 20, end_time_ms: end, text: "Charge the beacon.".into(),
+                                result_ids: vec!["spoken-tick".into()], tokens: vec![],
+                            };
+                            if events.send(TranscriptionEvent::FinalUtterance(utterance)).await.is_err() { break; }
+                            sent = true;
+                        }
+                    }
+                }
+            }
+        });
+        Ok(TranscriptionSessionHandle {
+            input,
+            events: output,
+        })
+    }
+}
+
+/// Exercises transcription-gated admission with one browser and a real software seat.
+/// Set PARLANDO_STARTUP_PACKAGE_DIR to pilot the unpacked Beacon release artifact.
+#[tokio::test]
+#[ignore = "requires the built participant fixture and Playwright Chromium"]
+async fn speech_agent_startup() -> Result<()> {
+    let mut config = contract_config();
+    enable_voice(&mut config);
+    let package = std::env::var_os("PARLANDO_STARTUP_PACKAGE_DIR");
+    if let Some(path) = &package {
+        // Exercise the ZIP's actual terminal copy before testing microphone or agent startup.
+        let direct = parlando_client_server_contract_tests::spawn_packaged_game(
+            contract_config(),
+            ServeOptions::default(),
+            Path::new(path),
+        )
+        .await?;
+        let exit = run_browser_driver(&direct, json!({"scenario": "waiting-leave"})).await?;
+        anyhow::ensure!(exit["status"] == "passed", "{exit}");
+    }
+    let factory: Arc<dyn AgentFactory> =
+        if let Some(agent) = std::env::var_os("PARLANDO_STARTUP_AGENT") {
+            let directory = package
+                .as_ref()
+                .ok_or_else(|| anyhow!("a packaged agent requires a Beacon game package"))?;
+            let game = parlando::component::LoadedGame::from_bytes(&fs::read(
+                Path::new(directory).join("game.wasm"),
+            )?)?;
+            let archive = Path::new(&agent);
+            let factory = parlando::deployment::load_agent_package(
+                archive,
+                &game,
+                &parlando::deployment::package_game(archive)?,
+                parlando::component::WasmMetering::Fuel,
+            )?;
+            anyhow::ensure!(
+                factory.definition().id == "beacon.tick_on_request",
+                "the Beacon startup pilot requires beacon.tick_on_request"
+            );
+            Arc::new(factory)
+        } else {
+            Arc::new(WaitingAgent)
+        };
+    config.agents = AgentsConfig {
+        mode: AgentsMode::HumanVsAgent,
+        human_vs_agent: Some(HumanVsAgentConfig {
+            factory: Some(factory.definition().id),
+            ..Default::default()
+        }),
+    };
+    config.transcription.enabled = true;
+    config.speechmatics.api_key = "fixture".into();
+    // The browser driver releases the simulated final transcript only after observing the human move.
+    let release = Arc::new(tokio::sync::Notify::new());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let recognize_url = format!("http://{}/tick", listener.local_addr()?);
+    let notify = release.clone();
+    let router = axum::Router::new().route(
+        "/tick",
+        axum::routing::post(move || async move {
+            notify.notify_one();
+        }),
+    );
+    let signal_server = tokio::spawn(async move { axum::serve(listener, router).await });
+    let tick_agent = factory.definition().id == "beacon.tick_on_request";
+    let options = ServeOptions {
+        agent_factory: Some(factory),
+        transcription_provider: Some(Arc::new(ReadyTranscriber(release))),
+        ..Default::default()
+    };
+    let server = if let Some(path) = &package {
+        parlando_client_server_contract_tests::spawn_packaged_game(config, options, Path::new(path))
+            .await?
+    } else {
+        enable_browser_fixture(&mut config)?;
+        spawn_server(config, options).await?
+    };
+    let result = run_browser_driver(
+        &server,
+        json!({"scenario":"speech-agent-startup", "beacon":package.is_some(), "recognizeTick": tick_agent.then_some(recognize_url)}),
+    )
+    .await?;
+    signal_server.abort();
+    anyhow::ensure!(result["status"] == "passed", "{result}");
+    Ok(())
 }
 
 /// Structured result returned by the browser process even when an assertion fails.
@@ -187,12 +346,12 @@ fn failing_agent(config: &mut ExperimentConfig) {
 }
 
 /// Returns ordinary server dependencies for human-human browser scenarios.
-fn ordinary_options() -> ServeOptions<ContractGame> {
+fn ordinary_options() -> ServeOptions {
     ServeOptions::default()
 }
 
 /// Installs the test-only failing agent factory for technical-failure coverage.
-fn failing_agent_options() -> ServeOptions<ContractGame> {
+fn failing_agent_options() -> ServeOptions {
     ServeOptions {
         agent_factory: Some(Arc::new(FailingAgentFactory)),
         ..ServeOptions::default()

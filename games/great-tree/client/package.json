@@ -4,12 +4,13 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "prebuild": "npm --prefix ../../../js-client run build:for-game",
     "build": "tsc && vite build",
     "watch": "vite build --watch",
     "test": "vitest run"
   },
   "dependencies": {
-    "@coli-saar/parlando-client": "^0.4.3",
+    "@coli-saar/parlando-client": "file:../../../js-client",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

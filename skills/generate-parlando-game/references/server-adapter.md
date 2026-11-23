@@ -1,58 +1,28 @@
-# Parlando Rust game reference
+# Component mechanics
 
-Consume the published `parlando` crate. The supported author API is `Game`, `GameMetadata`, `PlayerRole`, `ActionRejection`, `Server`, and the optional `agent` namespace.
+In Rust, implement `parlando_game_sdk::Game` on the type that owns one
+session. Derive `GameValue` for types exchanged with the host and export
+the game with `parlando_game_sdk::export!(YourGame)`. Use the scaffold to
+check the exact types and signatures for the project's SDK release.
 
-Use the same discovered Parlando release as the browser client. Do not substitute the obsolete `parlando-server` package, which implements the removed 0.2 API.
+Implement `init` from the supplied configuration and seed, and validate the
+acting `Role` and action in `step`. Return a stable `Rejection` code for an
+expected rule violation. The host can reuse the instance immediately after
+rejection, so validate before changing the game or advancing its RNG.
 
-## Contract
+Compute complete role-specific observations in `view_a` and `view_b`.
+Return the shared terminal value from `completion`. Put role-private facts
+in the corresponding final view. If the specification includes analysis
+metadata, update or clear it on each accepted turn.
 
-```rust
-pub trait Game: Send + Sync + 'static {
-    type Config;
-    type State;
-    type Action;
-    type Observation;
-    type Completion;
+Keep accepted transitions reproducible from the configuration, seed,
+and observed action sequence. Use optional paired checkpoint and restore
+methods when appropriate. A checkpoint must capture all state required to
+resume, including RNG state. Use the starter's `scenarios.yaml` syntax
+and `parlando test` to check recovery in the compiled component.
 
-    fn validate_config(&self, config: &Self::Config) -> anyhow::Result<()>;
-    fn initial_state(&self, context: GameInitializationContext<'_, Self::Config>) -> anyhow::Result<Self::State>;
-    fn apply_action(&self, state: &Self::State, action: &Self::Action, actor: PlayerRole)
-        -> Result<Self::State, ActionRejection>;
-    fn observation(&self, state: &Self::State, role: PlayerRole) -> Self::Observation;
-    fn available_actions(&self, state: &Self::State, role: PlayerRole)
-        -> Option<Vec<Self::Action>>;
-    fn transition_metadata(&self, before: &Self::State, after: &Self::State,
-        action: &Self::Action, actor: PlayerRole) -> Option<serde_json::Value>;
-    fn completion(&self, state: &Self::State) -> Option<Self::Completion>;
-}
-```
-
-Associated types must satisfy the serialization and clone bounds in the actual trait. `State` is authoritative and runtime-private. `Observation` is complete for one role. `Action` is deserialized automatically and, once accepted, delivered to both player roles alongside their role-specific observations. `apply_action` combines authorization, validation, and transition and performs no I/O. `available_actions` is optional guidance. `transition_metadata` is structured, role-neutral analysis data. `completion` atomically expresses terminal detection and a shared result safe for both roles.
-
-Read configuration and seed from `GameInitializationContext`; game-owned experiment secrets are available through its redacting `secrets.get(key)` lookup. Never copy a value into state, logs, or serialized configuration.
-
-Do not define `Event`, expose state, split validation from application, or render human prose in mechanics.
-
-## Server
-
-```rust
-let metadata = GameMetadata {
-    id: "<game-slug>".into(),
-    name: "<Game Name>".into(),
-    version: env!("CARGO_PKG_VERSION").parse()?,
-    build_manifest: serde_json::json!({"version": env!("CARGO_PKG_VERSION")}),
-};
-
-Server::new(MyGameFactory, metadata)?
-    .database_url(cli.database_url)
-    .participant_app(cli.client_dist)
-    .agent(DemoAgentFactory)?
-    .serve(SocketAddr::new(cli.host, cli.port))
-    .await?;
-```
-
-Omit `.agent` when not needed. The game binary must not import experiment configuration, pairing, session limits, providers, storage, routers, or `test_support`.
-
-## Tests
-
-Test seeded initialization, config rejection, every action and actor combination, A/B observation privacy, `available_actions`, every terminal result, metadata serialization, and determinism. When feasible, add a smoke test through the public protocol.
+For Python projects, use the generated typed `Game` class,
+`Mechanics = mechanics(YourGame)`, and the matching Python SDK from the
+starter's instructions. The CLI builds it with `componentize-py` and
+validates the same component contract. Both language paths produce the
+same package layout.

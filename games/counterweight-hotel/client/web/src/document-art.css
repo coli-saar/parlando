@@ -1,0 +1,13 @@
+.hotel-document-art {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-inline: auto;
+  border-radius: 2px;
+}
+
+/* A reading view gives the print the available width while keeping its close control on screen. */
+.hotel-panel:is(.hotel-panel--plate, .hotel-panel--route-card, .hotel-panel--bulletin) {
+  justify-self: center;
+  width: min(100%, 44rem, max(20rem, calc(145svh - 18rem)));
+}

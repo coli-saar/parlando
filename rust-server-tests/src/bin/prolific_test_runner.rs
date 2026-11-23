@@ -489,8 +489,10 @@ async fn main() -> Result<()> {
         if status != StatusCode::CONFLICT || !body.contains("must exactly match") {
             bail!("expected external-URL conflict, received {status}: {body}");
         }
-        Ok("activation rejected both a wrong completion action and another experiment's URL"
-            .to_string())
+        Ok(
+            "activation rejected both a wrong completion action and another experiment's URL"
+                .to_string(),
+        )
     })
     .await;
 
@@ -775,7 +777,7 @@ async fn main() -> Result<()> {
             .await?;
         first_socket
             .send(Message::Text(
-                json!({"type": "action", "action": {"finish": true}}).to_string(),
+                json!({"type": "action", "action": {"type":"mark","finish": true}}).to_string(),
             ))
             .await?;
         let first_end =
@@ -1089,7 +1091,7 @@ async fn main() -> Result<()> {
         read_socket_state(&mut second_socket, "active").await?;
         replacement
             .send(Message::Text(
-                json!({"type":"action","action":{"finish":true}}).to_string(),
+                json!({"type":"action","action":{"type":"mark","finish":true}}).to_string(),
             ))
             .await?;
         let first_end =
@@ -1240,7 +1242,7 @@ async fn main() -> Result<()> {
         time::sleep(Duration::from_millis(1_200)).await;
         first_socket
             .send(Message::Text(
-                json!({"type":"action","action":{"finish":false}}).to_string(),
+                json!({"type":"action","action":{"type":"mark","finish":false}}).to_string(),
             ))
             .await?;
         time::sleep(Duration::from_millis(1_100)).await;
@@ -1330,7 +1332,7 @@ async fn main() -> Result<()> {
                 create_active_pair(&client, &mock_base, &server_base, EXPERIMENT_ID, &suffix)
                     .await?;
             let finish = first_socket.send(Message::Text(
-                json!({"type":"action","action":{"finish":true}}).to_string(),
+                json!({"type":"action","action":{"type":"mark","finish":true}}).to_string(),
             ));
             let leave = leave_session(&client, &server_base, &second, &session);
             let (finish_result, leave_result) = tokio::join!(finish, leave);
@@ -1448,7 +1450,7 @@ async fn main() -> Result<()> {
         read_socket_state(&mut second_socket, "active").await?;
         replacement
             .send(Message::Text(
-                json!({"type":"action","action":{"finish":true}}).to_string(),
+                json!({"type":"action","action":{"type":"mark","finish":true}}).to_string(),
             ))
             .await?;
         let first_end =
@@ -1523,7 +1525,7 @@ async fn main() -> Result<()> {
         for _ in 0..8 {
             first_socket
                 .send(Message::Text(
-                    json!({"type":"action","action":{"finish":false,"invalid":true}}).to_string(),
+                    json!({"type":"action","action":{"type":"reject"}}).to_string(),
                 ))
                 .await?;
             time::sleep(Duration::from_millis(350)).await;
@@ -2031,7 +2033,7 @@ fn fixture_config(
             "session_max_lifetime_seconds": lifetime_seconds
         },
         "agents": {"mode": "human_vs_human"},
-        "voice": {"enabled": false},
+        "communication": {"mode": "typed"},
         "transcription": {"enabled": false},
         "game": {}
     })

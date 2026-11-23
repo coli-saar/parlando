@@ -1,0 +1,11 @@
+game: great-tree
+id: great_tree.idle
+name: Idle
+version: 1.0.0
+cargo_manifest: ../../server/Cargo.toml
+features:
+- idle
+dependency:
+  source: ../../dist/great-tree-0.1.0.zip
+  version: 0.1.0
+  sha256: 00e8908fa817d05ff73a7e911f72ce6b091e9ef3bb3a8b17c47231c5a5edb49b

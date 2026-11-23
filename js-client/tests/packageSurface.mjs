@@ -26,6 +26,9 @@ for (const required of [
   "dist/index.d.ts",
   "dist/react.js",
   "dist/react.d.ts",
+  "dist/participant/parlando-mark.svg",
+  "dist/participant/communicationWidget.js",
+  "dist/participant/communicationWidget.d.ts",
   "dist/audio/captureWorklet.js",
   "dist/audio/playbackWorklet.js"
 ]) {

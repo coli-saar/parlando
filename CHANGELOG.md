@@ -6,6 +6,104 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## Unreleased
 
+For the upcoming 0.7.0 release, see the [migration guide](docs/migrating-0.6.0-to-0.7.0.md).
+
+### Added
+
+- Author stateful component games with the Rust SDK and `parlando new`. Build,
+  test, and serve the same package locally or upload it to a persistent Parlando
+  host. Each deployed game has a dashboard and research database.
+
+- Scaffold Python games alongside Rust games and run their scenarios and packages with the same CLI. The shared host supports named experimenter accounts and a dashboard on its own administrator origin.
+- For trusted agent–agent workloads, `execution.wasm_metering: none` disables fuel accounting. The default remains `fuel`.
+- The React client includes a styled `CommunicationWidget`. Games can use its default placement or put it inside their own layout. The same widget displays typed chat or microphone controls according to the experiment mode.
+- The runtime stress harness supports typed human–human and human–agent games. The prerelease suite exercises both communication modes and verifies two-way typed chat in the packaged Rust and Python starters.
+
+### Changed
+
+- Experiments select `communication.mode: typed` (default) or `speech`. The game dashboard groups and disables speech settings in Typed mode, retaining their values. Typed experiments use no audio transport or speech providers. Speech experiments reject human-authored typed messages.
+- Schema 17 stores the communication mode in each experiment revision. Replay reads the mode recorded for the session. Upgrade populated schema-16 databases offline and rebuild participant assets with the matching client.
+
+- Live play, replay and headless experiments now execute Wasm games. Custom Rust hosts load components with `LoadedGame`. The game-authoring trait lives in `parlando-game-sdk`.
+
+- Rename the Rust SDK crate from `parlando-component-sdk` to `parlando-game-sdk`.
+  Update Rust imports to `parlando_game_sdk` and replace `ComponentWire` and
+  `ComponentDecode` derives with one `GameValue` derive. Existing compiled
+  game components remain compatible with the host.
+- Build and upload games as a single `dist/<game-id>-<game-version>.zip` file. Both the CLI
+  and the dashboard accept the same ZIP, including its manifest, Wasm component
+  and optional participant assets.
+- Start the local or shared host with `parlando serve --store DIRECTORY`. Use
+  `parlando deploy` to install or replace a game package. Manage
+  experiment creation, intake, replay, and export in the game dashboard. The
+  CLI prints readable results by default and supports `--json` for scripts.
+- Component games use the v4 WIT world. The host reads the guest's schema once
+  at load time. Configuration, actions, observations, completion and metadata
+  cross the game boundary as MessagePack values. Build guests with the v4
+  bindings and retain matching host and guest builds for historical replay. Local Rust policies
+  receive `ComponentValue` handles and training batches carry game types.
+  The component encoding applies at the guest boundary. The experiment and replay
+  configuration changes are described above.
+- Configure Rust `RewardFunction` implementations once per run via `configure`.
+  Accepted turns use the configured reward without passing YAML parameters again.
+
+## [0.6.0] - 2026-11-20
+
+### Added
+
+- Replay newly recorded sessions from the administrator dashboard. Play, pause, seek, and switch
+  between player viewpoints in the same game view used for live play.
+- Add The Last Screening and Counterweight Hotel as example games for two people or one person
+  with a software partner.
+
+### Changed
+
+- Replace the React renderer's `GameSession` with `GameSnapshot` and rename `sendAction` to `act`.
+  The shared participant app now renders conversation, microphone, connection, and leave controls.
+- Require Rust `Game::State` to implement `Deserialize`. Replay uses the original game rules and
+  three game-defined compatibility versions for state, actions, and rules.
+- Store one initial state and a sequence of accepted actions. New corpus action events carry
+  `null` in their `state` field. Existing records remain available with SQLite schema version 16.
+- Update the participant lobby, waiting room, and administrator screens with shared Parlando branding.
+
+### Fixed
+
+- Keep participant admission, action delivery, and session expiry consistent under concurrent
+  requests. Preserve active rooms and their settings when intake closes or configuration changes.
+- Discard stale reconnect and dashboard responses when their session or experiment changes.
+- Export a consistent SQLite snapshot and retain setup logs in session history while omitting
+  events before gameplay from the corpus.
+
+
+
+## [0.5.0] - 2026-10-05
+
+### Added
+
+- Record word and punctuation timings for recognized human speech and generated agent speech,
+  preserving formatted utterance text and nesting tokens under messages in corpus exports.
+- Test both production speech adapters against independent game-clock observations, including
+  capture gaps, delayed recognition, split generated words, and cumulative synthesis timestamps.
+
+### Changed
+
+- Use one chronological dashboard layout for utterances, tokens, actions, and logs, with
+  color-coded actors, aligned speaker bubbles, compact actions, and fixed log controls.
+- Show speech-resolution controls only for sessions with recorded speech. Preserve older speech
+  without token boundaries rather than inventing timings.
+- Make agent and transcription readiness follow usable provider state before activating a game.
+- Reject incompatible populated databases explicitly instead of interpreting older schemas at
+  startup. The current SQLite schema remains version 16, as in 0.4.3.
+
+### Fixed
+
+- Preserve capture pauses and dropped-frame gaps when mapping ASR sample timestamps to game time.
+- Interpret ElevenLabs character offsets once across synthesis chunks and record agent timing
+  only after successful audio publication.
+- Retain all game events and both speakers in token view, with identical visibility filters.
+- Keep complete output from every E2E layer when a release gate fails.
+
+
 ## [0.4.3] - 2026-09-29
 
 ### Added

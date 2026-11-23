@@ -1,5 +1,34 @@
 # Technical Decisions
 
+## 2026-11-21: Rehearse publication with local package artifacts
+
+The crate dry run can only list a crate's contents when a new exact dependency is
+absent from crates.io. Tests built from the repository also cannot show that
+scaffolding, compilation, and deployment work with just the packaged files.
+
+`make test-release-candidate` packages the six coordinated releases and runs
+consumers from a temporary directory outside the checkout. Cargo patches point
+to SDKs extracted from their own archives so the candidate can resolve its
+exact pins before the registry has the new version. The starter clients install
+the npm tarball, and a fresh virtual environment installs both SDK wheels.
+Reusing Beacon Relay exercises the published scaffolding and component toolchain
+for both languages without maintaining a second game. The browser checks use a
+temporary loopback host and real package upload, revision selection, and intake.
+Snapshot the six package trees together before building. A run can record the
+tested snapshot even when an unrelated edit lands during compilation. The
+publication preflight names any inputs that changed since the snapshot.
+
+The candidate target runs the ordinary, end-to-end, and component suites,
+including runtime stress tests, before it retains the rehearsal's artifacts.
+The coordinated publish target checks the version, source fingerprints, and
+artifact checksums. npm and Twine upload the exact retained files. Cargo's
+standard publish command packages the verified source again with registry
+dependency metadata and VCS provenance. This preserves Cargo authentication,
+verification, and registry polling without implementing a separate upload
+client. Registry dry runs and post-publication consumer checks cover that
+registry boundary. Individual upload targets remain available for a partial
+release, with npm and Python using the saved candidate.
+
 ## 2026-09-02: Participant admission retries reuse captured launch identity
 
 Context: The browser deliberately removes Prolific identifiers from the visible URL before sending
@@ -3664,3 +3693,2278 @@ only one credential per handle across all test routers. A concurrent test could 
 another router's credential and cause a spurious 401. The helper now retains every credential for a
 colliding handle and tries them against the target router; production credential lookup remains
 unchanged.
+
+The post-publication audit originally exempted the browser E2E fixture's local JavaScript
+dependency when checking manifests but accidentally inspected the same local link as though it
+were a registry consumer when checking lockfiles. The lockfile audit now applies the same narrow
+exemption. First-party games must resolve the published tarball and integrity digest; the browser
+fixture continues to resolve `../../js-client` so E2E tests exercise the source being released
+rather than the most recently published package.
+
+## 2026-09-29: Tighten Rust runtime invariants without changing game or agent APIs
+
+Context: The Rust runtime had accumulated compatibility parsing, optional construction states,
+duplicate domain types, and storage fallbacks. Several of those paths could hide corrupt data or
+leave a failed agent session partially alive. The same process also represented its global
+administrator dashboard as an experiment named `__dashboard__`, even though that route tree is
+installation-scoped.
+
+Decision: Preserve the public `Game`, `GameFactory`, `Agent`, and `AgentFactory` interfaces while
+making their surrounding runtime states explicit. Agent settings, identity, provenance, timeout,
+and invalid-action limit are resolved once before construction. A pending agent carries that
+validated data into the session, and every constructed agent reaches the same shutdown cleanup
+path even when `start` fails. Remote-agent factories now return an active remote instance after
+the create RPC succeeds, so callbacks no longer support a half-created state.
+
+Use `PlayerRole` as the sole seat type and canonicalize JSON through one shared helper. Keep
+dashboard event summaries typed until the HTTP serialization boundary. Persist only a
+`StoredExperimentConfig` containing revisioned experiment settings; process resources such as the
+database URL, listener settings, and provider secrets come from the current installation when a
+runtime is hydrated. Router construction uses a closed mode enum for standalone experiments,
+mounted experiments, and the installation dashboard. Dashboard construction has no synthetic
+experiment identifier and never persists an experiment record.
+
+Use `SqliteExperimentStore` directly instead of a private trait with one implementation. An empty
+database is initialized transactionally. A nonempty database must already contain the exact
+current schema marker before any schema write occurs; older or unversioned databases require an
+explicit one-off conversion. Export treats malformed stored JSON as corruption and returns an
+error. Nonhuman participant identity requires the current structured metadata, and scoped exports
+always require an experiment identifier.
+
+Tradeoffs: Existing databases below schema version 16 and stored agent rows missing current
+identity metadata now fail clearly instead of being interpreted heuristically. This deliberately
+removes implicit compatibility behavior. The remote factory performs its create RPC during
+`AgentFactory::create`, which can make construction slower, but callers receive either a fully
+usable agent or an error and agent implementations need no changes.
+
+The asynchronous construction regression test synchronizes on an explicit notification emitted
+when the gated factory is entered. Scheduler yields, polling intervals, and elapsed-time thresholds
+do not establish task ordering and are not used as evidence in this test. A separate runtime test
+already covers the agent eventually joining after construction, so this test ends after proving
+that the HTTP response returned while construction remained blocked.
+
+## 2026-09-29: Remove private Rust indirection without changing extension APIs
+
+Context: A source-level review found private helpers with long positional argument lists, output
+parameters, duplicated event-record construction, transport wrappers in domain helpers, redundant
+trait bounds, cloning dashboard projections, and request builders that resolved the same remote
+agent state twice. These were implementation smells rather than missing runtime behavior.
+
+Decision: Keep the exported `Game`, `GameFactory`, `Agent`, `AgentFactory`, experiment-runner result,
+and protocol types unchanged. Inside the headless runner, share one serialized decision input
+between trace and trajectory capture, group the values shared by action application in a private
+execution context, and return an explicit accepted-or-rejected action result. Build session event
+records through one required constructor and let best-effort callers choose to discard its error.
+Dashboard bundles borrow typed event summaries until JSON serialization. Internal conversation
+commit code returns its domain response directly, while HTTP boundaries remain responsible for
+`Json`. Remote decision requests receive an already resolved agent identity.
+
+Tradeoffs: The private execution context is deliberately limited to the runner operations that
+actually share its fields; it is not a new public framework or extension point. Borrowed dashboard
+bundles have lifetimes tied to the event slice, which is appropriate because they are serialized
+within the same call. Focused tests preserve remote affordance presence, provider-secret status
+shape, runner lifecycle and trajectory behavior, dashboard bundle output, and conversation-event
+persistence.
+
+## 2026-09-30: Preserve complete output for every coordinated E2E layer
+
+Context: A live contract failure was followed by successful browser and Prolific suites. The
+coordinator preserved the failing status, but its combined report had no saved contract output,
+so the original assertion could not be recovered from artifacts.
+
+Decision: Give each `make test-e2e` invocation a unique directory in `target/e2e-runs`. Stream
+each layer's combined stdout and stderr through `tee` into its own log. Bash `pipefail` preserves
+test failures through that pipeline, and later layers still execute. Save a run-specific report
+and structured exit statuses, and link every log from the latest combined report. Copy the browser
+report into the run directory and resolve the Prolific report from this run's announced path
+instead of selecting an unrelated newest artifact.
+
+Validation: Deterministic subprocess tests exercise the real Make recipe with a contract failure
+and with all layers succeeding. They verify stderr retention, exit-status propagation, continued
+execution, report links, and rejection of stale Prolific artifacts. Existing runs cannot recover
+output that was never logged; subsequent runs retain it.
+
+## 2026-09-30: Diagnose the audio contract activation race
+
+Context: The audio contract sometimes relays marker 1 to the partner without recording it in
+transcription. An instrumented failure recorded only role-B marker 9 and role-A marker 3.
+The transcription Ready handler sends its status before marking participant audio readiness
+and completing durable game activation. Relay accepts forming sessions; transcription requires
+a running, unpaused session. The test treated provider readiness as proof of game activation.
+
+Decision: Retain recorded-frame details in assertion failures. A temporary diagnostic change
+waited for authoritative participant state `active` before capture; all ten repeated runs passed.
+Remove that temporary change after the experiment. The correction should synchronize capture
+with the active game state, rather than delay capture for an arbitrary duration or relax the
+server's transcription lifecycle gate. This diagnosis does not change runtime behavior.
+
+## 2026-09-30: Add deliberately failing readiness regression tests
+
+Context: Existing agent delivery tests wait for an internal `agent_started` event after the
+public active notification. This can conceal activation preceding usable agent initialization.
+The user requested regression tests now, leaving production fixes for a later change.
+
+Decision: Add a recording agent with explicit construction/start gates and callback channels.
+Test that blocked start keeps the public session waiting and that the first action and message
+after public activation are delivered exactly once, with no internal readiness wait. Exercise
+leave during both construction and start, checking disposal and preservation of the terminal
+result; setup-time departure must be classified as leaving the waiting room. Strengthen the
+existing start-failure test to reject any intermediate public active state and replace its
+shutdown polling with a notification.
+
+For audio, preserve the current active-game transcription boundary. Hold activation open by
+withholding game connections, verify forming-room relay without transcription, then send the
+first frame immediately after the public active notification. A recording transcription peer
+reports only after receiving ordered Finish, so neither assertion relies on a sleep. This test
+does not claim provider readiness alone means the game is active or weaken the existing JavaScript
+mute contract. No public API or production code is changed.
+
+Expected current failures: blocked agent start already advertises `active`; leave during blocked
+start yields `left_game` rather than `left_waiting_room`; failed start advertises activation before
+ending. Late-construction disposal and the explicit audio lifecycle boundary currently pass.
+Handshake and callback timeouts bound failed execution; elapsed time does not establish ordering.
+
+Validation: The full Rust library suite completed with 223 passing tests and exactly the three
+expected failures above. Three further focused repetitions produced the same failures each time,
+with the audio boundary and late-construction cleanup passing every repetition. Full output is
+saved in `target/readiness-tests/full-rust.log`; focused and repeated runs have separate logs in
+the same directory. The failing tests are enabled, not ignored or converted into expected panics.
+
+## 2026-09-30: Make readiness follow usable agent and transcription state
+
+Context: The new readiness tests showed that the server activated the game before agent start
+completed, misclassified departure during start as `left_game`, and advertised an active game
+even when start failed. The JavaScript audio contract also exposed transcription readiness being
+published before the durable forming-to-running transition.
+
+Decision: Attach a constructed agent with `ready=false` and give its task ownership of start,
+execution, and shutdown. Run start without holding the session transition lock, so leave and
+expiry remain possible. After successful start, acquire that lock, verify the session is still
+forming, install the inbox, and mark the participant ready. Failed or cancelled setup never
+marks readiness and always reaches shutdown. Remove the pending-agent registry and the path
+which launched initialization after game activation; initialization now has one owner.
+
+Activation queues an internal Activated event before public input can arrive. The agent waits
+for that event and the activation transition lock before making its initial decision. Thus it
+cannot act before activation snapshots are published, and immediate participant observations
+are queued behind activation rather than silently omitted for a missing inbox. The callback
+API for games and agents is unchanged; start receives the forming session's initial observation.
+
+Transcription provider readiness marks internal audio setup complete, but client-facing
+transcription readiness requires a committed running, unpaused session. Both audio control
+messages and game-channel voice status use that condition. Activation updates all participant
+audio sockets, including peers whose provider finished earlier. Forming-room voice relay remains
+supported and untranscribed; this is now explicitly distinguished from transcription readiness.
+The audio regression checks both false readiness during formation and true readiness after
+activation, and the original JavaScript mute contract needs no added wait.
+
+Tradeoffs: Initialization can begin before the human/audio connections finish, but autonomous
+decisions cannot. Cancellation during a start callback remains bounded by the configured start
+timeout; after it returns, terminal state is rechecked and the agent is disposed of. No database
+schema, public trait, or protocol shape changes are needed.
+
+Validation: All 226 Rust library tests pass, including the three previously failing regressions.
+The complete `make test-e2e` gate exited zero: 119 JavaScript tests, 8 live contracts, 13 browser
+scenarios, and 35 Prolific scenarios pass, alongside the Rust layer and logging regression tests.
+The original JavaScript audio mute contract passed ten further consecutive runs with its driver
+unchanged. The separate runtime integration suite passed all five tests, including the remote
+gRPC agent and Speechmatics streaming contracts. The immutable gate report and all layer logs
+are in `target/e2e-runs/20260930-072240-yH5FZj`; focused diagnostic logs are in
+`target/readiness-tests`.
+
+## 2026-09-30: Keep the E2E reporter usable with the maintainer's Python 3.9
+
+Context: The E2E gate passed with the agent shell's Homebrew Python 3.14.6, but its logging
+prerequisite failed in the maintainer's Conda base environment (Python 3.9.13). The fixture's
+report writer used `zip(strict=True)`, introduced in Python 3.10. The resulting subprocess
+TypeError was hidden by the fixture subsequently indexing the missing report and raising KeyError.
+
+Decision: Remove the unnecessary strict argument; the reporter already checks the exact CLI
+argument count before pairing its five statuses with the five layers. No interpreter switching,
+version fallback, or new dependency is needed. Assert report existence with the coordinator's
+captured stdout/stderr before inspecting report contents, exposing the original failure if
+generation fails again. The success and failure-path logging tests pass on both Python 3.9.13
+and 3.14.6. Prior full-gate validation applied only to the agent interpreter; the full gate is
+being revalidated explicitly with `/opt/anaconda3/bin/python3`.
+
+The combined report also records the interpreter version and executable, and the subprocess tests
+verify that metadata. This makes environment-specific validation evidence visible in the artifact.
+
+Validation: The full `make test-e2e PYTHON=/opt/anaconda3/bin/python3` completed with exit zero:
+all five layers pass, including 13 browser scenarios and 35 Prolific scenarios. Its immutable
+report at `target/e2e-runs/20260930-073933-Smfa5j/report.md` records Python 3.9.13 and
+`/opt/anaconda3/bin/python3`. No Conda environment change is required to run the default command.
+
+## 2026-10-02: Measure ASR granularity and distinguish sample time from game time
+
+Context: Issue #41 requires exposing simultaneous speech without losing utterance text. We ran a read-only credential-backed experiment under `notes/asr-timing-2026-10-02/`, using cached ElevenLabs PCM and real Speechmatics responses, followed by an isolated in-memory Great Tree server probe. Production code and the live workspace database were not edited.
+
+Approach: Retain raw responses before proposing a token representation. Compare unchanged samples under leading silence, startup waits, sample-free pauses, omitted samples, and buffered delivery. Request entity details explicitly to inspect normalized multiword expressions. Keep source sample positions, actual dispatch clocks, and provider times separate. The successful native conversion trials used a transparent loopback relay for real cloud traffic after direct server-to-cloud backpressure prevented reliable paired output.
+
+Evidence: A normal English sentence yielded 14 independently timed words across 11 finals and one utterance end, identically across three repetitions. A money expression otherwise labelled one word exposed six timed spoken words with enable_entities=true. Provider times were stream-relative and advanced with supplied samples. In the paired native trials, source phrase separation was about 5.082 seconds both with silence and with a two-second sample-free pause. Provider word separation was 5.040 versus 3.040 seconds, and both utterances within each case received the same fixed game-clock anchor. Current conversion would therefore preserve the missing two seconds even after adding word results.
+
+Tradeoffs and follow-up: A future implementation should preserve formatted text and ordinary words plus entity spoken forms. It needs a sample-to-source-time correspondence, or equivalent transmitted silence for gaps, before claiming session-aligned token intervals. Utterance metadata included silence and should not substitute for spoken-word intervals. Boundary accuracy remains approximate; the provisional 150 ms target was not established against an independent oracle. Reconnect alignment remains inconclusive after quota/startup failures. Direct Rust-to-cloud backpressure is a separate observed limitation whose cause was not established. Complete evidence and reproduction commands are in the internal report; these observations do not yet define a supported public contract.
+
+Follow-up in the same experiment: A final orderly reconnect trial retained both phrases after waiting for pending transcript commitment and quota release. The old/new stream anchors were 46 ms and 15,670 ms on game time; reconstructed word separation differed from source dispatch by +42.2 ms. This verifies fresh-stream anchoring for that controlled local case. It supersedes the earlier inconclusive reconnect result, while abrupt reconnects, pending-final preservation, provider quota delays, and direct transport backpressure remain limitations.
+
+
+## 2026-10-02 — Timed speech tokens and capture-clock correspondence (issue #41)
+
+Context: saved Speechmatics responses expose independent word timings, but normalized
+entities otherwise collapse spoken words. Stream timestamps count supplied samples,
+so a fixed stream-origin addition compresses mute and dropped-frame gaps.
+
+Decision: explicitly enable entities, recursively retain their spoken forms as ordered
+word/punctuation tokens, and preserve formatted utterance text independently. Map
+provider offsets through successfully queued 20 ms frames using browser capture
+coordinates relative to the first accepted frame. Anchor that frame to server receipt
+on the game clock; use preceding frames for endpoints and following frames for word
+onsets at gaps. Keep point punctuation on the preceding boundary. Normalize dispatch
+jitter to non-overlapping frame intervals. Retain the current utterance's frames for
+idempotent retries, prune older correspondence, and scope deduplication to the stream
+origin. Read provider messages independently from writes and abort the writer when the
+receiver closes. An interrupted stream reports failure rather than treating pending
+fragments as a completed utterance.
+
+Storage/export: tokens belong to existing conversation-event JSON metadata; no database
+schema or conversion is needed. The corpus projects only kind, text, game-clock start_ms,
+end_ms, and optional confidence, validates them, and nests them under their utterance.
+The dashboard uses A/B bubbles and a shared bounded token axis. Repeated equal-text
+utterances remain distinct. Missing historical timings remain unavailable.
+
+Tradeoffs/limits: capture dispatch times and the server-receipt anchor estimate capture
+time; initial network latency and ASR boundary error remain. Missing samples and lost
+pending finals cannot be recovered. Tests use saved real ASR responses and synthetic
+speech PCM against a local protocol peer, without credentials or paid services. Direct
+provider reliability under interrupted networks remains a deployment check, not a
+conclusion from deterministic tests.
+
+Validation: 236 runtime library tests and one binary test passed; the local Speechmatics
+contract replay passed with all generated PCM frames; 17 dashboard tests passed. Browser
+inspection of the production renderer with synthetic overlapping A/B turns verified
+both views. JSON corpus schema parses, and export tests cover field projection and
+invalid intervals. No live provider calls, production database writes, Git operations,
+release, or publication were performed for this implementation.
+
+
+## 2026-10-02 — Complete vertical token view
+
+Context: the initial token view silently filtered the session to a ten-second
+window. Horizontal scrolling only traversed that window, so subsequent utterances
+were omitted and short words were clipped by duration-scaled bars.
+
+Decision: replace the windowed horizontal plot with all recorded speech tokens
+in vertically scrolling chronological rows, sharing a start-time column and
+separate A/B columns. Tokens with identical onsets share a row. Every token shows
+its endpoint and duration; punctuation remains distinct and parent utterance text
+and confidence remain accessible by hover or keyboard focus. Missing historical
+token data appears with its utterance in chronological order. Remove the obsolete
+start/window controls and horizontal-axis styles.
+
+Tradeoff: row spacing prioritizes legibility rather than proportional elapsed time;
+explicit start/end/duration values preserve timing and overlap information. Very
+long sessions render all tokens, as the session log already does for utterances.
+A future performance change must retain access to the entire recording.
+
+Validation: all 20 dashboard tests passed, including regression cases with
+utterances at 30 and 125 seconds, chronological ordering, simultaneous A/B onsets,
+missing historical tokens, escaping, and zero-duration punctuation. Browser
+inspection confirmed that scrolling down reaches all later words, the table
+header remains visible, and document width equals viewport width.
+
+
+## 2026-10-03 — Timed agent speech alongside human ASR
+
+Context: Great Tree session `merrily-amber-harbor` (database session 30)
+contains three human transcripts with 16 tokens and three agent messages without
+alignment. The token view previously selected only transcripts, hiding the agent
+side entirely. Human ASR does not process the server's own generated agent audio.
+
+Decision: request synchronized ElevenLabs character alignment, prefer normalized
+spoken characters, and group them into words across audio chunk boundaries.
+Represent synthesized PCM and tokens together in `SynthesizedSpeech`; generated
+tokens have no recognition confidence. Validate provider timing arrays and final
+completion rather than promoting interrupted responses to completed speech.
+The provider clock is cumulative across the entire synthesis request. An isolated
+live probe generated 38 words in 11 chunks (11,052.708 ms of PCM, alignment endpoint
+11,053 ms). Adding each chunk's PCM offset to these times double-counts elapsed
+time. Preserve the provider positions exactly once. The credential-free fixture
+in `rust-server/tests/fixtures/elevenlabs/` retains character timings and sample
+counts from that probe, with no audio, keys, or voice identifiers.
+
+Anchor those positions to the game clock immediately before server audio
+publication. After successful publication, append `conversation_speech_timing`
+linked to the original message ID and attributed to its agent participant. This
+preserves original text-commit order and lets the dashboard and corpus project
+speech timing onto one existing conversation message. Publication time estimates
+playback onset; network and browser buffering remain unmeasured delay. Publication
+failures do not create a completed speech-timing record. Existing event storage
+supports this representation without a database schema change or conversion.
+
+Include agent conversation bundles in the vertical token table. Historical agent
+messages remain visible with a timings-unavailable notice; no boundaries are
+invented from text. The three old B messages in the named session cannot recover
+original word boundaries because neither alignment nor generated audio was stored.
+New timings are recorded once the updated runtime is running. Existing providers
+without alignment retain audio publication and the speech interval, with no tokens.
+
+Validation: all 239 runtime library tests and one binary test passed, as did four
+local agent/client smoke tests, the Speechmatics contract test, and 21 dashboard
+tests. Local fake-provider tests check alignment casing, normalized text, cumulative
+chunk clocks, split words, and malformed intervals. Integration tests verify
+agent attribution and timing in both dashboard bundles and the single corpus
+message. Browser inspection using the production renderer showed all three old
+B messages beside A's tokens, and 38 aligned B words plus punctuation beside A
+in the synthetic recording, with no horizontal overflow. Great Tree also passed `cargo check` against the local runtime. The live
+database was read only; the running game was not restarted and no release was
+performed.
+
+
+## 2026-10-03 — Speech controls depend on recorded audio
+
+Context: an agent message can be purely typed, so agent authorship does not prove
+that the message was converted to voice. Typed-only sessions should not expose
+an utterance/token selector or notices about absent speech timings.
+
+Decision: dashboard bundles carry an explicit `spoken` flag. Human transcripts
+qualify directly; agent messages qualify through synthesis timing or a successful
+nonempty `tts_publish_completed` record linked by message ID. Existing durable
+publication evidence identifies old voiced messages without inventing their
+missing word boundaries. This is an event projection, with no database conversion
+or compatibility schema branch. Typed and failed-publication agent messages stay
+out of the token table. Hide the selector by default and reveal it only when a
+speech bundle exists; reset to utterances when switching to a typed-only session,
+so a previous token selection cannot hide that session's conversation.
+
+Validation: dashboard tests cover mixed typed/spoken agent replies and session
+switching from token view to typed-only conversation. Runtime integration checks
+new aligned speech, historical publication without alignment, and an agent message
+without publication evidence.
+
+
+## 2026-10-05 — Integrated clock oracle for generated and recognized speech
+
+Context: existing checks tested provider token parsing and clock mapping separately;
+the runtime ASR integration covered a single frame, while the TTS integration used
+a mock publisher. Those checks could miss a timestamp error between adapters,
+real publication, durable conversation records, and dashboard/corpus projection.
+
+Decision: add one credential-free combined integration test in
+`rust-server/src/app/tests/speech_timing.rs`. Local protocol peers exercise both
+production provider adapters and the production agent publisher in a human/agent
+room. ASR receives four known 20 ms frames starting at client capture offset 9000
+ms, with 960 ms without samples between the two turns. Provider tokens retain a
+continuous 0–80 ms sample clock; the expected game-clock positions independently
+require two 40 ms utterances beginning 1000 ms apart. Delay final ASR output so
+its receipt time cannot accidentally serve as audio time.
+
+TTS supplies 1600 ms of known PCM in two chunks, with cumulative character
+alignment and a word spanning the 300 ms chunk boundary. Delay synthesis after
+text commit. Check all 80 relay frames for sequence, timestamp, and exact payload;
+check publication onset between the separately observed provider response and
+first browser-socket audio receipt. Bound the ASR anchor between client send and
+provider input receipt, rather than deriving its oracle from stored timing. Verify
+exact offsets, durations, token counts, punctuation points, confidence semantics,
+and both A utterances plus B speech in dashboard and corpus projections.
+
+Tradeoff: deterministic local provider output tests transport and clock accuracy,
+not acoustic recognition boundaries or audible playback onset. Wall-clock brackets
+allow scheduler/network latency without using broad numeric tolerances that could
+hide offset errors. No paid provider calls, production database writes, schema
+changes, or runtime restarts are needed.
+
+Validation: the combined integration passed; all 240 runtime library tests and
+one binary test passed. The final attribution assertions also passed in the
+focused integration run. Targeted formatting checks passed and the context graph
+was refreshed.
+
+
+## 2026-10-05 — Preserve session events in token view and pin log controls
+
+Context: token view previously retained only speech, dropping game actions,
+logs, setup events, and typed turns. Session log controls shared the event scroll
+container and crowded a single row with the title and polling status.
+
+Decision: expand spoken bundles into token rows while preserving every other
+visible bundle at its game timestamp. Both views use the same card renderer for
+non-speech content, including structured actions, problem reasons, attribution,
+and event indexes. Apply the log/setup filters before either rendering path.
+Group simultaneous speech tokens only across adjacent speech entries, preserving
+event-index order when an action and token share an onset. Older speech without
+boundaries retains its existing notice; typed turns remain ordinary messages.
+
+Make the session log a flex column with an independently scrolling, keyboard-
+focusable event region. Keep its header outside that region; the table's column
+headings can still stick inside it. Arrange title and polling status on one row,
+and the labeled view selector and checkbox group on another, allowing wrapping.
+Use a bounded event region on narrow layouts so controls remain available there
+as well. This changes presentation only; stored clocks and event data are intact.
+
+Validation: all 23 dashboard tests passed, including production-renderer parity
+for actions, typed turns, logs, setup problems, completion, and both checkbox
+filters. Browser inspection rendered 30 actions and 30 speech turns in both
+views; token mode retained 150 tokens and all actions after filtering logs/setup.
+Scrolling the token region to its end left the header at exactly the same screen
+position, without horizontal overflow. Screenshot proof is stored in the local
+visualization directory as `session-log-events-scrolled.png`.
+
+A 560 px browser-frame check also retained the header position after scrolling,
+kept the control group aligned, and had document width equal to viewport width.
+
+
+## 2026-10-05 — Align the session log with summary cards
+
+Context: the unpadded shaded header looked disconnected from the session summary,
+and the token-table explanation and repeated polling timestamp added unnecessary
+text to an automatically updating view.
+
+Decision: remove the visible table caption and normal polling-status text. Retain
+a concise accessible table name and surface actual refresh errors only. Give the
+session log the same white card, border, corner radius, and header inset as the
+summary; align the table's first-column text with that inset. Use matching smaller
+insets on narrow screens. Keep the header outside the scroll region and preserve
+all existing event filters, token content, and automatic refresh behavior.
+
+Validation: all 23 dashboard tests passed. Browser geometry checks confirmed
+that the summary title, log title, and view control share the same left edge;
+no caption or polling text remains, there is no horizontal overflow, and the
+header position stays unchanged after scrolling. Screenshot: `session-log-clean-header.png`.
+
+
+## 2026-10-05 — One timeline for utterances and tokens
+
+Context: separate table and conversation layouts made changing speech resolution
+change speaker placement and event presentation as well.
+
+Decision: one sessionTimeline renderer projects bundles into chronological entries,
+expanding only recorded speech in token mode. Both modes use the same timestamp
+column, speaker bubbles, non-message cards, filters, and scrolling container.
+A bubbles align with the content area's left edge; B bubbles align with its right
+edge. Adjacent messages at identical onset share a timestamped row. Token focus
+and hover retain parent text and confidence; older recordings retain their whole
+message with an unavailable-timings notice. Removed the superseded token table,
+separate ordering function, duplicate speech renderer, and nested event timestamps.
+
+Tradeoff: token expansion can interleave events inside an utterance and increases
+vertical length; this is the intended finer temporal resolution. Identical onsets
+share one row, while event-index ordering remains deterministic. No timing data
+or clock conversion changed.
+
+Validation: 24 dashboard Node tests pass, including shared layout, simultaneous
+speakers, escaping, historical data, typed-only selection, and event/filter parity.
+Browser previews using production CSS and rendering functions verify both speaker
+edges, fixed controls through the last token, and no horizontal overflow on desktop
+and a 560-pixel-wide frame. Running game binaries still require rebuilding to embed
+updated dashboard assets.
+
+
+## 2026-10-05 — Compact action summaries and actor gutter
+
+Context: full action grids interrupted dialogue scanning; actor identity was
+repeated inside bubbles while logs resembled full operational event cards.
+
+Decision: each timeline entry carries a shared role badge beside its timestamp,
+using the existing blue A and amber B colors. Simultaneous speech retains one
+time row with a badge for each entry. Removed repeated actors and event IDs from
+bubble metadata; IDs remain in hover context. Actions use a native details
+summary with the type in bold and comma-separated key/value parameters. Matching
+player fields remain omitted because the gutter identifies the actor. Steps,
+IDs, original payload and additional text remain available through expansion.
+Logs show escaped muted text aligned to A's left or B's right edge without title
+labels. Unassigned events retain SYS in the gutter. Problem badges and reasons
+remain visible when action details are closed; error logs retain emphasis.
+
+Tradeoffs: ordinary lifecycle details take an expansion click; compact action
+summaries wrap at narrow widths rather than truncate. This changes presentation
+only and does not infer causal relationships from temporal proximity.
+
+Validation: all 25 dashboard Node tests pass, covering inline action parameters,
+actor badges, log label removal, escaping, visible problems, and existing
+speech/event/filter behavior. Production-renderer browser previews show compact
+SetFlow summaries, B logs aligned to the same right edge as speech, expandable
+steps/payload, and no horizontal overflow in a 560-pixel-wide frame. The running
+Great Tree binary was not restarted; rebuilding loads embedded dashboard assets.
+
+
+## 2026-10-05 — Plain action summaries and consistent log typography
+
+Context: the disclosure triangle implied additional interaction although the
+inline action already conveyed the information needed to read the timeline.
+Smaller log text introduced unnecessary typographic variation.
+
+Decision: remove action/setup disclosure controls and the hidden details markup,
+retaining compact inline summaries, actor badges and visible problem reasons.
+Event IDs remain hover metadata. Logs inherit the normal entry font size and
+retain gray text and speaker alignment. Removed obsolete disclosure styles.
+Tradeoff: the dashboard timeline no longer displays raw action payloads or
+lifecycle steps; durable records and corpus exports are unaffected.
+
+
+## 2026-10-05 — More space after timeline actors
+
+Context: the 10-pixel gap after actor badges was cramped for plain action rows.
+Decision: use one 24-pixel actor-to-content gap for every entry, reduced to
+16 pixels on narrow screens to retain reading width. Bubble padding no longer
+needs to compensate for an undersized shared gutter. No behavior changed.
+
+
+## 2026-10-05 — Symmetric timeline gutters
+
+Context: fixed timestamp widths left unused space beside the timestamp, making
+the visual gap to the actor larger than its CSS gap. Increasing only the gap
+after the actor did not establish a balanced layout.
+Decision: the timeline owns a content-sized timestamp column shared by subgrid
+rows. Timestamps align right so their visible ends stay aligned even as minute
+counts grow. Both timestamp-to-actor and actor-to-content use one inherited
+--timeline-gap (24 pixels, 16 on narrow screens). Empty states span both columns.
+This replaces fixed timestamp widths and independently configured gaps.
+
+
+## 2026-10-05 — Align plain logs with plain event text
+
+Context: log messages retained bubble-like horizontal padding despite having no
+bubble background, adding an extra indentation after the actor gutter.
+Decision: remove horizontal log padding at both desktop and narrow widths.
+System and A log text now begin at the same content edge as action summaries;
+B log text ends at the shared right edge. Vertical spacing and actor gutter
+sizes remain unchanged.
+
+
+## 2026-10-05 — Prepare coordinated release 0.5.0
+
+The maintainer explicitly selected and requested publication of 0.5.0. Both
+registries expose 0.4.3 and neither contains the target. This release records
+human/agent speech tokens and improves the shared dashboard chronology and
+provider readiness. Supported game/agent APIs and schema 16 remain unchanged
+from 0.4.3; no downstream migration guide is required. Earlier-schema databases
+must already be converted explicitly. Consumer npm lockfiles are deferred until
+the immutable 0.5.0 registry package exists. Publication requires a committed,
+clean candidate; Git commands remain separately subject to user authorization.
+
+
+0.5.0 candidate validation: metadata, make test, 25 dashboard tests, release
+builds, Hugo, local packaging and dirty-source publication dry runs all passed.
+The first E2E attempt hit sandbox-only Chromium launch denial; the unsandboxed
+rerun passed all 13 browser and 35 Prolific scenarios. Package contents were
+reviewed (49 Rust files, 50 npm files), with no private configuration or notes.
+Cargo cache and unused-local-patch warnings do not affect verified artifacts.
+Clean-source dry run requires a committed candidate; npm identity returned E401.
+No packages were uploaded and no Git commands were run. The concrete review,
+commit, authentication and post-publication checklist is notes/release-0.5.0.md.
+
+
+0.5.0 publication completed after the maintainer committed the candidate and
+renewed npm authentication. Cargo's clean-source dry run passed. Rust and npm
+published successfully; exact versions and npm latest were verified from their
+registries. npm visibility lagged the successful upload by several minutes;
+the original process was preserved and no duplicate publication was attempted.
+Clean Rust and TypeScript registry consumers build. Both game-client npm locks
+were refreshed to the immutable 0.5.0 tarball and sha512 integrity, and the
+--published metadata audit passed. Rust artifact provenance is
+ a8c0eb5690e7fcd5009a04ce116a8a0086e124e8 from packaged VCS metadata. No
+publishable package source changed after upload. The lockfile completion commit
+and annotated v0.5.0 tag/push remain maintainer-owned; no Git commands were run.
+
+
+## 2026-10-21 — Deterministic session replay and narrow game surfaces
+
+Context: administrators need to launch a replay from a recorded human–human,
+human–agent, or agent–agent session. Recording every authoritative state would
+duplicate data that deterministic game mechanics can derive. The previous React
+`GameSession` also mixed game rendering with connection, conversation, voice,
+and lifecycle controls, which made it unsuitable as a shared live/replay surface.
+
+Decision: the `session_created` event stores the one serialized initial
+authoritative state and the game's state, action, and rules compatibility
+identifiers. Accepted-action events store the actor and action but no resulting
+state. The administrator replay endpoint checks those identifiers, deserializes
+the initial state, and calls the normal `Game::apply_action` in event order. It
+derives both role-specific observations, available actions, completion, and the
+conversation timeline. Package release versions do not participate in replay
+compatibility. `Game::State` is now deserializable, and games may keep the three
+compatibility constants stable across releases that preserve representation and
+transition meaning.
+
+The React renderer now receives `GameSnapshot`, containing only the role,
+observation, latest accepted transition, available actions, interaction status,
+and `act`. Parlando renders conversation, connection, microphone, leave, and
+replay controls around that surface. The dashboard opens the experiment's normal
+frontend with an administrator replay URL; `ParticipantApp` bypasses participant
+registration, consent, matchmaking, and terminal flow, fetches reconstructed
+frames, and supplies them to the same renderer. Replay surfaces are inert, while
+live game handlers may update ordinary local React state before calling `act`, so
+the API does not impose a server round trip before immediate visual feedback.
+
+Tradeoffs: the default replay reproduces authoritative observations, accepted
+actions, and messages rather than undocumented transient animation frames. A
+future optional display-event extension can reproduce those animations without
+changing the stored replay model. Sessions recorded before this change return a
+clear replay-unavailable conflict because they have no initial-state record or
+compatibility identifiers. No database schema migration is required; the
+existing event state column now holds only the initial state.
+
+Validation: the server integration test records an initial state, conversation
+message, and accepted action, verifies that only the creation event has a stored
+state, and reconstructs three frames for both roles. React tests cover event
+jumps, role switching, disabled interaction, and replayed conversation. Runtime,
+package-surface, example-game, and browser-fixture builds exercise the narrowed
+API and Parlando-owned session controls.
+
+
+## 2026-10-28 — Agent-agent games appear as ordinary dashboard sessions
+
+Context: the standalone agent experiment runner executes replayable games but
+currently writes only runner results and optional traces. Administrators need
+to inspect those games through the normal session detail and replay surfaces,
+without exposing runner batches, plans, training phases, or controls in the
+dashboard.
+
+Decision: when explicitly configured with an experiment store destination, the
+runner projects each terminated headless game into the existing participant,
+session, and event schema. `SessionRunner` remains the sole owner of execution;
+the dashboard record is an atomic completed-session projection independent of
+trace capture. A deterministic opaque public session identifier derived from
+`(run_id, plan_id)` makes resume idempotent without a schema change, while the
+normal random dialogue identifier remains the administrator-facing label. The
+dashboard continues to expose only ordinary sessions, details, exports, and
+replay. Runner orchestration remains in YAML and runner artifacts.
+
+Tradeoffs: sessions appear only after their headless task terminates, and the
+dashboard cannot launch, monitor, or cancel runner work. Runner limits,
+quiescence, and cancellation are recorded as a runner-specific terminal event
+rather than being misrepresented as human participant outcomes. The detailed
+contract, invariants, validation plan, and deferred work are recorded in
+`notes/agent-agent-dashboard-session-design.md`.
+
+
+## 2026-10-28 — Clembench evaluation reads typed completion scores from session databases
+
+Context: an initial Clembench-porting discussion introduced a corpus export,
+a parallel game-end taxonomy, and a game-specific post-hoc scorer. Those
+mechanisms duplicate existing Parlando responsibilities. `Game::Completion` is
+already the structured terminal result and is stored in `SessionEnd`; the
+headless runner already has deterministic plans, typed game execution, and a
+design for projecting terminated sessions into the ordinary experiment
+database. The LM Playschool shared task accepted submitted model systems, which
+organizers executed themselves, rather than treating author-produced game runs
+as authoritative submissions.
+
+Decision: scored games use a reusable typed completion envelope with a stable
+serialized score field, validated binary or normalized numeric score, and
+game-specific terminal details. Clembench ports compose that general envelope
+with a benchmark-specific typed request-count result. The existing completion
+is the only game-score authority. Protocol-aborted games have no quality score;
+normal losses have a score, and infrastructure failures continue to use the
+existing `SessionEndCause` taxonomy. Headless evaluation sessions are recorded
+in one or more ordinary Parlando databases. A read-only evaluator unions those
+databases, rejects duplicate plan identities, reads the common completion
+envelope, and applies pinned Clembench/shared-task aggregation. Corpus export is
+reserved for optional publication after evaluation.
+
+Tradeoffs and risks: consistent score serialization constrains benchmark game
+completion types but eliminates a second scorer and permits cross-game database
+queries without knowing each result type. Moving source scorer calculations
+into authoritative state and completion requires differential tests against
+the pinned Clembench game master. Accepted actions are visible to both Parlando
+roles, so every port must verify that a raw response is public before using it
+as an action; games with private submissions need a safe representation or a
+future runtime capability. The detailed port mapping, experiment model,
+database boundary, implementation sequence, and provisional difficulty
+assessment are recorded in
+`notes/clembench-porting-and-evaluation-design.md`.
+
+## 2026-10-30 — Unified actions and native Rust games behind OpenEnv
+
+Context: the message/action split bypasses game transitions for conversation,
+restricts training capture, and makes raw-response benchmark ports awkward.
+Automatic disclosure of accepted actions also conflicts with private player
+submissions. OpenEnv needs externally stepped episodes, while Clembench source
+compatibility would introduce Python game hosting and suspension machinery.
+
+Proposed direction: use `Action<Operation, Message>` with distinct `Message`
+and `Operation` variants, both interpreted by the native Rust game. Supply a
+standard multimodal message representation while allowing custom payloads.
+Games emit recipient-scoped delivery effects; participant presentation and TTS
+consume those effects rather than raw submitted actions. Agents remain unaware
+of audio. A resumable session combines a Rust game with a frozen-policy partner
+and exposes the remaining role through an OpenEnv adapter. Clembench games are
+ported to Rust and validated for behavioral fidelity; unchanged Python game
+masters are outside the compatibility target.
+
+Tradeoffs: Rust ports require manual translation and upstream parity checks,
+but avoid a second game implementation runtime. OpenEnv trainers can retain
+their learning machinery, while environment-specific agents and scripts may
+still need schema, prompt, or wrapper changes. Generic message payloads require
+conversion into standard delivery content before generic rendering or TTS.
+
+Follow-up questions: finalize delivery/history semantics, multimodal asset
+access, scheduling and yields, announcement sender identity, the Rust/Python
+transport, and a pinned external compatibility matrix. This records a design
+proposal only; no APIs, databases, releases, or packages were changed. The
+current proposal and migration experiences are detailed in
+`notes/actions-and-openenv-design.md`. It supersedes the earlier note's message
+bypass and public-action assumptions while retaining its completion-score and
+evaluation direction.
+
+## 2026-11-19 — Internal ownership boundaries
+
+The live runtime, data projection, clients, and headless runner had independently evolving representations of session state. The implementation keeps the game and agent author contracts at their existing public entry points. SQLite retains its current schema, and the protocol and corpus retain their existing versions.
+
+### Live session ownership, ordering, and admission
+
+A live room owns the mutex that orders admission of its second seat, game actions, conversation, expiry, and connection lifecycle updates. The deadline sweep and socket grace timer recheck the current deadline while holding this mutex. A reconnect timer identifies the exact deadline it scheduled. Outbound actions carry immutable observations and affordances captured from that revision before persistence. The synchronous broadcast and mailbox publication follow SQLite's winning commit under the same ordering boundary. The SQL action writer explicitly reports an already-ended session, and a losing action publishes nothing. The implementation keeps role-private state and the existing participant wire format.
+
+The single optional software seat owns a bounded inbox in its room. The runtime reserves capacity before committing input and prioritizes already queued callbacks before requesting another decision. A full or unexpectedly closed inbox ends that room with a technical failure before the input commits. This trades continued interaction with an unresponsive agent for bounded memory and complete, ordered delivery of accepted transitions. Callback timeouts and shutdown still bound individual agent operations. Ordinary rooms never wait for another room's agent to consume a queue. A terminal commit closes the room's sender and lets the receiver drain, including its terminal observation and finish callback for completed games.
+
+Admission rechecks participant assignment while holding the experiment admission guard. Construction still obtains a durable session ID and logger before invoking the game factory. Initial membership and the initialization marker commit together before publication in live memory. Existing-room memberships also persist before insertion in memory. Initialization errors drain the provisional writer and terminate the durable reservation via one cleanup path. An admitted request runs to completion even if its HTTP client disconnects during persistence. Process failure remains subject to the existing interrupted-session policy.
+
+Regression cases use real HTTP, SQLite, and WebSocket paths for repeated concurrent joins, failed membership insertion followed by retry, a competing durable terminal writer, both roles' concurrent action streams against replay, agent mailbox exhaustion alongside an independent healthy room, and two disconnects within overlapping grace periods.
+
+Only human game connections and their grace periods keep an ended room in memory. A participant who never opened a socket receives the configured grace period from the terminal commit. Farewell audio closes on its own deadline. After room eviction the authenticated participant can still reconcile the terminal result from SQLite.
+
+### Corpus projection and administrator reads
+
+The durable store records session lifecycle, structured terminal cause, and end time, while corpus v1 requires a status string and gameplay-relative duration. A private typed session record now feeds both the single-session dashboard query and the experiment-wide snapshot. A dedicated corpus module owns the v1 projection and validates consistent lifecycle, terminal cause, and timestamps. A running session maps to `playing`, normal game completion to `completed`, participant departure to `abandoned`, timeout or partner unavailability to `expired`, and infrastructure failure to `failed`. An ongoing session has null duration. No persisted values or database schema change.
+
+The corpus game clock begins at game start. Setup logs with a negative game-relative timestamp are retained in SQLite and visible in session history. They are omitted from the v1 corpus, which requires nonnegative event times. A negative action or message timestamp still signals an integrity error. Event indices retain their durable values, including gaps from omitted records.
+
+The store uses one SQLite read transaction for all export tables. The projector groups events and memberships once by session and preserves SQL event and role ordering. Snapshot materialization still consumes memory proportional to the selected experiment. A long export holds a read snapshot while concurrently committed changes wait for the next export to appear. Administrator session detail and participant identity resolution use targeted reads, with experiment membership enforced in SQL.
+
+Regression coverage checks SQLite-backed corpus responses against the downloadable JSON Schema for active, completed and timed-out sessions. Setup log coverage checks the original entries in storage and the subsequent corpus. Schema validation is a development dependency with remote and file schema resolution disabled.
+
+### Participant connection, snapshot decoding, and dashboard selection
+
+The same participant state can arrive in a socket stream, an HTTP reconciliation, or a completed leave request. Keeping React state setters, a mutable mirror, and independent retry callbacks made response order determine which transport and observation the user saw. A private connection controller now owns the socket, heartbeat, retry window, pending ticket, and current view. Each attempt has a generation. Closing or replacing a session invalidates work started by the prior attempt. The latest view gates actions and chat, including callbacks retained by game renderers. Terminal snapshots share the same teardown and farewell-voice decision. Consecutive socket snapshots enforce lifecycle adjacency. Initial and resynchronized snapshots may skip intermediate lifecycle messages. HTTP and WebSocket decode the same platform-owned fields while game payloads stay opaque. This introduces a small transport controller and leaves the public TypeScript package entry points and game props intact.
+
+Dashboard catalogue, experiment, and session reads have distinct ownership. Changing selection invalidates pending responses, clears old detail/configuration from the view, and scopes subsequent requests to the selected resource. Identical reads in flight are shared, which prevents repeated polling from indefinitely superseding a slow response. In-flight requests may finish on the server after selection changes. Their replies and errors have no effect on the new view. An intercepted-network browser test exercises reversed experiment-list, session-detail, and event-poll responses through the production dashboard.
+
+### Installation and experiment resources
+
+The dashboard and experiment routes use separate construction paths. The installation owns storage, administrator authentication, settings, telemetry, and the mount registry. Dashboard handlers use a configuration context that can operate without a live session runtime. Each mounted experiment binds its own typed game configuration and session resources. Mounts use the same definitions for scoped administrative operations on both supported experiment URL prefixes.
+
+Closing intake or saving configuration retires the current admission owner. Existing rooms keep their original game settings, transports, reconnect deadlines, and providers. Reopened intake reads the latest stored configuration. A verified repeat Prolific submission rejoins its existing room. An unassigned direct registration can enter a reopened direct study after giving fresh consent under the current study purpose. Changing recruitment to Prolific requires a fresh verified launch. The HTTP credential format and the single-use WebSocket ticket contract stay the same.
+
+The host retains one small identity and recovery record per successfully mounted catalogue experiment for the life of the process. A full retired runtime remains while it owns a room within its normal lifecycle or transport grace window, or an unused registration within its configured waiting timeout. Periodic cleanup releases empty owners. Terminal participant reads then use SQLite. Sixty-four lock slots serialize configuration changes and construction. Unrelated names can briefly contend on a slot, and unknown namespaces allocate no permanent entries. Opening the first mount reconciles all unfinished SQLite sessions from the previous process. Replacing a mount in the same process preserves every live session.
+
+Admission and live-resource accounting include all retained revisions of the same experiment. Only the current revision contributes configured limits to installation load. Verified participant credential generation and cleanup are scoped to the issuing owner. Revoking an expired registration on an older revision cannot revoke a newer credential for the same durable participant.
+
+### Headless accounting and resumption
+
+Only the current training update owns accumulated trajectory steps. Run-wide accounting retains scalar counts and the durable result files retain complete per-session trajectories. Resumption reads the run ID, plan ID, status and learner steps together from each result exactly once. Fresh and resumed work use the same status classification. This keeps previous checkpoints out of memory while preserving plan identity, result filenames and the learner's existing idempotent update contract. Memory still scales with the trajectories in one pending update.
+
+### Remote Python agent lifetime
+
+An instance record binds each Python agent to its logger and callback lock. All callbacks for that instance drain their own logs under the lock. Shutdown shares the same lock, waits for earlier callbacks, and releases the registration after cleanup. Distinct instances can run independently. Creation reserves capacity on the asyncio service loop before awaiting the user factory. A stalled callback can delay shutdown for its own instance until it finishes or is cancelled.
+
+### Isolated HTTP fixtures
+
+Each server fixture owns its issued credentials. Anonymous, participant, and administrator requests send one caller-selected payload and observe the first response. This requires test callers to supply identity explicitly, makes authorization failures visible, and prevents unrelated concurrent tests from supplying substitute credentials.
+
+## 2026-11-19 — Offline code atlas
+
+The architecture guide in docs/code-atlas opens directly from a checkout. Hash routes address a component, evidence view, or action step. The map focuses on the five boundaries of live play. Its connections represent interactions, not a complete dependency graph. Source excerpts are embedded so opening the file requires neither a server nor permission to fetch local files. Run python3 scripts/refresh-code-atlas.py when the implementation changes and review the accompanying explanations. Recorded test passes refer to the dated local run and must be reassessed when fixtures or behavior change.
+
+## 2026-11-19 — Source-backed maintainer reference
+
+The replacement for the five-component overview lives in developer/code-atlas, outside the user manual and private working notes. Its directed neighborhoods describe witnessed runtime relationships, including calls, transport, channels and durable reads. Their edge counts would not measure static fan-in or fan-out. The session explorer keeps room lifecycle, pause, participant projection and retention distinct. Flow steps identify where a write becomes durable and where publication can occur. A searchable offline source bundle contains complete Graft symbol spans. Regenerate it with python3 scripts/refresh-code-atlas.py and review the editorial edge witnesses against changed implementations. The dated local result covers the Rust library suite (252 passed); the separate browser matrix is listed as inspected. The atlas does not run tests in the reader's browser.
+
+## 2026-11-19 — Orient the internals atlas around a concrete room
+
+The atlas opens with the Cue Choice Dax fixture to explain the distinction between room state, game mechanics and a role’s view. Each of the fifteen responsibility guides names inputs, outputs, motivation and an ordered list of source definitions. Paths and line anchors are derived from the existing offline source bundle. A reverse file index makes responsibilities implemented in the same module visible together. Dependency edges now lead to related reading paths, and regression fixtures can support more than one subsystem. The competing-deadline illustration models a single server evaluation for a paused running room; its example timestamps are independent of deployment settings. A real-socket regression in rust-server checks that reconnecting after idle but before grace returns the same room’s idle ending. The fixture permits either a prior cleanup sweep or the reconnect check to commit the terminal outcome, matching the externally observable contract.
+
+## 2026-11-19 — Developer reference as technical documentation
+
+The overview defines game, experiment, session, and observation in dependency order, then uses one existing Cue Choice fixture to relate the definitions to the code. The subsystem and file indexes hold lookup material on separate routes so the initial reading path can remain short. Documentation links retain the offline symbol bundle and line anchors. The dependency diagram documents selected calls, and the deadline illustration explicitly assumes one evaluation time; neither is a complete execution model.
+
+## 2026-11-19 — Reading order and source boundaries in the developer reference
+
+The overview introduces the players and their task before the Cue Choice state machine. It opens before the deal and treats a wrong-role request as an alternative to the first move. The view labels paraphrase the observations. The adjacent source controls retain the precise enum variants. The dependency map describes the operation at each edge and identifies entry definitions for responsibilities that span or share files. The file index uses the shared move handler to explain both a possible module split and the synchronization constraint such a split would need to preserve. These are editorial groupings; a code change to a role, observation, or handoff requires checking its corresponding explanation.
+
+## 2026-11-19 — Functional units and mutation boundaries
+
+The live server, SQLite store, experiment runner, and participant shell each put independent operations in a single implementation file. We split them behind the existing game, agent, runner, and client interfaces. File size prompted review. Ownership of an invariant or a separately testable computation determined the boundary.
+
+* A live session owns its mechanics state, lifecycle, pause, and participant readiness. The connection registry owns socket generations. Admission carries a reservation while selecting or constructing a room. The action coordinator keeps expiration, queue reservation, durable commit, state installation, and delivery in one ordered operation. Network handlers and agent callbacks use that operation. Changing the lock scope or publishing before the durable write would alter the concurrency contract.
+* Privacy reporting reads a scoped collection of configurations and builds one report consumed by the HTML, Markdown, and JSON routes. Export schema ownership stays with the corpus projector. Direct tests found that report text had been used as an identity key, causing repeated synthesis-service rows in an installation with multiple experiments. Separate sets of provider identities for transcription and synthesis preserve first-seen order and keep distinct data flows visible. Timeline tests now exercise the projection and grouping of durable events inside the owning unit.
+* SQLite uses the existing pool, records, and schema. The private modules group operations that change together. The event batch and terminal result remain in one transaction. A failed second insert must roll back the entire batch and leave the first sequence number available to a retry.
+* The headless runner keeps its public registry and uses private units for specification, planning, execution, training, and artifacts. The artifact store binds a run ID to its directory, verifies plan and checkpoint identity on resume, and publishes finalized records atomically. These invariants can be exercised without starting a game.
+* The browser shell coordinates the participant connection and rendering. Voice preparation owns its asynchronous cancellation and device lifecycle. Session controls own the chat draft during a pause. Integration suites continue to exercise the real public interfaces alongside the local tests.
+* The main tradeoff is additional navigation across explicit boundaries. The offline code atlas records the new symbol locations. A change to session serialization, a new retention rule, or another public entry point should be checked against its corresponding contract tests and atlas examples.
+
+## 2026-11-19 — Contract audit after the functional-unit split
+
+The source comments and the functional-unit audit in this directory describe the observable behavior at the new boundaries. Tests exercise the public caller when the invariant spans several units and the owning unit directly when ordering, rollback or time must be controlled.
+
+Participant deletion holds a SQLite write reservation before computing the affected graph. The live-room check, session list and deletes now share one snapshot. The read-only preview also uses one read transaction. This holds the writer during the preview queries, in exchange for ruling out a stale session list within the commit. The dashboard names the shared sessions before confirmation and refreshes the list after a successful delete. Administrator activity uses a monotone timestamp so an earlier request finishing late cannot shorten a valid session. No schema conversion is involved.
+
+Checkpoint parsing uses the same nonblank, opaque identity rule as construction. Resumption checks the persisted update ID and base alongside the run ID and checkpoint number. Valid files keep their wire format. A mismatched record stops the run because applying another policy's update would misattribute subsequent trajectories.
+
+Live expiry and the dashboard share their deadline candidates. The next scheduled deadline is chronological. Evaluation after several deadlines have elapsed uses cause precedence. Socket retirement drops registrations by complete session ID. Tests cover distinct roles, prefix collisions and deadlines expressed in different time zones.
+
+A replay URL owns its React component lifetime. Requests that finish after a switch cannot restore the preceding error or frames. Microphone device scans publish only the latest request's list, and a denied passive scan preserves the last list. The chat form checks interaction state on submission so a retained draft survives a pause.
+
+## 2026-11-19 — Source ownership of functional-unit contracts
+
+Module introductions describe the unit’s state or computation, its immediate callers and dependencies, and the guarantees that cross that boundary. Existing function comments retain the detailed ordering, failure, and retry rules beside the implementation that enforces them. The contract audit remains the index of behavioral tests. Moving an implementation requires carrying its contract to the new owner and refreshing source spans in the maintainer atlas.
+
+## 2026-11-19 — The Last Screening
+
+The game needs repeatable staging problems and a recognizable theater shared by two operators. Rust evaluates an ordered score of optical predicates on discrete lamp and flat detents. The score separates conditions that must stay true from the next required picture. Each seeded reel starts off its target marks. The projectionist holds the tower cue and the stagehand holds the aperture cue. New compositions can reuse the same predicates, slides, scene geometry, and wire actions. A reel with a new ID also needs a participant cue illustration and instructions.
+
+Babylon.js renders the two rooms from the public stage picture and the equipment owned by the seat. Clickable machines move the first-person camera to inspection positions. Local animation handles fly-rail travel, occlusion, projection shafts and the safety curtain. The server evaluates settled equipment states so frame rate and network timing do not determine success. The single-seat Vite preview supplies example observations only in development. Live play and completion run through Parlando.
+
+The launcher defaults to the sibling Parlando packages. Both registry manifests specify 0.5.0. Cargo's configuration is discovered from its invocation directory, so published builds run outside the checkout and local builds supply an explicit path patch. npm installs the locked dependencies before local mode substitutes a link to the sibling SDK. The published browser SDK and the checkout have different participant render callbacks under the same version number. A small adapter handles the action callback and the registry SDK's intercom controls. Parlando continues to own transport, admission and outcomes in both modes. The Rust game uses the shared trait surface and the checkout's initial replay-version defaults.
+
+The built-in image generator supplied the midnight seascape, repeating Deco wall panel and lighthouse cutout in client/web/src/art. The scenery directions were a hand-painted Scottish sea without moon, vessel or lighthouse; a face-on walnut and patinated bronze cinema wall bay; and an isolated Bell Rock stone lighthouse on transparent canvas. The moon and ship are separate projected slides. Both camera views, the two-reel playthrough including role chat and exits, and 256 seeded solves were checked during implementation.
+
+## 2026-11-19 — Solo operator in The Last Screening
+
+Human–agent pairing puts the human in seat A. An optional game setting assigns the projection booth to either seat, so the same registered partner can operate either room. The standard assignment remains A in existing games and replays. The operator reads its role-specific observation, exchanges its private one-based cue mark in chat, and chooses from the ordinary legal-action catalogue. Receiving a new reel clears the earlier mark. This keeps the clue exchange playable by one person while preserving the information split used in human–human sessions. The policy knows the two shipped reels; new reels with different lantern choreography need corresponding behavior for a computer projectionist.
+
+The Last Screening launcher prints the experiment dashboard URL immediately before starting the server. One resolved port supplies both the URL and the listener argument. The dashboard works with every experiment database and provides each experiment’s participant link.
+
+## 2026-11-19 — Counterweight Hotel
+
+A single East cable coordinate determines both suites’ positions. Parked guests can exchange luggage with staffed landing racks. Finite car capacity supplies the balance puzzle, while replenishable racks make wrong turns recoverable. Travel is quantized to a one-floor release and a separate brake action so network delay cannot decide a puzzle. Route data specifies initial and exit ranges and an optional pair of delivery manifests. The second itinerary uses the same machinery but requires a reversal at the exchange grille and different final loads. The physical controls reveal neither a valid seal nor destination through the list of available exit attempts.
+
+The porter acts through public observations and intercom messages. It can share a dispatch and operate independently, but needs the guest’s ledger entry to complete its own checkout. A rejected lock attempt waits for a corrected entry. Human and solo experiences use the same server and database. The new local demonstration uses text communication with its own dashboard credentials stored under the ignored, user-only .local directory.
+
+Babylon.js interpolates accepted floor changes against the shaft, opposite car and Alpine vista. The scene represents luggage counts and removable brake ownership. A keyboard-accessible dock offers the same actions as picking props. The React participant boundary handles the checkout and published 0.5.0 SDK callback differences used by Last Screening. The built-in image generator supplied five local textures: morning Alps, Jugendstil wallpaper, a marble landing, a woven carpet, and a travel trunk face.
+
+The launcher selects local or published Parlando as a pair. The browser build stamp covers browser sources, selected local SDK sources, dependency manifests, tool versions and output assets. An ordinary restart reuses the verified bundle and lets Cargo do its incremental check. Changing modes can rewrite the game's Cargo lock resolution; the delivered checkout is in local mode.
+
+### Walking inside the Counterweight Hotel suites
+
+The two suites now enclose a walkable space on all four sides. A local camera tracks the guest within their car while the shared cable state drives the view outside. Local movement needs no server events or changes to recorded puzzle actions. A circular walking footprint slides along walls and furnishings. The exchange grille stays a boundary at every floor. New furniture that blocks a walkway needs a corresponding footprint.
+
+A writing desk at the rear of each suite opens the same guest ledger as the keyboard-accessible controls. This gives the guest a reason to turn away from the shaft while preserving both itineraries, the porter policy, and access to every action from the controls. Keyboard and touch movement pause when a dialog takes focus.
+
+### Counterweight Hotel exterior and environmental clues
+
+The window bay and lift well have separate geometry. Deep reveals mask the edges of the alpine panorama. Continuous masonry encloses the five-storey shaft. The moving counterpart has an opaque shell and a fluted opal pane above a blind transfer hatch. The relative floor animation moves the entire shell and hatch together. The thin invisible interaction meshes remain independent of the visible surfaces.
+
+A dated workshop plate records the paired-car mechanism in the hotel's own visual language. The concierge's coloured reservation copy derives only from the current participant's view, including any luggage count. The stamped reservation panel and accessible control names provide the same information without requiring close visual inspection. The two suites preserve different halves of a rescue story, linked by torn rope and the porter's striped cloth. These objects add a reason for the guests to compare their rooms without adding another puzzle dependency. The porter asks for reciprocal booking information while leaving mechanical deductions to the guests.
+
+### Making the hotel service legible from the opening
+
+The guest’s objective and first social action appear together on a front desk slip. It follows the actual rendezvous, handoff and checkout states, using only each guest’s observation. The ledger links to the participant intercom so the guests still exchange their own bookings. Both luggage counts and their relative pull appear at the rack as cases move. Guests can inspect the hatch, brake and landing lock when an operation is unavailable. The dock and physical stations share the same panels and only the server catalogue can authorize a game action. The hatch has a separate pick surface in front of the grille. The commissioning plate and rescue keepsakes support inspection, while the window and incidental furniture remain scenery.
+
+### Counterweight Hotel interaction outlines
+
+Each usable furnishing has a persistent turquoise silhouette while the room accepts input. Babylon’s depth-aware selection pass groups visible mesh parts by the same interaction ID used for picking. Transparent hit areas stay out of that pass. Rescue gear uses a shared hit area and individually marked visible parts. The short prompt uses the same colour sample and changes from a general click or tap instruction to the action under the mouse. The outline pass pauses while an instrument panel is open.
+
+### Hover-only hotel affordances
+
+The selection layer starts empty. Changing the hovered object selects only its visible parts and updates its action prompt. Mouse leave, drag and instrument panels clear the selection. Cases, the luggage rack, the reservation copy and the ledger can share controls while keeping independent visual identities. Touch taps use the same pick path without requiring a prior hover.
+
+### Account for baggage on the landings
+
+The earlier model kept only the two car loads. Each wing now keeps a five-floor ledger. Each landing starts an itinerary with three cases and has six rack slots. A transfer conserves the wing’s total and changes exactly one rack and one cabin. Local transfers have priority. An empty source or full destination uses the nearest eligible rack on the same wing, breaking ties toward the lower floor. This preserves the original control availability and recovery from detours. Published observations supply the selected floor for each direction. The current wing sees its own racks and both car loads.
+
+The luggage panel frames both racks across a cutout in the cabin wall. A case changes its attachment from the cabin to the stationary shaft, with a visible hoist carrying it through the opening. An inter-floor transfer follows the separate service well. Queued, acknowledged transfers animate in sequence. Opening and closing the rack preserves the guest’s walking position.
+
+The interrupted live session was ended with authorization to update port 8081. Before the transactional replay conversion the hotel process was stopped and the SQLite file checked for open handles. Backup: games/counterweight-hotel/.local/hotel.sqlite.before-baggage-20261119T153714129154Z.backup. Storage schema version 16 was retained. All 16 recorded initial states received two five-rack allocations of three cases and updated state/rules compatibility metadata. Historical landing counts are reconstructible from accepted load/unload actions; they were never individually observed in the earlier game. SQLite integrity, foreign keys, unchanged table counts and unchanged unaffected row contents were verified against the backup, including 16 sessions, 20 participants, 662 events, and 31 session-participant rows.
+
+After restart, the live administrator replay endpoint reconstructed all 16 historical sessions. All 840 role-specific frames had five bounded landing inventories and conserved the total case count within each itinerary and wing.
+
+### Counterweight Hotel document inspection
+
+The workshop plate and each booking document use a shared Canvas2D drawing in the scene texture and the inspection canvas. The wall copy and desk ledger keep their own layouts, and both record the partner's wing, destination, seal, and any baggage delivery from the local observation. The scene redraws the booking textures only when those values change. The canvas supplies an accessible description because its printed text is rasterized. Only the book and framed documents own document interactions. Ordinary enamel labels remain scenery and the mechanisms retain their own pick targets.
+
+### Counterweight Hotel demo voice
+
+The paired demo uses Parlando's built-in live guest-to-guest audio relay. The dashboard setting changed in paired configuration revision 2 while no sessions were open, and the same experiment was reactivated. Transcription and speech synthesis stay disabled. Participants give browser microphone permission to prepare voice and can still use text. A test on port 8081 with two independent Chromium contexts and synthetic microphones verified that both seats sent audio frames and received nonzero audio from their partner. The test session was ended through participant controls.
+
+The hotel porter's policy consumes conversation text and returns text. Great Tree has separately configured transcription and speech synthesis. The hotel demo has no corresponding provider credentials or approved transcription flow, so spoken porter dialogue is pending while typed dialogue remains available.
+
+The two cars have permanent, unlatched brass ventilators facing the same full-height masonry air well. Their voices carry through the shaft at every stop and in transit. The grilles and their labels are scenery. Communication belongs to the participant session and continues independently of the walking camera, baggage view and document inspection.
+
+### Solo porter booking receipts
+
+The porter used to store a recognized reservation silently when it was waiting for the other guest to act. The revised policy sends a read-back of the floor, seal and optional luggage count, even when the guest repeats the entry. At a parked Floor 2 rendezvous the West porter names the handle handoff as the next action. Replies can accompany a legal physical action in the same agent response. A peer porter’s receipt does not trigger another receipt. The porter identity version distinguishes the new policy in recorded sessions.
+
+### Fixed brake levers and a transferable key
+
+Each Counterweight Hotel lift has a permanently mounted brake lever. One brass key unlocks the lever in the lift that holds it. At Floor 2 the aligned hatches let East pass it to West. Both levers remain visible throughout the exchange so the mechanism matches the room, workshop engraving, and porter’s instructions. The existing pass action and handle observation field already encode this exclusive ownership, preserving game rules and recorded actions.
+
+### Making the Counterweight Hotel cable and delivery observable
+
+The old solo session record shows that the porter reached East’s second booked floor, then emptied its car to satisfy West’s zero-case delivery. The guest continued trying to travel to the first booking. A separate stall occurred if the porter acquired the key before hearing its booking, although the coupled floors already determined both destinations.
+
+The first service now opens with two empty cars and East one stop above the hatch. Loading one case into East produces an observable change from equilibrium to descent. One release advances a single stop under gravity. Parking preserves position and loads. The server supplies each wing’s next possible landing from the same calculation that accepts a release. The client displays both weights, the available direction and the reserved landing. The 3D cars share one interpolated cable position, with West’s or East’s cases visible through the opposing rack and only the keyed lever operated. New services begin at their own initial pose. Stage one’s new initial deal changes new sessions only. Recorded initial states and later-stage deals still apply the same action rules.
+
+The porter derives travel from its partner’s ledger and the fixed sum of floor numbers. It loads or unloads its own car, asks for an explicit case adjustment if the other guest must act, and gives arrival instructions using that guest’s floor, seal and delivery count. Its own seal and ordered load must still come from the other guest. The porter waits 900 ms before parking so individual stops remain visible. A custom agent response timeout must allow time for this pause. It resets its booking on each service and can repeat the current one. The next service announces fresh bookings and the luggage needed for checkout is distinguished from the ballast used for travel.
+
+### One evacuation per hotel session
+
+Both guests reaching the old first exit triggered a fresh hotel booking inside the same session. The earlier destination had no visible significance beyond a desk entry. A session now has one physical objective: reach the two rescue bridges across the avalanche-damaged hotel, unlatch the gates and cross together. The default route teaches the freight balance and key exchange. The extra freight-manifest puzzle is a separately configured rescue-supplies run. Each route retains its seed-specific deal. Crossing both gates completes the session immediately.
+
+Both parked cars must align with their bridges after the key exchange for the arrival signal. The HUD marks the milestone immediately. Once the rendered cabin docks, the bridge replaces the ordinary landing and its lamps illuminate behind the closed gate. A short bell accompanies an actual arrival when browser audio is available. The gate opens after the guest uses the correct seal. The refuge ending appears after both guests cross. Supply alignment and crossing remain distinct so crews can see the bridge while finishing their loads.
+
+State now stores the selected route in place of a progression index and a seed for another service. The local SDK records state and rules version 3. Historical version 2 sessions need the earlier hotel binary for replay. No stored session records were converted. The launcher enables the local-replay Cargo feature only when using the local SDK, since the published 0.5.0 Game trait predates the replay constants.
+
+### Walkable avalanche terraces
+
+The rescue brief used to explain the avalanche before guests saw any damage. Both routes now start facing a terrace doorway. Parked lifts let either guest walk onto a fixed hotel gallery to see the broken stairs, damaged service gallery and refuge across the ravine. The route instructions are available on request. The terrace entrance and the sealed bridge gate sit on different sides of the car so exploring a blocked route cannot accidentally complete the escape.
+
+The server records each guest’s location when they cross the threshold. Walking, touch movement and the accessible dock use the same actions. A guest on the terrace can always board again. Both lifts remain parked until both guests are aboard, including when the porter operates the opposite brake. The walking controller retains the guest’s heading on a physical crossing and restores the correct side after reconnecting. The stairwell, avalanche and distant structures stay in shaft coordinates as the lift moves. Existing replay snapshots place both guests aboard, matching their original rules.
+
+The user authorized restarting the Counterweight Hotel demo to apply future changes, including ending an active game on its local port.
+
+### Hotel puzzle feedback and discovery
+
+The hotel supplies observations through its scenery, illustrated mechanism plate, private ledger, gauges, and inspection panels. Hover identifies the object under the cursor. The arrival bell, lamps, and banner acknowledge a successful docking. The client no longer generates route advice, appends instructions to milestones, or highlights the next control. The solo porter acts on the mechanism and exchanges ledger information as the other guest. It can report what it knows and acknowledge a failed attempt without giving the player a sequence of actions.
+
+### Directional lift sounds
+
+Each guest hears their own lift travel. The sign of the animated cabin displacement selects one of two quiet mechanical loops: a rising sheave whine with fast ratchet clicks for ascent and a lower, descending drum with paired knocks for descent. The render loop starts playback when the car actually moves, including after baggage work has finished, and fades it at the stop or a reversal. A stationary brake stroke and a fresh session snapshot produce no travel cue. The sound is independent of camera direction, voice settings and the bridge arrival bell.
+
+### Counterweight Hotel exterior and cabin motion
+
+A copy of the broken staircase on every deck and opaque service doors made the same terrace appear to follow the guests. The hotel now occupies stationary world coordinates. The guest suite and opposite cabin each translate four metres per floor in opposite directions. The camera, cases and hoist use the frame of their current support. The crossing to a terrace places the guest camera in the building frame. The server continues to interlock the brakes while either guest is outside.
+
+The broken stair flight belongs to the second-floor terrace. Each of the other four landings has a different edge profile, visible through the sliding service-door grilles while the car travels. All five decks share a walkable footprint so crossing and collision behavior are consistent. The bridge and refuge are placed in the building frame at the paired destination elevations selected for the route.
+
+### Keeping the refuge in sight
+
+The bridge previously appeared only on docking and ended at a sign. Each wing now has a permanent access gallery and trussed footbridge at its destination elevation. The gallery turns around the hotel and meets the near bridge joint. The far end meets the refuge’s doorway. Guests can see the span from their terrace throughout play. Only the short gangway across the opposing lift track deploys on docking. The threshold position and rooftop railing preserve sightlines across the possible starting and destination heights.
+
+### Making the solo porter's ballast changes perceptible
+
+In a live solo session, the porter moved two cases within a tenth of a second of the guest setting the brake. Travel itself preserves cargo. Each porter transfer now carries a chat message with the rack used and the resulting cabin load. The runtime delivers the message after accepting that transfer. The porter gives each brake stop and each of its transfers 900 ms to register before another decision. Ledger clues and travelling with a human partner retain their existing rules.
+
+### The bridge inspection lock
+
+The three gate marks previously appeared as names on buttons, with no connection to the bridge's condition. They now represent the individual stamps of the hotel's bridge inspectors. The inspector sets the latch after testing the span and files a stamped copy with the opposite crew for an independent check. The in-world lock, its close-up controls and the paper records share the same die artwork. Docking engages the release mechanism, while the existing server-side seal and supply checks still determine whether a crossing succeeds.
+
+### Crossing the bridge and resetting the lift
+
+Unlocking used to mark the guest as having escaped, which disabled scene input immediately. In rules version 4, unlocking pins the cars to their bridges and releases the gate. Each guest reaches the refuge independently. Manual and assisted walking use the same physical deck and slope coordinates, and the lodge lights come on before the client reports arrival. Both arrivals produce shared completion. A reconnect at an unlocked gate can repeat the crossing, and a guest already marked safe reconnects at the lodge.
+
+An incorrect inspection seal returns the coupled cars to the central safety catch when both guests are aboard with closed gates. If a guest is outside or a gate is open, the local inspection lock trips instead; the brake pedestal rewinds the spring for just over three seconds and resets it without moving the cars. A brake release advances one load-driven detent and catches automatically. Client sound, lever movement and the travel interlock follow the animated position.
+
+A visible suitcase click selects the mesh and transfers it according to its supporting rack. The server checks cabin capacity and the named source rack. The client animates the selected case on acknowledgement and fills its former slot. The accessible dispatch control can use the nearest eligible rack when the local rack is empty or full.
+
+Game URLs, experiment configurations and session records stay in the same local installation. The replay manifest changes from state/rules 3 and actions 1 to state/rules 4 and actions 2. The previous executable and participant build are retained in games/counterweight-hotel/.local/replay-v3 for replaying version 3 sessions against a copy of the database. A replay request for a v3 session on the new server correctly reports a version mismatch. The retained build does not cover earlier v2 sessions.
+
+### Bridge power, freight, and arrival signals
+
+Passing the key at the central exchange now seats it in the West master contact. The commissioning drawing, socket, receiver and peaked gallery entrance carry corresponding physical marks. Both bridge circuits energize when the key seats. The level gauge reports weights and balance, leaving guests to predict travel. The solo porter uses a dispatch assembled from the other guest’s messages before it drives onward, and asks for outstanding facts at the handoff. It does not reconstruct its own route from the opposing bridge elevation.
+
+A freight order pairs a stores floor with the two delivery ranges. Rescue Supplies adds a dedicated green dispensary chest to the East stores rack, one detent beyond the exchange. Only East can collect it at the powered dock with both guests aboard and room for a case. The case is counted separately from ordinary landing stock and occupies one cabin slot for the rest of the run. The service hoist carries the same mesh to the cabin. Both the signed cargo counts and the collected chest govern the freight scale. The inspection lock engages only after docking and freight clearance. Every incorrect engraving trips the local rewindable spring, preserving the solved lift journey and the partner’s position.
+
+Each wing has an arrival lamp on the refuge porch. The local arrival camera acknowledges reaching the threshold before the server ends the game. The completion view shows both lamps lit even when the runtime replaces the scene immediately. The local release and restore paths avoid replaying an already seated key’s relay sound.
+
+This revision uses state version 5, actions 3 and rules 5. The installed version 4 server and corresponding browser bundle were preserved in games/counterweight-hotel/.local/replay-v4 before rebuilding. Experiments and existing recordings retain their identifiers and database schema. Historical v4 replay requires its preserved build and a copy of the database.
+
+### Counterweight Hotel entry view and exterior doorway
+
+The first cabin view looks diagonally across the carpet toward the lounge furniture, windows and brake. Walking back inside still preserves the guest’s heading. Both wings share the initial sight line, with their own furnishing arrangements.
+
+The moving jamb defines the clear service opening. Cabin wall returns and fixed masonry terminate at staggered offsets behind it, and the terrace paving meets the brass sill at its outer edge. Intermediate cornices stop beside the doorway and each lintel ends below the next terrace. These clearances eliminate competing depth surfaces and keep trim from the floor below projecting into the walking route.
+
+### Counterweight Hotel exterior landscape
+
+The window billboard and distant gallery cards each carried independent mountain images, so a guest turning on the bridge could see their edges and the empty space below them. All openings now share one 4096 × 2048 equirectangular alpine photograph on a camera-centred Babylon sphere. The sphere is created after the cabin furniture is grouped so it remains a scene root during lift travel. A separate textured gorge in shaft coordinates provides parallax and a visible channel beneath the span. Vertex opacity tapers the distant perimeter into the photograph. The terrain is scenic and does not participate in walkable-floor queries or picking. Photographic sources and licenses are listed in the game README.
+
+### Counterweight Hotel exterior finish scale and delivery (2026-11-20)
+
+The terrace, gallery and refuge share nine small tiled colour and tangent-space normal map pairs. Their repeat dimensions are in metres, so moving along a long ashlar wall retains the same course height as approaching a short parapet. Box faces use construction coordinates for stone and paint, with local grain axes and slight per-member offsets for timber. Flagstone and transverse bridge planks use actual joints in the geometry. Bridge planks are merged by material within their moving or stationary groups. The walk surface and crossing coordinates remain independent of the small render-only joints.
+
+Map synthesis is an offline, deterministic authoring step in the web client's `tools/bake-exterior-finishes.mjs`. The WebP tiles total 590,008 bytes. Browser startup needs texture decoding and upload, with mipmapping and anisotropic filtering for oblique views. The baked normal maps and tiling trade unique large-scale building weathering for stable close-range detail, fewer uploads and no browser-side noise generation. The rounded avalanche banks share the snow map and retain smooth normals. Compacted ice and slate use faceted normals and distinct relief tiles to preserve visibly steeper fracture faces.
+
+The exterior shell includes the hotel’s side walls, casements, plinth and roof around the walkable gallery. The refuge sits on a continuous ledge whose snow and rock share a rim. Its toe extends below the gorge bed for all booking heights. The bridge has cross-girders and sway braces visible from the lower terraces. A directional light casts shadows across the outdoor architecture. Because its casters are fixed for a given booking, the shadow map refreshes when the booked elevation changes. The completion illustration is a render of this same scene with both arrival lamps on.
+
+### Counterweight Hotel brake interlock and suitcase dialogue
+
+Both cars use one removable brake key so only one operator can release the shared cable. The East socket operates the local brake and the West master additionally powers both bridge gate releases. The two workshop plates show this circuit beside the counterweight diagram, and the gate and socket markings identify the same feed. Suitcase racks and the cable gauge describe the present weight relationship. The porter attaches its motive to each committed transfer and recalls it for follow-up questions. Motives distinguish changing the direction of travel, freeing space for the dispensary suitcase, and meeting a delivery manifest. Participant-facing instruments, documents and dialogue call these objects suitcases. Players can still use older colloquial wording in chat.
+
+### Counterweight Hotel camera comfort
+
+Both lift cars previously began a trip with exponential catch-up, reaching peak velocity immediately. Guided movement also rotated toward each new path segment without a turn-rate limit. The terrace controls repositioned the walking camera between separate collision margins. Pointer drags used a fixed angular gain per pixel, so a full-width drag turned farther on a larger screen.
+
+The participant view now defaults to reduced motion and stores the guest’s override and vertical field of view locally. Audio and transit status accompany a discrete floor change in this mode, and an explicitly requested guided crossing cuts to the porch. Guests can still walk across manually. Animated travel has a rest-to-rest curve and a capped guide turn rate. The camera starts level, walking accelerates into a 1.75 m/s stride, mouse and touch turning scale with the displayed view, and a shared walkable sill keeps the guest’s heading and position across the server-approved transition. Manually arriving at the porch keeps the guest’s own view.
+
+In Chromium, fixed 16 ms scene steps produced only the two endpoint heights during reduced-motion travel. Animated travel covered the same 4 m, with a largest frame step of 0.054 m. In the doorway check the location change advanced the camera 0.004 m to the sill, and releasing movement input left the camera stationary. A browser playthrough verified the default mode, saved field of view, guided crossing and celebration.
+
+### Counterweight Hotel scene rendering and pointer sampling
+
+The entry view previously drew hundreds of individual planks, brass fittings and grille bars. Rigid parts now share a mesh when they belong to the same assembly and have the same opaque material, vertex attributes and interaction identity. Batches use the assembly's local coordinates so a suitcase, door leaf or brake pulley can still move independently. Transparent hit areas remain separate. The canvas renders one pixel per CSS pixel, trading some high-density detail for less GPU work. Hover sampling runs at most twenty times per second, including when scenery moves beneath a stationary pointer. A click still resolves the exact pointer position immediately.
+
+On a 1000 × 700 CSS pixel Chromium viewport at device pixel ratio 2, the warm entry view went from 538 to 258 draws per frame and from 1,143 to 624 scene meshes. The framebuffer fell from 1600 × 1120 to 1000 × 700. A comparison of 2,320 rays from four camera positions produced identical actions and occlusion. In a short SwiftShader run, median and 95th-percentile frame intervals fell from 159 and 218 ms to 141 and 197 ms. Software rasterization limits the applicability of these timings to players' GPUs.
+
+On the same viewport using Chromium's ANGLE Metal renderer on an Apple M5, median and 95th-percentile entry frame intervals were 16.8 and 17.7 ms before the change and 16.7 and 18.4 ms after. Both sustained approximately 60 fps in this short sample. Median and 95th-percentile JavaScript render times fell from 2.7 and 3.3 ms to 2.3 and 3.0 ms.
+
+### Counterweight Hotel observation window, skyline and lift animation
+
+The north masonry wing projected several metres beyond the observation glass and obscured the peaks from inside the cabin. The observation wing, plinth and roof now end at the glazing plane. A shallow window reveal and a splayed shaft partition preserve a solid enclosure around the neighbouring car and open the oblique sightlines. The shared exterior once again uses the original alpenglow artwork, wrapped continuously, fading into glacial haze below the bridge and clear sky above the mountains.
+
+Automatic lift travel and guided crossing are independent camera preferences. Lift rides default to the eased animation even for browsers with the previous reduced-motion preference, which still governs the guided crossing. An explicit choice to skip lift animation is saved separately.
+
+### Counterweight Hotel automatic brake pacing and receipts
+
+The porter waits after observing a committed key pass or brake release. The standard browser animation seats the key after 1,770 ms and travels one floor in 2,250 ms. The porter allows 2,000 ms and 2,500 ms respectively, with a margin for normal frame and delivery timing. These are agent presentation delays rather than new game rules. Slow or suspended browsers can still render the scene behind the server.
+
+Every porter release carries a chat receipt through the existing action-and-message response. The runner sends the receipt after accepting the release. The receipt identifies the operated wing and the purpose of the one-stop stroke, and the resulting floor indicators display where both lifts actually landed. This keeps the dialogue accurate even when another guest changes the balance near the time of the action.
+
+### Counterweight Hotel lift playback under rapid observations
+
+The hotel scene presents acknowledged changes in a single queue. Each cable release reaches its own landing before the next travel cue starts. A brake-key transfer holds both cars at level 2 until the key seats. That frame closes the bridge contact and can play the relay sound before the next stroke. A local hoist trip holds its position in the same sequence, with the existing hoist timing and catch-up rate. The scene reports completed landings to the view so the gauge can follow the presented motion. Initial scene setup installs the recorded floor and seated key immediately.
+
+The playback honors the stationary audio cue when lift animation is disabled. If the view observes a floor jump, the scene can reconstruct the intermediate landings along its direction and place an observed key change at the exchange. An excursion that reverses entirely between delivered observations cannot be reconstructed from endpoint observations alone.
+
+In Chromium, a fixed-step replay queued the sequence 1 → 2 → 3 → 4 → 3 with two hoist trips around the handoff. Each hoist moved only at its acknowledged floor. The bridge circuit energized on the frame before either car moved away from the exchange. The active lever switched with the seated key, and the open-gate snapshot applied only on the final visit to level 3.
+
+### Counterweight Hotel partner crossing poses
+
+Parlando 0.5.0 exposes game actions and observations on its authenticated participant socket. The hotel uses this channel for changed crossing poses, sampled at no more than four regular updates per second and quantized to five centimeters and 0.05 radians. The server binds reports to the acting assignment and accepts them only with that guest’s bridge gate open and before their refuge arrival. The latest sample follows the standard reconnect snapshot. Horizontal coordinates use the common crossing frame so the rendered guest acquires the local deck elevation in either wing. A return to the cabin or confirmation of arrival clears the crossing pose.
+
+The existing channel records accepted samples in session events and delivers them to the agent runner. The hotel porter skips a response to the human guest’s pose updates. A future transient participant transport could reduce event volume while preserving authenticated scoping. The controls and completion predicates remain independent of pose.
+
+### Counterweight Hotel refuge entrance and interaction visibility
+
+The furnished lodge door owns its own pickable leaf, glazing and brass push bar. Leaving these meshes out of the facade batch gives them one hover outline and one action. A guest within reach can click the door or use the matching dock button. Walking onto the rectangular mat submits the same arrival. This uses the porch's rotated coordinates and keeps an unacknowledged arrival eligible for retry. Only the server marks a guest safe and completes the booking when both have arrived.
+
+Hover remains the usual way to inspect an object. Guests can explicitly enable outlines for available instruments and suitcases with Show interactables. The door at the refuge uses the same mechanism. The first guest can look back from a reserved place on the porch while their partner crosses.
+
+Both roof sockets project onto the ravine-facing elevation, where the suspension rope runs over two exposed sheaves. The falls end at their respective car roofs. Running the sheaves from the same displayed lift height as the cars keeps the wheels, rope and animated brake stroke in sync. The glazed counter-car rides on the existing partner transform with its furnishings and actual suitcase load. The hotel-side desk window and the glazing give the bridge a sightline into both rooms.
+
+### Solo porter crossing the refuge gallery
+
+A solo guest needs to see the porter traverse the same gallery and porch that two human guests share. The browser and porter read the six centreline joints from the same route file. The porter samples each straight run at intervals of at most 0.65 metres and advances after its own accepted action, with 250 milliseconds between live samples. Each bend therefore has an explicit position and facing, and the final arrival uses the ordinary refuge action. Incoming human footsteps leave the porter’s pacing intact. A human pair incurs no porter timer. The fixed centreline makes solo travel predictable and ties both implementations to changes in lodge placement. The concurrent-footstep test exercises all joints with a second moving guest.
+
+### Walking pace in the Counterweight Hotel
+
+Manual and guided travel use a top speed of 3.5 metres per second. Manual input reaches that speed in about 0.22 seconds and stops on release, supporting short movements near instruments. Up to 100 milliseconds of frame time is integrated in collision steps of at most 20 milliseconds so ordinary frame-rate dips preserve walking pace and doorway clearance.
+
+### Counterweight Hotel rescue galleries in the shared shaft frame
+
+The two inboard cabin gates open onto separate timber galleries between the cars, each at its own dock height. East reaches the bridgehead directly. West crosses below East and climbs an exterior switchback, keeping the passage between the moving cars level. The bridgehead, span and lodge are all fixed in the East frame and booked at the East rescue floor. The span runs across the two towers' broadside, and the lookout on the porch aims between the bridgehead and the occupied cars. West's steeper booking climbs sixteen metres, so its guided traversal takes longer and covers visibly more ground.
+
+Both browser navigation and porter samples use role-specific planar joints followed by the common span and porch. The browser derives the West ramp height from its horizontal run and the difference between dock elevations. Each receiver uses the sender's wing to recover deck height where the two approaches overlap in plan. A local camera stays in its own cabin's frame, applying the wing transform to send poses and recover crossing geometry. The vertical separation therefore needs no new network coordinate.
+
+### Two occupied suites on one hotel cable
+
+Each browser places both full cabin assemblies in the East-oriented hotel frame. The West frame is a half-turn at (5.12, 9.42) metres, which brings the two off-centre exchange sockets onto the same line at Floor 2. Changing participant seats changes which car owns the camera and controls. The opposite car has the same shell, service doors, glazed panels, furnishings, brake equipment and baggage rack as its occupied counterpart. Its wing finish, gate position and suitcase count follow that guest’s observation-visible state. The observation includes both wings’ fixed rack counts so the outside view can show the same suitcases as the rooms.
+
+The existing server cable coordinate supplies both heights. A release advances the loaded system one landing under its brake and stop rules. The client interpolates one displacement for the pair, so the room-floor heights sum to sixteen metres throughout travel. The fixed architecture has separate service terraces, shaft gates and rails. A glazed baggage return and open rack frames expose the moving cars to the bridge. Private ledger contents stay in the guest’s own room.
+
+### West hotel pavilion and exchange landings
+
+The West service wing has a masonry envelope with large observation bays at each landing and a pitched roof over the residential side. Its open exchange portal and separate machinery roof preserve hatch, gallery and cable clearance. A fixed masonry landing spans the gap between the shaft fronts at each stop. Each slab carries a compass inlay centered below the two exchange hatches. Every inlay uses one print and the same orientation, with East pointing from the West shaft toward East.
+
+The rescue approaches still use their booked heights and existing walking joints. Their steel dock plates close the gap from each cabin sill to the stone, and the timber decks start at the far edge of the stone. Shared landing dimensions keep these surfaces flush and leave the compass uncovered. The bearing course projects below the plates and stops outside the moving cabin floors.
+
+### Counterweight Hotel bridge gate instruments
+
+The West Room key socket supplies both gate releases after the exchange. Each gate has a circuit, gangway and seal readout in a two-sided instrument over the grille. Its electrical readout changes with the existing seated-key animation and the West contactor. Docking follows lift playback, while each gate takes its own latch and inspection spring reading from the authoritative observation. The observation includes the other gate's spring state so a wrong seal cannot look like an electrical fault or a simultaneous trip of both gates. Neither instrument reveals the correct seal. The controls retain the same rules, and the bridge inspection panel gives equivalent text readings.
+
+### Counterweight Hotel evacuation and room names
+
+East Room and West Room identify persistent guest spaces while lift and cable describe their machinery. A cold radiator carries the night desk’s avalanche bulletin in each room. The on-object paper and inspection view use the same document artwork. Broken steam pipes on the terrace and smoke and firewood at the patrol refuge connect the hotel’s loss of heat to the visible destination. These cues give the evacuation a reason without disclosing the gate solution. The print also opens through the ledger for keyboard players.
+
+The gate readings occupy the lintel directly over each grille. A view from the brake showed the wall sconce obscuring a jamb-mounted prototype.
+
+### Cross-posted rescue bridge inspection signs
+
+Each guest has a single signed route record for the room across the shaft. The wall print, magnified print, accessible description and keyboard control identify the receiving room. The inspection sign also carries the suitcase manifest on supply routes, including the East dispensary pickup. The house bulletin has independent keyboard access. Removing the duplicate desk register and the purely decorative climbing exhibit leaves the wall signs as distinct landmarks.
+ The workshop plate occupies a continuous opaque wall. A separate papered pier carries the route sign between two valley windows.
+
+### Flush compass paving
+The exchange landing is cut around a circular compass. The opaque disk and flagstone surround share perimeter vertices at the walking elevation. The slab supplies only its sides and underside. This removes the rotated quad’s black corners and competing top faces. Sizing the disk from the shorter landing dimension leaves a continuous stone margin at both thresholds.
+
+### Joining the West pavilion to the hotel
+The terrace facade previously stopped just beyond the door jamb, leaving open sky between the gated landings and the pavilion corner. A masonry return with a recessed desk window now closes that bay on every West floor. A fixed, five-storey connecting range joins the shaft houses beside the exchange landings. Its walls and floor slabs use the fixed wing and landing coordinates so the connection stays in place during lift travel. The guest routes still use the original bridge and terrace openings.
+
+### Route-sign wall joinery
+The old full-depth brass jambs overlapped the wallpaper with identical face depths. The replacement divides the wall into a central papered pier and two equally sized sash openings. Stiles and rails meet edge to edge around recessed glass. The header spans the whole assembly and the existing dado carries it below. Both room meshes and their signs share the pier center.
+
+### Bridge doorway running clearance
+The retractable steel plate now spans the actual 130 mm gap from the parquet edge to the landing on either car. Its endpoints use the physical floor geometry and wing transform, independent of the walking guide. The East stringcourse and West lintel below each stop finish 140 mm below the landing, clearing the 100 mm plate. Formerly their top surfaces coincided with the steel and the outer edge of the stone at upper stops.
+
+### Render deployment for Counterweight Hotel
+Build the locked server and web app against the monorepo SDKs, including the shared bridge route in the Rust stage. Restrict Docker context inputs to source and build manifests so the local dashboard login, database and experiment exports stay on the development machine. The single Starter instance uses a 1 GB disk, with an application-owned directory created after mount. The service drops privileges before starting Parlando. Render provisions a new catalogue independently of the development server.
+
+### Free Render demo
+The hotel Blueprint now selects Free compute and requests no disk. The container runs as parlando and writes SQLite into its writable home directory. Local state is ephemeral. Durable storage requires a separately configured store or a paid persistent disk.
+
+### Hotel participant waiting room
+The shared participant view labels the seats relative to the connected guest. The microphone status stays visible and a disclosure holds transcription diagnostics. The hotel groups the authoritative timer and recruitment guidance in one inset, ahead of seat status and secondary controls. The countdown uses timer semantics to avoid announcing each tick.
+
+### Parlando logos and official screen palette (2026-11-20)
+
+The canonical assets are `brand/parlando-mark.svg`, `parlando-wordmark.svg`, and `palette.css` in the same directory. The five-piece lowercase p refers to the tangram communication task of Clark and Wilkes-Gibbs. Use the wordmark in product headers and the standalone p in compact contexts such as favicons. Both use the same Futura Bold p outline, white interior seams, and a thin charcoal outline around the letter. The remaining letters are outlined paths so rendering needs no installed font. Preserve the wordmark’s spacing, x-height and proportions.
+
+| Tile | Official sRGB | Interface role |
+| --- | --- | --- |
+| Stem, UdS blue | `#004875` | Primary action, link, selection |
+| Left, forest green | `#33684B` | Active, success |
+| Top, ochre | `#AD790C` | Draft and warning accents |
+| Right, brick red | `#A04432` | Danger and error |
+| Bottom, plum | `#71456E` | Testing and secondary emphasis |
+
+The blue matches the solid pixels in the supplied UdS-Logo-Leitfarbe-blau-transparent.png (RGB 0, 72, 117). The published style guide gives #004877 and the supplied JPEG uses Adobe RGB. For screen assets use the PNG value. Neutral text, backgrounds, and lighter state fills support legibility. Status labels carry the meaning alongside color. Preserve study-specific colors where they encode game mechanics or experimental stimuli.
+
+The repository-root `brand/` directory owns the originals so designers and contributors can find them directly. Run `make sync-brand` after editing the originals. It copies both logos and the palette to the Rust crate and Hugo static assets, and the standalone mark to the participant SDK. Local copies keep each subproject independently buildable.
+The participant SDK bundles the same mark alongside the lobby module, so its platform label works in independently hosted game clients.
+
+### Participant entry typography
+On entry, the game name supplies the page heading. The admission button names the action. Hotel entry styles use the entry action group to scope the layout and give the consent text, microphone status and admission controls separate spacing. The shared shell continues to identify the institution, and configuration determines which form sections appear.
+
+The hotel local build symlinks the compiled SDK with npm’s --no-install-links option. An installed packed copy could retain old markup after a same-version source rebuild. The Docker build installs into a fresh stage.
+
+## 2026-11-20 — Prepare the coordinated 0.6.0 release
+
+The replay renderer changes the public React and Rust game contracts. The release therefore uses
+0.6.0 for the runtime and browser SDK. The upgrade guide covers the snapshot interface, state
+deserialization, and the change from per-action snapshots to an initial state and accepted actions.
+
+The examples use compatible package ranges at the coordinated version. Their local builds pass
+the sibling SDK directly to npm with `--no-save`. A clean install verified that npm reused the
+locked versions of other dependencies and left the registry lockfile intact. The hotel links
+the sibling SDK for local rebuilds and installs a packed copy in the fresh Docker stage.
+The Last Screening and Counterweight Hotel use the shared renderer directly. The hotel keeps
+replay versions 6, 4, and 5 for state, actions, and rules in both build modes. Removing the
+local-only feature preserves compatibility with sessions recorded by recent local hotel builds.
+
+The first-party registry npm lockfiles still identify 0.5.0 until 0.6.0 is available on npm.
+Once both packages are published, resolve those lockfiles through npm, build the registry
+consumers, and run the release metadata audit with `--published --require-migration-guide`.
+
+A temporary Last Screening build linked to published 0.5.0 created a session with one accepted
+action. The 0.6.0 build opened a SQLite backup of that database and preserved counts, schema
+version 16, integrity, foreign keys, the historical session detail, and its action state in the
+corpus. That session returned the expected replay-unavailable response. A new session replayed
+an action for both roles and exported a null action state.
+
+Candidate validation passed the metadata audit, `make test`, and all five layers of
+`make test-e2e`, including 13 Chromium lifecycle and 35 Prolific scenarios. The all-features
+release build, Hugo build, package archives, and publication dry runs also passed. Clean
+consumers compiled against the two locally packed artifacts, and the examples built with the
+local SDK. Docker was unavailable because no local daemon was listening. The published build
+paths and registry lockfile audit require the actual 0.6.0 artifacts on both registries.
+
+## 2026-11-21 — Compare game execution through the existing runtime stress harness
+
+A shared Rust fixture provides identical game rules and projections in the native
+and Wasm runs. The opt-in Wasmtime adapter compiles a core module once and gives
+each session a separate store. The test-only JSON ABI serializes each game method
+independently, allowing the existing typed Game trait, storage, WebSockets, and
+full-duplex audio path to run as usual. This tests the cost of the simplest
+integration, including serialization and copying. A stateful single-call adapter
+or a WIT component could have different costs. Only locally built trusted
+fixtures belong here. Handling arbitrary game uploads would also require execution
+budgets and a recoverable guest failure boundary.
+
+Action latency measures from the client send to the matching role-A transition
+during steady traffic. Polling while waiting for the next PCM frame preserves
+audio pacing. The report includes missed matches to expose window censoring.
+Live scheduling varies between runs even with identical inputs. Child CPU seconds
+include server startup, compilation, and drain. Resource samples follow drain,
+so RSS cannot establish a per-active-room allocation. The macOS sampler converts
+Mach absolute ticks using the hardware timebase. The ps fallback reads cumulative
+TIME instead of percent CPU. The pilot protocol and measurements are in
+`notes/wasm-stress-pilot/`.
+
+An initial human-human pair exposed a race during churn. The stress client
+requested the new audio grant after the game WebSocket upgrade but before
+receiving its active participant snapshot. During that window the room could
+still be paused for reconnect, and the audio endpoint correctly returned HTTP
+400. Churn now waits for the active game snapshot before requesting audio.
+Both initial runs are retained in `notes/wasm-stress-pilot/initial-reconnect-diagnosis/`
+and excluded from the paired measurements.
+
+All six corrected 12-room runs passed. The paired change in p95 ranged from
+−0.97 to +1.78 ms, and server CPU increased in each pair. Per-run measurements
+and raw report links are in `notes/wasm-stress-pilot/results.md`.
+
+## 2026-11-21 — Commit live turns before publishing their checkpoints
+
+The room lock covers the stateful step, storage, and publication. The action task
+owns that lock independently of the submitting socket, so cancellation cannot
+interrupt installation after a durable write. The host keeps the last committed
+checkpoint until storage confirms the accepted event batch and terminal result.
+Reconnects take the room lock, and observations and affordances project from
+the host's committed checkpoint.
+
+A UUID on the accepted event identifies one prepared turn without a schema
+change. SQLite checks the ID under its writer reservation, before checking the
+lifecycle. The host retries the same event payloads and terminal value, including
+after a commit failure that a subsequent transaction proves absent. If SQLite
+cannot establish the outcome, the coordinator retains the room lock and checks
+again. Action callers receive an error while confirmation is pending. The
+periodic lifecycle sweep defers locked rooms so unrelated rooms can still
+expire. Once storage proves rollback and the write attempts are exhausted, the
+next submitted action still receives the prior checkpoint.
+
+## 2026-11-21 — Exercise the production component host in the stress harness
+
+The stress Wasm server registers the production component factory through the
+same generic server startup as the typed native fixture. Both share mechanics
+and deterministic workload agents. At the component boundary the agent
+serializes its typed mark as JSON. The fixture computes both views in one step
+and keeps its ordinary state inside the instance. A checkpoint every 32
+accepted actions bounds reconstruction from the preceding checkpoint. Native
+and component observations each include only the recipient's detailed history.
+The matching headless test compares complete decision traces and completion.
+The guest test build can trap after clearing its state to verify that a
+replacement reconstructs the latest accepted frame. Benchmark builds omit
+fault injection.
+
+## 2026-11-21 — Keep mutable game state in a component and select durable frames in the host
+
+The WIT world in rust-server/wit/game.wit defines init, restore and step. The
+same session-specific instance advances once for an ordinary turn in either
+runner. A returned frame carries both private views, neutral metadata and a
+completion result. Queries during publication and reconnect read the selected
+frame without a guest call. Choices, when exposed, belong in the role view.
+Native games retain their existing typed trait and agent interfaces. Game::step
+adds the distinction between an expected rules rejection and an execution fault
+to the existing host paths, including historical reconstruction and headless
+trajectory capture.
+
+Deterministic components can omit checkpoints. Each accepted action adds a
+constant-time immutable history entry to the candidate recovery recipe. A
+matching selected frame reuses the warm guest. A different frame or trap
+requires fresh linear memory and recovery from the most recent checkpoint or
+the recorded initialization and subsequent accepted actions. The per-frame
+cache identity is distinct even for two branches at the same depth and is
+regenerated on deserialization. Longer periods between snapshots save copying
+at the expense of memory for history and slower recovery. Nondeterministic
+transitions require explicit complete snapshots. The host commits those
+snapshots alongside the turn; a marked frame with missing data fails replay.
+The public corpus projection excludes private recovery data.
+
+The component package loader and CLI are opt-in. Each store has no host imports,
+bounded memory, and per-call fuel. A SHA-256 check protects replay frames and
+headless result reuse from a different component with the same game version.
+The CLI loads one local game package per process and uses the existing live
+database startup policy. Hot installation of multiple packages, process-crash
+resumption of active rooms and a component-native training reward interface
+would be separate changes.
+
+The `make test-components` target builds both the Rust fixture and a minimal
+guest written directly against the canonical ABI in WebAssembly text. The
+second guest avoids a common binding generator between host and both test
+guests. Its fixed ABI layout is specific to the versioned WIT fixture. The
+Rust test guest can also return an invalid role view after modifying its state.
+The host must discard that instance and recover the committed frame before
+accepting another turn.
+
+Verification included the shared native/guest headless decision trace, a
+separately authored WAT component, two isolated sessions, recovery from a guest
+trap, exhausted fuel, malformed output after mutation, and an uninstalled turn.
+Live SQLite fault tests held an actual commit acknowledgement while cancelling
+its submitter, and checked one durable record and one publication. Another
+stored a non-reproducible transition and verified checkpoint replay, corruption
+detection and corpus privacy. The component CLI was exercised with two live
+WebSocket participants and a headless Python gRPC policy. These are correctness
+checks; the earlier stateless benchmark numbers do not characterize this ABI.
+
+## 2026-11-21 — Binary role observations on the component boundary
+
+The stateful fixture profile attributed 4.11 µs per accepted headless action
+to encoding the result and installing guest state. The entire hot component
+call's bindings and payload transfer took about 0.61 µs. WIT v2 keeps the
+one-step component interface and changes just the two role views to MessagePack
+byte lists. Typed Rust game code can use the component SDK's named-field Serde
+encoder. Other languages can encode the documented JSON subset directly.
+Configuration, actions, completion, transition metadata, and opaque checkpoints
+retain their existing representations.
+
+The host decodes and validates both roles before installing a frame. It shares
+each decoded role view as an immutable Arc<Value> with local Rust agents.
+Explicitly typed component-agent callbacks need the new Rust observation type.
+Browsers, gRPC agents and experiment records receive their usual values. Wire
+decoding is bounded per view to constrain allocation on untrusted guest data.
+Direct guest encoding assumes JSON-shaped Serde data. Types relying on JSON
+coercions can materialize a serde_json::Value first, at the cost of allocating
+that intermediate value. Compiled v1 guests require a matching v1 host for
+historical replay and a rebuild for new v2 sessions.
+
+The comparison uses the previous JSON component, the new component, and a native
+fixture. Its in-process policies exercise both ignored and consumed observations.
+The additional Hotel workload uses sampled role views and synthetic transitions.
+Experiment sources, protocols, and measurements are under
+`notes/wasm-codec-performance/`.
+
+On the M5, the original one-worker workload improved from 110,422 to 165,129
+actions/s (631,092 native). The matched hot interface subtotal fell from 5.86
+to 3.63 µs. The four-way test kept execution and agent inputs fixed while
+varying encoding and sharing independently. MessagePack and sharing both helped
+the string-heavy fixture. On the nested Hotel snapshots, JSON plus sharing
+reached 43,151 actions/s versus 39,993 for MessagePack plus sharing and 37,102
+for JSON plus cloning. A single preferred codec for every view shape is still
+an open question. New fixed-load live runs completed successfully, with higher
+client p95 than the preceding same-seed JSON runs. The live comparison used
+historical controls and does not establish causation.
+
+## 2026-11-21 — Keep game execution typed through the local policy and learner
+
+The v2 boundary eliminated JSON text for views but still allocated two decoded
+JSON trees every accepted turn. Hotel and Last Screening also generated trees
+for their native agents, which immediately deserialized them again. Component
+WIT v3 represents config, actions, both role observations, completion and
+metadata as MessagePack. The host validates each returned payload before
+installing the frame and shares its original buffer with local agents. They can
+decode into a game type or borrow selected strings and omit fields from a
+policy-specific struct. An opaque checkpoint stays game-defined. The fixture
+keeps its existing JSON checkpoint encoding. Replay pins the original component
+digest; a v2 component needs its matching host.
+
+Local rollout, training and trace capture retain typed observations and actions,
+including native Rust structs or shared ComponentValue handles. A training
+plan resolves its reward configuration before running sessions. The learner
+registration supplies a decoder for pending batches resumed from JSON result
+files, so observation deserialization is a requirement for learners and not for
+evaluation-only games. Full traces can reference the learner input already
+owned by a captured transition. Output serialization reconstructs the previous
+trace and trajectory shape. WebSocket, gRPC and storage adapters may convert
+data at their boundaries; the component recovery snapshot preserves the old
+compact JSON-text action/config fields, including key order.
+
+Both bundled games now project typed role-private observations for local
+policies. The complete Hotel opening views match the v2 recorded fixture.
+The cost of validation and policy-requested decoding remains part of the game
+step or the subsequent callback. A policy that requests the whole view pays
+for that decode. See `notes/wasm-component-v3/` for the headless measurements.
+
+On one M5 worker the repeated original fixture rose from 177,252 to 210,062
+Wasm actions/s (614,398 native). Reading the Hotel-shaped opening views rose
+from 37,356 to 76,938 Wasm actions/s; the new typed native comparison reached
+595,786 actions/s. Hotel includes the removal of the guest/native projection
+trees in addition to the component ABI change. Both roles matched their v2
+digests. Verification exercised the complete component suite, both native game
+adapters, the cue-choice learner, the live WebSocket client and administrator
+replay, and headless gRPC including result resume and digest rejection.
+
+### Trust codec-produced values across the v3 component interface
+
+Both endpoints use a codec that produces one JSON-compatible MessagePack value
+per observation, action, configuration, completion, or metadata field. The host
+adopts buffers received from that codec after checking their length (1 byte
+through 8 MiB). It retains each role's immutable observation and decodes only
+for a consumer. Session state, replay selection and opaque guest checkpoints
+use the existing v3 rules. Game authors continue to use ordinary Serde types
+with the component SDK. The public Game trait and the WIT function signatures
+stay the same.
+
+The SDK writer enforces the value-domain and resource rules as it encodes.
+The separate raw-byte constructor still validates data with unknown
+provenance. A third-party language binding is responsible for enforcing the
+same rules before returning bytes. In particular, the host no longer promises
+to detect a malformed, unused in-bounds observation when installing a frame.
+The live event writer asks the game for metadata through an infallible optional
+field. Unreadable metadata from a nonconforming encoder is logged and omitted
+at that point. A headless rollout that ignores metadata never builds its JSON
+representation. Persisted records and external protocols retain their existing
+formats.
+
+Measuring the encoder and receiver together was important. A first checked
+encoder rebuilt map key sets and used the same expensive bookkeeping for
+arrays and structs. The retained implementation writes typed MessagePack
+directly and keeps separate state for arrays, named structs, and dynamic maps.
+For small named structs a bitmap detects potentially repeated names and an
+exact string comparison resolves collisions. This keeps custom serializers
+subject to the same uniqueness rules as derived serializers.
+
+In ten paired release trials, the median paired throughput gain was 24% for
+the original ignore policy and 68% for policies reading the nested Hotel
+fixture. The Hotel policy checksums matched the original implementation for
+both seats in every trial. See `notes/trusted-codec/` for the release build
+identifiers, exact workloads and raw samples. These figures describe local
+agent rollouts; live web and remote-agent tests exercised correctness.
+
+### Positional observation schema pilot
+
+The local rollout pilot in `notes/declared-wire/` generated matching guest
+writers and host readers from the stress and Hotel observation declarations.
+It sends every struct slot in declaration order. An absent optional value
+occupies a nil slot. Unit-only enums use numeric tags; an enum whose variants
+can carry data uses an array containing the tag and all variant fields. Plain
+strings remain ordinary MessagePack strings. All 514 named Hotel role views
+matched their independently reconstructed compact equivalents. The study
+keeps the production component contract intact. A deployed positional codec
+would need an agreed schema/version and a schema-aware conversion back to the
+existing named representation for recording and external clients.
+
+### Discover each game's compact wire schema at load time
+
+The v4 component exports describe(). The host calls it once on a disposable
+instance before accepting sessions, validates its JSON declaration, and shares
+the resulting schema with all sessions for that component. A separate instance
+ensures that initialization cannot depend on side effects of discovery. Using a
+declaration allows one host binary to load unrelated games, including non-Rust
+guests, without linking their types or sending field names with every view.
+
+Struct fields occupy fixed positions and enum variants have numeric tags.
+Arbitrary strings and dynamic map keys keep their actual contents. The host
+can borrow string data from an observation for a local policy. A ComponentValue
+keeps its compact bytes and slot schema together, so serialization at a public
+boundary reconstructs named fields and variants. Incoming named MessagePack
+actions and configurations map directly into the declared representation.
+Serde projections can skip unrequested fields. Reads bound structurally skipped
+data and the aggregate text synthesized from declared names. Guests using the
+provided codecs are trusted to encode the declared types.
+
+A schema explains representations, not game semantics. Games still own state,
+action acceptance, checkpoints, and both role views. Public and persistent
+formats retain named values. Version 3 components require a version 3 host,
+including for historical replay. Keep the matching artifacts when upgrading.
+The tradeoff for independent game deployment is interpreting a loaded schema
+while reading values on the host. The full measurements and reproduction
+scripts are in notes/declared-generic/.
+
+Twelve paired release trials per workload gave 160,665 Hotel actions/s for
+the generic host, 135,369 for named v3, 205,197 for the game-specific positional
+reader, and 629,177 native (medians). Both roles' full Hotel observations used
+54,873 bytes across one session, down from 374,324. All 514 Hotel and 514 stress
+views agreed. The simpler workloads lost 4–7% relative to named v3. This
+benchmark uses the Hotel opening projections driven by stress-fixture actions.
+Its throughput gap does not isolate the choice of Wasm execution engine.
+
+### Decode declared Rust guest actions from their wire slots
+
+The guest knows its Rust action type when it is compiled. A separate
+`ComponentDecode` derive lets it opt in to constructing that type from the
+fixed slots and numeric enum ordinals already defined by `ComponentWire`.
+The guest does not need a cached runtime schema or a Serde visitor for the
+declared portion of the action. The stress fixture uses `decode_declared`
+at its step boundary, including the component compiled with trap variants.
+
+The reader shares the MessagePack token, byte, node, and depth checks used by
+schema decoding, and validates all slots before returning the constructed
+value. Nested dynamic JSON uses the existing named reader on the same cursor.
+String borrows come from the supplied action buffer. The separate derive
+allows callers that rely on custom Serde behavior or runtime declarations to
+keep using the schema adapter. It adds generated construction code to the
+guest and requires nested declared types to support direct decoding. The
+public names, wire bytes, and ABI version are independent of this choice.
+
+## Resolved observation policies
+
+The declared observation reader presents the public field names and enum
+tagging through Serde. Hotel policies that visit an entire action catalogue
+need its variant names and selected scalars from the surrounding view. Repeating
+field and enum dispatch for each observation made these reads a measurable
+part of the local rollout.
+
+The component SDK resolves an explicit `Selection` with
+`Projection::resolve`, using the guest's declaration for each seat. It sorts
+record and tuple selections by their compact positions and prepares a table
+from enum ordinals to names and payload lengths. Reads use the existing bounded
+wire cursor and deliver borrowed strings and variant labels to the caller. A
+read checks schema identity before walking the bytes and permits independently
+owned but equal declarations. The normal host path shares the same schema
+allocation, so it takes the identity fast path.
+
+The caller sees values in wire order and chooses the projected inputs and
+their keys. Options without a value emit no inputs. The API streams selected
+values, so callers can accumulate into local state and publish only after
+validation succeeds. The decoder still walks preceding values to find later
+slots and checks the physical structure of unselected fields. Enum payloads
+remain skippable when the caller selects only the variant label. The named
+Serde interface continues to handle arbitrary deserialization and structured
+payloads. List element boundaries, map selection, and enum payload projection
+can be added if a policy needs them.
+
+### Host several WASM games in one Parlando installation
+
+The live component command binds one component factory, dashboard, and database
+at startup. A long-running host should register immutable releases above the
+existing game installations, preserve each game's database and dashboard, and
+bind each experiment revision to both the mechanics and browser build. A game
+admission gate can close independently of experiment activation and drain sessions
+on their pinned releases. The additional catalog and release retention are the
+cost of restarting and rolling back without losing provenance.
+
+Use a versioned ZIP bundle and a scoped REST API with independent upload and
+activation permissions. Install provider credentials once at the host, with
+per-game grants enforced by host adapters. Serve game JavaScript on participant
+origins separated from the dashboard. The first deployment model assumes reviewed
+releases. Supporting unreviewed publishers requires stronger process isolation
+and validation of the existing trusted component codec boundary. The design and
+verification cases are in [multi-game-host-design.md](multi-game-host-design.md).
+
+### Verify the final component rollout path against the previous v4 build
+
+For the stress fixture, history stores StressRole values which serialize to
+the original role strings. Native apply_action retains the immutable caller
+contract. The stateful guest validates before writing and retains the evicted
+history and previous scalar values until both role views and any checkpoint
+have encoded. A recoverable projection failure rolls back without cloning
+every history entry. The immutable native comparison also benefits from
+copying typed history rather than allocating per-entry strings.
+
+Use the resolved policy reader for stable local scalar selections and the
+derived guest reader when the action type is known at compile time. Neither
+choice alters the v4 ABI or the named protocol for remote agents. The local
+reader test keeps the same policy outputs and visits all observations for both
+seats. On 16 paired release rounds, Hotel progressed from 155,807 to 236,808
+actions/s and the updated native fixture reached 844,548. Median paired
+speedup was 1.55× against the prior v4 implementation and the paired native
+lead was 3.52×. This is traffic from Hotel opening views with stress mechanics.
+Measured with the older host, the fixture's history change improved throughput
+by 19%, with a further 7% after enabling the direct action decoder. The
+resolved reader added 23% on the completed guest. These are separate paired
+comparisons. See notes/final-rollout/ for protocol, raw data and stage probes.
+
+### Demonstrate the v4 component contract with Last Token in C
+
+Use a standalone game under `experiments/c-last-token` to exercise the
+language boundary of the existing component host. Generate the canonical
+ABI from the checkout's WIT with `wit-bindgen c`. Compile with Zig's C driver
+and use its libc for ownership-compatible buffers. The packaged guest has
+zero host imports. The registry Rust release 0.6.0 lacks component hosting,
+so build the host from this checkout. The React app consumes the registry
+client 0.6.0.
+
+Keep the guest codec limited to the game's bounded compact MessagePack
+schema. The schema and encoder evolve together, so the host probe checks
+named payloads and rejection codes. With at most 15 accepted moves,
+deterministic replay is sufficient for recovery. Larger games may need
+checkpoints to bound re-execution. The release benchmark uses the actual
+component factory from the checkout and measures load, fresh session
+initialization, and current-state turns. It leaves transport, persistence,
+and named observation decoding outside the timed sections.
+
+### Resolve shared provider credentials through explicit grants
+
+Use operator-owned provider profiles for the authenticated destination and
+secret reference, with per-game grants and usage limits. The current adapter
+sends the bearer key to the configured URL, so experiment endpoint overrides
+cannot govern a shared credential. Resolve the key on new connections to
+support rotation without redeployment. Upstream costs and compromise affect
+every game using the same key.
+
+Keep the bundle tool artifact-based. Game toolchains produce a WASM component
+and static assets. One packer and host-compatible validator serve manual and
+automated deployment. This keeps project build scripts off the host and lets
+CI isolate upload credentials from build steps. See the
+[multi-game host design](multi-game-host-design.md).
+
+### Test import-free Python mechanics against the existing component host
+
+Port Last Token to Python to distinguish a WASI compatibility issue from
+resource limits. The port uses generated WIT bindings, the same compact
+MessagePack schema as the C version, and deterministic replay. It reuses
+the participant bundle and the same host probe. Its manifest uses a
+separate game ID to keep its component provenance distinct.
+
+With componentize-py 0.25.1 and `--stub-wasi`, the component validates and
+exports the expected WIT with zero imports. The stock host fails when it
+tries to instantiate core instance 17. Componentize-py 0.17.2, 0.19.3,
+and 0.24.0 also hit that limit. The 0.17.2 test uses the older generated
+binding module for `Err`. The 0.25.1 artifact contains 38 core module
+instantiations.
+
+A temporary host copy under `/private/tmp` raises the Wasmtime store
+instance cap from 16 to 64. The Python component passes the host probe
+with that single adjustment, including both winners, action rejection,
+session isolation, and recovery by replay. The host in the repository
+retains its current limits and empty linker. If Parlando adopts this build
+path, consider a higher instance allowance for reviewed components after
+measuring the effect of concurrent Python sessions. That decision is
+independent of granting WASI capabilities.
+
+On Apple M5 with Wasmtime 36.0.23, both guests used the same temporary
+release host. The probe takes 21 factory load measurements and reports
+medians of 21 batch means for session and turn measurements after one
+warmup batch. Each batch contains 1,000 12-move games. Timings cover the
+in-process host only.
+
+| Measure | C median (min–max) | Python median (min–max) |
+| --- | ---: | ---: |
+| Component bytes | 7,388 | 18,456,593 |
+| Factory load, ms | 2.982 (2.701–4.042) | 4,338.250 (4,161.408–4,849.305) |
+| Session creation and initialization, µs | 6.935 (6.736–8.659) | 671.105 (630.338–832.098) |
+| Current-state accepted turn, µs | 0.376 (0.369–0.381) | 9.727 (9.262–11.320) |
+
+Build with `componentize-py==0.25.1` on PATH and
+`experiments/c-last-token/python/build.sh`. The existing probe takes an
+optional component path after `check` or `bench`. Pass
+`experiments/c-last-token/build/last-token-python.wasm` to the stock probe
+to reproduce the load failure or to a probe linked to the temporary
+64-instance host to reproduce the successful checks and timings. The
+Python manifest uses the existing Last Token client bundle.
+
+The temporary host also passed a live desktop and phone-width Chromium
+smoke test. Two participants paired, saw matching pile updates and
+role-appropriate turn controls, and received the same winner.
+
+## 2026-11-21: Separate editable component projects from deployable packages
+
+Context: Game authors need source-level validation and a portable artifact whose identity and paths
+do not depend on their local Cargo or npm installations.
+
+Decision: The project manifest resolves source and output paths relative to itself. Builds compile a
+Rust cdylib with the import-free WebAssembly target and use Cargo's artifact records to locate it,
+then wrap its embedded WIT interface with wasm-tools. The build validates it with the same factory
+used by both runners. It stages the component, manifest and compiled browser assets under
+`dist/parlando`. The staged manifest carries only the public game metadata and relative artifact
+paths. A build lock serializes replacements and a failed subprocess leaves the preceding package
+available. JSON command output has a single envelope on stdout and child diagnostics go to stderr.
+
+Decision: Scenario tests submit named JSON values through the real component runtime. Cases may
+request a fresh engine session plus restoration of persisted state before a move. The starter uses
+deterministic replay from the recorded seed and accepted actions. An uninterrupted control session
+receives accepted actions only. Comparing role views, completion and transition metadata with that
+control exposes hidden side effects of rejection and discrepancies after recovery. A native test
+independently exercises the same game trait.
+
+Tradeoffs: Web compilation requires the Rust WebAssembly target and wasm-tools. Browser builds
+install npm dependencies and use the lockfile once generated. The Rust scaffold honors an explicit
+`--sdk-path`. Otherwise it copies the necessary SDK manifests, sources and WIT from the SDK bundled
+beside the CLI or its source checkout, so the generated project can move without machine-specific
+paths. Without an available source, the generated registry dependency requires a published SDK
+release. The local live server continues to
+use the administrative dashboard to configure and open experiments.
+
+## 2026-11-21 — Export typed guest mechanics and deploy immutable packages
+
+A Rust component implements a small, stateful game trait. The SDK owns the WIT
+exports, schema description, typed input decoding, and frame construction.
+Role views, completion and metadata can borrow session data while the SDK encodes
+them. Checkpoints are optional and opaque. Stateful games retain deterministic
+replay and need neither a Clone implementation nor a general-purpose state codec.
+The guest and server each package their own WIT definition, with a workspace
+test for byte equality. Ordinary rejections leave the guest reusable. Failure
+to encode a frame after state mutation traps so the host discards that instance;
+a fixture exercises recovery to the last committed action.
+
+The local server and hosted deployment use the same component loader. The
+deployment host validates packages, includes participant files in the revision
+digest, and pins each experiment to one revision. Selection and intake have a
+separate operator credential. Browser JavaScript is trusted by the operator
+selecting a revision and runs on the installation's web origin. Distinct asset
+bundles are not separate browser security origins. Deploy independent trust
+domains on separate origins. One instance owns the durable volume, including
+package revisions, selections, and per-experiment databases. Intake is closed
+on startup so recovery does not admit participants without operator action.
+
+Store upload credentials per origin and game in Keychain or the desktop Secret
+Service. CI-injected credentials must name their receiving origin. Uploads use
+the same noninteractive command that developers use, while provider credentials
+are confined to infrastructure provisioning. Use a manual artifact build for
+CLI bundles and host images, keeping artifact generation separate from package
+publication. Source deployment uses the provider's volume for SQLite and
+package files. Live cloud provisioning and registry publication require the
+operator's account and are separate from local conformance and integration tests.
+
+### Measure concurrent Python Last Token sessions
+
+Use the same temporary 64-instance host from the Python compatibility
+test. The harness loads one shared factory and holds 16, 64, 128, or 256
+session stores and their states in one process. It initializes them
+serially, then four workers advance disjoint sets of sessions over 12
+synchronized rounds. Each round submits one move per game. Every session
+must report player B as the winner at the end. The macOS stress probe
+samples process resident memory and physical footprint after initialization
+and during play. It checks a 3.25 GiB footprint budget every 16 session
+initializations and caps the test at 256 sessions.
+
+The host ran on a 32 GiB Apple M5. Both Python runs completed all sessions.
+Ranges below span the two runs. Each baseline was collected after loading
+one factory and running the correctness checks.
+
+| Open games | Python midpoint footprint, MiB | Python turns/s | C midpoint footprint, MiB |
+| ---: | ---: | ---: | ---: |
+| 0 | 166–169 | — | 5.1 |
+| 16 | 351–353 | 16,910–115,701 | 6.2 |
+| 64 | 904–907 | 24,951–140,759 | 9.5 |
+| 128 | 1,670–1,686 | 22,626–136,742 | 14.0 |
+| 256 | 3,196–3,222 | 34,483–94,463 | 22.9 |
+
+Python added approximately 11.8–11.9 MiB per session above the factory
+baseline at 256 sessions. The slowest round of 256 turns took 9.47–28.95 ms.
+Other workloads ran on the same machine, and scheduler contention can
+affect those timings. The experiment includes engine work and synchronization.
+It excludes networking, SQLite, agents, and sustained churn, so the maximum
+tested tier is a lower bound for this particular component and harness.
+
+The separate instance cap limits the number of core Wasm instances a single
+store may allocate. Raising it to 64 permits the tested Python component
+while preserving the import boundary. A deployment's game admission budget
+should account for observed per-game memory and leave headroom for the rest
+of the server, independent of the instance cap.
+
+Reproduce on macOS with the Last Token probe linked to the temporary
+64-instance host. Run it with `stress experiments/c-last-token/build/last-token-python.wasm`
+and pass `experiments/c-last-token/build/last-token.wasm` for the C control.
+The probe implementation is in `experiments/c-last-token/probe/src/stress.rs`.
+
+## Parlando Game SDK naming and derivation
+
+Expose the Rust guest library as parlando-game-sdk. GameValue describes a type
+in the public game interface and derives its schema and encoder together. Emit
+the direct decoder with field-specific trait bounds, so input types are checked
+by the Game trait and an output containing borrowed slices can be written without
+providing a decoder. Preserve the v4 WIT contract and existing encoded values.
+
+### Add Python authoring to the component SDK and CLI
+
+Raise the core instance cap from 16 to 64 per Wasmtime store. The earlier
+Python probe established that the CPython component exceeds 16 and runs at
+64 with the existing memory and fuel budgets. Keep the empty linker and
+compile Python with `componentize-py --stub-wasi`. This change expands the
+number of Wasm modules one session may instantiate. Session admission and
+memory budgeting remain separate concerns.
+
+The Python SDK specializes the existing v4 game world using six Python
+payload annotations. One compiled type description drives schema emission
+and the bounded MessagePack codec. Guest state lives in a session object
+owned by each component instance. A rule rejection returns the stable
+application reason before state mutation. Encoding or projection failure
+after a successful turn traps, which gives the host its normal recovery
+path. Generated WIT types are imported by the guest adapter and native
+unit tests can import the same game module. A game with external package
+dependencies must load its dependencies at build time and remain within
+the capabilities provided by the component.
+
+The CLI dispatches build and native test commands through the manifest's
+language-specific authoring inputs. Both languages use the same loader,
+scenario runner and package output. The portable CLI archive carries
+matching SDK sources and the scaffold vendors the Python package. Beacon
+Relay uses the same participant view and YAML scenario in both languages.
+Its target derives from the session seed and it recovers through accepted
+action replay.
+
+The packaged CLI was tested from a moved Python scaffold. Verification
+covers SDK wire and lifecycle tests, native Beacon tests, the shared
+scenario against the exact packaged Wasm, zero Wasm imports, and a
+two-browser live game through the packaged CLI. The Rust component
+conformance suite provides regression coverage for the shared host.
+
+## Use Wasm as the server game contract
+
+The live server and headless runner previously supported a native Rust implementation as well as a Wasm implementation behind game and factory traits. Both now hold a compiled LoadedGame, open an isolated GameSession per play-through and consume GameFrame observations and completion. The Rust Game authoring trait belongs to the guest SDK. Native Rust policies can still register in a thin host or a headless runner.
+
+The guest owns mutable state. A frame records the identity needed to recover the committed position after a trap or failed write, using a checkpoint when available and deterministic replay otherwise. Successful writes need no second guest invocation. Choices a game needs to disclose travel in its role views. The store and participant protocols retain their existing formats. Pre-Wasm recordings need their original executable and data store for replay; an unrelated module cannot reconstruct their private initial state. Bundled game launchers use separate component databases.
+
+The live installation adds the SHA-256 of the loaded component to the existing
+JSON build manifest. It accepts an object or null and rejects a supplied digest
+that differs from the executable bytes. Standalone, embedded and deployed
+launchers publish that provenance through the installation manifest. The live
+test suite embeds a prebuilt WebAssembly fixture to exercise production frame
+projection, failed writes, checkpoint replay and agent startup during Rust test
+runs.
+
+### Headless agents and Cue Choice
+
+The headless runner accepts a compiled component alongside deployment metadata
+and stores the digest calculated from the executable in the run manifest. A
+worker shares that compiled component across plans and uses one isolated game
+session per plan. Resumed runs validate the saved component digest before
+reusing finalized results or training batches. Outputs created by an earlier
+native binary lack that digest and require a fresh run directory.
+
+Agent callbacks and learner trajectory payloads use the host's concrete
+ComponentValue. The game can include a legal-action catalogue in a role view.
+Cue Choice does this for the learner and signals the dealer phase in the dealer
+view. The Python policy still applies the legal set at selection time while
+retaining the same model prompt. The v1 artifact and gRPC fields for an
+additional action catalogue remain optional and new host decisions leave them
+empty. Rewards can inspect role views, transition metadata and completion
+through GameFrame. Private state stays in the guest.
+
+The headless lifecycle tests embed a stripped build of the stress fixture's
+headless example. Ordinary host tests therefore exercise a real guest without
+invoking the Rust Wasm toolchain at test time. Rebuild the fixture when changing
+the game interface or test mechanics using the commands documented beside the
+fixture loader.
+
+### Use the same game SDK import name in Python and Rust
+
+Expose `parlando_game_sdk` as the Python module so examples use the same
+game SDK name in both languages. The Python distribution, source directory,
+and CLI vendor directory are named `parlando-python-sdk` to identify the
+Python package alongside the Rust crate. The scaffold, archive, and wheel
+all supply the new module name.
+
+### Package the four authored Rust games as components
+
+Space Game, The Great Tree, Counterweight Hotel, and The Last Screening now
+build Wasm from the same Rust mechanics their rule tests exercise. The guest
+owns mutable state and uses the recorded seed. The host recovers through action
+replay. The HTTP protocol and WIT need no game-specific extensions. Space Game
+and Screening carry legal controls in each role projection. Hotel already
+carried them in its view. Great Tree continues to validate controls when acted
+upon. Screening's compact role enum retains the flattened public JSON fields
+used by its browser and authored agent.
+
+The optional native launchers register each game's existing agent factories
+with the shared host. They load the exact same component as the generic CLI.
+The hosted agents retain their typed policy logic and convert values at the host
+callback boundary. Great Tree's headless launcher uses the same pattern.
+
+Each default local launcher writes to `.local/component.sqlite`. Included
+container recipes use a separate component SQLite path. Historical installations
+keep their native records and stores. Opening those records through the new
+guest is outside this transition because the old state snapshot format has no
+component replay provenance.
+
+Native rule suites and four component scenarios verified role views, seeded
+starts, accepted and rejected actions, and recovery through the guest ABI.
+Clean npm builds verified the four packages against the matching published
+0.6.0 client lockfiles.
+
+### Publish all reusable registry packages from Make
+
+Use one serial publication sequence for the derive crate, Rust Game SDK,
+server, browser client, Python Game SDK, and Python agent SDK. Keep the
+server and browser client in lockstep. SDKs retain their independent
+versions, so dependency crates already available in the Cargo index can
+be reused and Twine skips existing PyPI distribution files. Named Make
+targets support recovery after a partial release.
+
+The dry-run target builds and checks each Python wheel and source
+distribution without invoking upload. Cargo dry runs use the registry
+package when its workspace dependencies are indexed. For a new dependency
+chain, the dry run lists the dependent crate contents and the maintainer
+runs its full verification after its dependency becomes available.
+
+The three optional authored configuration fields are represented as optional in
+the compact schema. The guest assigns the previous default when no value is
+supplied. Declaring an ordinary required field with only a Serde default was
+insufficient because the host validates named configuration before invoking the
+guest. All four packages passed fresh-database startup and HTTP health checks.
+The Space Game Linux package built as a static x86-64 executable and passed its
+manifest checksum verification. The Docker daemon was unavailable for image
+builds.
+
+### Version all registry packages together
+
+All six Parlando packages carry the same release version. Align the SDK
+manifests with the existing server and client version, 0.6.0, as a repository
+metadata change. The next release increments the shared version and
+publishes all six packages even when some package source has not changed.
+Use exact Rust SDK dependency versions to prevent Cargo from pairing a
+server or SDK with a different release. The CLI derives its scaffold SDK
+dependency from its own version.
+
+Make checks the package versions, Rust SDK pins and npm lockfile before
+uploading. Standard publication attempts each package at the shared version.
+Use individual targets to recover a partial release.
+
+### Extend the deployed-experiment host
+
+The checkout already has a long-running host with game-scoped REST uploads,
+content-addressed packages, immutable experiment selections, per-experiment
+SQLite databases and explicit intake. Preserve those contracts. A per-game
+dashboard can index the current selections and reuse applicable experiment
+views without consolidating databases or adding a second release lifecycle.
+Put the dashboard on an operator origin. Participant origins may be shared
+within a trust domain, with distinct origins for independent publishers.
+
+The hosted selection path rejects inline keys. Use a host-owned Speechmatics
+binding through the existing transcription-provider seam and check the same
+binding at activation and stream admission. Keep the existing package format
+and CLI, including the Python build path. Revisit binary upload transport only
+if package size or handoff warrants it. The revised
+[multi-game host design](multi-game-host-design.md) records remaining work and
+verification cases.
+
+### Scope credential sharing across integrations
+
+Use one operator-managed registry for outbound credential references, typed
+service profiles and game or experiment grants. Apply it to Speechmatics,
+ElevenLabs, Prolific and remote-agent transport. Check allowed operations and
+upstream resources as well as endpoint identity. The same Prolific token can
+back distinct study grants, and a remote-agent transport key is independent
+of the model keys held by that agent. Keep deployment, admin and participant
+authentication in their existing scopes. This extends the earlier
+Speechmatics-only integration plan. See the
+[multi-game host design](multi-game-host-design.md).
+
+### Keep remote agents game-scoped
+
+Remote agents are defined against a game's action and observation contract.
+Register each agent endpoint and its transport credential under one game ID.
+Experiments of that game may select compatible registrations. The host may
+resolve references through the same secret backend used for shared provider
+credentials. Remote-agent registrations and transport credentials are outside
+the cross-game provider grant model described in the preceding decision.
+
+### Scope researcher access at the host
+
+Use one named dashboard login for a single operator. With multiple
+experimenters, authorize an individual identity against host-owned game and
+experiment grants and record the actor for lifecycle and data operations.
+Prefer existing institutional identity for login. An experiment assignment
+does not imply export permission. Start with operator-managed grants and
+reuse the game-scoped deployment tokens for machine uploads.
+
+### Let an experimenter deploy and update an assigned experiment
+
+Authorize deployment against the experiment as well as the package's game ID.
+Keep a stable experiment identity and participant entry URL. Record immutable
+deployments under that identity and switch only the named experiment's
+selection. Reuse existing selection database isolation for deployment data.
+The first cutover closes intake and drains live sessions. It retains the
+history and checks the expected selection before switching. Experiment-scoped
+machine credentials can deploy within the same limits. Host operators retain
+namespace, access and provider authority. This supersedes the proposal to
+reserve release selection for operators and require a new public experiment
+ID for each update.
+
+### Start with lab-wide experimenter access
+
+For a group whose members can share study data and operational authority,
+start with a lab-wide experimenter role and an infrastructure operator role.
+Keep individual identities for audit and revocation through existing sign-in
+when available. Finer grants follow project access boundaries. Self-service
+deployment can use a fresh immutable run ID under the same game. Introduce
+in-place deployment switching when a participant link must survive an
+update.
+
+### Use individual passwords with host-wide experimenter access
+
+The lab wants separate named password accounts for attribution and revocation,
+with the same access to every game and experiment. Store accounts at the host
+and reuse the local authenticator's Argon2id password hashing and session
+mechanisms where applicable. Replace the earlier human assignment-grant
+proposal with host-wide role checks. Keep a separate operator role for account
+and infrastructure management. Provider grants and scoped machine deployment
+tokens retain their own authorization boundaries.
+
+### Implement named hosted accounts and a shared lab dashboard
+
+The host can expose a browser dashboard on a dedicated hostname while
+preserving the participant and bearer-token API routes. Cookie sessions are
+host-only and authenticated mutations require the configured Origin and a
+CSRF token. The separate hostname is required because uploaded participant
+HTML and JavaScript are controlled by game authors. Use the infrastructure
+bearer token to provision the first operator account, then let named
+operators create, reset, and disable accounts through the dashboard.
+
+Store users, revocable sessions and audit events in a separate host
+dashboard SQLite database. Passwords use Argon2id with bounded verification
+work. Sessions hold only token digests at rest and expire after 12 hours.
+Reset and disable revoke sessions transactionally. Durable audit attempts
+precede side effects and outcomes are written after the result. Run data
+and immutable selections keep their existing storage and lifecycle.
+Experimenters share authority across all games and runs. Browser deployment
+uses the existing immutable package envelope and creates a fresh run when
+switching builds. No experiment databases need conversion.
+
+### Make the hosted manual CLI-first
+
+The 0.7.0 experimenter manual assumes the installed CLI and uses Beacon
+Relay throughout. Order the public workflow around a local pilot, the
+portable WASM package, shared-host deployment, then data collection and
+export. Keep operator bootstrap separate from the experimenter's upload
+and intake steps. The shared host uses immutable run IDs and named accounts.
+Describe provider-backed flows under the single-game host where their
+credential editor exists.
+
+Use the Hugo manual as the canonical task guide. Keep current technical
+references and institutional privacy materials in docs. Remove superseded
+single-game deployment tutorials, historical migrations, duplicate manual
+chapters, and their obsolete screenshots. The docs assume the 0.7.0
+release. Smoke tests exercise the checkout CLI with local SDK sources
+because that release is awaiting publication.
+
+### Keep the game creation skill technical
+
+Use the installed CLI and the project scaffold as the working examples.
+Default new mechanics to Rust, honor an explicit Python request, and keep an
+existing project's language unless asked to port it. The supplied specification
+owns game design. The skill covers the Wasm contract, role-safe browser views,
+testing, and packaging. Agent and deployment instructions live in conditional
+references. The local skill is a symlink to the repository version, so one
+edit updates both entry points.
+
+### Keep Cranelift and fuel for agent experiments
+
+Full agent–agent play through the production experiment runner on Apple M5
+covered both Hotel routes and both Screening seat assignments with bundled
+agents. Compare component backends only after checking full role inputs,
+decisions and outcomes for identical seeds. Wasmtime 36.0.23 Winch loaded the
+components faster and changed the seeded starting observations in both games.
+Pulley preserved the traces and delivered 13–21% of Cranelift throughput.
+
+Keep the per-call fuel budget for deterministic interruption and replay.
+Cranelift with an epoch watchdog reached a 1.5–10.1% higher paired median and
+Cranelift with no execution budget reached a 1.1–14.6% higher paired median
+across the four workload and concurrency combinations. Each combination had
+paired rounds on either side of baseline. The epoch option trades a fixed
+instruction budget for a timing-dependent deadline. Revisit on the target
+deployment after profiling workloads that spend more time in guest execution.
+The benchmark scripts, full methodology and samples are in
+`notes/wasm-engine-evaluation/`.
+
+## Make Wasmtime fuel accounting configurable for agent–agent workloads
+
+Realistic agent–agent workload measurements above justify an opt-in unmetered mode for trusted components. Keep the 50-million-unit per-call budget by default. Select instrumentation when compiling the component because raising the fuel allowance still incurs accounting overhead. Use one mode throughout an experiment, including training, validation and replay within the run. Record a non-default mode in the experiment fingerprint while preserving the existing fingerprint for default fuel. This keeps existing outputs resumable and prevents mixing modes in one result directory.
+
+Live servers select the policy at launch. Memory and instance limits are independent of fuel. With fuel disabled a non-returning guest can occupy its worker indefinitely. No wall-clock interruption replaces the deterministic budget in this mode.
+
+## 2026-11-22 — Select a single participant communication channel per experiment
+
+The participant shell previously rendered its text composer even when voice transport was enabled. A browser could also submit typed dialogue to the game socket in a speech condition. The experiment now pins one communication mode, typed (the default) or speech. Speech transport, recognition, and synthesis settings remain revisioned when dormant. The effective mode controls validation, provider initialization, audio-plan issuance, public participant UI, and admission of human-authored messages. The origin remains on the research record. Agents keep their existing speaker-and-text observation for typed messages and final transcripts.
+
+The React package owns one communication widget, its styles, and its actions. The default shell mounts it for games that use standard placement. With communicationPlacement="game", the renderer mounts it inside its layout. React context supplies the same session capabilities in either position and keeps presentation and transport out of the game observation schema. The replay uses the experiment revision that produced the session and shows recorded messages without live controls. Stable CSS hooks and theme properties allow game styling. Existing built participant assets must be rebuilt against the matching client before deployment with this server.
+
+### Workspace data conversion
+
+Schema 17 replaces voice.enabled in the stored experiment configuration and every configuration revision. A true flag maps to speech and a false flag maps to typed. The previous schema allowed typed input in either condition. This correspondence identifies the intended transport setting, not the origin of every historical utterance. Recorded events retain their original content and attribution.
+
+Before conversion, the source stores were checked for open database, WAL, and SHM handles. Each database was backed up alongside its source and converted transactionally. The backups are:
+
+- `games/last-screening/.local/screening.sqlite.schema16-before-communication-20261122T065523Z.backup` (2 experiments, 3 revisions, 0 sessions).
+- `games/counterweight-hotel/.local/hotel.sqlite.schema16-before-communication-20261122T065523Z.backup` (3 experiments, 6 revisions, 46 sessions, 4,506 events).
+- `games/great-tree/server/parlando-great-tree.sqlite.schema16-before-communication-20261122T065523Z.backup` (4 experiments, 18 revisions, 50 sessions, 1,640 events).
+
+The source, backup, and converted databases passed SQLite integrity and foreign-key checks. Each converted configuration matched the original with only the communication mapping applied. Each experiment matched its current revision, and every session retained a valid revision. Per-table row counts were preserved apart from the new schema-history record. The older schema-10 Space Game database and disposable smoke-test and screenshot databases were outside this conversion.
+
+Shared hosts store immutable selection files separately and derive each database filename from the serialized selection hash. No shared-host selection store was found in this workspace. An operator upgrading a populated shared host must convert its saved selection and database together while the host is stopped and preserve the database under the updated selection hash; changing just the selection would select an empty store.
+
+## 2026-11-22 — Exercise typed games in the runtime stress harness
+
+The stress workload previously exercised the speech channel for both seat pairings. The communication condition belongs to an experiment, so each harness invocation now creates its own typed or speech experiment. Speech remains the default for continuity with existing capacity runs. The four-condition Make target runs separate experiments in succession. Its reports keep provider costs and message counts attributable to the relevant mode.
+
+Typed runs use the production participant and game endpoints, including the normal agent callback when one seat is an agent. In addition to observing delivery on the game sockets, the runner checks the durable conversation and terminal outcome of the fixture games. Synthetic recognition and synthesis processes run only for speech. Browser playthroughs remain a separate check on the real widget and participant interface; the load clients exercise the same server using sockets. A passing short matrix establishes correctness at its stated concurrency and duration.
+
+The prerelease gate runs the four-condition stress matrix and repeats the typed conversation at the package boundary. Both the installed Rust and Python Beacon Relay starters are deployed as explicitly typed experiments. Two independent browser contexts exchange text in both directions and finish each game. The package test catches failures in UI composition or npm packaging that a socket client cannot observe, while the stress runs check concurrent delivery, agent responses, and storage.
+
+## 2026-11-22 — Confirm project creation in the terminal
+
+The CLI renders the successful scaffold result as a short confirmation with the project and manifest paths. Formatting at the CLI boundary keeps both paths tied to the scaffold result, including custom destinations, and preserves the existing structured envelope for callers that pass `--json`.
+
+## 2026-11-22 — Unpublished starter dependencies
+
+The 0.7.0 CLI can be used locally before the matching browser client reaches npm.
+The CLI looks beside its executable for `share/parlando/<CLI version>/`. When that
+directory contains the matching npm tarball, scaffolding copies it to the
+project's `vendor/` and uses a relative `file:` dependency from `client/package.json`.
+This keeps the scaffold movable and lets npm record the tarball integrity in its
+normal lockfile. A CLI without the tarball generates the exact release version
+as a registry dependency. Python setup instructions use the SDK version
+independently of how npm obtains the client.
+
+Explicit guest SDK paths continue to take priority. The versioned asset directory
+also accepts the matching Rust and Python guest SDK sources. Existing portable
+CLI archives supply SDKs under `share/`, so that location remains available
+before the source checkout fallback. Local prerelease bundles need to be restaged
+if their source artifacts change, even when the prerelease version stays the same.
+The 0.7.0 bundle was installed at
+`/Users/koller/.cargo/bin/share/parlando/0.7.0`. Its npm tarball SHA-256 is
+`2f8339c4a8ed8149f52eac83ac77e22bbbac37f476c4e36c9ed899661947cb64`.
+
+## 2026-11-22 — Separate server startup, deployment and intake in the CLI
+
+The local tutorial used to start a game-specific server from a package manifest. Local pilots now use the same deployment host as shared installations. The CLI exposes that host through `serve --store`. Deploying records an immutable revision, selecting pins it to an experiment, and changing intake admits participants. This adds setup steps to a first pilot and makes it possible to inspect and retry each operation independently. A custom Rust application can still embed the game runtime.
+
+Each CLI operation supplies its terminal summary alongside its structured result. The terminal can report domain-specific outcomes such as native tests skipped, scenario counts, deployment revision and participant URL. The global `--json` flag selects the result envelope for automation and subprocess diagnostics stay on stderr. Scripts that parsed the previous pretty-printed default must request JSON and read its `result` field.
+
+## 2026-11-22 — Deploy the built game as a single ZIP
+
+One upload must carry the exact component, game metadata and browser assets selected at build time. The CLI creates `dist/<game-id>-<game-version>.zip` using the manifest ID and semantic version and prints its absolute path after the build diagnostics. The same file is the input to package validation, the deployment CLI and the browser file picker.
+
+The dashboard sends the ZIP bytes to the host with the existing session and CSRF credentials. The host reads the manifest to determine the game in the installation-wide dashboard. On a game-specific route the server checks the ID against the route and its credential scope. Package revisions still identify the member paths and bytes, so archive compression does not change a pin. The service unpacks accepted contents into its existing immutable revision store. The builder stages the ZIP under the output directory and replaces the same game/version atomically after validation. Other versions keep their filenames. Project-based deployment resolves the exact current ID and version. A previously built directory must be rebuilt as a ZIP for a new upload. Existing server-side package revisions remain usable.
+
+CLI success messages describe the state reached by the command. The build confirmation states that the ZIP is ready for deployment and leaves the path on its own final line.
+
+## 2026-11-22 — Default host store for local pilots
+
+The host CLI uses its working directory as the default store. The tutorial explicitly creates a sibling host directory and starts the service there in a subshell, keeping the interactive shell in the game project for deployment. Starting the CLI in a different directory therefore selects a different store. Startup diagnostics display the resolved path. Operators can pin an absolute location with `--store` independently of the service working directory.
+
+A host can start without any game or operator credential. In this mode the existing selection loader restores participant routes, while the absence of an expected bearer digest or a dashboard session keeps the management endpoints closed. Configured CLI upload grants and dashboard bootstrap still require their normal credentials. Credential configuration takes effect at startup.
+
+On a default loopback listener the CLI enables the administrator dashboard on localhost and prints its URL after restoring experiments. The participant origin uses the numeric loopback address. For an empty account store, the local terminal receives a per-process setup link whose fragment authorizes only the first operator creation. The dashboard clears the fragment and uses ordinary password login thereafter. Explicitly configured external hosts retain their operator-token bootstrap. Binding first preserves the assigned port in generated URLs.
+
+## 2026-11-22 — Preserve dashboard setup on reload and separate local logins
+
+The first-operator link is scrubbed from the address bar immediately. The setup form keeps its credential in the administrator origin’s tab session storage until setup finishes, is cancelled, or the server rejects the credential. This lets the user reload the form. Browsers that block session storage can still complete setup on the original page.
+
+Browser cookies are shared across ports on the same hostname. Dashboards on nonstandard ports now use a stable cookie name derived from the canonical administrator origin for login, lookup, and logout. Existing sessions on those ports require one new sign-in. The standard HTTP and HTTPS ports keep their existing cookie names.
+
+## 2026-11-22 — One administrator URL for local hosting
+
+The default loopback host prints its plain `/admin` URL on every start. The page checks the account store when a visitor has no session and offers first-operator creation only while the store is empty. This supersedes the terminal setup link and tab storage described above. First-use authorization now trusts a local client reaching the configured administrator origin. A second local user could claim an empty store first. Explicitly configured hosts retain their operator-token bootstrap. The database still arbitrates concurrent first-account requests.
+
+## 2026-11-22 — Reuse the Parlando administrator identity
+
+The local dashboard serves the existing Parlando wordmark, mark and palette from the administrator origin. Its account creation and sign-in pages follow the existing administrator page. Browser labels and instructions call the privileged account an administrator. The stored role and API value remain `operator`, so existing privileges and account records retain their meaning.
+
+## 2026-11-22 — Organize the administrator site around games
+
+The administrator landing page lists games once per game ID. Opening a game takes the user to its existing scoped URL, where its revisions and experiments can be managed together. User administration lives in its own view. Audit history loads on demand there. This keeps account and audit queries off the Games page and preserves links to individual game pages.
+
+## 2026-11-22 — Display the manifest name in game administration
+
+The project and ZIP already declare a public `name` and an immutable game `id`. The dashboard reads the name from installed package manifests and uses it for the game list, game heading and browser tab. A smaller ID distinguishes games with the same name. Upload confirmations use the name in that upload. Experiment pins, URLs, grants and archive filenames continue to use IDs or digests.
+
+A game may be renamed across revisions, including builds with the same semantic version. The catalogue takes its name from the distinct revision with the latest revision-directory modification time, using the greatest digest to break a tie. An identical re-upload reuses its directory. This avoids a separate mutable naming record and makes already-installed games readable on upgrade. Copying stores without preserving directory timestamps can alter which label wins when names differ.
+
+## 2026-11-22 — Create an experiment first and configure it on its own page
+
+Game pages collect only the new experiment ID and its package revision in a modal. A successful creation opens the same administrator URL as Manage in the experiment list, `/experiments/<id>/admin`. Choosing a revision from its row preselects that revision. The separate participant URL continues to resolve under `/e/<id>/`.
+
+The creation POST reserves a fresh ID, records defaults and leaves intake inactive. Required game-specific values can be supplied on the experiment page. The CLI's selection PUT continues to support an explicit initial configuration and idempotent retries. The initial selection hash still identifies the same SQLite database. Later settings saves use its existing configuration revision records, with an expected revision and inactive-state checks. Participant sessions remain associated with their originating runtime revision.
+
+## 2026-11-22 — Explain experiment IDs before submission
+
+Hosted experiment IDs form single path segments in participant and administrator URLs and in the host store. The creation dialog describes the existing identifier rules and suggests a valid spelling for spaces. The user retains control of the ID that will be shared and persisted.
+
+## 2026-11-22 — One creation button on the game page
+
+The Experiments section opens the creation dialog. Its package revision picker handles all builds, so the Revisions table only lists versions and digests.
+
+## 2026-11-22 — Preserve the case of hosted experiment IDs
+
+Hosted experiment IDs accept uppercase ASCII letters within the existing 64-character format. The host preserves the submitted spelling in URLs, selection filenames, and SQLite paths. It matches route IDs exactly. Game package IDs, grants, and host aliases retain their lowercase format.
+
+Creating or pinning a case-only variant returns a conflict before building a runtime or writing files. This keeps the same store valid on case-sensitive and case-insensitive filesystems and leaves exact-spelling CLI retries idempotent. Startup also rejects case-only duplicates in stored selections, which can otherwise be introduced by editing or merging stores outside Parlando.
+
+## 2026-11-22 — One current build and one installation per hosted game
+
+The administrator dashboard opens the game’s existing multi-experiment installation. The installation reads and writes `games/<id>/game.sqlite` across deployments. Newly deployed games start inactive. A persistent activation marker records participant availability separately from experiment intake, and an idle replacement preserves the marker. Each participant URL uses `/e/<game-id>~<experiment-id>/` so games can reuse experiment IDs while ZIPs built against the existing JavaScript client still recognize a single experiment path segment. The administrator origin mounts the dashboard at `/<game-id>`.
+
+The host prepares and validates a candidate before switching `packages/<id>/current` by atomic file rename. The pointer names one complete build directory. Once the directory update is durable, the host removes previous build directories. Startup prunes candidates left by interruption and requires offline conversion of stores containing legacy experiment pins or versioned package directories. The database retains recorded study metadata and results as the build changes.
+
+Requests hold a per-game read lock through app dispatch. Replacement and availability changes hold the write lock while checking intake, sessions and connections and publishing the result. Upload publication also serializes competing uploads, including the first upload for a game, to avoid duplicate runtimes. The upload semaphore bounds archive memory while this work proceeds. Deactivation waits for intake to close and connections to drain. The administrator can continue to review settings and historical data while the game is inactive.
+
+### Dashboard ownership and the local Beacon installation
+
+The shared server overview links each game ID to its existing experiment administration application on the admin origin. Authentication and CSRF come from the host session. The participant origin serves package code. A one-use replay grant carrying the game, experiment and session lets existing ZIP clients read a replay for up to 60 seconds after issuance. Opening intake checks the current package configuration, while historical experiments remain available for inspection.
+
+Converted the stopped pre-release store at `/private/tmp/parlando-test/beacon/exec` under its exclusive host lock. The byte-verified backup is `/private/tmp/parlando-test/beacon/exec-backup-20261122-203325`. The sole selection referenced the sole Beacon build, with SHA-256 revision `723f3284bdca93f5fef539ebc280825254d5a29f9315e85511ca74031861ce4f`. The selection’s configuration matched the saved experiment. Copied that build byte-for-byte and took a transactional SQLite snapshot into the per-game database. Set the game active to preserve its former participant URL availability under the new URL scheme. Its one experiment, `beacon-test`, remains inactive.
+
+Verified database integrity and foreign keys, schema version 17, exact experiment database dump equality and every table count before switching directories. The database preserves the experiment, its configuration revision and the game settings row, with zero sessions. The unchanged account database contains one account, one login session and six audit events. The old structures exist only in the backup.
+
+The Games overview shows the existing boolean availability as a text label with the same 7 px green or ochre marker as an active or inactive experiment. The decorative CSS marker needs no separate accessible label.
+
+The planned sessions field explains the reporting target in the experiment configuration form. Its help uses a paired-game example to distinguish sessions from participant places and describes the verified Prolific fallback and continued intake after the target is reached.
+
+## Beacon Relay participant styling
+
+Both starter languages copy the same client stylesheet. The starter owns the visual theme and uses the participant runtime’s lobby, countdown, and seat classes so game authors can restyle them without replacing the waiting-room logic. Changes to these classes should be checked against the screenshot in the getting-started guide. The image was captured from an isolated two-browser pilot before the second seat joined.
+
+## Reusing experiments after a game update
+
+A game update retains the game’s database and experiment IDs. Dashboard readiness, editing, and intake use the installed game’s configuration validation across semantic versions. A compatible configuration can launch at its existing revision. An inactive experiment with incompatible game settings can be repaired through the ordinary revision-checked save. The experiment’s creation version remains provenance, while each new session records the installed game version. Reproducibility across updates depends on retaining the earlier game package.
+
+## Participant recruitment in Beacon and other browser games
+
+The host attaches the receiving seat’s admission source to waiting, active, and paused participant snapshots. A synthetic Prolific admission is a local preview. The JavaScript client exposes the source through GameSnapshot.recruitmentSource. Replay has no live participant and uses null. Terminal outcome text describes the game event, while the optional recipient-specific server handoff supplies the provider instructions. This keeps a direct participant’s exit message accurate on reload and after intake settings change.
+
+## Missing upload tokens in the CLI
+
+Credential lookups distinguish a missing game token from a credential-store failure. For a missing token, deploy prints the login command for the resolved server URL and the package’s game ID, plus the dashboard upload option. Other store failures retain their diagnostic context so login is suggested only when it addresses the failure.
+
+## Browser-authorized CLI deployment
+
+CLI sign-in uses a five-minute device pairing with the existing dashboard account. The browser requires a signed-in session, CSRF protection, and the code printed in the terminal. The CLI exchanges a separate device secret once and stores the resulting credential under the canonical server URL in the OS credential store. The account database holds only digests, bounds outstanding requests, and revokes CLI credentials and approved pending requests when a password changes or an account is disabled. Uploads use the same account-level authority as dashboard uploads and record the same audit identity. A host needs the separate administrator origin for this flow. Bootstrap operator access remains a separate server-management capability.
+
+### Default CLI deployment host
+
+Keep servers.yaml as a flat alias-to-URL mapping. Login, deployment and availability commands resolve the alias `default` when the target flag is omitted. That entry may select a named alias so a URL only needs to be maintained once. Existing URL-valued entries, including one named `default`, keep their meaning. Explicit URLs bypass configuration. A missing default produces an error rather than choosing a server implicitly.
+
+CLI host aliases live in ~/.parlando/servers.yaml so the manual, help and lookup all point to one predictable location. Existing users of the former XDG location can move their servers.yaml file there.
+
+CLI login links carry the short-lived approval code in the URL fragment. This identifies the requesting process across browser sign-in without typing a code or opening a local callback port. Approval requires an explicit authenticated click. Only the CLI holds the separate secret needed to retrieve the credential. Links from other people can identify their CLI, hence the prompt to approve only a login the user initiated.
+
+The CLI approval page uses a compact card with a plain statement of the permission granted and a single explicit approval action. The header identifies the signed-in account.
+
+## Installing WASM agents on the account-based deployment host
+
+Game and agent authors share the Rust SDK, but deploy their packages independently. The host accepts an agent ZIP through the same authenticated upload endpoint as a game ZIP and records its policy revision against the installed game build. Replacing a policy requires the runtime to be idle. Persisting the registration lets the host reconstruct its agent factories after restart, while attaching it to the game build avoids silently applying a policy to a changed game schema.
+
+Experiment operators choose Human vs agent and a factory in the game dashboard, save the configuration revision, and start intake there. The package rehearsal exercises this flow through the installed CLI and Chromium after testing the policy under both headless metering modes.
+
+## Independent agent projects and game dependency changes
+
+A participant in a shared task can start from the organizer's game ZIP. An agent project records the game ID plus its dependency locator and exact version in `agent.yaml`. The same entry holds the required SHA-256 of the archive bytes. Keeping the locator and digest together lets a single file replacement update the release pin. Local ZIPs are verified on use. URL releases are cached by digest for subsequent offline builds. All agent project builds resolve a game ZIP. Game authors can build a new local ZIP and select it with `parlando agent set-game`; a release server is optional. This adds an explicit packaging step during joint development and ensures participants and authors both discover the interface from the packaged WASM.
+
+The resolver returns one loaded executable and its metadata. Binding generation uses the component's validated schema for actions, both role views and completion. Headless runs from the agent manifest compile the policy against that schema and give the same loaded game to the runner. This preserves the distinction between a schema-compatible change and a behavior change. The runtime keeps its existing package compatibility rules and checks the exported policy against the game.
+
+The scaffold currently emits Rust and keeps the policy separate from its generated module. Local and downloaded ZIPs use the same package loader regardless of the game's implementation language. The optional bindings path belongs to the agent manifest so other layouts and projects that maintain their own wire types can use the same dependency workflow. A new agent language needs its own policy scaffolding and codec generator. A matching game-language SDK or the game's source tree is unnecessary when consuming a release ZIP.
+
+Agent authoring commands share the `parlando agent` namespace. Creation uses `agent new` alongside `agent set-game`. The game scaffold keeps `parlando new NAME`, including when the game ID is `agent`.
+
+Project build, check, and test use an explicit manifest when supplied, otherwise searching the working directory for game.yaml followed by agent.yaml. The order preserves existing game commands for games with a colocated policy, while standalone policies need no manifest flag. Agent creation uses the project ID as its destination when --path is omitted, matching game creation.
+
+The hosting dashboard lists agent package IDs, names, versions, and revisions from the same ordered pins used to construct each hosted game runtime. Keeping this metadata with the runtime makes installs and game revision changes visible together and avoids rescanning the package store for each dashboard request. The browser keeps expansion state within the signed-in view and uses the successful upload receipt to reveal the specific agent revision.
+
+A fresh agent scaffold uses the packaged action and seat-A observation declarations to select the tick-on-request policy when it can construct the single unsigned ticks field and read the boolean your_turn field. This works for renamed Beacon starters and across game languages. Other games retain the editable generic policy. The display name defaults to title-cased words from the factory ID and can be overridden with --name. Scaffolding writes the same name to the manifest and exported definition so the existing package identity check covers both dashboard surfaces.
+
+The deploy command accepts the package ZIP as its positional argument. The existing --package option and no-argument game release lookup remain supported. Clap rejects combining the two explicit forms before the CLI accesses host credentials.
+
+The hosting Games view uses a shared package column for human-readable names and stable IDs, and a release column for versions and revisions. A dedicated leading disclosure expands agent rows. Narrow screens reflow the same rows and actions into two lines. Upload and refresh live in the page toolbar, with the upload form opening above the list.
+
+The hosting list groups games by a divider before each game and a branch beside its agents. Parent and child rows share a white surface so a persistent fill never competes with the temporary upload highlight.
+
+Agent rows show identity and release only. Presence under a game already conveys installation. On phones these fields share one row, while the parent disclosure aligns with the game title independently of wrapped metadata.
+
+The hosting dashboard renders one table body per game so the same game and agent rows form a card on phones and remain column-aligned on desktop. Phone cards put update and activation under Manage to leave room for release metadata at narrow widths. Upload, refresh, and game navigation remain directly accessible.
+
+## 2026-11-23 — Railway GitHub deployments for the shared host
+
+Use Railway's branch autodeploy with the root railway.json and existing shared-host image. This keeps GitHub pushes responsible for server updates and leaves game and WASM policy releases with Parlando's authenticated upload API. One replica owns the SQLite store. On Railway the entrypoint requires the volume at /data and dashboard configuration before serving, since a healthy empty or upload-disabled host would give operators a misleading deployment signal. Volume handoff interrupts service during redeployment. GitHub installation access, domains, DNS, volume attachment, and secrets are environment-specific. Retire the Render blueprints and provider URL fallback. Existing Render resources and research records require a separate operator cutover.
+
+## First administrator setup on a shared host
+
+Local and Railway dashboards use the same first-visitor claim on the admin origin. The atomic first-account insert closes setup across simultaneous requests and restarts. The admin must claim a fresh volume immediately. CLI pairing withholds its sign-in URL until an account exists. Account sign-in authorizes game uploads and activation, and account administration requires an admin browser session. This replaces the infrastructure bearer secret and uses the existing account schema.
+
+## Railway shared-origin hosting for trusted games
+
+Default the container dashboard to its resolved public URL. Railway supplies the public domain at runtime. Route the shared origin using the existing management and experiment paths and continue checking the configured authority, browser origin, session and CSRF values. Uploaded game clients share the browser privileges of signed-in users on that origin. The operator accepts this trust model. An explicitly configured separate admin hostname retains origin isolation for other deployments.
+
+## First-party game and agent package builds
+
+Build each game ZIP first. Source its browser SDK from this checkout so the host and participant runtime agree before a coordinated release. The browser projects use relative npm dependencies and build the SDK during their own prebuild. Docker stages preserve the same relative layout. The game launcher pins each local agent manifest to the archive reported by the CLI before building its independent ZIP. A single agent may live beside its game. Great Tree has separate agent directories so either agent can be built or installed on its own. Pins identify archive bytes, so a rebuild with different assets or toolchains requires refreshing the pin.
+
+Space Game's movement agent requests host wakeups during live play and follows the runner's decisions during headless play. Root Bot shares its behavior between its component and its logged native implementation. Great Tree's OpenAI agent uses the native host's network and secret facilities. Cue Choice's Python learner uses the remote service interface, while its dealer can run in the same training coordinator from a ZIP or a native factory. Neither the learner nor the OpenAI backend can perform external I/O inside an import-free component. Last Token's Python build keeps its component inside the project directory so the same package path passes project validation and builds the ZIP.
+
+The packaged checks cover seven game archives and six agent archives. Cue Choice exercised the packaged dealer with a random Python learner through checkpoint creation and held-out validation. Hotel and Screening self-play reached game completion. Space Game's two movement agents exchanged accepted moves and chat until the evaluation's message limit. They do not operate the station equipment needed for a mission win. Great Tree also uses the participant SDK's interaction flag to disable gate input during replay and reconnection.
+
+## Build and deploy entry points for example games
+
+Each example builds locally and deploys to a separately managed Parlando host. The build records the relative ZIP paths and digests reported or computed for that invocation in dist/deploy-packages.json. This lets deployment use the exact release and agent selection even when dist contains older builds. Deploy verifies the full list before the first upload and passes the game to the authenticated CLI before any agent. Each upload is a separate server operation. If a later upload fails, the earlier receipts still apply and the operator can retry the deployment. Activation and experiment intake remain separate operator actions. Native headless experiment binaries continue to serve their experiment-specific roles.
+
+A deployment rehearsal built all seven example projects and used their deploy scripts against one disposable, authenticated localhost server. The hosting dashboard reported seven installed games and six agents. Separate preflight checks covered stale ZIP exclusion, default-host selection, and failure before uploading the game if a subsequent agent archive was missing or had changed.
+
+## Hosting dashboard game controls
+
+The Games list displays host availability and offers package updates directly at all screen sizes. Activation controls participant routing and has no runtime memory benefit. Operators can change it with the CLI. A newly installed game therefore needs CLI activation before its first pilot.
+
+## Participant entry and microphone meter defaults
+
+Beacon Relay’s theme provided the landing card but left voice preparation to the client. The only default meter rules were mounted inside the active communication widget, so preflight showed a label with a zero-height track. The shared meter now supplies its own track and fill, and the startup shell provides the voice and consent layout. Both use a CSS cascade layer so existing game themes can override the defaults. Game packages bundle the client at build time, so existing deployments require a rebuilt client bundle. The speech browser scenario checks the layout and a painted, nonzero reading before and after entering matchmaking. The waiting room previously omitted the meter. Both speech screens render it even when readings are unavailable, using the existing inactive zero level.
+
+## Serve voice worklets as same-origin modules
+
+Beacon Relay’s deployed Vite bundle inlined the small capture worklet as a data URL. Parlando’s participant Content Security Policy allows same-origin scripts and rejects that module when the voice transport starts. The microphone permission check and local level probe can both succeed before this failure. The shared audio sink marks both worklet URLs with Vite’s no-inline asset query. This keeps their URLs relative to the game bundle at any experiment mount path and prevents a change in either processor’s size from affecting whether it can load. Each module now needs its own asset request. Existing deployed games pick up the fix when their browser assets are rebuilt and deployed.
+
+## Preserve hosted agents across game deployments (2026-11-23)
+
+A fresh build previously started with an empty agent registry. Stage the current registrations alongside the new game and validate them before publishing the build pointer. This keeps game and agent versions independent, preserves exact agent revisions across restarts, and lets a failed compatibility check leave the previous build available. Registrations already lost under the former behavior can be restored by uploading the selected agent archives again.
+
+## Detect participant SDK mismatches before packaging
+
+The served Beacon 0.1.3 bundle matched the local ZIP and decoded voice.enabled, while the running experiment returned communication.mode=speech. Both seats could connect without a browser ever opening its audio transport. A transcription-gated session correctly waits for the human's provider readiness and the software seat's start callback. A game version bump does not select the browser SDK; registry and candidate tarballs can even have the same npm version. The build therefore exercises the installed official SDK's public configuration decoder after npm restores the lockfile. Custom clients and prebuilt distributions still need an artifact-level pilot.
+
+The shared waiting room exposes pending audio readiness and lets a reloaded tab prepare its own microphone without registering another seat. The browser regression holds the audio ticket until both connections and a live local meter are observable, reloads the human tab, then permits audio and requires a successful first game action. The external transcription service is represented by its local ready event. The same test accepts an unpacked Beacon ZIP so package selection can be tested independently of the SDK workspace.
+
+The participant-facing Beacon policy is beacon.tick_on_request. Its initial greeting covers speech and typed play. The release rehearsal deploys that generated policy and checks that B holds its turn until a finalized “Tick.” arrives over the transcription path. A separate headless test fixture sends commands to exercise the generated agent. The speech test uses a simulated provider and real browser audio transport, so it checks transcript delivery and agent response independently of acoustic recognition accuracy.
+
+## Recruitment-specific participant copy
+
+The waiting room uses the admitted seat’s recruitment_source exclusively. Falling back to experiment configuration when the source is missing could instruct a direct participant to return a submission. Terminal codes and links remain driven by the per-seat server handoff. The packaged-game regression checks direct exit copy both on leave and after reload; the older Beacon 0.1.3 bundle fails on its unconditional return instruction.
+
+Beacon's request policy matches “charge the beacon” as a complete finalized utterance or typed message, ignoring case and terminal sentence punctuation. This avoids depending on the single syllable “tick,” reported as “take” in live recognition, while keeping one request per pulse and the existing factory ID. Recognition accuracy still depends on the deployed recognizer.
+
+## Dashboard package drops
+
+The Games dashboard presents a standalone drop target above the table. Dropping a ZIP starts deployment immediately. Clicking the target still opens the picker and review dialog. Both paths share validation and submission. Both new packages and revisions use the manifest-directed upload endpoint, so the games table needs no per-row Update action.
+
+The shared speech widget no longer renders the remoteAudio receipt flag as “heard” or “silent.” This flag records transport activity independently of the microphone level or recognition of a command. The browser relay test observes incoming binary audio frames at both seats directly; the public audio status remains available to callers.
+
+The dashboard agent release cell spans the Release and Status columns because activation status belongs to the game. This gives the upload highlight a painted cell across the entire row while retaining the two-item mobile layout.
+
+The New experiment dialog uses the dashboard’s existing stacked field layout. The ID label names the input explicitly, and its help and validation message sit directly below it. Empty validation feedback takes no layout space.
+
+## Deployed games and experiment intake
+
+A successful deployment mounts the game and its experiment routes. Experiment lifecycle alone controls new participant admission. The host no longer reads or writes per-game active marker files. Old markers have no effect. This removes the second availability decision from the API, CLI, and games list. Existing session and package replacement guards still protect live work. No database schema changes are needed.

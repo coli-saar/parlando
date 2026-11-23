@@ -1,55 +1,108 @@
-# Parlando agents reference
+# Agent integration
 
-Agents control A or B with the same observations, actions, and rules as humans. They never receive authoritative state or frontend events.
+An agent controls one seat and receives the same role-private view and shared
+completion as a participant. Use the game's accepted actions and the other
+player's messages as policy inputs. Keep private policy state per session and
+use the recorded seed for reproducible choices. The game validates every
+proposed action.
 
-## Rust
+## Write a typed Rust policy
 
-Implement `parlando::agent::Agent<G>` and `Factory<G>`. `Factory::definition` supplies dashboard metadata. `create(Context { role, seed, settings })` is async and constructs one session-local agent before game delivery. Every factory must implement `identity(settings)` with a non-empty semantic name and stable implementation version; configuration choices belong in settings and the configuration fingerprint.
+Use the same `parlando-game-sdk` dependency as the game. Share the game's
+Rust action, view and completion definitions, with `GameValue` derived for
+the compact payloads when both are in one crate. For an independent policy
+crate, build the game ZIP and use `parlando agent new <agent-id> --game "$PACKAGE"`
+to generate Rust types from the game's schema, including Python games. Import `Role` and the derive from
+`parlando_game_sdk`, and import the policy API from
+`parlando_game_sdk::agent`.
 
-Implement callbacks as needed:
+Implement `Agent` with `#[parlando_game_sdk::agent::async_trait]` and
+declare `Config`, `Action`, `View` and `Completion`. Declare the policy ID,
+name, implementation version and configuration fields in `definition`.
+The ID and name must match the agent package manifest. The implementation
+version identifies the policy. The manifest version identifies the archive
+release.
 
-```rust
-async fn start(&mut self, initial_observation: Observation) -> Result<()>;
-async fn observe_transition(&mut self, actor: PlayerRole, action: Action,
-                            observation: Observation) -> Result<()>;
-async fn observe_message(&mut self, sender: PlayerRole, text: String) -> Result<()>;
-async fn finish(&mut self, completion: Completion) -> Result<()>;
-async fn respond(&mut self, available_actions: Option<Vec<Action>>)
-    -> Result<Option<Response<Action>>>;
-async fn shutdown(&mut self) -> Result<()>;
+- Construct one fresh policy in `init(InitContext)` using the typed settings,
+  assigned role and recorded seed. Use `start` to receive the initial view.
+- In `observe`, handle the optional accepted transition before the optional
+  partner message. A transition carries the actor, action and this seat's
+  resulting view. Use `LazyView<T>` only when the policy can ignore complete
+  views on some transitions, and call `decode()` on the branches that use them.
+- Implement `respond(RespondReason)` using `Response::action`,
+  `Response::message`, `Response::action_and_message` or
+  `Response::default()` to yield. When a response includes a move and text,
+  the runtime sends the message only after it accepts the move. The live
+  runtime can deliver chat text or finalized speech transcripts and can
+  schedule a wakeup requested with `wake_after`. For headless experiments,
+  let the experiment schedule supply decisions and return no wakeup request.
+- Use `finish` for terminal completion and `shutdown` to release resources.
+
+In the policy's Rust `cdylib` crate, invoke
+`parlando_game_sdk::agent::export_agent!(Policy)` at crate root. When the
+policy and mechanics share a crate, use a project feature to select one export
+per build. A separate agent crate needs no SDK feature. The import-free WASM
+callback must complete in one poll. Use the remote gRPC option for network
+inference or other work that needs an asynchronous service.
+
+## Build and exercise separate archives
+
+Create `agent.yaml` next to the project. Use the target game's ID and the
+policy's own stable ID, display name and semantic archive version:
+
+```yaml
+game: last-screening
+id: last_screening.operator
+name: Screening partner
+version: 1.0.0
+cargo_manifest: server/Cargo.toml
+features: [agent-component]
 ```
 
-Return `Response::action`, `Response::message`, or `Response::action_and_message`. Return `None` to decline. A message communicates only with the other player and does not change state. Returned actions pass normal validation. Use `shutdown` to release per-session resources; it is lifecycle cleanup, not a terminal-result callback.
+The example uses a feature because the game and policy share this crate.
+Omit `features` for an independent policy crate without a feature gate. For
+an existing WASM component, use `component: path/to/agent.wasm` instead of
+the Cargo fields. Paths resolve relative to the manifest.
 
-Register additional in-process factories with `Server::agent`. Every server includes the remote gRPC factory; its endpoint and optional YAML mapping are dashboard-selected settings interpreted by that factory. Keep agent credentials in the remote process rather than transporting them through Parlando.
+Run native policy tests and build the independent agent ZIP. Build the game
+first and use `set-game` to record its archive version and checksum in the
+agent manifest. The project defines which features its native tests need.
 
-## Python
-
-```python
-from parlando_agent_sdk import Agent, Context, Response, serve
-
-class MyAgent(Agent):
-    async def start(self, initial_observation):
-        self.observation = initial_observation
-
-    async def observe_transition(self, actor, action, observation):
-        self.observation = observation
-
-    async def observe_message(self, sender, text):
-        self.last_message = (sender, text)
-
-    async def finish(self, completion):
-        self.completion = completion
-
-    async def respond(self, available_actions):
-        if available_actions:
-            return Response.action(available_actions[0])
-        return None
-
-def create_agent(context: Context) -> Agent:
-    return MyAgent()
-
-serve(create_agent, host="127.0.0.1", port=50051)
+```sh
+cargo test --manifest-path server/Cargo.toml --features agent-component --lib
+parlando build
+parlando agent set-game dist/last-screening-0.1.0.zip --manifest agent.yaml
+parlando build --manifest agent.yaml
+parlando check --package dist/agent-last_screening.operator-1.0.0.zip
 ```
 
-Use `Response.action_with_message(action, text)` when a Python agent must combine both outputs. Generate protobuf bindings from the installed SDK. Keep LLM credentials and prompts in the remote process. If dialogue matters, test `observe_message` and a later response. Release resources in `shutdown`. Do not encode readiness as a player message: explicit initialization readiness is deferred runtime work.
+The build checks the policy's compact payload layouts against the pinned game.
+The archive check validates the agent component interface and its declared
+identity. Exercise behavior by configuring both seats with
+the intended factory IDs and running a seeded headless experiment:
+
+```sh
+parlando run experiment.yaml --package dist/last-screening-0.1.0.zip \
+  --agent dist/agent-last_screening.operator-1.0.0.zip
+```
+
+Check completed sessions, accepted and rejected actions, message order and
+terminal outcomes. Use a full trace when verifying parity across native and
+WASM execution. For a live pilot, test the relevant role, dialogue and
+presentation timing in the browser. Upload the game ZIP first and the agent
+ZIP separately, then choose the installed factory in the game dashboard's
+experiment configuration.
+See [deployment](config-deployment.md) for the package and authority workflow.
+
+## Use a remote gRPC service
+
+For a policy running in an independent process, select `remote_grpc` and
+configure its endpoint and settings in the experiment. The Python service can
+use the public `parlando_agent_sdk` package. It receives transitions and
+partner messages through `observe_transition` and `observe_message`.
+Use `Response.action_with_message` for a move with text, and return `None`
+to yield. Keep model-provider credentials in the agent process. Follow the
+[remote-agent guide](https://coli-saar.github.io/parlando/manual/build/agents-and-voice/)
+for endpoint authentication and service setup.
+
+For the Beacon starter, use `beacon.tick_on_request`. Pilot one turn without a request, then say “charge the beacon” in a speech experiment or send it in typed chat. Verify that one request produces one legal tick.

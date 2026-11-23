@@ -5,7 +5,7 @@
 //! protocols used by the production Speechmatics and ElevenLabs adapters.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashSet, VecDeque},
     fs::File,
     io::Write,
     net::SocketAddr,
@@ -39,12 +39,14 @@ use parlando::{
         Identity as AgentIdentity, Response as AgentResponse,
     },
     bundled_runtime_limits,
+    component::{ComponentValue, LoadedGame},
     test_support::{
         run_dashboard, AudioFrame, DashboardHealth, DashboardMetric, DashboardPanel,
         DashboardSeries, DashboardSnapshot, DashboardTile,
     },
-    ActionRejection, Game, GameInitializationContext, GameMetadata, PlayerRole, Server,
+    GameMetadata, PlayerRole, Server,
 };
+use parlando_stress_fixture::StressAction;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
@@ -56,7 +58,7 @@ use tokio::{
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-const HARNESS_REVISION: u32 = 5;
+const HARNESS_REVISION: u32 = 7;
 const PROFILE: &str = "resident-capacity-v1";
 const PROVIDER_KEY: &str = "runtime-stress-provider-key";
 const FRAME_INTERVAL: Duration = Duration::from_millis(20);
@@ -78,6 +80,12 @@ struct Args {
     /// Participant composition used for every session.
     #[arg(long, value_enum, default_value_t = Pairing::HumanAgent)]
     pairing: Pairing,
+    /// Participant communication channel exercised by the workload.
+    #[arg(long, value_enum, default_value_t = Communication::Speech)]
+    communication: Communication,
+    /// Override the bundled stress game with a locally built Wasm component.
+    #[arg(long)]
+    wasm_module: Option<PathBuf>,
     /// Disable the terminal dashboard without changing the workload.
     #[arg(long)]
     headless: bool,
@@ -100,154 +108,55 @@ enum Pairing {
     HumanHuman,
 }
 
-/// Versioned fixture state with bounded history and representative padding.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct StressState {
-    counts: [u64; 2],
-    last_sequence: [u64; 2],
-    complete: bool,
-    history: VecDeque<(String, u64)>,
-    padding: String,
-}
-
-/// Monotonic fixture action used by humans and the compiled agent.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-enum StressAction {
-    Mark { sequence: u64, finish: bool },
-}
-
-/// Role-specific state projection used to verify reconnect snapshots.
-#[derive(Clone, Debug, Serialize)]
-struct StressObservation {
-    role: String,
-    counts: [u64; 2],
-    last_sequence: [u64; 2],
-    complete: bool,
-    padding: String,
-}
-
-/// Terminal fixture result.
-#[derive(Clone, Debug, Serialize)]
-struct StressCompletion {
-    total_actions: u64,
-}
-
-/// Cheap deterministic game compiled only into the stress executable.
-#[derive(Clone)]
-struct StressGame;
-
-struct StressGameFactory;
-
-impl parlando::GameFactory for StressGameFactory {
-    type Game = StressGame;
-
-    /// Creates one stateless stress-session game.
-    fn create(&self, _context: parlando::GameSessionContext) -> Result<StressGame> {
-        Ok(StressGame)
-    }
-}
-
-impl Game for StressGame {
-    type Config = Value;
-    type State = StressState;
-    type Action = StressAction;
-    type Observation = StressObservation;
-    type Completion = StressCompletion;
-
-    /// Creates one stateless stress-game value for an admitted session.
-    /// Creates one fixed-shape state value per admitted session.
-    fn initial_state(&self, _: GameInitializationContext<'_, Value>) -> Result<StressState> {
-        Ok(StressState {
-            counts: [0, 0],
-            last_sequence: [0, 0],
-            complete: false,
-            history: VecDeque::new(),
-            padding: "p".repeat(2048),
-        })
-    }
-
-    /// Rejects stale, duplicate, and post-terminal actions through the normal path.
-    fn apply_action(
-        &self,
-        state: &StressState,
-        action: &StressAction,
-        actor: PlayerRole,
-    ) -> std::result::Result<StressState, ActionRejection> {
-        if state.complete {
-            return Err(ActionRejection::new("session_complete"));
-        }
-        let StressAction::Mark { sequence, finish } = action;
-        let index = usize::from(actor == PlayerRole::B);
-        if *sequence <= state.last_sequence[index] {
-            return Err(ActionRejection::new("stale_or_duplicate_sequence"));
-        }
-        let mut next = state.clone();
-        next.counts[index] += 1;
-        next.last_sequence[index] = *sequence;
-        next.complete = *finish;
-        next.history.push_back((actor.as_str().into(), *sequence));
-        while next.history.len() > 32 {
-            next.history.pop_front();
-        }
-        Ok(next)
-    }
-
-    /// Returns the recipient role alongside all transition-verification fields.
-    fn observation(&self, state: &StressState, player: PlayerRole) -> StressObservation {
-        StressObservation {
-            role: player.as_str().into(),
-            counts: state.counts,
-            last_sequence: state.last_sequence,
-            complete: state.complete,
-            padding: state.padding.clone(),
-        }
-    }
-
-    /// Advertises representative terminal and nonterminal actions.
-    fn available_actions(&self, _: &StressState, _: PlayerRole) -> Option<Vec<StressAction>> {
-        Some(vec![
-            StressAction::Mark {
-                sequence: 1,
-                finish: false,
-            },
-            StressAction::Mark {
-                sequence: 1,
-                finish: true,
-            },
-        ])
-    }
-
-    /// Produces a terminal summary only after completion.
-    fn completion(&self, state: &StressState) -> Option<StressCompletion> {
-        state.complete.then_some(StressCompletion {
-            total_actions: state.counts.iter().sum(),
-        })
-    }
+/// Communication mode shared by experiment configuration, workload and report.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+enum Communication {
+    Typed,
+    Speech,
 }
 
 /// Deterministic session-local agent.
 struct StressAgent {
+    role: PlayerRole,
     sequence: u64,
     pending: bool,
     reply_tag: String,
 }
 
+/// Encodes a policy decision for the stress game.
+fn agent_action(action: StressAction) -> Result<ComponentValue> {
+    ComponentValue::from_typed(&action)
+}
+
+/// Decodes just the typed field needed by the local policy.
+fn observed_sequence(observation: &ComponentValue, role: PlayerRole) -> Result<u64> {
+    #[derive(Deserialize)]
+    struct Sequences {
+        last_sequence: [u64; 2],
+    }
+
+    let view: Sequences = observation.decode()?;
+    Ok(view.last_sequence[usize::from(role == PlayerRole::B)])
+}
+
 #[async_trait]
-impl Agent<StressGame> for StressAgent {
+impl Agent for StressAgent {
     /// Schedules the initial agent turn.
-    async fn start(&mut self, _: StressObservation) -> Result<()> {
+    async fn start(&mut self, observation: ComponentValue) -> Result<()> {
+        self.sequence = observed_sequence(&observation, self.role)?;
         self.pending = true;
         self.reply_tag = "initial".into();
         Ok(())
     }
-    /// Responds after role A changes game state.
+    /// Refreshes the action sequence from the committed role view.
     async fn observe_transition(
         &mut self,
         _actor: PlayerRole,
-        _: StressAction,
-        _: StressObservation,
+        _: ComponentValue,
+        observation: ComponentValue,
     ) -> Result<()> {
+        self.sequence = observed_sequence(&observation, self.role)?;
         self.pending = false;
         Ok(())
     }
@@ -259,21 +168,18 @@ impl Agent<StressGame> for StressAgent {
         }
         Ok(())
     }
-    /// Emits one deterministic action and TTS-triggering message.
-    async fn respond(
-        &mut self,
-        _: Option<Vec<StressAction>>,
-    ) -> Result<Option<AgentResponse<StressAction>>> {
+    /// Emits one deterministic action and a reply that can be delivered as chat or synthesized.
+    async fn respond(&mut self) -> Result<Option<AgentResponse>> {
         if !self.pending {
             return Ok(None);
         }
         self.pending = false;
         self.sequence += 1;
         Ok(Some(AgentResponse::action_and_message(
-            StressAction::Mark {
+            agent_action(StressAction::Mark {
                 sequence: self.sequence,
                 finish: false,
-            },
+            })?,
             format!("agent reply {}", self.reply_tag),
         )))
     }
@@ -283,7 +189,7 @@ impl Agent<StressGame> for StressAgent {
 struct StressAgentFactory;
 
 #[async_trait]
-impl AgentFactory<StressGame> for StressAgentFactory {
+impl AgentFactory for StressAgentFactory {
     /// Describes the compiled fixture agent for experiment selection.
     fn definition(&self) -> AgentDefinition {
         AgentDefinition {
@@ -294,8 +200,9 @@ impl AgentFactory<StressGame> for StressAgentFactory {
         }
     }
     /// Creates isolated state for one session.
-    async fn create(&self, _: AgentContext) -> Result<Box<dyn Agent<StressGame> + Send>> {
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         Ok(Box::new(StressAgent {
+            role: context.role,
             sequence: 0,
             pending: false,
             reply_tag: String::new(),
@@ -354,6 +261,9 @@ struct Counters {
     started_sessions: AtomicU64,
     finished_sessions: AtomicU64,
     game_messages: AtomicU64,
+    typed_messages_sent: AtomicU64,
+    typed_messages_verified: AtomicU64,
+    typed_agent_replies_verified: AtomicU64,
     actions: AtomicU64,
     pcm_sent: AtomicU64,
     pcm_verified: AtomicU64,
@@ -364,6 +274,8 @@ struct Counters {
     first_failure: Mutex<Option<String>>,
     room_failures: Mutex<Vec<bool>>,
     rates: Mutex<RateHistory>,
+    steady_actions_sent: AtomicU64,
+    steady_action_latencies: Mutex<Vec<Duration>>,
 }
 
 /// Bounded rolling throughput samples rendered by the dashboard.
@@ -385,6 +297,28 @@ struct RateTotals {
 }
 
 impl Counters {
+    /// Computes nearest-rank percentiles once the workload has ended.
+    fn steady_action_to_observation(&self) -> ActionLatencyReport {
+        let mut samples = self
+            .steady_action_latencies
+            .lock()
+            .expect("action latency mutex poisoned");
+        samples.sort_unstable();
+        let percentile_ms = |percentile: usize| {
+            let rank = (samples.len() * percentile).div_ceil(100);
+            rank.checked_sub(1)
+                .map(|index| samples[index].as_secs_f64() * 1000.0)
+        };
+        let sent_count = self.steady_actions_sent.load(Ordering::Relaxed);
+        ActionLatencyReport {
+            sent_count,
+            sample_count: samples.len(),
+            unmatched_count: sent_count - samples.len() as u64,
+            p50_ms: percentile_ms(50),
+            p95_ms: percentile_ms(95),
+        }
+    }
+
     /// Records one correctness or transport failure with its session identity.
     fn fail(&self, session: usize, error: &anyhow::Error) {
         self.failures.fetch_add(1, Ordering::Relaxed);
@@ -408,6 +342,9 @@ impl Counters {
             started_sessions: self.started_sessions.load(Ordering::Relaxed),
             finished_sessions: self.finished_sessions.load(Ordering::Relaxed),
             game_messages: self.game_messages.load(Ordering::Relaxed),
+            typed_messages_sent: self.typed_messages_sent.load(Ordering::Relaxed),
+            typed_messages_verified: self.typed_messages_verified.load(Ordering::Relaxed),
+            typed_agent_replies_verified: self.typed_agent_replies_verified.load(Ordering::Relaxed),
             actions: self.actions.load(Ordering::Relaxed),
             pcm_sent: self.pcm_sent.load(Ordering::Relaxed),
             pcm_verified: self.pcm_verified.load(Ordering::Relaxed),
@@ -463,6 +400,9 @@ struct WorkloadReport {
     started_sessions: u64,
     finished_sessions: u64,
     game_messages: u64,
+    typed_messages_sent: u64,
+    typed_messages_verified: u64,
+    typed_agent_replies_verified: u64,
     actions: u64,
     pcm_sent: u64,
     pcm_verified: u64,
@@ -470,6 +410,17 @@ struct WorkloadReport {
     tts_audio: u64,
     failures: u64,
     first_failure: Option<String>,
+}
+
+/// Latencies of matching steady-phase action and observation pairs on participant A's game socket.
+#[derive(Debug, Serialize)]
+struct ActionLatencyReport {
+    sent_count: u64,
+    sample_count: usize,
+    /// Sent actions with no matching observation by the end of steady, including late observations.
+    unmatched_count: u64,
+    p50_ms: Option<f64>,
+    p95_ms: Option<f64>,
 }
 
 /// SQLite row and file verification results.
@@ -481,6 +432,9 @@ struct DatabaseReport {
     memberships: i64,
     events: i64,
     transcripts: i64,
+    typed_messages: i64,
+    agent_messages: i64,
+    speech_events: i64,
     actions: i64,
     terminal_events: i64,
     main_bytes: u64,
@@ -499,14 +453,17 @@ struct Report {
     sessions: usize,
     seconds: u64,
     pairing: Pairing,
+    communication: Communication,
+    game_backend: &'static str,
     experiment_id: &'static str,
     config_revision: Option<i64>,
-    provider: ProviderReady,
+    provider: Option<ProviderReady>,
     phases_seconds: BTreeMap<&'static str, u64>,
     descriptor_limits: DescriptorReport,
     server: ChildReport,
-    providers: ChildReport,
+    providers: Option<ChildReport>,
     workload: WorkloadReport,
+    steady_action_to_observation: ActionLatencyReport,
     database: DatabaseReport,
     cleanup_ms: u64,
     success: bool,
@@ -541,8 +498,16 @@ async fn supervise(args: Args) -> Result<()> {
     if args.seconds < 10 {
         bail!("--seconds must be at least 10");
     }
+    if let Some(path) = &args.wasm_module {
+        anyhow::ensure!(path.is_file(), "missing Wasm component {}", path.display());
+    }
+    let wasm_module_arg = args
+        .wasm_module
+        .as_deref()
+        .map(|path| path.to_str().context("Wasm component path is not UTF-8"))
+        .transpose()?;
     workload_preflight(args.sessions, args.pairing)?;
-    let limits = descriptor_preflight(args.sessions, args.pairing)?;
+    let limits = descriptor_preflight(args.sessions, args.pairing, args.communication)?;
     let run_id = format!(
         "{}-{}",
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
@@ -557,33 +522,45 @@ async fn supervise(args: Args) -> Result<()> {
     let readiness = run_dir.join("providers-ready.json");
     let executable = std::env::current_exe()?;
 
-    let mut providers = spawn_logged(
-        &executable,
-        &[
-            "__providers",
-            &readiness.display().to_string(),
-            &args.seed.to_string(),
-        ],
-        &run_dir,
-        "providers",
-    )?;
-    let provider = wait_readiness(&readiness, &mut providers).await?;
+    let (mut providers, provider) = if args.communication == Communication::Speech {
+        let mut providers = spawn_logged(
+            &executable,
+            &[
+                "__providers",
+                &readiness.display().to_string(),
+                &args.seed.to_string(),
+            ],
+            &run_dir,
+            "providers",
+        )?;
+        let provider = match wait_readiness(&readiness, &mut providers).await {
+            Ok(ready) => ready,
+            Err(error) => {
+                stop_child(&mut providers).await;
+                return Err(error);
+            }
+        };
+        (Some(providers), Some(provider))
+    } else {
+        (None, None)
+    };
     let address = reserve_address().await?;
-    let mut server = spawn_logged(
-        &executable,
-        &[
-            "__server",
-            &address.to_string(),
-            &database.display().to_string(),
-        ],
-        &run_dir,
-        "server",
-    )?;
+    let address_arg = address.to_string();
+    let database_arg = database.display().to_string();
+    let mut server_args = vec!["__server", &address_arg, &database_arg];
+    if let Some(path) = wasm_module_arg {
+        server_args.push(path);
+    }
+    let mut server = spawn_logged(&executable, &server_args, &run_dir, "server")?;
     let base = format!("http://{address}");
-    wait_health(&base, &mut server).await?;
+    wait_health(&base, &mut server).await.with_context(|| {
+        format!(
+            "server startup failed; see {}",
+            run_dir.join("server.stderr.log").display()
+        )
+    })?;
 
-    let setup_result =
-        configure_experiment(&base, &provider, args.pairing, args.sessions, &run_dir).await;
+    let setup_result = configure_experiment(&base, provider.as_ref(), &args, &run_dir).await;
     let admin = setup_result.as_ref().ok().cloned();
     let counters = Arc::new(Counters::default());
     counters
@@ -627,8 +604,11 @@ async fn supervise(args: Args) -> Result<()> {
     };
     let cleanup_ms = cleanup_started.elapsed().as_millis() as u64;
     let server_report = stop_child(&mut server).await;
-    let provider_report = stop_child(&mut providers).await;
-    let database_report = verify_database(&database, args.sessions, args.pairing).await;
+    let provider_report = match providers.as_mut() {
+        Some(child) => Some(stop_child(child).await),
+        None => None,
+    };
+    let database_report = verify_database(&database, &args, &counters.report()).await;
     let error = workload
         .as_ref()
         .err()
@@ -641,13 +621,15 @@ async fn supervise(args: Args) -> Result<()> {
         });
     let error = error.or_else(|| cleanup_result.err().map(|error| format!("{error:#}")));
     let report = Report {
-        schema_revision: 1,
+        schema_revision: 2,
         harness_revision: HARNESS_REVISION,
         profile: PROFILE,
         seed: args.seed,
         sessions: args.sessions,
         seconds: args.seconds,
         pairing: args.pairing,
+        communication: args.communication,
+        game_backend: "wasm",
         experiment_id: "runtime-stress",
         config_revision: admin.as_ref().map(|auth| auth.config_revision),
         provider,
@@ -656,6 +638,7 @@ async fn supervise(args: Args) -> Result<()> {
         server: server_report,
         providers: provider_report,
         workload: counters.report(),
+        steady_action_to_observation: counters.steady_action_to_observation(),
         database: database_report.unwrap_or_default(),
         cleanup_ms,
         success: error.is_none(),
@@ -786,13 +769,19 @@ async fn server_child(arguments: &[String]) -> Result<()> {
         .context("missing server address")?
         .parse()?;
     let database = PathBuf::from(arguments.get(1).context("missing database path")?);
+    let factory = match arguments.get(2) {
+        Some(path) => LoadedGame::load(Path::new(path))?,
+        None => {
+            LoadedGame::from_bytes(include_bytes!("../../stress-fixture/embedded/stress.wasm"))?
+        }
+    };
     let metadata = GameMetadata {
         id: "runtime-stress".into(),
         name: "Runtime Stress Fixture".into(),
         version: semver::Version::new(1, 0, 0),
         build_manifest: json!({"harness_revision": HARNESS_REVISION}),
     };
-    Server::new(StressGameFactory, metadata)?
+    Server::new(factory, metadata)?
         .database_url(format!("sqlite:///{}", database.display()))
         .agent(StressAgentFactory)?
         .serve(address)
@@ -987,9 +976,8 @@ fn validate_elevenlabs_initial(value: &Value) -> Result<()> {
 /// Configures, reads back, and activates one immutable experiment over admin HTTP.
 async fn configure_experiment(
     base: &str,
-    provider: &ProviderReady,
-    pairing: Pairing,
-    sessions: usize,
+    provider: Option<&ProviderReady>,
+    args: &Args,
     run_dir: &Path,
 ) -> Result<AdminAuth> {
     let client = reqwest::Client::new();
@@ -1006,42 +994,48 @@ async fn configure_experiment(
         .as_str()
         .context("setup response omitted CSRF token")?
         .to_string();
-    let settings = client
-        .get(format!("{base}/api/admin/game/settings"))
-        .header(reqwest::header::COOKIE, &cookie)
-        .send()
-        .await?;
-    let settings = response_value(settings, "read game settings").await?;
-    let provider_secrets = client
-        .post(format!("{base}/api/admin/game/settings"))
-        .header(reqwest::header::COOKIE, &cookie)
-        .header("x-csrf-token", &csrf)
-        .json(&json!({
-            "expected_revision": settings["revision"],
-            "institution": settings["institution"],
-            "admin_allowed_ip_ranges": settings["admin_allowed_ip_ranges"],
-            "speechmatics_realtime_url": provider.speechmatics_url,
-            "tts_base_url": provider.elevenlabs_url,
-            "secret_updates": {"speechmatics.api_key":PROVIDER_KEY,"tts.api_key":PROVIDER_KEY}
-        }))
-        .send()
-        .await?;
-    ensure_response(provider_secrets, "store provider credentials").await?;
+    if let Some(provider) = provider {
+        let settings = client
+            .get(format!("{base}/api/admin/game/settings"))
+            .header(reqwest::header::COOKIE, &cookie)
+            .send()
+            .await?;
+        let settings = response_value(settings, "read game settings").await?;
+        let provider_secrets = client
+            .post(format!("{base}/api/admin/game/settings"))
+            .header(reqwest::header::COOKIE, &cookie)
+            .header("x-csrf-token", &csrf)
+            .json(&json!({
+                "expected_revision": settings["revision"],
+                "institution": settings["institution"],
+                "admin_allowed_ip_ranges": settings["admin_allowed_ip_ranges"],
+                "speechmatics_realtime_url": provider.speechmatics_url,
+                "tts_base_url": provider.elevenlabs_url,
+                "secret_updates": {"speechmatics.api_key":PROVIDER_KEY,"tts.api_key":PROVIDER_KEY}
+            }))
+            .send()
+            .await?;
+        ensure_response(provider_secrets, "store provider credentials").await?;
+    }
+    let sessions = args.sessions;
+    let pairing = args.pairing;
     let agents = if pairing == Pairing::HumanAgent {
         json!({"mode":"human_vs_agent","human_vs_agent":{"factory":"runtime-stress"}})
     } else {
         json!({"mode":"human_vs_human"})
     };
-    let config = json!({
+    let mut config = json!({
         "direct":{"consents":[{"id":"stress","title":"Stress consent","body":"Synthetic participant","required":true}]},
-        "voice":{"enabled":true},
-        "transcription":{"enabled":true},
-        "speechmatics":{"realtime_url":provider.speechmatics_url},
-        "tts":{"enabled":pairing == Pairing::HumanAgent,"base_url":provider.elevenlabs_url,"voice_id":"stress","model":"stress","output_format":"pcm_24000"},
+        "communication":{"mode":args.communication},
         "agents":agents,
         "capacity":{"max_active_sessions":sessions + 16,"max_waiting_sessions":sessions + 16,
             "max_unattached_participants":sessions * 2 + 32,"max_transcription_streams":sessions * 2 + 32}
     });
+    if let Some(provider) = provider {
+        config["transcription"] = json!({"enabled":true});
+        config["speechmatics"] = json!({"realtime_url":provider.speechmatics_url});
+        config["tts"] = json!({"enabled":pairing == Pairing::HumanAgent,"base_url":provider.elevenlabs_url,"voice_id":"stress","model":"stress","output_format":"pcm_24000"});
+    }
     let created = client.post(format!("{base}/api/admin/experiments")).header(reqwest::header::COOKIE, &cookie)
         .header("x-csrf-token", &csrf).json(&json!({"experiment_id":"runtime-stress","config":config,"notes":"generated by cargo stress"}))
         .send().await?;
@@ -1054,13 +1048,20 @@ async fn configure_experiment(
         .send()
         .await?;
     let effective = response_value(effective, "read effective experiment").await?;
-    if effective["experiment"]["config"]["speechmatics"]["realtime_url"]
-        != provider.speechmatics_url
-    {
-        bail!("Speechmatics URL changed during normalization");
-    }
-    if effective["experiment"]["config"]["tts"]["base_url"] != provider.elevenlabs_url {
-        bail!("ElevenLabs URL changed during normalization");
+    anyhow::ensure!(
+        effective["experiment"]["config"]["communication"]["mode"]
+            == serde_json::to_value(args.communication)?,
+        "communication mode changed during normalization"
+    );
+    if let Some(provider) = provider {
+        if effective["experiment"]["config"]["speechmatics"]["realtime_url"]
+            != provider.speechmatics_url
+        {
+            bail!("Speechmatics URL changed during normalization");
+        }
+        if effective["experiment"]["config"]["tts"]["base_url"] != provider.elevenlabs_url {
+            bail!("ElevenLabs URL changed during normalization");
+        }
     }
     std::fs::write(
         run_dir.join("effective-experiment.json"),
@@ -1174,11 +1175,13 @@ async fn run_workload_inner(
         let task_counters = counters.clone();
         let task_cancelled = cancelled.clone();
         let pairing = args.pairing;
+        let communication = args.communication;
         tasks.push(tokio::spawn(async move {
             time::sleep_until(start_at.into()).await;
             let result = drive_session(
                 index,
                 pairing,
+                communication,
                 task_client,
                 task_base,
                 task_ws,
@@ -1227,10 +1230,239 @@ async fn run_workload_inner(
     Ok(())
 }
 
+/// Runs one typed room through chat, action verification, reconnect, and clean completion.
+async fn drive_typed_session(
+    index: usize,
+    client: &reqwest::Client,
+    base: &str,
+    ws: &str,
+    staged: &StagedSession,
+    measured_start: Instant,
+    deadline: Instant,
+    counters: &Counters,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<()> {
+    let room = &staged.room;
+    let mut game_a = game_socket(client, base, ws, room, &staged.a).await?;
+    let mut game_b = if let Some(b) = &staged.b {
+        Some(game_socket(client, base, ws, room, b).await?)
+    } else {
+        None
+    };
+    read_participant_state(&mut game_a, "active").await?;
+    send_json(&mut game_a, json!({"type":"ready"})).await?;
+    let mut message_ids = HashSet::new();
+    if let Some(peer) = &mut game_b {
+        read_participant_state(peer, "active").await?;
+        send_json(peer, json!({"type":"ready"})).await?;
+    } else {
+        let greeting = read_typed_message(&mut game_a, room, "B", "agent reply initial").await?;
+        message_ids.insert(greeting);
+        counters.game_messages.fetch_add(1, Ordering::Relaxed);
+    }
+    counters.started_sessions.fetch_add(1, Ordering::Relaxed);
+
+    let total = deadline.duration_since(measured_start);
+    let started = Instant::now();
+    let mut next_message = started;
+    let mut next_action = started + Duration::from_secs(3);
+    let mut next_heartbeat = started + Duration::from_secs(1);
+    let mut action_sequence = 1u32;
+    let mut exchange = 0u32;
+    let mut reconnected = false;
+    while !cancelled.load(Ordering::Relaxed) {
+        let now = Instant::now();
+        let phase = phase_name(now.duration_since(measured_start), total);
+        if phase == "drain" && exchange != 0 {
+            finish_session(&mut game_a, room, action_sequence, counters).await?;
+            if let Some(peer) = &mut game_b {
+                let deadline = time::Instant::now() + Duration::from_secs(10);
+                if !matches!(
+                    read_finish_outcome(peer, room, deadline).await?,
+                    FinishOutcome::Completed
+                ) {
+                    bail!("room {room} role B did not observe successful completion");
+                }
+            }
+            break;
+        }
+        if phase == "churn" && index % 4 == 0 && !reconnected {
+            let _ = game_a.close(None).await;
+            game_a = game_socket(client, base, ws, room, &staged.a).await?;
+            read_participant_state(&mut game_a, "active").await?;
+            send_json(&mut game_a, json!({"type":"ready"})).await?;
+            counters.reconnects.fetch_add(1, Ordering::Relaxed);
+            reconnected = true;
+            next_message = now;
+        }
+        if now >= next_message {
+            exercise_typed_chat(
+                &mut game_a,
+                game_b.as_mut(),
+                room,
+                exchange,
+                &mut message_ids,
+                counters,
+            )
+            .await?;
+            exchange += 1;
+            next_message = Instant::now() + Duration::from_secs(4);
+        }
+        if now >= next_action {
+            let sent_at = Instant::now();
+            let steady_end = measured_start + total / 2;
+            let steady = phase_name(sent_at.duration_since(measured_start), total) == "steady";
+            send_json(&mut game_a, json!({
+                "type":"action","action":{"type":"mark","sequence":action_sequence,"finish":false}
+            })).await?;
+            counters.actions.fetch_add(1, Ordering::Relaxed);
+            if steady {
+                counters.steady_actions_sent.fetch_add(1, Ordering::Relaxed);
+            }
+            read_typed_mark(&mut game_a, room, "A", action_sequence).await?;
+            let observed_at = Instant::now();
+            if steady && observed_at < steady_end {
+                counters
+                    .steady_action_latencies
+                    .lock()
+                    .expect("action latency mutex poisoned")
+                    .push(observed_at.duration_since(sent_at));
+            }
+            if let Some(peer) = &mut game_b {
+                read_typed_mark(peer, room, "B", action_sequence).await?;
+            }
+            action_sequence += 1;
+            next_action = Instant::now() + Duration::from_secs(5);
+        }
+        if now >= next_heartbeat {
+            send_json(&mut game_a, json!({"type":"heartbeat"})).await?;
+            if let Some(peer) = &mut game_b {
+                send_json(peer, json!({"type":"heartbeat"})).await?;
+            }
+            next_heartbeat = Instant::now() + Duration::from_secs(1);
+        }
+        let boundary = match phase {
+            "ramp" | "steady" => measured_start + total / 2,
+            "churn" => measured_start + total.mul_f64(0.8),
+            _ => now,
+        };
+        let next = boundary
+            .min(next_message)
+            .min(next_action)
+            .min(next_heartbeat);
+        time::sleep_until(next.into()).await;
+    }
+    let _ = game_a.close(None).await;
+    if let Some(peer) = &mut game_b {
+        let _ = peer.close(None).await;
+    }
+    counters.finished_sessions.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Verifies the sender echo and partner behavior for one uniquely identified typed exchange.
+async fn exercise_typed_chat(
+    game_a: &mut Socket,
+    game_b: Option<&mut Socket>,
+    room: &str,
+    exchange: u32,
+    message_ids: &mut HashSet<String>,
+    counters: &Counters,
+) -> Result<()> {
+    let text = format!("typed stress {room} A {exchange}");
+    send_json(game_a, json!({"type":"message","text":text})).await?;
+    counters.typed_messages_sent.fetch_add(1, Ordering::Relaxed);
+    let id = read_typed_message(game_a, room, "A", &text).await?;
+    if let Some(peer) = game_b {
+        if read_typed_message(peer, room, "A", &text).await? != id {
+            bail!("room {room} role B received a different id for role A's message");
+        }
+        counters.game_messages.fetch_add(2, Ordering::Relaxed);
+        counters
+            .typed_messages_verified
+            .fetch_add(1, Ordering::Relaxed);
+        let reply = format!("typed stress {room} B {exchange}");
+        send_json(peer, json!({"type":"message","text":reply})).await?;
+        counters.typed_messages_sent.fetch_add(1, Ordering::Relaxed);
+        let reply_id = read_typed_message(peer, room, "B", &reply).await?;
+        if read_typed_message(game_a, room, "B", &reply).await? != reply_id {
+            bail!("room {room} role A received a different id for role B's message");
+        }
+        if !message_ids.insert(id) || !message_ids.insert(reply_id) {
+            bail!("room {room} reused a typed message id");
+        }
+        counters.game_messages.fetch_add(2, Ordering::Relaxed);
+        counters
+            .typed_messages_verified
+            .fetch_add(1, Ordering::Relaxed);
+    } else {
+        let reply = format!("agent reply {text}");
+        let reply_id = read_typed_message(game_a, room, "B", &reply).await?;
+        if !message_ids.insert(id) || !message_ids.insert(reply_id) {
+            bail!("room {room} reused a typed message id");
+        }
+        counters.game_messages.fetch_add(2, Ordering::Relaxed);
+        counters
+            .typed_messages_verified
+            .fetch_add(1, Ordering::Relaxed);
+        counters
+            .typed_agent_replies_verified
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// Reads and checks an exact typed broadcast and returns its server-issued identifier.
+async fn read_typed_message(
+    socket: &mut Socket,
+    room: &str,
+    sender: &str,
+    text: &str,
+) -> Result<String> {
+    let payload = read_type(socket, "message").await?;
+    let message = &payload["message"];
+    if payload["public_session_id"] != room
+        || message["sender"] != sender
+        || message["input"] != "text"
+        || message["text"] != text
+    {
+        bail!("room {room} expected typed message {text:?} from role {sender}, received {payload}");
+    }
+    message["id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .with_context(|| format!("room {room} typed message omitted its id"))
+}
+
+/// Checks a role-specific view of the mark submitted by the human in seat A.
+async fn read_typed_mark(
+    socket: &mut Socket,
+    room: &str,
+    viewer: &str,
+    sequence: u32,
+) -> Result<()> {
+    let mark = read_type(socket, "transition").await?;
+    let action = &mark["action"];
+    let observation = &mark["observation"];
+    if mark["public_session_id"] != room
+        || mark["actor"] != "A"
+        || action["type"] != "mark"
+        || action["finish"] != false
+        || action["sequence"] != sequence
+        || observation["role"] != viewer
+        || observation["last_sequence"][0] != sequence
+    {
+        bail!("room {room} expected role {viewer}'s view of A's mark {sequence}, received {mark}");
+    }
+    Ok(())
+}
+
 /// Drives public game/audio sockets for one staged session and verifies relay/TTS traffic.
 async fn drive_session(
     index: usize,
     pairing: Pairing,
+    communication: Communication,
     client: reqwest::Client,
     base: String,
     ws: String,
@@ -1240,6 +1472,20 @@ async fn drive_session(
     counters: Arc<Counters>,
     cancelled: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
+    if communication == Communication::Typed {
+        return drive_typed_session(
+            index,
+            &client,
+            &base,
+            &ws,
+            &staged,
+            measured_start,
+            deadline,
+            &counters,
+            &cancelled,
+        )
+        .await;
+    }
     let mut game_a = game_socket(&client, &base, &ws, &staged.room, &staged.a).await?;
     let mut audio_a = audio_socket(&client, &base, &ws, &staged.room, &staged.a).await?;
     let mut game_b = if let Some(b) = &staged.b {
@@ -1264,16 +1510,19 @@ async fn drive_session(
     }
     counters.started_sessions.fetch_add(1, Ordering::Relaxed);
     let mut sequence = 1u32;
+    let mut frames_on_audio_connection = 0u32;
     let mut reconnected = false;
     let mut next_message = Instant::now() + Duration::from_secs(2);
     let mut next_action = Instant::now() + Duration::from_secs(3);
     let mut next_heartbeat = Instant::now() + Duration::from_secs(1);
     let mut next_frame = Instant::now();
+    let total = deadline.duration_since(measured_start);
+    let mut pending_actions = BTreeMap::new();
     while Instant::now() < deadline && !cancelled.load(Ordering::Relaxed) {
-        let phase = phase_name(
-            measured_start.elapsed(),
-            deadline.duration_since(measured_start),
-        );
+        let phase = phase_name(measured_start.elapsed(), total);
+        if phase != "steady" {
+            pending_actions.clear();
+        }
         if phase == "drain" {
             finish_session(&mut game_a, &staged.room, sequence, &counters).await?;
             break;
@@ -1282,11 +1531,13 @@ async fn drive_session(
             let _ = game_a.close(None).await;
             let _ = audio_a.close(None).await;
             game_a = game_socket(&client, &base, &ws, &staged.room, &staged.a).await?;
-            audio_a = audio_socket(&client, &base, &ws, &staged.room, &staged.a).await?;
+            // The upgrade can return before the server clears the pause, which blocks audio tickets.
             read_participant_state(&mut game_a, "active").await?;
+            audio_a = audio_socket(&client, &base, &ws, &staged.room, &staged.a).await?;
             send_json(&mut game_a, json!({"type":"ready"})).await?;
             counters.reconnects.fetch_add(2, Ordering::Relaxed);
             reconnected = true;
+            frames_on_audio_connection = 0;
         }
         let encoded = AudioFrame {
             sequence,
@@ -1295,6 +1546,7 @@ async fn drive_session(
         }
         .encode();
         audio_a.send(Message::Binary(encoded.clone())).await?;
+        frames_on_audio_connection += 1;
         counters.pcm_sent.fetch_add(1, Ordering::Relaxed);
         if let Some(peer) = &mut audio_b {
             if read_binary(peer).await? != encoded {
@@ -1314,18 +1566,22 @@ async fn drive_session(
             }
             counters.pcm_verified.fetch_add(1, Ordering::Relaxed);
         }
-        if Instant::now() >= next_message {
-            let text = format!("stress:{index}:{sequence}");
-            send_json(&mut game_a, json!({"type":"message","text":text})).await?;
-            counters.game_messages.fetch_add(1, Ordering::Relaxed);
+        if pairing == Pairing::HumanAgent
+            && Instant::now() >= next_message
+            && frames_on_audio_connection >= 100
+        {
+            read_tts_fingerprint(&mut audio_a, "agent reply stress").await?;
+            counters.tts_audio.fetch_add(1, Ordering::Relaxed);
             next_message += Duration::from_secs(4);
-            if pairing == Pairing::HumanAgent {
-                read_tts_fingerprint(&mut audio_a, &format!("agent reply {text}")).await?;
-                counters.tts_audio.fetch_add(1, Ordering::Relaxed);
-            }
         }
         if Instant::now() >= next_action {
-            send_json(&mut game_a, json!({"type":"action","action":{"type":"mark","sequence":sequence,"finish":false}})).await?;
+            let action = json!({"type":"action","action":{"type":"mark","sequence":sequence,"finish":false}});
+            let sent_at = Instant::now();
+            send_json(&mut game_a, action).await?;
+            if phase_name(sent_at.duration_since(measured_start), total) == "steady" {
+                counters.steady_actions_sent.fetch_add(1, Ordering::Relaxed);
+                pending_actions.insert(u64::from(sequence), sent_at);
+            }
             counters.actions.fetch_add(1, Ordering::Relaxed);
             next_action += Duration::from_secs(5);
         }
@@ -1338,10 +1594,23 @@ async fn drive_session(
         }
         sequence = sequence.wrapping_add(1);
         next_frame += FRAME_INTERVAL;
-        if next_frame > Instant::now() {
+        let now = Instant::now();
+        if phase_name(now.duration_since(measured_start), total) == "steady" {
+            let steady_end = measured_start + total / 2;
+            read_steady_observations(
+                &mut game_a,
+                &staged.room,
+                next_frame.min(steady_end),
+                steady_end,
+                &mut pending_actions,
+                &counters,
+            )
+            .await?;
+            next_frame = next_frame.max(now);
+        } else if next_frame > now {
             time::sleep_until(next_frame.into()).await;
         } else {
-            next_frame = Instant::now();
+            next_frame = now;
         }
     }
     let _ = game_a.close(None).await;
@@ -1354,6 +1623,63 @@ async fn drive_session(
     }
     counters.finished_sessions.fetch_add(1, Ordering::Relaxed);
     Ok(())
+}
+
+/// Polls participant A's observations during PCM pacing and correlates each accepted action once.
+async fn read_steady_observations(
+    socket: &mut Socket,
+    room: &str,
+    next_frame: Instant,
+    steady_end: Instant,
+    pending: &mut BTreeMap<u64, Instant>,
+    counters: &Counters,
+) -> Result<()> {
+    let frame_timer = time::sleep_until(next_frame.into());
+    tokio::pin!(frame_timer);
+    loop {
+        let frame = tokio::select! {
+            _ = &mut frame_timer => return Ok(()),
+            frame = socket.next() => frame.context("game socket closed during steady phase")??,
+        };
+        let received_at = Instant::now();
+        if received_at >= steady_end {
+            return Ok(());
+        }
+        let Message::Text(text) = frame else {
+            continue;
+        };
+        let payload: Value = serde_json::from_str(&text)?;
+        if payload["type"] == "error" {
+            bail!("game socket error during steady phase: {payload}");
+        }
+        if payload["type"] == "message" && payload["public_session_id"] == room {
+            counters.game_messages.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some(sent_at) =
+            observed_action_sequence(room, &payload).and_then(|sequence| pending.remove(&sequence))
+        {
+            counters
+                .steady_action_latencies
+                .lock()
+                .expect("action latency mutex poisoned")
+                .push(received_at.duration_since(sent_at));
+        }
+    }
+}
+
+/// Identifies a nonterminal A mark from its action and resulting role-A observation.
+fn observed_action_sequence(room: &str, payload: &Value) -> Option<u64> {
+    let action = &payload["action"];
+    let observation = &payload["observation"];
+    let sequence = action["sequence"].as_u64()?;
+    (payload["type"] == "transition"
+        && payload["public_session_id"] == room
+        && payload["actor"] == "A"
+        && action["type"] == "mark"
+        && action["finish"] == false
+        && observation["role"] == "A"
+        && observation["last_sequence"][0].as_u64() == Some(sequence))
+    .then_some(sequence)
 }
 
 /// Keeps both participants connected until the server durably accepts session completion.
@@ -1372,12 +1698,14 @@ async fn finish_session(
         )
         .await?;
         counters.actions.fetch_add(1, Ordering::Relaxed);
-        let outcome = read_finish_outcome(game, deadline).await.with_context(|| {
-            format!(
-                "room {room} did not complete within 10s; last readiness rejection: {}",
-                last_rejection.as_deref().unwrap_or("none")
-            )
-        })?;
+        let outcome = read_finish_outcome(game, room, deadline)
+            .await
+            .with_context(|| {
+                format!(
+                    "room {room} did not complete within 10s; last readiness rejection: {}",
+                    last_rejection.as_deref().unwrap_or("none")
+                )
+            })?;
         match outcome {
             FinishOutcome::Completed => return Ok(()),
             FinishOutcome::Retryable(code) => {
@@ -1404,7 +1732,11 @@ enum FinishOutcome {
 }
 
 /// Reads through unrelated broadcasts until completion or an actionable rejection arrives.
-async fn read_finish_outcome(game: &mut Socket, deadline: time::Instant) -> Result<FinishOutcome> {
+async fn read_finish_outcome(
+    game: &mut Socket,
+    room: &str,
+    deadline: time::Instant,
+) -> Result<FinishOutcome> {
     loop {
         let remaining = deadline.saturating_duration_since(time::Instant::now());
         if remaining.is_zero() {
@@ -1420,7 +1752,15 @@ async fn read_finish_outcome(game: &mut Socket, deadline: time::Instant) -> Resu
         let value: Value = serde_json::from_str(&text)?;
         match value["type"].as_str() {
             Some("participant_state") if value["participant_state"]["state"] == "ended" => {
-                return Ok(FinishOutcome::Completed)
+                let state = &value["participant_state"];
+                if state["public_session_id"] != room
+                    || state["result"]["outcome"] != "completed"
+                    || state["result"]["reason"] != "game_completed"
+                    || state["result"]["completion"].is_null()
+                {
+                    bail!("room {room} reported an unexpected terminal state: {state}");
+                }
+                return Ok(FinishOutcome::Completed);
             }
             Some("action_rejected") => {
                 let code = value["code"]
@@ -1545,19 +1885,27 @@ async fn ticket_socket(
 
 /// Reads the next matching game protocol message.
 async fn read_type(socket: &mut Socket, expected: &str) -> Result<Value> {
+    let deadline = time::Instant::now() + SOCKET_TIMEOUT;
     for _ in 0..64 {
-        let message = time::timeout(SOCKET_TIMEOUT, socket.next())
+        let message = time::timeout_at(deadline, socket.next())
             .await
-            .context("game socket timeout")?
+            .with_context(|| format!("game socket timed out waiting for {expected}"))?
             .context("game socket closed")??;
-        if let Message::Text(text) = message {
-            let value: Value = serde_json::from_str(&text)?;
-            if value["type"] == "error" {
-                bail!("game socket error: {value}");
+        match message {
+            Message::Text(text) => {
+                let value: Value = serde_json::from_str(&text)?;
+                if value["type"] == "error" {
+                    bail!("game socket error: {value}");
+                }
+                if expected == "transition" && value["type"] == "action_rejected" {
+                    bail!("game action was rejected: {value}");
+                }
+                if value["type"] == expected {
+                    return Ok(value);
+                }
             }
-            if value["type"] == expected {
-                return Ok(value);
-            }
+            Message::Close(frame) => bail!("game socket closed waiting for {expected}: {frame:?}"),
+            _ => {}
         }
     }
     bail!("did not receive {expected}")
@@ -1567,8 +1915,12 @@ async fn read_type(socket: &mut Socket, expected: &str) -> Result<Value> {
 async fn read_participant_state(socket: &mut Socket, expected: &str) -> Result<Value> {
     loop {
         let message = read_type(socket, "participant_state").await?;
-        if message["participant_state"]["state"] == expected {
-            return Ok(message["participant_state"].clone());
+        let state = &message["participant_state"];
+        if state["state"] == expected {
+            return Ok(state.clone());
+        }
+        if state["state"] == "ended" {
+            bail!("game ended while waiting for {expected}: {state}");
         }
     }
 }
@@ -1722,6 +2074,20 @@ fn workload_snapshot(
         value,
         health,
     };
+    let speech = args.communication == Communication::Speech;
+    let series = [
+        (" Actions / second ", &rates.actions),
+        (" Messages / second ", &rates.messages),
+        (" PCM frames / second ", &rates.pcm),
+        (" TTS publications / second ", &rates.tts),
+    ]
+    .into_iter()
+    .take(if speech { 4 } else { 2 })
+    .map(|(title, samples)| DashboardSeries {
+        title: title.into(),
+        values: samples.iter().copied().collect(),
+    })
+    .collect();
     DashboardSnapshot {
         title: format!("Parlando runtime stress r{HARNESS_REVISION}"),
         mode: PROFILE.into(),
@@ -1763,18 +2129,42 @@ fn workload_snapshot(
                 ],
             },
             DashboardPanel {
-                title: " Audio & correctness ".into(),
+                title: if speech {
+                    " Audio & correctness "
+                } else {
+                    " Chat & correctness "
+                }
+                .into(),
                 metrics: vec![
-                    metric(
-                        "PCM sent / verified",
-                        format!("{} / {}", report.pcm_sent, report.pcm_verified),
-                        DashboardHealth::Good,
-                    ),
-                    metric(
-                        "Agent TTS",
-                        format!("{} total · {}/s", report.tts_audio, latest(&rates.tts)),
-                        DashboardHealth::Good,
-                    ),
+                    if speech {
+                        metric(
+                            "PCM sent / verified",
+                            format!("{} / {}", report.pcm_sent, report.pcm_verified),
+                            DashboardHealth::Good,
+                        )
+                    } else {
+                        metric(
+                            "Typed sent / verified",
+                            format!(
+                                "{} / {}",
+                                report.typed_messages_sent, report.typed_messages_verified
+                            ),
+                            DashboardHealth::Good,
+                        )
+                    },
+                    if speech {
+                        metric(
+                            "Agent TTS",
+                            format!("{} total · {}/s", report.tts_audio, latest(&rates.tts)),
+                            DashboardHealth::Good,
+                        )
+                    } else {
+                        metric(
+                            "Agent replies verified",
+                            report.typed_agent_replies_verified.to_string(),
+                            DashboardHealth::Good,
+                        )
+                    },
                     metric(
                         "Failures",
                         report.failures.to_string(),
@@ -1795,33 +2185,29 @@ fn workload_snapshot(
                         format!("{:?}", args.pairing),
                         DashboardHealth::Neutral,
                     ),
-                    metric("Seed", args.seed.to_string(), DashboardHealth::Neutral),
                     metric(
-                        "PCM throughput",
-                        format!("{} frames/s", latest(&rates.pcm)),
-                        DashboardHealth::Good,
+                        "Communication",
+                        format!("{:?}", args.communication),
+                        DashboardHealth::Neutral,
                     ),
+                    metric("Seed", args.seed.to_string(), DashboardHealth::Neutral),
+                    if speech {
+                        metric(
+                            "PCM throughput",
+                            format!("{} frames/s", latest(&rates.pcm)),
+                            DashboardHealth::Good,
+                        )
+                    } else {
+                        metric(
+                            "Chat throughput",
+                            format!("{} messages/s", latest(&rates.messages)),
+                            DashboardHealth::Good,
+                        )
+                    },
                 ],
             },
         ],
-        series: vec![
-            DashboardSeries {
-                title: " Actions / second ".into(),
-                values: rates.actions.iter().copied().collect(),
-            },
-            DashboardSeries {
-                title: " Messages / second ".into(),
-                values: rates.messages.iter().copied().collect(),
-            },
-            DashboardSeries {
-                title: " PCM frames / second ".into(),
-                values: rates.pcm.iter().copied().collect(),
-            },
-            DashboardSeries {
-                title: " TTS publications / second ".into(),
-                values: rates.tts.iter().copied().collect(),
-            },
-        ],
+        series,
         tiles: counters
             .room_failures
             .lock()
@@ -1860,6 +2246,10 @@ fn print_report_summary(report: &Report, path: &Path) {
         Pairing::HumanAgent => "human-agent",
         Pairing::HumanHuman => "human-human",
     };
+    let communication = match report.communication {
+        Communication::Typed => "typed",
+        Communication::Speech => "speech",
+    };
     let session_noun = if report.sessions == 1 {
         "session"
     } else {
@@ -1868,8 +2258,8 @@ fn print_report_summary(report: &Report, path: &Path) {
     let run_directory = path.parent().unwrap_or_else(|| Path::new("."));
     eprintln!();
     eprintln!(
-        "Parlando runtime stress: {outcome} — {pairing}, {} {session_noun} for {}s",
-        report.sessions, report.seconds
+        "Parlando runtime stress: {outcome} — {}, {pairing}, {communication}, {} {session_noun} for {}s",
+        report.game_backend, report.sessions, report.seconds
     );
     if report.success {
         eprintln!(
@@ -1889,15 +2279,43 @@ fn print_report_summary(report: &Report, path: &Path) {
         report.workload.finished_sessions,
         report.workload.failures
     );
-    eprintln!(
-        "  Average load: {:.1} PCM frames/s, {:.1} messages/s, {:.1} offered actions/s, {:.1} TTS publications/s.",
-        rate(report.workload.pcm_sent),
-        rate(report.workload.game_messages),
-        rate(report.workload.actions),
-        rate(report.workload.tts_audio)
-    );
-    match report.pairing {
-        Pairing::HumanHuman => eprintln!(
+    if report.communication == Communication::Speech {
+        eprintln!(
+            "  Average load: {:.1} PCM frames/s, {:.1} observed messages/s, {:.1} offered actions/s, {:.1} TTS publications/s.",
+            rate(report.workload.pcm_sent),
+            rate(report.workload.game_messages),
+            rate(report.workload.actions),
+            rate(report.workload.tts_audio)
+        );
+    } else {
+        eprintln!(
+            "  Average load: {:.1} typed messages/s, {:.1} offered actions/s.",
+            rate(report.workload.typed_messages_sent),
+            rate(report.workload.actions),
+        );
+    }
+    let latency = &report.steady_action_to_observation;
+    if let (Some(p50), Some(p95)) = (latency.p50_ms, latency.p95_ms) {
+        eprintln!(
+            "  Steady action-to-observation latency: p50 {p50:.2} ms, p95 {p95:.2} ms ({}/{} sampled, {} unmatched).",
+            latency.sample_count, latency.sent_count, latency.unmatched_count
+        );
+    } else {
+        eprintln!(
+            "  Steady action-to-observation latency: 0/{} sampled, {} unmatched.",
+            latency.sent_count, latency.unmatched_count
+        );
+    }
+    match (report.communication, report.pairing) {
+        (Communication::Typed, _) => eprintln!(
+            "  Chat: {} of {} typed messages and {} agent replies verified. SQLite stored {} typed and {} agent messages.",
+            report.workload.typed_messages_verified,
+            report.workload.typed_messages_sent,
+            report.workload.typed_agent_replies_verified,
+            report.database.typed_messages,
+            report.database.agent_messages
+        ),
+        (Communication::Speech, Pairing::HumanHuman) => eprintln!(
             "  Audio: {} of {} full-duplex relay frames verified ({:.1}%).",
             report.workload.pcm_verified,
             report.workload.pcm_sent,
@@ -1905,7 +2323,7 @@ fn print_report_summary(report: &Report, path: &Path) {
                 report.workload.pcm_verified as f64 * 100.0 / report.workload.pcm_sent as f64
             }
         ),
-        Pairing::HumanAgent => eprintln!(
+        (Communication::Speech, Pairing::HumanAgent) => eprintln!(
             "  Audio: human PCM exercised ASR; {} final transcripts and {} fingerprint-verified TTS publications were durable.",
             report.database.transcripts, report.workload.tts_audio
         ),
@@ -1937,7 +2355,12 @@ fn print_report_summary(report: &Report, path: &Path) {
     } else {
         eprintln!(
             "  Cleanup: {} ms; server {}; providers {}.",
-            report.cleanup_ms, report.server.status, report.providers.status
+            report.cleanup_ms,
+            report.server.status,
+            report
+                .providers
+                .as_ref()
+                .map_or("disabled", |child| child.status.as_str())
         );
     }
     if let Some(error) = &report.error {
@@ -1945,27 +2368,17 @@ fn print_report_summary(report: &Report, path: &Path) {
     }
     eprintln!("  Artifacts: {}", run_directory.display());
     eprintln!("  JSON report: {}", path.display());
-    if report.success {
-        let increased =
-            (report.sessions.saturating_mul(5).saturating_add(3) / 4).max(report.sessions + 1);
-        eprintln!("  Next: repeat this exact run three times to establish consistency:");
-        eprintln!("        cargo stress --sessions {} --seconds {} --pairing {pairing} --seed {} --headless", report.sessions, report.seconds, report.seed);
-        eprintln!("        Then probe higher: cargo stress --sessions {increased} --seconds {} --pairing {pairing} --seed {} --headless", report.seconds.max(120), report.seed);
-    } else {
-        eprintln!(
-            "  Next: inspect {}/server.stderr.log and retry the same seed headlessly:",
-            run_directory.display()
-        );
-        eprintln!("        cargo stress --sessions {} --seconds {} --pairing {pairing} --seed {} --headless --keep", report.sessions, report.seconds, report.seed);
-    }
+    eprintln!("  Repeat with the same Wasm module, seed and workload to compare runs.");
 }
 
 /// Opens the stopped SQLite database, checkpoints WAL, and verifies durable invariants.
 async fn verify_database(
     database: &Path,
-    expected_sessions: usize,
-    pairing: Pairing,
+    args: &Args,
+    workload: &WorkloadReport,
 ) -> Result<DatabaseReport> {
+    let expected_sessions = args.sessions;
+    let pairing = args.pairing;
     let bytes = |path: &Path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let wal = PathBuf::from(format!("{}-wal", database.display()));
     let shm = PathBuf::from(format!("{}-shm", database.display()));
@@ -1996,7 +2409,25 @@ async fn verify_database(
         }
     };
     let actions = event_count("game_action_accepted").await?;
-    let transcripts = sqlx::query_scalar::<_, i64>("select count(*) from session_events where event_type = 'conversation_message' and json_extract(payload_json, '$.origin') = 'voice_transcript'").fetch_one(&pool).await?;
+    let message_count = |origin: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "select count(*) from session_events where event_type = 'conversation_message'
+                 and json_extract(payload_json, '$.origin') = ?",
+            )
+            .bind(origin)
+            .fetch_one(&pool)
+            .await
+        }
+    };
+    let transcripts = message_count("voice_transcript").await?;
+    let typed_messages = message_count("typed").await?;
+    let agent_messages = message_count("agent").await?;
+    let speech_events = sqlx::query_scalar::<_, i64>(
+        "select count(*) from session_events where event_type in
+         ('conversation_speech_timing', 'tts_diagnostic', 'transcription_diagnostic', 'voice_diagnostic')",
+    ).fetch_one(&pool).await?;
     let terminal_events = sqlx::query_scalar::<_, i64>("select count(*) from session_events where event_type in ('session_completed','session_abandoned','session_expired')").fetch_one(&pool).await?;
     if sessions != expected_sessions as i64 {
         bail!("SQLite sessions {sessions} did not match target {expected_sessions}");
@@ -2015,9 +2446,68 @@ async fn verify_database(
     if memberships < expected_memberships || events == 0 || actions == 0 {
         bail!("SQLite is missing memberships, events, or actions");
     }
-    if transcripts == 0 {
-        bail!("SQLite contains no final Speechmatics transcripts");
+    match args.communication {
+        Communication::Typed => {
+            anyhow::ensure!(
+                transcripts == 0 && speech_events == 0,
+                "typed workload persisted speech events"
+            );
+            anyhow::ensure!(
+                typed_messages as u64 == workload.typed_messages_sent
+                    && workload.typed_messages_verified == workload.typed_messages_sent,
+                "typed message counts diverged (sent {}, verified {}, persisted {typed_messages})",
+                workload.typed_messages_sent,
+                workload.typed_messages_verified,
+            );
+            if pairing == Pairing::HumanAgent {
+                anyhow::ensure!(
+                    workload.typed_agent_replies_verified == workload.typed_messages_sent,
+                    "verified {} agent replies for {} typed messages",
+                    workload.typed_agent_replies_verified,
+                    workload.typed_messages_sent,
+                );
+            }
+            let expected_agent_messages = if pairing == Pairing::HumanAgent {
+                expected_sessions as u64 + workload.typed_agent_replies_verified
+            } else {
+                0
+            };
+            anyhow::ensure!(
+                agent_messages as u64 == expected_agent_messages,
+                "SQLite stored {agent_messages} agent messages, expected {expected_agent_messages}"
+            );
+            anyhow::ensure!(
+                workload.pcm_sent == 0 && workload.pcm_verified == 0 && workload.tts_audio == 0,
+                "typed workload recorded audio traffic"
+            );
+            let provider_credentials = sqlx::query_scalar::<_, i64>(
+                "select count(*) from game_secrets
+                 where secret_key in ('speechmatics.api_key', 'tts.api_key')",
+            )
+            .fetch_one(&pool)
+            .await?;
+            anyhow::ensure!(
+                provider_credentials == 0,
+                "typed workload stored speech provider credentials"
+            );
+            verify_typed_dialogues(&pool, expected_sessions, pairing).await?;
+        }
+        Communication::Speech => {
+            anyhow::ensure!(
+                transcripts > 0,
+                "SQLite contains no final Speechmatics transcripts"
+            );
+            anyhow::ensure!(
+                typed_messages == 0,
+                "speech workload persisted typed messages"
+            );
+        }
     }
+    let completed = event_count("session_completed").await?;
+    anyhow::ensure!(
+        completed == expected_sessions as i64,
+        "SQLite recorded {completed} completed games for {expected_sessions} sessions"
+    );
     if terminal_events != expected_sessions as i64 {
         bail!(
             "SQLite terminal events {terminal_events} did not match sessions {expected_sessions}"
@@ -2034,6 +2524,9 @@ async fn verify_database(
         memberships,
         events,
         transcripts,
+        typed_messages,
+        agent_messages,
+        speech_events,
         actions,
         terminal_events,
         main_bytes,
@@ -2043,15 +2536,54 @@ async fn verify_database(
     })
 }
 
+/// Verifies one durable typed exchange per session with the configured counterpart.
+async fn verify_typed_dialogues(
+    pool: &sqlx::SqlitePool,
+    sessions: usize,
+    pairing: Pairing,
+) -> Result<()> {
+    let counterpart = match pairing {
+        Pairing::HumanAgent => "agent",
+        Pairing::HumanHuman => "typed",
+    };
+    let exchanges = sqlx::query_scalar::<_, i64>(
+        "select count(*) from sessions s where exists (
+             select 1 from session_events first
+             join session_events reply on reply.experiment_id = first.experiment_id
+                 and reply.session_id = first.session_id and reply.event_index > first.event_index
+             where first.experiment_id = s.experiment_id and first.session_id = s.session_id
+               and first.event_type = 'conversation_message' and first.actor_role = 'A'
+               and json_extract(first.payload_json, '$.origin') = 'typed'
+               and reply.event_type = 'conversation_message' and reply.actor_role = 'B'
+               and json_extract(reply.payload_json, '$.origin') = ?
+               and (? != 'agent' or json_extract(reply.payload_json, '$.text') =
+                   'agent reply ' || json_extract(first.payload_json, '$.text'))
+         )",
+    )
+    .bind(counterpart)
+    .bind(counterpart)
+    .fetch_one(pool)
+    .await?;
+    anyhow::ensure!(
+        exchanges == sessions as i64,
+        "SQLite recorded typed exchanges in {exchanges} of {sessions} sessions"
+    );
+    Ok(())
+}
+
 /// Computes and raises the inherited descriptor soft limit before spawning children.
-fn descriptor_preflight(sessions: usize, pairing: Pairing) -> Result<DescriptorReport> {
-    let required = 128
-        + sessions as u64
-            * if pairing == Pairing::HumanHuman {
-                10
-            } else {
-                8
-            };
+fn descriptor_preflight(
+    sessions: usize,
+    pairing: Pairing,
+    communication: Communication,
+) -> Result<DescriptorReport> {
+    let per_session = match (communication, pairing) {
+        (Communication::Typed, Pairing::HumanHuman) => 6,
+        (Communication::Typed, Pairing::HumanAgent) => 4,
+        (Communication::Speech, Pairing::HumanHuman) => 10,
+        (Communication::Speech, Pairing::HumanAgent) => 8,
+    };
+    let required = 128 + sessions as u64 * per_session;
     #[cfg(unix)]
     unsafe {
         let mut limit = libc::rlimit {
@@ -2100,6 +2632,7 @@ fn spawn_logged(
     let mut command = Command::new(executable);
     command
         .args(arguments)
+        .kill_on_drop(true)
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
     #[cfg(unix)]
@@ -2214,7 +2747,7 @@ fn sample_process(pid: u32) -> Option<(Option<u64>, Option<f64>, Option<usize>)>
     #[cfg(not(target_os = "macos"))]
     {
         let output = std::process::Command::new("ps")
-            .args(["-o", "rss=", "-o", "%cpu=", "-p", &pid.to_string()])
+            .args(["-o", "rss=", "-o", "time=", "-p", &pid.to_string()])
             .output()
             .ok()?;
         let text = String::from_utf8(output.stdout).ok()?;
@@ -2223,7 +2756,7 @@ fn sample_process(pid: u32) -> Option<(Option<u64>, Option<f64>, Option<usize>)>
             .next()
             .and_then(|value| value.parse::<u64>().ok())
             .map(|kib| kib * 1024);
-        let cpu = fields.next().and_then(|value| value.parse::<f64>().ok());
+        let cpu = fields.next().and_then(parse_process_cpu_time);
         let fds = std::fs::read_dir(format!("/proc/{pid}/fd"))
             .ok()
             .map(|items| items.count())
@@ -2241,6 +2774,23 @@ fn sample_process(pid: u32) -> Option<(Option<u64>, Option<f64>, Option<usize>)>
             });
         Some((rss, cpu, fds))
     }
+}
+
+/// Converts the cumulative ps TIME field ([days-]hours:minutes:seconds) to seconds.
+#[cfg(any(not(target_os = "macos"), test))]
+fn parse_process_cpu_time(value: &str) -> Option<f64> {
+    let (days, time) = match value.split_once('-') {
+        Some((days, time)) => (days.parse::<u64>().ok()?, time),
+        None => (0, value),
+    };
+    let mut parts = time.rsplit(':');
+    let seconds = parts.next()?.parse::<f64>().ok()?;
+    let minutes = parts.next()?.parse::<u64>().ok()?;
+    let hours = parts.next().unwrap_or("0").parse::<u64>().ok()?;
+    parts
+        .next()
+        .is_none()
+        .then_some(days as f64 * 86400.0 + hours as f64 * 3600.0 + minutes as f64 * 60.0 + seconds)
 }
 
 /// Reads resident memory, CPU time, and descriptor count using macOS libproc.
@@ -2283,10 +2833,17 @@ fn sample_macos_process(pid: u32) -> Option<(Option<u64>, Option<f64>, Option<us
     if read != size {
         return None;
     }
-    let cpu_seconds = (info.total_user + info.total_system) as f64 / 1_000_000_000.0;
+    // libproc reports absolute Mach clock ticks. Apple Silicon and Intel can use different timebases.
+    let mut scale = mach2::mach_time::mach_timebase_info { numer: 0, denom: 0 };
+    let status = unsafe { mach2::mach_time::mach_timebase_info(&mut scale) };
+    let cpu_seconds = (status == 0 && scale.denom != 0).then(|| {
+        (info.total_user + info.total_system) as f64 * f64::from(scale.numer)
+            / f64::from(scale.denom)
+            / 1e9
+    });
     let fd_bytes = unsafe { proc_pidinfo(pid as i32, 1, 0, std::ptr::null_mut(), 0) };
     let fd_count = (fd_bytes > 0).then_some(fd_bytes as usize / 8);
-    Some((Some(info.resident_size), Some(cpu_seconds), fd_count))
+    Some((Some(info.resident_size), cpu_seconds, fd_count))
 }
 
 /// Writes JSON by rename so partial readiness is never observable.
@@ -2345,10 +2902,59 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
 
+    /// Requires a matching action and observation on the expected room and role.
+    #[test]
+    fn correlates_steady_observations_with_exact_actions() {
+        let mut payload = json!({
+            "type": "transition",
+            "public_session_id": "room",
+            "actor": "A",
+            "action": {"type": "mark", "sequence": 12, "finish": false},
+            "observation": {"role": "A", "last_sequence": [12, 9]},
+        });
+        assert_eq!(observed_action_sequence("room", &payload), Some(12));
+        assert_eq!(observed_action_sequence("other", &payload), None);
+        payload["actor"] = json!("B");
+        assert_eq!(observed_action_sequence("room", &payload), None);
+        payload["actor"] = json!("A");
+        payload["observation"]["last_sequence"][0] = json!(13);
+        assert_eq!(observed_action_sequence("room", &payload), None);
+        payload["type"] = json!("participant_state");
+        payload["observation"]["last_sequence"][0] = json!(12);
+        assert_eq!(observed_action_sequence("room", &payload), None);
+    }
+
+    /// Leaves empty percentile values unset and uses nearest-rank order statistics.
+    #[test]
+    fn summarizes_steady_action_latency() {
+        let counters = Counters::default();
+        let empty = counters.steady_action_to_observation();
+        assert_eq!(empty.sample_count, 0);
+        assert_eq!(empty.p50_ms, None);
+        assert_eq!(empty.p95_ms, None);
+        counters.steady_actions_sent.store(22, Ordering::Relaxed);
+        counters
+            .steady_action_latencies
+            .lock()
+            .unwrap()
+            .extend((1..=20).rev().map(Duration::from_millis));
+        let populated = counters.steady_action_to_observation();
+        assert_eq!(populated.sent_count, 22);
+        assert_eq!(populated.sample_count, 20);
+        assert_eq!(populated.unmatched_count, 2);
+        assert_eq!(populated.p50_ms, Some(10.0));
+        assert_eq!(populated.p95_ms, Some(19.0));
+    }
+
     /// Confirms the public parser rejects hidden or implementation-detail knobs.
     #[test]
     fn public_cli_is_deliberately_small() {
-        assert!(Args::try_parse_from(["runtime-stress", "--sessions", "4", "--headless"]).is_ok());
+        let default =
+            Args::try_parse_from(["runtime-stress", "--sessions", "4", "--headless"]).unwrap();
+        assert_eq!(default.communication, Communication::Speech);
+        let typed = Args::try_parse_from(["runtime-stress", "--communication", "typed"]).unwrap();
+        assert_eq!(typed.communication, Communication::Typed);
+        assert!(Args::try_parse_from(["runtime-stress", "--communication", "other"]).is_err());
         assert!(Args::try_parse_from(["runtime-stress", "--database", "x"]).is_err());
         assert!(Args::try_parse_from(["runtime-stress", "__server"]).is_err());
     }
@@ -2364,6 +2970,13 @@ mod tests {
         assert!(message.contains("Use --sessions 150 or lower"));
         assert!(message.contains("rust-server/config/runtime-limits.json"));
         assert!(workload_preflight(300, Pairing::HumanAgent).is_ok());
+    }
+
+    /// Verifies ps CPU time is reported in seconds across minute, hour and day formats.
+    #[test]
+    fn process_cpu_time_units() {
+        assert_eq!(parse_process_cpu_time("01:02.5"), Some(62.5));
+        assert_eq!(parse_process_cpu_time("1-01:02:03"), Some(90123.0));
     }
 
     /// Confirms phase rounding retains the requested measured duration.
@@ -2454,3 +3067,11 @@ mod tests {
         assert_eq!(receiver.borrow().phase.as_deref(), Some("failed"));
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_stress/component_tests.rs"]
+mod component_tests;
+
+#[cfg(test)]
+#[path = "runtime_stress/deployment_tests.rs"]
+mod deployment_tests;

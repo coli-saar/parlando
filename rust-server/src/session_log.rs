@@ -1,3 +1,8 @@
+//! Session construction supplies game and agent instances with handles that share a bounded
+//! byte budget and carry their source attribution. In a live session a successful log call
+//! queues the entry for the SQLite writer, which the runtime drains at shutdown. Headless
+//! sessions enforce the same limits and discard accepted text.
+
 use std::{
     error::Error,
     fmt,

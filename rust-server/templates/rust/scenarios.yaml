@@ -1,0 +1,36 @@
+- name: Activate the beacon after rejected moves and recovery
+  seed: 0
+  config: {}
+  initial:
+    a: { charge: 0, target: 4, your_turn: true }
+    b: { charge: 0, target: 4, your_turn: false }
+  steps:
+    - actor: B
+      action: { ticks: 2 }
+      reject: wrong_turn
+      expect:
+        a: { charge: 0, target: 4, your_turn: true }
+        b: { charge: 0, target: 4, your_turn: false }
+    - actor: A
+      action: { ticks: 2 }
+      expect:
+        a: { charge: 2, target: 4, your_turn: false }
+        b: { charge: 2, target: 4, your_turn: true }
+    - actor: B
+      action: { ticks: 1 }
+      recover: true
+      expect:
+        a: { charge: 3, target: 4, your_turn: true }
+        b: { charge: 3, target: 4, your_turn: false }
+    - actor: A
+      action: { ticks: 2 }
+      reject: overcharge
+      expect:
+        a: { charge: 3, target: 4, your_turn: true }
+        b: { charge: 3, target: 4, your_turn: false }
+    - actor: A
+      action: { ticks: 1 }
+      expect:
+        a: { charge: 4, target: 4, your_turn: false }
+        b: { charge: 4, target: 4, your_turn: false }
+        completion: { activated_at: 4 }

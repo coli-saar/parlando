@@ -1,50 +1,38 @@
-- title: Start here
+- title: Get started
   items:
-    - title: What Parlando is
-      path: manual/start/architecture
-    - title: Install and run Great Tree
+    - title: Install and play a local game
       path: manual/start/getting-started
-    - title: Understand games, experiments, and sessions
-      path: manual/start/concepts
-    - title: Run a local pilot
-      path: manual/start/first-experiment
-- title: Design the task
+- title: Build and deploy
   items:
-    - title: Build a dialogue game
+    - title: Build a game in Rust or Python
       path: manual/build/create-game
-    - title: Attach an automated player
-      path: manual/build/agents-and-voice
-    - title: Run agent-only studies
-      path: manual/build/agent-agent
-    - title: Enable typed or spoken dialogue
-      path: manual/build/voice
-- title: Conduct a study
+    - title: Package a game for deployment
+      path: manual/build/packages
+    - title: Deploy to a shared host
+      path: manual/deploy
+    - title: Operate a shared host
+      path: manual/deploy/host
+- title: Run a study
   items:
-    - title: Configure an experiment
+    - title: Configure and run a study
       path: manual/run/configuration
-    - title: Prepare consent and privacy
+    - title: Prepare consent and privacy settings
       path: manual/run/consent-privacy
+    - title: Monitor sessions and export results
+      path: manual/run/data-operations
     - title: Recruit through Prolific
       path: manual/run/prolific
-    - title: Monitor, export, and back up data
-      path: manual/run/data-operations
-- title: Operate Parlando
+- title: Communication and agents
   items:
-    - title: Deploy a game
-      path: manual/deploy
-    - title: Cross-compile for Linux
-      path: manual/deploy/cross-compiling-for-linux
-    - title: Deploy on Render
-      path: manual/deploy/render
-- title: Reference
+    - title: Configure communication
+      path: manual/build/voice
+    - title: Attach a remote agent
+      path: manual/build/agents-and-voice
+    - title: Run an agent-only evaluation
+      path: manual/build/agent-agent
+- title: Privacy reference
   items:
-    - title: Upgrade from 0.3 to 0.4
-      path: manual/reference/migrating-0.3.0-to-0.4.0
-    - title: Rust and React game APIs
-      path: manual/reference/game-api
-    - title: Agents API
-      path: manual/reference/agents
     - title: Participant information template
       path: manual/privacy/participant-information-v1.0
-    - title: German privacy-review material
+    - title: Institutional review material
       path: manual/privacy

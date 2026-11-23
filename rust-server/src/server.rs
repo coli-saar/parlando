@@ -1,30 +1,37 @@
+//! Launchers use the server builder to supply a WebAssembly game, agent factories,
+//! participant assets, and installation options. Serving hands these inputs to the HTTP host,
+//! which loads experiment settings and mounts the participant and administrative routes.
+
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use crate::{
     agents::{AgentFactory, SharedAgentFactory},
     app::{serve_game, ServeOptions},
+    component::LoadedGame,
     config::{AgentsMode, ExperimentConfig},
-    game::{GameFactory, GameMetadata},
+    game::GameMetadata,
     remote_agent::RemoteAgent,
 };
 use anyhow::{anyhow, Result};
 
-/// Configures and runs one compiled game without exposing dashboard-owned policy.
-pub struct Server<F: GameFactory> {
-    game_factory: F,
+/// Configures one WebAssembly game and runs its participant and administrator routes.
+pub struct Server {
+    loaded_game: LoadedGame,
     metadata: GameMetadata,
     database_url: String,
     participant_app: Option<PathBuf>,
     public_url: Option<String>,
-    agents: Vec<SharedAgentFactory<F::Game>>,
+    agents: Vec<SharedAgentFactory>,
 }
 
-impl<F: GameFactory> Server<F> {
-    /// Creates a server for one compiled game and validates its stable identity.
-    pub fn new(game_factory: F, metadata: GameMetadata) -> Result<Self> {
+impl Server {
+    /// Creates a server for one component and pins its verified SHA-256 in the build manifest.
+    /// A manifest with a conflicting digest is rejected before the server opens its database.
+    pub fn new(loaded_game: LoadedGame, mut metadata: GameMetadata) -> Result<Self> {
         metadata.validate()?;
+        metadata.pin_component(&loaded_game)?;
         Ok(Self {
-            game_factory,
+            loaded_game,
             metadata,
             database_url: "sqlite:///./parlando.sqlite".to_string(),
             participant_app: None,
@@ -54,11 +61,9 @@ impl<F: GameFactory> Server<F> {
     }
 
     /// Registers one compiled agent implementation for dashboard selection.
-    pub fn agent<AF>(mut self, factory: AF) -> Result<Self>
-    where
-        AF: AgentFactory<F::Game>,
-    {
-        let factory: Arc<dyn AgentFactory<F::Game>> = Arc::new(factory);
+    pub fn agent(mut self, factory: impl AgentFactory) -> Result<Self> {
+        let prepared = factory.with_host_wasm_metering(self.loaded_game.metering())?;
+        let factory = prepared.unwrap_or_else(|| Arc::new(factory));
         let definition = factory.definition();
         definition.validate()?;
         let id = definition.id;
@@ -93,48 +98,52 @@ impl<F: GameFactory> Server<F> {
         register_default_remote_agent(&mut self.agents);
         let registered = Arc::new(self.agents);
         serve_game(
-            self.game_factory,
+            self.loaded_game,
             bootstrap,
             self.metadata,
             address,
-            move |experiment| {
-                let definitions = registered
-                    .iter()
-                    .map(|factory| factory.definition())
-                    .collect::<Vec<_>>();
-                let agent_factory = if experiment.agents.mode == AgentsMode::HumanVsAgent {
-                    let selected = experiment
-                        .agents
-                        .human_vs_agent
-                        .as_ref()
-                        .and_then(|config| config.factory.as_deref())
-                        .ok_or_else(|| {
-                            anyhow!("human-versus-agent mode requires an explicit agent factory")
-                        })?;
-                    Some(
-                        registered
-                            .iter()
-                            .find(|factory| factory.definition().id == selected)
-                            .cloned()
-                            .ok_or_else(|| anyhow!("unknown registered agent {selected:?}"))?,
-                    )
-                } else {
-                    None
-                };
-                Ok(ServeOptions {
-                    agent_factory,
-                    agent_definitions: definitions,
-                    ..ServeOptions::default()
-                })
-            },
+            move |experiment| experiment_serve_options(&registered, experiment),
         )
         .await
     }
 }
 
+/// Selects the registered agent factory and advertises all supported agent definitions.
+pub(crate) fn experiment_serve_options(
+    registered: &[SharedAgentFactory],
+    experiment: &ExperimentConfig,
+) -> Result<ServeOptions> {
+    let definitions = registered
+        .iter()
+        .map(|factory| factory.definition())
+        .collect();
+    let agent_factory = if experiment.agents.mode == AgentsMode::HumanVsAgent {
+        let selected = experiment
+            .agents
+            .human_vs_agent
+            .as_ref()
+            .and_then(|config| config.factory.as_deref())
+            .ok_or_else(|| anyhow!("human-versus-agent mode requires an explicit agent factory"))?;
+        Some(
+            registered
+                .iter()
+                .find(|factory| factory.definition().id == selected)
+                .cloned()
+                .ok_or_else(|| anyhow!("unknown registered agent {selected:?}"))?,
+        )
+    } else {
+        None
+    };
+    Ok(ServeOptions {
+        agent_factory,
+        agent_definitions: definitions,
+        ..ServeOptions::default()
+    })
+}
+
 /// Adds Parlando's standard remote transport unless the server already registered it explicitly.
-fn register_default_remote_agent<A: crate::Game>(agents: &mut Vec<SharedAgentFactory<A>>) {
-    let remote_id = <RemoteAgent as AgentFactory<A>>::definition(&RemoteAgent::new()).id;
+pub(crate) fn register_default_remote_agent(agents: &mut Vec<SharedAgentFactory>) {
+    let remote_id = <RemoteAgent as AgentFactory>::definition(&RemoteAgent::new()).id;
     if agents
         .iter()
         .any(|registered| registered.definition().id == remote_id)
@@ -147,56 +156,30 @@ fn register_default_remote_agent<A: crate::Game>(agents: &mut Vec<SharedAgentFac
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ActionRejection, Game, GameInitializationContext, PlayerRole};
-    use serde_json::Value;
 
-    /// Minimal typed game used to inspect generic server-side agent registration.
-    struct TestGame;
-
-    impl Game for TestGame {
-        type Config = Value;
-        type State = Value;
-        type Action = Value;
-        type Observation = Value;
-        type Completion = Value;
-
-        /// Creates an empty state because registration does not execute game mechanics.
-        fn initial_state(
-            &self,
-            _context: GameInitializationContext<'_, Self::Config>,
-        ) -> Result<Self::State> {
-            Ok(Value::Null)
-        }
-
-        /// Preserves the state because registration does not execute game mechanics.
-        fn apply_action(
-            &self,
-            state: &Self::State,
-            _action: &Self::Action,
-            _actor: PlayerRole,
-        ) -> std::result::Result<Self::State, ActionRejection> {
-            Ok(state.clone())
-        }
-
-        /// Returns the state as the role-neutral test observation.
-        fn observation(&self, state: &Self::State, _role: PlayerRole) -> Self::Observation {
-            state.clone()
-        }
-
-        /// Keeps the test game nonterminal.
-        fn completion(&self, _state: &Self::State) -> Option<Self::Completion> {
-            None
-        }
-    }
-
-    /// The default registration makes the remote factory available exactly once.
+    /// Records the loaded executable identity and refuses a false caller-supplied pin.
     #[test]
-    fn default_remote_agent_is_registered_once() {
-        let mut agents: Vec<SharedAgentFactory<TestGame>> = Vec::new();
-        register_default_remote_agent(&mut agents);
-        register_default_remote_agent(&mut agents);
-
-        assert_eq!(agents.len(), 1);
-        assert_eq!(agents[0].definition().id, "remote_grpc");
+    fn server_validates_component_build_provenance() -> Result<()> {
+        let game =
+            LoadedGame::from_bytes(include_bytes!("../tests/fixtures/live-game/fixture.wasm"))?;
+        let metadata = GameMetadata {
+            id: "build-pin-test".to_string(),
+            name: "Build pin test".to_string(),
+            version: semver::Version::new(1, 0, 0),
+            build_manifest: serde_json::json!({"caller": "fixture"}),
+        };
+        let server = Server::new(game.clone(), metadata.clone())?;
+        assert_eq!(server.metadata.build_manifest["caller"], "fixture");
+        assert_eq!(
+            server.metadata.build_manifest["component_sha256"],
+            game.digest()
+        );
+        let mut conflicting = metadata;
+        conflicting.build_manifest["component_sha256"] = serde_json::json!("other");
+        let error = Server::new(game, conflicting)
+            .err()
+            .expect("server must reject a false digest");
+        assert!(error.to_string().contains("digest does not match"));
+        Ok(())
     }
 }

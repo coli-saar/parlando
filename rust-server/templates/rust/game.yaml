@@ -1,0 +1,6 @@
+id: __GAME_ID__
+name: Beacon Relay
+version: 0.1.0
+cargo_manifest: Cargo.toml
+client_project: client
+scenarios: scenarios.yaml

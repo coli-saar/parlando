@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 
 /// The five limb shapes in Crown's domain. Fixed for every session; only the
 /// bijection to roots (see `bijection.rs`) and which limb starts flowered vary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize, parlando_game_sdk::GameValue,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum LimbId {
     Spire,
@@ -30,7 +32,9 @@ impl LimbId {
 }
 
 /// The five root shapes in Root's domain. Same fixed/varying split as `LimbId`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize, parlando_game_sdk::GameValue,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum RootId {
     Hand,

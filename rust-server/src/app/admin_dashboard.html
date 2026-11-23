@@ -1,8 +1,12 @@
 <!doctype html>
+<!-- The administrative routes serve this shell. The dashboard script binds controls by
+     their element IDs and fills the session, experiment and configuration views from the admin API. -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="/admin/assets/parlando-mark.svg">
+  <link rel="stylesheet" href="/admin/assets/palette.css">
   <title>Parlando Experimenter Dashboard</title>
   <link rel="stylesheet" href="/admin/assets/admin-dashboard.css">
 </head>
@@ -36,8 +40,7 @@
     <div class="product-row">
       <button id="menuButton" class="menu-button" type="button" aria-expanded="false" aria-controls="experimentSidebar" aria-label="Open experiments"><svg class="icon" aria-hidden="true"><use href="#icon-menu"></use></svg></button>
       <div class="product-identity">
-        <span class="product-mark" aria-hidden="true">P</span>
-        <span class="identity-copy"><strong>Parlando</strong><span class="muted small">Experimenter dashboard</span></span>
+        <span class="identity-copy"><img src="/admin/assets/parlando-wordmark.svg" width="110" alt="Parlando"><span class="muted small">Experimenter dashboard</span></span>
       </div>
       <div class="game-identity">
         <strong id="gameName">Game</strong>
@@ -118,12 +121,16 @@
             <section class="session-summary" id="summary"><div class="empty">Select a session to inspect metadata and events.</div></section>
             <section class="session-log">
               <header class="events-header">
-                <h2>Session log</h2>
-                <span id="liveStatus" class="muted small">Idle</span>
-                <label class="toggle-row" title="Show game- and agent-authored log messages"><input id="showLogs" type="checkbox"><span>Show game/agent logs</span></label>
-                <label class="toggle-row" title="Show participant, session, and voice setup events"><input id="showHousekeeping" type="checkbox"><span>Show setup events</span></label>
+                <div class="events-heading"><h2>Session log</h2><span id="sessionLogError" class="problem-reason small" role="alert" hidden></span></div>
+                <div class="events-toolbar">
+                  <label class="speech-view-control" hidden><span>View</span><select id="speechView"><option value="utterances">Utterances</option><option value="tokens">Tokens</option></select></label>
+                  <div class="event-filters">
+                    <label class="toggle-row" title="Show game- and agent-authored log messages"><input id="showLogs" type="checkbox"><span>Game/agent logs</span></label>
+                    <label class="toggle-row" title="Show participant, session, and voice setup events"><input id="showHousekeeping" type="checkbox"><span>Setup events</span></label>
+                  </div>
+                </div>
               </header>
-              <div id="timeline" class="timeline"></div>
+              <div id="timeline" class="timeline" role="region" aria-label="Session events" tabindex="0"></div>
             </section>
           </div>
         </section>
@@ -188,17 +195,21 @@
         <section class="settings-section"><header class="section-intro"><h2>ElevenLabs</h2><p class="muted">Connection defaults and credentials for synthesized speech.</p></header><div class="settings-form"><label>Base URL default<input id="ttsBaseUrlInput" type="url" placeholder="wss://api.elevenlabs.io"><span class="config-help">Initial WebSocket service origin for new experiments.</span></label><div class="provider-secret" id="ttsProviderSecret"></div><p class="muted small">Changing the endpoint default never changes an existing experiment revision.</p></div></section>
         <section class="settings-section"><header class="section-intro"><h2>Prolific</h2><p class="muted">Endpoint and credential used to verify each experiment's linked Prolific study.</p></header><div class="settings-form"><label>API base URL<input id="prolificApiBaseUrlInput" type="url" placeholder="https://api.prolific.com"><span class="config-help">Keep the default except for a compatible private endpoint or local integration testing.</span></label><div class="provider-secret" id="prolificProviderSecret"></div><p class="muted small">The workspace is derived from each linked study's Prolific project.</p></div></section>
         <section class="settings-section"><header class="section-intro"><h2>Save changes</h2><p class="muted">This saves every shared and provider setting above in one transaction.</p></header><div class="settings-form"><div class="settings-save-row"><button class="primary" id="saveGameSettings" type="button">Save all game settings</button><span class="save-confirmation" id="gameSettingsSaved" role="status" hidden>All game settings saved</span></div></div></section>
-        <section class="settings-section"><header class="section-intro"><h2>Build information</h2><p class="muted">The compiled game and Parlando versions used by all experiments.</p></header><div id="reproducibility"><div class="empty">Loading build information…</div></div></section>
+        <section class="settings-section"><header class="section-intro"><h2>Build information</h2><p class="muted">The game component and Parlando versions used by all experiments.</p></header><div id="reproducibility"><div class="empty">Loading build information…</div></div></section>
       </div>
     </section>
 
   </main>
   <div class="quick-tooltip" id="quickTooltip" role="tooltip" hidden></div>
   <dialog id="createExperimentDialog" aria-labelledby="createExperimentTitle">
-    <form id="createExperimentForm" class="dialog-form" method="dialog">
-      <header><h2 id="createExperimentTitle">New experiment</h2><p class="muted">Choose its immutable identifier and optional private Markdown notes.</p></header>
-      <label>Experiment ID (unique and immutable after creation)<input id="newExperimentId" name="experiment_id" required pattern="[A-Za-z0-9._-]{1,128}" autocomplete="off" aria-describedby="newExperimentIdHelp"><span id="newExperimentIdHelp" class="config-help">1–128 letters, digits, dots, dashes, or underscores. This cannot be changed later.</span></label>
-      <label>Markdown description (optional)<textarea id="newExperimentNotes" name="notes" rows="7" spellcheck="true"></textarea></label>
+    <form id="createExperimentForm" class="dialog-form" method="dialog" novalidate>
+      <h2 id="createExperimentTitle">New experiment</h2>
+      <div class="config-field">
+        <label for="newExperimentId">Experiment ID</label>
+        <input id="newExperimentId" name="experiment_id" required maxlength="128" autocomplete="off" aria-describedby="newExperimentIdHelp createExperimentError">
+        <p id="newExperimentIdHelp" class="config-help">Use letters, digits, dots, dashes, or underscores. The ID cannot be changed later.</p>
+        <p id="createExperimentError" role="alert"></p>
+      </div>
       <div class="dialog-actions"><button id="cancelCreateExperiment" class="secondary" type="button">Cancel</button><button class="primary" type="submit">Create experiment</button></div>
     </form>
   </dialog>

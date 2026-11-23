@@ -1,3 +1,7 @@
+//! SQLite participant and session creation request random three-word pseudonyms from separate
+//! noun lists. Storage owns uniqueness checks and retries. Corpus exports can therefore
+//! identify participants and dialogues without deriving names from recruitment identifiers.
+
 use rand::seq::SliceRandom;
 
 const ADVERBS: &str = "

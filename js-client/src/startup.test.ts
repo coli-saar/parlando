@@ -1,17 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  CLIENT_HEARTBEAT_INTERVAL_MS,
-  canSendGameMessage,
-  completedSessionPatch,
   isVoiceEnabled,
-  normalizePresence,
   participantMicrophoneLabel,
-  platformLabel,
   selectableAudioInputs,
-  sendActionIfGameActive,
-  sendMessageIfGameActive,
   voiceStatusUpdate
-} from "./startup";
+} from "./participant/microphone";
+import { normalizePresence, platformLabel } from "./participant/lobby";
 import type { ExperimentInfo } from "./protocol";
 import { experimentAllowsIntake, requiredConsentsAccepted, transcriptionProgressForStatus } from "./helpers";
 
@@ -20,7 +14,7 @@ function publicConfig(overrides: Partial<ExperimentInfo> = {}): ExperimentInfo {
     gameName: "Tiny Game",
     status: "active",
     consents: [],
-    voice: { enabled: false },
+    communication: { mode: "typed" },
     ...overrides
   };
 }
@@ -31,10 +25,6 @@ function audioInput(deviceId: string, label: string): MediaDeviceInfo {
 }
 
 describe("Parlando startup helpers", () => {
-  it("uses the reviewed one-second transport heartbeat", () => {
-    expect(CLIENT_HEARTBEAT_INTERVAL_MS).toBe(1_000);
-  });
-
   it("combines the platform name with an optional institution", () => {
     expect(platformLabel("Saarland University")).toBe("Parlando · Saarland University");
     expect(platformLabel("  ")).toBe("Parlando");
@@ -43,7 +33,7 @@ describe("Parlando startup helpers", () => {
 
   it("treats disabled voice as a no-voice startup", () => {
     expect(isVoiceEnabled(publicConfig())).toBe(false);
-    expect(isVoiceEnabled(publicConfig({ voice: { enabled: true } }))).toBe(true);
+    expect(isVoiceEnabled(publicConfig({ communication: { mode: "speech" } }))).toBe(true);
   });
 
   it("derives consent readiness from configured items alone", () => {
@@ -120,48 +110,5 @@ describe("Parlando startup helpers", () => {
       transcriptionMessage: "ASR ready",
       transcriptionReady: true
     });
-  });
-
-  it("stores game-specific completion payloads from completed server messages", () => {
-    const patch = completedSessionPatch({
-      outcome: "success",
-      dyadScore: 12,
-      playerScores: { A: 7, B: 5 }
-    });
-
-    expect(patch).toEqual({
-      completed: true,
-      completion: {
-        outcome: "success",
-        dyadScore: 12,
-        playerScores: { A: 7, B: 5 }
-      }
-    });
-  });
-
-  it("guards participant game messages after completion", () => {
-    expect(canSendGameMessage({ participantState: { state: "active" }, synchronization: "connected" })).toBe(true);
-    expect(canSendGameMessage({ participantState: { state: "paused" }, synchronization: "connected" })).toBe(false);
-    expect(canSendGameMessage({ participantState: { state: "ended" }, synchronization: "connected" })).toBe(false);
-    expect(canSendGameMessage({ participantState: { state: "active" }, synchronization: "reconnecting" })).toBe(false);
-    expect(canSendGameMessage(null)).toBe(false);
-  });
-
-  it("does not send actions or chat after completion", () => {
-    const socket = {} as WebSocket;
-    const apiClient = {
-      sendAction: vi.fn(),
-      sendMessage: vi.fn()
-    };
-
-    sendActionIfGameActive(apiClient, { socket, participantState: { state: "ended" }, synchronization: "connected" }, { type: "finish" });
-    sendMessageIfGameActive(apiClient, { socket, participantState: { state: "paused" }, synchronization: "connected" }, "late hello");
-    expect(apiClient.sendAction).not.toHaveBeenCalled();
-    expect(apiClient.sendMessage).not.toHaveBeenCalled();
-
-    sendActionIfGameActive(apiClient, { socket, participantState: { state: "active" }, synchronization: "connected" }, { type: "finish" });
-    sendMessageIfGameActive(apiClient, { socket, participantState: { state: "active" }, synchronization: "connected" }, "hello");
-    expect(apiClient.sendAction).toHaveBeenCalledWith(socket, { type: "finish" });
-    expect(apiClient.sendMessage).toHaveBeenCalledWith(socket, "hello");
   });
 });

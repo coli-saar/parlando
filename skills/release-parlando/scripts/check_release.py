@@ -10,6 +10,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+CLIENT_TEMPLATE = Path("rust-server/templates/rust/client/package.json")
+
 
 def repository_root() -> Path:
     """Return the Parlando repository root relative to this bundled skill script."""
@@ -44,15 +46,32 @@ def record_equal(errors: list[str], label: str, actual: object, expected: object
         errors.append(f"{label}: expected {expected!r}, found {actual!r}")
 
 
-def check_primary_packages(root: Path, version: str, errors: list[str]) -> None:
-    """Check the publishable Rust and JavaScript package versions and npm lock root."""
-    cargo_path = root / "rust-server/Cargo.toml"
-    cargo = read_toml(cargo_path)
-    package = cargo.get("package")
-    if not isinstance(package, dict):
-        errors.append(f"{cargo_path}: missing [package]")
-    else:
-        record_equal(errors, str(cargo_path), package_version(package, cargo_path), version)
+def check_release_packages(root: Path, version: str, errors: list[str]) -> None:
+    """Check the six release versions, exact Rust SDK pins, and npm lock root."""
+    manifests = {
+        "rust-server/Cargo.toml": "package",
+        "parlando-game-sdk/Cargo.toml": "package",
+        "parlando-game-sdk/derive/Cargo.toml": "package",
+        "parlando-python-sdk/pyproject.toml": "project",
+        "parlando-agent-sdk/pyproject.toml": "project",
+    }
+    for filename, section in manifests.items():
+        path = root / filename
+        package = read_toml(path).get(section)
+        if not isinstance(package, dict):
+            errors.append(f"{path}: missing [{section}]")
+        else:
+            record_equal(errors, str(path), package_version(package, path), version)
+
+    for filename, name in (
+        ("rust-server/Cargo.toml", "parlando-game-sdk"),
+        ("parlando-game-sdk/Cargo.toml", "parlando-game-derive"),
+    ):
+        path = root / filename
+        dependency = read_toml(path).get("dependencies", {}).get(name)
+        record_equal(
+            errors, f"{path} dependency {name}", direct_parlando_version(dependency), f"={version}"
+        )
 
     package_path = root / "js-client/package.json"
     package_json = read_json(package_path)
@@ -77,6 +96,15 @@ def direct_parlando_version(value: object) -> str | None:
     return None
 
 
+def uses_checkout_client(root: Path, manifest: Path, dependency: object) -> bool:
+    """Identify local game clients that build the browser SDK from this checkout."""
+    return (
+        isinstance(dependency, str)
+        and dependency.startswith("file:")
+        and (manifest.parent / dependency[5:]).resolve() == (root / "js-client").resolve()
+    )
+
+
 def check_consumers(root: Path, version: str, errors: list[str]) -> None:
     """Check all first-party manifests that directly consume either Parlando package."""
     for path in sorted(root.rglob("Cargo.toml")):
@@ -91,24 +119,21 @@ def check_consumers(root: Path, version: str, errors: list[str]) -> None:
             if declared is not None:
                 record_equal(errors, f"{path} [{section_name}].parlando", declared, version)
 
-    expected = f"^{version}"
     for path in sorted(root.rglob("package.json")):
         if any(part in {"target", "node_modules"} for part in path.parts):
-            continue
-        if path == root / "client-server-tests/browser/package.json":
-            # This unpublished fixture deliberately consumes the local package under test.
             continue
         document = read_json(path)
         for section_name in ("dependencies", "devDependencies", "peerDependencies"):
             section = document.get(section_name)
             if not isinstance(section, dict) or "@coli-saar/parlando-client" not in section:
                 continue
-            record_equal(
-                errors,
-                f"{path} {section_name}.@coli-saar/parlando-client",
-                section["@coli-saar/parlando-client"],
-                expected,
-            )
+            declared = section["@coli-saar/parlando-client"]
+            if path == root / CLIENT_TEMPLATE:
+                record_equal(errors, str(path), declared, "__CLIENT_DEPENDENCY__")
+            elif declared not in (version, f"^{version}") and not (
+                document.get("private") is True and uses_checkout_client(root, path, declared)
+            ):
+                errors.append(f"{path} {section_name}: expected client version {version}, found {declared!r}")
 
 
 def check_published_consumer_lockfiles(root: Path, version: str, errors: list[str]) -> None:
@@ -122,12 +147,14 @@ def check_published_consumer_lockfiles(root: Path, version: str, errors: list[st
     for package_path in sorted(root.rglob("package.json")):
         if any(part in {"target", "node_modules"} for part in package_path.parts):
             continue
-        if package_path == root / "client-server-tests/browser/package.json":
-            # The unpublished browser fixture must exercise the local package under test.
+        if package_path == root / CLIENT_TEMPLATE:
+            # The CLI substitutes its release version when creating the project.
             continue
         package = read_json(package_path)
         dependencies = package.get("dependencies")
         if not isinstance(dependencies, dict) or package_name not in dependencies:
+            continue
+        if package.get("private") is True and uses_checkout_client(root, package_path, dependencies[package_name]):
             continue
         lock_path = package_path.with_name("package-lock.json")
         if not lock_path.exists():
@@ -152,25 +179,9 @@ def check_published_consumer_lockfiles(root: Path, version: str, errors: list[st
 
 
 def check_release_documents(root: Path, version: str, errors: list[str]) -> None:
-    """Check current release guidance, changelog metadata, and the generator skill baseline."""
-    publishing_path = root / "docs/publishing-packages.md"
-    publishing = publishing_path.read_text(encoding="utf-8")
-    rust_examples = re.findall(r'^parlando = "([0-9]+\.[0-9]+\.[0-9]+)"$', publishing, re.MULTILINE)
-    npm_examples = re.findall(
-        r'^"@coli-saar/parlando-client": "\^([0-9]+\.[0-9]+\.[0-9]+)"$',
-        publishing,
-        re.MULTILINE,
-    )
-    if not rust_examples or any(item != version for item in rust_examples):
-        errors.append(f"{publishing_path}: current Rust examples must all use {version}")
-    if not npm_examples or any(item != version for item in npm_examples):
-        errors.append(f"{publishing_path}: current npm examples must all use ^{version}")
-
+    """Check current release guidance and changelog metadata."""
     generator_path = root / "skills/generate-parlando-game/SKILL.md"
     generator = generator_path.read_text(encoding="utf-8")
-    marker = f"Current coordinated release: `{version}`."
-    if marker not in generator:
-        errors.append(f"{generator_path}: missing release marker {marker!r}")
     if "docs/migrating-to-clean-api.md" in generator:
         errors.append(f"{generator_path}: still references obsolete migration guide")
 
@@ -209,7 +220,12 @@ def check_migration_guide(
 def parse_args() -> argparse.Namespace:
     """Parse and validate the target stable semantic version from the command line."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("version", help="target stable SemVer, for example 0.4.0")
+    parser.add_argument("version", nargs="?", help="target stable SemVer, for example 0.4.0")
+    parser.add_argument(
+        "--packages-only",
+        action="store_true",
+        help="check package metadata only and default to the server crate version",
+    )
     parser.add_argument(
         "--published",
         action="store_true",
@@ -221,7 +237,11 @@ def parse_args() -> argparse.Namespace:
         help="require and validate a version-specific downstream migration guide",
     )
     args = parser.parse_args()
-    if not re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", args.version):
+    if not args.packages_only and args.version is None:
+        parser.error("version is required for a full release audit")
+    if args.packages_only and (args.published or args.require_migration_guide):
+        parser.error("--packages-only requires a package metadata check without additional flags")
+    if args.version is not None and not re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", args.version):
         parser.error("version must be stable SemVer in MAJOR.MINOR.PATCH form")
     return args
 
@@ -231,23 +251,28 @@ def main() -> int:
     args = parse_args()
     root = repository_root()
     errors: list[str] = []
+    version = args.version
     try:
-        check_primary_packages(root, args.version, errors)
-        check_consumers(root, args.version, errors)
-        if args.published:
-            check_published_consumer_lockfiles(root, args.version, errors)
-        check_release_documents(root, args.version, errors)
-        check_migration_guide(root, args.version, args.require_migration_guide, errors)
+        if version is None:
+            path = root / "rust-server/Cargo.toml"
+            version = package_version(read_toml(path).get("package", {}), path)
+        check_release_packages(root, version, errors)
+        if not args.packages_only:
+            check_consumers(root, version, errors)
+            if args.published:
+                check_published_consumer_lockfiles(root, version, errors)
+            check_release_documents(root, version, errors)
+            check_migration_guide(root, version, args.require_migration_guide, errors)
     except (OSError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
         errors.append(str(error))
 
     if errors:
-        print(f"release metadata check failed for {args.version}:", file=sys.stderr)
+        print(f"release metadata check failed for {version}:", file=sys.stderr)
         for error in errors:
             print(f"- {error}", file=sys.stderr)
         return 1
     suffix = " with published consumer locks" if args.published else ""
-    print(f"release metadata check passed for {args.version}{suffix}")
+    print(f"release metadata check passed for {version}{suffix}")
     return 0
 
 

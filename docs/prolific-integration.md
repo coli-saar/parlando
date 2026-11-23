@@ -2,7 +2,7 @@
 
 This document is a technical reference for maintainers and deployment operators. Experimenters who
 want to configure and run a study should follow
-[Run a Parlando experiment through Prolific](using-prolific.md).
+[Run a Parlando experiment through Prolific](web/content/manual/run/prolific.md).
 
 Parlando verifies each Prolific admission, pairs Prolific participants without changing their
 recruitment source, records phase-specific outcomes, and returns each participant through the
@@ -40,7 +40,9 @@ built-in **No consent** path with **Request return** and creates no Parlando par
 The values configured in Parlando are the exact completion codes created in Prolific. All six
 codes must be present and distinct.
 
-## Configure the installation
+## Configure the game
+
+Open the game dashboard to provision Prolific credentials and configure the experiment's recruitment settings.
 
 An administrator configures two installation-level values in the Parlando dashboard:
 

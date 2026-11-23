@@ -1,3 +1,7 @@
+//! Exercises the audio session registry with synthetic frames and room workloads.
+//! The workload task sends measurement snapshots to the shared terminal dashboard.
+//! Exiting the dashboard signals cancellation to the workload.
+
 use std::{
     collections::VecDeque,
     sync::{

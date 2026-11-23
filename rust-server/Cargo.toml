@@ -2,7 +2,7 @@
 name = "parlando"
 edition = "2021"
 license = "MIT"
-version = "0.4.3"
+version = "0.6.0"
 description = "Reusable Rust runtime for Parlando dialogue-game experiments."
 repository = "https://github.com/coli-saar/parlando"
 readme = "../README.md"
@@ -32,9 +32,10 @@ jsonwebtoken = "9"
 prost = "0.13"
 prost-types = "0.13"
 rand = "0.8"
+parlando-game-sdk = { version = "=0.6.0", path = "../parlando-game-sdk" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["raw_value"] }
 serde_yaml = "0.9"
 semver = { version = "1", features = ["serde"] }
 sha2 = "0.10"
@@ -48,22 +49,34 @@ tower-http = { version = "0.6", features = ["cors", "fs", "limit", "timeout", "t
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 ratatui = { version = "0.30.2", optional = true }
-clap = { version = "4", features = ["derive"], optional = true }
+clap = { version = "4", features = ["derive"] }
+tempfile = { version = "3" }
+zip = { version = "7.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+wasmtime = { version = "36.0.23", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = { version = "3" }
 
 [features]
 internal-tools = []
-stress-tui = ["internal-tools", "dep:clap", "dep:ratatui"]
+stress-tui = ["internal-tools", "dep:ratatui"]
 
 [[bin]]
 name = "audio-stress-tui"
 path = "src/bin/audio_stress_tui.rs"
 required-features = ["stress-tui"]
 
+[[bin]]
+name = "parlando"
+path = "src/bin/parlando.rs"
+
 [build-dependencies]
 tonic-build = "0.13.1"
 protoc-bin-vendored = "3"
 
 [dev-dependencies]
+jsonschema = { version = "0.61.2", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tempfile = "3"
 tokio-stream = { version = "0.1", features = ["net", "sync"] }

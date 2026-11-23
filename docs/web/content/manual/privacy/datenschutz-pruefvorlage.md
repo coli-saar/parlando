@@ -70,7 +70,7 @@ Ein typisches Experiment läuft aus Sicht einer Versuchsperson wie folgt ab:
 4. Die Person wird einer Sitzung, einem Raum und einer Rolle zugeordnet. Die Gegenrolle wird von einer zweiten Versuchsperson oder einem vertrauenswürdigen Software-Agenten übernommen.
 5. Der Server sendet jeder Rolle nur die für sie bestimmte Beobachtung des fiktiven Spielzustands. Verdeckte Informationen der anderen Rolle werden serverseitig nicht in diese Ansicht aufgenommen.
 6. Der Browser übermittelt vorgeschlagene Spielhandlungen an den Server. Erst der Server prüft, ob die Handlung nach den Regeln des Experiments zulässig ist, verändert den gemeinsamen Zustand und verteilt die daraus folgende rollenbezogene Ansicht.
-7. Die Aufgabe kann eine Tastaturkommunikation bereitstellen. Bei Mensch–Mensch-Sprache übermittelt Parlando die Live-Stimme und lässt beide Seiten durch Speechmatics transkribieren. Bei Mensch–Agent-Sprache wird die menschliche Stimme transkribiert und die gespeicherte Agentenantwort durch ElevenLabs vorgelesen.
+7. Im Modus „typed“ stellt Parlando einen Tastatur-Chat bereit. Bei Mensch–Mensch-Sprache übermittelt Parlando die Live-Stimme und lässt beide Seiten durch Speechmatics transkribieren. Bei Mensch–Agent-Sprache wird die menschliche Stimme transkribiert und die gespeicherte Agentenantwort durch ElevenLabs vorgelesen.
 8. Die aktivierten Handlungen, Zustandsänderungen, Kommunikationsinhalte, Zeitangaben und Ergebnisse werden als geordnete Sitzungsdaten in der lokalen Datenbank gespeichert.
 9. Am Ende erzeugt der Experimentcode eine strukturierte Abschlusszusammenfassung, beispielsweise Erfolg, Ergebnis oder für die Forschungsfrage benötigte Zustandsmerkmale.
 10. Die Versuchsperson kann die Sitzung verlassen; Forschende arbeiten anschließend mit den gespeicherten Daten und nicht mit einem nur im Browser vorhandenen Zustand.
@@ -106,7 +106,7 @@ Die erbetene Plattformbewertung ist auf folgende Verwendung beschränkt:
 - wissenschaftliche Experimente mit fiktiven Spiel- und Dialogaufgaben,
 - zwei menschliche Rollen oder menschliche Rollen und vertrauenswürdige Software-Agenten,
 - Spielhandlungen, technische Zeitpunkte und Ergebnisse,
-- optional eine vom Spiel bereitgestellte Tastaturkommunikation,
+- Tastatur-Chat im Experimentmodus „typed“,
 - Mensch–Mensch-Sprache mit Echtzeittranskription durch Speechmatics,
 - Mensch–Agent-Sprache mit Speechmatics und Sprachausgabe der Agentenantwort durch ElevenLabs,
 - wissenschaftliche Auswertung und Nachnutzung pseudonymisierter Forschungsdaten,
@@ -186,7 +186,7 @@ Der Standardbetrieb verwendet automatisch erzeugte, studienbezogene Teilnehmerke
 | Sitzungsdaten | zufällig erzeugte, menschenlesbare Dialogkennung, Experiment, Raum, Rolle, Verbindungsstatus und Zeitpunkte | verbindet die zwei Rollen und ordnet Ereignisse in einem gemeinsamen Ablauf |
 | Spielhandlungen und Ergebnisse | Aktionen, Ereignisse und Abschlussdaten entsprechend dem Experimentcode | bildet den untersuchten Aufgabenverlauf und seinen Ausgang ab |
 | Vollständiger Spielzustand | der resultierende Zustand wird mit jeder akzeptierten Handlung gespeichert | ermöglicht die Rekonstruktion der Situation, in der eine Handlung oder Äußerung erfolgte |
-| Tastatur-Chat | gesendete Nachrichten werden gespeichert, wenn das Spiel diese Kommunikationsform bereitstellt | ermöglicht die Analyse des Zusammenhangs zwischen sprachlicher Koordination und Spielverlauf |
+| Tastatur-Chat | gesendete Nachrichten werden gespeichert, wenn im Experiment der Modus „typed“ gewählt ist | ermöglicht die Analyse des Zusammenhangs zwischen sprachlicher Koordination und Spielverlauf |
 | Finale Sprachtranskripte | finale Transkripte mit Sprecher und Äußerungszeiten werden in Sprachbedingungen gespeichert | macht gesprochene Kommunikation für Dialoganalysen zugänglich, ohne Roh-Audio zu archivieren |
 | Sprachdiagnostik | neue Browser- und Transportdiagnosen werden nicht dauerhaft gespeichert | vermeidet operative Verknüpfungsdaten im Forschungsbestand |
 | Erklärungsnachweis | Entscheidungen, Zeitpunkt, Informationsversion und -URL | belegt, welche konfigurierte Information referenziert und welche Erklärung abgegeben wurde |

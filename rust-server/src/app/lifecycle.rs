@@ -1,3 +1,8 @@
+//! Defines the installation's experiment states, their permitted transitions, and the
+//! data purpose associated with intake. Administrative activation changes this state.
+//! Admission consults it before allocating rooms, whose individual lifecycles are owned
+//! by the session module.
+
 use super::*;
 
 /// Participant-availability lifecycle for one experiment hosted by a game process.
@@ -72,8 +77,8 @@ impl ExperimentLifecycle {
 }
 
 /// Rejects new intake unless the experiment is collecting test or research sessions.
-pub(super) async fn require_open_experiment<A: Game>(
-    state: &AppState<A>,
+pub(super) async fn require_open_experiment(
+    state: &AppState,
 ) -> Result<tokio::sync::RwLockReadGuard<'_, ExperimentLifecycle>, AppError> {
     let lifecycle = state.experiment_lifecycle.read().await;
     if lifecycle.allows_intake() {

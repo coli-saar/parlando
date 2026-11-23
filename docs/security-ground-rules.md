@@ -19,7 +19,7 @@ mitigations.
 ## Deployment context
 
 Parlando is self-hosted academic research software for browser-based dialogue
-games. A typical installation runs one researcher's compiled game, collects
+games. An installation serves one or more WASM game packages, collects
 low-risk game actions and dialogue from recruited adults for a limited intake
 window, and is operated by a trusted university team. It is internet-facing and
 must withstand ordinary participant misuse and opportunistic probing, but it is
@@ -54,10 +54,10 @@ its research data from a malicious authenticated administrator.
 
 ## Accepted product choices that are not security findings
 
-### The first visitor may create the administrator
+### The first visitor may create the administrator on a fresh installation
 
-A fresh database deliberately lets the first visitor to `/admin` create the one
-administrator credential. This is the supported bootstrap ceremony. The operator
+A fresh custom single-game installation using the Rust `Server` builder lets the first
+visitor to `/admin` create its administrator credential. This is the supported bootstrap ceremony. The operator
 is expected to visit the installation before distributing its URL, and the
 singleton insert must be atomic.
 
@@ -67,6 +67,13 @@ including when the server is reachable beyond loopback. Findings remain valid if
 the implementation permits a second administrator setup, overwrites an existing
 credential, bypasses authentication after setup, or fails to enforce the
 singleton atomically.
+
+### Trusted game clients can share the dashboard origin
+
+On Railway, the dashboard and participant pages share a hostname by default. Publishers on this origin are trusted with the authority of any signed-in admin who opens their game. A separate admin hostname isolates the dashboard when publishers have a different trust level. The admin claims the first account at `/admin` immediately after first startup and before sharing access. Once claimed, the store requires sign-in across redeployments. Experimenter accounts share access to the host's
+games and research data. Participant apps on a shared origin must belong to
+publishers trusted for that origin. A WASM game runs inside the host's
+component sandbox, while its browser assets execute in participants' browsers.
 
 ### Anonymous people may participate more than once
 
@@ -143,8 +150,8 @@ absence of this optional feature is not a security defect.
 
 ## Configuration authority
 
-Study behavior and operational security policy are configured in the
-database-backed administrator dashboard. This includes administrator IP-range
+The single-game installation uses its database-backed administrator dashboard
+for study configuration and administrative policy. This includes administrator IP-range
 policy; it is not configured through environment variables. Environment values
 are limited to secrets that must not enter durable configuration and bootstrap
 coordinates genuinely needed before the database and dashboard can open, such as
@@ -157,6 +164,10 @@ academic operator surface. Parlando applies dashboard-configured CIDR ranges to
 the direct network peer and permits only two concurrent password verifications.
 When a trusted reverse proxy hides the original client address, the equivalent
 IP/VPN rule belongs at that proxy rather than in untrusted forwarding headers.
+
+The shared host uses a dedicated dashboard account store, account-bound, server-wide deployment credentials,
+and a separate research database for each game. Maintain deployment and dashboard authority
+separately from participant credentials and the files in a game package.
 
 ## Realistic attack scenarios
 

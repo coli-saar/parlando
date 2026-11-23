@@ -14,22 +14,24 @@ use parlando::{
         Agent, Context as AgentContext, Definition as AgentDefinition, Factory as AgentFactory,
         Identity as AgentIdentity, Response as AgentResponse,
     },
+    component::{ComponentValue, LoadedGame},
     test_support::{
         build_router,
         remote_agent_pb::{
             agent_service_server::{AgentService, AgentServiceServer},
+            decision_reason::Kind as DecisionReasonKind,
             AgentResponse as PbAgentResponse, CreateAgentRequest, CreateAgentResponse,
-            FinishRequest, ObserveMessageRequest, ObserveResponse, ObserveTransitionRequest,
-            RespondRequest, RespondResponse, ShutdownRequest, ShutdownResponse, StartRequest,
+            FinishRequest, ObserveMessageRequest, ObserveRequest, ObserveResponse,
+            ObserveTransitionRequest, RespondRequest, RespondResponse, ShutdownRequest,
+            ShutdownResponse, StartRequest,
         },
         AgentsConfig, AgentsMode, AudioChunk, ConsentItemConfig, DatabaseConfig, DirectConfig,
         ExperimentConfig, ExperimentIdentityConfig, HumanVsAgentConfig, ServeOptions,
-        SpeechmaticsConfig, StreamingTtsProvider, TranscriptionConfig, VoiceConfig,
+        SpeechmaticsConfig, StreamingTtsProvider, TranscriptionConfig,
     },
-    ActionRejection, Game, GameInitializationContext, PlayerRole,
+    PlayerRole,
 };
 use prost_types::{value::Kind, Struct, Value as ProstValue};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -40,138 +42,28 @@ use tonic::{transport::Server, Request as TonicRequest, Response as TonicRespons
 type TestSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct DummyState {
-    actions: usize,
-    done: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-enum DummyAction {
-    Mark { finish: bool },
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct DummyObservation {
-    role: String,
-    actions: usize,
-    done: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct DummySummary {
-    done: bool,
-    actions: usize,
-}
-
-#[derive(Clone)]
-struct DummyAdapter;
-
-struct DummyGameFactory;
-
-impl parlando::GameFactory for DummyGameFactory {
-    type Game = DummyAdapter;
-
-    /// Creates one stateless integration-test game.
-    fn create(&self, _context: parlando::GameSessionContext) -> Result<DummyAdapter> {
-        Ok(DummyAdapter)
-    }
-}
-
-impl Game for DummyAdapter {
-    type Config = Value;
-    type State = DummyState;
-    type Action = DummyAction;
-    type Observation = DummyObservation;
-    type Completion = DummySummary;
-
-    /// Creates one stateless test adapter for an admitted session.
-    fn initial_state(
-        &self,
-        _context: GameInitializationContext<'_, Self::Config>,
-    ) -> Result<Self::State> {
-        Ok(DummyState {
-            actions: 0,
-            done: false,
-        })
-    }
-
-    fn apply_action(
-        &self,
-        state: &Self::State,
-        action: &Self::Action,
-        _actor: PlayerRole,
-    ) -> std::result::Result<Self::State, ActionRejection> {
-        if state.done {
-            return Err(ActionRejection::new("game_complete"));
-        }
-        let DummyAction::Mark { finish } = action;
-        Ok(DummyState {
-            actions: state.actions + 1,
-            done: *finish,
-        })
-    }
-
-    fn observation(&self, state: &Self::State, player: PlayerRole) -> Self::Observation {
-        DummyObservation {
-            role: player.as_str().to_string(),
-            actions: state.actions,
-            done: state.done,
-        }
-    }
-
-    fn available_actions(
-        &self,
-        _state: &Self::State,
-        _player: PlayerRole,
-    ) -> Option<Vec<Self::Action>> {
-        Some(vec![
-            DummyAction::Mark { finish: false },
-            DummyAction::Mark { finish: true },
-        ])
-    }
-
-    fn completion(&self, state: &Self::State) -> Option<Self::Completion> {
-        state.done.then(|| DummySummary {
-            done: state.done,
-            actions: state.actions,
-        })
-    }
-}
-
 struct ScriptedAgent {
-    script: VecDeque<Option<AgentResponse<DummyAction>>>,
+    script: VecDeque<Option<AgentResponse>>,
 }
 
 #[async_trait]
-impl Agent<DummyAdapter> for ScriptedAgent {
-    async fn start(&mut self, observation: DummyObservation) -> Result<()> {
-        assert_eq!(observation.role, "B");
+impl Agent for ScriptedAgent {
+    async fn start(&mut self, observation: ComponentValue) -> Result<()> {
+        assert_eq!(serde_json::to_value(observation)?["role"], "B");
         Ok(())
     }
 
-    async fn respond(
-        &mut self,
-        available_actions: Option<Vec<DummyAction>>,
-    ) -> Result<Option<AgentResponse<DummyAction>>> {
-        assert_eq!(
-            available_actions,
-            Some(vec![
-                DummyAction::Mark { finish: false },
-                DummyAction::Mark { finish: true }
-            ])
-        );
+    async fn respond(&mut self) -> Result<Option<AgentResponse>> {
         Ok(self.script.pop_front().unwrap_or(None))
     }
 }
 
 struct ScriptedAgentFactory {
-    scripts: Mutex<VecDeque<Vec<Option<AgentResponse<DummyAction>>>>>,
+    scripts: Mutex<VecDeque<Vec<Option<AgentResponse>>>>,
 }
 
 impl ScriptedAgentFactory {
-    fn new(script: Vec<Option<AgentResponse<DummyAction>>>) -> Self {
+    fn new(script: Vec<Option<AgentResponse>>) -> Self {
         Self {
             scripts: Mutex::new(VecDeque::from([script])),
         }
@@ -179,7 +71,7 @@ impl ScriptedAgentFactory {
 }
 
 #[async_trait]
-impl AgentFactory<DummyAdapter> for ScriptedAgentFactory {
+impl AgentFactory for ScriptedAgentFactory {
     fn definition(&self) -> AgentDefinition {
         AgentDefinition {
             id: "mock".to_string(),
@@ -189,7 +81,7 @@ impl AgentFactory<DummyAdapter> for ScriptedAgentFactory {
         }
     }
 
-    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent<DummyAdapter> + Send>> {
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
         assert_eq!(context.role, PlayerRole::B);
         let script = self.scripts.lock().unwrap().pop_front().unwrap_or_default();
         Ok(Box::new(ScriptedAgent {
@@ -211,13 +103,20 @@ struct RecordingTts {
 
 #[async_trait]
 impl StreamingTtsProvider for RecordingTts {
-    async fn synthesize(&self, text: &str, _message_id: &str) -> Result<Vec<AudioChunk>> {
+    async fn synthesize(
+        &self,
+        text: &str,
+        _message_id: &str,
+    ) -> Result<parlando::test_support::SynthesizedSpeech> {
         self.messages.lock().unwrap().push(text.to_string());
-        Ok(vec![AudioChunk {
-            data: vec![1, 2, 3, 4],
-            sample_rate: 16000,
-            channels: 1,
-        }])
+        Ok(parlando::test_support::SynthesizedSpeech {
+            chunks: vec![AudioChunk {
+                data: vec![1, 2, 3, 4],
+                sample_rate: 16000,
+                channels: 1,
+            }],
+            tokens: vec![],
+        })
     }
 }
 
@@ -226,6 +125,7 @@ struct MockRemoteAgentState {
     create_requests: Mutex<Vec<CreateAgentRequest>>,
     start_requests: Mutex<Vec<StartRequest>>,
     respond_requests: Mutex<Vec<RespondRequest>>,
+    observe_requests: Mutex<Vec<ObserveRequest>>,
     finish_requests: Mutex<Vec<FinishRequest>>,
 }
 
@@ -257,6 +157,21 @@ impl AgentService for MockRemoteAgentService {
     ) -> std::result::Result<TonicResponse<ObserveResponse>, Status> {
         self.state
             .start_requests
+            .lock()
+            .unwrap()
+            .push(request.into_inner());
+        Ok(TonicResponse::new(ObserveResponse {
+            session_logs: Vec::new(),
+        }))
+    }
+
+    /// Receives one role-specific delivery from the host.
+    async fn observe(
+        &self,
+        request: TonicRequest<ObserveRequest>,
+    ) -> std::result::Result<TonicResponse<ObserveResponse>, Status> {
+        self.state
+            .observe_requests
             .lock()
             .unwrap()
             .push(request.into_inner());
@@ -310,6 +225,7 @@ impl AgentService for MockRemoteAgentService {
             response: Some(PbAgentResponse {
                 message: (decision_count == 1).then(|| "hello from remote grpc".to_string()),
                 action: Some(dummy_action_struct(decision_count > 1)),
+                wakeup: None,
             }),
             session_logs: Vec::new(),
         }))
@@ -390,16 +306,18 @@ fn dummy_action_struct(finish: bool) -> Struct {
     }
 }
 
-async fn spawn_server(
-    config: ExperimentConfig,
-    options: ServeOptions<DummyAdapter>,
-) -> Result<TestServer> {
+async fn spawn_server(config: ExperimentConfig, options: ServeOptions) -> Result<TestServer> {
     let temp = TempDir::new()?;
     let mut config = config;
     config.database = DatabaseConfig {
         url: format!("sqlite:///{}", temp.path().join("mock-client.db").display()),
     };
-    let router = build_router(DummyGameFactory, config, options).await?;
+    let router = build_router(
+        LoadedGame::from_bytes(include_bytes!("../stress-fixture/embedded/contract.wasm"))?,
+        config,
+        options,
+    )
+    .await?;
     let server = spawn_router(router, temp).await?;
     let client = reqwest::Client::new();
     let admin = admin_setup(&client, &server.base_url).await?;
@@ -450,10 +368,6 @@ fn config(mode: AgentsMode) -> ExperimentConfig {
                 required: true,
             }],
             ..DirectConfig::default()
-        },
-        voice: VoiceConfig {
-            enabled: true,
-            ..VoiceConfig::default()
         },
         speechmatics: SpeechmaticsConfig::default(),
         transcription: TranscriptionConfig {
@@ -749,12 +663,8 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
         .error_for_status()?
         .json::<Value>()
         .await?;
-    assert_eq!(audio["enabled"], true);
-    assert_eq!(audio["protocol_version"], 1);
-    assert_eq!(audio["sample_rate_hz"], 24000);
-    assert!(audio["token"]
-        .as_str()
-        .is_some_and(|value| !value.is_empty()));
+    assert_eq!(audio["enabled"], false);
+    assert!(audio["token"].is_null());
 
     let mut socket_a = ws_connect(&client, &server, &public_session_id, &a).await?;
     let mut socket_b = ws_connect(&client, &server, &public_session_id, &b).await?;
@@ -762,7 +672,7 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
     let assigned_b = read_participant_state(&mut socket_b, "active").await?;
     assert_eq!(assigned_a["role"], "A");
     assert_eq!(assigned_b["role"], "B");
-    assert_eq!(assigned_a["available_actions"].as_array().unwrap().len(), 2);
+    assert!(assigned_a["available_actions"].is_null());
     send_ws(&mut socket_a, json!({"type": "ready"})).await?;
     send_ws(&mut socket_b, json!({"type": "ready"})).await?;
 
@@ -813,20 +723,24 @@ async fn mock_browser_two_human_flow_covers_http_ws_chat_audio_and_export() -> R
 }
 
 #[tokio::test]
-async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_diagnostics(
-) -> Result<()> {
+async fn mock_browser_typed_agent_conversation_ignores_the_speech_provider() -> Result<()> {
     let tts = Arc::new(RecordingTts {
         messages: Mutex::new(vec![]),
     });
     let factory = Arc::new(ScriptedAgentFactory::new(vec![
         Some(AgentResponse::action_and_message(
-            DummyAction::Mark { finish: false },
+            ComponentValue::from_typed(&json!({"type":"mark","finish":false}))?,
             "agent says hello",
         )),
-        Some(AgentResponse::action(DummyAction::Mark { finish: true })),
+        Some(AgentResponse::action(ComponentValue::from_typed(
+            &json!({"type":"mark","finish":true}),
+        )?)),
     ]));
+    let mut experiment_config = config(AgentsMode::HumanVsAgent);
+    experiment_config.tts.enabled = true;
+    experiment_config.transcription.enabled = true;
     let server = spawn_server(
-        config(AgentsMode::HumanVsAgent),
+        experiment_config,
         ServeOptions {
             agent_factory: Some(factory),
             tts_provider: Some(tts.clone()),
@@ -855,18 +769,7 @@ async fn mock_browser_human_vs_agent_flow_covers_agent_message_action_and_tts_di
     let completed = read_participant_state(&mut socket, "ended").await?;
     assert_eq!(completed["result"]["completion"]["done"], true);
 
-    for _ in 0..20 {
-        if tts
-            .messages
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|message| message == "agent says hello")
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    assert!(tts.messages.lock().unwrap().is_empty());
 
     let export = admin_export(&client, &server.base_url, &admin_cookie).await?;
     let events = export["experiment"]["sessions"][0]["events"]
@@ -966,8 +869,30 @@ async fn mock_browser_human_vs_remote_grpc_agent_flow_uses_normal_runtime_and_pe
     let respond_requests = remote.state.respond_requests.lock().unwrap().clone();
     assert_eq!(respond_requests.len(), 2);
     assert_eq!(respond_requests[0].agent_id, "remote-agent-1");
-    assert!(respond_requests[0].available_actions_provided);
-    assert_eq!(respond_requests[0].available_actions.len(), 2);
+    assert!(!respond_requests[0].available_actions_provided);
+    assert!(respond_requests[0].available_actions.is_empty());
+    assert_eq!(
+        respond_requests[0].reason.as_ref().unwrap().kind(),
+        DecisionReasonKind::SessionStarted
+    );
+    assert_eq!(
+        respond_requests[1].reason.as_ref().unwrap().kind(),
+        DecisionReasonKind::AfterObservation
+    );
+    let observe_requests = remote.state.observe_requests.lock().unwrap().clone();
+    let transitions = observe_requests
+        .iter()
+        .filter_map(|request| {
+            request
+                .transition
+                .as_ref()
+                .map(|transition| (request, transition))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(transitions.len(), 2);
+    assert!(transitions
+        .iter()
+        .all(|(request, transition)| transition.actor == "B" && request.message.is_none()));
     let finish_requests = remote.state.finish_requests.lock().unwrap().clone();
     assert_eq!(finish_requests.len(), 1);
     assert_eq!(finish_requests[0].agent_id, "remote-agent-1");

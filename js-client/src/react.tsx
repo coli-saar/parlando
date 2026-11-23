@@ -1,38 +1,21 @@
-import { microphoneMuteButtonLabel } from "./helpers.js";
-import type { VoiceStatus } from "./audio/types.js";
-import { initialVoiceStatus } from "./audio/types.js";
+/**
+ * Games import ParticipantApp and its rendering types through this React entry point. The
+ * exported controls and indicators also accept voice status and callbacks from a custom UI.
+ * The participant runtime and audio controller own the connections behind those callbacks.
+ */
 
-export { MicrophoneLevelMeter, TranscriptionProgress } from "./voiceComponents.js";
-
-/** Renders the participant control for muting an already connected microphone. */
-export function MicrophoneMuteButton({
-  enabled,
-  onMutedChange,
-  status = initialVoiceStatus
-}: {
-  enabled: boolean;
-  onMutedChange: (muted: boolean) => void;
-  status?: VoiceStatus;
-}) {
-  const muted = status.connected && !status.microphoneEnabled;
-  return (
-    <button
-      aria-pressed={muted}
-      className={`microphone-mute-button ${muted ? "muted" : "live"}`}
-      disabled={!enabled || !status.connected || status.microphoneChanging}
-      onClick={() => onMutedChange(!muted)}
-      type="button"
-    >
-      {microphoneMuteButtonLabel(status)}
-    </button>
-  );
-}
+export { MicrophoneLevelMeter, MicrophoneMuteButton, TranscriptionProgress } from "./voiceComponents.js";
+export { CommunicationWidget } from "./participant/communicationWidget.js";
 
 export {
   ParticipantApp,
   PartnerReconnectNotice,
   ProlificHandoff,
-  type GameSession,
+  ReplayPlayer,
+  type CommunicationPlacement,
+  type GameSnapshot,
   type GameTransition,
-  type ParticipantAppProps
+  type ParticipantAppProps,
+  type ReplayFrame,
+  type SessionReplay
 } from "./startup.js";

@@ -1,69 +1,31 @@
-# Parlando
+# <img src="brand/parlando-wordmark.svg" width="260" alt="Parlando">
 
-Parlando is a platform for running two-player online dialogue-game experiments. A game supplies a
-browser interface and typed task rules; Parlando supplies participant entry, consent, pairing,
-communication, agents, monitoring, structured data, privacy controls, export, and optional Prolific
-recruitment.
-
-The [Parlando manual](docs/web/content/manual/_index.md) is the self-contained starting point for installing Parlando,
-running the Great Tree example, creating a game, configuring a study, deploying it, and managing
-research data.
-
-## Run the Great Tree example
-
-Install stable Rust, Node.js 20.19 or newer (or 22.12 or newer), npm, and GNU Make. Then run:
+Parlando runs two-player dialogue-game experiments with humans and software agents. A game package contains WebAssembly mechanics and a browser application. A shared host serves one current package per game and opens a separate dashboard for each game’s experiments.
 
 ```sh
-games/great-tree/run.sh
+cargo install --locked parlando --bin parlando
 ```
 
-Open <http://127.0.0.1:8080/admin>, create the first administrator, create an experiment, and open
-its participant link in two isolated browser contexts. See
-[Install and run the example](docs/web/content/manual/start/getting-started.md) for the complete walkthrough.
+Start with the [experimenter manual](https://coli-saar.github.io/parlando/manual/). Its [first walkthrough](https://coli-saar.github.io/parlando/manual/start/getting-started/) takes you from installation to playing both seats of a local game. Follow [package a game](https://coli-saar.github.io/parlando/manual/build/packages/) and [deploy to a shared host](https://coli-saar.github.io/parlando/manual/deploy/) when you are ready to run a study.
 
-## Use the released packages
+The games in this checkout each provide `build.sh` and `deploy.sh`. For example, from `games/great-tree/`:
 
-Games use the coordinated Rust and JavaScript releases:
-
-```toml
-[dependencies]
-parlando = "0.4.3"
+```sh
+./build.sh
+parlando login --server lab
+./deploy.sh --host lab
 ```
 
-```json
-{
-  "dependencies": {
-    "@coli-saar/parlando-client": "^0.4.3"
-  }
-}
-```
+Use your server URL or alias in place of `lab`. Login is needed once per server. The deployment uploads the ZIPs from the last build, game first, then agents. Use `./build.sh --game-only` for a game-only upload, or omit `--host` to deploy to the CLI’s default server.
 
-The repository's `generate-parlando-game` skill can generate a complete Rust server, React
-participant application, tests, and deployment files from a task description. The
-[Create a game](docs/web/content/manual/build/create-game.md) chapter explains the workflow.
+To host the server and deploy game and agent packages, see [Deploy Parlando on Railway](docs/web/content/manual/deploy/railway.md).
 
-## Preview the manual locally
+For maintainers, see the [release procedure](docs/releasing-parlando.md) and the [internals atlas](developer/code-atlas/index.html).
 
-The manual is the `/manual/` section of the repository's Hugo website:
+## Preview the manual
 
 ```sh
 hugo server --source docs/web
 ```
 
-Open <http://127.0.0.1:1313/parlando/>. Use
-`hugo --source docs/web --panicOnWarning --printPathWarnings` to perform the same validation as
-GitHub Actions.
-
-The workflow in `.github/workflows/web-pages.yml` deploys the site after a successful push to
-`main`. In the GitHub repository, select **Settings → Pages → Source: GitHub Actions** once to enable
-the deployment. The website source lives under `docs/web`; future product pages can join the manual
-without introducing a second site generator or publishing the older technical documents in `docs/`.
-
-## Current scope
-
-Parlando 0.4.3 supports roles `A` and `B`, live human–human and human–agent sessions, headless
-agent–agent evaluation, SQLite persistence, typed communication, optional live voice and
-transcription, and single-process live session state. Different compiled games run as separate
-processes with separate databases.
-
-Parlando is distributed under the terms in [LICENSE](LICENSE).
+Open [the local site](http://127.0.0.1:1313/parlando/).

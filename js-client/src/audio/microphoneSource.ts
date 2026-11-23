@@ -1,3 +1,10 @@
+/**
+ * MicrophoneSource owns the browser stream obtained during preflight and its level probe. The
+ * controller receives device and level updates and supplies a MicrophoneInput to the sink,
+ * which can request its own stream. Superseded acquisition and teardown release resources
+ * owned by the obsolete request.
+ */
+
 import type { MicrophoneInput, VoicePreflight } from "./types.js";
 import { initialVoicePreflight } from "./types.js";
 

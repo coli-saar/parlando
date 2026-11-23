@@ -1,3 +1,8 @@
+//! Installation startup and the dashboard use these types to turn stored experiment settings
+//! into a runtime configuration. Structural validation checks the allowed values and their
+//! relationships. Activation checks the additional conditions required to open intake,
+//! including credentials for enabled providers.
+
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{bail, Context, Result};
@@ -188,11 +193,29 @@ pub struct ExperimentIdentityConfig {
     pub id: Option<String>,
 }
 
+/// Selects the participant conversation input and transport for an experiment.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommunicationMode {
+    /// Players compose messages through the game WebSocket.
+    #[default]
+    Typed,
+    /// Players use the audio WebSocket, with optional speech providers.
+    Speech,
+}
+
+/// Public and revisioned selection of the experiment's communication channel.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CommunicationConfig {
+    /// Input and transport enabled for players. Defaults to typed conversation.
+    pub mode: CommunicationMode,
+}
+
+/// Audio transport settings used by speech-mode experiments.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct VoiceConfig {
-    /// Enables Parlando's authenticated browser-to-server audio WebSocket.
-    pub enabled: bool,
     /// Canonical PCM sample rate; protocol version 1 requires 24 kHz.
     pub sample_rate_hz: u32,
     /// Canonical binary frame duration; protocol version 1 requires 20 ms.
@@ -207,7 +230,6 @@ impl Default for VoiceConfig {
     /// Uses the single wire format implemented by protocol version 1.
     fn default() -> Self {
         Self {
-            enabled: false,
             sample_rate_hz: 24_000,
             frame_duration_ms: 20,
             jitter_buffer_ms: 100,
@@ -339,6 +361,8 @@ pub struct ExperimentConfig {
     pub server: ServerConfig,
     #[serde(skip)]
     pub database: DatabaseConfig,
+    /// Conversation channel available to players.
+    pub communication: CommunicationConfig,
     pub voice: VoiceConfig,
     pub speechmatics: SpeechmaticsConfig,
     pub transcription: TranscriptionConfig,
@@ -353,6 +377,89 @@ pub struct ExperimentConfig {
     pub game_secrets: HashMap<String, String>,
 }
 
+/// Revisioned experiment settings, excluding process resources, identity, and credentials.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct StoredExperimentConfig {
+    pub session: SessionConfig,
+    pub progress: ProgressConfig,
+    pub direct: DirectConfig,
+    pub recruitment: RecruitmentConfig,
+    /// Conversation channel available to players.
+    pub communication: CommunicationConfig,
+    pub voice: VoiceConfig,
+    pub speechmatics: SpeechmaticsConfig,
+    pub transcription: TranscriptionConfig,
+    pub tts: TtsConfig,
+    pub agents: AgentsConfig,
+    pub capacity: CapacityConfig,
+    pub privacy: PrivacyConfig,
+    pub game: Value,
+}
+
+impl Default for StoredExperimentConfig {
+    /// Creates the revisioned portion of the default experiment configuration.
+    fn default() -> Self {
+        Self::from(&ExperimentConfig::default())
+    }
+}
+
+impl From<&ExperimentConfig> for StoredExperimentConfig {
+    /// Copies only fields that belong to an experiment revision.
+    fn from(config: &ExperimentConfig) -> Self {
+        Self {
+            session: config.session.clone(),
+            progress: config.progress.clone(),
+            direct: config.direct.clone(),
+            recruitment: config.recruitment.clone(),
+            communication: config.communication,
+            voice: config.voice.clone(),
+            speechmatics: config.speechmatics.clone(),
+            transcription: config.transcription.clone(),
+            tts: config.tts.clone(),
+            agents: config.agents.clone(),
+            capacity: config.capacity.clone(),
+            privacy: config.privacy.clone(),
+            game: config.game.clone(),
+        }
+    }
+}
+
+impl StoredExperimentConfig {
+    /// Combines one stored revision with process-owned resources and experiment identity.
+    pub(crate) fn into_runtime(
+        self,
+        bootstrap: &ExperimentConfig,
+        experiment_id: &str,
+        public_base_url: String,
+    ) -> ExperimentConfig {
+        ExperimentConfig {
+            experiment: ExperimentIdentityConfig {
+                id: Some(experiment_id.to_string()),
+            },
+            session: self.session,
+            progress: self.progress,
+            direct: self.direct,
+            recruitment: self.recruitment,
+            server: ServerConfig {
+                public_base_url,
+                ..bootstrap.server.clone()
+            },
+            database: bootstrap.database.clone(),
+            communication: self.communication,
+            voice: self.voice,
+            speechmatics: self.speechmatics,
+            transcription: self.transcription,
+            tts: self.tts,
+            agents: self.agents,
+            capacity: self.capacity,
+            privacy: self.privacy,
+            game: self.game,
+            game_secrets: HashMap::new(),
+        }
+    }
+}
+
 impl Default for ExperimentConfig {
     /// Creates a complete experiment configuration with an empty game-owned mapping.
     fn default() -> Self {
@@ -364,6 +471,7 @@ impl Default for ExperimentConfig {
             recruitment: RecruitmentConfig::default(),
             server: ServerConfig::default(),
             database: DatabaseConfig::default(),
+            communication: CommunicationConfig::default(),
             voice: VoiceConfig::default(),
             speechmatics: SpeechmaticsConfig::default(),
             transcription: TranscriptionConfig::default(),
@@ -378,6 +486,21 @@ impl Default for ExperimentConfig {
 }
 
 impl ExperimentConfig {
+    /// Returns whether the experiment allows participants to exchange audio.
+    pub fn is_speech(&self) -> bool {
+        self.communication.mode == CommunicationMode::Speech
+    }
+
+    /// Returns whether participant speech is sent to a transcription provider.
+    pub fn transcription_active(&self) -> bool {
+        self.is_speech() && self.transcription.enabled
+    }
+
+    /// Returns whether agent messages are synthesized for speech playback.
+    pub fn tts_active(&self) -> bool {
+        self.is_speech() && self.tts.enabled
+    }
+
     /// Validates cross-field requirements that cannot be expressed by serde defaults alone.
     pub fn validate(&self) -> Result<()> {
         if self.experiment.id.as_ref().is_some_and(|id| {
@@ -454,7 +577,7 @@ impl ExperimentConfig {
         if self.capacity.max_active_sessions == 0
             || self.capacity.max_waiting_sessions == 0
             || self.capacity.max_unattached_participants == 0
-            || self.capacity.max_transcription_streams == 0
+            || (self.transcription_active() && self.capacity.max_transcription_streams == 0)
             || self.capacity.storage_reserve_megabytes == 0
         {
             bail!("capacity limits must be positive");
@@ -477,17 +600,23 @@ impl ExperimentConfig {
         if self.privacy.contract_version.trim().is_empty() {
             bail!("privacy.contract_version must not be empty");
         }
-        if self.voice.jitter_buffer_ms < self.voice.frame_duration_ms
-            || self.voice.jitter_buffer_ms > 5_000
-        {
-            bail!("voice.jitter_buffer_ms must be between one frame and 5000 ms");
+        if self.is_speech() {
+            if self.voice.sample_rate_hz != 24_000 || self.voice.frame_duration_ms != 20 {
+                bail!(
+                    "voice protocol version 1 requires sample_rate_hz 24000 and frame_duration_ms 20"
+                );
+            }
+            if self.voice.jitter_buffer_ms < self.voice.frame_duration_ms
+                || self.voice.jitter_buffer_ms > 5_000
+            {
+                bail!("voice.jitter_buffer_ms must be between one frame and 5000 ms");
+            }
+            if self.voice.post_completion_seconds == 0 || self.voice.post_completion_seconds > 3_600
+            {
+                bail!("voice.post_completion_seconds must be between 1 and 3600");
+            }
         }
-        if self.voice.post_completion_seconds == 0
-            || self.voice.post_completion_seconds > 3_600
-        {
-            bail!("voice.post_completion_seconds must be between 1 and 3600");
-        }
-        if self.tts.enabled {
+        if self.tts_active() {
             if self.tts.provider != "elevenlabs" {
                 bail!("tts.provider must be elevenlabs");
             }
@@ -499,14 +628,7 @@ impl ExperimentConfig {
             }
             validate_websocket_url("tts.base_url", &self.tts.base_url)?;
         }
-        if self.voice.enabled
-            && (self.voice.sample_rate_hz != 24_000 || self.voice.frame_duration_ms != 20)
-        {
-            bail!(
-                "voice protocol version 1 requires sample_rate_hz 24000 and frame_duration_ms 20"
-            );
-        }
-        if self.transcription.enabled {
+        if self.transcription_active() {
             if self.transcription.provider != "speechmatics" {
                 bail!("transcription.provider must be speechmatics");
             }
@@ -584,13 +706,13 @@ impl ExperimentConfig {
     /// Lists missing runtime credentials or identifiers which prevent participant intake.
     pub fn activation_issues(&self) -> Vec<String> {
         let mut issues = Vec::new();
-        if self.transcription.enabled && self.speechmatics.api_key.trim().is_empty() {
+        if self.transcription_active() && self.speechmatics.api_key.trim().is_empty() {
             issues.push("Speechmatics API key is required when transcription is enabled.".into());
         }
-        if self.tts.enabled && self.tts.api_key.trim().is_empty() {
+        if self.tts_active() && self.tts.api_key.trim().is_empty() {
             issues.push("ElevenLabs API key is required when text to speech is enabled.".into());
         }
-        if self.tts.enabled && self.tts.voice_id.trim().is_empty() {
+        if self.tts_active() && self.tts.voice_id.trim().is_empty() {
             issues.push("ElevenLabs voice id is required when text to speech is enabled.".into());
         }
         issues
@@ -723,6 +845,7 @@ mod tests {
     fn activation_validation_requires_enabled_tts_secrets() {
         let mut config = ExperimentConfig::default();
         config.database.url = "sqlite:///:memory:".to_string();
+        config.communication.mode = CommunicationMode::Speech;
         config.tts.enabled = true;
         config.tts.voice_id = "voice".to_string();
 
@@ -809,6 +932,8 @@ mod tests {
             |config: &mut ExperimentConfig| config.capacity.storage_reserve_megabytes = 0,
         ] {
             let mut config = valid_config();
+            config.communication.mode = CommunicationMode::Speech;
+            config.transcription.enabled = true;
             mutate(&mut config);
             assert!(config
                 .validate()
@@ -856,12 +981,13 @@ mod tests {
     fn validation_checks_voice_protocol_boundaries() {
         for jitter in [20, 5_000] {
             let mut config = valid_config();
-            config.voice.enabled = true;
+            config.communication.mode = CommunicationMode::Speech;
             config.voice.jitter_buffer_ms = jitter;
             config.validate().unwrap();
         }
         for jitter in [19, 5_001] {
             let mut config = valid_config();
+            config.communication.mode = CommunicationMode::Speech;
             config.voice.jitter_buffer_ms = jitter;
             assert!(config.validate().is_err());
         }
@@ -870,7 +996,7 @@ mod tests {
             |config: &mut ExperimentConfig| config.voice.frame_duration_ms = 10,
         ] {
             let mut config = valid_config();
-            config.voice.enabled = true;
+            config.communication.mode = CommunicationMode::Speech;
             mutate(&mut config);
             assert!(config
                 .validate()
@@ -880,11 +1006,13 @@ mod tests {
         }
         for seconds in [1, 3_600] {
             let mut config = valid_config();
+            config.communication.mode = CommunicationMode::Speech;
             config.voice.post_completion_seconds = seconds;
             config.validate().unwrap();
         }
         for seconds in [0, 3_601] {
             let mut config = valid_config();
+            config.communication.mode = CommunicationMode::Speech;
             config.voice.post_completion_seconds = seconds;
             assert!(config.validate().is_err());
         }
@@ -894,6 +1022,7 @@ mod tests {
     #[test]
     fn validation_checks_transcription_provider_and_float_boundaries() {
         let mut valid = valid_config();
+        valid.communication.mode = CommunicationMode::Speech;
         valid.transcription.enabled = true;
         valid.validate().unwrap();
 
@@ -1006,10 +1135,36 @@ mod tests {
         }
     }
 
+    /// Typed experiments ignore dormant provider settings and reject the removed voice switch.
+    #[test]
+    fn typed_communication_leaves_speech_settings_dormant() {
+        let mut config = valid_config();
+        config.transcription.enabled = true;
+        config.tts.enabled = true;
+        config.speechmatics.realtime_url.clear();
+        config.tts.model.clear();
+        config.voice.frame_duration_ms = 0;
+        config.capacity.max_transcription_streams = 0;
+        assert_eq!(config.communication.mode, CommunicationMode::Typed);
+        config.validate().unwrap();
+        assert!(config.activation_issues().is_empty());
+
+        config.communication.mode = CommunicationMode::Speech;
+        assert!(config.validate().is_err());
+        assert!(!config.activation_issues().is_empty());
+        assert!(
+            serde_json::from_value::<StoredExperimentConfig>(serde_json::json!({
+                "voice": {"enabled": true}
+            }))
+            .is_err()
+        );
+    }
+
     /// Confirms activation issues are complete, ordered, and whitespace-sensitive.
     #[test]
     fn activation_issues_are_stable_and_complete() {
         let mut config = valid_config();
+        config.communication.mode = CommunicationMode::Speech;
         config.transcription.enabled = true;
         config.speechmatics.api_key = "  ".to_string();
         config.tts.enabled = true;
@@ -1042,11 +1197,13 @@ mod tests {
     #[test]
     fn validation_checks_revisioned_provider_endpoints() {
         let mut transcription = valid_config();
+        transcription.communication.mode = CommunicationMode::Speech;
         transcription.transcription.enabled = true;
         transcription.speechmatics.realtime_url = "https://not-websocket.test".to_string();
         assert!(transcription.validate().is_err());
 
         let mut synthesis = valid_config();
+        synthesis.communication.mode = CommunicationMode::Speech;
         synthesis.tts.enabled = true;
         synthesis.tts.voice_id = "voice".to_string();
         synthesis.tts.base_url = "https://not-websocket.test".to_string();

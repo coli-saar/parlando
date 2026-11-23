@@ -12,7 +12,6 @@ import {
   type AudioSessionPlan,
   type ExperimentInfo,
   type GameSessionPlan,
-  type JoinedSession,
   type PlayerMessage,
   type PlayerRole,
   type VoicePreflight,
@@ -25,22 +24,21 @@ The React entry point exports the participant lifecycle and platform widgets:
 ```tsx
 import {
   ParticipantApp,
-  type GameSession,
-  MicrophoneMuteButton,
-  MicrophoneLevelMeter,
-  TranscriptionProgress,
+  type GameSnapshot,
 } from "@coli-saar/parlando-client/react";
 ```
 
-`ParticipantApp` handles registration, consent, matchmaking, readiness, connection, and optional audio before handing a `GameSession` to the game renderer. The game owns its domain types, visual design, controls, language, assets, and completion presentation.
+`ParticipantApp` handles registration, consent, matchmaking, readiness, connection, conversation, microphone controls, leaving, replay, and terminal outcomes. It hands a `GameSnapshot` to the game renderer. The game owns its domain types, game surface, task controls, language, assets, and completion presentation.
 
-`GameSession` exposes role-specific `observation`, the nullable most recent `transition`, optional `availableActions`, conversation, presence, completion, voice capability, and high-level operations. A transition contains the accepted actor and action; presentation code may ignore it and render only the observation. The session does not expose authoritative state, generic events, provider credentials, or dashboard configuration.
+`GameSnapshot` exposes role-specific `observation`, the nullable most recent `transition`, optional `availableActions`, `interactionEnabled`, and `act`. A transition contains the accepted actor and action; presentation code may ignore it and render only the observation. The snapshot does not expose authoritative state, transport state, provider credentials, or dashboard configuration. The same renderer receives live and reconstructed replay snapshots.
 
 Use `new ParticipantClient({ baseUrl })` for the HTTP lifecycle of a custom non-React participant application. It retains the participant credential and returns presentation-neutral experiment, room, and authenticated one-use `GameSessionPlan` or `AudioSessionPlan` values with JavaScript-style field names. Implement the documented WebSocket protocol from that plan when the complete `ParticipantApp` lifecycle is unsuitable; raw server-message DTOs and socket helpers are intentionally not package exports.
 
 ## Presentation boundary
 
-The package supplies platform behavior, not game presentation. Human-readable labels, animation, maps, dialogue layout, and accessibility choices belong to the participant application. Rust games and agents exchange only structured domain observations, actions, messages, and completion.
+The package supplies platform behavior and platform widgets, while the game supplies its game surface. Maps, task-specific labels, and game animation belong to the game. Conversation, microphone, connection, leave, and replay controls belong to Parlando and expose stable `parlando-*` styling hooks.
+
+`ParticipantApp` displays a communication widget below the game by default. The experiment's `communication.mode` selects typed chat or the microphone controls. To place the widget in your UI, set `communicationPlacement="game"` on `ParticipantApp` and render one `<CommunicationWidget />` inside `renderGame`. Import both components from `@coli-saar/parlando-client/react`. The widget includes default styling. Scope game CSS to its `.parlando-communication` root to customize its appearance. See the [game developer guide](../docs/web/content/manual/build/create-game.md#place-communication-beside-the-game) for a layout example.
 
 Speechmatics and TTS credentials and provider selection remain server-owned. Participant code receives only narrow capabilities and session status. Do not call provider APIs directly.
 

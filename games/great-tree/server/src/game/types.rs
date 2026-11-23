@@ -1,4 +1,4 @@
-use parlando::PlayerRole;
+use parlando_game_sdk::Role as PlayerRole;
 use serde::{Deserialize, Serialize};
 
 use super::ids::{LimbId, RootId};
@@ -6,7 +6,9 @@ use super::ids::{LimbId, RootId};
 /// Which seat (`PlayerRole::A` or `PlayerRole::B`) controls Crown for a session. Root is
 /// whichever seat this isn't. An administrator sets this per experiment; it has no gameplay
 /// effect of its own, it only decides which invitation link is Crown and which is Root.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, parlando_game_sdk::GameValue,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum CrownSeat {
     A,
@@ -31,14 +33,14 @@ impl CrownSeat {
 
 /// Game-owned configuration, edited as YAML in the experiment's "Game configuration" panel in
 /// the admin dashboard (`/admin/experiments`).
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, parlando_game_sdk::GameValue)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct GreatTreeConfig {
     /// Which seat is Crown for this experiment. Defaults to `a` (Crown = Player A), matching
     /// the game's original fixed assignment. Set to `b` to swap the two invitation links'
     /// roles without changing anything else.
-    #[serde(default)]
-    pub crown_seat: CrownSeat,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crown_seat: Option<CrownSeat>,
 }
 
 /// Authoritative, server-only state. Never sent to a participant.
@@ -63,14 +65,18 @@ pub struct GreatTreeState {
     pub bijection: [RootId; 5],
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, parlando_game_sdk::GameValue,
+)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum GreatTreeAction {
     SetSun { limb: LimbId, lit: bool },
     SetFlow { root: RootId, open: bool },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, parlando_game_sdk::GameValue,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct LimbView {
     pub id: LimbId,
@@ -78,7 +84,9 @@ pub struct LimbView {
     pub water: bool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, parlando_game_sdk::GameValue,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct RootView {
     pub id: RootId,
@@ -89,14 +97,14 @@ pub struct RootView {
 /// One Rust type serving both roles' `Game::observation`, discriminated on the wire by `role`.
 /// Each variant carries only that role's own five items — Crown's variant has no way to carry
 /// root or bijection data even by mistake, which is the point (spec §4's privacy requirement).
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, parlando_game_sdk::GameValue)]
 #[serde(tag = "role", rename_all = "camelCase")]
 pub enum GreatTreeObservation {
     Crown { limbs: [LimbView; 5] },
     Root { roots: [RootView; 5] },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, parlando_game_sdk::GameValue)]
 #[serde(rename_all = "camelCase")]
 pub struct GreatTreeCompletion {
     /// Which limbs were flowering at the moment three-of-five was reached (spec §8).
@@ -122,7 +130,7 @@ mod tests {
             limb: LimbId::Hook,
             lit: true,
         };
-        let value = serde_json::to_value(&action).unwrap();
+        let value = serde_json::to_value(action).unwrap();
         assert_eq!(value["type"], "setSun");
         assert_eq!(value["limb"], "hook");
         assert_eq!(value["lit"], true);
@@ -134,7 +142,7 @@ mod tests {
             root: RootId::Deep,
             open: false,
         };
-        let value = serde_json::to_value(&action).unwrap();
+        let value = serde_json::to_value(action).unwrap();
         assert_eq!(value["type"], "setFlow");
         assert_eq!(value["root"], "deep");
         assert_eq!(value["open"], false);

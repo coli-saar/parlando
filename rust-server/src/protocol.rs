@@ -1,3 +1,9 @@
+//! The HTTP handlers, game socket, and participant client exchange these serialized requests,
+//! snapshots, and events. Participant state carries the result or observation for its
+//! recipient. The server marks outgoing messages as targeted or broadcast so the socket loop
+//! can select what each participant receives.
+
+use crate::config::CommunicationConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -48,7 +54,8 @@ pub struct PublicConfigResponse {
     pub participant_information_version: Option<String>,
     pub participant_information_url: Option<String>,
     pub consents: Vec<ConsentItemResponse>,
-    pub voice: Value,
+    /// Conversation channel participants should use for this experiment.
+    pub communication: CommunicationConfig,
     /// Narrow intake capability; study ids and completion codes remain private.
     pub recruitment: Value,
 }
@@ -258,6 +265,8 @@ pub enum ParticipantState {
     Registered,
     /// The participant belongs to a session which has not started.
     Waiting {
+        /// Admission source of the receiving participant.
+        recruitment_source: String,
         public_session_id: String,
         role: String,
         waiting_started_at: String,
@@ -266,6 +275,8 @@ pub enum ParticipantState {
     },
     /// The running session currently accepts meaningful participant input.
     Active {
+        /// Admission source of the receiving participant.
+        recruitment_source: String,
         public_session_id: String,
         role: String,
         observation: Value,
@@ -275,6 +286,8 @@ pub enum ParticipantState {
     },
     /// The running session preserves its projection while interaction is unavailable.
     Paused {
+        /// Admission source of the receiving participant.
+        recruitment_source: String,
         public_session_id: String,
         role: String,
         reason: ParticipantPauseReason,
@@ -291,38 +304,6 @@ pub enum ParticipantState {
         /// End of the optional post-completion voice relay period.
         voice_ends_at: Option<String>,
     },
-}
-
-/// Lifecycle-only participant phase used to validate transitions independently of payload data.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ParticipantPhase {
-    Registered,
-    Waiting,
-    Active,
-    Paused,
-    Ended,
-}
-
-/// Reports whether two distinct participant phases form an allowed lifecycle transition.
-#[cfg(test)]
-pub fn participant_transition_allowed(from: ParticipantPhase, to: ParticipantPhase) -> bool {
-    matches!(
-        (from, to),
-        (ParticipantPhase::Registered, ParticipantPhase::Waiting)
-            | (
-                ParticipantPhase::Waiting,
-                ParticipantPhase::Active | ParticipantPhase::Ended
-            )
-            | (
-                ParticipantPhase::Active,
-                ParticipantPhase::Paused | ParticipantPhase::Ended
-            )
-            | (
-                ParticipantPhase::Paused,
-                ParticipantPhase::Active | ParticipantPhase::Ended
-            )
-    )
 }
 
 /// The deliberately closed participant pause-reason vocabulary.
@@ -431,31 +412,7 @@ impl ServerMessage {
 mod tests {
     use serde_json::Value;
 
-    use super::{participant_transition_allowed, ParticipantPhase};
     use super::{ClientMessage, ServerMessage};
-
-    /// Locks the deliberately small participant transition graph, including its absorbing end.
-    #[test]
-    fn participant_transition_graph_is_strict() {
-        use ParticipantPhase::*;
-        let allowed = [
-            (Registered, Waiting),
-            (Waiting, Active),
-            (Waiting, Ended),
-            (Active, Paused),
-            (Active, Ended),
-            (Paused, Active),
-            (Paused, Ended),
-        ];
-        for from in [Registered, Waiting, Active, Paused, Ended] {
-            for to in [Registered, Waiting, Active, Paused, Ended] {
-                assert_eq!(
-                    participant_transition_allowed(from, to),
-                    allowed.contains(&(from, to))
-                );
-            }
-        }
-    }
 
     /// Confirms the game channel accepts only the current four operation names.
     #[test]

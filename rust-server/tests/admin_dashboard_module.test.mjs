@@ -15,33 +15,6 @@ test('dashboard entry module has valid ECMAScript module syntax', () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
-test('progress loads during initialization and when its tab opens', () => {
-  const source = readFileSync(
-    new URL('../src/app/admin_dashboard.js', import.meta.url),
-    'utf8',
-  );
-  assert.match(source, /Promise\.all\(\[loadSessions\(\), loadProgress\(\), loadLoad\(\)\]\)/);
-  assert.match(source, /state\.activeTab === 'progress'\) loadProgress\(\)/);
-  assert.match(source, /state\.sessionProgress\?\.sessions \|\| \[\]/);
-  assert.match(source, /session\.purpose === 'testing'/);
-  assert.match(source, /setInterval\([\s\S]*state\.activeTab === 'progress' \? loadProgress\(\)/);
-  assert.match(source, /if \(signature === state\.sessionProgressSignature\) return false;/);
-  assert.match(source, /if \(initialLoad\) sessionEndChart\.innerHTML = '<div class="empty">Loading…<\/div>';/);
-  assert.doesNotMatch(source, /async function loadProgress\(\)[\s\S]*?state\.sessionProgress = null;[\s\S]*?\/\/ Refreshes the linked Prolific study/);
-  assert.match(source, /data-progress-session/);
-  assert.match(source, /state\.activeTab = 'sessions';[\s\S]*selectSession/);
-  assert.match(source, /<button class="progress-session-row/);
-  assert.doesNotMatch(source, /class="progress-session-link"/);
-  assert.doesNotMatch(source, /presentation\.label\}\$\{session\.purpose === 'testing'/);
-  assert.match(source, /session-wait-detail[^`]*Unsuccessful wait <strong>/);
-  assert.doesNotMatch(source, /<dt>Unsuccessful wait<\/dt>/);
-  assert.doesNotMatch(source, /Prolific places:/);
-  assert.match(source, /session\.lifecycle === 'ended' \? sessionEndPresentation\(session\)/);
-  assert.match(source, /namedStatusLabel\(terminal\.status, terminal\.label, true\)/);
-  assert.match(source, /class="progress-session-date"[^\n]*fmtDate\(session\.created_at\)/);
-  assert.match(source, /class="progress-session-time"[^\n]*fmtClockTime\(session\.created_at\)/);
-});
-
 test('dashboard utility classes cannot override the hidden attribute', () => {
   const css = readFileSync(
     new URL('../src/app/admin_dashboard.css', import.meta.url),
@@ -55,7 +28,7 @@ test('dashboard utility classes cannot override the hidden attribute', () => {
   assert.match(css, /\.progress-session-row\s*\{[^}]*column-gap:\s*20px;[^}]*grid-column:\s*1 \/ -1;[^}]*grid-template-columns:\s*subgrid/);
   assert.match(css, /\.progress-session-row strong\s*\{[^}]*color:\s*var\(--text\)/);
   assert.match(css, /\.progress-header\s*\{[^}]*max-width:\s*900px/);
-  assert.match(css, /--session-completed:\s*#2f9e62/);
+  assert.match(css, /--session-completed:\s*var\(--parlando-green\)/);
   assert.match(css, /\.status-dot\.completed\s*\{\s*background:\s*var\(--session-completed\)/);
   assert.match(css, /\.status-dot\.connection-lost\s*\{\s*background:\s*var\(--session-connection-lost\)/);
   assert.match(css, /\.status-dot\.no-partner\s*\{\s*background:\s*var\(--session-no-partner\)/);

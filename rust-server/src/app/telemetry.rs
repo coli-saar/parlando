@@ -1,3 +1,8 @@
+//! Collects process-local operational counters, per-connection liveness readings, and
+//! bounded load history. HTTP middleware, transports, and gameplay operations record
+//! observations here. The monitoring sampler and administrator load endpoint read them.
+//! Research exports come from the durable store.
+
 use std::{
     collections::VecDeque,
     sync::{
@@ -278,7 +283,7 @@ pub(crate) struct LoadSample {
 }
 
 /// Current use and configured ceilings for admitted research resources.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct CapacitySample {
     pub active_reserved_sessions: usize,
     pub active_session_limit: usize,
@@ -294,7 +299,7 @@ pub(crate) struct CapacitySample {
 }
 
 /// Instantaneous transport counts and heartbeat health bands.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct ConnectionSample {
     pub game_connections: usize,
     pub game_live: usize,

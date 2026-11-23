@@ -172,7 +172,7 @@ async function pairedGame(origin) {
   const pair = await setupPair(origin);
   assert.equal(pair.activeA.observation.role, "A");
   assert.equal(pair.activeB.observation.role, "B");
-  assert.equal(pair.activeA.available_actions.length, 3);
+  assert.equal(pair.activeA.available_actions == null, true);
 
   pair.a.sendAction(pair.peerA.socket, { type: "reject" });
   const rejection = await pair.peerA.nextType("action_rejected");

@@ -362,6 +362,41 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(contexts[0].settings, {"difficulty": 2.0})
         self.assertIsInstance(contexts[0].logger, server.SessionLogger)
 
+    async def test_shutdown_waits_for_active_callback_and_its_logs(self) -> None:
+        """Closing the instance lets an in-flight callback finish and drain its own logs."""
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        class SlowAgent(RecordingAgent):
+            """Pauses start until shutdown has had an opportunity to run."""
+
+            async def start(self, observation: dict[str, object]) -> None:
+                """Records a log after the close request has arrived."""
+                entered.set()
+                await release.wait()
+                logger.log("start finished")
+
+        def factory(context: server.Context) -> SlowAgent:
+            """Retains the session logger used by the in-flight callback."""
+            nonlocal logger
+            logger = context.logger
+            return SlowAgent()
+
+        logger: server.SessionLogger
+        service = self.service(factory)
+        created = await service.CreateAgent(self.create_request(), FakeContext())
+        request = SimpleNamespace(agent_id=created.agent_id, observation=Struct())
+        callback = asyncio.create_task(service.Start(request, FakeContext()))
+        await entered.wait()
+        shutdown = asyncio.create_task(service.Shutdown(request, FakeContext()))
+        await asyncio.sleep(0)
+        self.assertFalse(shutdown.done())
+        late_callback = asyncio.create_task(service.Start(request, FakeContext()))
+        release.set()
+        self.assertEqual((await callback).session_logs, ["start finished"])
+        self.assertEqual((await shutdown).session_logs, [])
+        with self.assertRaises(AbortedRpc):
+            await late_callback
+
     async def test_unknown_agent_ids_abort(self) -> None:
         """Observation RPCs reject unknown capability identifiers."""
         service = self.service(lambda _: RecordingAgent())
@@ -396,6 +431,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             agent_id=created.agent_id,
             available_actions_provided=True,
             available_actions=[server._dict_to_struct({"type": "pass"})],
+            HasField=lambda _: False,
         )
         yielded = await service.Respond(request, FakeContext())
         self.assertFalse(hasattr(yielded, "response"))
@@ -403,6 +439,61 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agent.asserted_actions, [{"type": "pass"}])
         self.assertEqual(combined.response.message, "passing")
         self.assertEqual(server._struct_to_dict(combined.response.action.value), {"type": "pass"})
+
+
+class UnifiedCallbackTests(unittest.IsolatedAsyncioTestCase):
+    """Exercises the generated protocol for joint delivery and live timers."""
+
+    async def test_combined_observation_and_rejection_reason(self) -> None:
+        """A transition and chat share one callback, and replies can set a timer."""
+        from datetime import timedelta
+
+        observations: list[server.Observation] = []
+        reasons: list[server.Reason] = []
+
+        class UnifiedAgent(server.Agent):
+            """Records unified callbacks without implementing any legacy callbacks."""
+
+            async def observe(self, observation: server.Observation) -> None:
+                """Records one incoming delivery."""
+                observations.append(observation)
+
+            async def decide(self, reason: server.Reason) -> server.Decision:
+                """Records the reason and returns a timer-only decision."""
+                reasons.append(reason)
+                return server.Decision(wakeup=server.WakeupRequest.after(timedelta(milliseconds=50)))
+
+        pb = parlando_agent_v5_pb2
+        service = server._AgentService(lambda _: UnifiedAgent())
+        created = await service.CreateAgent(pb.CreateAgentRequest(role="A"), FakeContext())
+        await service.Observe(
+            pb.ObserveRequest(
+                agent_id=created.agent_id,
+                transition=pb.ObserveRequest.Transition(
+                    actor="B", action={"amount": 1}, view={"count": 1}
+                ),
+                message=pb.ObserveRequest.Message(sender="B", text="hello"),
+            ),
+            FakeContext(),
+        )
+        response = await service.Respond(
+            pb.RespondRequest(
+                agent_id=created.agent_id,
+                reason=pb.DecisionReason(
+                    kind=pb.DecisionReason.ACTION_REJECTED, rejection_code="wrong_role"
+                ),
+            ),
+            FakeContext(),
+        )
+        self.assertEqual(
+            observations,
+            [server.Observation(server.Transition("B", {"amount": 1}, {"count": 1}),
+                                server.Message("B", "hello"))],
+        )
+        self.assertEqual(reasons, [server.Reason("action_rejected", "wrong_role")])
+        self.assertEqual(response.response.wakeup.after.ToTimedelta(), timedelta(milliseconds=50))
+        self.assertFalse(response.response.HasField("action"))
+        self.assertFalse(response.response.HasField("message"))
 
 
 class ServerValidationTests(unittest.IsolatedAsyncioTestCase):
@@ -445,7 +536,7 @@ class ProtocolSourceTests(unittest.TestCase):
         self.assertEqual(descriptor.package, "parlando.agent.v5")
         self.assertEqual(
             list(descriptor.services_by_name["AgentService"].methods_by_name),
-            ["CreateAgent", "Start", "ObserveTransition", "ObserveMessage", "Finish", "Respond", "Shutdown"],
+            ["CreateAgent", "Start", "Observe", "ObserveTransition", "ObserveMessage", "Finish", "Respond", "Shutdown"],
         )
         request = descriptor.message_types_by_name["CreateAgentRequest"]
         self.assertEqual(

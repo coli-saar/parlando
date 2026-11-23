@@ -21,11 +21,13 @@ Partner relay, transcription, and agent playback are independent consumers. A sl
 
 ## Session And Authentication
 
-After joining a room, the browser requests
-`POST /e/{experiment_id}/api/sessions/{public_session_id}/audio-session` with its participant
-bearer credential. When voice is enabled, the response contains:
+The participant page is mounted at `/e/{game_id}~{experiment_id}/` on a shared
+host and `/e/{experiment_id}/` on a custom single-game host. After joining a
+room, the browser sends `POST api/sessions/{public_session_id}/audio-session`
+relative to the participant page, using its participant bearer credential.
+When voice is enabled, the response contains the following fields.
 
-- the relative `/e/{experiment_id}/ws/audio/{public_session_id}` path;
+- the `ws/audio/{public_session_id}` path under the same participant scope;
 - an opaque, random token valid for one minute and one WebSocket upgrade;
 - protocol version, sample rate, channel count, frame duration, and jitter-buffer target.
 
@@ -78,17 +80,34 @@ Agent TTS is finite audio rather than a naturally clocked microphone. The server
 The server creates one `TranscriptionProvider` session per human microphone stream. Providers receive canonical `AudioFrame` values and emit provider-neutral events:
 
 - `Ready`;
-- replaceable `Partial` text for status displays;
-- `FinalUtterance` with text, timing, and stable result ids;
+- `FinalUtterance` with formatted text, utterance timing, independently timed tokens, and stable result ids;
 - `Failed`.
 
-Only final utterances are durable. Parlando deduplicates provider results, persists a transcript event, adds a `voice_transcript` conversation message, broadcasts it on the game WebSocket, and calls `agent::Agent::observe_message` with spoken modality. Speechmatics is the current hosted implementation and is contacted only by the server. Its API key is never returned to a browser. A future local recognizer can implement the same provider trait without changing browser or agent code.
+Only final utterances are durable. Parlando deduplicates provider results, persists a `voice_transcript` conversation message, broadcasts it on the game WebSocket, and calls `agent::Agent::observe_message` with the speaker and text. Typed messages reach an agent through the same callback. Speechmatics is the current hosted implementation and is contacted only by the server. Its API key is never returned to a browser. A future local recognizer can implement the same provider trait without changing browser or agent code.
 
 The provider connection may become ready while participants are still waiting, because provider
 readiness is one of the conditions for starting a voice-enabled game. Parlando does not send PCM to
 that connection until the room enters `running`. Waiting-room speech is therefore neither
 transcribed nor persisted. The first accepted in-game PCM frame establishes the bridge from the
-provider's media timeline to the session's authoritative `game_time_ms` clock.
+provider's media timeline to the session's `game_time_ms` clock. The server records
+which 20 ms frames enter the provider queue, then maps supplied-sample offsets
+through those frames' capture timestamps. Mute intervals and dropped frames do
+not advance the provider clock, but their capture-time gaps remain in stored
+boundaries. Each replacement connection establishes its own correspondence.
+Adjacent frame intervals are kept non-overlapping when browser dispatch jitter
+produces equal or closely spaced timestamps.
+
+Speechmatics entity output is explicitly enabled. The final formatted utterance
+can contain `£17.25`, while its timed tokens retain the spoken words “seventeen
+pounds and twenty five pence.” Punctuation is retained as a separate category and
+can have zero duration. Results already use absolute offsets within the supplied
+audio stream; metadata offsets are not added to them.
+
+Stored boundaries are estimates. The first frame's server receipt time anchors
+the capture clock, so initial transport latency and browser scheduling can affect
+absolute session alignment. ASR word boundaries are also approximate. A missing
+frame cannot be transcribed, and interrupted provider sessions may lose pending
+finals; preserving clock gaps does not recover missing speech.
 
 The version 1 relay does not persist raw audio. When Speechmatics is configured,
 it receives the live microphone stream for recognition. A study that requires
@@ -100,6 +119,21 @@ a local implementation.
 
 Agents speak by returning `agent::Response::Message`. Parlando persists that text first, asks the configured streaming TTS provider for 24 kHz mono PCM, and publishes the resulting frames through the room relay. Game implementations and browser clients must not call a TTS service or publish audio directly.
 
+
+The ElevenLabs provider requests synchronized character alignment and groups
+normalized spoken characters into words across chunk boundaries. Alignment
+positions are cumulative within one synthesis request. Parlando maps these
+positions onto the game clock at the start of audio publication and records the
+speech interval and tokens against the original message after publication
+succeeds. The dashboard and corpus export attach these timings to that message;
+they do not create a second conversation message.
+
+Publication time estimates playback onset. It does not measure when a listener
+hears each word, because network transit and browser buffering introduce delay.
+Agent tokens carry no ASR confidence, and generated PCM is not persisted.
+Providers without alignment still publish audio and retain the speech interval,
+but provide no token boundaries.
+
 ## Deployment And Scaling
 
 Active audio rooms, one-use tokens, and playback queues are process-local. Run one server process or configure sticky routing so all HTTP and WebSocket requests for a room reach the same instance. A future multi-instance deployment needs a shared room/media backplane rather than ordinary stateless load balancing.
@@ -109,12 +143,13 @@ Bounded queues protect the game server from slow clients. When an outbound queue
 ## Configuration
 
 Configure non-secret audio settings in the inactive experiment's dashboard form.
-Enable `voice`, then enable `transcription` and `tts` only when the study requires
-them. Protocol version 1 fixes `voice.sample_rate_hz` at 24000,
+Set `communication.mode` to `speech`, then enable `transcription` and `tts` when the study requires
+them. In `typed` mode the server accepts participant messages over the game connection and keeps the audio transport and both speech providers inactive. Protocol version 1 fixes `voice.sample_rate_hz` at 24000,
 `voice.frame_duration_ms` at 20, mono PCM, and a TTS output format compatible with
 24 kHz PCM. The normal initial jitter target is 100 ms.
 
-Add Speechmatics and ElevenLabs credentials explicitly under Game settings.
+Add Speechmatics and ElevenLabs credentials under **Game settings** in the
+game dashboard.
 Parlando has no environment-variable fallback for provider secrets. Configure
 the exact Speechmatics realtime URL, ElevenLabs base URL, recognition behavior,
 and ElevenLabs voice in the experiment revision. Provider keys remain outside

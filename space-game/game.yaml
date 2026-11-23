@@ -1,0 +1,7 @@
+id: space-game
+name: Space Game
+version: 0.1.0
+cargo_manifest: server/Cargo.toml
+component: game.wasm
+client_project: client
+client_dist: client/dist

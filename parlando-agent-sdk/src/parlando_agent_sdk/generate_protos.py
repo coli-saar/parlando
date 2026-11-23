@@ -1,4 +1,9 @@
-"""Generates Python gRPC modules for the Parlando remote-agent protocol."""
+"""Generates Python gRPC modules for the Parlando remote-agent protocol.
+
+Both protocol definitions come from rust-server/proto. The development command runs protoc
+and writes the Python message types and service stubs imported by the SDK server into the
+package's generated directory.
+"""
 
 from __future__ import annotations
 

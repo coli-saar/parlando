@@ -12,7 +12,6 @@
 **/*secret*.yml
 **/config/*.yaml
 **/config/*.yml
-!space-game/config/experiment.render.example.yaml
 **/*.pem
 **/*.key
 **/*.p12

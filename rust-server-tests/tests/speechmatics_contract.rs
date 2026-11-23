@@ -43,7 +43,11 @@ async fn run_fake_speechmatics(
         ))
         .await
         .unwrap();
-    let pcm = read_binary(&mut socket).await;
+    let mut pcm: Vec<u8> = Vec::new();
+    let fixture = include_bytes!("../../rust-server/tests/fixtures/speechmatics/amber.pcm");
+    for _ in fixture.chunks(AUDIO_FRAME_BYTES) {
+        pcm.extend(read_binary(&mut socket).await);
+    }
     socket
         .send(Message::Text(
             json!({
@@ -59,7 +63,12 @@ async fn run_fake_speechmatics(
             json!({
                 "message":"AddTranscript",
                 "id":"result-1",
-                "metadata":{"transcript":"hello world", "start_time":0.25, "end_time":0.75}
+                "metadata":{"transcript":"Amber lantern.", "start_time":0.0, "end_time":1.0},
+                "results":[
+                    {"type":"word","start_time":0.0,"end_time":0.4,"alternatives":[{"content":"Amber","confidence":1.0}]},
+                    {"type":"word","start_time":0.4,"end_time":0.96,"alternatives":[{"content":"lantern","confidence":1.0}]},
+                    {"type":"punctuation","start_time":0.96,"end_time":0.96,"alternatives":[{"content":"."}]}
+                ]
             })
             .to_string(),
         ))
@@ -139,25 +148,41 @@ async fn speechmatics_adapter_obeys_streaming_protocol_without_external_service(
         tokio::time::timeout(Duration::from_secs(2), session.events.recv()).await?,
         Some(TranscriptionEvent::Ready)
     ));
-    let pcm = vec![7; AUDIO_FRAME_BYTES];
-    session
-        .input
-        .send(TranscriptionInput::Audio(AudioFrame {
-            sequence: 0,
-            timestamp_ms: 0,
-            pcm: pcm.clone(),
-        }))
-        .await?;
+    // Replay generated speech byte-for-byte; only the final short frame is padded.
+    let fixture = include_bytes!("../../rust-server/tests/fixtures/speechmatics/amber.pcm");
+    let mut pcm: Vec<u8> = Vec::new();
+    let mut sequence = 0;
+    for chunk in fixture.chunks(AUDIO_FRAME_BYTES) {
+        let mut frame_pcm = chunk.to_vec();
+        frame_pcm.resize(AUDIO_FRAME_BYTES, 0);
+        pcm.extend(&frame_pcm);
+        session
+            .input
+            .send(TranscriptionInput::Audio(AudioFrame {
+                sequence,
+                timestamp_ms: u64::from(sequence) * 20,
+                pcm: frame_pcm,
+            }))
+            .await?;
+        sequence += 1;
+    }
     let final_utterance = tokio::time::timeout(Duration::from_secs(2), session.events.recv())
         .await?
         .unwrap();
     let TranscriptionEvent::FinalUtterance(final_utterance) = final_utterance else {
         panic!("expected final utterance");
     };
-    assert_eq!(final_utterance.text, "hello world");
-    assert_eq!(final_utterance.start_time_ms, 250);
-    assert_eq!(final_utterance.end_time_ms, 750);
+    assert_eq!(final_utterance.text, "Amber lantern.");
+    assert_eq!(final_utterance.start_time_ms, 0);
+    assert_eq!(final_utterance.end_time_ms, 1000);
     assert_eq!(final_utterance.result_ids, ["result-1"]);
+    assert_eq!(final_utterance.tokens.len(), 3);
+    assert_eq!(final_utterance.tokens[1].text, "lantern");
+    assert_eq!(final_utterance.tokens[1].start_time_ms, 400);
+    assert_eq!(
+        final_utterance.tokens[2].start_time_ms,
+        final_utterance.tokens[2].end_time_ms
+    );
     session.input.send(TranscriptionInput::Finish).await?;
 
     let (start, observed_pcm, end) =
@@ -172,11 +197,15 @@ async fn speechmatics_adapter_obeys_streaming_protocol_without_external_service(
     assert_eq!(start["transcription_config"]["language"], "en");
     assert_eq!(start["transcription_config"]["model"], "enhanced");
     assert_eq!(start["transcription_config"]["enable_partials"], true);
+    assert_eq!(start["transcription_config"]["enable_entities"], true);
     assert_eq!(
         start["transcription_config"]["conversation_config"]["end_of_utterance_silence_trigger"],
         0.8
     );
     assert_eq!(observed_pcm, pcm);
-    assert_eq!(end, json!({"message":"EndOfStream", "last_seq_no":1}));
+    assert_eq!(
+        end,
+        json!({"message":"EndOfStream", "last_seq_no":sequence})
+    );
     Ok(())
 }

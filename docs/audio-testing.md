@@ -11,7 +11,7 @@ cd rust-server
 cargo test
 ```
 
-This ordinary suite includes frame validation, token authorization and replay rejection, simultaneous-room isolation, connection replacement, relay and transcription fan-out, transcript idempotency, agent delivery, TTS publication, and a credential-free Speechmatics adapter contract test. That contract test starts a local fake provider WebSocket and exercises the production adapter's authorization header, recognition configuration, PCM transfer, partial/final events, utterance timing, and end-of-stream sequence.
+This ordinary suite includes frame validation, token authorization and replay rejection, simultaneous-room isolation, connection replacement, relay and transcription fan-out, transcript idempotency, agent delivery, TTS publication, and timed-word regression fixtures. A separate credential-free Speechmatics adapter contract test starts a local fake provider WebSocket and exercises the production adapter's authorization header, recognition configuration, PCM transfer, partial/final events, utterance timing, and end-of-stream sequence.
 
 TypeScript tests use their own toolchain:
 
@@ -37,6 +37,52 @@ test. The same suite runs a deterministic dummy game and drives it with the buil
 consent, waiting, pairing, game-channel tickets, decoded server messages, chat, actions, completion,
 reconnection, and lifecycle deadlines through the real HTTP and WebSocket routes. Rust constructs
 the server and selects timeout configuration, but it does not impersonate a participant client.
+
+Run the local provider contract and dashboard tests from the repository root:
+
+```sh
+cargo test --manifest-path rust-server-tests/Cargo.toml --test speechmatics_contract
+node --test rust-server/tests/admin_dashboard*.test.mjs
+```
+
+The transcription regression fixtures include credential-free final Speechmatics
+responses for a fourteen-word sentence, normalized currency and dates, and
+nonzero stream offsets. Clock tests cover sample-free gaps, endpoint selection,
+connection replacement, and dispatch jitter. The local Speechmatics protocol test
+replays generated “Amber lantern” PCM and checks byte preservation, explicit
+entity configuration, timed tokens, and the end-of-stream sequence. It does not
+measure recognition accuracy: its provider responses are deterministic fixtures.
+
+
+TTS tests use a local fake ElevenLabs WebSocket to check synchronized alignment,
+normalized spoken text, words split across chunks, and malformed timing arrays.
+A saved eleven-chunk response from a synthetic 38-word message checks cumulative
+alignment offsets against the complete PCM duration. The fixture contains text,
+character timings, and sample counts; it contains no audio, credentials, or
+voice identifiers. Runtime integration tests check that agent timings appear
+under the same message in the dashboard and corpus export. Dashboard tests also
+cover historical agent messages without timings and both speaker columns.
+
+
+The combined speech-timing integration test runs the production Speechmatics and
+ElevenLabs adapters against local WebSocket peers, then uses the production agent
+audio publisher and participant audio route. It supplies known PCM and independent
+provider timestamps, delays both provider responses, and starts microphone capture
+at a nonzero offset. Two recognized turns span a 960 ms sample-free capture gap;
+generated words span two PCM chunks, including a word split at the chunk boundary.
+The test checks every published frame, bounds each speech origin against separately
+observed send/receive times, and verifies exact token offsets and utterance durations
+in both dashboard bundles and corpus messages.
+
+Run this focused integration test with:
+
+```sh
+cargo test --manifest-path rust-server/Cargo.toml generated_and_recognized_speech_keep_audio_clock_timings_end_to_end
+```
+
+These checks establish clock conversion, audio publication, and persistence
+correctness for known provider output. They do not measure a provider's linguistic
+boundary accuracy or the extra delay introduced by a listener's browser playback.
 
 ## Interactive Stress Dashboard
 

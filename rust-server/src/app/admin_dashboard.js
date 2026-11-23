@@ -1,6 +1,15 @@
+// Coordinates the administrator’s selected experiment, session and editing views. Fetch
+// helpers bind reads to their selection and supply CSRF headers for mutations. Accepted
+// responses update shared dashboard state, which the view renders with the formatting
+// helpers.
+
+import { bindSpeechSettings, COMMUNICATION_MODE_FIELD, configAt, readConfigFields, renderSpeechSettings, renderStandardConfigField, setConfigAt } from './communication-config.js';
 import { state } from './admin-dashboard-state.js';
-import { escapeHtml, experimentDisplayStatus, fmtClockTime, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, plannedProgressLayout, sessionEndCauseRows, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
-import { absoluteParticipantUrl, adminFetch, experimentRuntimeApi, participantUrlCanOpen } from './admin-dashboard-api.js';
+import { isSpeechBundle, sessionTimeline, roleBadge, escapeHtml, experimentDisplayStatus, fmtClockTime, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, participantDeletionPrompt, plannedProgressLayout, sessionEndCauseRows, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
+import { absoluteParticipantUrl, adminPath, adminFetch, SelectionRequests, experimentRuntimeApi, participantUrlCanOpen } from './admin-dashboard-api.js';
+const catalogueRequests = new SelectionRequests();
+const experimentRequests = new SelectionRequests();
+const sessionRequests = new SelectionRequests();
 const experimentList = document.getElementById('experimentList');
 const menuButton = document.getElementById('menuButton');
 const experimentHeader = document.getElementById('experimentHeader');
@@ -16,7 +25,10 @@ const refreshProgressButton = document.getElementById('refreshProgress');
 const sessionDetail = document.getElementById('sessionDetail');
 const summary = document.getElementById('summary');
 const timeline = document.getElementById('timeline');
-const liveStatus = document.getElementById('liveStatus');
+const speechView = document.getElementById('speechView');
+// Re-renders the session log when switching between utterance and token views.
+speechView.addEventListener('change', renderEventBundles);
+const sessionLogError = document.getElementById('sessionLogError');
 const reproducibility = document.getElementById('reproducibility');
 const gameName = document.getElementById('gameName');
 const gameVersion = document.getElementById('gameVersion');
@@ -476,9 +488,10 @@ function renderLivenessTable() {
       renderTabs();
       showScope('experiments');
       if (state.experiment?.experiment_id !== row.dataset.experiment) {
-        await selectExperiment(row.dataset.experiment);
+        await Promise.all([selectExperiment(row.dataset.experiment), selectSession(Number(row.dataset.session))]);
+      } else {
+        await selectSession(Number(row.dataset.session));
       }
-      await selectSession(Number(row.dataset.session));
     });
   });
 }
@@ -607,18 +620,18 @@ function localPreviewId() {
 
 // Builds a participant URL, minting a fresh identity for each Local Preview action.
 function participantPageHref(experiment) {
-  const url = new URL(`/e/${encodeURIComponent(experiment.experiment_id)}/`, window.location.origin);
+  const url = new URL(experiment.participant_page_url || `/e/${encodeURIComponent(experiment.experiment_id)}/`, window.location.origin);
   const selectedConfig = state.experiment?.experiment_id === experiment.experiment_id ? state.configValue : null;
   const prolific = selectedConfig?.recruitment?.prolific || experiment.config?.recruitment?.prolific;
   const runningUrl = experiment.participant_url;
-  if (!runningUrl || runningUrl.kind === 'direct' || !prolific?.enabled) return `${url.pathname}${url.search}`;
+  if (!runningUrl || runningUrl.kind === 'direct' || !prolific?.enabled) return experiment.participant_page_url || `${url.pathname}${url.search}`;
   if (runningUrl.kind === 'prolific') {
     return prolificSetupUrl(experiment);
   }
   url.searchParams.set('PROLIFIC_PID', localPreviewId());
   url.searchParams.set('STUDY_ID', prolific.study_id);
   url.searchParams.set('SESSION_ID', localPreviewId());
-  return `${url.pathname}${url.search}`;
+  return experiment.participant_page_url ? url.href : `${url.pathname}${url.search}`;
 }
 
 // Opens one newly minted Local Preview invitation without retaining it for later launches.
@@ -923,17 +936,16 @@ async function loadSessions() {
   if (!state.experiment) return;
   const params = new URLSearchParams({ limit: '80' });
   if (sessionLifecycleFilter.value) params.set('lifecycle', sessionLifecycleFilter.value);
-  const response = await adminFetch(state, `${runtimeApi('sessions')}?${params}`);
-  if (!response.ok) throw new Error(await response.text());
-  const data = await response.json();
-  state.sessions = data.sessions || [];
-  if (state.selectedSession) {
-    const refreshed = state.sessions.find(session => session.session_id === state.selected);
-    if (refreshed) Object.assign(state.selectedSession, refreshed);
-  }
-  renderSessions();
-  if (state.selectedSession) renderSummary(state.selectedSession, state.selectedParticipants);
-  if (!state.selected && state.sessions[0]) selectSession(state.sessions[0].session_id);
+  await experimentRequests.json('sessions', state, `${runtimeApi('sessions')}?${params}`, data => {
+    state.sessions = data.sessions || [];
+    if (state.selectedSession) {
+      const refreshed = state.sessions.find(session => session.session_id === state.selected);
+      if (refreshed) Object.assign(state.selectedSession, refreshed);
+    }
+    renderSessions();
+    if (state.selectedSession) renderSummary(state.selectedSession, state.selectedParticipants);
+    if (!state.selected && state.sessions[0]) selectSession(state.sessions[0].session_id);
+  });
 }
 
 // Applies a new progress projection only when its rendered data changed.
@@ -953,10 +965,7 @@ async function loadProgress() {
   const initialLoad = state.sessionProgressSignature === null;
   if (initialLoad) sessionEndChart.innerHTML = '<div class="empty">Loading…</div>';
   try {
-    const response = await adminFetch(state, runtimeApi('progress'));
-    if (!response.ok) throw new Error(await response.text());
-    const data = await response.json();
-    applySessionProgress(data.progress || null);
+    await experimentRequests.json('progress', state, runtimeApi('progress'), data => applySessionProgress(data.progress || null));
   } catch (error) {
     if (initialLoad) {
       sessionEndChart.innerHTML = `<div class="empty">Progress unavailable: ${escapeHtml(error.message)}</div>`;
@@ -970,13 +979,7 @@ async function loadProgress() {
 async function refreshProgress() {
   refreshProgressButton.disabled = true;
   try {
-    const response = await adminFetch(state, runtimeApi('progress'), {
-      method: 'POST',
-      headers: { 'X-CSRF-Token': state.csrfToken || '' }
-    });
-    if (!response.ok) throw new Error(await response.text());
-    const data = await response.json();
-    applySessionProgress(data.progress || null);
+    await experimentRequests.json('progress', state, runtimeApi('progress'), data => applySessionProgress(data.progress || null), { method: 'POST' });
   } finally {
     refreshProgressButton.disabled = false;
   }
@@ -984,43 +987,34 @@ async function refreshProgress() {
 
 // Refreshes game identity, catalogue metadata, shared settings, and the selected configuration.
 async function loadExperiment() {
-  const response = await adminFetch(state, '/api/admin/experiments');
-  if (!response.ok) throw new Error(await response.text());
-  const data = await response.json();
-  state.experiments = data.experiments || [];
-  state.game = data.game || null;
-  state.versionManifest = data.version_manifest || null;
-  state.gameSettings = data.game_settings || null;
-  state.gameProviderSecrets = data.game_provider_secrets || [];
-  state.csrfToken = data.csrf_token || null;
-  state.configLoadFailed = false;
-  state.configLoadError = null;
-  const selectedId = state.experiment?.experiment_id || state.experiments.find(item => ['active', 'testing'].includes(item.status))?.experiment_id;
-  state.experiment = state.experiments.find(item => item.experiment_id === selectedId) || state.experiments[0] || null;
-  if (!state.experiment) {
-    state.selected = null;
-    state.selectedSession = null;
-    state.selectedParticipants = [];
-    state.sessions = [];
-    state.events = [];
-    state.eventBundles = [];
-    state.load = null;
-    state.privacy = null;
-    state.activationIssues = [];
-    state.loadedConfigKey = null;
-    state.configValue = null;
-    sessionDetail.hidden = true;
-    sessionList.innerHTML = '<div class="empty">No experiment selected.</div>';
-  }
-  renderExperiment();
-  renderExperimentHeader();
-  renderExperimentWorkspaceState();
-  renderExperimentDetails();
-  renderNotes();
-  if (!state.gameSettingsDirty) synchronizeGameSettingsForm();
-  const configKey = state.experiment ? `${state.experiment.experiment_id}:${state.experiment.config_revision}` : null;
-  if (configKey && configKey !== state.loadedConfigKey) await loadConfigurationSafely();
-  updateConfigurationEditability();
+  await catalogueRequests.json('catalogue', state, '/api/admin/experiments', async data => {
+    state.experiments = data.experiments || [];
+    state.game = data.game || null;
+    state.versionManifest = data.version_manifest || null;
+    state.gameSettings = data.game_settings || null;
+    state.gameProviderSecrets = data.game_provider_secrets || [];
+    state.csrfToken = data.csrf_token || null;
+    const selectedId = state.experiment?.experiment_id || state.experiments.find(item => ['active', 'testing'].includes(item.status))?.experiment_id;
+    setSelectedExperiment(state.experiments.find(item => item.experiment_id === selectedId) || state.experiments[0] || null);
+    if (!state.experiment) {
+      sessionList.innerHTML = '<div class="empty">No experiment selected.</div>';
+    }
+    renderExperiment();
+    renderExperimentHeader();
+    renderExperimentWorkspaceState();
+    renderExperimentDetails();
+    renderNotes();
+    if (!state.gameSettingsDirty) synchronizeGameSettingsForm();
+    const configKey = state.experiment ? `${state.experiment.experiment_id}:${state.experiment.config_revision}` : null;
+    if (configKey && configKey !== state.loadedConfigKey) await loadConfigurationSafely();
+    updateConfigurationEditability();
+  });
+}
+
+// Starts a fresh catalogue read after a durable change, even when polling is in flight.
+function reloadCatalogue() {
+  catalogueRequests.reset();
+  return loadExperiment();
 }
 
 // Changes the selected experiment's durable lifecycle.
@@ -1038,7 +1032,7 @@ async function updateExperimentStatus(status, verifyProlific = false, participan
     window.alert(await response.text());
     return false;
   }
-  if (statusChanged) await loadExperiment();
+  if (statusChanged) await reloadCatalogue();
   else buttons.forEach(button => { button.disabled = false; });
   return true;
 }
@@ -1051,30 +1045,58 @@ async function archiveSelectedExperiment() {
     method: 'POST', headers: { 'X-CSRF-Token': state.csrfToken || '' }
   });
   if (!response.ok) { window.alert(await response.text()); return; }
-  await loadExperiment();
+  await reloadCatalogue();
 }
 
-// Selects one experiment and scopes session, export, and configuration requests to it.
-async function selectExperiment(experimentId) {
-  state.experiment = state.experiments.find(item => item.experiment_id === experimentId) || null;
-  state.selected = null;
-  state.selectedSession = null;
-  state.selectedParticipants = [];
-  state.load = null;
+// Replaces projections and invalidates their outstanding requests when changing experiments.
+function setSelectedExperiment(experiment) {
+  const same = state.experiment?.experiment_id === experiment?.experiment_id;
+  state.experiment = experiment;
+  if (same) return;
+  experimentRequests.reset();
+  clearSelectedSession();
+  state.sessions = [];
   state.privacy = null;
   state.activationIssues = [];
   state.sessionProgress = null;
   state.sessionProgressSignature = null;
   state.configLoadFailed = false;
   state.configLoadError = null;
+  state.loadedConfigKey = null;
+  state.configValue = null;
+  revisionHistory.replaceChildren();
+  configRevision.textContent = '';
+  configForm.replaceChildren();
+  privacyContent.replaceChildren();
+  document.getElementById('privacyMarkdown').removeAttribute('href');
+  document.getElementById('privacyJson').removeAttribute('href');
+  saveConfiguration.disabled = true;
+  renderSessions();
+  renderProgressSessions();
+  renderSessionEndChart();
+}
+
+// Clears the previous detail before a new selection or lifecycle filter begins loading.
+function clearSelectedSession() {
+  sessionRequests.reset();
+  state.selected = null;
+  state.selectedSession = null;
+  state.selectedParticipants = [];
+  state.events = [];
+  state.eventBundles = [];
+  state.lastEventIndex = 0;
   sessionDetail.hidden = true;
+}
+
+// Selects one experiment and scopes session, export, and configuration requests to it.
+async function selectExperiment(experimentId) {
+  setSelectedExperiment(state.experiments.find(item => item.experiment_id === experimentId) || null);
   closeExperimentMenu();
   renderExperiment();
   renderExperimentHeader();
   renderExperimentDetails();
   renderNotes();
-  await Promise.all([loadConfigurationSafely(), loadSessions(), loadProgress(), loadLoad()]);
-  if (state.activeTab === 'privacy') await loadPrivacy();
+  await Promise.all([loadConfigurationSafely(), loadSessions(), loadProgress(), loadLoad(), state.activeTab === 'privacy' && loadPrivacy()]);
 }
 
 // Returns an authenticated runtime API path for the selected experiment.
@@ -1082,36 +1104,58 @@ function runtimeApi(path) {
   return experimentRuntimeApi(state.experiment, path);
 }
 
+// Builds the participant-frontend URL that loads one administrator-only replay.
+function replayPageHref(sessionId) {
+  const url = new URL(`/e/${encodeURIComponent(state.experiment.experiment_id)}/`, window.location.origin);
+  url.searchParams.set('parlandoReplay', runtimeApi(`sessions/${sessionId}/replay`));
+  return `${url.pathname}${url.search}`;
+}
+
+// Opens the isolated package renderer using a one-use link for the selected session.
+async function launchHostedReplay(sessionId) {
+  const popup = window.open('about:blank', '_blank');
+  if (!popup) throw new Error('Allow pop-up windows to open the replay.');
+  popup.opener = null;
+  try {
+    const response = await adminFetch(state, runtimeApi(`sessions/${sessionId}/replay-link`), { method: 'POST' });
+    if (!response.ok) throw new Error((await response.text()) || 'The replay could not be opened.');
+    const data = await response.json();
+    popup.location.replace(data.url);
+  } catch (error) {
+    popup.close();
+    throw error;
+  }
+}
+
 // Loads the selected experiment's authoritative database-backed configuration.
 async function loadConfiguration() {
   if (!state.experiment) return;
   const id = encodeURIComponent(state.experiment.experiment_id);
-  const response = await adminFetch(state, `/api/admin/experiments/${id}/config`);
-  if (!response.ok) throw new Error(await response.text());
-  const data = await response.json();
-  state.configLoadFailed = false;
-  state.agentFactories = data.agent_factories || [];
-  state.configuredSecrets = data.configured_secrets || [];
-  state.activationIssues = data.activation_issues || [];
-  renderExperimentHeader();
-  state.gameSecretKeys = state.configuredSecrets.filter(item => item.key.startsWith('game.')).map(item => item.key);
-  state.secretDeletions = new Set();
-  const authoritativeExperiment = data.experiment;
-  if (state.experiment?.experiment_id === authoritativeExperiment.experiment_id) {
-    Object.assign(state.experiment, authoritativeExperiment);
-    const catalogueExperiment = state.experiments.find(item => item.experiment_id === authoritativeExperiment.experiment_id);
-    if (catalogueExperiment && catalogueExperiment !== state.experiment) Object.assign(catalogueExperiment, authoritativeExperiment);
-    renderExperiment();
+  await experimentRequests.json('config', state, `/api/admin/experiments/${id}/config`, async data => {
+    state.configLoadFailed = false;
+    state.agentFactories = data.agent_factories || [];
+    state.configuredSecrets = data.configured_secrets || [];
+    state.activationIssues = data.activation_issues || [];
     renderExperimentHeader();
-    renderExperimentDetails();
-  }
-  renderConfigurationForm(data.experiment.config, data.game_yaml || '{}\n');
-  renderExperimentHeader();
-  upgradeYamlEditor();
-  configRevision.textContent = `Revision ${data.experiment.config_revision}`;
-  state.loadedConfigKey = `${data.experiment.experiment_id}:${data.experiment.config_revision}`;
-  await loadRevisionHistory();
-  updateConfigurationEditability(authoritativeExperiment);
+    state.gameSecretKeys = state.configuredSecrets.filter(item => item.key.startsWith('game.')).map(item => item.key);
+    state.secretDeletions = new Set();
+    const authoritativeExperiment = data.experiment;
+    if (state.experiment?.experiment_id === authoritativeExperiment.experiment_id) {
+      Object.assign(state.experiment, authoritativeExperiment);
+      const catalogueExperiment = state.experiments.find(item => item.experiment_id === authoritativeExperiment.experiment_id);
+      if (catalogueExperiment && catalogueExperiment !== state.experiment) Object.assign(catalogueExperiment, authoritativeExperiment);
+      renderExperiment();
+      renderExperimentHeader();
+      renderExperimentDetails();
+    }
+    renderConfigurationForm(data.experiment.config, data.game_yaml || '{}\n');
+    renderExperimentHeader();
+    upgradeYamlEditor();
+    configRevision.textContent = `Revision ${data.experiment.config_revision}`;
+    state.loadedConfigKey = `${data.experiment.experiment_id}:${data.experiment.config_revision}`;
+    updateConfigurationEditability(authoritativeExperiment);
+    await loadRevisionHistory();
+  });
 }
 
 // Keeps session browsing available and prevents stale configuration saves after a load error.
@@ -1134,7 +1178,7 @@ async function loadConfigurationSafely() {
 
 // Reapplies editor availability after lifecycle-only refreshes that do not reload configuration data.
 function updateConfigurationEditability(experiment = state.experiment) {
-  const readOnly = state.configLoadFailed || !experiment || experiment.status !== 'inactive' || experiment.game_version !== state.game?.version;
+  const readOnly = !state.loadedConfigKey || state.configLoadFailed || !experiment || experiment.status !== 'inactive';
   configForm.querySelectorAll('input, textarea, select, button:not([data-reveal-secret])').forEach(control => { control.disabled = readOnly; });
   saveConfiguration.disabled = readOnly;
 }
@@ -1142,16 +1186,15 @@ function updateConfigurationEditability(experiment = state.experiment) {
 // Loads compact immutable revision metadata for the selected experiment.
 async function loadRevisionHistory() {
   const id = encodeURIComponent(state.experiment.experiment_id);
-  const response = await adminFetch(state, `/api/admin/experiments/${id}/revisions`);
-  if (!response.ok) throw new Error(await response.text());
-  const data = await response.json();
-  revisionHistory.innerHTML = (data.revisions || []).map(revision => `
-    <div class="revision-row">
-      <strong>Revision ${revision.revision}</strong>
-      <span class="muted small">${escapeHtml(fmtTime(revision.created_at))}</span>
-      ${revision.change_summary ? `<div class="small">${escapeHtml(revision.change_summary)}</div>` : ''}
-    </div>
-  `).join('') || '<div class="empty">No revisions stored.</div>';
+  await experimentRequests.json('revisions', state, `/api/admin/experiments/${id}/revisions`, data => {
+    revisionHistory.innerHTML = (data.revisions || []).map(revision => `
+      <div class="revision-row">
+        <strong>Revision ${revision.revision}</strong>
+        <span class="muted small">${escapeHtml(fmtTime(revision.created_at))}</span>
+        ${revision.change_summary ? `<div class="small">${escapeHtml(revision.change_summary)}</div>` : ''}
+      </div>
+    `).join('') || '<div class="empty">No revisions stored.</div>';
+  });
 }
 
 const CONSENT_TEMPLATES = {
@@ -1192,8 +1235,8 @@ const CONSENT_TEMPLATE_CHOICES = [
 ];
 
 const PARLANDO_CONFIG_SECTIONS = [
-  { title: 'Progress', description: 'Optional target for direct or mixed recruitment.', fields: [
-    { path: 'progress.planned_sessions', label: 'Planned sessions', help: 'Leave empty to use the linked Prolific study when available.', type: 'optional-number', min: 1 }
+  { title: 'Progress', description: 'The Progress tab compares completed game sessions with your target. Reaching the target leaves participant intake open.', fields: [
+    { path: 'progress.planned_sessions', label: 'Planned sessions (optional)', help: 'Count one session per game played. For example, 40 people playing once in pairs would play 20 sessions. If you leave this blank, Parlando uses the target from your verified Prolific study when available. Otherwise, the Progress tab shows session counts without a target.', type: 'optional-number', min: 1 }
   ]},
   { title: 'Session lifecycle', description: 'Timeouts applied uniformly to every session in this experiment.', fields: [
     { path: 'session.waiting_session_timeout_seconds', label: 'Waiting-session timeout (seconds)', help: 'Time before an unmatched session expires.', type: 'number', min: 1 },
@@ -1207,27 +1250,9 @@ const PARLANDO_CONFIG_SECTIONS = [
     { path: 'direct.participant_information_url', label: 'Participant-information URL', help: 'Public document describing the study and its data handling.', type: 'url' },
     { path: 'direct.consents', label: 'Consent items', help: 'Statements presented before participation. Accepted items are recorded with their exact presentation hash.', type: 'consents' }
   ]},
-  { title: 'Voice transport', description: 'Live browser audio carried through Parlando. This is independent of speech recognition.', fields: [
-    { path: 'voice.enabled', label: 'Enable voice transport', help: 'Allow participants to send and receive live audio. Parlando relays audio but does not store the raw recording.', type: 'boolean' },
-    { path: 'voice.jitter_buffer_ms', label: 'Playback jitter buffer (ms)', help: 'Audio buffered before playback.', type: 'number', min: 20, max: 5000 },
-    { path: 'voice.post_completion_seconds', label: 'Post-game voice time (seconds)', help: 'Time participants may keep talking after an ordinarily completed game.', type: 'number', min: 1, max: 3600 },
-  ]},
-  { title: 'Speech recognition', description: 'Optional Speechmatics conversion of participant speech into text.', fields: [
-    { path: 'transcription.enabled', label: 'Enable speech recognition', help: 'Send live participant audio to Speechmatics and make recognized text available to the game and agents.', type: 'boolean' },
-    { path: 'transcription.model', label: 'Recognition model', help: 'Enhanced favors recognition quality; Standard is the lighter operating point.', type: 'select', options: [['enhanced', 'Enhanced'], ['standard', 'Standard']] },
-    { path: 'transcription.language', label: 'Spoken language', help: 'Speechmatics language code for the expected participant speech, for example en or de.' },
-    { path: 'speechmatics.realtime_url', label: 'Speechmatics realtime URL', help: 'Exact regional or private WebSocket endpoint that receives participant audio.' },
-    { path: 'speechmatics.max_delay', label: 'Maximum transcript delay (seconds)', help: 'Maximum recognition delay; larger values may improve accuracy at the cost of responsiveness.', type: 'decimal', min: 0.1 },
-    { path: 'speechmatics.enable_partials', label: 'Show partial transcripts', help: 'Deliver provisional text while the participant is still speaking.', type: 'boolean' },
-    { path: 'speechmatics.end_of_utterance_silence_trigger', label: 'End-of-utterance silence (seconds)', help: 'Silence used to close an utterance.', type: 'decimal', min: 0.1 }
-  ]},
-  { title: 'Text to speech', description: 'Optional ElevenLabs speech synthesis for agent messages.', fields: [
-    { path: 'tts.enabled', label: 'Enable text to speech', help: 'Synthesize agent messages with ElevenLabs and publish the audio through voice transport.', type: 'boolean' },
-    { path: 'tts.model', label: 'Synthesis model', help: 'Choose the ElevenLabs balance of latency, language coverage, and expressiveness.', type: 'select', options: [['eleven_flash_v2_5', 'Flash v2.5'], ['eleven_flash_v2', 'Flash v2'], ['eleven_multilingual_v2', 'Multilingual v2'], ['eleven_v3', 'Eleven v3']] },
-    { path: 'tts.voice_id', label: 'ElevenLabs voice id', help: 'Stable ElevenLabs identifier of the voice used for agent speech.' },
-    { path: 'tts.voice_name', label: 'Voice display name', help: 'Human-readable voice label exposed to the participant client.' },
-    { path: 'tts.base_url', label: 'ElevenLabs base URL', help: 'Exact WebSocket service origin that receives agent message text.' }
-  ]},
+  { title: 'Communication', description: 'Choose how participants communicate in this experiment.', fields: [
+    COMMUNICATION_MODE_FIELD
+  ], speechSettings: true },
   { title: 'Prolific study and completion paths', description: 'Link this experiment to exactly one Prolific study. Create six completion paths under Prolific → Data collection → Completion paths, then copy each Prolific-generated code into its matching field. Parlando never generates completion codes. Private intake identifiers never enter exports.', fields: [
     { type: 'prolific-setup-url', label: 'URL for Prolific study setup', help: 'Copy this URL into Prolific before linking the study here. It contains Prolific placeholders and accepts participants only while this experiment is running through Prolific.' },
     { path: 'recruitment.prolific.enabled', label: 'Enable Prolific intake', help: 'Require and privately retain the PROLIFIC_PID, STUDY_ID, and SESSION_ID URL parameters.', type: 'boolean' },
@@ -1240,29 +1265,15 @@ const PARLANDO_CONFIG_SECTIONS = [
     { path: 'recruitment.prolific.completion_paths.no_consent', label: 'No consent code', help: 'Game condition: The participant declined required consent before registration. Prolific outcome: Request return. Suggested Prolific label: No consent.', type: 'completion-code' }
   ]},
   { title: 'Players and agents', description: 'Select human pairing or one server-side agent and configure its runtime limits.', fields: [
-    { path: 'agents', label: 'Participants', help: 'Pair two people, or pair one person with an agent compiled into this game server.', type: 'agents' }
+    { path: 'agents', label: 'Participants', help: 'Pair two people, or pair one person with an agent available for this game.', type: 'agents' }
   ]},
   { title: 'Capacity', description: 'Admission limits and the disk reserve protecting durable storage.', fields: [
     { path: 'capacity.max_active_sessions', label: 'Maximum active sessions', help: 'Maximum sessions that have paired participants or otherwise occupy active runtime capacity.', type: 'number', min: 1 },
     { path: 'capacity.max_waiting_sessions', label: 'Maximum waiting sessions', help: 'Maximum unmatched participant sessions waiting for a compatible partner.', type: 'number', min: 1 },
     { path: 'capacity.max_unattached_participants', label: 'Maximum unattached participants', help: 'Maximum issued participant identities that have not yet joined a session.', type: 'number', min: 1 },
-    { path: 'capacity.max_transcription_streams', label: 'Maximum recognition streams', help: 'Maximum simultaneous participant audio streams sent to speech recognition.', type: 'number', min: 1 },
     { path: 'capacity.storage_reserve_megabytes', label: 'Disk reserve (MB)', help: 'Pause new session admission when available disk space falls below this reserve.', type: 'number', min: 1 }
   ]}
 ];
-
-// Returns one nested configuration value without evaluating a user-controlled expression.
-function configAt(config, path) {
-  return path.split('.').reduce((value, key) => value == null ? undefined : value[key], config);
-}
-
-// Writes one nested configuration value while preserving unedited server-owned defaults.
-function setConfigAt(config, path, value) {
-  const segments = path.split('.');
-  let target = config;
-  segments.slice(0, -1).forEach(segment => { target = target[segment] ||= {}; });
-  target[segments.at(-1)] = value;
-}
 
 // Renders the curated Parlando editor, game YAML, and write-only secret controls.
 function renderConfigurationForm(config, gameYaml = '{}\n') {
@@ -1271,18 +1282,20 @@ function renderConfigurationForm(config, gameYaml = '{}\n') {
   const sections = PARLANDO_CONFIG_SECTIONS.map(section => `
     <section class="config-group">
       <header class="config-group-copy"><h3>${escapeHtml(section.title)}</h3><p class="muted small">${escapeHtml(section.description)}</p></header>
-      <div class="config-fields">${section.fields.map(field => renderConfigField(field, config)).join('')}</div>
+      <div class="config-fields">${section.fields.map(field => renderConfigField(field, config)).join('')}
+        ${section.speechSettings ? renderSpeechSettings(config) : ''}
+      </div>
     </section>`).join('');
   configForm.innerHTML = `${activationWarning}${sections}
     <section class="config-group">
-      <header class="config-group-copy"><h3>Game configuration</h3><p class="muted small">Game-owned options. YAML is parsed and validated by the compiled game before it can be saved.</p></header>
+      <header class="config-group-copy"><h3>Game configuration</h3><p class="muted small">Game-owned options. The server checks the YAML against the game component’s configuration schema before saving it.</p></header>
       <div class="config-fields">
         <label class="config-field"><span>Game options</span><textarea id="gameYaml" class="game-yaml" spellcheck="false">${escapeHtml(gameYaml)}</textarea></label>
         <div class="validation-row"><button class="secondary" id="validateGameYaml" type="button">${icon('check')}Validate YAML</button><span id="gameYamlValidation" class="validation-result small"></span></div>
       </div>
     </section>
     <section class="config-group">
-      <header class="config-group-copy"><h3>Game secrets</h3><p class="muted small">Named credentials available to game startup code. Values are omitted from revisions and exports.</p></header>
+      <header class="config-group-copy"><h3>Game secrets</h3><p class="muted small">Named credentials for agents and server-side providers. Values are omitted from revisions and exports.</p></header>
       <div class="config-fields"><div id="gameSecretList" class="game-secret-list"></div><div class="add-secret-row"><label class="config-field"><span>New secret name</span><input id="newGameSecretName" placeholder="service_api_key"></label><button class="secondary" id="addGameSecret" type="button">${icon('plus')}Add secret</button></div></div>
     </section>`;
   document.getElementById('validateGameYaml').addEventListener('click', validateGameYaml);
@@ -1297,6 +1310,7 @@ function renderConfigurationForm(config, gameYaml = '{}\n') {
     control.addEventListener('input', refreshDraftActivationWarning);
     control.addEventListener('change', refreshDraftActivationWarning);
   });
+  bindSpeechSettings(configForm);
   renderGameSecrets();
   refreshDraftActivationWarning();
 }
@@ -1308,19 +1322,9 @@ function renderConfigField(field, config) {
     return `<div class="config-field"><span>${escapeHtml(field.label)}</span><div class="setup-url-control"><input type="text" readonly value="${escapeHtml(value)}" aria-label="${escapeHtml(field.label)}"><button class="secondary" data-copy-prolific-setup-url type="button">${icon('copy')}Copy setup URL</button></div><span class="config-help">${escapeHtml(field.help)}</span></div>`;
   }
   const value = configAt(config, field.path);
-  const help = field.help ? `<span class="config-help">${escapeHtml(field.help)}</span>` : '';
-  let control;
   if (field.type === 'consents') return renderConsentEditor(field, Array.isArray(value) ? value : []);
   if (field.type === 'agents') return renderAgentEditor(field, value || {});
-  if (field.type === 'boolean') return `<label class="config-field config-boolean"><span class="checkbox-line"><input data-config-path="${escapeHtml(field.path)}" data-config-type="boolean" type="checkbox" ${value ? 'checked' : ''}><span>${escapeHtml(field.label)}</span></span>${help}</label>`;
-  else if (field.type === 'number') control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="number" type="number" value="${escapeHtml(value)}" ${field.min != null ? `min="${field.min}"` : ''} ${field.max != null ? `max="${field.max}"` : ''} step="${field.step || '1'}">`;
-  else if (field.type === 'optional-number') control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="optional-number" type="number" value="${escapeHtml(value ?? '')}" ${field.min != null ? `min="${field.min}"` : ''} ${field.max != null ? `max="${field.max}"` : ''} step="${field.step || '1'}">`;
-  else if (field.type === 'decimal') control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="number" type="text" inputmode="decimal" pattern="-?[0-9]+(?:\\.[0-9]+)?" value="${escapeHtml(value)}" placeholder="1.2" title="Use a decimal point, for example 1.2">`;
-  else if (field.type === 'select') control = `<select data-config-path="${escapeHtml(field.path)}" data-config-type="string">${field.options.map(([option, label]) => `<option value="${escapeHtml(option)}" ${value === option ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select>`;
-  else if (field.type === 'json') control = `<textarea data-config-path="${escapeHtml(field.path)}" data-config-type="json" rows="${field.rows || 5}" spellcheck="false">${escapeHtml(JSON.stringify(value, null, 2))}</textarea>`;
-  else if (field.type === 'completion-code') control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="string" type="text" maxlength="64" pattern="[A-Za-z0-9]*" value="${escapeHtml(value ?? '')}" autocomplete="off">`;
-  else control = `<input data-config-path="${escapeHtml(field.path)}" data-config-type="string" type="${field.type === 'url' ? 'url' : 'text'}" value="${escapeHtml(value ?? '')}">`;
-  return `<label class="config-field"><span>${escapeHtml(field.label)}</span>${control}${help}</label>`;
+  return renderStandardConfigField(field, config);
 }
 
 // Copies the inactive-safe URL template used to configure one linked Prolific study.
@@ -1419,7 +1423,7 @@ function renderAgentEditor(field, agents) {
   return `<div class="config-field agent-editor" data-agent-editor>
     <label class="config-field"><span>Participant pairing</span><select data-agent-mode><option value="human_vs_human" ${humanVsAgent ? '' : 'selected'}>Human vs human</option><option value="human_vs_agent" ${humanVsAgent ? 'selected' : ''} ${state.agentFactories.length ? '' : 'disabled'}>Human vs agent</option></select><span class="config-help">${escapeHtml(field.help || '')}</span></label>
     <div class="agent-settings" data-agent-settings ${humanVsAgent ? '' : 'hidden'}>
-      <label class="config-field"><span>Agent</span><select data-agent-factory>${state.agentFactories.map(factory => `<option value="${escapeHtml(factory.id)}" ${factory.id === descriptor?.id ? 'selected' : ''}>${escapeHtml(factory.name)}</option>`).join('')}</select><span class="config-help" data-agent-description>${escapeHtml(descriptor?.description || 'Select one of the agent implementations compiled into this game binary.')}</span></label>
+      <label class="config-field"><span>Agent</span><select data-agent-factory>${state.agentFactories.map(factory => `<option value="${escapeHtml(factory.id)}" ${factory.id === descriptor?.id ? 'selected' : ''}>${escapeHtml(factory.name)}</option>`).join('')}</select><span class="config-help" data-agent-description>${escapeHtml(descriptor?.description || 'Select an agent available for this game.')}</span></label>
       <div class="agent-specific-fields" data-agent-specific-fields>${agentFactoryFieldsMarkup(descriptor, configured.config || {})}</div>
       <label class="config-field"><span>Action timeout (seconds)</span><input data-agent-timeout type="text" inputmode="decimal" value="${escapeHtml(configured.act_timeout_seconds ?? 30)}"><span class="config-help">Maximum time allowed for the agent to choose one action.</span></label>
       <label class="config-field"><span>Invalid-action limit</span><input data-agent-invalid-limit type="number" min="1" step="1" value="${escapeHtml(configured.invalid_action_limit ?? 3)}"><span class="config-help">End the session after this many invalid agent actions.</span></label>
@@ -1582,24 +1586,10 @@ function refreshDraftActivationWarning() {
   items.textContent = state.activationIssues.join(' ');
 }
 
-// Reconstructs typed Parlando JSON while leaving game YAML and credentials separate.
+// Reconstructs Parlando JSON, retaining speech values even when Typed disables their controls.
 function configurationFromForm() {
   const config = structuredClone(state.configValue || {});
-  configForm.querySelectorAll('[data-config-path]').forEach(control => {
-    let value;
-    if (control.dataset.configType === 'boolean') value = control.checked;
-    else if (control.dataset.configType === 'optional-number') {
-      value = control.value.trim() === '' ? null : Number(control.value);
-      if (value !== null && !Number.isFinite(value)) throw new Error(`${control.dataset.configPath} must be a number`);
-    }
-    else if (control.dataset.configType === 'number') {
-      value = Number(control.value);
-      if (!Number.isFinite(value)) throw new Error(`${control.dataset.configPath} must be a number written with a decimal point`);
-    }
-    else if (control.dataset.configType === 'json') value = JSON.parse(control.value);
-    else value = control.value;
-    setConfigAt(config, control.dataset.configPath, value);
-  });
+  readConfigFields(configForm, config);
   configForm.querySelectorAll('[data-consent-editor]').forEach(editor => {
     const items = Array.from(editor.querySelectorAll('.consent-item')).map(item => ({
       id: item.querySelector('[data-consent-field="id"]').value.trim(),
@@ -1646,7 +1636,7 @@ function configurationFromForm() {
   return config;
 }
 
-// Asks the compiled game to parse and validate the current YAML without saving it.
+// Checks the current YAML against the game component’s schema without saving it.
 async function validateGameYaml() {
   const result = document.getElementById('gameYamlValidation');
   result.className = 'validation-result small';
@@ -1741,16 +1731,17 @@ async function revealSecret(key, button) {
   button.textContent = 'Hide';
 }
 
-// Creates an inactive experiment from the compiled game's current defaults.
-async function createExperiment(experimentId, notes) {
+// Creates an inactive experiment from the installation’s current defaults.
+async function createExperiment(experimentId) {
   const response = await adminFetch(state, '/api/admin/experiments', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
-    body: JSON.stringify({ experiment_id: experimentId, notes: notes.trim() || null })
+    body: JSON.stringify({ experiment_id: experimentId })
   });
-  if (!response.ok) throw new Error(await response.text());
-  state.experiment = { experiment_id: experimentId };
-  await loadExperiment();
+  if (!response.ok) {
+    throw new Error((await response.text()) || 'The experiment could not be created.');
+  }
+  await reloadCatalogue();
   await selectExperiment(experimentId);
 }
 
@@ -1766,8 +1757,7 @@ async function cloneSelectedExperiment() {
     body: JSON.stringify({ experiment_id: experimentId })
   });
   if (!response.ok) throw new Error(await response.text());
-  state.experiment = { experiment_id: experimentId };
-  await loadExperiment();
+  await reloadCatalogue();
   await selectExperiment(experimentId);
 }
 
@@ -1784,7 +1774,7 @@ async function updateCatalogue(changes) {
     })
   });
   if (!response.ok) throw new Error(await response.text());
-  await loadExperiment();
+  await reloadCatalogue();
 }
 
 // Saves Markdown notes as catalogue metadata without creating a configuration revision.
@@ -1792,20 +1782,16 @@ async function saveNotes() {
   const selectedId = state.experiment?.experiment_id;
   if (!selectedId) return;
   const value = state.notesSource.trim() || null;
-  const response = await adminFetch(state, `/api/admin/experiments/${encodeURIComponent(selectedId)}/catalogue`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrfToken || '' },
-    body: JSON.stringify({ pinned: state.experiment.pinned, notes: value })
-  });
-  if (!response.ok) throw new Error(await response.text());
-  if (state.experiment?.experiment_id !== selectedId) return;
-  state.experiment.notes = value;
-  const catalogue = state.experiments.find(item => item.experiment_id === selectedId);
-  if (catalogue) catalogue.notes = value;
-  state.notesSource = value || '';
-  state.notesDirty = false;
-  notesSaveState.textContent = 'Saved';
-  renderExperiment();
+  await experimentRequests.json('save-notes', state, `/api/admin/experiments/${encodeURIComponent(selectedId)}/catalogue`, () => {
+    state.experiment.notes = value;
+    const catalogue = state.experiments.find(item => item.experiment_id === selectedId);
+    if (catalogue) catalogue.notes = value;
+    if ((state.notesSource.trim() || null) === value) {
+      state.notesDirty = false;
+      notesSaveState.textContent = 'Saved';
+    }
+    renderExperiment();
+  }, { method: 'POST', body: JSON.stringify({ pinned: state.experiment.pinned, notes: value }) });
 }
 
 // Validates and stores the editor contents as a new immutable revision.
@@ -1832,7 +1818,7 @@ async function saveConfigRevision() {
     })
   });
   if (!response.ok) { window.alert(await response.text()); return; }
-  await loadExperiment();
+  await reloadCatalogue();
 }
 
 // Copies the latest committed shared settings into controls when no local draft exists.
@@ -1995,27 +1981,25 @@ async function saveSharedGameSettings() {
   state.gameSettingsDraftRevision = null;
   state.loadedConfigKey = null;
   flashGameSettingsSaved();
-  await loadExperiment();
+  await reloadCatalogue();
 }
 
 // Loads one selected session, its participants, and its initial event bundle.
 async function selectSession(sessionId) {
+  clearSelectedSession();
   state.selected = sessionId;
-  state.lastEventIndex = 0;
   renderSessions();
-  liveStatus.textContent = 'Loading';
-  const response = await adminFetch(state, runtimeApi(`sessions/${sessionId}`));
-  if (!response.ok) throw new Error(await response.text());
-  const data = await response.json();
-  state.selectedSession = data.session;
-  state.selectedParticipants = data.participants || [];
-  renderSummary(data.session, state.selectedParticipants);
-  sessionDetail.hidden = false;
-  state.events = [];
-  state.eventBundles = data.event_bundles || [];
-  mergeEvents(data.events || []);
-  renderEventBundles();
-  liveStatus.textContent = 'Live';
+  sessionLogError.hidden = true;
+  await sessionRequests.json('detail', state, runtimeApi(`sessions/${sessionId}`), data => {
+    state.selectedSession = data.session;
+    state.selectedParticipants = data.participants || [];
+    renderSummary(data.session, state.selectedParticipants);
+    sessionDetail.hidden = false;
+    state.events = [];
+    state.eventBundles = data.event_bundles || [];
+    mergeEvents(data.events || []);
+    renderEventBundles();
+  });
 }
 
 // Switches among the selected experiment's sessions, progress, notes, export, and configuration views.
@@ -2059,7 +2043,7 @@ function renderPrivacy() {
       <h3>Data retained in Parlando's SQLite database</h3><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Information</th><th>Why it is processed</th><th>What is retained</th></tr></thead><tbody>${storageRows}</tbody></table></div>
       <h3>Data not retained by Parlando</h3><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Information</th><th>Parlando guarantee</th><th>Boundary of the guarantee</th></tr></thead><tbody>${nonRetainedRows}</tbody></table></div>
       <h3>External speech services</h3><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Service</th><th>Purpose</th><th>Data sent</th></tr></thead><tbody>${serviceRows}</tbody></table></div>
-      <h3>Corpus export</h3><p>${escapeHtml(privacy.exports?.structure || '')} ${escapeHtml(privacy.exports?.scope || '')}</p><p>${escapeHtml(privacy.exports?.identifiers || '')} ${escapeHtml(privacy.exports?.timing || '')}</p><p><strong>How fields are selected:</strong> ${escapeHtml(privacy.exports?.selection_rule || '')}</p><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Part of the corpus</th><th>What it contains</th></tr></thead><tbody>${exportRows}</tbody></table></div><p><strong>Stored or used by Parlando but not written to the corpus:</strong></p><ul>${notWrittenItems}</ul><p><strong>Before sharing:</strong> ${escapeHtml(privacy.exports?.detail || '')}</p><p class="muted">Schema ${escapeHtml(privacy.exports?.schema_id || '')}; available as ${escapeHtml((privacy.exports?.formats || []).join(', '))}. <a href="/api/admin/export-schema" download>Download the machine-readable schema</a>.</p>
+      <h3>Corpus export</h3><p>${escapeHtml(privacy.exports?.structure || '')} ${escapeHtml(privacy.exports?.scope || '')}</p><p>${escapeHtml(privacy.exports?.identifiers || '')} ${escapeHtml(privacy.exports?.timing || '')}</p><p><strong>How fields are selected:</strong> ${escapeHtml(privacy.exports?.selection_rule || '')}</p><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Part of the corpus</th><th>What it contains</th></tr></thead><tbody>${exportRows}</tbody></table></div><p><strong>Stored or used by Parlando but not written to the corpus:</strong></p><ul>${notWrittenItems}</ul><p><strong>Before sharing:</strong> ${escapeHtml(privacy.exports?.detail || '')}</p><p class="muted">Schema ${escapeHtml(privacy.exports?.schema_id || '')}; available as ${escapeHtml((privacy.exports?.formats || []).join(', '))}. <a href="${escapeHtml(adminPath(state, '/api/admin/export-schema'))}" download>Download the machine-readable schema</a>.</p>
       <h3>Consent evidence and deletion</h3><div class="table-wrap"><table class="privacy-table"><thead><tr><th>Area</th><th>Behavior</th></tr></thead><tbody><tr><td>Consent evidence</td><td>${escapeHtml(privacy.consent_evidence?.detail || '')}</td></tr><tr><td>Participant deletion</td><td>${escapeHtml(privacy.participant_deletion?.detail || '')}</td></tr></tbody></table></div>
       <h3>Scope of this record</h3><p>This record documents behavior enforced by Parlando for this experiment. Store it with the exported data. Supplement it with the controller, legal basis, retention period, hosting arrangements${providerRecord} that apply at your institution.</p>
     </article>`;
@@ -2073,12 +2057,12 @@ async function loadPrivacy() {
     return;
   }
   const id = encodeURIComponent(state.experiment.experiment_id);
-  document.getElementById('privacyMarkdown').href = `/api/admin/experiments/${id}/privacy.md`;
-  document.getElementById('privacyJson').href = `/api/admin/experiments/${id}/privacy.json`;
-  const response = await adminFetch(state, `/api/admin/experiments/${id}/privacy`);
-  if (!response.ok) throw new Error(await response.text());
-  state.privacy = await response.json();
-  renderPrivacy();
+  document.getElementById('privacyMarkdown').href = adminPath(state, `/api/admin/experiments/${id}/privacy.md`);
+  document.getElementById('privacyJson').href = adminPath(state, `/api/admin/experiments/${id}/privacy.json`);
+  await experimentRequests.json('privacy', state, `/api/admin/experiments/${id}/privacy`, data => {
+    state.privacy = data;
+    renderPrivacy();
+  });
 }
 
 // Constrains one draggable catalogue width to useful desktop limits.
@@ -2154,7 +2138,9 @@ function renderSummary(session, participantRows) {
     facts.push(`<div><dt>Last meaningful activity</dt><dd>${escapeHtml(fmtTime(session.last_meaningful_activity_at))}</dd></div>`);
   }
   summary.innerHTML = `
-    <div class="session-summary-heading"><h2>Session ${escapeHtml(session.session_id)}</h2>${session.dialogue_id ? `<strong class="session-dialogue-name">${escapeHtml(session.dialogue_id)}</strong>` : ''}</div>
+    <div class="session-summary-heading"><h2>Session ${escapeHtml(session.session_id)}</h2>${session.dialogue_id ? `<strong class="session-dialogue-name">${escapeHtml(session.dialogue_id)}</strong>` : ''}${state.adminPrefix
+      ? `<button class="secondary session-replay" type="button">${icon('play')}Replay</button>`
+      : `<a class="secondary session-replay" href="${escapeHtml(replayPageHref(session.session_id))}" target="_blank" rel="noopener">${icon('play')}Replay</a>`}</div>
     <dl class="session-facts">${facts.join('')}</dl>
     ${participantAssignments(participantRows, session)}
   `;
@@ -2304,19 +2290,20 @@ function participantAssignments(rows, session = state.selectedSession) {
 async function deleteParticipantData(researchId) {
   if (!state.experiment) return;
   const path = runtimeApi(`participants/${encodeURIComponent(researchId)}/deletion`);
-  const previewResponse = await adminFetch(state, path);
-  if (!previewResponse.ok) throw new Error(await previewResponse.text());
-  const preview = (await previewResponse.json()).preview;
-  const confirmed = window.confirm(
-    `Delete ${researchId}? This removes ${preview.content_event_count} message/transcript events and ${preview.consent_count} consent declarations, and anonymizes ${preview.other_event_count} other event references. This cannot be undone.`
-  );
-  if (!confirmed) return;
-  const response = await adminFetch(state, path, {
-    method: 'POST',
-    headers: { 'X-CSRF-Token': state.csrfToken || '' }
+  await sessionRequests.json('deletion-preview', state, path, async ({ preview }) => {
+    if (preview.has_non_terminal_session) {
+      window.alert('Deletion is blocked until every session involving this participant has ended.');
+      return;
+    }
+    if (window.confirm(participantDeletionPrompt(researchId, preview))) {
+      await sessionRequests.json('deletion', state, path, async () => {
+        clearSelectedSession();
+        experimentRequests.invalidate('sessions');
+        experimentRequests.invalidate('progress');
+        await Promise.all([loadSessions(), loadProgress()]);
+      }, { method: 'POST' });
+    }
   });
-  if (!response.ok) throw new Error(await response.text());
-  await selectSession(state.selected);
 }
 
 // Maps one event bundle to its restrained visual category.
@@ -2325,13 +2312,6 @@ function eventClass(bundle) {
   if (bundle.kind === 'action') return 'action';
   if (bundle.kind === 'voice' || bundle.kind === 'transcript') return 'transcript';
   return '';
-}
-
-// Renders compact participant role markers for rows and event timeline entries.
-function roleBadge(role) {
-  const normalized = role === 'A' || role === 'B' ? role : '';
-  if (!normalized) return '<span class="role-badge role-system">SYS</span>';
-  return `<span class="role-badge role-${normalized.toLowerCase()}">${escapeHtml(normalized)}</span>`;
 }
 
 // Returns only extra event text that is not already implied by the title and badge.
@@ -2349,46 +2329,33 @@ function mergeEvents(events) {
 
 // Renders filtered event bundles as the selected session's chronological log.
 function renderEventBundles() {
+  const hasSpeech = (state.eventBundles || []).some(isSpeechBundle);
+  speechView.closest('label').hidden = !hasSpeech;
+  if (!hasSpeech) speechView.value = 'utterances';
   const bundles = (state.eventBundles || []).filter(bundle => {
     if (bundle.kind === 'log' && !showLogs.checked) return false;
     return showHousekeeping.checked || !bundle.housekeeping;
   });
-  timeline.innerHTML = '';
-  for (const bundle of bundles) {
-    timeline.insertAdjacentHTML('beforeend', `
-      <article class="event ${eventClass(bundle)}">
-        <div class="event-line">
-          <span class="game-time" title="Game time">${escapeHtml(fmtGameTime(bundle.game_time_ms))}</span>
-          ${roleBadge(bundle.role)}
-          <div class="event-main">
-            <span class="event-title">${escapeHtml(bundle.title)}${bundle.problem ? '<span class="problem-badge">Problem</span>' : ''}</span>
-            <span class="muted small">#${bundle.first_index}${bundle.first_index === bundle.last_index ? '' : `-${bundle.last_index}`}</span>
-            ${bundle.steps ? `<div class="bundle-steps">${escapeHtml(bundle.steps)}</div>` : ''}
-            ${bundle.problem_reason ? `<div class="problem-reason">${escapeHtml(bundle.problem_reason)}</div>` : ''}
-          </div>
-          <div class="event-text">${bundle.action ? `<div class="structured-action">${prettyAction(bundle.action, bundle.role)}</div>` : escapeHtml(bundle.text || '')}</div>
-        </div> 
-      </article>
-    `);
-  }
-  if (!timeline.children.length) timeline.innerHTML = '<div class="empty">No action or message events recorded yet.</div>';
+  timeline.innerHTML = sessionTimeline(bundles, speechView.value, renderEventBundle);
 }
 
-// Formats a structured action without repeating its already-visible actor role.
+// Presents compact actions and speaker-aligned logs without disclosure controls.
+function renderEventBundle(bundle) {
+  const problem = bundle.problem ? '<span class="problem-badge">Problem</span>' : '';
+  const reason = bundle.problem_reason ? `<div class="problem-reason">${escapeHtml(bundle.problem_reason)}</div>` : '';
+  if (bundle.kind === 'log') {
+    return `<article class="timeline-log speaker-${bundle.role === 'B' ? 'b' : 'a'}${bundle.problem ? ' problem' : ''}" title="#${bundle.first_index}">${escapeHtml(bundle.text || '')}${problem}${reason}</article>`;
+  }
+  const summary = bundle.action ? prettyAction(bundle.action, bundle.role) : `<strong>${escapeHtml(bundle.title)}</strong>${bundle.text ? ` · ${escapeHtml(bundle.text)}` : ''}`;
+  return `<article class="event ${eventClass(bundle)}" title="#${bundle.first_index}">${summary}${problem}${reason}</article>`;
+}
+
+// Formats action fields inline while omitting an actor already visible in the gutter.
 function prettyAction(action, role) {
   if (!action || typeof action !== 'object') return escapeHtml(String(action ?? ''));
-  const type = action.type;
-  const rows = Object.entries(action).filter(([key, value]) => {
-    if (key === 'type') return false;
-    if (key === 'player' && role && value === role) return false;
-    return true;
-  }).map(([key, value]) => `
-    <div class="action-row">
-      <span class="action-key">${escapeHtml(key)}</span>
-      <span class="action-value">${escapeHtml(formatActionValue(value))}</span>
-    </div>
-  `).join('');
-  return `${type ? `<strong class="action-type">${escapeHtml(type)}</strong>` : ''}${rows}`;
+  const fields = Object.entries(action).filter(([key, value]) => key !== 'type' && !(key === 'player' && role && value === role))
+    .map(([key, value]) => `${escapeHtml(key)}: ${escapeHtml(formatActionValue(value))}`).join(', ');
+  return `${action.type ? `<strong>${escapeHtml(action.type)}</strong>` : ''}${fields ? ` ${fields}` : ''}`;
 }
 
 // Serializes one structured action value for compact inline display.
@@ -2400,31 +2367,55 @@ function formatActionValue(value) {
 
 // Polls for new durable events in the currently selected session.
 async function refreshEvents() {
-  if (!state.selected) return;
+  if (!state.selectedSession) return;
   const params = new URLSearchParams({ after: String(state.lastEventIndex) });
-  const response = await adminFetch(state, `${runtimeApi(`sessions/${state.selected}/events`)}?${params}`);
-  if (!response.ok) throw new Error(await response.text());
-  const data = await response.json();
-  state.eventBundles = data.event_bundles || state.eventBundles;
-  mergeEvents(data.events || []);
-  renderEventBundles();
-  liveStatus.textContent = `Last checked ${new Date().toLocaleTimeString()}`;
+  await sessionRequests.json('events', state, `${runtimeApi(`sessions/${state.selected}/events`)}?${params}`, data => {
+    state.eventBundles = data.event_bundles || state.eventBundles;
+    mergeEvents(data.events || []);
+    renderEventBundles();
+    sessionLogError.hidden = true;
+  });
 }
+
+document.addEventListener('click', event => {
+  if (!state.adminPrefix || !state.selectedSession || !event.target.closest('button.session-replay')) return;
+  launchHostedReplay(state.selectedSession.session_id).catch(error => window.alert(error.message));
+});
 
 showHousekeeping.addEventListener('change', renderEventBundles);
 showLogs.addEventListener('change', renderEventBundles);
 refreshProgressButton.addEventListener('click', () => refreshProgress().catch(error => window.alert(error.message)));
+const createExperimentForm = document.getElementById('createExperimentForm');
+const newExperimentId = document.getElementById('newExperimentId');
+const createExperimentError = document.getElementById('createExperimentError');
+const submitExperiment = createExperimentForm.querySelector('button[type="submit"]');
+
 document.getElementById('createExperimentButton').addEventListener('click', () => {
-  document.getElementById('createExperimentForm').reset();
+  createExperimentForm.reset();
+  createExperimentError.textContent = '';
   createExperimentDialog.showModal();
-  document.getElementById('newExperimentId').focus();
+  newExperimentId.focus();
 });
 document.getElementById('cancelCreateExperiment').addEventListener('click', () => createExperimentDialog.close());
-document.getElementById('createExperimentForm').addEventListener('submit', event => {
+createExperimentForm.addEventListener('submit', async event => {
   event.preventDefault();
-  const experimentId = document.getElementById('newExperimentId').value.trim();
-  const notes = document.getElementById('newExperimentNotes').value;
-  createExperiment(experimentId, notes).then(() => createExperimentDialog.close()).catch(error => window.alert(error.message));
+  if (submitExperiment.disabled) return;
+  const experimentId = newExperimentId.value;
+  createExperimentError.textContent = '';
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(experimentId) || ['.', '..'].includes(experimentId)) {
+    createExperimentError.textContent = 'Use 1–128 ASCII letters, digits, dots, dashes, or underscores. A single dot or two dots is invalid.';
+    newExperimentId.focus();
+    return;
+  }
+  submitExperiment.disabled = true;
+  try {
+    await createExperiment(experimentId);
+    createExperimentDialog.close();
+  } catch (error) {
+    createExperimentError.textContent = error.message;
+  } finally {
+    submitExperiment.disabled = false;
+  }
 });
 document.getElementById('notesWriteMode').addEventListener('click', () => setNotesMode('write'));
 document.getElementById('notesPreviewMode').addEventListener('click', () => setNotesMode('preview'));
@@ -2480,10 +2471,7 @@ scopeButtons.forEach(button => {
 document.querySelectorAll('[data-status-filter]').forEach(initializeStatusFilter);
 experimentStatusFilter.addEventListener('change', renderExperiment);
 sessionLifecycleFilter.addEventListener('change', () => {
-  state.selected = null;
-  state.selectedSession = null;
-  state.selectedParticipants = [];
-  sessionDetail.hidden = true;
+  clearSelectedSession();
   loadSessions();
 });
 document.getElementById('downloadExport').addEventListener('click', () => {
@@ -2492,7 +2480,7 @@ document.getElementById('downloadExport').addEventListener('click', () => {
     format: document.getElementById('exportFormat').value,
     variant: document.getElementById('exportVariant').value
   });
-  window.location.href = `${runtimeApi('export')}?${params}`;
+  window.location.href = adminPath(state, `${runtimeApi('export')}?${params}`);
 });
 summary.addEventListener('click', event => {
   const button = event.target.closest('.delete-participant');
@@ -2512,7 +2500,8 @@ renderTabs();
 showScope('experiments');
 setInterval(() => {
   loadExperiment().then(() => Promise.all([loadSessions(), state.activeTab === 'progress' ? loadProgress() : Promise.resolve(), loadLoad()])).catch(error => {
-    liveStatus.textContent = error.message;
+    sessionLogError.textContent = error.message;
+    sessionLogError.hidden = false;
   });
 }, 5000);
 state.timer = setInterval(refreshEvents, 1500);

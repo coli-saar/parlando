@@ -1,3 +1,9 @@
+/**
+ * The participant runtime and voice controls use these pure decisions to interpret consent,
+ * intake, presence, and voice status. Each caller supplies the current protocol or audio
+ * snapshot and uses the returned eligibility, progress, or label when rendering.
+ */
+
 import type { ConsentItem, ExperimentInfo, Presence } from "./protocol.js";
 import type { VoiceStatus } from "./audio/types.js";
 
@@ -47,4 +53,9 @@ export function microphoneMuteButtonLabel(status: VoiceStatus): string {
   if (!status.connected) return status.connecting ? "Connecting" : "Microphone unavailable";
   if (status.microphoneChanging) return status.microphoneEnabled ? "Muting…" : "Unmuting…";
   return status.microphoneEnabled ? "Mute mic" : "Unmute mic";
+}
+
+/** Uses the error message when a browser or transport operation provides one. */
+export function errorMessage(caught: unknown, fallback: string): string {
+  return caught instanceof Error ? caught.message : fallback;
 }

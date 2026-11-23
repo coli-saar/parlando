@@ -1,0 +1,34 @@
+// One isolated component instance owns one game's mutable session state.
+package parlando:game@4.0.0;
+
+interface mechanics {
+    enum role { a, b }
+
+    // The producer's codec guarantees that each payload follows its declared
+    // compact MessagePack schema. The host may forward it without parsing.
+    // Checkpoints contain all data needed to resume the game in a fresh instance,
+    // including its random state.
+    // Omit the checkpoint to recover by replaying deterministic actions.
+    record frame {
+        checkpoint: option<list<u8>>,
+        view-a: list<u8>,
+        view-b: list<u8>,
+        completion: option<list<u8>>,
+        metadata: option<list<u8>>,
+    }
+
+    // Describe configuration, actions, and frame payloads as a JSON game schema.
+    // The host calls this on a separate instance before creating sessions.
+    describe: func() -> string;
+
+    // Initialize from one schema-encoded configuration value and the recorded seed.
+    init: func(config: list<u8>, seed: u64) -> result<frame, string>;
+    // Recover in a fresh instance. An error means this checkpoint is incompatible.
+    restore: func(checkpoint: list<u8>) -> result<_, string>;
+    // Attempt one schema-encoded action. A rejection must leave session state unchanged.
+    step: func(actor: role, action: list<u8>) -> result<frame, string>;
+}
+
+world game {
+    export mechanics;
+}

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Parlando</title>
+  <link rel="icon" type="image/svg+xml" href="/admin/assets/parlando-mark.svg">
+  <link rel="stylesheet" href="/admin/assets/palette.css">
+  <link rel="stylesheet" href="/admin/dashboard.css">
+  <script type="module" src="/admin/dashboard.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-row">
+      <a class="brand" href="/admin"><img src="/admin/assets/parlando-wordmark.svg" width="110" alt="Parlando"></a>
+    <nav id="workspace-nav" aria-label="Workspace" hidden>
+      <a id="games-nav" href="/admin">Games</a>
+      <a id="users-nav" href="/admin#users" hidden>Users</a>
+    </nav>
+      <div id="identity" class="toolbar" hidden>
+        <span id="signed-in-as"><span id="account-name"></span><span id="account-role"></span></span>
+        <button id="logout" type="button">Sign out</button>
+      </div>
+    </div>
+
+  </header>
+
+  <main>
+    <p id="notice" role="status" hidden></p>
+    <section id="cli-login" class="cli-card" aria-labelledby="cli-title" hidden>
+      <span class="terminal-icon" aria-hidden="true">›_</span>
+      <h1 id="cli-title">Connect your terminal</h1>
+      <p>Authorize the Parlando CLI to deploy games to this server with your account.</p>
+      <form method="post" id="cli-form">
+        <label>Terminal code <input id="cli-code" name="code" autocomplete="off" spellcheck="false" maxlength="16" required></label>
+        <button class="primary">Authorize CLI</button>
+      </form>
+    </section>
+    <div id="auth" class="auth-page" hidden>
+      <div class="auth-shell">
+        <div class="auth-brand" aria-hidden="true">
+          <img src="/admin/assets/parlando-mark.svg" width="48" alt="">
+        </div>
+        <section id="setup" class="auth-panel" aria-labelledby="setup-title" hidden>
+          <h1 id="setup-title">Create your administrator account</h1>
+          <form method="post" id="setup-form">
+            <label>Username <input name="username" autocomplete="username" maxlength="128" required></label>
+            <div class="auth-field">
+              <label>Password <input name="password" type="password" autocomplete="new-password" aria-describedby="password-help" required></label>
+              <small id="password-help">Use at least 12 characters.</small>
+            </div>
+            <label>Confirm password <input name="password_confirmation" type="password" autocomplete="new-password" required></label>
+            <button class="primary">Create administrator</button>
+          </form>
+        </section>
+        <section id="sign-in" class="auth-panel" aria-labelledby="sign-in-title" hidden>
+          <h1 id="sign-in-title">Sign in</h1>
+          <form method="post" id="login">
+            <label>Username <input name="username" autocomplete="username" maxlength="128" required></label>
+            <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+            <button class="primary">Sign in</button>
+          </form>
+        </section>
+      </div>
+    </div>
+
+    <div id="workspace" hidden>
+      <div class="page-title toolbar">
+        <h1 id="page-title" tabindex="-1">Games</h1>
+        <div class="toolbar page-actions">
+          <button id="refresh" type="button">Refresh</button>
+        </div>
+      </div>
+
+      <section id="games" aria-labelledby="page-title">
+        <button id="package-drop-zone" type="button" aria-haspopup="dialog">
+          Drop a game or agent ZIP here
+          <small>or click to choose a package</small>
+        </button>
+        <dialog id="publish-game" aria-labelledby="upload-title">
+          <form id="publish-form">
+            <h2 id="upload-title">Upload a package</h2>
+            <label>Game or agent ZIP <input name="archive" type="file" accept=".zip" required></label>
+            <p id="upload-notice" role="status" hidden></p>
+            <div class="toolbar">
+              <button id="submit-upload" class="primary">Upload package</button>
+              <button id="cancel-upload" type="button">Cancel</button>
+            </div>
+          </form>
+        </dialog>
+        <div class="panel scroll"><table id="game-list">
+          <thead><tr><th scope="col">Game or agent</th><th scope="col">Release</th></tr></thead>
+        </table></div>
+      </section>
+
+      <section id="users" class="panel" aria-labelledby="page-title" hidden>
+        <div class="scroll"><table>
+          <thead><tr><th scope="col">Username</th><th scope="col">Role</th><th scope="col">Status</th><th scope="col">Manage</th></tr></thead>
+          <tbody id="account-rows"></tbody>
+        </table></div>
+        <details id="create-account">
+          <summary>Create an account</summary>
+          <form method="post" id="account-form">
+            <div class="fields">
+              <label>Username <input name="username" autocomplete="off" required></label>
+              <label>Initial password <input name="password" type="password" autocomplete="new-password" required></label>
+              <label>Role <select name="role"><option value="experimenter">Experimenter</option><option value="operator">Admin</option></select></label>
+            </div>
+            <button class="primary">Create account</button>
+          </form>
+        </details>
+        <form method="post" id="reset-password" class="inset" hidden>
+          <h4 id="reset-title"></h4>
+          <label>New password <input name="password" type="password" autocomplete="new-password" required></label>
+          <div class="toolbar"><button class="primary">Reset password</button><button id="cancel-reset" type="button">Cancel</button></div>
+        </form>
+        <details id="audit-history">
+          <summary>Audit history</summary>
+          <div class="scroll"><table>
+            <thead><tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Operation</th><th scope="col">Target</th><th scope="col">Outcome</th></tr></thead>
+            <tbody id="audit-rows"></tbody>
+          </table></div>
+        </details>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

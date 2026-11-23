@@ -1,0 +1,68 @@
+:root {
+  font: 1rem/1.5 system-ui, sans-serif;
+  color: #192c29;
+  background: #f5f3e9;
+}
+
+body {
+  margin: 0 auto;
+  max-width: 56rem;
+  padding: clamp(0.75rem, 4vw, 2.5rem);
+}
+
+.pile,
+.lobby-panel,
+.parlando-session-outcome,
+.parlando-game-completion {
+  box-sizing: border-box;
+  max-width: 36rem;
+  padding: clamp(0.85rem, 4vw, 1.75rem);
+  background: #fffcf4;
+  border: 1px solid #adbbb2;
+  border-radius: 0.65rem;
+}
+
+.pile h1 {
+  margin: 0;
+  font-family: Georgia, serif;
+}
+
+.moves,
+.parlando-completion-code-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+button {
+  padding: 0.45rem 0.75rem;
+  font: inherit;
+  color: white;
+  background: #245546;
+  border: 1px solid #245546;
+  border-radius: 0.3rem;
+}
+
+button:disabled,
+.parlando-decline-consent {
+  color: #334d45;
+  background: #e4e9e3;
+}
+
+button:focus-visible,
+a:focus-visible {
+  outline: 3px solid #8d4f25;
+  outline-offset: 2px;
+}
+
+.parlando-partner-reconnect,
+.parlando-recruitment-handoff {
+  padding: 0.65rem;
+  border-left: 3px solid #245546;
+}
+
+.parlando-completion-code {
+  font-family: monospace;
+  overflow-wrap: anywhere;
+}

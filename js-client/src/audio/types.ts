@@ -1,3 +1,10 @@
+/**
+ * The source, controller, sink, and participant UI exchange these audio contracts.
+ * MicrophoneInput supplies streams to transports. AudioSessionContext supplies the room plan
+ * and callbacks, and AudioSessionSnapshot combines local preflight readings with transport and
+ * transcription status.
+ */
+
 import type { AudioSessionPlan, PlayerRole } from "../protocol";
 
 export interface VoiceStatus {
