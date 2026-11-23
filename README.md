@@ -1,5 +1,12 @@
 # <img src="brand/parlando-wordmark.svg" width="260" alt="Parlando">
 
+[![parlando release](https://img.shields.io/crates/v/parlando?label=parlando)](https://crates.io/crates/parlando)
+[![parlando-game-sdk release](https://img.shields.io/crates/v/parlando-game-sdk?label=parlando-game-sdk)](https://crates.io/crates/parlando-game-sdk)
+[![parlando-game-derive release](https://img.shields.io/crates/v/parlando-game-derive?label=parlando-game-derive)](https://crates.io/crates/parlando-game-derive)
+[![@coli-saar/parlando-client release](https://img.shields.io/npm/v/@coli-saar/parlando-client?label=%40coli-saar%2Fparlando-client)](https://www.npmjs.com/package/@coli-saar/parlando-client)
+[![parlando-python-sdk release](https://img.shields.io/pypi/v/parlando-python-sdk?label=parlando-python-sdk)](https://pypi.org/project/parlando-python-sdk)
+[![parlando-agent-sdk release](https://img.shields.io/pypi/v/parlando-agent-sdk?label=parlando-agent-sdk)](https://pypi.org/project/parlando-agent-sdk)
+
 Parlando runs two-player dialogue-game experiments with humans and software agents. A game package contains WebAssembly mechanics and a browser application. A shared host serves one current package per game and opens a separate dashboard for each game’s experiments.
 
 ```sh
