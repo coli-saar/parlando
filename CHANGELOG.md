@@ -6,7 +6,9 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## Unreleased
 
-For the upcoming 0.7.0 release, see the [migration guide](docs/migrating-0.6.0-to-0.7.0.md).
+## [0.7.0] - 2026-11-23
+
+For upgrade instructions, see the [migration guide](docs/migrating-0.6.0-to-0.7.0.md).
 
 ### Added
 

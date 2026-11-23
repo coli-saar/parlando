@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "parlando-game-derive"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -48,4 +48,4 @@ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[patch.unused]]
 name = "parlando"
-version = "0.6.0"
+version = "0.7.0"

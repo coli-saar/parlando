@@ -19,6 +19,23 @@ and the [deployment walkthrough](agents.md#run-a-local-wasm-agent).
 
 Use the 0.7.0 versions of `parlando` and `@coli-saar/parlando-client`. Use matching versions of the Rust game SDK and derive crate, or the Python game and agent SDKs, wherever your project depends on them. For an unreleased candidate, use the candidate artifacts. After publication, install the coordinated versions from their registries.
 
+For a custom Rust host, update the dependency in `Cargo.toml`:
+
+```toml
+[dependencies]
+parlando = "0.7.0"
+```
+
+A host that previously supplied a native `GameFactory` now loads the compiled game component with `LoadedGame`. In a TypeScript participant client, update the existing dependency in `package.json` and regenerate its lockfile:
+
+```json
+{
+  "dependencies": {
+    "@coli-saar/parlando-client": "^0.7.0"
+  }
+}
+```
+
 Start a reference project with `parlando new <game-id> --lang rust` or `--lang python`. Move game mechanics into the session-owned component. For Rust games the public `Game` trait lives in `parlando_game_sdk`. Projects using the earlier component SDK should rename `parlando-component-sdk` to `parlando-game-sdk` and replace `ComponentWire` and `ComponentDecode` with the `GameValue` derive. Build for the v4 game world. Custom Rust hosts load games with `LoadedGame`. Typed agents receive the view type declared by their policy, and Rust reward functions receive their configuration once through `configure`. See the [component interface](component-games.md) and [agent integration guide](agents.md).
 
 Run `parlando test` and `parlando build`. Pass the ZIP path printed by the build to `parlando check --package`. Deploy the resulting ZIP to your host. Retain the exact component used to record each session you wish to replay. See [package a game](web/content/manual/build/packages.md).
@@ -126,7 +143,7 @@ COMMIT;
 
 Before starting the new server, verify that the maximum version is 17, integrity returns `ok`, foreign-key checks return no rows, and the four row counts match the backup. Compare each revision's mode with the backup's old flag by experiment ID and revision.
 
-## Pilot before opening intake
+## Validate the upgrade before opening intake
 
 1. In a typed experiment, enter from two independent browser profiles, send one message from each, and finish the game. Each browser should show both messages once without requesting microphone access.
 2. Use the same game package in a speech experiment. Check microphone permission, the meter, mute, and partner playback. For a spoken agent, also check recognition and audible replies with your configured providers.

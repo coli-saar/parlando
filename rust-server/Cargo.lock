@@ -2345,7 +2345,7 @@ dependencies = [
 
 [[package]]
 name = "parlando"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2394,7 +2394,7 @@ dependencies = [
 
 [[package]]
 name = "parlando-game-derive"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2403,7 +2403,7 @@ dependencies = [
 
 [[package]]
 name = "parlando-game-sdk"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",

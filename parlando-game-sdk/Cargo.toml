@@ -1,12 +1,12 @@
 [package]
 name = "parlando-game-sdk"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 license = "MIT"
 description = "Rust SDK for authoring Parlando games and agents"
 
 [dependencies]
-parlando-game-derive = { path = "derive", version = "=0.6.0" }
+parlando-game-derive = { path = "derive", version = "=0.7.0" }
 anyhow = "1"
 async-trait = "0.1"
 rmp = "0.8"
