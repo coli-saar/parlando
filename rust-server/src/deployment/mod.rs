@@ -622,7 +622,7 @@ async fn dispatch(State(host): State<Arc<Host>>, request: Request) -> HttpResult
             Err((StatusCode::UNAUTHORIZED, _))
                 if tail.is_empty() && parts.method == Method::GET =>
             {
-                return Ok(Redirect::temporary(&format!("/admin?next=/{id}")).into_response());
+                return Ok(Redirect::temporary(&format!("/?next=/{id}")).into_response());
             }
             Err(error) => return Err(error),
         };

@@ -3,7 +3,7 @@ import { expect, test } from '@playwright/test';
 
 const assets = new URL('../../rust-server/src/', import.meta.url);
 const files = {
-  '/admin': ['deployment/dashboard.html', 'text/html'],
+  '/': ['deployment/dashboard.html', 'text/html'],
   '/admin/dashboard.js': ['deployment/dashboard.js', 'text/javascript'],
   '/admin/dashboard.css': ['deployment/dashboard.css', 'text/css'],
   '/admin/assets/palette.css': ['../brand/palette.css', 'text/css'],
@@ -58,7 +58,7 @@ test('plain admin offers setup until an administrator is created', async ({ page
     await route.fulfill({ status: 404 });
   });
 
-  await page.goto('http://hosting.test/admin');
+  await page.goto('http://hosting.test/');
   const wordmark = page.getByRole('img', { name: 'Parlando', exact: true });
   await expect(wordmark).toHaveJSProperty('complete', true);
   await expect(wordmark).not.toHaveJSProperty('naturalWidth', 0);
@@ -119,7 +119,7 @@ test('setup switches to sign-in when another visitor creates the administrator f
     }
     await route.fulfill({ status: 401 });
   });
-  await page.goto('http://hosting.test/admin');
+  await page.goto('http://hosting.test/');
   const form = page.locator('#setup-form');
   await form.getByLabel('Username').fill('administrator');
   await form.getByLabel('Password', { exact: true }).fill('local-admin-password');
@@ -152,16 +152,16 @@ test('sign-in resumes a local game dashboard address and ignores external destin
     await route.fulfill({ status: 404 });
   });
 
-  await page.goto('http://hosting.test/admin?next=/example');
+  await page.goto('http://hosting.test/?next=/example');
   const login = page.locator('#login');
   await login.getByLabel('Username').fill('researcher');
   await login.getByLabel('Password').fill('researcher-password');
   await login.getByRole('button', { name: 'Sign in' }).click();
   await expect(page).toHaveURL('http://hosting.test/example');
 
-  await page.goto('http://hosting.test/admin?next=%2F%2Fexample.com');
+  await page.goto('http://hosting.test/?next=%2F%2Fexample.com');
   await expect(page.getByRole('heading', { name: 'Games', exact: true })).toBeVisible();
-  await expect(page).toHaveURL('http://hosting.test/admin?next=%2F%2Fexample.com');
+  await expect(page).toHaveURL('http://hosting.test/?next=%2F%2Fexample.com');
 });
 
 test('Games deploys and updates packages and opens the game dashboard', async ({ page }) => {
@@ -199,7 +199,7 @@ test('Games deploys and updates packages and opens the game dashboard', async ({
     await route.fulfill({ status: 404 });
   });
 
-  await page.goto('http://hosting.test/admin');
+  await page.goto('http://hosting.test/');
   await expect(page.getByText('No games have been deployed.')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Users' })).toBeHidden();
   const zone = page.locator('#package-drop-zone');
@@ -314,12 +314,12 @@ test('Users loads accounts on entry and audit history on demand', async ({ page 
     await route.fulfill({ status: 404 });
   });
 
-  await page.goto('http://hosting.test/admin');
+  await page.goto('http://hosting.test/');
   await expect(page.getByRole('heading', { name: 'Games', exact: true })).toBeVisible();
   expect(accountRequests).toHaveLength(0);
   expect(auditRequests).toHaveLength(0);
   await page.getByRole('link', { name: 'Users', exact: true }).click();
-  await expect(page).toHaveURL('http://hosting.test/admin#users');
+  await expect(page).toHaveURL('http://hosting.test/#users');
   await expect(page.getByRole('heading', { name: 'Users', exact: true })).toBeVisible();
   await expect(page.locator('#account-rows').getByText('researcher', { exact: true })).toBeVisible();
   await expect(page.locator('#games')).toBeHidden();

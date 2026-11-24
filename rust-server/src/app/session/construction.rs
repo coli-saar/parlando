@@ -5,6 +5,7 @@
 //! publishing the room. The agent path joins a separately constructed agent to the
 //! reserved seat and hands it to the live agent task.
 
+use crate::agents::with_callback_timeout;
 use crate::app::admission::AdmissionReservation;
 use crate::app::{
     agent_event_metadata, broadcast_participant_states, configuration_fingerprint,
@@ -308,7 +309,7 @@ async fn try_construct_and_join_agent(
         agent_instance_secrets: prepared.agent_instance_secrets,
         logger: logger.for_agent(participant_id, PlayerRole::B),
     };
-    let mut agent = match tokio::time::timeout(
+    let mut agent = match with_callback_timeout(
         Duration::from_secs_f64(prepared.timeout),
         prepared.factory.create(context),
     )
@@ -330,7 +331,7 @@ async fn try_construct_and_join_agent(
     };
     let event_metadata = agent_event_metadata(&event_metadata);
     let Some(transition_lock) = session_transition_lock(state, public_session_id).await else {
-        let _ = tokio::time::timeout(Duration::from_secs(5), agent.shutdown()).await;
+        let _ = with_callback_timeout(Duration::from_secs(5), agent.shutdown()).await;
         return Err(AppError::not_found("Session not found."));
     };
     let transition_guard = transition_lock.lock().await;
@@ -370,7 +371,7 @@ async fn try_construct_and_join_agent(
     .await;
     if let Err(error) = attach_result {
         drop(transition_guard);
-        let _ = tokio::time::timeout(Duration::from_secs(5), agent.shutdown()).await;
+        let _ = with_callback_timeout(Duration::from_secs(5), agent.shutdown()).await;
         return Err(error);
     }
     persist_session_event(

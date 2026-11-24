@@ -335,7 +335,7 @@ async fn deployment_browser_accounts_manage_games_and_revoke_sessions() {
     ] {
         assert_eq!(
             client
-                .get(format!("{origin}/admin"))
+                .get(format!("{origin}/"))
                 .send()
                 .await
                 .unwrap()

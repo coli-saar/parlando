@@ -139,8 +139,7 @@ fn session_cookie_name(admin: &reqwest::Url) -> String {
 /// Mounts management UI and account endpoints with a shared origin check.
 pub(super) fn routes() -> Router<Arc<Host>> {
     Router::new()
-        .route("/admin", get(page))
-        .route("/admin/", get(page))
+        .route("/", get(page))
         .route("/admin/dashboard.js", get(javascript))
         .route("/admin/dashboard.css", get(stylesheet))
         .route("/admin/assets/parlando-mark.svg", get(parlando_mark))
@@ -262,7 +261,7 @@ async fn cli_start(State(host): State<Arc<Host>>) -> HttpResult<Json<Value>> {
             "Too many pending CLI sign-ins. Try again later.".into(),
         ))?;
     Ok(Json(
-        json!({"device":device,"code":code,"url":format!("{}/admin?cli-login",dashboard.origin)}),
+        json!({"device":device,"code":code,"url":format!("{}/?cli-login",dashboard.origin)}),
     ))
 }
 

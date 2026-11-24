@@ -10,13 +10,13 @@ use super::planning::{ResolvedSeat, SessionPlan};
 use super::results::{SessionCaptures, SessionResult, SessionStatus};
 use super::schedule::other_role;
 use super::spec::TraceLevel;
+use crate::agents::with_callback_timeout;
 use crate::agents::{Agent, AgentContext};
 use crate::component::{ComponentValue, LoadedGame};
 use crate::game::PlayerRole;
 use crate::SessionLogger;
 use anyhow::{anyhow, Context, Result};
 use std::time::{Duration, Instant};
-use tokio::time::timeout;
 
 /// Single-session driver shared by batch evaluation workers.
 pub(super) struct SessionRunner {
@@ -139,7 +139,7 @@ pub(super) async fn deliver_message(
     callback_timeout: Duration,
 ) -> std::result::Result<(), SessionFailure> {
     let receiver = other_role(sender);
-    timeout(
+    with_callback_timeout(
         callback_timeout,
         agents[role_index(receiver)].observe(crate::agent::Observation {
             transition: None,
@@ -161,7 +161,7 @@ pub(super) async fn finish_agents(
     callback_timeout: Duration,
 ) -> std::result::Result<(), SessionFailure> {
     for role in [PlayerRole::A, PlayerRole::B] {
-        timeout(
+        with_callback_timeout(
             callback_timeout,
             agents[role_index(role)].finish(completion.clone()),
         )
@@ -189,7 +189,7 @@ async fn shutdown_agents(
 
 /// Applies the bounded best-effort shutdown contract to one agent.
 async fn shutdown_agent(agent: &mut dyn Agent, duration: Duration) -> Option<String> {
-    match timeout(duration, agent.shutdown()).await {
+    match with_callback_timeout(duration, agent.shutdown()).await {
         Ok(Ok(())) => None,
         Ok(Err(error)) => Some(format!("shutdown failed: {error:#}")),
         Err(_) => Some("shutdown timed out".to_string()),
@@ -202,7 +202,7 @@ async fn create_agent(
     logger: SessionLogger,
     callback_timeout: Duration,
 ) -> Result<Box<dyn Agent + Send>> {
-    timeout(
+    with_callback_timeout(
         callback_timeout,
         seat.factory.create(AgentContext {
             role: seat.role,

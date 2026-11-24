@@ -157,6 +157,7 @@ pub(super) fn experiment_admin_routes(prefix: &str) -> Router<Arc<AppState>> {
             post(admin_update_experiment_status),
         )
         .route(&path("/sessions"), get(admin_sessions))
+        .route(&path("/sessions/search"), post(admin_search_sessions))
         .route(
             &path("/progress"),
             get(admin_progress).post(admin_refresh_progress),
@@ -348,14 +349,29 @@ fn dashboard_feature_routes(prefix: &str) -> Router<Arc<ServerContext>> {
 pub(super) fn http_layers(api: Router, state: &Arc<ServerContext>, cors: CorsLayer) -> Router {
     api.layer(RequestBodyLimitLayer::new(64 * 1024))
         .layer(ConcurrencyLimitLayer::new(256))
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(30),
-        ))
+        .layer(middleware::from_fn(request_timeout))
         .layer(middleware::from_fn(security_headers))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             track_request_load,
         ))
         .layer(cors)
+}
+
+/// Preserves the ordinary request deadline while allowing corpus preparation to finish.
+async fn request_timeout(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let corpus_download = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .is_some_and(|route| route.as_str().ends_with("/api/admin/export"));
+    if corpus_download {
+        return next.run(request).await;
+    }
+    match tokio::time::timeout(Duration::from_secs(30), next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => StatusCode::REQUEST_TIMEOUT.into_response(),
+    }
 }

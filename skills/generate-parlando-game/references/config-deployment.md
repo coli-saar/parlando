@@ -7,9 +7,7 @@ assets. Set `PACKAGE` to the path printed by the build. Run `parlando check --pa
 handing off or uploading that ZIP.
 
 For a [local pilot](https://coli-saar.github.io/parlando/manual/start/getting-started/#start-a-local-server),
-start a server with `parlando serve --store DIRECTORY`, deploy the ZIP in
-**Games**. Open its game ID link and use the game
-dashboard to configure the experiment and start a local preview. Study settings
+start a server with `parlando serve --store DIRECTORY`, open the administrator origin at `/`, and deploy the ZIP in **Games**. Deployment mounts the game immediately. Open the game ID link and use the game dashboard to configure the experiment and start a local preview. Each experiment controls its own intake. Study settings
 such as pairing, consent, intake, communication, and agent selection belong to
 the experiment. Game-owned parameters go in the game's typed configuration.
 Store secrets outside packages, browser assets, and experiment configuration.
@@ -18,7 +16,7 @@ For an authorized deployment, use the shared dashboard or
 `parlando deploy --host <origin> --package "$PACKAGE" --json`.
 Sign in once with `parlando login --server SERVER_URL` and choose **Authorize CLI** in the browser. The saved credential can deploy any game on that server. Record the returned revision with
 the study data. A new upload replaces the current package if the game's
-experiments and sessions have stopped. Follow [Deploy to a shared host](https://coli-saar.github.io/parlando/manual/deploy/)
+experiments have stopped and its sessions have finished. Reuse the existing experiment URL, validate its settings in local preview, and retain the previous ZIP for replay. Follow [Deploy to a shared host](https://coli-saar.github.io/parlando/manual/deploy/)
 for credential setup and operator commands.
 
 For a local WASM policy, set `GAME_PACKAGE` to the built game ZIP path.

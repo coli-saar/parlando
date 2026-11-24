@@ -199,6 +199,118 @@ impl SqliteExperimentStore {
             .collect()
     }
 
+    /// Reads the indexed high-water mark so an idle dashboard poll skips projection.
+    pub(crate) async fn latest_event_index(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+    ) -> Result<i64> {
+        Ok(sqlx::query_scalar("select coalesce(max(event_index), 0) from session_events where experiment_id = ? and session_id = ?")
+            .bind(experiment_id).bind(session_id).fetch_one(&self.pool).await?)
+    }
+
+    /// Reads one chronological dashboard page and the auxiliary speech records needed
+    /// to display its messages. Recovery checkpoints are never part of a monitor read.
+    pub(crate) async fn timeline_page(
+        &self,
+        experiment_id: &str,
+        session_id: i64,
+        before: Option<i64>,
+        after: Option<i64>,
+    ) -> Result<TimelinePage> {
+        const PAGE_SIZE: usize = 100;
+        let mut tx = self.pool.begin().await?;
+        let mut query = sqlx::QueryBuilder::new(
+            "select event_id, experiment_id, session_id, event_index, event_type,
+                    actor_participant_id, actor_role, payload_json, null, game_time_ms
+             from session_events where experiment_id = ",
+        );
+        query
+            .push_bind(experiment_id)
+            .push(" and session_id = ")
+            .push_bind(session_id);
+        if let Some(after) = after {
+            query
+                .push(" and event_index > ")
+                .push_bind(after)
+                .push(" order by event_index asc");
+        } else {
+            if let Some(before) = before {
+                query.push(" and event_index < ").push_bind(before);
+            }
+            query.push(" order by event_index desc");
+        }
+        query.push(" limit ").push_bind((PAGE_SIZE + 1) as i64);
+        let mut rows = query
+            .build_query_as::<SessionEventSqlRow>()
+            .fetch_all(&mut *tx)
+            .await?;
+        let has_more = rows.len() > PAGE_SIZE;
+        rows.truncate(PAGE_SIZE);
+        if after.is_none() {
+            rows.reverse();
+        }
+        let first_index = rows.first().map(|row| row.3);
+        let last_index = rows.last().map_or(after.unwrap_or(0), |row| row.3);
+        let mut events = rows
+            .into_iter()
+            .map(stored_event_from_sql_row)
+            .collect::<Result<Vec<_>>>()?;
+        events.retain(|event| {
+            !matches!(
+                event.event_type.as_str(),
+                "conversation_speech_timing" | "tts_diagnostic"
+            )
+        });
+        let message_ids: Vec<&str> = events
+            .iter()
+            .filter(|event| event.event_type == "conversation_message")
+            .filter_map(|event| event.payload["id"].as_str())
+            .collect();
+        if !message_ids.is_empty() {
+            let support = sqlx::query_as::<_, SessionEventSqlRow>(
+                "with ids(id) as (select value from json_each(?1)),
+                 supporting(event_id, last_index) as (
+                   select event_id, max(event_index) from session_events
+                   where experiment_id=?2 and session_id=?3 and event_type='conversation_speech_timing'
+                   and payload_json ->> 'message_id' in (select id from ids)
+                   group by payload_json ->> 'message_id'
+                   union all
+                   select event_id, max(event_index) from session_events
+                   where experiment_id=?2 and session_id=?3 and event_type='tts_diagnostic'
+                   and payload_json ->> 'event'='tts_publish_completed'
+                   and json_extract(payload_json, '$.metadata.bytes') > 0
+                   and json_extract(payload_json, '$.metadata.message_id') in (select id from ids)
+                   group by json_extract(payload_json, '$.metadata.message_id'))
+                 select event_id, experiment_id, session_id, event_index, event_type, actor_participant_id,
+                        actor_role, payload_json, null, game_time_ms from session_events
+                 where event_id in (select event_id from supporting) order by event_index"
+            ).bind(serde_json::to_string(&message_ids)?).bind(experiment_id).bind(session_id)
+             .fetch_all(&mut *tx).await?;
+            for row in support {
+                events.push(stored_event_from_sql_row(row)?);
+            }
+        }
+        let after_terminal = if let Some(first) =
+            first_index.filter(|_| has_more || after.is_some())
+        {
+            sqlx::query_scalar::<_, bool>(
+                "select exists(select 1 from session_events where experiment_id=? and session_id=?
+                 and event_type in ('session_completed','session_abandoned','session_expired','participant_disconnected')
+                 and event_index < ?)"
+            ).bind(experiment_id).bind(session_id).bind(first).fetch_one(&mut *tx).await?
+        } else {
+            false
+        };
+        tx.commit().await?;
+        Ok(TimelinePage {
+            older_before: first_index.filter(|_| has_more && after.is_none()),
+            last_index,
+            events,
+            after_terminal,
+        })
+    }
+
     /// Identifies experiments with unfinished sessions, including retired runtime revisions.
     pub(crate) async fn interrupted_experiment_ids(&self) -> Result<Vec<String>> {
         Ok(sqlx::query_scalar(
@@ -217,35 +329,51 @@ impl SqliteExperimentStore {
             .bind(experiment_id).fetch_all(&self.pool).await?)
     }
 
-    /// Lists recent sessions with dashboard summary data.
+    /// Filters and limits sessions before reading participant and event summaries.
     pub(crate) async fn recent_sessions(
         &self,
         experiment_id: &str,
+        lifecycle: Option<&str>,
+        prolific_pid_suffix: Option<&str>,
         limit: i64,
     ) -> Result<Vec<StoredSessionSummary>> {
         let limit = limit.clamp(1, 10_000);
         let sessions = sqlx::query(
             r#"
-            select s.session_id, s.public_session_id, s.dialogue_id, s.mode, s.lifecycle, s.purpose,
-                   s.config_revision, s.game_version, s.created_at,
-                   s.waiting_started_at, s.waiting_deadline_at, s.lifetime_deadline_at,
-                   s.last_meaningful_activity_at, s.idle_deadline_at, s.started_at,
-                   s.ended_at, s.completion_json, s.session_end_json,
-                   count(distinct sp.participant_id) as participant_count,
-                   count(distinct se.event_id) as event_count,
-                   max(se.game_time_ms) as last_event_game_time_ms
-            from sessions s
-            left join session_participants sp
-                on sp.experiment_id = s.experiment_id and sp.session_id = s.session_id
-            left join session_events se
-                on se.experiment_id = s.experiment_id and se.session_id = s.session_id
-            where s.experiment_id = ?
-            group by s.experiment_id, s.session_id
+            with recent as (
+                select s.*
+                from sessions s
+                where s.experiment_id = ?1
+                  and (?2 is null or s.lifecycle = ?2)
+                  and (?3 is null or exists (
+                      select 1
+                      from session_participants sp
+                      where sp.experiment_id = s.experiment_id and sp.session_id = s.session_id
+                        and sp.participant_id in (
+                            select ps.participant_id
+                            from prolific_submissions ps
+                            where ps.experiment_id = ?1
+                              and ps.verification_method != 'synthetic_testing'
+                              and substr(ps.prolific_participant_id, -length(?3)) = ?3
+                        )
+                  ))
+                order by s.created_at desc, s.session_id desc
+                limit ?4
+            )
+            select s.*,
+                   (select count(*) from session_participants sp
+                    where sp.experiment_id = s.experiment_id and sp.session_id = s.session_id) as participant_count,
+                   (select count(*) from session_events se
+                    where se.experiment_id = s.experiment_id and se.session_id = s.session_id) as event_count,
+                   (select max(se.game_time_ms) from session_events se
+                    where se.experiment_id = s.experiment_id and se.session_id = s.session_id) as last_event_game_time_ms
+            from recent s
             order by s.created_at desc, s.session_id desc
-            limit ?
             "#,
         )
         .bind(experiment_id)
+        .bind(lifecycle)
+        .bind(prolific_pid_suffix)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?
@@ -420,6 +548,14 @@ impl SqliteExperimentStore {
         .collect::<Result<Vec<_>>>()?;
         Ok(participants)
     }
+}
+
+/// Ordered rows for one monitor window, with enough surrounding context for speech and teardown.
+pub(crate) struct TimelinePage {
+    pub events: Vec<StoredSessionEvent>,
+    pub after_terminal: bool,
+    pub older_before: Option<i64>,
+    pub last_index: i64,
 }
 
 pub(super) type SessionEventSqlRow = (

@@ -2,11 +2,15 @@
 
 All notable changes to Parlando releases are tracked in this file.
 
-The format is based on Keep a Changelog, and this project uses semantic versioning for the published Rust crate and JavaScript client package.
+The format is based on Keep a Changelog, and this project uses semantic versioning for the coordinated Rust, JavaScript, and Python packages.
 
 ## Unreleased
 
-For the upcoming 0.7.0 release, see the [migration guide](docs/migrating-0.6.0-to-0.7.0.md).
+- Python dependency names change from `parlando-python-sdk` to `parlando-game-sdk` and from `parlando-agent-sdk` to `parlando-remote-agent`. Existing Python imports continue to work.
+
+## [0.7.0] - 2026-11-23
+
+For upgrade instructions, see the [migration guide](docs/migrating-0.6.0-to-0.7.0.md).
 
 ### Added
 
@@ -14,7 +18,9 @@ For the upcoming 0.7.0 release, see the [migration guide](docs/migrating-0.6.0-t
   test, and serve the same package locally or upload it to a persistent Parlando
   host. Each deployed game has a dashboard and research database.
 
-- Scaffold Python games alongside Rust games and run their scenarios and packages with the same CLI. The shared host supports named experimenter accounts and a dashboard on its own administrator origin.
+- Scaffold Python games alongside Rust games and run their scenarios and packages with the same CLI. The shared host supports named experimenter accounts, browser-authorized CLI uploads, and a dashboard at the root of the administrator origin. Trusted deployments can share one origin with participants.
+- Build and deploy Rust Wasm policies as separate agent ZIPs. `parlando agent new` generates Rust types from a pinned game ZIP, including games written in Python. Use `parlando agent set-game` to select a new archive and refresh the bindings.
+- Researchers can search an experiment’s sessions by Prolific participant ID suffix, page through session timelines, and download a corpus from a consistent database snapshot.
 - For trusted agent–agent workloads, `execution.wasm_metering: none` disables fuel accounting. The default remains `fuel`.
 - The React client includes a styled `CommunicationWidget`. Games can use its default placement or put it inside their own layout. The same widget displays typed chat or microphone controls according to the experiment mode.
 - The runtime stress harness supports typed human–human and human–agent games. The prerelease suite exercises both communication modes and verifies two-way typed chat in the packaged Rust and Python starters.
@@ -28,15 +34,16 @@ For the upcoming 0.7.0 release, see the [migration guide](docs/migrating-0.6.0-t
 
 - Rename the Rust SDK crate from `parlando-component-sdk` to `parlando-game-sdk`.
   Update Rust imports to `parlando_game_sdk` and replace `ComponentWire` and
-  `ComponentDecode` derives with one `GameValue` derive. Existing compiled
-  game components remain compatible with the host.
+  `ComponentDecode` derives with one `GameValue` derive. The SDK rename preserves compatibility for components already built for the v4 world.
 - Build and upload games as a single `dist/<game-id>-<game-version>.zip` file. Both the CLI
   and the dashboard accept the same ZIP, including its manifest, Wasm component
   and optional participant assets.
 - Start the local or shared host with `parlando serve --store DIRECTORY`. Use
   `parlando deploy` to install or replace a game package. Manage
   experiment creation, intake, replay, and export in the game dashboard. The
-  CLI prints readable results by default and supports `--json` for scripts.
+  host mounts the game immediately. Each experiment controls its own intake. A
+  replacement preserves study records and installed agents, and the host checks
+  agent compatibility before accepting the new game. The CLI prints readable results by default and supports `--json` for scripts.
 - Component games use the v4 WIT world. The host reads the guest's schema once
   at load time. Configuration, actions, observations, completion and metadata
   cross the game boundary as MessagePack values. Build guests with the v4
@@ -46,6 +53,12 @@ For the upcoming 0.7.0 release, see the [migration guide](docs/migrating-0.6.0-t
   configuration changes are described above.
 - Configure Rust `RewardFunction` implementations once per run via `configure`.
   Accepted turns use the configured reward without passing YAML parameters again.
+
+### Fixed
+
+- Speech pilots show the microphone level during entry and matchmaking. A participant who reloads while waiting can prepare the microphone again. When transcription is required for startup, play waits for the recognizer to acknowledge readiness.
+- Participant recruitment instructions follow the admitted seat. Direct entrants see neutral exit text and Prolific entrants receive their own return handoff.
+- Remote gRPC agents receive the remaining callback time allowed by the runtime, including longer deadlines configured for headless experiments.
 
 ## [0.6.0] - 2026-11-20
 

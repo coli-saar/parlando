@@ -105,7 +105,7 @@ pub async fn login(server: &str, open_browser: bool) -> Result<()> {
     ensure!(
         url.username().is_empty()
             && url.password().is_none()
-            && url.path() == "/admin"
+            && url.path() == "/"
             && url.query() == Some("cli-login")
             && url.fragment().is_none(),
         "Invalid browser sign-in URL"

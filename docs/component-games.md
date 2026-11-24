@@ -28,6 +28,12 @@ leaves the entire session state, including the random generator, unchanged.
 Each frame carries two complete role observations, optional completion and
 transition metadata, and an optional opaque recovery checkpoint.
 
+After either player makes an accepted move, each connected client receives the
+actor, the action, and its own role’s new observation. A client can use those
+updates to display activity during play. Reconnecting restores the current
+observation. Include any recent activity that should survive a reload in the
+role’s view. Transition metadata is available in the research corpus.
+
 ### Declare the interface for your game
 
 Implement `describe() -> string` on the component. The returned UTF-8 JSON

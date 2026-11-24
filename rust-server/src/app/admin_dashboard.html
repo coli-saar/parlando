@@ -92,9 +92,11 @@
           <button class="tab active" type="button" data-tab="sessions">Sessions</button>
           <button class="tab" type="button" data-tab="progress">Progress</button>
           <button class="tab" type="button" data-tab="notes">Notes</button>
-          <button class="tab" type="button" data-tab="export">Export</button>
-          <button class="tab" type="button" data-tab="details">Configuration</button>
-          <button class="tab" type="button" data-tab="privacy"><svg class="icon" aria-hidden="true"><use href="#icon-shield"></use></svg>Privacy</button>
+          <div class="workspace-management-tabs" role="group" aria-label="Experiment management">
+            <button class="tab" type="button" data-tab="details">Configuration</button>
+            <button class="tab" type="button" data-tab="export">Export</button>
+            <button class="tab" type="button" data-tab="privacy"><svg class="icon" aria-hidden="true"><use href="#icon-shield"></use></svg>Privacy</button>
+          </div>
         </nav>
 
         <section id="sessionsPanel" class="tab-panel session-workspace">
@@ -112,6 +114,14 @@
                 </div>
               </div>
             </div>
+            <form id="sessionSearch" class="session-search" role="search" aria-label="Find sessions by Prolific participant ID">
+              <label for="prolificPidSuffix" class="small muted">Prolific participant ID</label>
+              <div>
+                <input id="prolificPidSuffix" type="search" placeholder="Last few characters" maxlength="128" autocomplete="off" spellcheck="false">
+                <button class="secondary" type="submit">Search</button>
+                <button id="clearSessionSearch" class="secondary" type="button" hidden>Clear</button>
+              </div>
+            </form>
             <div id="sessionList" class="session-list"><div class="empty">Loading sessions…</div></div>
           </aside>
 
@@ -123,13 +133,19 @@
               <header class="events-header">
                 <div class="events-heading"><h2>Session log</h2><span id="sessionLogError" class="problem-reason small" role="alert" hidden></span></div>
                 <div class="events-toolbar">
-                  <label class="speech-view-control" hidden><span>View</span><select id="speechView"><option value="utterances">Utterances</option><option value="tokens">Tokens</option></select></label>
+                  <label class="speech-view-control" hidden><span>View</span><select id="speechView" aria-label="Speech view"><option value="utterances">Utterances</option><option value="tokens">Tokens</option></select></label>
                   <div class="event-filters">
+                    <label class="toggle-row"><input id="showMessagesOnly" type="checkbox"><span>Messages only</span></label>
                     <label class="toggle-row" title="Show game- and agent-authored log messages"><input id="showLogs" type="checkbox"><span>Game/agent logs</span></label>
                     <label class="toggle-row" title="Show participant, session, and voice setup events"><input id="showHousekeeping" type="checkbox"><span>Setup events</span></label>
                   </div>
                 </div>
               </header>
+              <nav id="timelinePages" aria-label="Session log pages" hidden>
+                <button class="secondary" id="olderEvents" type="button">Older events</button>
+                <button class="secondary" id="newerEvents" type="button">Newer events</button>
+                <button class="secondary" id="latestEvents" type="button">Latest events</button>
+              </nav>
               <div id="timeline" class="timeline" role="region" aria-label="Session events" tabindex="0"></div>
             </section>
           </div>

@@ -1,22 +1,59 @@
 # Releasing Parlando
 
-`make publish` covers six Parlando packages across crates.io, npm, and PyPI.
+For a prepared release, run these commands from the repository root:
+
+1. `make test-release-candidate` builds packages and tests them in temporary consumer projects.
+2. `make publish` builds the six packages from the current checkout and uploads them using your registry credentials.
+
+Each command prints the current step, its elapsed time on completion, and the path
+to its full log under `target/release-logs/`. A failure shows the last 20 lines
+from that step. Registry approval links and credential prompts appear live.
+Use `make VERBOSE=1 test-release-candidate` or `make VERBOSE=1 publish` to
+stream the full output as well. Both commands reuse the installed Python packaging tools.
 
 | Registry | Packages |
 | --- | --- |
 | crates.io | `parlando-game-derive`, `parlando-game-sdk`, `parlando` |
 | npm | `@coli-saar/parlando-client` |
-| PyPI | `parlando-python-sdk`, `parlando-agent-sdk` |
+| PyPI | `parlando-game-sdk`, `parlando-remote-agent` |
 
 All six packages use one release version. Publish every package at that
 version, including SDKs whose source code has no changes since the previous
 release. On crates.io, publish `parlando-game-derive`, `parlando-game-sdk`,
 and `parlando` in that order.
-On PyPI, `parlando-python-sdk` supplies the game API imported as
-`parlando_game_sdk`, and `parlando-agent-sdk` supplies the remote agent API.
+On PyPI, `parlando-game-sdk` supplies the game API imported as
+`parlando_game_sdk`, and `parlando-remote-agent` supplies the remote agent API.
 
 This document is the canonical release procedure. `docs/publishing-packages.md` identifies the packages and their
 installation paths, while this page defines the coordinated release.
+
+## One-time Python setup
+
+Both release commands require Python 3.11 or newer with `build` and `twine`
+installed. To check an existing installation, run the following from the
+repository root. Make prints the interpreter it uses. If both checks pass,
+the Python setup is complete.
+
+```bash
+make check-release-versions check-release-tools
+```
+
+By default, Make uses `.local/release-venv/bin/python` if it exists, then
+falls back to `python3` on your `PATH`. You can use an existing release
+environment without activating it.
+
+If you see `ModuleNotFoundError: No module named 'tomllib'`, check the
+interpreter printed by Make. Python 3.11 introduced `tomllib` in the
+standard library. If that interpreter is from your active Conda `base`
+environment, upgrade it once:
+
+```bash
+conda install -n base "python=3.11"
+```
+
+If the packaging check reports a missing `build` or `twine` module, use
+the interpreter printed by Make to install them. For example, if Make
+prints `python3`, run `python3 -m pip install build twine`.
 
 ## 1. Establish the release version
 
@@ -56,6 +93,7 @@ Update the following release-facing material in the same candidate:
 - review `skills/generate-parlando-game/SKILL.md` and its references for API or configuration changes;
 - update current version examples and behavioral descriptions in the README and `docs/`, including
   the Hugo manual under `docs/web/content`;
+- for the first release after 0.7.0, update the Python install examples and PyPI links in the manual and `docs/component-games.md` to the new distribution names. Switch both Python version badges and their links in the root README when the packages are live on PyPI;
 - rebuild or validate generated documentation where the repository's documentation workflow
   requires it.
 
@@ -96,21 +134,18 @@ mechanically.
 
 ## 3. Run the release gates
 
-Use Python 3.11 or later for the release tools. Install the
-`wasm32-unknown-unknown` Rust target and put `wasm-tools` on `PATH`.
-Then run the release candidate target.
+Install Hugo and the `wasm32-unknown-unknown` Rust target, and put
+`wasm-tools` on `PATH`. Run the candidate target from the repository root:
 
 ```bash
-python3 -m venv .local/release-venv
-.local/release-venv/bin/python -m pip install build twine
-make test-release-candidate PYTHON=.local/release-venv/bin/python
+make test-release-candidate
 ```
 
 The target runs `make test`, `make test-e2e`, `make test-components`, and
 `make test-runtime-communication`. Read the browser and Prolific results in
 `target/e2e-report.md`. The communication gate runs four concurrent fixture
 games for each combination of typed or speech communication and human–human
-or human–agent pairing. All four runs must pass before the candidate is saved.
+or human–agent pairing. All four runs must pass.
 Each writes a JSON report under `target/runtime-stress/`. Longer capacity
 runs are described in [runtime stress testing](runtime-stress-testing.md).
 
@@ -145,23 +180,12 @@ the action schema. The CLI regenerates the bindings, and the policy's
 obsolete action fails to compile. Selecting the original ZIP restores its
 bindings and completion target.
 
-A failed agent check prevents the candidate from being saved.
-
 The rehearsal installs `componentize-py` and Playwright as test dependencies.
 Set `PLAYWRIGHT_BROWSERS_PATH` to reuse a compatible Chromium installation.
 The rehearsal may fetch public dependencies and runs without registry
-credentials. After every test passes, the target saves the candidate artifacts
-and their checksums under `target/release-candidates/`. The output gives the
-exact directory to inspect.
-
-Then verify release builds, documentation, and registry dry runs.
-
-```bash
-cargo build --release --all-features --manifest-path rust-server/Cargo.toml
-npm --prefix js-client run build
-hugo --source docs/web --panicOnWarning --printPathWarnings
-make publish-dry-run PYTHON=.local/release-venv/bin/python
-```
+credentials. The npm tarball and Python distributions are built under `target/release-packages/`. Both Make targets rebuild them on each invocation. The candidate
+target also builds the optimized server and JavaScript client, validates the Hugo
+manual, and runs the registry dry runs.
 
 The dry run checks both Python source distributions and wheels. When a
 new Rust dependency is still absent from crates.io, it lists the dependent
@@ -215,16 +239,16 @@ Recheck target versions and registry access immediately before uploading.
 Configure Twine for PyPI using the maintainer's credentials.
 
 ```bash
-make publish PYTHON=.local/release-venv/bin/python
+make publish
 ```
 
-The command verifies the saved candidate's version, artifact checksums, and
-package inputs before uploading. It publishes the Rust derive crate, shared Rust
-SDK, and server in dependency order, then uploads the exact tested npm
-tarball and Python distributions. Cargo creates fresh crates.io archives from
-the verified inputs and validates their registry dependency resolution. A
-failed upload stops the sequence. Run the candidate target again if the package
-inputs or artifacts change before publication.
+Run publication from the committed source revision you tested. The two Make
+targets are independent and can run in separate checkouts of that revision.
+Publication checks the coordinated versions and release tools, then Cargo packages
+and uploads the derive crate, SDK and server in dependency order. npm builds
+the client from its lockfile and uploads the new tarball. Each Python SDK gets
+a fresh source distribution and wheel, which Twine checks before upload.
+An upload failure stops subsequent packages.
 
 If npm requests browser approval, keep the process alive while the
 maintainer follows its link. Verify each exact published version in its
@@ -232,8 +256,9 @@ registry. After a partial release, retry only the failed and pending
 targets. Use `publish-rust-derive`, `publish-rust-sdk`,
 `publish-rust-server`, `publish-js-client`,
 `publish-python-game-sdk`, or `publish-python-agent-sdk` as appropriate.
-If PyPI accepted only one distribution file, verify it and upload only the
-missing file from the saved candidate directory with Twine.
+If PyPI accepted only one distribution file, verify the accepted filename and version on PyPI. Use the release Python to run `-m build --outdir DIRECTORY SDK_SOURCE`
+with a fresh output directory. Run `-m twine check --strict` on both files, then
+`-m twine upload --repository pypi` with only the missing file’s path.
 
 ## 6. Verify consumers and finish the release
 

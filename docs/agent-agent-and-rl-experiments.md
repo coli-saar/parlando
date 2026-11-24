@@ -205,6 +205,9 @@ execution:
 
 These are also the default limits; default concurrency is one. Callbacks are
 serialized within a session, while separate sessions may run concurrently.
+For a `remote_grpc` agent, the runner sends the remaining callback time to
+the remote service as a gRPC deadline. Increase `callback_timeout_seconds`
+for slow model responses. Shutdown uses `shutdown_timeout_seconds`.
 With `fail_fast: false`, a failed session is finalized and unrelated sessions
 continue. With `fail_fast: true`, the runner stops after a failed session and
 runs sessions sequentially.

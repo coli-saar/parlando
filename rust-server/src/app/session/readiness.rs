@@ -31,9 +31,19 @@ impl SessionParticipant {
         changed
     }
 
+    /// Clears the acknowledgement when a forming seat loses or replaces its audio stream.
+    pub(in crate::app) fn clear_audio_ready(&mut self) {
+        self.audio_ready = false;
+    }
+
     /// Returns whether the seat has finished audio setup.
     pub(in crate::app) fn audio_ready(&self) -> bool {
         self.audio_ready
+    }
+
+    /// A browser participant uses an audio stream during required transcription setup.
+    pub(in crate::app) fn uses_browser_audio(&self) -> bool {
+        self.source != "agent" && self.source != "worker"
     }
 
     /// Every seat must be connected. Agents also require their ready declaration.
@@ -42,10 +52,7 @@ impl SessionParticipant {
     pub(in crate::app) fn ready_for_game(&self, transcription_required: bool) -> bool {
         self.connected
             && (self.source != "agent" || self.ready)
-            && (self.source == "agent"
-                || self.source == "worker"
-                || !transcription_required
-                || self.audio_ready)
+            && (!self.uses_browser_audio() || !transcription_required || self.audio_ready)
     }
 }
 

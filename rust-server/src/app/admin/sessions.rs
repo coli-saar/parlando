@@ -1,12 +1,10 @@
 //! Answers session-list, detail and event-poll requests in the selected experiment. Detail
 //! combines durable session and participant records with the current room state when
-//! available. The event poll returns rows after its cursor and constructs timeline bundles
-//! from the complete event history so a later step can finish an earlier bundle.
+//! available. Event reads follow indexed cursors and group the selected window for display.
 
 use crate::app::{
-    admin_event_bundles, admin_experiment_id, important_admin_events, json, AdminExperimentScope,
-    AppError, AppState, Arc, Deserialize, Extension, Json, Path, Query, Result, SessionLifecycle,
-    State, Value,
+    admin_experiment_id, important_admin_events, json, AdminExperimentScope, AppError, AppState,
+    Arc, Deserialize, Extension, Json, Path, Query, Result, SessionLifecycle, State, Value,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -15,9 +13,17 @@ pub(in crate::app) struct AdminSessionsQuery {
     lifecycle: Option<String>,
 }
 
+/// Filters the session list by a literal suffix of a retained Prolific participant ID.
+#[derive(Deserialize)]
+pub(in crate::app) struct AdminSessionSearch {
+    prolific_pid_suffix: String,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub(in crate::app) struct AdminEventsQuery {
     after: Option<i64>,
+    before: Option<i64>,
+    since: Option<i64>,
 }
 
 /// Returns recent database sessions for the experiment dashboard.
@@ -26,7 +32,33 @@ pub(in crate::app) async fn admin_sessions(
     scope: Option<Extension<AdminExperimentScope>>,
     Query(query): Query<AdminSessionsQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let experiment_id = admin_experiment_id(&state, scope.as_ref());
+    list_admin_sessions(&state, scope.as_ref(), query, None).await
+}
+
+/// Searches through the experiment's sessions using a request body for the private ID.
+pub(in crate::app) async fn admin_search_sessions(
+    State(state): State<Arc<AppState>>,
+    scope: Option<Extension<AdminExperimentScope>>,
+    Query(query): Query<AdminSessionsQuery>,
+    Json(search): Json<AdminSessionSearch>,
+) -> Result<Json<Value>, AppError> {
+    let suffix = search.prolific_pid_suffix.trim();
+    if suffix.is_empty() || suffix.chars().count() > 128 {
+        return Err(AppError::bad_request(
+            "Enter a Prolific participant ID suffix of 1 to 128 characters.",
+        ));
+    }
+    list_admin_sessions(&state, scope.as_ref(), query, Some(suffix)).await
+}
+
+/// Validates the lifecycle filter and returns only session summaries for the current scope.
+async fn list_admin_sessions(
+    state: &AppState,
+    scope: Option<&Extension<AdminExperimentScope>>,
+    query: AdminSessionsQuery,
+    prolific_pid_suffix: Option<&str>,
+) -> Result<Json<Value>, AppError> {
+    let experiment_id = admin_experiment_id(state, scope);
     if query
         .lifecycle
         .as_deref()
@@ -40,17 +72,13 @@ pub(in crate::app) async fn admin_sessions(
         .context
         .installation
         .store
-        .recent_sessions(&experiment_id, query.limit.unwrap_or(50))
+        .recent_sessions(
+            &experiment_id,
+            query.lifecycle.as_deref(),
+            prolific_pid_suffix,
+            query.limit.unwrap_or(50),
+        )
         .await?;
-    let sessions = sessions
-        .into_iter()
-        .filter(|session| {
-            query
-                .lifecycle
-                .as_ref()
-                .is_none_or(|lifecycle| session.lifecycle == *lifecycle)
-        })
-        .collect::<Vec<_>>();
     Ok(Json(json!({
         "experiment_id": experiment_id,
         "sessions": sessions,
@@ -150,23 +178,34 @@ pub(in crate::app) async fn admin_session_detail(
             Ok::<Value, anyhow::Error>(value)
         })
         .collect::<Result<Vec<_>>>()?;
-    let events = important_admin_events(
-        state
-            .context
-            .installation
-            .store
-            .session_events(&experiment_id, session_id, None)
-            .await?,
-    );
-    let event_bundles = admin_event_bundles(&events);
-    Ok(Json(json!({
-        "experiment_id": experiment_id,
-        "session": session,
-        "participants": participants,
-        "events": events,
-        "event_bundles": event_bundles,
-        "prolific_reconciliation_issue": reconciliation_issue,
-    })))
+    let mut detail = session_timeline_page(&state, &experiment_id, session_id, None, None).await?;
+    detail["experiment_id"] = json!(experiment_id);
+    detail["session"] = json!(session);
+    detail["participants"] = json!(participants);
+    detail["prolific_reconciliation_issue"] = json!(reconciliation_issue);
+    Ok(Json(detail))
+}
+
+/// Projects a bounded event window, enriching speech from the entire session and
+/// optionally limiting the raw event summaries to rows newer than a polling cursor.
+async fn session_timeline_page(
+    state: &AppState,
+    experiment_id: &str,
+    session_id: i64,
+    before: Option<i64>,
+    after: Option<i64>,
+) -> Result<Value, AppError> {
+    let page = state
+        .context
+        .installation
+        .store
+        .timeline_page(experiment_id, session_id, before, after)
+        .await?;
+    let events = important_admin_events(page.events);
+    let bundles = crate::app::timeline::page_event_bundles(&events, page.after_terminal);
+    Ok(
+        json!({"events": events, "event_bundles": bundles, "older_before": page.older_before, "last_index": page.last_index}),
+    )
 }
 
 /// Returns important database events after an optional event index.
@@ -176,25 +215,36 @@ pub(in crate::app) async fn admin_session_events(
     Path(session_id): Path<i64>,
     Query(query): Query<AdminEventsQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let after = query.after.unwrap_or(0);
     let experiment_id = admin_experiment_id(&state, scope.as_ref());
-    let all_events = state
-        .context
-        .installation
-        .store
-        .session_events(&experiment_id, session_id, None)
-        .await?;
-    let events = all_events
-        .clone()
+    if [query.after, query.before, query.since]
         .into_iter()
-        .filter(|event| event.event_index > after)
-        .collect::<Vec<_>>();
-    let visible_events = important_admin_events(events);
-    let event_bundles = admin_event_bundles(&important_admin_events(all_events));
-    Ok(Json(json!({
-        "experiment_id": experiment_id,
-        "session_id": session_id,
-        "events": visible_events,
-        "event_bundles": event_bundles,
-    })))
+        .flatten()
+        .count()
+        > 1
+    {
+        return Err(AppError::bad_request("Specify one timeline cursor."));
+    }
+    if let Some(since) = query.since {
+        if state
+            .context
+            .installation
+            .store
+            .latest_event_index(&experiment_id, session_id)
+            .await?
+            == since
+        {
+            return Ok(Json(json!({"unchanged": true})));
+        }
+    }
+    let mut page = session_timeline_page(
+        &state,
+        &experiment_id,
+        session_id,
+        query.before,
+        query.after,
+    )
+    .await?;
+    page["experiment_id"] = json!(experiment_id);
+    page["session_id"] = json!(session_id);
+    Ok(Json(page))
 }

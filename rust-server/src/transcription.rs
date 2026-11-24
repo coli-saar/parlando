@@ -156,13 +156,13 @@ impl TranscriptionProvider for SpeechmaticsTranscriptionProvider {
                 "audio_format": {"type": "raw", "encoding": "pcm_s16le", "sample_rate": 24000},
                 "transcription_config": transcription_config
             });
-            if write
-                .send(tokio_tungstenite::tungstenite::Message::Text(
+            let sent = tokio::select! {
+                _ = events.closed() => return,
+                result = write.send(tokio_tungstenite::tungstenite::Message::Text(
                     start.to_string(),
-                ))
-                .await
-                .is_err()
-            {
+                )) => result,
+            };
+            if sent.is_err() {
                 let _ = events
                     .send(TranscriptionEvent::Failed(
                         "could not start Speechmatics".into(),
@@ -171,7 +171,11 @@ impl TranscriptionProvider for SpeechmaticsTranscriptionProvider {
                 return;
             }
             loop {
-                let Some(Ok(message)) = read.next().await else {
+                let message = tokio::select! {
+                    _ = events.closed() => return,
+                    message = read.next() => message,
+                };
+                let Some(Ok(message)) = message else {
                     let _ = events
                         .send(TranscriptionEvent::Failed(
                             "Speechmatics closed before recognition started".into(),

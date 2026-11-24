@@ -8,8 +8,10 @@ maintainers package, verify, and publish the CLI and SDKs.
 | crates.io | `parlando` | Installs the CLI and provides the library for custom hosts. |
 | crates.io | `parlando-game-sdk`, `parlando-game-derive` | Build Rust games and typed agents for native or WebAssembly execution. |
 | npm | `@coli-saar/parlando-client` | Supplies the browser participant application and client bindings. |
-| PyPI | `parlando-python-sdk` | Builds Python game components through the Python SDK. |
-| PyPI | `parlando-agent-sdk` | Runs the Python service for a remote agent. |
+| PyPI | `parlando-game-sdk` | Builds Python game components through the Python SDK. |
+| PyPI | `parlando-remote-agent` | Runs the Python service for a remote agent. |
+
+For version 0.7.0, the PyPI distribution names are `parlando-python-sdk` and `parlando-agent-sdk`, respectively.
 
 Use `cargo install --locked parlando --bin parlando` for the CLI. New games
 get matching SDK dependencies from `parlando new`. Commit the project

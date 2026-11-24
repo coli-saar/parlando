@@ -145,7 +145,10 @@ function outcomeText(outcome: ParticipantOutcome | null, reason: string | null):
     case "partner_left": return "Your partner left or could not reconnect, so the session cannot continue.";
     case "partner_unavailable": return "No partner became available before the waiting period ended.";
     case "idle_limit_reached": return "The session ended because neither participant produced meaningful activity before the inactivity deadline.";
-    case "technical_failure": return "A technical problem prevented the session from continuing.";
+    case "technical_failure":
+      if (reason === "transcription_start_timeout") return "Speech transcription took too long to start. The game could not begin.";
+      if (reason === "transcription_start_failed") return "Speech transcription could not start. The game could not begin.";
+      return "A technical problem prevented the session from continuing.";
     case "lifetime_limit_reached": return "The session reached its absolute lifetime limit and could not continue.";
     default: return reason ? `The session ended (${reason}).` : "The session can no longer continue.";
   }

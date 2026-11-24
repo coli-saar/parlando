@@ -131,7 +131,7 @@ pub(super) async fn execute(command: RemoteCommand) -> Result<Report> {
             let options = HostOptions { store, public_url };
             let dashboard_url = admin_url
                 .as_ref()
-                .map(|origin| format!("{}/admin", origin.trim_end_matches('/')));
+                .map(|origin| format!("{}/", origin.trim_end_matches('/')));
             let ready = || {
                 eprintln!("Parlando deployment host listening on {bind}\nStore: {store_display}");
                 if let Some(url) = &dashboard_url {

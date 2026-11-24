@@ -6,7 +6,7 @@
 import { bindSpeechSettings, COMMUNICATION_MODE_FIELD, configAt, readConfigFields, renderSpeechSettings, renderStandardConfigField, setConfigAt } from './communication-config.js';
 import { bindImprintEditor, renderImprintEditor, renderImprintPreview } from './imprint-config.js';
 import { state } from './admin-dashboard-state.js';
-import { isSpeechBundle, sessionTimeline, roleBadge, escapeHtml, experimentDisplayStatus, fmtClockTime, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, participantDeletionPrompt, plannedProgressLayout, sessionEndCauseRows, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
+import { isMessageBundle, isSpeechBundle, sessionTimeline, roleBadge, escapeHtml, experimentDisplayStatus, fmtClockTime, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, participantDeletionPrompt, plannedProgressLayout, sessionEndCauseRows, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
 import { absoluteParticipantUrl, adminPath, adminFetch, SelectionRequests, experimentRuntimeApi, participantUrlCanOpen } from './admin-dashboard-api.js';
 const catalogueRequests = new SelectionRequests();
 const experimentRequests = new SelectionRequests();
@@ -38,6 +38,11 @@ const gameBuild = document.getElementById('gameBuild');
 const experimentLabel = document.getElementById('experimentLabel');
 const experimentStatusFilter = document.getElementById('experimentStatusFilter');
 const sessionLifecycleFilter = document.getElementById('sessionLifecycleFilter');
+const sessionSearch = document.getElementById('sessionSearch');
+const prolificPidSuffixInput = document.getElementById('prolificPidSuffix');
+const clearSessionSearch = document.getElementById('clearSessionSearch');
+let prolificPidSuffix = '';
+const showMessagesOnly = document.getElementById('showMessagesOnly');
 const showHousekeeping = document.getElementById('showHousekeeping');
 const showLogs = document.getElementById('showLogs');
 const configForm = document.getElementById('configForm');
@@ -944,7 +949,9 @@ function renderProgressSessions() {
 // Renders the selected experiment's durable sessions with lifecycle dots and compact event counts.
 function renderSessions() {
   if (!state.sessions.length) {
-    sessionList.innerHTML = '<div class="empty">No sessions in this experiment yet.</div>';
+    const message = prolificPidSuffix ? 'No sessions match this Prolific participant ID suffix and lifecycle filter.'
+      : sessionLifecycleFilter.value ? 'No sessions match this lifecycle filter.' : 'No sessions in this experiment yet.';
+    sessionList.innerHTML = `<div class="empty" role="status">${message}</div>`;
     return;
   }
   sessionList.innerHTML = state.sessions.map(session => {
@@ -965,12 +972,16 @@ function renderSessions() {
   });
 }
 
-// Loads recent durable sessions using the selected lifecycle filter.
+// Loads recent sessions using the committed search suffix and current lifecycle filter.
 async function loadSessions() {
   if (!state.experiment) return;
   const params = new URLSearchParams({ limit: '80' });
   if (sessionLifecycleFilter.value) params.set('lifecycle', sessionLifecycleFilter.value);
-  await experimentRequests.json('sessions', state, `${runtimeApi('sessions')}?${params}`, data => {
+  const path = prolificPidSuffix ? 'sessions/search' : 'sessions';
+  const options = prolificPidSuffix
+    ? { method: 'POST', body: JSON.stringify({ prolific_pid_suffix: prolificPidSuffix }) }
+    : undefined;
+  await experimentRequests.json('sessions', state, `${runtimeApi(path)}?${params}`, data => {
     state.sessions = data.sessions || [];
     if (state.selectedSession) {
       const refreshed = state.sessions.find(session => session.session_id === state.selected);
@@ -979,6 +990,16 @@ async function loadSessions() {
     renderSessions();
     if (state.selectedSession) renderSummary(state.selectedSession, state.selectedParticipants);
     if (!state.selected && state.sessions[0]) selectSession(state.sessions[0].session_id);
+  }, options, true);
+}
+
+// Applies a new session search or lifecycle filter and clears the previous detail.
+function reloadSessionFilter() {
+  clearSelectedSession();
+  state.sessions = [];
+  sessionList.innerHTML = '<div class="empty" role="status">Loading sessions…</div>';
+  loadSessions().catch(error => {
+    sessionList.innerHTML = `<div class="empty" role="alert">${escapeHtml(error.message)}</div>`;
   });
 }
 
@@ -1089,6 +1110,9 @@ function setSelectedExperiment(experiment) {
   renderPrivacyDocumentLinks();
   if (same) return;
   experimentRequests.reset();
+  sessionSearch.reset();
+  prolificPidSuffix = '';
+  clearSessionSearch.hidden = true;
   clearSelectedSession();
   state.sessions = [];
   state.privacy = null;
@@ -1118,7 +1142,8 @@ function clearSelectedSession() {
   state.selected = null;
   state.selectedSession = null;
   state.selectedParticipants = [];
-  state.events = [];
+  state.eventPageBounds = [];
+  state.olderEventsBefore = null;
   state.eventBundles = [];
   state.lastEventIndex = 0;
   sessionDetail.hidden = true;
@@ -1368,10 +1393,10 @@ const PARLANDO_CONFIG_SECTIONS = [
   { title: 'Communication', description: 'Choose how participants communicate in this experiment.', fields: [
     COMMUNICATION_MODE_FIELD
   ], speechSettings: true },
-  { title: 'Prolific study and completion paths', description: 'Link this experiment to exactly one Prolific study. Create six completion paths under Prolific → Data collection → Completion paths, then copy each Prolific-generated code into its matching field. Parlando never generates completion codes. Private intake identifiers never enter exports.', fields: [
+  { title: 'Prolific study and completion paths', description: 'Link this experiment to one Prolific study. In Prolific → Data collection → Completion paths, use the built-in No consent path and set up a distinct path for each of the other five outcomes. Choose Custom where there is no matching preset. Copy the code generated for each path into the corresponding Parlando field. Parlando matches paths by code and checks the required action. Use the suggested labels to identify the paths in Prolific.', fields: [
     { type: 'prolific-setup-url', label: 'URL for Prolific study setup', help: 'Copy this URL into Prolific before linking the study here. It contains Prolific placeholders and accepts participants only while this experiment is running through Prolific.' },
     { path: 'recruitment.prolific.enabled', label: 'Enable Prolific intake', help: 'Require and privately retain the PROLIFIC_PID, STUDY_ID, and SESSION_ID URL parameters.', type: 'boolean' },
-    { path: 'recruitment.prolific.study_id', label: 'Linked Prolific study ID', help: 'In app.prolific.com/researcher/studies/<study-id>, enter only the value after /studies/. Parlando derives its workspace from the study project.' },
+    { path: 'recruitment.prolific.study_id', label: 'Linked Prolific study ID', help: 'Copy the segment immediately after /studies/ in the Prolific study URL. Organization URLs can also include a workspace segment before /studies/. Parlando derives the workspace from the study project.' },
     { path: 'recruitment.prolific.completion_paths.completed', label: 'Completed code', help: 'Game condition: The game completed normally. Prolific outcome: Automatically approve the submission. Suggested Prolific label: Completed.', type: 'completion-code' },
     { path: 'recruitment.prolific.completion_paths.partner_left', label: 'Partner left code', help: 'Game condition: The participant remained after their partner left or failed to reconnect. Prolific outcome: Automatically approve the submission. Suggested Prolific label: Partner left.', type: 'completion-code' },
     { path: 'recruitment.prolific.completion_paths.game_did_not_start', label: 'Game did not start code', help: 'Game condition: The participant’s session ended before a playable game began. Prolific outcome: Request return; do not use Screened out. Suggested Prolific label: Game did not start.', type: 'completion-code' },
@@ -2108,10 +2133,7 @@ async function selectSession(sessionId) {
     state.selectedParticipants = data.participants || [];
     renderSummary(data.session, state.selectedParticipants);
     sessionDetail.hidden = false;
-    state.events = [];
-    state.eventBundles = data.event_bundles || [];
-    mergeEvents(data.events || []);
-    renderEventBundles();
+    applyTimelinePage(data);
   });
 }
 
@@ -2427,17 +2449,17 @@ function eventClass(bundle) {
   return '';
 }
 
-// Returns only extra event text that is not already implied by the title and badge.
-function mergeEvents(events) {
-  const known = new Set(state.events.map(event => `${event.event_id}:${event.event_index}`));
-  for (const event of events) {
-    const key = `${event.event_id}:${event.event_index}`;
-    if (known.has(key)) continue;
-    known.add(key);
-    state.events.push(event);
-    state.lastEventIndex = Math.max(state.lastEventIndex, event.event_index);
-  }
-  state.events.sort((left, right) => left.event_index - right.event_index);
+// Replaces the displayed window and keeps the live edge available after browsing history.
+function applyTimelinePage(data) {
+  state.eventBundles = data.event_bundles;
+  state.lastEventIndex = data.last_index;
+  state.olderEventsBefore = data.older_before;
+  const viewingHistory = state.eventPageBounds.length > 0;
+  document.getElementById('timelinePages').hidden = !viewingHistory && data.older_before == null;
+  document.getElementById('olderEvents').disabled = data.older_before == null;
+  document.getElementById('newerEvents').disabled = !viewingHistory;
+  document.getElementById('latestEvents').disabled = !viewingHistory;
+  renderEventBundles();
 }
 
 // Renders filtered event bundles as the selected session's chronological log.
@@ -2445,19 +2467,25 @@ function renderEventBundles() {
   const hasSpeech = (state.eventBundles || []).some(isSpeechBundle);
   speechView.closest('label').hidden = !hasSpeech;
   if (!hasSpeech) speechView.value = 'utterances';
+  showLogs.disabled = showMessagesOnly.checked;
+  showHousekeeping.disabled = showMessagesOnly.checked;
   const bundles = (state.eventBundles || []).filter(bundle => {
+    if (showMessagesOnly.checked) return isMessageBundle(bundle);
     if (bundle.kind === 'log' && !showLogs.checked) return false;
     return showHousekeeping.checked || !bundle.housekeeping;
   });
-  timeline.innerHTML = sessionTimeline(bundles, speechView.value, renderEventBundle);
+  timeline.innerHTML = showMessagesOnly.checked && !bundles.length
+    ? '<div class="empty">No messages in this part of the log.</div>'
+    : sessionTimeline(bundles, speechView.value, renderEventBundle);
 }
 
-// Presents compact actions and speaker-aligned logs without disclosure controls.
+// Presents compact actions and logs in the same content column as messages.
 function renderEventBundle(bundle) {
   const problem = bundle.problem ? '<span class="problem-badge">Problem</span>' : '';
   const reason = bundle.problem_reason ? `<div class="problem-reason">${escapeHtml(bundle.problem_reason)}</div>` : '';
   if (bundle.kind === 'log') {
-    return `<article class="timeline-log speaker-${bundle.role === 'B' ? 'b' : 'a'}${bundle.problem ? ' problem' : ''}" title="#${bundle.first_index}">${escapeHtml(bundle.text || '')}${problem}${reason}</article>`;
+    const speaker = bundle.role === 'A' ? 'a' : bundle.role === 'B' ? 'b' : 'system';
+    return `<article class="timeline-log speaker-${speaker}${bundle.problem ? ' problem' : ''}" title="#${bundle.first_index}">${escapeHtml(bundle.text || '')}${problem}${reason}</article>`;
   }
   const summary = bundle.action ? prettyAction(bundle.action, bundle.role) : `<strong>${escapeHtml(bundle.title)}</strong>${bundle.text ? ` · ${escapeHtml(bundle.text)}` : ''}`;
   return `<article class="event ${eventClass(bundle)}" title="#${bundle.first_index}">${summary}${problem}${reason}</article>`;
@@ -2478,16 +2506,48 @@ function formatActionValue(value) {
   return JSON.stringify(value);
 }
 
-// Polls for new durable events in the currently selected session.
-async function refreshEvents() {
-  if (!state.selectedSession) return;
-  const params = new URLSearchParams({ after: String(state.lastEventIndex) });
+// Loads one historical window or follows the newest events. Only the current request
+// can replace the window, even if the user changes pages during a poll.
+async function loadTimelinePage(bounds, poll = false) {
+  const params = new URLSearchParams();
+  if (bounds.length) params.set('before', bounds.at(-1));
+  if (poll) params.set('since', state.lastEventIndex);
   await sessionRequests.json('events', state, `${runtimeApi(`sessions/${state.selected}/events`)}?${params}`, data => {
-    state.eventBundles = data.event_bundles || state.eventBundles;
-    mergeEvents(data.events || []);
-    renderEventBundles();
+    if (!data.unchanged) {
+      state.eventPageBounds = bounds;
+      applyTimelinePage(data);
+    }
     sessionLogError.hidden = true;
   });
+}
+
+// Reports timeline read failures locally while retaining the last successful page.
+function requestTimelinePage(bounds, poll = false) {
+  return loadTimelinePage(bounds, poll).catch(error => {
+    sessionLogError.textContent = error.message;
+    sessionLogError.hidden = false;
+  });
+}
+
+// A history request supersedes a poll; new polls wait until navigation has finished.
+let timelineNavigation = null;
+function navigateTimeline(bounds) {
+  const pending = requestTimelinePage(bounds);
+  timelineNavigation = pending;
+  pending.finally(() => { if (timelineNavigation === pending) timelineNavigation = null; });
+}
+
+document.getElementById('olderEvents').addEventListener('click', () => {
+  if (state.olderEventsBefore != null) navigateTimeline([...state.eventPageBounds, state.olderEventsBefore]);
+});
+document.getElementById('newerEvents').addEventListener('click', () => navigateTimeline(state.eventPageBounds.slice(0, -1)));
+document.getElementById('latestEvents').addEventListener('click', () => navigateTimeline([]));
+
+// Polls the indexed high-water mark only while following the live end of the session.
+function refreshEvents() {
+  if (state.selectedSession && !timelineNavigation && !state.eventPageBounds.length) {
+    return requestTimelinePage([], true);
+  }
 }
 
 document.addEventListener('click', event => {
@@ -2497,6 +2557,7 @@ document.addEventListener('click', event => {
 
 showHousekeeping.addEventListener('change', renderEventBundles);
 showLogs.addEventListener('change', renderEventBundles);
+showMessagesOnly.addEventListener('change', renderEventBundles);
 refreshProgressButton.addEventListener('click', () => refreshProgress().catch(error => window.alert(error.message)));
 const createExperimentForm = document.getElementById('createExperimentForm');
 const newExperimentId = document.getElementById('newExperimentId');
@@ -2598,9 +2659,19 @@ scopeButtons.forEach(button => {
 });
 document.querySelectorAll('[data-status-filter]').forEach(initializeStatusFilter);
 experimentStatusFilter.addEventListener('change', renderExperiment);
-sessionLifecycleFilter.addEventListener('change', () => {
-  clearSelectedSession();
-  loadSessions();
+sessionLifecycleFilter.addEventListener('change', reloadSessionFilter);
+sessionSearch.addEventListener('submit', event => {
+  event.preventDefault();
+  prolificPidSuffix = prolificPidSuffixInput.value.trim();
+  clearSessionSearch.hidden = !prolificPidSuffix;
+  reloadSessionFilter();
+});
+clearSessionSearch.addEventListener('click', () => {
+  sessionSearch.reset();
+  prolificPidSuffix = '';
+  clearSessionSearch.hidden = true;
+  prolificPidSuffixInput.focus();
+  reloadSessionFilter();
 });
 document.getElementById('downloadExport').addEventListener('click', () => {
   if (!state.experiment) return;

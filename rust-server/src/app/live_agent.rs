@@ -6,6 +6,7 @@
 //! paths as other live input.
 
 use crate::agent::{Decision, Reason, WakeupRequest};
+use crate::agents::with_callback_timeout;
 use tokio::time::Instant;
 
 use super::{
@@ -110,7 +111,8 @@ async fn request_agent_decision(
     reason: Reason,
     wakeup: &mut Option<Instant>,
 ) -> Result<()> {
-    let result = tokio::time::timeout(Duration::from_secs_f64(timeout), agent.decide(reason)).await;
+    let result =
+        with_callback_timeout(Duration::from_secs_f64(timeout), agent.decide(reason)).await;
     let mut decision = flatten_agent_timeout(result, "agent respond timeout")?;
     match decision.wakeup.take() {
         Some(WakeupRequest::After(delay)) => {
@@ -133,12 +135,9 @@ pub(super) async fn start_agent_task(
     mut pending: AgentTaskInput,
 ) {
     let key = agent_key(&public_session_id, &participant_session_id);
-    {
-        let mut started = state.started_agents.write().await;
-        if !started.insert(key.clone()) {
-            let _ = pending.agent.shutdown().await;
-            return;
-        }
+    if !state.started_agents.write().await.insert(key.clone()) {
+        let _ = with_callback_timeout(Duration::from_secs(5), pending.agent.shutdown()).await;
+        return;
     }
     tokio::spawn(async move {
         let mut agent = pending.agent;
@@ -158,7 +157,7 @@ pub(super) async fn start_agent_task(
             let Some(initial_observation) = initial_observation else {
                 return;
             };
-            let started = tokio::time::timeout(
+            let started = with_callback_timeout(
                 Duration::from_secs_f64(timeout),
                 agent.start(initial_observation),
             )
@@ -308,7 +307,7 @@ pub(super) async fn start_agent_task(
                         observation,
                         completion,
                     } => (
-                        tokio::time::timeout(
+                        with_callback_timeout(
                             Duration::from_secs_f64(timeout),
                             agent.observe(observation),
                         )
@@ -321,7 +320,7 @@ pub(super) async fn start_agent_task(
                     invalid_actions += 1;
                 }
                 if let Some(completion) = completion {
-                    let finished = tokio::time::timeout(
+                    let finished = with_callback_timeout(
                         Duration::from_secs_f64(timeout),
                         agent.finish(completion),
                     )
@@ -366,7 +365,7 @@ pub(super) async fn start_agent_task(
         {
             session.agent_inbox.take();
         }
-        match tokio::time::timeout(Duration::from_secs(5), agent.shutdown()).await {
+        match with_callback_timeout(Duration::from_secs(5), agent.shutdown()).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => tracing::warn!(%error, public_session_id, "agent shutdown failed"),
             Err(error) => tracing::warn!(%error, public_session_id, "agent shutdown timed out"),

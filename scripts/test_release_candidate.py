@@ -28,8 +28,8 @@ CRATES = (
     ("parlando", "rust-server"),
 )
 PYTHON_SDKS = (
-    ("parlando-python-sdk", "parlando_game_sdk"),
-    ("parlando-agent-sdk", "parlando_agent_sdk"),
+    ("parlando-game-sdk", "parlando_game_sdk", "parlando-python-sdk"),
+    ("parlando-remote-agent", "parlando_agent_sdk", "parlando-agent-sdk"),
 )
 GAMES = {"rust": "release-rust", "python": "release-python"}
 TICK_AGENT_ID = "beacon.tick_on_request"
@@ -37,8 +37,6 @@ AGENT_ID = "release.beacon"
 AGENT_NAME = "Release Beacon partner"
 AGENT_MESSAGE = "One tick from the Beacon partner."
 AGENT_FIXTURE = ROOT / "scripts/release_candidate_agent.rs"
-JS_GENERATED = ("node_modules", "dist", "coverage", ".local")
-PYTHON_GENERATED = (".venv", "dist", "build", "*.egg-info", "__pycache__", ".pytest_cache", ".benchmarks")
 
 
 def run(*args, cwd, env, capture=False, timeout=None):
@@ -89,95 +87,6 @@ def stage_crate(work, source, env):
     return stage
 
 
-def stage_packages(work, env):
-    """Freeze all six package trees before building any release artifacts."""
-    for _, source in CRATES:
-        stage_crate(work, source, env)
-    trees = [("js-client", JS_GENERATED)]
-    trees.extend((name, PYTHON_GENERATED) for name, _ in PYTHON_SDKS)
-    for source, generated in trees:
-        shutil.copytree(
-            ROOT / source, work / "sources" / source,
-            ignore=shutil.ignore_patterns(*generated, ".DS_Store"),
-        )
-
-
-def digest(path):
-    """Hash an input or package in binary mode."""
-    with path.open("rb") as data:
-        return hashlib.file_digest(data, "sha256").hexdigest()
-
-
-def release_sources(env):
-    """Fingerprint package inputs so a stale rehearsal cannot authorize publication."""
-    files = {
-        ROOT / ".cargo/config.toml",
-        Path(__file__).resolve(),
-        AGENT_FIXTURE,
-        ROOT / "scripts/release_candidate_browser.mjs",
-        ROOT / "client-server-tests/browser/browser-driver.mjs",
-        ROOT / "client-server-tests/tests/browser_e2e.rs",
-        ROOT / "client-server-tests/src/lib.rs",
-        ROOT / "client-server-tests/Cargo.toml",
-        ROOT / "client-server-tests/Cargo.lock",
-    }
-    for _, source in CRATES:
-        files.update((ROOT / source / relative).resolve() for relative in cargo_inputs(source, env))
-    package_trees = [("js-client", JS_GENERATED), *((name, PYTHON_GENERATED) for name, _ in PYTHON_SDKS)]
-    for source, generated in package_trees:
-        ignore = shutil.ignore_patterns(*generated, ".DS_Store")
-        for directory, subdirs, names in os.walk(ROOT / source):
-            ignored = ignore(directory, subdirs + names)
-            subdirs[:] = [name for name in subdirs if name not in ignored]
-            files.update(Path(directory) / name for name in names if name not in ignored)
-    return {str(path.relative_to(ROOT)): digest(path) for path in sorted(files)}
-
-
-def check_sources(expected, env):
-    """Report each changed input before accepting a recorded candidate."""
-    current = release_sources(env)
-    changed = sorted(path for path in current.keys() | expected.keys() if current.get(path) != expected.get(path))
-    if changed:
-        paths = "\n".join(f"  {path}" for path in changed)
-        raise SystemExit(f"Release inputs changed. Run make test-release-candidate.\n{paths}")
-
-
-def save_verified(output, artifacts, version, sources):
-    """Retain artifacts from a successful run and atomically select them for publication."""
-    checksums = {path.name: digest(path) for path in sorted(artifacts.iterdir())}
-    output.mkdir(parents=True, exist_ok=True)
-    bundle = Path(tempfile.mkdtemp(prefix=f"{version}-", dir=output))
-    shutil.copytree(artifacts, bundle, dirs_exist_ok=True)
-    manifest = {
-        "version": version,
-        "bundle": bundle.name,
-        "artifacts": checksums,
-        "sources": sources,
-    }
-    marker = bundle / "verified.json"
-    marker.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    marker.replace(output / "verified.json")
-    print(f"Verified release artifacts saved to {bundle}")
-
-
-def verified_bundle(output, version, env):
-    """Check that the current release still matches the passing candidate and return its files."""
-    marker = output / "verified.json"
-    if not marker.is_file():
-        raise SystemExit("No verified release candidate. Run make test-release-candidate.")
-    manifest = json.loads(marker.read_text(encoding="utf-8"))
-    if manifest["version"] != version:
-        raise SystemExit(f"No verified candidate for {version}. Run make test-release-candidate.")
-    bundle = output / manifest["bundle"]
-    if not bundle.is_dir():
-        raise SystemExit("Verified artifacts are missing. Run make test-release-candidate.")
-    artifacts = {path.name: digest(path) for path in sorted(bundle.iterdir())}
-    if artifacts != manifest["artifacts"]:
-        raise SystemExit("Verified artifact files changed. Run make test-release-candidate.")
-    check_sources(manifest["sources"], env)
-    return bundle
-
-
 def install_rust(work, artifacts, version, env):
     """Package crates in dependency order and install the CLI from its extracted archive."""
     patches = []
@@ -215,27 +124,9 @@ def install_rust(work, artifacts, version, env):
     return binary, extracted
 
 
-def pack_client(work, artifacts, env):
-    """Create the npm tarball using its normal prepack build in a clean staging directory."""
-    source = work / "sources/js-client"
-    run("npm", "ci", "--no-audit", "--no-fund", cwd=source, env=env)
-    package = json.loads(run(
-        "npm", "pack", "--json", "--pack-destination", artifacts,
-        cwd=source, env=env, capture=True,
-    ))[0]
-    return artifacts / package["filename"]
-
-
-def install_python(work, artifacts, packaged_server, version, env):
-    """Build both distributions, install the two wheels, and exercise the installed SDKs."""
-    for name, _ in PYTHON_SDKS:
-        source = work / "sources" / name
-        run(sys.executable, "-m", "build", "--outdir", artifacts, source, cwd=work, env=env)
-    wheels = sorted(artifacts.glob("*.whl"))
-    run(
-        sys.executable, "-m", "twine", "check", "--strict", *wheels,
-        *sorted(artifacts.glob("*.tar.gz")), cwd=work, env=env,
-    )
+def install_python(work, packages, packaged_server, version, env):
+    """Install the wheels built by Make and exercise the installed SDKs."""
+    wheels = [packages / f"{name.replace('-', '_')}-{version}-py3-none-any.whl" for name, _, _ in PYTHON_SDKS]
     venv = work / "python"
     run(sys.executable, "-m", "venv", venv, cwd=work, env=env)
     python = venv / "bin/python"
@@ -245,16 +136,16 @@ def install_python(work, artifacts, packaged_server, version, env):
     )
     imports = "\n".join(
         f"import {module}\nassert metadata.version({name!r}) == {version!r}"
-        for name, module in PYTHON_SDKS
+        for name, module, _ in PYTHON_SDKS
     )
     run(python, "-I", "-c", f"from importlib import metadata\n{imports}", cwd=work, env=env)
     run(python, "-m", "pip", "check", cwd=work, env=env)
 
     # The SDK tests run without their source trees. The agent protocol check uses the packaged proto.
     shutil.copytree(packaged_server / "proto", work / "rust-server/proto")
-    for name, _ in PYTHON_SDKS:
-        tests = work / name / "tests"
-        shutil.copytree(work / "sources" / name / "tests", tests, ignore=shutil.ignore_patterns("__pycache__"))
+    for _, _, directory in PYTHON_SDKS:
+        tests = work / directory / "tests"
+        shutil.copytree(ROOT / directory / "tests", tests, ignore=shutil.ignore_patterns("__pycache__"))
         run(python, "-I", "-m", "unittest", "discover", "-s", tests, cwd=work, env=env)
     return venv
 
@@ -596,7 +487,7 @@ def authorize_cli(binary, origin, admin_origin, browser, env):
         try:
             prompt = login.stderr.readline()
             url = prompt.strip().removeprefix("Authorize this CLI in your browser: ")
-            if not url.startswith(f"{admin_origin}/admin?cli-login#"):
+            if not url.startswith(f"{admin_origin}/?cli-login#"):
                 raise RuntimeError("CLI did not print the expected authorization link")
             subprocess.run(
                 ["node", "release_candidate_browser.mjs", "login"],
@@ -631,7 +522,7 @@ def play_games(work, binary, agent_package, env):
             "PARLANDO_STARTUP_PACKAGE_DIR": str(extracted), "PARLANDO_STARTUP_AGENT": str(agent_package),
         })
     with local_host(work, binary, env) as (origin, admin_origin, credentials):
-        run("node", "release_candidate_browser.mjs", "setup", f"{admin_origin}/admin",
+        run("node", "release_candidate_browser.mjs", "setup", f"{admin_origin}/",
             cwd=browser, env=browser_env, timeout=60)
         authorize_cli(binary, origin, admin_origin, browser, browser_env)
         for game in GAMES.values():
@@ -666,14 +557,9 @@ def play_games(work, binary, agent_package, env):
 def main():
     """Run the package-consumer rehearsal in a temporary workspace."""
     parser = argparse.ArgumentParser(description=__doc__)
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--output", type=Path, help="retain the artifacts from a passing run")
-    mode.add_argument("--verified", type=Path, help="print the directory of a verified bundle")
-    args = parser.parse_args()
+    parser.add_argument("--packages", required=True, type=Path, help="directory containing the npm tarball and SDK wheels built by Make")
+    packages = parser.parse_args().packages.resolve()
     version = package_metadata(ROOT / "rust-server/Cargo.toml")["version"]
-    if args.verified:
-        print(verified_bundle(args.verified.resolve(), version, os.environ))
-        return
     with tempfile.TemporaryDirectory(prefix="parlando-release-") as directory:
         work = Path(directory).resolve()
         artifacts = work / "artifacts"
@@ -682,19 +568,15 @@ def main():
         env.pop("PYTHONPATH", None)
         env.pop("NODE_PATH", None)
         env.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(work / "chromium"))
-        sources = release_sources(env) if args.output else None
-        stage_packages(work, env)
-        if args.output:
-            check_sources(sources, env)
+        for _, source in CRATES:
+            stage_crate(work, source, env)
         binary, packaged_server = install_rust(work, artifacts, version, env)
-        client = pack_client(work, artifacts, env)
-        venv = install_python(work, artifacts, packaged_server, version, env)
+        client = packages / f"coli-saar-parlando-client-{version}.tgz"
+        venv = install_python(work, packages, packaged_server, version, env)
         env["VIRTUAL_ENV"] = str(venv)
         build_games(work, binary, client, version, env)
         agent_package = build_and_run_agent(work, binary, version, env)
         play_games(work, binary, agent_package, env)
-        if args.output:
-            save_verified(args.output.resolve(), artifacts, version, sources)
     print(f"Parlando {version} release candidate passed")
 
 

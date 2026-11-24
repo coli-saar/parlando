@@ -22,6 +22,15 @@ dashboard. Use the session record, events, and replay to inspect the
 play-through. The custom single-game dashboard also includes load history and
 configuration revision views. See the [experimenter workflow](web/content/manual/run/data-operations.md).
 
+In **Sessions**, use **Prolific participant ID** to find sessions by the last
+few characters of a participant's retained Prolific ID. Search results respect
+the selected experiment and lifecycle filter.
+
+The session log opens at the latest events and updates during play. Use **Older
+events** and **Newer events** to inspect earlier pages, or **Latest events** to
+resume live updates. Each page groups the events in its range and includes
+speech timing even when the alignment was recorded later.
+
 ### Interpret load and liveness
 
 The Load page samples the experiment runtime every five seconds and retains at
@@ -119,6 +128,13 @@ CSV. It contains every research session that entered gameplay. Parlando construc
 the corpus as a new document from a fixed output-field list; new database fields
 do not enter it automatically.
 
+Each download represents one database snapshot. On a file-backed installation,
+researchers can export concurrently while sessions continue to record events.
+The server prepares each download in a private temporary file, so allow enough
+temporary disk space for the active downloads. The server releases the database
+reader before it sends the file to the browser. With an in-memory database,
+preparation shares the installation’s single database connection.
+
 The corpus retains the experiment-specific participant and dialogue labels so
 repeated exports can be joined. Events and transcript boundaries use the stored
 game clock, in milliseconds from game start; waiting time and session duration
@@ -147,19 +163,15 @@ The utterance/token selector appears only when a session contains recorded speec
 Typed-only sessions show the normal conversation log. Agent messages count as
 speech only when audio publication succeeded.
 
-Both session-log views show timestamps and color-coded actor badges on the left
-and conversation bubbles
-against the left edge for A and the right edge for B. Choose **Utterances** to read
-whole messages or **Tokens** to expand spoken messages into individual tokens.
-Speech is ordered by estimated onset and shows its end time and duration; other
-events retain their event time. Game events, logs, setup events, and
-typed messages remain in both views; the same visibility filters apply. The
-Session log header and controls remain visible while you scroll its events. Actions show their
-name in bold followed by inline parameters. Log messages use the same font size
-as other entries, with muted text aligned with their speaker. Game logs have a
-system actor badge. Problems and their reasons remain visible. Each
-word shows its end time and duration; hover or focus for parent-utterance context
-and available recognition confidence. Punctuation has no spoken duration.
+Both views align all entries in one column beside the timestamp and actor
+badge. Role A is blue, role B is orange, and system events use a neutral badge.
+Choose **Utterances** to read whole messages or **Tokens** to expand spoken
+messages into individual tokens. Speech appears in order of estimated onset.
+Other events retain their event time. Turn on **Messages only** to show typed
+messages and speech while hiding actions, logs, and other system events.
+
+Each word shows its end time and duration. Hover or focus on a word to see its
+parent utterance and available recognition confidence. Punctuation has no spoken duration.
 Recordings without token data show a timings-unavailable notice.
 
 A spoken message retains its formatted `text` and optional `utterance_timing`.

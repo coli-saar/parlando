@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-import { isSpeechBundle, escapeHtml, fmtGameTime, sessionTimeline, roleBadge } from '../src/app/admin_dashboard_format.mjs';
+import { isMessageBundle, isSpeechBundle, escapeHtml, fmtGameTime, sessionTimeline, roleBadge } from '../src/app/admin_dashboard_format.mjs';
 
 test('orders utterances by speech onset instead of ASR delivery time', () => {
   const a = { kind: 'transcript', text: 'earlier', first_index: 2, game_time_ms: 5000, utterance_timing: { start_ms: 500 } };
@@ -85,7 +85,7 @@ test('typed-only sessions hide the selector and restore the normal conversation 
   const speechView = { value: 'tokens', closest: () => label };
   const state = { eventBundles: [{ kind: 'transcript', role: 'A', first_index: 1, text: 'Spoken turn' }] };
   const timeline = { innerHTML: '', children: [1], insertAdjacentHTML(_position, html) { this.innerHTML += html; } };
-  const context = { state, speechView, timeline, showLogs: { checked: false }, showHousekeeping: { checked: false }, isSpeechBundle, sessionTimeline, roleBadge, escapeHtml, fmtGameTime };
+  const context = { state, speechView, timeline, showMessagesOnly: { checked: false }, showLogs: { checked: false }, showHousekeeping: { checked: false }, isMessageBundle, isSpeechBundle, sessionTimeline, roleBadge, escapeHtml, fmtGameTime };
   runInNewContext(render + '\nrenderEventBundles();', context);
   assert.equal(label.hidden, false);
   state.eventBundles = [{ kind: 'conversation', origin: 'agent', role: 'B', first_index: 2, text: 'Typed agent reply', game_time_ms: 100 }];
@@ -120,7 +120,7 @@ test('token and utterance views retain identical non-speech cards and filters', 
     {kind:'session_completed', first_index:7, last_index:7, game_time_ms:800, title:'Completed'},
   ];
   const context = {state:{eventBundles:bundles}, speechView:{value:'utterances',closest:()=>({})}, timeline:{innerHTML:''},
-    showLogs:{checked:true}, showHousekeeping:{checked:true}, isSpeechBundle, sessionTimeline, roleBadge, escapeHtml, fmtGameTime};
+    showMessagesOnly:{checked:false}, showLogs:{checked:true}, showHousekeeping:{checked:true}, isMessageBundle, isSpeechBundle, sessionTimeline, roleBadge, escapeHtml, fmtGameTime};
   const render = dashboardRendererSource();
   runInNewContext(render + '\nrenderEventBundles();', context);
   const utterances = context.timeline.innerHTML;
@@ -144,6 +144,18 @@ test('token and utterance views retain identical non-speech cards and filters', 
     assert.ok(context.timeline.innerHTML.includes('Open root'));
     assert.ok(context.timeline.innerHTML.includes('Typed turn'));
     assert.ok(context.timeline.innerHTML.includes('Completed'));
+    context.showMessagesOnly.checked = true;
+    context.showLogs.checked = true;
+    context.showHousekeeping.checked = true;
+    runInNewContext(render + '\nrenderEventBundles();', context);
+    assert.ok(context.timeline.innerHTML.includes(view === 'tokens' ? '>First<' : '>First second<'));
+    assert.ok(context.timeline.innerHTML.includes('Typed turn'));
+    for (const excluded of ['Open root', '&lt;private&gt;', 'Disconnected', 'Completed']) {
+      assert.ok(!context.timeline.innerHTML.includes(excluded));
+    }
+    assert.equal(context.showLogs.disabled, true);
+    assert.equal(context.showHousekeeping.disabled, true);
+    context.showMessagesOnly.checked = false;
   }
 });
 
@@ -172,7 +184,7 @@ test('actions are inline and logs omit labels while preserving actor badges and 
     {kind:'log',first_index:6,game_time_ms:500,title:'Game log',text:'Finished'},
   ];
   const context = {state:{eventBundles:bundles},speechView:{value:'utterances',closest:()=>({})},timeline:{innerHTML:''},
-    showLogs:{checked:true},showHousekeeping:{checked:true},isSpeechBundle,sessionTimeline,roleBadge,escapeHtml,fmtGameTime};
+    showMessagesOnly:{checked:false},showLogs:{checked:true},showHousekeeping:{checked:true},isMessageBundle,isSpeechBundle,sessionTimeline,roleBadge,escapeHtml,fmtGameTime};
   runInNewContext(dashboardRendererSource() + '\nrenderEventBundles();', context);
   const html=context.timeline.innerHTML;
   assert.match(html, /<strong>SetFlow<\/strong> root: Silver, open: true/);
@@ -184,6 +196,7 @@ test('actions are inline and logs omit labels while preserving actor badges and 
   assert.match(html, /role-system">SYS/);
   assert.match(html, /timeline-log speaker-a[^]*&lt;checking&gt;/);
   assert.match(html, /timeline-log speaker-b problem/);
+  assert.match(html, /timeline-log speaker-system/);
   assert.ok(html.includes('Unavailable'));
   assert.ok(!html.includes('Agent log'));
   assert.ok(!html.includes('Game log'));

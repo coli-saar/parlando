@@ -77,3 +77,22 @@ test('refresh after deletion replaces a stale list and preserves unrelated pendi
   await Promise.all([old, config]);
   assert.deepEqual(seen, ['fresh', 'configuration']);
 });
+
+test('read-only session search coalesces identical suffixes and drops stale results', async t => {
+  const requests = new SelectionRequests();
+  const replies = [];
+  t.mock.method(globalThis, 'fetch', () => new Promise(resolve => replies.push(resolve)));
+  const received = [];
+  const search = suffix => requests.json('sessions', {}, '/sessions/search', data => received.push(data), {
+    method: 'POST',
+    body: JSON.stringify({ prolific_pid_suffix: suffix }),
+  }, true);
+  const first = search('123');
+  assert.equal(search('123'), first);
+  const second = search('456');
+  assert.equal(replies.length, 2);
+  replies[1](Response.json('current'));
+  replies[0](Response.json('obsolete'));
+  await Promise.all([first, second]);
+  assert.deepEqual(received, ['current']);
+});

@@ -46,15 +46,12 @@ Resolve every failure. Also inspect broad searches for the previous version and 
 
 ## Verify the release candidate
 
-Set up the Python release environment described in the canonical release
-procedure. Run these gates in order and report the exact failing command:
+Run the coordinated pre-release target from the repository root. Make checks the installed
+Python packaging tools and runs the test, build, documentation, registry dry-run
+and package-consumer gates. Report the exact failing command if a gate fails.
 
 ```bash
-make test-release-candidate PYTHON=.local/release-venv/bin/python
-cargo build --release --all-features --manifest-path rust-server/Cargo.toml
-npm --prefix js-client run build
-hugo --source docs/web --panicOnWarning --printPathWarnings
-make publish-dry-run PYTHON=.local/release-venv/bin/python
+make test-release-candidate
 ```
 
 Require `target/e2e-report.md` to show every browser and Prolific scenario passing. A test-harness
@@ -70,9 +67,8 @@ of each message in each browser and no microphone request. Check the standalone 
 `parlando-game-sdk`. Require the candidate CLI to build and check the agent ZIP,
 complete two-agent headless games under both metering modes, and record the packaged WASM
 digest for each seat. Require the separate agent upload and live human–agent
-game to pass through the installed host. Inspect the saved candidate before publication. `make publish`
-verifies its checksums and inputs and publishes the saved npm and PyPI distributions. Cargo
-packages the verified Rust inputs during publication.
+game to pass through the installed host. Run `make publish` from the tested
+source revision. It builds fresh Rust, npm and Python distributions for upload.
 
 Inspect the Cargo package and npm dry-run file lists for secrets, private configuration, internal notes, missing declarations, and unexpected generated files. Confirm registry identities before publication with `cargo owner --list parlando` and `npm owner ls @coli-saar/parlando-client` or equivalent read-only identity checks.
 

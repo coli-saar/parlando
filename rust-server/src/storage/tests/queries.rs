@@ -55,7 +55,10 @@ async fn sqlite_stamps_testing_and_research_session_purpose() {
         .await
         .unwrap();
 
-    let sessions = store.recent_sessions("purpose", 10).await.unwrap();
+    let sessions = store
+        .recent_sessions("purpose", None, None, 10)
+        .await
+        .unwrap();
     assert_eq!(sessions[0].session_id, research_session);
     assert_eq!(sessions[0].purpose, "research");
     assert_eq!(sessions[1].session_id, testing_session);
@@ -69,6 +72,107 @@ async fn sqlite_stamps_testing_and_research_session_purpose() {
             .purpose,
         "testing"
     );
+}
+
+/// Finds older Prolific sessions using an experiment-scoped literal suffix and lifecycle.
+#[tokio::test]
+async fn sqlite_session_search_matches_prolific_suffix_before_limit() {
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+    let mut matching_sessions = Vec::new();
+    for experiment_id in ["search-a", "search-b"] {
+        store
+            .create_experiment(ExperimentRecord {
+                experiment_id: experiment_id.into(),
+                game_version: "0.4.0".into(),
+                config: json!({}),
+                server_version: None,
+                version_manifest: None,
+                status: "active".into(),
+                notes: None,
+            })
+            .await
+            .unwrap();
+        for (session_name, lifecycle, participant_suffix) in
+            [("older", "running", "a21"), ("newer", "forming", "f03")]
+        {
+            let session_id = store
+                .create_session(SessionRecord {
+                    experiment_id: experiment_id.into(),
+                    config_revision: 1,
+                    game_version: "0.4.0".into(),
+                    public_session_id: format!("{experiment_id}-{session_name}"),
+                    mode: "direct".into(),
+                    lifecycle: lifecycle.into(),
+                    purpose: "research".into(),
+                    waiting_timeout_seconds: 600,
+                    maximum_lifetime_seconds: 14_400,
+                })
+                .await
+                .unwrap();
+            if session_name == "older" {
+                matching_sessions.push(session_id);
+            }
+            let admission = store
+                .admit_prolific_submission(
+                    ProlificSubmissionRecord {
+                        experiment_id: experiment_id.into(),
+                        prolific_participant_id: format!("123prefix{participant_suffix}"),
+                        prolific_study_id: format!("study-{experiment_id}"),
+                        prolific_session_id: format!("submission-{session_name}"),
+                        verification_method: "submission_api".into(),
+                    },
+                    true,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            store
+                .add_session_participant(SessionParticipantRecord {
+                    experiment_id: experiment_id.into(),
+                    session_id,
+                    participant_id: admission.participant_id,
+                    participant_session_id: admission.participant_session_id,
+                    role: "A".into(),
+                    connection_status: "connected".into(),
+                })
+                .await
+                .unwrap();
+        }
+    }
+
+    let latest = store
+        .recent_sessions("search-a", None, None, 1)
+        .await
+        .unwrap();
+    assert_eq!(latest[0].lifecycle, "forming");
+    for (experiment_id, expected) in ["search-a", "search-b"].into_iter().zip(matching_sessions) {
+        let matches = store
+            .recent_sessions(experiment_id, None, Some("a21"), 1)
+            .await
+            .unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].session_id, expected);
+        assert_eq!(matches[0].participant_count, 1);
+    }
+    let filtered = store
+        .recent_sessions("search-a", Some("running"), Some("a21"), 1)
+        .await
+        .unwrap();
+    assert_eq!(filtered.len(), 1);
+    assert!(store
+        .recent_sessions("search-a", Some("forming"), Some("a21"), 1)
+        .await
+        .unwrap()
+        .is_empty());
+    for non_suffix in ["prefix", "%_", "study-search-a", "submission-older"] {
+        assert!(store
+            .recent_sessions("search-a", None, Some(non_suffix), 1)
+            .await
+            .unwrap()
+            .is_empty());
+    }
 }
 
 /// Confirms progress counts include every session rather than the recent-session display limit.
@@ -440,4 +544,54 @@ async fn sqlite_experiment_sessions_participants_and_events_are_queryable() {
         .unwrap()
         .is_empty());
     assert!(deleted["session_events"].as_array().unwrap().is_empty());
+}
+
+/// Dashboard cursors cover both directions and retain alignment recorded outside a message's page.
+#[tokio::test]
+async fn timeline_pages_bound_rows_and_join_late_speech_timing() {
+    let store = SqliteExperimentStore::connect("sqlite:///:memory:")
+        .await
+        .unwrap();
+    let id = running_test_session(&store, "timeline").await;
+    sqlx::query("with recursive numbers(i) as (select 1 union all select i+1 from numbers where i<211)
+        insert into session_events (experiment_id,session_id,event_index,event_type,payload_json,game_state_json,game_time_ms)
+        select 'timeline', ?, i, case i when 5 then 'conversation_message' when 25 then 'participant_disconnected'
+          when 211 then 'conversation_speech_timing' else 'log' end,
+          case i when 5 then '{\"id\":\"m\"}' when 211 then '{\"message_id\":\"m\",\"metadata\":{\"start_game_time_ms\":9}}'
+          else '{}' end, '{\"checkpoint\":true}', i from numbers")
+        .bind(id).execute(&store.pool).await.unwrap();
+    assert_eq!(store.latest_event_index("timeline", id).await.unwrap(), 211);
+    let last = store
+        .timeline_page("timeline", id, None, None)
+        .await
+        .unwrap();
+    assert_eq!((last.older_before, last.last_index), (Some(112), 211));
+    assert!(last.after_terminal);
+    assert!(last.events.iter().all(|event| event.game_state.is_none()));
+    let middle = store
+        .timeline_page("timeline", id, last.older_before, None)
+        .await
+        .unwrap();
+    assert_eq!((middle.older_before, middle.last_index), (Some(12), 111));
+    let first = store
+        .timeline_page("timeline", id, middle.older_before, None)
+        .await
+        .unwrap();
+    assert_eq!((first.older_before, first.last_index), (None, 11));
+    assert!(first
+        .events
+        .iter()
+        .any(|event| event.event_index == 211 && event.payload["message_id"] == "m"));
+    let forwards = store
+        .timeline_page("timeline", id, None, Some(80))
+        .await
+        .unwrap();
+    assert_eq!(forwards.last_index, 180);
+    assert_eq!(forwards.events[0].event_index, 81);
+    assert!(store
+        .timeline_page("other", id, None, None)
+        .await
+        .unwrap()
+        .events
+        .is_empty());
 }

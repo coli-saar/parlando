@@ -1,6 +1,6 @@
 ---
 name: generate-parlando-game
-description: Implement, port, or update a Parlando game from supplied rules using the Parlando CLI, shared Rust SDK, and participant client. Use for technical game creation, optional policy authoring, and packaging from an existing specification.
+description: Implement, port, or update a Parlando game from supplied rules using the Parlando CLI, Rust or Python Game SDK, and participant client. Use for technical game creation, optional policy authoring, and packaging from an existing specification.
 ---
 
 # Generate a Parlando game
@@ -11,7 +11,7 @@ Implement the supplied game specification. Ask a focused question only when a mi
 
 For a new game, default to Rust and run `parlando new <game-id> --lang rust`. Use `--lang python` when the user requests Python. For an existing project, inspect its `game.yaml`, dependencies, and scenarios, and keep its implementation language unless the user requests a port.
 
-Use the starter and the documentation for the project's Parlando release to establish the SDK API and file layout. Keep the scaffold's matching SDK and browser dependencies. The [experimenter manual](https://coli-saar.github.io/parlando/manual/) covers tool installation and package conventions.
+When porting a 0.6.0 game to 0.7.0, follow the [migration guide](https://github.com/coli-saar/parlando/blob/main/docs/migrating-0.6.0-to-0.7.0.md) for native mechanics, browser dependencies, and existing study data. Use the starter and the documentation for the project's Parlando release to establish the SDK API and file layout. Keep the scaffold's matching SDK and browser dependencies. The [experimenter manual](https://coli-saar.github.io/parlando/manual/) covers tool installation and package conventions.
 
 ## Implement the mechanics and browser contract
 

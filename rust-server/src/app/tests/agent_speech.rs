@@ -36,7 +36,7 @@ async fn agent_tts_records_diagnostics_for_agent_messages() {
             .unwrap();
     let _ = read_participant_state(&mut socket, "active").await;
 
-    let export = wait_for_tts_diagnostic(router, "tts_message_completed").await;
+    let export = wait_for_tts_diagnostic(router.clone(), "tts_message_completed").await;
     let diagnostics = export["session_events"]
         .as_array()
         .unwrap()
@@ -97,7 +97,7 @@ async fn agent_tts_records_diagnostics_for_agent_messages() {
     assert_eq!(spoken["spoken"], true);
     assert_eq!(spoken["tokens"][0]["text"], "speak this");
     assert_eq!(spoken["utterance_timing"]["start_ms"], origin);
-    let corpus = corpus_experiment_export(serde_json::from_value(export).unwrap(), "2").unwrap();
+    let corpus = assert_corpus_session(router, "playing").await;
     let spoken = corpus["experiment"]["sessions"][0]["events"]
         .as_array()
         .unwrap()

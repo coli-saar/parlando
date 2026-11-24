@@ -14,7 +14,7 @@ The host loads compiled packages. Build tools belong on game authors' machines o
 
 ## Start and expose the service
 
-For a local pilot, run `parlando serve` in the host directory and open the administrator link printed in the terminal. The same `/admin` page lets you create the first administrator account in a new store and sign in to an existing store.
+For a local pilot, run `parlando serve` in the host directory and open the administrator link printed in the terminal. The same `/` page lets you create the first administrator account in a new store and sign in to an existing store.
 
 To test an explicitly configured pair of origins, start the service from a writable directory.
 
@@ -25,13 +25,13 @@ parlando serve --bind 127.0.0.1:8000 --store ./parlando-host \
 
 The two names reach the same listener. They count as different browser origins, keeping uploaded participant JavaScript away from the dashboard's authority.
 
-For a public host, use HTTPS and preserve the requested Host header and WebSocket upgrades. To serve trusted games and the dashboard together, pass the same origin to `--public-url` and `--admin-url`. To isolate uploaded game JavaScript from the dashboard, assign the dashboard its own hostname. Use a single host process for the persistent store. Open `/admin` on the dashboard origin after startup.
+For a public host, use HTTPS and preserve the requested Host header and WebSocket upgrades. To serve trusted games and the dashboard together, pass the same origin to `--public-url` and `--admin-url`. To isolate uploaded game JavaScript from the dashboard, assign the dashboard its own hostname. Use a single host process for the persistent store. Open `/` on the dashboard origin after startup.
 
 ## Create the first administrator on a configured host
 
-Open `/admin` on the administrator hostname immediately after first startup. Choose your username and a password of at least 12 bytes. The first visitor to complete the form claims the host. Once an account exists, setup closes and stays closed across restarts using the same store.
+Open `/` on the administrator hostname immediately after first startup. Choose your username and a password of at least 12 bytes. The first visitor to complete the form claims the host. Once an account exists, setup closes and stays closed across restarts using the same store.
 
-Sign in at `/admin` and open **Users** to create an experimenter account for each colleague. Experimenters share access to every game and experiment.
+Sign in at `/` and open **Users** to create an experimenter account for each colleague. Experimenters share access to every game and experiment.
 
 Administrators use **Users** to create accounts, reset passwords, and disable accounts. A reset or disable revokes that account's current dashboard sessions. Expand **Audit history** on the same page to review recorded operations.
 

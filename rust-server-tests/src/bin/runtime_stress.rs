@@ -58,7 +58,7 @@ use tokio::{
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-const HARNESS_REVISION: u32 = 7;
+const HARNESS_REVISION: u32 = 8;
 const PROFILE: &str = "resident-capacity-v1";
 const PROVIDER_KEY: &str = "runtime-stress-provider-key";
 const FRAME_INTERVAL: Duration = Duration::from_millis(20);
@@ -1535,6 +1535,11 @@ async fn drive_session(
             read_participant_state(&mut game_a, "active").await?;
             audio_a = audio_socket(&client, &base, &ws, &staged.room, &staged.a).await?;
             send_json(&mut game_a, json!({"type":"ready"})).await?;
+            if pairing == Pairing::HumanAgent {
+                // The mock ASR counts only frames received after the stream starts.
+                wait_for_transcription_ready(&mut audio_a).await?;
+                next_frame = Instant::now();
+            }
             counters.reconnects.fetch_add(2, Ordering::Relaxed);
             reconnected = true;
             frames_on_audio_connection = 0;
@@ -1929,6 +1934,29 @@ async fn read_participant_state(socket: &mut Socket, expected: &str) -> Result<V
 async fn send_json(socket: &mut Socket, value: Value) -> Result<()> {
     socket.send(Message::Text(value.to_string())).await?;
     Ok(())
+}
+
+/// Waits for the replacement audio socket to report that it can accept PCM for transcription.
+async fn wait_for_transcription_ready(socket: &mut Socket) -> Result<()> {
+    time::timeout(Duration::from_secs(3), async {
+        while let Some(message) = socket.next().await {
+            match message? {
+                Message::Text(text) => {
+                    let status: Value = serde_json::from_str(&text)?;
+                    if status["type"] == "transcriptionStatus" && status["ready"] == true {
+                        return Ok(());
+                    }
+                }
+                Message::Close(frame) => {
+                    bail!("audio socket closed before transcription readiness: {frame:?}");
+                }
+                _ => {}
+            }
+        }
+        bail!("audio socket ended before transcription readiness")
+    })
+    .await
+    .context("audio transcription readiness deadline")?
 }
 
 /// Reads one binary audio message within the correctness deadline.

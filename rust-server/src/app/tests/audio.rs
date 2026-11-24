@@ -714,3 +714,225 @@ impl TranscriptionProvider for DuplicateFinalTranscriptionProvider {
         })
     }
 }
+
+/// Opens a browser socket and receives its StartRecognition request at a local Speechmatics peer.
+async fn open_speechmatics_test_stream(
+    router: &TestRouter,
+    base: &str,
+    listener: &TcpListener,
+    room: &str,
+    participant: &str,
+) -> (
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+) {
+    let plan = request_audio_plan(router.clone(), room, participant).await;
+    let host = base.trim_start_matches("http://");
+    let token = plan["token"].as_str().unwrap();
+    let (browser, _) = connect_async(format!("ws://{host}/ws/audio/{room}?token={token}"))
+        .await
+        .unwrap();
+    let (stream, _) = listener.accept().await.unwrap();
+    let mut provider = tokio_tungstenite::accept_async(stream).await.unwrap();
+    assert_eq!(
+        read_ws_type_speechmatics(&mut provider).await["message"],
+        "StartRecognition"
+    );
+    (browser, provider)
+}
+
+/// Reads the next provider request as JSON.
+async fn read_ws_type_speechmatics(
+    provider: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+) -> Value {
+    let message = tokio::time::timeout(Duration::from_secs(2), provider.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    serde_json::from_str(message.to_text().unwrap()).unwrap()
+}
+
+/// Waits for a cancelled or failed provider socket to release its peer.
+async fn assert_speechmatics_peer_closed(
+    provider: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    budget: Duration,
+) {
+    tokio::time::timeout(budget, async {
+        while let Some(message) = provider.next().await {
+            assert!(message.is_err() || message.unwrap().is_close());
+        }
+    })
+    .await
+    .expect("failed or superseded provider socket stayed open");
+}
+
+/// Exercises a two-browser failure against two successful acknowledgements in another room.
+async fn assert_speechmatics_start_failure(provider_rejects: bool, expected_reason: &str) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut config = voice_enabled_config();
+    config.transcription.enabled = true;
+    config.speechmatics.api_key = "startup-test-key".into();
+    config.speechmatics.realtime_url = format!("ws://{}", listener.local_addr().unwrap());
+    let router = build_router(live_game(), config, ServeOptions::default())
+        .await
+        .unwrap();
+    let (a, b, broken) = create_joined_room(router.clone()).await;
+    let (c, d, healthy) = create_joined_room(router.clone()).await;
+    let (base, server) = spawn_test_server(router.clone()).await;
+
+    let game_a = connect_async(game_socket_url(&router, &base, &broken, &a).await);
+    let game_b = connect_async(game_socket_url(&router, &base, &broken, &b).await);
+    let game_c = connect_async(game_socket_url(&router, &base, &healthy, &c).await);
+    let game_d = connect_async(game_socket_url(&router, &base, &healthy, &d).await);
+    let (game_a, game_b, game_c, game_d) =
+        tokio::try_join!(game_a, game_b, game_c, game_d).unwrap();
+    let (mut game_a, _) = game_a;
+    let (mut game_b, _) = game_b;
+    let (mut game_c, _) = game_c;
+    let (mut game_d, _) = game_d;
+
+    let (_browser_b, mut provider_b) =
+        open_speechmatics_test_stream(&router, &base, &listener, &broken, &b).await;
+    let (_browser_a, mut provider_a) =
+        open_speechmatics_test_stream(&router, &base, &listener, &broken, &a).await;
+    let (_browser_c, mut provider_c) =
+        open_speechmatics_test_stream(&router, &base, &listener, &healthy, &c).await;
+    let (_browser_d, mut provider_d) =
+        open_speechmatics_test_stream(&router, &base, &listener, &healthy, &d).await;
+    for provider in [&mut provider_a, &mut provider_c, &mut provider_d] {
+        send_ws_json(provider, json!({"message":"RecognitionStarted"})).await;
+    }
+    assert_eq!(
+        read_participant_state(&mut game_b, "waiting").await["role"],
+        "B"
+    );
+    if provider_rejects {
+        send_ws_json(
+            &mut provider_b,
+            json!({"message":"Error","reason":"fixture_rejection"}),
+        )
+        .await;
+    }
+    read_participant_state(&mut game_c, "active").await;
+    read_participant_state(&mut game_d, "active").await;
+
+    // A silent provider sends no event. Wait for the real startup budget to elapse.
+    let closed = assert_speechmatics_peer_closed(&mut provider_b, Duration::from_secs(15));
+    tokio::pin!(closed);
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        tokio::select! {
+            () = &mut closed => break,
+            _ = heartbeat.tick() => {
+                for socket in [&mut game_a, &mut game_b, &mut game_c, &mut game_d] {
+                    send_ws_json(socket, json!({"type":"heartbeat"})).await;
+                }
+            }
+        }
+    }
+
+    for socket in [&mut game_a, &mut game_b] {
+        let ended = read_participant_state(socket, "ended").await;
+        assert_eq!(ended["result"]["outcome"], "technical_failure");
+        assert_eq!(ended["result"]["reason"], expected_reason);
+    }
+    let (_, healthy_state) = participant_json_request(
+        router.clone(),
+        &c,
+        http::Method::GET,
+        "/api/participant-state",
+        json!({}),
+    )
+    .await;
+    assert_eq!(healthy_state["participant_state"]["state"], "active");
+
+    let (status, sessions) = admin_json_request(
+        router.clone(),
+        http::Method::GET,
+        "/api/admin/sessions",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let failure_room = sessions["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["public_session_id"] == broken)
+        .unwrap();
+    assert_eq!(failure_room["lifecycle"], "ended");
+    assert!(failure_room["started_at"].is_null());
+    let session_id = failure_room["session_id"].as_i64().unwrap();
+    let (status, timeline) = admin_json_request(
+        router,
+        http::Method::GET,
+        &format!("/api/admin/sessions/{session_id}/events"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let faults = timeline["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["event_type"] == "transcription_start_failed")
+        .collect::<Vec<_>>();
+    assert_eq!(faults.len(), 1);
+    assert_eq!(faults[0]["actor_role"], "B");
+    assert_eq!(faults[0]["detail"]["reason"], expected_reason);
+    server.abort();
+}
+
+/// A Speechmatics rejection ends both forming seats and leaves concurrent pairs alone.
+#[tokio::test]
+async fn speechmatics_rejection_ends_only_the_affected_player_pair() {
+    assert_speechmatics_start_failure(true, "transcription_start_failed").await;
+}
+
+/// A silent Speechmatics peer terminates formation when the acknowledgement budget expires.
+#[tokio::test]
+async fn speechmatics_missing_acknowledgement_ends_only_the_affected_player_pair() {
+    assert_speechmatics_start_failure(false, "transcription_start_timeout").await;
+}
+
+/// Closing or replacing a pre-acknowledgement socket permits a fresh attempt.
+#[tokio::test]
+async fn speechmatics_replacement_cancels_pending_startup() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut config = voice_enabled_config();
+    config.transcription.enabled = true;
+    config.speechmatics.api_key = "startup-test-key".into();
+    config.speechmatics.realtime_url = format!("ws://{}", listener.local_addr().unwrap());
+    let router = build_router(live_game(), config, ServeOptions::default())
+        .await
+        .unwrap();
+    let (a, b, room) = create_joined_room(router.clone()).await;
+    let (base, server) = spawn_test_server(router.clone()).await;
+
+    let (mut game_a, _) = connect_async(game_socket_url(&router, &base, &room, &a).await)
+        .await
+        .unwrap();
+    let (mut game_b, _) = connect_async(game_socket_url(&router, &base, &room, &b).await)
+        .await
+        .unwrap();
+
+    let (mut dropped_browser, mut dropped_provider) =
+        open_speechmatics_test_stream(&router, &base, &listener, &room, &a).await;
+    dropped_browser.close(None).await.unwrap();
+    assert_speechmatics_peer_closed(&mut dropped_provider, Duration::from_secs(2)).await;
+
+    let (_old_browser_a, mut old_provider_a) =
+        open_speechmatics_test_stream(&router, &base, &listener, &room, &a).await;
+    let (_browser_a, mut provider_a) =
+        open_speechmatics_test_stream(&router, &base, &listener, &room, &a).await;
+    assert_speechmatics_peer_closed(&mut old_provider_a, Duration::from_secs(2)).await;
+    let (_browser_b, mut provider_b) =
+        open_speechmatics_test_stream(&router, &base, &listener, &room, &b).await;
+    for provider in [&mut provider_a, &mut provider_b] {
+        send_ws_json(provider, json!({"message":"RecognitionStarted"})).await;
+    }
+    read_participant_state(&mut game_a, "active").await;
+    read_participant_state(&mut game_b, "active").await;
+    server.abort();
+}
