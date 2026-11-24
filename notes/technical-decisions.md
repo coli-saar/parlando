@@ -6362,3 +6362,25 @@ The two top-level release targets name their steps in Make and use the same repo
 ### Name the Python distributions for the APIs they provide
 
 Starting with the release after 0.7.0, publish the Python game SDK as `parlando-game-sdk` and the gRPC agent SDK as `parlando-remote-agent`. PyPI and crates.io resolve names independently. Changing distribution metadata allows existing Python imports and checkout paths to stay stable. Keep the published-version badges and 0.7.0 manual commands on the live projects until the renamed releases exist.
+
+## 2026-11-24 · Simplify consent section text fields
+
+Consent section editors omit the repeated visible “Text for …” label because the section title already identifies the field. Each textarea retains the section title as its accessible name through aria-label. This reduces visual repetition without changing template contents or form generation.
+
+## 2026-11-24 · Publish consent forms in participant information
+
+Privacy → Participants previews generated consent titles and statements, reflecting edits and removals while marking unsaved drafts. The existing public participant information URL and authenticated HTML download share the saved-revision renderer, so publication still requires saving. Only explicit consent copy is rendered, escaped as plain text; section drafting inputs and private configuration are excluded. Multiple configured forms retain their order. Missing or blank statements show “Please configure the informed consent form.” This document is informational and does not record acceptance; participant intake retains that responsibility.
+
+## 2026-11-24 · Share consent copy across audience pages
+
+Participants, Study conductors, and Data protection managers now render the same configured consent forms, as requested. All previews share draft updates and the missing-form notice; public pages and downloads share the saved-copy renderer. The existing separate URLs and HTML templates remain available for later audience-specific refinement, without duplicating consent configuration now. Until that refinement, edits affect every audience.
+
+## 2026-11-24 · Project consent sections for study conductors
+
+The conductor preview, public page and download omit Subject of this study, Possible benefit of the study, Declaration of consent, and Communication and privacy rules. Forms remain authoritative plain-text statements used by participant intake; projection recognizes catalogue headings at the start or following a blank line and removes each excluded section through the next recognized heading. Separately configured items with an excluded title are also omitted. Custom or renamed headings remain visible, so conductors must retain generated headings for filtering. This preserves edited copy and acceptance hashes without changing storage or rewriting saved revisions. Browser and Rust projections have matching catalogue coverage checked by tests.
+
+The Voluntary participation and research data option is removed from new generation; Voluntary participation and withdrawal remains. The non-personal information template adds study-specific identifiers, game actions, timing, results, and transcripts of sent messages to the existing examples. Existing saved statements are not silently rewritten; regenerate and save a revision to adopt the new template.
+
+## 2026-11-24 · Limit the data protection document to data-handling sections
+
+The data protection manager preview, public page and download select personal/non-personal information collected, controller/contact, storage, and disclosure/publication from the configured consent. The heading-based projection now supports an inclusion list and individually titled sections; unclassified copy is excluded from this audience. Participant and conductor projections retain their behavior. Each data protection view links explicitly to the complete participant consent page; public rendering derives an absolute deployment-aware URL so downloaded documents work outside the host. Existing configuration and acceptance records are unchanged. Retaining generated headings remains necessary for reliable selection.

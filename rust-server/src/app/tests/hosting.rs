@@ -147,7 +147,18 @@ async fn compiled_game_router_hosts_multiple_experiments() {
             raw_request(router.clone(), http::Method::GET, &path, Body::empty()).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(content_type.as_deref(), Some("text/html; charset=utf-8"));
-        assert!(body.contains("<body></body>"));
+        if matches!(audience, "participants" | "conductors" | "data-protection") {
+            assert!(body.contains("Informed consent form"));
+            if audience == "data-protection" {
+                assert!(!body.contains("Agree?"));
+                assert!(body.contains("View the full informed consent form"));
+                assert!(body.contains("/e/primary/information/participants/"));
+            } else {
+                assert!(body.contains("Agree?"));
+            }
+        } else {
+            assert!(body.contains("<body></body>"));
+        }
         let download_path =
             format!("/api/admin/experiments/primary/information/{audience}/download");
         let (unauthorized, _, _) = raw_request(

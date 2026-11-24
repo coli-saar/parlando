@@ -294,7 +294,6 @@ textarea { min-height: 92px; resize: vertical; width: 100%; }
 .consent-template-option > span { display: grid; gap: 3px; }
 .consent-section { display: grid; gap: 10px; min-width: 0; }
 .consent-section-text { display: grid; gap: 6px; padding-left: 28px; min-width: 0; }
-.consent-section-text > span { font-size: 12px; font-weight: 700; }
 .consent-section-text textarea { width: 100%; min-width: 0; }
 .consent-template-option strong { font-size: 13px; }
 .consent-actions { display: grid; gap: 8px; justify-items: start; }

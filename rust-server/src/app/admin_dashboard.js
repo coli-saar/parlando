@@ -585,6 +585,56 @@ function renderImprintDocument(text = '') {
   document.getElementById('imprintDocument').innerHTML = renderImprintPreview(text, state.configValue?.direct?.imprint?.text || '');
 }
 
+// Selects the requested sections for each audience. Generated headings start
+// the body or follow a blank line; paragraphs within a section remain together.
+function consentBodyForAudience(body, audience, title = '') {
+  if (!['conductors', 'data-protection'].includes(audience)) return body;
+  const included = new Set(['Personal information collected', 'Non-personal information collected', 'Data controller and contact person', 'Data storage', 'Disclosure and publication']);
+  const excluded = new Set(['Subject of this study', 'Possible benefit of the study', 'Declaration of consent', 'Communication and privacy rules']);
+  const headings = new Set(CONSENT_TEMPLATE_OPTIONS.map(item => item.title));
+  let keep = audience !== 'data-protection' || included.has(title.trim());
+  const lines = body.split('\n');
+  return lines.filter((line, index) => {
+    const heading = line.trim();
+    if ((index === 0 || !lines[index - 1].trim()) && headings.has(heading)) {
+      keep = audience === 'data-protection' ? included.has(heading) : !excluded.has(heading);
+    }
+    return keep;
+  }).join('\n').trim();
+}
+
+// Previews audience-specific copies without changing the saved consent or acceptance record.
+// Public pages and downloads continue to use the saved configuration revision.
+function renderConsentDocument(items = []) {
+  const draft = JSON.stringify(items) !== JSON.stringify(state.configValue?.direct?.consents || []);
+  document.querySelectorAll('[data-consent-document]').forEach(target => {
+    const audience = target.dataset.consentDocument;
+    const excluded = ['Subject of this study', 'Possible benefit of the study', 'Declaration of consent', 'Communication and privacy rules'];
+    const forms = items
+      .filter(item => audience !== 'conductors' || !excluded.includes(item.title?.trim()))
+      .map(item => ({ ...item, body: consentBodyForAudience(item.body || '', audience, item.title || '') }))
+      .filter(item => item.body.trim());
+    const content = forms.length
+      ? forms.map(item => `<section><h3>${escapeHtml(item.title || 'Consent Form')}</h3><div style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(item.body)}</div></section>`).join('')
+      : '<p class="muted">Please configure the informed consent form.</p>';
+    const consentUrl = state.experiment?.information_sites?.participants;
+    const consentLink = audience === 'data-protection' && consentUrl
+      ? `<p><a href="${escapeHtml(consentUrl)}" target="_blank" rel="noopener">View the full informed consent form</a></p>` : '';
+    target.innerHTML = `<article class="privacy-document"><h2>Informed consent form</h2>${consentLink}${content}</article>${draft ? '<p class="muted">Draft preview. Save a new revision to update the public page and download.</p>' : ''}`;
+  });
+}
+
+// Reads generated editor fields after edits, generation, or removal for the document preview.
+function previewConsentFromEditor() {
+  const items = Array.from(configForm.querySelectorAll('.consent-item')).map(item => ({
+    id: item.querySelector('[data-consent-field="id"]').value.trim(),
+    title: item.querySelector('[data-consent-field="title"]').value.trim(),
+    body: item.querySelector('[data-consent-field="body"]').value.trim(),
+    required: item.querySelector('[data-consent-field="required"]').checked,
+  }));
+  renderConsentDocument(items);
+}
+
 // Refreshes document actions on every selection, including catalogue refreshes.
 function renderPrivacyDocumentLinks() {
   const experiment = state.experiment;
@@ -1124,6 +1174,7 @@ function setSelectedExperiment(experiment) {
   state.loadedConfigKey = null;
   state.configValue = null;
   renderImprintDocument();
+  renderConsentDocument();
   revisionHistory.replaceChildren();
   configRevision.textContent = '';
   configForm.replaceChildren();
@@ -1229,6 +1280,7 @@ async function loadConfigurationSafely() {
     state.loadedConfigKey = null;
     state.configValue = null;
     renderImprintDocument();
+    renderConsentDocument();
     configRevision.textContent = 'Unavailable';
     configForm.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
     revisionHistory.innerHTML = '';
@@ -1296,7 +1348,7 @@ const CONSENT_TEMPLATE_OPTIONS = [
     "id": "informed_consent_non_personal_information_collected_v1",
     "title": "Non-personal information collected",
     "description": "Collected information that does not identify participants.",
-    "body": "This study collects following non-personal information:\n\n- Game interaction data\n- Achieved score"
+    "body": "This study collects following non-personal information:\n\n- Game interaction data\n- Achieved score\n- Study-specific identifiers\n- Game actions\n- Timing\n- Results\n- Transcripts of the sent messages"
   },
   {
     "id": "informed_consent_personal_information_collected_v1",
@@ -1351,12 +1403,6 @@ const CONSENT_TEMPLATE_OPTIONS = [
     "title": "Eligibility and study information",
     "description": "Age eligibility and acknowledgment of participant information.",
     "body": "I confirm that I am at least 18 years old. I have read and understood the Participant Information and Privacy Notice [version] linked above, and I have had the opportunity to ask questions."
-  },
-  {
-    "id": "research_data_consent_v1_0",
-    "title": "Voluntary participation and research data",
-    "description": "Consent to research-data processing by the configured institution.",
-    "body": "I voluntarily agree to participate and consent to [responsible institution] processing the study-specific identifiers, game actions, timing, results, and the messages or final transcripts enabled for this study. I understand that these data will be used for this study, scientific verification and reuse, and the preparation and publication of anonymized research corpora as described in the Participant Information and Privacy Notice. I understand how to withdraw my consent while my data can still be linked to my study-specific participant identifier."
   },
   {
     "id": "participant_privacy_rules_v1_0",
@@ -1448,7 +1494,13 @@ function renderConfigurationForm(config, gameYaml = '{}\n') {
   configForm.querySelectorAll('[data-reveal-secret]').forEach(button => button.addEventListener('click', () => revealSecret(button.dataset.revealSecret, button)));
   configForm.querySelectorAll('[data-delete-secret]').forEach(button => button.addEventListener('click', () => removeSecret(button.dataset.deleteSecret)));
   configForm.querySelectorAll('[data-secret-placeholder="true"]').forEach(installSecretReplacementInput);
-  configForm.querySelectorAll('[data-consent-editor]').forEach(initializeConsentEditor);
+  configForm.querySelectorAll('[data-consent-editor]').forEach(editor => {
+    initializeConsentEditor(editor);
+    editor.addEventListener('input', previewConsentFromEditor);
+    editor.addEventListener('change', previewConsentFromEditor);
+    editor.addEventListener('click', previewConsentFromEditor);
+  });
+  previewConsentFromEditor();
   configForm.querySelectorAll('[data-agent-editor]').forEach(initializeAgentEditor);
   configForm.querySelector('[data-copy-prolific-setup-url]')?.addEventListener('click', event => copyProlificSetupUrl(event.currentTarget));
   configForm.querySelectorAll('[data-config-path], [data-secret-update]').forEach(control => {
@@ -1615,7 +1667,7 @@ function renderConsentEditor(field, items) {
   const contents = items.length
     ? items.map(consentItemMarkup).join('')
     : '<p class="consent-empty muted small">No consent statements configured.</p>';
-  const templateOptions = CONSENT_TEMPLATE_OPTIONS.map(template => `<div class="consent-section" data-consent-section><label class="consent-template-option"><input type="checkbox" data-consent-template-option value="${escapeHtml(template.id)}" aria-controls="consent-section-${escapeHtml(template.id)}"><span><strong>${escapeHtml(template.title)}</strong><span class="config-help">${escapeHtml(template.description)}</span></span></label><label class="consent-section-text" data-consent-section-editor hidden><span>Text for ${escapeHtml(template.title)}</span><textarea id="consent-section-${escapeHtml(template.id)}" data-consent-section-text="${escapeHtml(template.id)}" rows="4">${escapeHtml(template.body)}</textarea></label></div>`).join('');
+  const templateOptions = CONSENT_TEMPLATE_OPTIONS.map(template => `<div class="consent-section" data-consent-section><label class="consent-template-option"><input type="checkbox" data-consent-template-option value="${escapeHtml(template.id)}" aria-controls="consent-section-${escapeHtml(template.id)}"><span><strong>${escapeHtml(template.title)}</strong><span class="config-help">${escapeHtml(template.description)}</span></span></label><label class="consent-section-text" data-consent-section-editor hidden><textarea aria-label="${escapeHtml(template.title)}" id="consent-section-${escapeHtml(template.id)}" data-consent-section-text="${escapeHtml(template.id)}" rows="4">${escapeHtml(template.body)}</textarea></label></div>`).join('');
   return `<div class="config-field">${field.label ? `<span>${escapeHtml(field.label)}</span>` : ''}${field.help ? `<span class="config-help">${escapeHtml(field.help)}</span>` : ''}<div class="consent-editor" data-consent-editor data-consent-path="${escapeHtml(field.path)}"><fieldset class="consent-template-options"><legend>Consent form sections</legend><div class="consent-actions"><button class="secondary" type="button" data-select-all-consent>Select all</button></div>${templateOptions}</fieldset><p class="config-help">Select sections and edit their template text below to combine into one editable Consent Form with one acceptance requirement. Leave all options unchecked for an empty statement. Existing forms are kept.</p><div class="consent-actions"><button class="secondary" type="button" data-generate-consent>${icon('plus')}Generate consent form</button></div><div class="consent-items">${contents}</div><span class="config-help">Every generated form is required by default. Complete its title and statement before saving, and review all placeholders before collecting data.</span></div></div>`;
 }
 
