@@ -21,6 +21,41 @@ Before opening a study, verify the following for the condition you plan to run.
 - **Data collection.** Decide which conversation data you need, how long to keep it, and what you will export. Review the [consent and privacy guide](consent-privacy/).
 - **Optional integrations.** Configure credentials before relying on speech services or Prolific. See the [speech guide](../build/voice/) and [Prolific guide](prolific/).
 
+## Configure the public imprint
+
+Under **Participant access and consent → Imprint**, select the country where the
+study operator is established. The selector provides templates for Germany, the
+United States, France, Austria, Spain, Ireland, Italy, and the Netherlands, plus a
+general EU starting point. Each generated imprint names the selected template and
+lists its legal references with official source URLs, qualified by applicability
+to the operator. Standalone HTTPS source URLs are clickable in the preview, public
+page, and HTML download. The templates omit German and Austrian media-law references. The US
+template explains the absence of a general federal imprint requirement. The EU
+option does not replace national requirements. Existing saved text is preserved;
+to use an updated template, select another country and then the intended country
+again, which replaces the current text.
+
+The operating institution is pre-filled from **Shared settings → Institution**.
+Enter the responsible contact person's name, public postal address, email, and
+telephone. These fields populate the template; they do not identify the contact
+person as the institution's legal representative. Complete the remaining
+placeholders and remove inapplicable lines. The templates assume a public
+annotation study without selling or editorial publishing and require review for
+the operator's legal form and applicable national requirements.
+
+Contact changes update an unedited template. Once you customize the text, contact
+changes preserve it. Selecting a different country replaces the text with that
+country’s template, using the current contact fields.
+
+**Privacy → Imprint** displays the current imprint immediately, including unsaved
+edits. A draft label distinguishes unsaved text from the saved public notice.
+
+**Save new revision** publishes the exact imprint text at the study's
+`information/imprint/` URL, including while intake is closed. **Privacy → Imprint**
+provides the public link and an HTML download of the same notice. Changes to shared
+institution settings do not rewrite an already saved notice. Keep a separate
+privacy notice describing the study's processing of personal data.
+
 ## Open and close intake
 
 | Intake state | Use it for |

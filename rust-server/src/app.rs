@@ -518,6 +518,7 @@ impl IntoResponse for AppError {
     }
 }
 
+mod study_sites;
 mod routing;
 pub use routing::serve_game;
 #[cfg(any(test, feature = "internal-tools"))]

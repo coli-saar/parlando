@@ -137,6 +137,75 @@ async fn compiled_game_router_hosts_multiple_experiments() {
     .await;
     assert_eq!(create_status, StatusCode::OK);
     assert_eq!(created["experiment_id"], "primary");
+    for audience in ["participants", "data-protection", "conductors", "imprint"] {
+        let path = format!("/e/primary/information/{audience}/");
+        assert!(created["information_sites"][audience]
+            .as_str()
+            .unwrap()
+            .ends_with(&path));
+        let (status, body, content_type) =
+            raw_request(router.clone(), http::Method::GET, &path, Body::empty()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(content_type.as_deref(), Some("text/html; charset=utf-8"));
+        assert!(body.contains("<body></body>"));
+        let download_path =
+            format!("/api/admin/experiments/primary/information/{audience}/download");
+        let (unauthorized, _, _) = raw_request(
+            router.clone(),
+            http::Method::GET,
+            &download_path,
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(unauthorized, StatusCode::UNAUTHORIZED);
+        let cookie = router
+            .admin
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .cookie
+            .clone();
+        let download = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&download_path)
+                    .header(http::header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(download.status(), StatusCode::OK);
+        assert_eq!(
+            download.headers()[http::header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(
+            download.headers()[http::header::CONTENT_DISPOSITION],
+            format!("attachment; filename=\"primary-{audience}.html\"")
+        );
+        let downloaded = to_bytes(download.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(downloaded.as_ref(), body.as_bytes());
+
+        let (status, body, _) =
+            raw_request(router.clone(), http::Method::HEAD, &path, Body::empty()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.is_empty());
+        let (status, _, _) =
+            raw_request(router.clone(), http::Method::POST, &path, Body::empty()).await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    }
+    for path in [
+        "/e/missing/information/participants/",
+        "/e/primary/information/unknown/",
+    ] {
+        let (status, _, _) =
+            raw_request(router.clone(), http::Method::GET, path, Body::empty()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
     let (shell_status, shell_body, _) = raw_request(
         router.clone(),
         http::Method::GET,
@@ -229,6 +298,9 @@ async fn compiled_game_router_hosts_multiple_experiments() {
     assert_eq!(config_status, StatusCode::OK);
     stored_config["experiment"]["config"]["session"]["waiting_session_timeout_seconds"] =
         Value::Number(300.into());
+    stored_config["experiment"]["config"]["direct"]["imprint"] = json!({
+        "country": "DE", "operator": "Institute", "text": "Institute & team\n<script>literal</script>"
+    });
     let (save_status, saved) = admin_json_request(
         router.clone(),
         http::Method::POST,
@@ -242,6 +314,56 @@ async fn compiled_game_router_hosts_multiple_experiments() {
     .await;
     assert_eq!(save_status, StatusCode::OK, "config save failed: {saved}");
     assert_eq!(saved["revision"], 2);
+
+    // A saved imprint is public before activation and isolated from the other study.
+    let (status, public_imprint, _) = raw_request(
+        router.clone(),
+        http::Method::GET,
+        "/e/secondary/information/imprint/",
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(public_imprint.contains("Institute &amp; team\n&lt;script&gt;literal&lt;/script&gt;"));
+    let (_, primary_imprint, _) = raw_request(
+        router.clone(),
+        http::Method::GET,
+        "/e/primary/information/imprint/",
+        Body::empty(),
+    )
+    .await;
+    assert!(!primary_imprint.contains("Institute &amp; team"));
+    let cookie = router
+        .admin
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .cookie
+        .clone();
+    let downloaded = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/admin/experiments/secondary/information/imprint/download")
+                .header(http::header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(downloaded.status(), StatusCode::OK);
+    let bytes = to_bytes(downloaded.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(bytes.as_ref(), public_imprint.as_bytes());
+    let (status, body, _) = raw_request(
+        router.clone(),
+        http::Method::HEAD,
+        "/e/secondary/information/imprint/",
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_empty());
 
     for (experiment_id, lifecycle) in [("primary", "active"), ("secondary", "testing")] {
         let (status, body) = admin_json_request(

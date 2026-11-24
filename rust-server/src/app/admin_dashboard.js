@@ -4,6 +4,7 @@
 // helpers.
 
 import { bindSpeechSettings, COMMUNICATION_MODE_FIELD, configAt, readConfigFields, renderSpeechSettings, renderStandardConfigField, setConfigAt } from './communication-config.js';
+import { bindImprintEditor, renderImprintEditor, renderImprintPreview } from './imprint-config.js';
 import { state } from './admin-dashboard-state.js';
 import { isSpeechBundle, sessionTimeline, roleBadge, escapeHtml, experimentDisplayStatus, fmtClockTime, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, participantDeletionPrompt, plannedProgressLayout, sessionEndCauseRows, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
 import { absoluteParticipantUrl, adminPath, adminFetch, SelectionRequests, experimentRuntimeApi, participantUrlCanOpen } from './admin-dashboard-api.js';
@@ -561,6 +562,39 @@ function renderExperiment() {
   });
 }
 
+// Selects one document without changing the experiment workspace's top-level tab.
+function selectPrivacyDocument(key, focus = false) {
+  document.querySelectorAll('[data-privacy-tab]').forEach(button => {
+    const selected = button.dataset.privacyTab === key;
+    button.setAttribute('aria-selected', String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    if (selected && focus) button.focus();
+  });
+  document.querySelectorAll('[data-privacy-document]').forEach(panel => {
+    panel.hidden = panel.dataset.privacyDocument !== key;
+  });
+}
+
+// Shows current editor text immediately while keeping public links tied to saved revisions.
+function renderImprintDocument(text = '') {
+  document.getElementById('imprintDocument').innerHTML = renderImprintPreview(text, state.configValue?.direct?.imprint?.text || '');
+}
+
+// Refreshes document actions on every selection, including catalogue refreshes.
+function renderPrivacyDocumentLinks() {
+  const experiment = state.experiment;
+  document.querySelectorAll('[data-privacy-open]').forEach(link => {
+    const url = experiment?.information_sites?.[link.dataset.privacyOpen];
+    if (url) link.href = url;
+    else link.removeAttribute('href');
+  });
+  document.querySelectorAll('[data-privacy-download]').forEach(link => {
+    if (experiment) {
+      link.href = adminPath(state, `/api/admin/experiments/${encodeURIComponent(experiment.experiment_id)}/information/${link.dataset.privacyDownload}/download`);
+    } else link.removeAttribute('href');
+  });
+}
+
 // Renders experiment identity, lifecycle metadata, and actions without duplicating session totals.
 function renderExperimentHeader() {
   const experiment = state.experiment;
@@ -1052,6 +1086,7 @@ async function archiveSelectedExperiment() {
 function setSelectedExperiment(experiment) {
   const same = state.experiment?.experiment_id === experiment?.experiment_id;
   state.experiment = experiment;
+  renderPrivacyDocumentLinks();
   if (same) return;
   experimentRequests.reset();
   clearSelectedSession();
@@ -1064,6 +1099,7 @@ function setSelectedExperiment(experiment) {
   state.configLoadError = null;
   state.loadedConfigKey = null;
   state.configValue = null;
+  renderImprintDocument();
   revisionHistory.replaceChildren();
   configRevision.textContent = '';
   configForm.replaceChildren();
@@ -1167,6 +1203,7 @@ async function loadConfigurationSafely() {
     state.configLoadError = error.message;
     state.loadedConfigKey = null;
     state.configValue = null;
+    renderImprintDocument();
     configRevision.textContent = 'Unavailable';
     configForm.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
     revisionHistory.innerHTML = '';
@@ -1197,41 +1234,117 @@ async function loadRevisionHistory() {
   });
 }
 
-const CONSENT_TEMPLATES = {
-  eligibility: {
-    id: 'eligibility_and_information_v1_0',
-    title: 'Eligibility and study information',
-    required: true,
-    body: ({ informationVersion }) => `I confirm that I am at least 18 years old. I have read and understood the Participant Information and Privacy Notice${informationVersion ? `, version ${informationVersion},` : ''} linked above, and I have had the opportunity to ask questions.`
+// Section titles and descriptions guide conductor-authored consent text in reading order.
+// Adaptation attribution lives in third-party/informed-consent-form.
+const CONSENT_TEMPLATE_OPTIONS = [
+  {
+    "id": "informed_consent_study_subject_v1",
+    "title": "Subject of this study",
+    "description": "Study purpose and what participants will do.",
+    "body": "[Describe the study purpose, the task participants will perform, and any concepts they need to understand.]"
   },
-  researchData: {
-    id: 'research_data_consent_v1_0',
-    title: 'Voluntary participation and research data',
-    required: true,
-    body: ({ institution }) => {
-      if (!institution) throw new Error('Configure the responsible institution before adding this consent template.');
-      return `I voluntarily agree to participate and consent to ${institution} processing the study-specific identifiers, game actions, timing, results, and the messages or final transcripts enabled for this study. I understand that these data will be used for this study, scientific verification and reuse, and the preparation and publication of anonymized research corpora as described in the Participant Information and Privacy Notice. I understand how to withdraw my consent while my data can still be linked to my study-specific participant identifier.`;
-    }
+  {
+    "id": "informed_consent_duration_compensation_v1",
+    "title": "Duration and compensation",
+    "description": "Expected time, payment, and payment conditions.",
+    "body": "[State the expected and maximum duration, compensation, and conditions for receiving it.]"
   },
-  privacyRules: {
-    id: 'participant_privacy_rules_v1_0',
-    title: 'Communication and privacy rules',
-    required: true,
-    body: "I will discuss only the fictional task. I will not disclose contact details, credentials, or sensitive real-world information, and I will not record, identify, copy, or redistribute another participant's communications."
+  {
+    "id": "informed_consent_benefits_v1",
+    "title": "Possible benefit of the study",
+    "description": "Scientific contribution and potential benefits.",
+    "body": "[Explain the scientific contribution and any expected benefits to participants or others.]"
   },
-  voice: {
-    id: 'voice_and_transcription_v1_0',
-    title: 'Live voice and transcription',
-    required: true,
-    body: () => 'I consent to my live microphone audio being transmitted to the other participant and, when transcription is enabled, to Speechmatics for real-time transcription in the processing region described in the Participant Information and Privacy Notice. I consent to storage of the final transcript and timing when enabled for this study. I understand that Parlando does not store raw microphone audio.'
+  {
+    "id": "informed_consent_experiences_risks_v1",
+    "title": "Experiences and risks",
+    "description": "Participant experiences, risks, and safeguards.",
+    "body": "[Describe the experiences, foreseeable risks, and measures to reduce them.]"
+  },
+  {
+    "id": "informed_consent_data_processing_v1",
+    "title": "Data processing",
+    "description": "Responsible institution, processing purposes, and legal basis.",
+    "body": "[Identify the responsible institution, applicable data protection rules, purposes, and legal basis.]"
+  },
+  {
+    "id": "informed_consent_non_personal_information_collected_v1",
+    "title": "Non-personal information collected",
+    "description": "Collected information that does not identify participants.",
+    "body": "This study collects following non-personal information:\n\n- Game interaction data\n- Achieved score"
+  },
+  {
+    "id": "informed_consent_personal_information_collected_v1",
+    "title": "Personal information collected",
+    "description": "Collected information that identifies or can be linked to participants.",
+    "body": "This study collects following personal information:\n\n- Voice data (only collected for transcription and deleted afterwards)\n- Your Prolific ID (only for payment)"
+  },
+  {
+    "id": "informed_consent_confidentiality_v1",
+    "title": "Confidentiality",
+    "description": "Who can access identifiable information.",
+    "body": "[Explain who can access identifiable data and how confidentiality is protected.]"
+  },
+  {
+    "id": "informed_consent_data_storage_v1",
+    "title": "Data storage",
+    "description": "Storage locations, retention, and security.",
+    "body": "[Specify storage locations, retention periods, safeguards, and whether data are identifiable, pseudonymized, or anonymized.]"
+  },
+  {
+    "id": "informed_consent_disclosure_publication_v1",
+    "title": "Disclosure and publication",
+    "description": "Recipients, international transfers, and publication plans.",
+    "body": "[Name recipients and service providers, any international transfers, and the data and license intended for publication.]"
+  },
+  {
+    "id": "informed_consent_withdrawal_v1",
+    "title": "Voluntary participation and withdrawal",
+    "description": "Voluntary participation and how withdrawal works.",
+    "body": "Participation is voluntary. [Explain how to stop participating or withdraw consent, the consequences for compensation and collected data, and any limits after anonymization.]"
+  },
+  {
+    "id": "informed_consent_participant_rights_v1",
+    "title": "Access, correction, and deletion",
+    "description": "How to request access, correction, or deletion.",
+    "body": "[Describe how participants can exercise their rights, which study identifier they need, and how to contact the responsible person.]"
+  },
+  {
+    "id": "informed_consent_controller_contact_v1",
+    "title": "Data controller and contact person",
+    "description": "Study contacts, data protection contacts, and complaints.",
+    "body": "[Name, position, institution, and contact details. Include the data protection contact and complaint route.]"
+  },
+  {
+    "id": "informed_consent_declaration_v1",
+    "title": "Declaration of consent",
+    "description": "Agreement to participate and to the described data processing.",
+    "body": "I have read and understood the study information and agree to participate in this study. I agree to the collection and processing of my data for the scientific purposes described above. I understand the storage and sharing arrangements and how to withdraw my consent."
+  },
+  {
+    "id": "eligibility_and_information_v1_0",
+    "title": "Eligibility and study information",
+    "description": "Age eligibility and acknowledgment of participant information.",
+    "body": "I confirm that I am at least 18 years old. I have read and understood the Participant Information and Privacy Notice [version] linked above, and I have had the opportunity to ask questions."
+  },
+  {
+    "id": "research_data_consent_v1_0",
+    "title": "Voluntary participation and research data",
+    "description": "Consent to research-data processing by the configured institution.",
+    "body": "I voluntarily agree to participate and consent to [responsible institution] processing the study-specific identifiers, game actions, timing, results, and the messages or final transcripts enabled for this study. I understand that these data will be used for this study, scientific verification and reuse, and the preparation and publication of anonymized research corpora as described in the Participant Information and Privacy Notice. I understand how to withdraw my consent while my data can still be linked to my study-specific participant identifier."
+  },
+  {
+    "id": "participant_privacy_rules_v1_0",
+    "title": "Communication and privacy rules",
+    "description": "Rules for protecting privacy during participant communication.",
+    "body": "I will discuss only the fictional task. I will not disclose contact details, credentials, or sensitive real-world information, and I will not record, identify, copy, or redistribute another participant's communications."
+  },
+  {
+    "id": "voice_and_transcription_v1_0",
+    "title": "Live voice and transcription",
+    "description": "Consent to live voice transmission and enabled transcription.",
+    "body": "I consent to my live microphone audio being transmitted to the other participant and, when transcription is enabled, to Speechmatics for real-time transcription in the processing region described in the Participant Information and Privacy Notice. I consent to storage of the final transcript and timing when enabled for this study. I understand that Parlando does not store raw microphone audio."
   }
-};
-
-const CONSENT_TEMPLATE_CHOICES = [
-  ['eligibility', 'Eligibility and study information'],
-  ['researchData', 'Voluntary participation and research data'],
-  ['privacyRules', 'Communication and privacy rules'],
-  ['voice', 'Live voice and transcription']
 ];
 
 const PARLANDO_CONFIG_SECTIONS = [
@@ -1248,7 +1361,9 @@ const PARLANDO_CONFIG_SECTIONS = [
     { path: 'direct.enabled', label: 'Enable direct participant access', help: 'Allow participants to enter this experiment from its public participant page.', type: 'boolean' },
     { path: 'direct.participant_information_version', label: 'Participant-information version', help: 'Version identifier recorded with the information shown to participants.' },
     { path: 'direct.participant_information_url', label: 'Participant-information URL', help: 'Public document describing the study and its data handling.', type: 'url' },
-    { path: 'direct.consents', label: 'Consent items', help: 'Statements presented before participation. Accepted items are recorded with their exact presentation hash.', type: 'consents' }
+  ], subsections: [
+    { title: 'Consent items', fields: [{ path: 'direct.consents', help: 'Statements presented before participation. Accepted items are recorded with their exact presentation hash.', type: 'consents' }] },
+    { title: 'Imprint', fields: [{ path: 'direct.imprint', label: 'Imprint', type: 'imprint' }] }
   ]},
   { title: 'Communication', description: 'Choose how participants communicate in this experiment.', fields: [
     COMMUNICATION_MODE_FIELD
@@ -1285,6 +1400,11 @@ function renderConfigurationForm(config, gameYaml = '{}\n') {
       <div class="config-fields">${section.fields.map(field => renderConfigField(field, config)).join('')}
         ${section.speechSettings ? renderSpeechSettings(config) : ''}
       </div>
+      ${(section.subsections || []).map(subsection => `
+        <section class="config-subgroup">
+          <header class="config-group-copy"><h4>${escapeHtml(subsection.title)}</h4></header>
+          <div class="config-fields">${subsection.fields.map(field => renderConfigField(field, config)).join('')}</div>
+        </section>`).join('')}
     </section>`).join('');
   configForm.innerHTML = `${activationWarning}${sections}
     <section class="config-group">
@@ -1310,6 +1430,7 @@ function renderConfigurationForm(config, gameYaml = '{}\n') {
     control.addEventListener('input', refreshDraftActivationWarning);
     control.addEventListener('change', refreshDraftActivationWarning);
   });
+  configForm.querySelectorAll('[data-imprint-editor]').forEach(editor => bindImprintEditor(editor, renderImprintDocument));
   bindSpeechSettings(configForm);
   renderGameSecrets();
   refreshDraftActivationWarning();
@@ -1322,6 +1443,7 @@ function renderConfigField(field, config) {
     return `<div class="config-field"><span>${escapeHtml(field.label)}</span><div class="setup-url-control"><input type="text" readonly value="${escapeHtml(value)}" aria-label="${escapeHtml(field.label)}"><button class="secondary" data-copy-prolific-setup-url type="button">${icon('copy')}Copy setup URL</button></div><span class="config-help">${escapeHtml(field.help)}</span></div>`;
   }
   const value = configAt(config, field.path);
+  if (field.type === 'imprint') return renderImprintEditor(value || {}, state.gameSettings?.institution || '');
   if (field.type === 'consents') return renderConsentEditor(field, Array.isArray(value) ? value : []);
   if (field.type === 'agents') return renderAgentEditor(field, value || {});
   return renderStandardConfigField(field, config);
@@ -1453,7 +1575,7 @@ function initializeAgentEditor(editor) {
 // Renders one structured consent statement with explicit editable fields.
 function consentItemMarkup(item, index) {
   return `<section class="consent-item">
-    <header class="consent-item-header"><strong>Consent item ${index + 1}</strong><button class="secondary" type="button" data-remove-consent>${icon('trash')}Remove</button></header>
+    <header class="consent-item-header"><strong>Consent form ${index + 1}</strong><button class="secondary" type="button" data-remove-consent>${icon('trash')}Remove</button></header>
     <div class="consent-item-fields">
       <label><span>Identifier</span><input data-consent-field="id" value="${escapeHtml(item.id || '')}" placeholder="data-processing" autocomplete="off"><span class="config-help">Stable identifier stored with the participant's decision.</span></label>
       <label><span>Title</span><input data-consent-field="title" value="${escapeHtml(item.title || '')}" placeholder="Data processing consent"><span class="config-help">Short heading shown to the participant.</span></label>
@@ -1468,14 +1590,14 @@ function renderConsentEditor(field, items) {
   const contents = items.length
     ? items.map(consentItemMarkup).join('')
     : '<p class="consent-empty muted small">No consent statements configured.</p>';
-  const templateOptions = CONSENT_TEMPLATE_CHOICES.map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('');
-  return `<div class="config-field"><span>${escapeHtml(field.label)}</span>${field.help ? `<span class="config-help">${escapeHtml(field.help)}</span>` : ''}<div class="consent-editor" data-consent-editor data-consent-path="${escapeHtml(field.path)}"><div class="consent-items">${contents}</div><div class="consent-actions"><label class="consent-template-field"><span>Consent template</span><select data-consent-template>${templateOptions}</select></label><button class="secondary" type="button" data-add-consent-template>${icon('plus')}Add template</button><button class="secondary" type="button" data-add-consent>${icon('plus')}Blank item</button></div><span class="config-help">Templates come from Parlando's participant-information package and assume consent is the legal basis. Every added template is required by default. Review every placeholder and obtain local approval before collecting data.</span></div></div>`;
+  const templateOptions = CONSENT_TEMPLATE_OPTIONS.map(template => `<div class="consent-section" data-consent-section><label class="consent-template-option"><input type="checkbox" data-consent-template-option value="${escapeHtml(template.id)}" aria-controls="consent-section-${escapeHtml(template.id)}"><span><strong>${escapeHtml(template.title)}</strong><span class="config-help">${escapeHtml(template.description)}</span></span></label><label class="consent-section-text" data-consent-section-editor hidden><span>Text for ${escapeHtml(template.title)}</span><textarea id="consent-section-${escapeHtml(template.id)}" data-consent-section-text="${escapeHtml(template.id)}" rows="4">${escapeHtml(template.body)}</textarea></label></div>`).join('');
+  return `<div class="config-field">${field.label ? `<span>${escapeHtml(field.label)}</span>` : ''}${field.help ? `<span class="config-help">${escapeHtml(field.help)}</span>` : ''}<div class="consent-editor" data-consent-editor data-consent-path="${escapeHtml(field.path)}"><fieldset class="consent-template-options"><legend>Consent form sections</legend><div class="consent-actions"><button class="secondary" type="button" data-select-all-consent>Select all</button></div>${templateOptions}</fieldset><p class="config-help">Select sections and edit their template text below to combine into one editable Consent Form with one acceptance requirement. Leave all options unchecked for an empty statement. Existing forms are kept.</p><div class="consent-actions"><button class="secondary" type="button" data-generate-consent>${icon('plus')}Generate consent form</button></div><div class="consent-items">${contents}</div><span class="config-help">Every generated form is required by default. Complete its title and statement before saving, and review all placeholders before collecting data.</span></div></div>`;
 }
 
 // Renumbers consent headings and restores the empty state after structural edits.
 function refreshConsentEditor(editor) {
   const items = Array.from(editor.querySelectorAll('.consent-item'));
-  items.forEach((item, index) => { item.querySelector('.consent-item-header strong').textContent = `Consent item ${index + 1}`; });
+  items.forEach((item, index) => { item.querySelector('.consent-item-header strong').textContent = `Consent form ${index + 1}`; });
   const container = editor.querySelector('.consent-items');
   const empty = container.querySelector('.consent-empty');
   if (!items.length && !empty) container.innerHTML = '<p class="consent-empty muted small">No consent statements configured.</p>';
@@ -1490,53 +1612,44 @@ function nextConsentId(editor) {
   return `consent-${number}`;
 }
 
-// Replaces template placeholders for installation facts already configured in the dashboard.
-function hydrateConsentTemplate(template) {
-  const informationVersion = configForm.querySelector('[data-config-path="direct.participant_information_version"]')?.value.trim();
-  const institution = state.gameSettings?.institution?.trim();
-  const body = typeof template.body === 'function' ? template.body({ informationVersion, institution }) : template.body;
-  return { ...template, body };
-}
-
-// Adds one ordinary required consent item from the selected reviewed template.
-function addConsentTemplate(editor) {
-  const selected = editor.querySelector('[data-consent-template]').value;
-  const template = CONSENT_TEMPLATES[selected];
-  if (!template) return;
-  const existingIds = new Set(Array.from(editor.querySelectorAll('[data-consent-field="id"]')).map(input => input.value.trim()));
-  if (existingIds.has(template.id)) {
-    window.alert('This consent template is already present.');
-    return;
-  }
+// Combines only checked sections and their conductor-authored text into one draft.
+// No selection creates an empty statement; edits and deliberately cleared text are preserved.
+function generateConsentForm(editor) {
+  const selected = new Set(Array.from(editor.querySelectorAll('[data-consent-template-option]:checked')).map(input => input.value));
+  const sections = CONSENT_TEMPLATE_OPTIONS.filter(item => selected.has(item.id));
   const container = editor.querySelector('.consent-items');
-  container.querySelector('.consent-empty')?.remove();
   const count = container.querySelectorAll('.consent-item').length;
-  let hydrated;
-  try {
-    hydrated = hydrateConsentTemplate(template);
-  } catch (error) {
-    window.alert(error instanceof Error ? error.message : 'Could not resolve consent template.');
-    return;
-  }
-  container.insertAdjacentHTML('beforeend', consentItemMarkup(hydrated, count));
+  container.querySelector('.consent-empty')?.remove();
+  const form = {
+    id: nextConsentId(editor),
+    title: 'Consent Form',
+    body: sections.map(item => `${item.title}\n${editor.querySelector(`[data-consent-section-text="${item.id}"]`).value}`).join('\n\n'),
+    required: true,
+  };
+  container.insertAdjacentHTML('beforeend', consentItemMarkup(form, count));
   refreshConsentEditor(editor);
-  container.querySelector('.consent-item:last-child [data-consent-field="body"]')?.focus();
+  container.querySelectorAll('[data-consent-field="body"]')[count]?.focus();
 }
 
 // Adds and removes structured consent items while preserving all other draft fields.
 function initializeConsentEditor(editor) {
+  // Keep hidden section text in the current draft so toggling never discards writing.
+  editor.addEventListener('change', event => {
+    if (!event.target.matches('[data-consent-template-option]')) return;
+    const section = event.target.closest('[data-consent-section]');
+    section.querySelector('[data-consent-section-editor]').hidden = !event.target.checked;
+  });
   editor.addEventListener('click', event => {
-    if (event.target.closest('[data-add-consent-template]')) {
-      addConsentTemplate(editor);
+    // Selecting all reveals each editor without resetting any conductor-written text.
+    if (event.target.closest('[data-select-all-consent]')) {
+      editor.querySelectorAll('[data-consent-template-option]').forEach(checkbox => {
+        checkbox.checked = true;
+        checkbox.closest('[data-consent-section]').querySelector('[data-consent-section-editor]').hidden = false;
+      });
       return;
     }
-    if (event.target.closest('[data-add-consent]')) {
-      const container = editor.querySelector('.consent-items');
-      container.querySelector('.consent-empty')?.remove();
-      const count = container.querySelectorAll('.consent-item').length;
-      container.insertAdjacentHTML('beforeend', consentItemMarkup({ id: nextConsentId(editor), title: '', body: '', required: true }, count));
-      refreshConsentEditor(editor);
-      container.querySelector('.consent-item:last-child [data-consent-field="id"]')?.focus();
+    if (event.target.closest('[data-generate-consent]')) {
+      generateConsentForm(editor);
       return;
     }
     const remove = event.target.closest('[data-remove-consent]');
@@ -2457,6 +2570,21 @@ document.addEventListener('focusout', event => {
 });
 window.addEventListener('resize', hideQuickTooltip);
 document.addEventListener('scroll', hideQuickTooltip, true);
+// Implements click and standard arrow/Home/End keyboard navigation for document tabs.
+const privacyDocumentTabs = Array.from(document.querySelectorAll('[data-privacy-tab]'));
+privacyDocumentTabs.forEach((button, index) => {
+  button.addEventListener('click', () => selectPrivacyDocument(button.dataset.privacyTab));
+  button.addEventListener('keydown', event => {
+    let next;
+    if (event.key === 'ArrowRight') next = (index + 1) % privacyDocumentTabs.length;
+    else if (event.key === 'ArrowLeft') next = (index + privacyDocumentTabs.length - 1) % privacyDocumentTabs.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = privacyDocumentTabs.length - 1;
+    else return;
+    event.preventDefault();
+    selectPrivacyDocument(privacyDocumentTabs[next].dataset.privacyTab, true);
+  });
+});
 tabButtons.forEach(button => {
   button.addEventListener('click', () => {
     state.activeTab = button.dataset.tab;

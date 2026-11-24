@@ -8,4 +8,4 @@ features:
 dependency:
   source: ../../dist/great-tree-0.1.0.zip
   version: 0.1.0
-  sha256: 00e8908fa817d05ff73a7e911f72ce6b091e9ef3bb3a8b17c47231c5a5edb49b
+  sha256: 59bff53554c1a3890578dd943854802d83de513849ad6fddf91099191944f8eb

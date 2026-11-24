@@ -5968,3 +5968,345 @@ The New experiment dialog uses the dashboard’s existing stacked field layout. 
 ## Deployed games and experiment intake
 
 A successful deployment mounts the game and its experiment routes. Experiment lifecycle alone controls new participant admission. The host no longer reads or writes per-game active marker files. Old markers have no effect. This removes the second availability decision from the API, CLI, and games list. Existing session and package replacement guards still protect live work. No database schema changes are needed.
+
+
+## 2026-11-23 — Consent templates and study information sites
+
+The conductor dashboard already has an editable consent-template selector, and both the
+browser and server enforce required consent before waiting-room admission. Adapt the two
+pages from Wuhn/informed-consent-form into two required plain-text templates in that
+selector. Preserve the section structure and declarations; substitute explicit placeholders
+for upstream institution-specific laws, anonymity assertions, risk claims, and withdrawal
+promises. Retain Apache-2.0 licensing and source blob identifiers under rust-server/third-party.
+This reuses the existing exact-presentation consent records without a parallel form endpoint
+or database representation. Long consent bodies preserve paragraph breaks in the client.
+
+Each stored experiment exposes separate participants, data-protection, and conductors
+information URLs. Three embedded static HTML documents deliberately contain empty titles
+and bodies. The dispatcher checks the stored study and serves these documents before runtime
+construction, so creation/cloning immediately provisions the URLs even when the study is
+inactive or cannot start. Catalogue and creation responses supply deployment-aware URLs;
+the dashboard links to them. No physical per-study file copies or database schema changes
+are needed for empty documents. Future per-study content storage/editing remains a separate
+decision; these public static sites must never become implicit access to admin data.
+
+Tradeoff: the upstream pages are editable consent sections shown together, rather than a
+Flask-style Next-page flow. Existing templates remain available; new templates are explicit
+opt-ins, not silently assigned to existing studies. Blank sites are available for existing
+stored studies as well. Public documentation describes this contract and the lack of a content
+editor. The graft CLI and graph directory were absent, so context came from direct source
+inspection and no graph refresh was possible.
+
+Validation: all 138 browser-client tests and the TypeScript build passed. Dashboard module
+and API checks passed, as did targeted Rust formatting checks. The multi-experiment routing
+regression verifies all three empty HTML sites before activation, HEAD responses, rejected
+POSTs, and unknown study/audience paths. It and all 11 admission regressions passed after
+rerunning outside the sandbox, which blocks local WebSocket listener creation. Rust emitted
+existing unused-import warnings in the test modules.
+
+
+## 2026-11-23 — Empty experiment imprint
+
+Add an imprint document to the existing static study-site registry. Creation and cloning
+therefore expose its URL automatically, and the dashboard labels the link “Imprint”.
+The embedded HTML title and body remain empty until content is supplied. Reusing the
+registry also makes the page available to existing studies without database changes.
+The tradeoff remains that content is embedded rather than editable per experiment;
+future content ownership and editing will need a separate implementation. Extend the
+existing routing regression to check imprint availability before activation and the
+same GET/HEAD/POST behavior as the other information pages.
+
+## 2026-11-23 — Beacon local browser SDK alignment
+
+The locally installed server expects communication.mode, but the generated Beacon client
+resolved the registry's 0.6.0 SDK, whose decoder lacks that contract. Build and pack this
+checkout's js-client, retain its tarball in beacon/client/vendor, and pin Beacon's browser
+dependency and lockfile to that local artifact. A tarball gives npm ci reproducible bytes
+and avoids linked-package React resolution issues. This is a local candidate alignment,
+not a publication or release version change. Regenerate the tarball explicitly when the
+local browser SDK changes; the installed CLI's compatibility check remains enabled.
+
+
+## 2026-11-23 — Privacy document navigation and downloads
+
+Move the static study-page actions from the experiment header into a Study documents
+section under Privacy. Give Data documentation and each static page an independent
+accessible tab, retaining the existing generated report and its Markdown/JSON downloads.
+Static pages remain empty; each has Open page and Download HTML actions. Refresh actions
+when the selected experiment changes to avoid links to the previous study.
+
+Serve HTML attachments through an authenticated installation-level admin route that
+reuses the static document registry and verifies study existence. A public cross-origin
+link with a download attribute is insufficient when the admin and participant origins
+differ. The endpoint returns the same bytes as the public page with a study-specific
+filename. No runtime activation, schema change, or content editor is needed.
+
+Validation: dashboard syntax and Rust routing tests passed. Each of the four downloads
+requires authentication, carries an HTML attachment filename, and matches the public
+page bytes. A DOM smoke check passed for click/arrow-key tab selection, focus handling,
+hosted admin prefixes, changed experiment links, and clearing links on deselection.
+
+
+## Privacy document tab order
+
+Following the clarified request, order the study document tabs Data documentation,
+Participants, Study conductors, Data protection managers, then Imprint.
+Data documentation is initially selected; panel order and keyboard navigation follow
+the same sequence. This is a presentation change with no storage or API changes.
+
+
+## 2026-11-23 — Country-specific study imprints
+
+Context: Public annotation studies need an editable operator notice under participant
+access and consent. Previously the per-study imprint route served an empty HTML file.
+Only the shared institution field exists; no structured responsible-person details
+were available to reuse.
+
+Decision: Store `direct.imprint` (country, explicit public identity fields, authoritative
+plain text) in the existing revisioned JSON configuration. Seed the operator from
+shared institution settings. Provide DE, US, FR, AT, ES, IE, IT, NL and a clearly labeled
+EU baseline. Keep the responsible contact distinct from the legal representative.
+Generate on country selection and update untouched copy when contact inputs change;
+confirm before replacing edited prose. Never infer public contact details from accounts.
+Render only saved imprint text, HTML-escaped, on public GET/HEAD and authenticated HTML
+downloads, without runtime activation. No database schema change or conversion is needed.
+
+Tradeoffs: Plain text is intentionally editable and auditable, without HTML execution.
+Templates contain conditional placeholders and are not compliance certification; operators
+must review before saving because saving publishes the exact text, including placeholders.
+Institution changes do not silently rewrite published notices. The existing information
+page routes remain the public navigation contract; game clients control their own links.
+
+Sources: EU Directive 2000/31/EC Article 5; German DDG §5;
+https://entreprendre.service-public.gouv.fr/vosdroits/F37351 ;
+https://www.usp.gv.at/themen/brancheninformationen/information-und-kommunikation/offenlegungspflicht-gemaess-para-25-mediengesetz.html ;
+https://www.boe.es/buscar/act.php?id=BOE-A-2002-13758#a10 ;
+https://cro.ie/Registration/Company/Incidental-Obligations/Letterheads/ ;
+https://www.lab-to.camcom.it/media/events/attachment/Slide_Garelli.pdf ;
+https://business.gov.nl/regulations/rules-business-correspondence/ .
+Follow-up: Activity changes (selling, editorial publishing, regulated services) require
+review beyond these annotation-study templates. Graft is not installed and no graft/
+index exists in this checkout; targeted source inspection was used instead.
+
+Validation: All five dashboard JavaScript test files passed, including the new imprint
+editor behavior tests. Both Rust imprint unit tests passed. The compiled-game hosting
+integration test passed, covering saved public text before activation, study isolation,
+HTML download parity, and HEAD responses. It required an unsandboxed rerun because the
+sandbox denied its local socket. Changed Rust files pass rustfmt; the repository-wide
+format check also reported unrelated existing differences in app.rs, lib.rs, and
+bin/parlando/project.rs, which were left untouched. Existing unused-import warnings remain.
+
+## 2026-11-23 — Visible imprint regeneration outcomes
+
+The regeneration button could silently write identical text (contact edits already
+refresh untouched templates), or rely on a native browser confirmation for custom
+copy. Replace native confirmation with an inline Replace/Cancel prompt and report
+regenerated, already-current, missing-country, and cancelled outcomes in an accessible
+status region. Stage country changes until replacement is approved, preserving edited
+text and its original country on cancellation. No persistence or schema change.
+The embedded dashboard assets require a rebuilt/restarted server to serve this change.
+Validation: dashboard JavaScript tests passed, including direct button clicks, missing
+country, no-change feedback, explicit replacement, and preservation on cancellation.
+Graft remains unavailable; inspected the known imprint module directly.
+
+## 2026-11-23 — Inline imprint document and automatic country templates
+
+The Privacy → Imprint panel contained only instructional text even though saved copy
+was already served publicly. Render the exact plain-text imprint as an escaped document
+in that panel. Bind initial load, country generation, contact edits, and manual prose
+edits to the preview; clear it on study switches and configuration-load failure.
+Label unsaved copy as a draft, keeping the public route and download revision-backed.
+
+At the user's request, remove the regeneration button, status controls, and all
+replacement/cancellation prompts. Country selection directly generates its template
+and the help text explains replacement. Contact changes still preserve customized
+prose. This supersedes the previous regeneration-button decision; no storage changes.
+
+Validation: all dashboard JavaScript test files passed. Five focused imprint tests
+cover generation, prefilling, automatic updates, custom-copy behavior, preview updates,
+escaping, saved/draft distinction, and removal of the regeneration controls. Graft
+is still unavailable; used targeted reads of the existing implementation.
+
+## 2026-11-24 — Country and legal references in generated imprints
+
+Generated notice text now records the selected template label and jurisdiction-specific
+legal references. These are part of the authoritative editable text, so the Privacy
+preview, saved public page, and download carry them consistently. References are
+qualified by applicability rather than asserting that every annotation study falls
+within every cited law. The US entry states that there is no general federal imprint
+requirement; it does not mislabel email or marketplace laws as annotation-site duties.
+Existing saved notices are not rewritten. No schema changes.
+
+Verified references against official legislation/government or chamber guidance:
+- Germany: https://www.gesetze-im-internet.de/ddg/__5.html and MStV §18(1).
+- France: https://entreprendre.service-public.gouv.fr/vosdroits/F37351 and LCEN.
+- Austria: https://www.ris.bka.gv.at/eli/bgbl/i/2001/152/P5/NOR40025801 and the previously recorded §25 MedienG guidance.
+- Spain: https://www.boe.es/buscar/act.php?id=BOE-A-2002-13758#a10 .
+- Ireland: https://cea.gov.ie/en-ie/Publications/Case-Studies/Annual-Report-2025-Case-Studies and https://www.irishstatutebook.ie/eli/2003/si/68 .
+- Italy: previously recorded Article 2250 chamber guidance; Article 7 D.Lgs.70/2003 at https://www.mn.camcom.gov.it/files/CommercioEstero/ecommerce-Imodulo21maggio2021.pdf .
+- Netherlands: https://ondernemersplein.overheid.nl/wetten-en-regels/regels-voor-bedrijfscorrespondentie/ (BW 3:15d).
+- EU: Article 5 Directive 2000/31/EC, subject to national implementation.
+
+Validation: focused imprint tests and all dashboard JavaScript test files passed.
+Graft remains unavailable; used targeted inspection of the known module.
+
+## 2026-11-24 — Non-media references and linked imprint sources
+
+Removed MStV §18(1) and MedienG §25 references at the user's request, along with the
+Austrian media-owner prompt. Retained France's LCEN general online-provider disclosures:
+these extend beyond editorial publishing. Each remaining jurisdictional reference has
+official legislation or government/chamber guidance URLs in the generated text. The US
+entry has no invented statutory source for a general federal imprint requirement.
+Italy uses official chamber guidance because the attempted Normattiva article URLs
+returned error pages. Source URLs live in the authoritative text, preserving downloads
+and edited notices without introducing a separate schema or rewriting existing notices.
+
+Both renderers link only standalone HTTPS lines and escape all link attributes and text.
+No raw HTML or script URL support was added. Regression tests cover escaping, link
+rendering, and removal of the media references. Graft remains unavailable.
+
+## 2026-11-24 — Single Informed Consent template
+
+Merged the two adapted study-information and data-privacy consent templates into one
+required item named Informed Consent (`informed_consent_v1`). Preserve every section
+and combine participation/data-processing agreement into a single final declaration.
+Remove both superseded selector options and the user-facing provenance description;
+retain Apache-2.0 licensing and adaptation attribution under third-party. Update the
+user guide to the single-template workflow. Existing configured items and recorded
+consent evidence remain intact; adding the new template is explicit, with no data
+migration or silent alteration of participant agreements.
+
+Validation: dashboard JavaScript checks passed. Evaluated the template definitions to
+verify all twelve substantive headings, both agreements, one declaration, one required
+item, and removal of the old selector definitions. Graft remains unavailable; the
+existing adaptation and third-party attribution identified the two source pages.
+
+## 2026-11-24 — Imprint subsection layout
+
+Replace the imprint fieldset/legend box with an unboxed field container. Render Imprint
+as an h4 subsection under Participant access and consent, after its general/consent
+fields, in the left configuration column. Reuse the parent grid through CSS subgrid
+so fields align with other settings and stack on the existing mobile breakpoint.
+The editor binding, preview, and persistence contracts are unchanged. A generic
+subsections list keeps layout decisions in the configuration section definitions.
+Validation: all dashboard JavaScript test files passed. Graft remains unavailable.
+
+## 2026-11-24 — Consent subsection and short field-column dividers
+
+Move Consent items into the same subsection structure as Imprint, with its heading
+in the left column and editor on the right. Omit the redundant right-column heading.
+Add a grey one-pixel vertical divider inside each subsection's field column, inset
+8px from its top and bottom and separated from fields by 20px. The divider is local
+to that subsection rather than extending across the section or through headings;
+the same containment works when columns stack on narrow screens. Consent behavior
+and persistence are unchanged. All dashboard JavaScript tests passed. Graft remains
+unavailable, so existing known layout definitions were inspected directly.
+
+## 2026-11-24 — Horizontal subsection dividers
+
+Correct the preceding divider orientation per the user's clarification: use horizontal
+grey rules in the gap above Consent items and Imprint fields, spanning only their
+field column. Remove the vertical rule and left padding so fields retain their shared
+alignment. Heading placement and responsive stacking remain unchanged.
+
+## 2026-11-24 — Thirteen independent informed-consent forms
+
+Replace the combined template definition with an ordered array of thirteen items,
+one per substantive heading including the final declaration. Preserve all prose and
+the introduction, placed in the first item. Selecting Informed Consent adds the full
+set as separately editable forms with stable semantic identifiers and independent
+required/optional settings. Generalize insertion to accept either one item or a batch;
+hydrate before modifying the editor and skip existing IDs to prevent duplicate forms.
+Saved combined forms and past evidence are unchanged; no migration or compatibility
+branch is needed. This supersedes the earlier single-form template decision.
+
+Validation: dashboard JavaScript tests passed. Executed the actual insertion handler
+with an editor fixture to verify thirteen ordered forms, unique IDs, declaration last,
+repeat-add protection, and restoration of a missing section. Graft remains unavailable.
+
+## 2026-11-24 — Visible consent-section checklist and generation
+
+Replace the consent dropdown with an always-visible, initially unchecked list of all
+17 individual options (13 informed-consent sections and four existing alternatives),
+each with a short purpose description. Generate consent form replaces Add template
+and the redundant Blank item control. Selected options generate separate editable
+items in reading order; no selection creates one blank item with an unused identifier.
+Keep prior forms and skip already-present identifiers. Hydrate the entire selected
+batch before inserting anything, preserving atomic failure when institution data is
+missing. Empty forms are editor drafts: existing server validation still requires
+a title and statement before saving. No persistence or admission contract changes.
+
+Validation: four new tests exercise actual renderer/generator units for all visible
+options, selected-only generation, duplicate avoidance, empty generation, and hydration
+failure. All six dashboard JavaScript test files passed. Graft remains unavailable.
+
+## 2026-11-24 — One generated Consent Form and acceptance decision
+
+Generation now joins selected section titles and hydrated bodies in reading order
+into one item titled Consent Form. Use one unused identifier and one required flag
+for the entire statement. No selection creates that same item with an empty body.
+Existing forms remain untouched; generation appends rather than merging previously
+recorded or customized consent items. Remove per-section duplicate filtering, since
+section IDs no longer identify generated forms. No schema/admission changes.
+
+Validation: focused generation tests verify one item, ordered headings, selected-only
+content, unused ID, and exactly one identifier/title/statement/required control in the
+actual item renderer. Empty-selection and atomic hydration-failure cases pass, as do
+all six dashboard JavaScript test files. Graft remains unavailable.
+
+## 2026-11-24 — Conductor-written section text
+
+Each consent-section checkbox reveals an initially empty, labeled textarea directly
+below the option. Hide rather than clear it on deselection. Generate Consent Form
+joins only checked headings and their exact entered text in catalogue order, producing
+one item and one acceptance requirement. Remove unused template body definitions and
+hydration logic: default prose and institution-dependent generation are no longer part
+of this workflow. Section buffers remain temporary editor state; generated statements
+are saved through the existing revision mechanism. No schema changes.
+
+Validation: five focused tests cover visibility, empty initial inputs, user text and
+line-break preservation, selected-only assembly, no-selection generation, and a single
+acceptance control. All six dashboard JavaScript test files passed. Graft unavailable.
+
+## 2026-11-24 — Restore editable consent template defaults
+
+Restore the previously used adapted Wuhn prose/placeholders for the thirteen informed
+consent sections and the prior wording for the four additional Parlando sections.
+Prefill each textarea once when rendering the editor, escaping its contents. Checkbox
+toggling changes visibility only; generation still uses the current textarea value,
+including a deliberately cleared value. No-selection generation remains empty. Use
+editable institution/version placeholders in the supplemental sections rather than
+blocking initial form rendering when shared configuration is missing. This restores
+Parlando's prior adaptation, not upstream institution-specific claims verbatim.
+
+Validation: all six dashboard JavaScript test files passed. Focused checks confirm
+all seventeen fields contain their defaults, generation respects authored/cleared text,
+and toggling preserves edits. No schema change. Graft remains unavailable.
+
+## 2026-11-24 — Generated consent form heading
+
+Rename generated card headings from Consent item to Consent form, retaining numbering.
+Update both initial rendering and renumbering after removal so the label stays consistent.
+No data or behavior change. Focused consent-generation checks passed; graft unavailable.
+
+## 2026-11-24 — Separate collected-information sections
+
+Remove the opening reading instruction from the study-subject default. Replace the
+single collected-information option with independently selectable non-personal and
+personal information options, each with its own identifier, description, and editable
+prompt. Prompts distinguish anonymous/unlinkable information from identifiable or
+pseudonymized participant information without assuming all study responses are anonymous.
+The catalogue now has 14 informed-consent sections and four supplementary options.
+Existing generated statements remain unchanged. Dashboard JavaScript checks passed;
+graft remains unavailable.
+
+## 2026-11-24 — Select all consent sections and supplied collection wording
+
+Add Select all above the consent checklist. It checks all 18 options and reveals
+all text fields without resetting edits or generating a form implicitly. Replace
+personal/non-personal collection defaults with the exact study wording supplied by
+the user (voice and Prolific ID; game interactions and score). These are editable
+study declarations, not changes to data handling or automated privacy classifications.
+Existing generated statements remain unchanged. Updated user documentation.
+Validation: focused consent tests and all dashboard JavaScript test files passed,
+including bulk-selection visibility and edit preservation. Graft remains unavailable.

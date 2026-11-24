@@ -169,8 +169,34 @@
         </section>
 
         <section id="privacyPanel" class="tab-panel simple-panel" hidden>
-          <header class="section-intro"><h2>Data documentation</h2><p class="muted">A generated record of how this experiment stores, processes, exports, and deletes participant data. Download it and retain it with the experiment data.</p><span class="page-actions"><a id="privacyMarkdown" class="primary" download>Download Markdown</a><a id="privacyJson" class="secondary" download>Download JSON</a></span></header>
-          <div id="privacyContent"><div class="empty">Loading privacy status…</div></div>
+          <header class="section-intro"><h2>Privacy</h2><h3 id="privacyDocumentsHeading">Study documents</h3></header>
+          <div class="privacy-document-tabs" role="tablist" aria-labelledby="privacyDocumentsHeading">
+            <button id="privacy-tab-documentation" class="privacy-document-tab" type="button" role="tab" data-privacy-tab="documentation" aria-controls="privacy-document-documentation" aria-selected="true" tabindex="0">Data documentation</button>
+            <button id="privacy-tab-participants" class="privacy-document-tab" type="button" role="tab" data-privacy-tab="participants" aria-controls="privacy-document-participants" aria-selected="false" tabindex="-1">Participants</button>
+            <button id="privacy-tab-conductors" class="privacy-document-tab" type="button" role="tab" data-privacy-tab="conductors" aria-controls="privacy-document-conductors" aria-selected="false" tabindex="-1">Study conductors</button>
+            <button id="privacy-tab-data-protection" class="privacy-document-tab" type="button" role="tab" data-privacy-tab="data-protection" aria-controls="privacy-document-data-protection" aria-selected="false" tabindex="-1">Data protection managers</button>
+            <button id="privacy-tab-imprint" class="privacy-document-tab" type="button" role="tab" data-privacy-tab="imprint" aria-controls="privacy-document-imprint" aria-selected="false" tabindex="-1">Imprint</button>
+          </div>
+          <section id="privacy-document-documentation" role="tabpanel" aria-labelledby="privacy-tab-documentation" data-privacy-document="documentation" tabindex="0">
+            <header class="section-intro"><h3>Data documentation</h3><p class="muted">A generated record of how this experiment stores, processes, exports, and deletes participant data. Download it and retain it with the experiment data.</p><span class="page-actions"><a id="privacyMarkdown" class="primary" download>Download Markdown</a><a id="privacyJson" class="secondary" download>Download JSON</a></span></header>
+            <div id="privacyContent"><div class="empty">Loading privacy status…</div></div>
+          </section>
+          <section id="privacy-document-participants" role="tabpanel" aria-labelledby="privacy-tab-participants" data-privacy-document="participants" tabindex="0" hidden>
+            <header class="section-intro"><h3>Participants</h3><span class="page-actions"><a class="primary" data-privacy-download="participants" download>Download HTML</a><a class="secondary" data-privacy-open="participants" target="_blank" rel="noopener">Open page</a></span></header>
+            <p class="muted">This page is currently empty.</p>
+          </section>
+          <section id="privacy-document-conductors" role="tabpanel" aria-labelledby="privacy-tab-conductors" data-privacy-document="conductors" tabindex="0" hidden>
+            <header class="section-intro"><h3>Study conductors</h3><span class="page-actions"><a class="primary" data-privacy-download="conductors" download>Download HTML</a><a class="secondary" data-privacy-open="conductors" target="_blank" rel="noopener">Open page</a></span></header>
+            <p class="muted">This page is currently empty.</p>
+          </section>
+          <section id="privacy-document-data-protection" role="tabpanel" aria-labelledby="privacy-tab-data-protection" data-privacy-document="data-protection" tabindex="0" hidden>
+            <header class="section-intro"><h3>Data protection managers</h3><span class="page-actions"><a class="primary" data-privacy-download="data-protection" download>Download HTML</a><a class="secondary" data-privacy-open="data-protection" target="_blank" rel="noopener">Open page</a></span></header>
+            <p class="muted">This page is currently empty.</p>
+          </section>
+          <section id="privacy-document-imprint" role="tabpanel" aria-labelledby="privacy-tab-imprint" data-privacy-document="imprint" tabindex="0" hidden>
+            <header class="section-intro"><h3>Imprint</h3><span class="page-actions"><a class="primary" data-privacy-download="imprint" download>Download HTML</a><a class="secondary" data-privacy-open="imprint" target="_blank" rel="noopener">Open page</a></span></header>
+            <div id="imprintDocument"><p class="muted">Choose a country and complete the imprint under Configuration → Participant access and consent → Imprint.</p></div>
+          </section>
         </section>
       </section>
     </section>

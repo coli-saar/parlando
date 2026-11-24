@@ -241,7 +241,13 @@ textarea { min-height: 92px; resize: vertical; width: 100%; }
 .config-group { border: 0; border-radius: 0; border-top: 1px solid var(--line); display: grid; gap: 36px; grid-template-columns: minmax(180px, .65fr) minmax(360px, 1.35fr); padding: 26px 0; }
 .config-group-copy { display: grid; gap: 5px; align-content: start; }
 .config-group-copy h3 { font-size: 16px; margin: 0; }
-.config-fields { display: grid; gap: 16px; }
+/* Subsections share the parent columns, including its single-column mobile layout. */
+.config-subgroup { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; gap: inherit; min-width: 0; }
+/* Horizontal dividers sit in the subsection gap and span only the right-hand fields. */
+.config-subgroup > .config-fields { position: relative; }
+.config-subgroup > .config-fields::before { content: ""; position: absolute; left: 0; right: 0; top: -18px; height: 1px; background: var(--line); pointer-events: none; }
+.config-group-copy h4 { font-size: 14px; margin: 0; }
+.config-fields { display: grid; gap: 16px; min-width: 0; }
 .speech-settings { border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 24px; margin: 0; min-width: 0; padding: 16px; }
 .speech-settings legend { font-size: 14px; font-weight: 700; padding: 0 6px; }
 .speech-settings h4 { font-size: 13px; margin: 0; }
@@ -275,9 +281,18 @@ textarea { min-height: 92px; resize: vertical; width: 100%; }
 .consent-body textarea { min-width: 0; width: 100%; }
 .consent-required { align-items: center; display: inline-flex; gap: 8px; justify-self: start; }
 .consent-required input { height: 18px; width: 18px; }
-.consent-actions { align-items: end; display: grid; gap: 8px; grid-template-columns: minmax(220px, 1fr) auto auto; }
-.consent-template-field { display: grid; gap: 6px; min-width: 0; }
-.consent-template-field > span { font-size: 12px; font-weight: 700; }
+/* Keep every consent option visible, with its description beside the checkbox. */
+.consent-template-options { border: 0; margin: 0; padding: 0; display: grid; gap: 12px; min-width: 0; }
+.consent-template-options legend { font-size: 13px; font-weight: 700; margin-bottom: 12px; padding: 0; }
+.consent-template-option { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 10px; align-items: start; }
+.consent-template-option input { width: 18px; height: 18px; margin: 2px 0 0; }
+.consent-template-option > span { display: grid; gap: 3px; }
+.consent-section { display: grid; gap: 10px; min-width: 0; }
+.consent-section-text { display: grid; gap: 6px; padding-left: 28px; min-width: 0; }
+.consent-section-text > span { font-size: 12px; font-weight: 700; }
+.consent-section-text textarea { width: 100%; min-width: 0; }
+.consent-template-option strong { font-size: 13px; }
+.consent-actions { display: grid; gap: 8px; justify-items: start; }
 .consent-empty { border-block: 1px solid var(--line); padding: 16px 0; }
 .secret-control { align-items: center; display: grid; gap: 7px; grid-template-columns: minmax(0, 1fr) auto auto; }
 .secret-control input { min-width: 0; width: 100%; }
@@ -486,3 +501,9 @@ dialog::backdrop { background: rgba(20,34,45,.35); }
   .speech-bubble { padding: 8px 10px; }
   .timeline-log { padding: 8px 0; }
 }
+
+/* Document navigation stays independent of the experiment workspace tabs. */
+.privacy-document-tabs { display: flex; flex-wrap: wrap; gap: 3px; border-bottom: 1px solid var(--strong-line); margin-bottom: 20px; }
+.privacy-document-tab { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--subtle); cursor: pointer; font: inherit; font-weight: 600; padding: 9px 11px; }
+.privacy-document-tab[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--text); }
+.privacy-document-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }

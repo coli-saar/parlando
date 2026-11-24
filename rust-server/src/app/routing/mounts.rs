@@ -258,6 +258,18 @@ pub(super) async fn dispatch_experiment_service(host: Arc<GameHost>, request: Re
         return Redirect::temporary(&format!("/e/{experiment_id}/")).into_response();
     }
     let suffix = &relative_path[experiment_id.len()..];
+    if matches!(surface, RuntimeSurface::Participant) {
+        if let Some(response) = crate::app::study_sites::serve_information_site(
+            &host.dashboard,
+            experiment_id,
+            suffix,
+            request.method(),
+        )
+        .await
+        {
+            return response;
+        }
+    }
     let owner = match host
         .cached_owner(experiment_id, surface, suffix, request.headers())
         .await

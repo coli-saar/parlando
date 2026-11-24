@@ -39,6 +39,7 @@ export function StartupShell({
             border-radius: .75rem;
           }
           .lobby-panel .voice-preflight > div:first-child,
+          .lobby-panel .consent-row > span > span { white-space: pre-wrap; }
           .lobby-panel .consent-row > span { display: grid; gap: .2rem; }
           .lobby-panel .voice-preflight > button { justify-self: start; }
           .lobby-panel .voice-preflight select {

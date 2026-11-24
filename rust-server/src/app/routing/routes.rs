@@ -242,6 +242,10 @@ fn dashboard_feature_routes(prefix: &str) -> Router<Arc<ServerContext>> {
     let participant_path = |path: &str| format!("{prefix}{path}");
     Router::new()
         .route(
+            &participant_path("/api/admin/experiments/:experiment_id/information/:page/download"),
+            get(crate::app::study_sites::admin_information_site_download),
+        )
+        .route(
             &participant_path("/api/admin/export-schema"),
             get(admin_corpus_export_schema),
         )
@@ -269,6 +273,10 @@ fn dashboard_feature_routes(prefix: &str) -> Router<Arc<ServerContext>> {
         .route(
             &participant_path("/admin/assets/communication-config.js"),
             get(admin_communication_config_javascript),
+        )
+        .route(
+            &participant_path("/admin/assets/imprint-config.js"),
+            get(admin_imprint_config_javascript),
         )
         .route(
             &participant_path("/api/admin/privacy"),

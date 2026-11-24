@@ -86,6 +86,27 @@ pub struct ConsentItemConfig {
     pub required: bool,
 }
 
+/// Public study imprint and the explicit identity fields used to generate its initial copy.
+/// The conductor edits `text`; changing shared settings never silently changes published copy.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ImprintConfig {
+    /// Operator jurisdiction: a supported country code, EU baseline, or empty when unset.
+    pub country: String,
+    /// Full public legal name of the institution or individual operating this study.
+    pub operator: String,
+    /// Public study contact, not necessarily the entity's authorized legal representative.
+    pub responsible_person: String,
+    /// Public postal address used when generating the notice.
+    pub address: String,
+    /// Public contact email; never inferred from an administrator account.
+    pub email: String,
+    /// Public contact telephone number.
+    pub phone: String,
+    /// Authoritative public notice, rendered as escaped plain text rather than HTML.
+    pub text: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DirectConfig {
@@ -93,6 +114,8 @@ pub struct DirectConfig {
     pub participant_information_version: String,
     pub participant_information_url: String,
     pub consents: Vec<ConsentItemConfig>,
+    /// Country-specific public operator notice, saved with the study revision.
+    pub imprint: ImprintConfig,
 }
 
 impl Default for DirectConfig {
@@ -102,6 +125,7 @@ impl Default for DirectConfig {
             participant_information_version: String::new(),
             participant_information_url: String::new(),
             consents: vec![],
+            imprint: ImprintConfig::default(),
         }
     }
 }
@@ -666,6 +690,25 @@ impl ExperimentConfig {
         }
         if self.agents.mode == AgentsMode::HumanVsHuman && self.agents.human_vs_agent.is_some() {
             bail!("agents.human_vs_agent must be omitted in human_vs_human mode");
+        }
+        if !["", "DE", "US", "FR", "AT", "ES", "IE", "IT", "NL", "EU"]
+            .contains(&self.direct.imprint.country.as_str())
+        {
+            bail!("unsupported imprint country");
+        }
+        if self.direct.imprint.text.chars().count() > 20_000 {
+            bail!("imprint text must not exceed 20000 characters");
+        }
+        for value in [
+            &self.direct.imprint.operator,
+            &self.direct.imprint.responsible_person,
+            &self.direct.imprint.address,
+            &self.direct.imprint.email,
+            &self.direct.imprint.phone,
+        ] {
+            if value.chars().count() > 2000 {
+                bail!("imprint contact fields must not exceed 2000 characters");
+            }
         }
         let mut consent_ids = HashSet::new();
         for item in &self.direct.consents {

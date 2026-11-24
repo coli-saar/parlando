@@ -362,7 +362,10 @@ describe("ParticipantApp participant state machine", () => {
       ...config(),
       participantInformationUrl: "https://study.test/information",
       participantInformationVersion: "v2",
-      consents: [{ id: "research", title: "Research use", body: "Use my responses.", required: true }],
+      consents: [
+        { id: "information", title: "About this study", body: "Study purpose\nTask and risks", required: true },
+        { id: "research", title: "Research use", body: "Use my responses.", required: true }
+      ],
       recruitment: { provider: "prolific", decline_url: "https://app.prolific.com/submissions/complete?cc=DECLINE" }
     });
     render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
@@ -372,9 +375,12 @@ describe("ParticipantApp participant state machine", () => {
     expect(screen.getByRole("link", { name: /participant information/i })).toHaveAttribute("href", "https://study.test/information");
     expect(screen.getByRole("link", { name: "Do not consent" })).toHaveAttribute("href", expect.stringContaining("DECLINE"));
     fireEvent.click(screen.getByRole("checkbox", { name: /research use/i }));
+    expect(enter).toBeDisabled();
+    expect(client.acceptConsents).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("checkbox", { name: /about this study/i }));
     expect(enter).toBeEnabled();
     fireEvent.click(enter);
-    await waitFor(() => expect(client.acceptConsents).toHaveBeenCalledWith({ research: true }));
+    await waitFor(() => expect(client.acceptConsents).toHaveBeenCalledWith({ research: true, information: true }));
   });
 
   it("does not fabricate a local refusal for an invalid Prolific configuration", async () => {

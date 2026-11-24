@@ -95,6 +95,10 @@ pub(in crate::app) async fn admin_experiments(
             &experiment.experiment_id,
         );
         object.insert(
+            "information_sites".to_string(),
+            crate::app::study_sites::information_site_urls(&public_base),
+        );
+        object.insert(
             "prolific_setup_url".to_string(),
             json!(prolific_setup_url(&public_base)),
         );
@@ -230,6 +234,9 @@ pub(in crate::app) async fn admin_create_experiment(
         "experiment_id": request.experiment_id,
         "game_version": state.installation.game_descriptor.version,
         "status": "inactive",
+        "information_sites": crate::app::study_sites::information_site_urls(
+            &experiment_public_base_url(&state.config.server.public_base_url, &request.experiment_id)
+        ),
     })))
 }
 
@@ -277,6 +284,9 @@ pub(in crate::app) async fn admin_clone_experiment(
         "source_experiment_id": source_experiment_id,
         "game_version": state.installation.game_descriptor.version,
         "status": "inactive",
+        "information_sites": crate::app::study_sites::information_site_urls(
+            &experiment_public_base_url(&state.config.server.public_base_url, &request.experiment_id)
+        ),
     })))
 }
 
