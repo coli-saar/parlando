@@ -205,3 +205,5 @@ Choose the profile below. Each lists its own settings. The final section gives t
 - **Jitter buffer ms** — `100`
 - **Post completion seconds** — `60`
 - **Sample rate hz** — `24000`
+beacon/
+parlando-host/
