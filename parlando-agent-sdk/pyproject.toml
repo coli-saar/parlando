@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "parlando-agent-sdk"
+name = "parlando-remote-agent"
 version = "0.7.0"
 description = "Python SDK for implementing remote Parlando gRPC agents."
 readme = "README.md"

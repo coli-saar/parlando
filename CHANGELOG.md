@@ -6,6 +6,8 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## Unreleased
 
+- Python dependency names change from `parlando-python-sdk` to `parlando-game-sdk` and from `parlando-agent-sdk` to `parlando-remote-agent`. Existing Python imports continue to work.
+
 ## [0.7.0] - 2026-11-23
 
 For upgrade instructions, see the [migration guide](docs/migrating-0.6.0-to-0.7.0.md).

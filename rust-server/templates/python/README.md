@@ -14,7 +14,7 @@ python3 -m venv .venv
 If `python.sdk_path` is empty in `game.yaml`, install the matching SDK.
 
 ```sh
-.venv/bin/python -m pip install parlando-python-sdk==__SDK_VERSION__
+.venv/bin/python -m pip install parlando-game-sdk==__SDK_VERSION__
 ```
 
 Build the package and try it locally.

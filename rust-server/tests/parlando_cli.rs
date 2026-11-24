@@ -98,7 +98,7 @@ fn scaffold_selects_client_from_the_installation() {
     );
     assert!(fs::read_to_string(bundled.join("README.md"))
         .unwrap()
-        .contains(&format!("parlando-python-sdk=={VERSION}")));
+        .contains(&format!("parlando-game-sdk=={VERSION}")));
 }
 
 /// Project errors use stderr for humans and a single structured stdout result for automation.

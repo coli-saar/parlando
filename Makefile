@@ -202,8 +202,8 @@ publish:
 	  --step "Publish parlando-game-sdk" publish-rust-sdk \
 	  --step "Publish parlando" publish-rust-server \
 	  --step "Publish @coli-saar/parlando-client" publish-js-client \
-	  --step "Publish parlando-python-sdk" publish-python-game-sdk \
-	  --step "Publish parlando-agent-sdk" publish-python-agent-sdk
+	  --step "Publish parlando-game-sdk to PyPI" publish-python-game-sdk \
+	  --step "Publish parlando-remote-agent to PyPI" publish-python-agent-sdk
 
 publish-rust:
 	$(MAKE) publish-rust-derive
@@ -254,7 +254,7 @@ publish-js-client publish-js-client-dry-run:
 
 publish-python-game-sdk publish-python-game-sdk-dry-run: pack-python-game-sdk
 publish-python-agent-sdk publish-python-agent-sdk-dry-run: pack-python-agent-sdk
-publish-python-game-sdk: SDK_DIST := parlando_python_sdk
-publish-python-agent-sdk: SDK_DIST := parlando_agent_sdk
+publish-python-game-sdk: SDK_DIST := parlando_game_sdk
+publish-python-agent-sdk: SDK_DIST := parlando_remote_agent
 publish-python-game-sdk publish-python-agent-sdk:
 	$(REGISTRY_RUN) "$(RELEASE_PYTHON)" -m twine upload --repository pypi "$(RELEASE_DIST)/$(SDK_DIST)-$(RELEASE_VERSION)"{.tar.gz,-py3-none-any.whl}

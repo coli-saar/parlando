@@ -15,14 +15,14 @@ stream the full output as well. Both commands reuse the installed Python packagi
 | --- | --- |
 | crates.io | `parlando-game-derive`, `parlando-game-sdk`, `parlando` |
 | npm | `@coli-saar/parlando-client` |
-| PyPI | `parlando-python-sdk`, `parlando-agent-sdk` |
+| PyPI | `parlando-game-sdk`, `parlando-remote-agent` |
 
 All six packages use one release version. Publish every package at that
 version, including SDKs whose source code has no changes since the previous
 release. On crates.io, publish `parlando-game-derive`, `parlando-game-sdk`,
 and `parlando` in that order.
-On PyPI, `parlando-python-sdk` supplies the game API imported as
-`parlando_game_sdk`, and `parlando-agent-sdk` supplies the remote agent API.
+On PyPI, `parlando-game-sdk` supplies the game API imported as
+`parlando_game_sdk`, and `parlando-remote-agent` supplies the remote agent API.
 
 This document is the canonical release procedure. `docs/publishing-packages.md` identifies the packages and their
 installation paths, while this page defines the coordinated release.
@@ -93,6 +93,7 @@ Update the following release-facing material in the same candidate:
 - review `skills/generate-parlando-game/SKILL.md` and its references for API or configuration changes;
 - update current version examples and behavioral descriptions in the README and `docs/`, including
   the Hugo manual under `docs/web/content`;
+- for the first release after 0.7.0, update the Python install examples and PyPI links in the manual and `docs/component-games.md` to the new distribution names. Switch both Python version badges and their links in the root README when the packages are live on PyPI;
 - rebuild or validate generated documentation where the repository's documentation workflow
   requires it.
 

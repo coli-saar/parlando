@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "parlando-python-sdk"
+name = "parlando-game-sdk"
 version = "0.7.0"
 description = "Python SDK for Parlando game components"
 readme = "README.md"

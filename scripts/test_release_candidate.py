@@ -28,8 +28,8 @@ CRATES = (
     ("parlando", "rust-server"),
 )
 PYTHON_SDKS = (
-    ("parlando-python-sdk", "parlando_game_sdk"),
-    ("parlando-agent-sdk", "parlando_agent_sdk"),
+    ("parlando-game-sdk", "parlando_game_sdk", "parlando-python-sdk"),
+    ("parlando-remote-agent", "parlando_agent_sdk", "parlando-agent-sdk"),
 )
 GAMES = {"rust": "release-rust", "python": "release-python"}
 TICK_AGENT_ID = "beacon.tick_on_request"
@@ -126,7 +126,7 @@ def install_rust(work, artifacts, version, env):
 
 def install_python(work, packages, packaged_server, version, env):
     """Install the wheels built by Make and exercise the installed SDKs."""
-    wheels = [packages / f"{name.replace('-', '_')}-{version}-py3-none-any.whl" for name, _ in PYTHON_SDKS]
+    wheels = [packages / f"{name.replace('-', '_')}-{version}-py3-none-any.whl" for name, _, _ in PYTHON_SDKS]
     venv = work / "python"
     run(sys.executable, "-m", "venv", venv, cwd=work, env=env)
     python = venv / "bin/python"
@@ -136,16 +136,16 @@ def install_python(work, packages, packaged_server, version, env):
     )
     imports = "\n".join(
         f"import {module}\nassert metadata.version({name!r}) == {version!r}"
-        for name, module in PYTHON_SDKS
+        for name, module, _ in PYTHON_SDKS
     )
     run(python, "-I", "-c", f"from importlib import metadata\n{imports}", cwd=work, env=env)
     run(python, "-m", "pip", "check", cwd=work, env=env)
 
     # The SDK tests run without their source trees. The agent protocol check uses the packaged proto.
     shutil.copytree(packaged_server / "proto", work / "rust-server/proto")
-    for name, _ in PYTHON_SDKS:
-        tests = work / name / "tests"
-        shutil.copytree(ROOT / name / "tests", tests, ignore=shutil.ignore_patterns("__pycache__"))
+    for _, _, directory in PYTHON_SDKS:
+        tests = work / directory / "tests"
+        shutil.copytree(ROOT / directory / "tests", tests, ignore=shutil.ignore_patterns("__pycache__"))
         run(python, "-I", "-m", "unittest", "discover", "-s", tests, cwd=work, env=env)
     return venv
 

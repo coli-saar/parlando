@@ -1,11 +1,10 @@
 # <img src="brand/parlando-wordmark.svg" width="260" alt="Parlando">
 
-[![parlando release](https://img.shields.io/crates/v/parlando?label=parlando)](https://crates.io/crates/parlando)
-[![parlando-game-sdk release](https://img.shields.io/crates/v/parlando-game-sdk?label=parlando-game-sdk)](https://crates.io/crates/parlando-game-sdk)
-[![parlando-game-derive release](https://img.shields.io/crates/v/parlando-game-derive?label=parlando-game-derive)](https://crates.io/crates/parlando-game-derive)
-[![@coli-saar/parlando-client release](https://img.shields.io/npm/v/@coli-saar/parlando-client?label=%40coli-saar%2Fparlando-client)](https://www.npmjs.com/package/@coli-saar/parlando-client)
-[![parlando-python-sdk release](https://img.shields.io/pypi/v/parlando-python-sdk?label=parlando-python-sdk)](https://pypi.org/project/parlando-python-sdk)
-[![parlando-agent-sdk release](https://img.shields.io/pypi/v/parlando-agent-sdk?label=parlando-agent-sdk)](https://pypi.org/project/parlando-agent-sdk)
+**Core** [![parlando version on crates](https://img.shields.io/crates/v/parlando?label=parlando)](https://crates.io/crates/parlando) [![@coli-saar/parlando-client version on npm](https://img.shields.io/npm/v/@coli-saar/parlando-client?label=%40coli-saar%2Fparlando-client)](https://www.npmjs.com/package/@coli-saar/parlando-client)
+
+**Rust game/agent SDK** [![parlando-game-sdk version on crates](https://img.shields.io/crates/v/parlando-game-sdk?label=parlando-game-sdk)](https://crates.io/crates/parlando-game-sdk) 
+
+**Python SDKs** [![parlando-python-sdk version on pypi](https://img.shields.io/pypi/v/parlando-python-sdk?label=game%20SDK)](https://pypi.org/project/parlando-python-sdk) [![parlando-agent-sdk version on pypi](https://img.shields.io/pypi/v/parlando-agent-sdk?label=remote%20agent)](https://pypi.org/project/parlando-agent-sdk)
 
 Parlando is a platform for crowdsourcing dialogue games. In a dialogue game, two players share a task in a web browser. They each see only part of the situation, and they talk or type to each other to complete the task. Parlando records what the players said next to what they did. This lets a researcher ask how communication and action relate: for example, when a listener asks for clarification, and whether the answer changed their next move.
 

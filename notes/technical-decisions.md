@@ -6016,3 +6016,7 @@ The package rehearsal stages the checkout and tests disposable archives. Publica
 ## 2026-11-23 · Release output and registry interaction
 
 The two top-level release targets name their steps in Make and use the same reporter. Each invocation owns a timestamped log under target/release-logs. The reporter joins standard output and error, times each step, and stops at the first failed Make target. The last 20 lines come from that step alone. Publication runs each package separately so successful uploads and the failed retry target are visible. When the caller has a terminal the registry client receives a pseudoterminal, so a prompt without a newline can still accept input. Direct package targets and ordinary development commands retain their native output.
+
+### Name the Python distributions for the APIs they provide
+
+Starting with the release after 0.7.0, publish the Python game SDK as `parlando-game-sdk` and the gRPC agent SDK as `parlando-remote-agent`. PyPI and crates.io resolve names independently. Changing distribution metadata allows existing Python imports and checkout paths to stay stable. Keep the published-version badges and 0.7.0 manual commands on the live projects until the renamed releases exist.
