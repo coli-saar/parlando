@@ -121,7 +121,7 @@ test-e2e: test-e2e-logging
 
 # Verify that the coordinator preserves failures and complete layer output.
 test-e2e-logging:
-	"$(PYTHON)" -m unittest discover -s "$(PARLANDO_DIR)/scripts" -p test_e2e_logging.py -v
+	"$(PYTHON)" -m unittest discover -s "$(PARLANDO_DIR)/scripts" -p 'test_*logging.py' -v
 
 # Runs the Python SDK suite in an environment where its package dependencies are installed.
 test-python:
@@ -168,22 +168,42 @@ publish-rust-sdk-dry-run:
 publish-rust-server-dry-run:
 	"$(RELEASE_PYTHON)" "$(PARLANDO_DIR)/scripts/release_crate.py" "$(RUST_SERVER_DIR)/Cargo.toml"
 
-# Exercise the complete candidate in disposable consumer projects.
-test-release-candidate: publish-dry-run check-release-tools
-	$(MAKE) test PYTHON="$(RELEASE_PYTHON)"
-	$(MAKE) test-e2e PYTHON="$(RELEASE_PYTHON)"
-	$(MAKE) test-components
-	$(MAKE) test-runtime-communication
+# The release reporter invokes each named Make target and retains its full output.
+RELEASE_MAKE := $(MAKE)
+RELEASE_REPORT := "$(RELEASE_PYTHON)" "$(PARLANDO_DIR)/scripts/release_output.py"
+.PHONY: release-preflight release-server-build release-manual release-rehearsal
+release-preflight: check-release-versions check-release-tools
+
+test-release-candidate:
+	@PYTHON="$(RELEASE_PYTHON)" $(RELEASE_REPORT) pre-release "$(RELEASE_MAKE)" \
+	  --step "Validate release configuration" release-preflight \
+	  --step "Build packages and check registry dry runs" publish-dry-run \
+	  --step "Unit and client/server tests" test \
+	  --step "Browser and Prolific scenarios" test-e2e \
+	  --step "Component compatibility" test-components \
+	  --step "Communication stress matrix" test-runtime-communication \
+	  --step "Build optimized server" release-server-build \
+	  --step "Build documentation" release-manual \
+	  --step "Test packaged games and agents" release-rehearsal
+
+release-server-build:
 	cargo build --locked --release --all-features --manifest-path "$(RUST_SERVER_DIR)/Cargo.toml"
+
+release-manual:
 	hugo --source "$(PARLANDO_DIR)/docs/web" --destination "$(PARLANDO_DIR)/target/release-manual" --panicOnWarning --printPathWarnings
+
+release-rehearsal:
 	npm_config_cache="$(NPM_CACHE)" "$(RELEASE_PYTHON)" "$(RELEASE_REHEARSAL)" --packages "$(RELEASE_DIST)"
 
-# Serial sub-makes preserve publication order and stop on a failed upload even with make -j.
-publish: check-release-versions check-release-tools
-	$(MAKE) publish-rust
-	$(MAKE) publish-js-client
-	$(MAKE) publish-python-game-sdk
-	$(MAKE) publish-python-agent-sdk
+publish:
+	@$(RELEASE_REPORT) publish "$(RELEASE_MAKE)" \
+	  --step "Validate release configuration" release-preflight \
+	  --step "Publish parlando-game-derive" publish-rust-derive \
+	  --step "Publish parlando-game-sdk" publish-rust-sdk \
+	  --step "Publish parlando" publish-rust-server \
+	  --step "Publish @coli-saar/parlando-client" publish-js-client \
+	  --step "Publish parlando-python-sdk" publish-python-game-sdk \
+	  --step "Publish parlando-agent-sdk" publish-python-agent-sdk
 
 publish-rust:
 	$(MAKE) publish-rust-derive
@@ -200,13 +220,13 @@ check-release-tools:
 	"$(RELEASE_PYTHON)" -m twine --version
 
 publish-rust-derive:
-	cd "$(RUST_GAME_SDK_DIR)/derive" && cargo publish --registry crates-io
+	cd "$(RUST_GAME_SDK_DIR)/derive" && $(REGISTRY_RUN) cargo publish --registry crates-io
 
 publish-rust-sdk:
-	cd "$(RUST_GAME_SDK_DIR)" && cargo publish --registry crates-io
+	cd "$(RUST_GAME_SDK_DIR)" && $(REGISTRY_RUN) cargo publish --registry crates-io
 
 publish-rust-server:
-	cd "$(RUST_SERVER_DIR)" && cargo publish --registry crates-io
+	cd "$(RUST_SERVER_DIR)" && $(REGISTRY_RUN) cargo publish --registry crates-io
 
 # Both release workflows rebuild their packages. Stage only the package inputs in a fresh directory.
 .PHONY: pack-js-client pack-python-game-sdk pack-python-agent-sdk
@@ -230,11 +250,11 @@ pack-python-game-sdk pack-python-agent-sdk: check-release-tools
 publish-js-client publish-js-client-dry-run: pack-js-client
 publish-js-client-dry-run: NPM_RELEASE_FLAGS := --dry-run
 publish-js-client publish-js-client-dry-run:
-	cd "$(JS_CLIENT_DIR)" && npm --cache "$(NPM_CACHE)" publish "$(CLIENT_TARBALL)" --access public $(NPM_RELEASE_FLAGS)
+	cd "$(JS_CLIENT_DIR)" && $(REGISTRY_RUN) npm --cache "$(NPM_CACHE)" publish "$(CLIENT_TARBALL)" --access public $(NPM_RELEASE_FLAGS)
 
 publish-python-game-sdk publish-python-game-sdk-dry-run: pack-python-game-sdk
 publish-python-agent-sdk publish-python-agent-sdk-dry-run: pack-python-agent-sdk
 publish-python-game-sdk: SDK_DIST := parlando_python_sdk
 publish-python-agent-sdk: SDK_DIST := parlando_agent_sdk
 publish-python-game-sdk publish-python-agent-sdk:
-	"$(RELEASE_PYTHON)" -m twine upload --repository pypi "$(RELEASE_DIST)/$(SDK_DIST)-$(RELEASE_VERSION)"{.tar.gz,-py3-none-any.whl}
+	$(REGISTRY_RUN) "$(RELEASE_PYTHON)" -m twine upload --repository pypi "$(RELEASE_DIST)/$(SDK_DIST)-$(RELEASE_VERSION)"{.tar.gz,-py3-none-any.whl}

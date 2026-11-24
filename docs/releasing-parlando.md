@@ -5,7 +5,11 @@ For a prepared release, run these commands from the repository root:
 1. `make test-release-candidate` builds packages and tests them in temporary consumer projects.
 2. `make publish` builds the six packages from the current checkout and uploads them using your registry credentials.
 
-Both commands reuse the installed Python packaging tools.
+Each command prints the current step, its elapsed time on completion, and the path
+to its full log under `target/release-logs/`. A failure shows the last 20 lines
+from that step. Registry approval links and credential prompts appear live.
+Use `make VERBOSE=1 test-release-candidate` or `make VERBOSE=1 publish` to
+stream the full output as well. Both commands reuse the installed Python packaging tools.
 
 | Registry | Packages |
 | --- | --- |

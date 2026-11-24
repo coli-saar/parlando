@@ -24,7 +24,7 @@ Render the current view from `snapshot.observation`. Submit actions with
 any controls exposed in the view. The component independently validates
 every action. `snapshot.transition` is nullable and describes the latest
 accepted action when present. Use it for displays that need the actor or
-action. The observation supplies the current task state.
+action. The observation supplies the current task state, including on the terminal turn. If the UI needs a move history after reconnect, include the visible history in each role’s observation.
 
 Use `renderCompletion` for game-specific display of the shared result.
 Let the SDK handle participant entry, connection and reconnect state,
