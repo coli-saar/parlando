@@ -1,9 +1,10 @@
 # <img src="brand/parlando-wordmark.svg" width="260" alt="Parlando">
 
-<a href="https://crates.io/crates/parlando"><img src="https://img.shields.io/crates/v/parlando?label=parlando&amp;logo=rust&amp;logoColor=white" alt="Rust · parlando version on crates" align="middle"></a>
-
-<a href="https://www.npmjs.com/package/@coli-saar/parlando-client"><img src="https://img.shields.io/npm/v/@coli-saar/parlando-client?label=%40coli-saar%2Fparlando-client&amp;logo=typescript&amp;logoColor=white" alt="TypeScript · @coli-saar/parlando-client version on npm" align="middle"></a>
-
+<a href="https://crates.io/crates/parlando"><img src="https://img.shields.io/crates/v/parlando?label=parlando" alt="Rust · parlando version on crates" align="middle"></a>
+<a href="https://www.npmjs.com/package/@coli-saar/parlando-client"><img src="https://img.shields.io/npm/v/@coli-saar/parlando-client?label=%40coli-saar%2Fparlando-client&amp" alt="TypeScript · @coli-saar/parlando-client version on npm" align="middle"></a>
+<a href="https://crates.io/crates/parlando-game-sdk"><img src="https://img.shields.io/crates/v/parlando-game-sdk?label=Rust%20Game%20SDK&amp;logo=rust&amp;logoColor=white" alt="Rust · parlando-game-sdk version on crates" align="middle"></a>
+<a href="https://pypi.org/project/parlando-python-sdk"><img src="https://img.shields.io/pypi/v/parlando-python-sdk?label=game%20SDK&amp;logo=python&amp;logoColor=white" alt="Python · parlando-python-sdk version on pypi" align="middle"></a>
+      <a href="https://pypi.org/project/parlando-agent-sdk"><img src="https://img.shields.io/pypi/v/parlando-agent-sdk?label=remote%20agent&amp;logo=python&amp;logoColor=white" alt="Python · parlando-agent-sdk version on pypi" align="middle"></a>
 
 <table>
   <tr>
