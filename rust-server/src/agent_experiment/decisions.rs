@@ -14,7 +14,7 @@ use super::session::{
 use super::spec::TraceLevel;
 use super::training::TrajectoryStep;
 use crate::agents::with_callback_timeout;
-use crate::agents::{Agent, AgentResponse, Message, Observation, Reason, Transition};
+use crate::agents::{Agent, AgentResponse, Reason};
 use crate::component::{ComponentValue, GameFrame, GameSession};
 use crate::game::{ActionRejection, PlayerRole};
 use anyhow::anyhow;
@@ -160,14 +160,12 @@ pub(super) async fn drive_session(
                 completion: Some(completion),
             });
         }
-        if result.accepted_actions >= plan.limits.accepted_actions {
-            return Ok(limit_outcome(SessionStatus::ActionLimit));
-        }
-        if result.messages >= plan.limits.messages {
-            return Ok(limit_outcome(SessionStatus::MessageLimit));
-        }
-        if result.rejected_actions >= plan.limits.rejected_actions {
-            return Ok(limit_outcome(SessionStatus::RejectionLimit));
+        if let Some(status) = plan.limits.reached_after_response(
+            result.accepted_actions,
+            result.messages,
+            result.rejected_actions,
+        ) {
+            return Ok(limit_outcome(status));
         }
         let Some(next) = schedule.next(role, response.as_ref(), rejection.as_ref()) else {
             return Ok(limit_outcome(SessionStatus::Quiescent));
@@ -225,20 +223,10 @@ impl DecisionExecution<'_> {
         let completion = next.completion();
         let message = message.filter(|_| completion.is_none());
         for role in [PlayerRole::A, PlayerRole::B] {
-            let observation = next.observation(role);
             with_callback_timeout(
                 self.plan.limits.callback_timeout(),
-                self.agents[role_index(role)].observe(Observation {
-                    transition: Some(Transition {
-                        actor,
-                        action: action.clone(),
-                        view: observation,
-                    }),
-                    message: message.filter(|_| role != actor).map(|text| Message {
-                        sender: actor,
-                        text: text.to_owned(),
-                    }),
-                }),
+                self.agents[role_index(role)]
+                    .observe(next.transition_observation(role, actor, action, message)),
             )
             .await
             .map_err(|_| callback_timeout_failure("observe_transition", role))?

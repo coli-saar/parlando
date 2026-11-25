@@ -72,7 +72,7 @@ class SessionLogger:
             self._accepted_bytes += size
             self._entries.append(message)
 
-    def _drain(self) -> list[str]:
+    def drain(self) -> list[str]:
         """Removes entries for one response while retaining the session byte total."""
         with self._lock:
             entries = self._entries
@@ -239,7 +239,18 @@ class Agent:
         return None
 
 
-AgentFactory = Callable[[Context], Agent | Awaitable[Agent]]
+AgentSource = type[Agent] | Callable[[Context], Agent | Awaitable[Agent]]
+
+
+async def create_agent(source: AgentSource, context: Context) -> Agent:
+    """Create one session's agent using the same convention as the gRPC host.
+
+    Pass an Agent subclass with a zero-argument constructor, or a synchronous
+    or asynchronous factory that takes the session Context. Use a factory when
+    construction needs role, seed, settings, checkpoint, or session logging.
+    """
+    instance = source() if isinstance(source, type) else source(context)
+    return await instance if inspect.isawaitable(instance) else instance
 
 
 @dataclass
@@ -255,7 +266,7 @@ class _AgentService:
     """Generated gRPC servicer implementation backed by Python Agent instances."""
 
     def __init__(
-        self, factory: AgentFactory, auth_token: str | None = None, max_agents: int = 128
+        self, factory: AgentSource, auth_token: str | None = None, max_agents: int = 128
     ) -> None:
         """Creates a service that instantiates one Python agent per CreateAgent call."""
         self._factory = factory
@@ -293,16 +304,13 @@ class _AgentService:
                 checkpoint_id=_optional_checkpoint(request),
                 logger=logger,
             )
-            maybe_agent = self._factory(init_context)
-            agent = (
-                await maybe_agent if inspect.isawaitable(maybe_agent) else maybe_agent
-            )
+            agent = await create_agent(self._factory, init_context)
             agent_id = str(uuid.uuid4())
             self._agents[agent_id] = _AgentInstance(agent, logger)
         finally:
             self._creating_agents -= 1
         return self._pb2.CreateAgentResponse(
-            agent_id=agent_id, session_logs=logger._drain()
+            agent_id=agent_id, session_logs=logger.drain()
         )
 
     @asynccontextmanager
@@ -323,7 +331,7 @@ class _AgentService:
         """Handles a remote Start request from the Rust server."""
         async with self._instance(request.agent_id, context) as instance:
             await instance.agent.start(_struct_to_dict(request.observation))
-            return self._pb2.ObserveResponse(session_logs=instance.logger._drain())
+            return self._pb2.ObserveResponse(session_logs=instance.logger.drain())
 
     async def Observe(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Delivers a combined observation under the instance's callback lock."""
@@ -339,7 +347,7 @@ class _AgentService:
             if request.HasField("message"):
                 message = Message(request.message.sender, request.message.text)
             await instance.agent.observe(Observation(transition, message))
-            return self._pb2.ObserveResponse(session_logs=instance.logger._drain())
+            return self._pb2.ObserveResponse(session_logs=instance.logger.drain())
 
     async def ObserveTransition(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote ObserveTransition request from the Rust server."""
@@ -349,19 +357,19 @@ class _AgentService:
                 _struct_to_dict(request.action),
                 _struct_to_dict(request.observation),
             )
-            return self._pb2.ObserveResponse(session_logs=instance.logger._drain())
+            return self._pb2.ObserveResponse(session_logs=instance.logger.drain())
 
     async def ObserveMessage(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote ObserveMessage request from the Rust server."""
         async with self._instance(request.agent_id, context) as instance:
             await instance.agent.observe_message(request.sender, request.text)
-            return self._pb2.ObserveResponse(session_logs=instance.logger._drain())
+            return self._pb2.ObserveResponse(session_logs=instance.logger.drain())
 
     async def Finish(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote Finish request from the Rust server."""
         async with self._instance(request.agent_id, context) as instance:
             await instance.agent.finish(_struct_to_dict(request.completion))
-            return self._pb2.ObserveResponse(session_logs=instance.logger._drain())
+            return self._pb2.ObserveResponse(session_logs=instance.logger.drain())
 
     async def Respond(self, request: Any, context: grpc.aio.ServicerContext) -> Any:
         """Handles a remote Respond request from the Rust server."""
@@ -378,10 +386,10 @@ class _AgentService:
                 )
                 return self._pb2.RespondResponse(
                     response=_decision_to_proto(self._pb2, decision),
-                    session_logs=instance.logger._drain(),
+                    session_logs=instance.logger.drain(),
                 )
             result = await instance.agent.respond(_available_actions(request))
-            logs = instance.logger._drain()
+            logs = instance.logger.drain()
             if result is None:
                 return self._pb2.RespondResponse(session_logs=logs)
             return self._pb2.RespondResponse(
@@ -399,13 +407,13 @@ class _AgentService:
                 return self._pb2.ShutdownResponse(session_logs=[])
             try:
                 await instance.agent.shutdown()
-                return self._pb2.ShutdownResponse(session_logs=instance.logger._drain())
+                return self._pb2.ShutdownResponse(session_logs=instance.logger.drain())
             finally:
                 del self._agents[request.agent_id]
 
 
 async def _serve_async(
-    factory: type[Agent] | AgentFactory,
+    factory: AgentSource,
     host: str = "127.0.0.1",
     port: int = 50051,
     certificate_chain: bytes | None = None,
@@ -452,7 +460,7 @@ async def _serve_async(
 
 def add_agent_service(
     server: grpc.aio.Server,
-    factory: type[Agent] | AgentFactory,
+    factory: AgentSource,
     *,
     max_agents: int = 128,
 ) -> None:
@@ -463,24 +471,35 @@ def add_agent_service(
     The caller owns server binding, startup, and shutdown. Transport authentication
     is read from `PARLANDO_REMOTE_AGENT_TOKEN`.
     """
+    _register_agent_service(
+        server, factory, max_agents, os.environ.get("PARLANDO_REMOTE_AGENT_TOKEN") or None
+    )
+
+
+def _register_agent_service(
+    server: grpc.aio.Server, factory: AgentSource, max_agents: int, token: str | None
+) -> None:
+    """Attach a capacity-limited registry with the owning listener's credential policy."""
     if max_agents <= 0:
         raise ValueError("max_agents must be greater than zero")
-    _pb2, pb2_grpc = _generated_modules()
+    _, pb2_grpc = _generated_modules()
+    pb2_grpc.add_AgentServiceServicer_to_server(_AgentService(factory, token, max_agents), server)
 
-    def normalized_factory(context: Context) -> Agent | Awaitable[Agent]:
-        """Creates an Agent from either a zero-argument class or a context-aware factory."""
-        if isinstance(factory, type):
-            return factory()
-        return factory(context)
 
-    pb2_grpc.add_AgentServiceServicer_to_server(
-        _AgentService(
-            normalized_factory,
-            os.environ.get("PARLANDO_REMOTE_AGENT_TOKEN") or None,
-            max_agents,
-        ),
-        server,
-    )
+async def start_loopback_agent_service(
+    source: AgentSource, *, max_agents: int = 128
+) -> tuple[grpc.aio.Server, str]:
+    """Start a local opponent on an OS-assigned loopback port in this event loop.
+
+    The returned HTTP endpoint accepts unauthenticated gRPC from local processes.
+    Use it within a trusted host. The caller owns the returned server and must
+    await its stop method when the local client has finished.
+    """
+    server = grpc.aio.server()
+    _register_agent_service(server, source, max_agents, None)
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    return server, f"http://127.0.0.1:{port}"
 
 
 class Learner:
@@ -527,7 +546,7 @@ def add_learner_service(server: grpc.aio.Server, learner: Learner) -> None:
 
 
 def serve(
-    factory: type[Agent] | AgentFactory,
+    factory: AgentSource,
     host: str = "127.0.0.1",
     port: int = 50051,
     certificate_chain: bytes | None = None,
@@ -564,6 +583,15 @@ def _dict_to_struct(value: dict[str, Any]) -> Struct:
     struct = Struct()
     json_format.ParseDict(value, struct)
     return struct
+
+
+def wire_value(value: dict[str, Any]) -> dict[str, Any]:
+    """Copy a JSON object through the same protobuf Struct as a remote agent.
+
+    Nested objects and arrays retain their shape. All numbers use double
+    precision, including integers in a game's original component value.
+    """
+    return _struct_to_dict(_dict_to_struct(value))
 
 
 def _available_actions(request: Any) -> Optional[list[dict[str, Any]]]:

@@ -1,0 +1,14 @@
+[env]
+game = "games/last-screening/dist/last-screening-0.1.0.zip"
+learner_role = "B"
+schedule = { kind = "alternate_every_response", first = "A" }
+limits = { decisions = 64 }
+
+[env.opponent]
+factory = "wasm"
+path = "games/last-screening/dist/agent-last_screening.operator-1.0.0.zip"
+
+[env.taskset]
+id = "last_screening_verifiers"
+seeds = [1, 2, 3, 4]
+system_prompt = "parlando-rl/examples/last_screening/instructions.txt"

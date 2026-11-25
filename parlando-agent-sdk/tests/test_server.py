@@ -17,7 +17,7 @@ PACKAGE_SRC = Path(__file__).resolve().parents[1] / "src"
 if str(PACKAGE_SRC) not in sys.path:
     sys.path.insert(0, str(PACKAGE_SRC))
 
-from parlando_agent_sdk import server  # noqa: E402
+from parlando_agent_sdk import AgentSource, create_agent, server, wire_value  # noqa: E402
 from parlando_agent_sdk.generated import parlando_agent_v5_pb2, parlando_rl_v1_pb2  # noqa: E402
 
 
@@ -144,7 +144,10 @@ class ConversionTests(unittest.TestCase):
             "nested": {"items": [1.5, "two", False]},
             "empty": {},
         }
-        self.assertEqual(server._struct_to_dict(server._dict_to_struct(value)), value)
+        value["nested"]["items"].append(2)
+        converted = wire_value(value)
+        self.assertEqual(converted, value)
+        self.assertIs(type(converted["nested"]["items"][-1]), float)
 
     def test_available_actions_distinguishes_omitted_empty_and_populated(self) -> None:
         """The optional affordance contract distinguishes missing hints from an empty set."""
@@ -194,6 +197,19 @@ class ConversionTests(unittest.TestCase):
 
 class ServiceTests(unittest.IsolatedAsyncioTestCase):
     """Covers service authentication, capacity, cleanup, and delegation."""
+
+    async def test_create_agent_normalizes_all_public_sources(self) -> None:
+        """Local drivers and gRPC accept classes and sync or async context factories."""
+        context = server.Context("A", 42, {})
+
+        async def make_agent(received: server.Context) -> server.Agent:
+            """Verify that an asynchronous factory receives the caller's session."""
+            self.assertIs(received, context)
+            return RecordingAgent()
+
+        sources: tuple[AgentSource, ...] = (RecordingAgent, lambda _: RecordingAgent(), make_agent)
+        for source in sources:
+            self.assertIsInstance(await create_agent(source, context), RecordingAgent)
 
     def service(self, factory: object, **options: object) -> server._AgentService:
         """Constructs a service while replacing generated protobuf imports."""

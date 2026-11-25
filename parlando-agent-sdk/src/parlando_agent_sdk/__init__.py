@@ -7,6 +7,7 @@ agent service for standalone deployments.
 
 from .server import (
     Agent,
+    AgentSource,
     Context,
     Decision,
     Learner,
@@ -20,11 +21,15 @@ from .server import (
     WakeupRequest,
     add_agent_service,
     add_learner_service,
+    create_agent,
     serve,
+    start_loopback_agent_service,
+    wire_value,
 )
 
 __all__ = [
     "Agent",
+    "AgentSource",
     "Context",
     "Decision",
     "Learner",
@@ -38,5 +43,8 @@ __all__ = [
     "WakeupRequest",
     "add_agent_service",
     "add_learner_service",
+    "create_agent",
     "serve",
+    "start_loopback_agent_service",
+    "wire_value",
 ]

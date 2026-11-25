@@ -27,26 +27,26 @@ mod transcription;
 mod tts;
 mod wasm_agent;
 
-
 pub use agent_experiment::{
     AgentSchedule, AlternateAfterAction, AlternateEveryResponse, CheckpointId, ExperimentFile,
     ExperimentRunSummary, ExperimentRunner, RLAgent, RLTrainingContext, ResultAgent,
-    RewardFunction, RoleRewards, SessionResult, SessionStatus, TrainingBatch, TrajectoryStep,
+    RewardFunction, RoleRewards, SessionLimits, SessionResult, SessionStatus, TrainingBatch,
+    TrajectoryStep,
 };
 pub use game::{ActionRejection, GameMetadata, PlayerRole, SecretValues};
 pub use runtime_limits::{bundled_runtime_limits, ParticipantCreationLimit, RuntimeLimits};
 pub use server::Server;
 pub use session_log::{
-    SessionLogError, SessionLogger, MAX_SESSION_LOG_BYTES, MAX_SESSION_LOG_ENTRY_BYTES,
-    SESSION_LOG_QUEUE_CAPACITY,
+    SessionLogCapture, SessionLogError, SessionLogger, MAX_SESSION_LOG_BYTES,
+    MAX_SESSION_LOG_ENTRY_BYTES, SESSION_LOG_QUEUE_CAPACITY,
 };
 
 /// APIs for implementing optional computer-controlled players.
 pub mod agent {
     pub use crate::agents::{
-        configuration_fingerprint, Agent, AgentContext as Context, AgentFactory as Factory,
-        AgentIdentity as Identity, AgentResponse as Response, Decision, Message, Observation,
-        Reason, Transition, WakeupRequest,
+        configuration_fingerprint, with_callback_timeout, Agent, AgentContext as Context,
+        AgentFactory as Factory, AgentIdentity as Identity, AgentResponse as Response, Decision,
+        Message, Observation, Reason, Transition, WakeupRequest,
     };
     pub use crate::game::{
         AgentConfigChoice as Choice, AgentConfigField as ConfigField,
@@ -69,7 +69,7 @@ pub mod agent {
 
     /// Adapter for agents hosted behind Parlando's versioned gRPC protocol.
     pub mod grpc {
-        pub use crate::remote_agent::RemoteAgent;
+        pub use crate::remote_agent::{action_from_wire_json, RemoteAgent};
     }
 }
 

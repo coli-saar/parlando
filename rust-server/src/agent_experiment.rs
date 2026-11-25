@@ -27,7 +27,7 @@ pub use training::{
 };
 
 use self::schedule::require_empty_parameters;
-pub use self::spec::ExperimentFile;
+pub use self::spec::{ExperimentFile, SessionLimits};
 use crate::agents::AgentFactory;
 use crate::component::LoadedGame;
 use crate::game::{GameMetadata, PlayerRole};

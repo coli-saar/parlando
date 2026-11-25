@@ -106,6 +106,14 @@ impl RemoteAgent {
     pub fn new() -> Self {
         Self
     }
+
+    /// Creates a remote factory with a credential scoped to this endpoint.
+    ///
+    /// An empty token disables authentication for this factory. A nonempty token
+    /// follows the same TLS requirements as the process-wide default credential.
+    pub fn with_auth_token(token: String) -> impl AgentFactory {
+        AuthenticatedRemoteAgent(token)
+    }
 }
 
 impl Default for RemoteAgent {
@@ -152,7 +160,7 @@ impl AgentFactory for RemoteAgent {
 
     /// Creates one fully initialized remote-agent handle for a session participant.
     async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
-        create_remote_instance(context, None).await
+        create_remote_instance(context, None, None).await
     }
 
     /// Returns durable identity metadata for remote gRPC agents.
@@ -165,12 +173,37 @@ impl AgentFactory for RemoteAgent {
     }
 }
 
+/// Remote factory with an explicit, endpoint-scoped authorization override.
+struct AuthenticatedRemoteAgent(String);
+
+#[async_trait]
+impl AgentFactory for AuthenticatedRemoteAgent {
+    /// Exposes the same non-secret endpoint configuration as the standard factory.
+    fn definition(&self) -> AgentDefinition {
+        <RemoteAgent as AgentFactory>::definition(&RemoteAgent)
+    }
+
+    /// Sends this endpoint's credential through the standard transport adapter.
+    async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
+        create_remote_instance(context, None, Some(&self.0)).await
+    }
+
+    /// Uses the standard remote implementation identity.
+    fn identity(&self, settings: &Value) -> Result<AgentIdentity> {
+        <RemoteAgent as AgentFactory>::identity(&RemoteAgent, settings)
+    }
+}
+
 /// Creates and initializes a remote agent, optionally pinned to a learner checkpoint.
 async fn create_remote_instance(
     context: AgentContext,
     checkpoint: Option<CheckpointId>,
+    auth_token: Option<&str>,
 ) -> Result<Box<dyn Agent + Send>> {
-    let config = remote_config_from_settings(&context.settings)?;
+    let mut config = remote_config_from_settings(&context.settings)?;
+    if let Some(token) = auth_token {
+        config.auth_token = (!token.is_empty()).then(|| token.to_owned());
+    }
     validate_remote_endpoint(&config.endpoint, config.auth_token.is_some())?;
     let channel = Channel::from_shared(config.endpoint.clone())
         .context("invalid remote agent endpoint")?
@@ -225,7 +258,7 @@ impl AgentFactory for RemoteCheckpointFactory {
 
     /// Creates an inference agent pinned to this factory's checkpoint.
     async fn create(&self, context: AgentContext) -> Result<Box<dyn Agent + Send>> {
-        create_remote_instance(context, Some(self.checkpoint.clone())).await
+        create_remote_instance(context, Some(self.checkpoint.clone()), None).await
     }
 
     /// Returns the remote implementation identity independently of checkpoint identity.
@@ -576,10 +609,7 @@ fn reason_to_proto(reason: Reason) -> pb::DecisionReason {
 /// Validates a timer update and converts the protobuf decision into host outputs.
 fn proto_to_decision(response: pb::AgentResponse) -> Result<Decision> {
     use pb::wakeup_request::Request;
-    let action = response
-        .action
-        .map(|action| ComponentValue::from_typed(&struct_to_json(action)))
-        .transpose()?;
+    let action = response.action.map(decode_remote_action).transpose()?;
     let wakeup = match response.wakeup {
         None => None,
         Some(wakeup) => Some(match wakeup.request {
@@ -599,6 +629,20 @@ fn proto_to_decision(response: pb::AgentResponse) -> Result<Decision> {
         message: response.message,
         wakeup,
     })
+}
+
+/// Decodes a JSON-shaped agent action through the remote agent number representation.
+///
+/// Use this when an in-process policy returns the same object that it would
+/// pass through gRPC. Integral doubles become compact integer values so the
+/// action is validated against the same game schema as a remote response.
+pub fn action_from_wire_json(value: Value) -> Result<ComponentValue> {
+    decode_remote_action(json_to_struct(value)?)
+}
+
+/// Decodes one protobuf action using the game component wire representation.
+fn decode_remote_action(value: Struct) -> Result<ComponentValue> {
+    ComponentValue::from_typed(&struct_to_json(value))
 }
 
 /// Converts a component value to the object representation used by remote callbacks.

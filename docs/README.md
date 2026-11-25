@@ -17,6 +17,8 @@ The [experimenter manual](web/content/manual/_index.md) is the main guide. It st
 - [WebAssembly component interface](component-games.md)
 - [Participant client protocol](client-protocol.md) and [audio transport](audio-transport.md)
 - [Agent API](agents.md) and [headless evaluation and training](agent-agent-and-rl-experiments.md)
+- [Train and deploy policies with Parlando RL](training-with-parlando-rl.md)
+- [Train a Parlando agent with OpenEnv](training-with-openenv.md)
 - [Data and monitoring reference](data-and-monitoring.md)
 - [Prolific integration reference](prolific-integration.md)
 - [Participant materials and institutional privacy review](privacy/README.md)

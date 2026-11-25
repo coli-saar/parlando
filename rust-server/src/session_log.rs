@@ -91,6 +91,20 @@ pub struct SessionLogger {
     source: SessionLogSource,
 }
 
+/// Nonblocking reader for a session-local headless log capture.
+pub struct SessionLogCapture(mpsc::Receiver<PendingSessionLog>);
+
+impl SessionLogCapture {
+    /// Removes and returns entries currently in the queue, in acceptance order.
+    pub fn drain(&mut self) -> Vec<String> {
+        let mut entries = Vec::new();
+        while let Ok(entry) = self.0.try_recv() {
+            entries.push(entry.text);
+        }
+        entries
+    }
+}
+
 /// Execution-owned worker which drains and closes one live session log.
 pub(crate) struct SessionLogWriter {
     shutdown: Option<oneshot::Sender<()>>,
@@ -130,7 +144,7 @@ impl SessionLogger {
     /// Headless sessions do not use the live SQLite event store. This sink preserves the
     /// public byte-limit behavior and gives constructors the same logger capability while
     /// the runner's first implementation writes only structured result and trace artifacts.
-    pub(crate) fn headless() -> Self {
+    pub fn headless() -> Self {
         Self {
             inner: Arc::new(SessionLoggerInner {
                 sender: None,
@@ -138,6 +152,22 @@ impl SessionLogger {
             }),
             source: SessionLogSource::Game,
         }
+    }
+
+    /// Creates a bounded headless logger and its in-memory reader.
+    ///
+    /// Drain the reader between decisions to leave room for later callbacks. The
+    /// existing entry and cumulative byte limits still apply to this session.
+    pub fn capture_headless() -> (Self, SessionLogCapture) {
+        let (sender, receiver) = mpsc::channel(SESSION_LOG_QUEUE_CAPACITY);
+        let logger = Self {
+            inner: Arc::new(SessionLoggerInner {
+                sender: Some(sender),
+                accepted_bytes: AtomicUsize::new(0),
+            }),
+            source: SessionLogSource::Game,
+        };
+        (logger, SessionLogCapture(receiver))
     }
 
     /// Creates a logger which validates limits and then deliberately discards entries.

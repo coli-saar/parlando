@@ -552,6 +552,34 @@ impl GameFrame {
         self.views[usize::from(role == PlayerRole::B)].clone()
     }
 
+    /// Builds the headless callback for a committed action from one seat's perspective.
+    ///
+    /// Both players receive the transition and their own view. Only the other
+    /// player receives the optional message, and completion suppresses chat.
+    pub fn transition_observation(
+        &self,
+        receiver: PlayerRole,
+        actor: PlayerRole,
+        action: &ComponentValue,
+        message: Option<&str>,
+    ) -> crate::agent::Observation {
+        use crate::agent::{Message, Observation, Transition};
+
+        Observation {
+            transition: Some(Transition {
+                actor,
+                action: action.clone(),
+                view: self.observation(receiver),
+            }),
+            message: message
+                .filter(|_| receiver != actor && self.completion().is_none())
+                .map(|text| Message {
+                    sender: actor,
+                    text: text.to_owned(),
+                }),
+        }
+    }
+
     /// Materializes neutral event metadata when the runtime logs the transition.
     /// Logs invalid output from a nonconforming codec and omits that metadata.
     pub fn transition_metadata(&self) -> Option<Value> {

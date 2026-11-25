@@ -1,0 +1,8 @@
+spec_version: 1
+name: parlando_openenv
+type: space
+runtime: fastapi
+app: server.app:app
+port: 8000
+action: ParlandoAction
+observation: ParlandoObservation

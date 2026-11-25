@@ -1,0 +1,39 @@
+schema: parlando-agent-experiment/v1
+
+game:
+  id: cue-choice
+
+agents:
+  learner:
+    factory: remote_grpc
+    settings:
+      endpoint: http://127.0.0.1:50061
+  dealer:
+    factory: cue_choice.dealer
+
+sessions:
+  scenarios:
+    - name: dax-held-out
+      config: {level: dax}
+      seeds: [10001, 10002, 10003, 10004]
+    - name: wug-held-out
+      config: {level: wug}
+      seeds: [10001, 10002, 10003, 10004]
+    - name: kiki-held-out
+      config: {level: kiki}
+      seeds: [10001, 10002, 10003, 10004]
+    - name: zorp-held-out
+      config: {level: zorp}
+      seeds: [10001, 10002, 10003, 10004]
+  seats:
+    player_a: learner
+    player_b: dealer
+  mirror_roles: false
+
+schedule:
+  kind: alternate_after_action
+  first: player_b
+
+output:
+  directory: cue-choice-results
+  trace: decisions

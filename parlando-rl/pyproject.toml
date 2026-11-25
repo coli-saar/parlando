@@ -1,0 +1,35 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "parlando-rl"
+version = "0.1.0"
+description = "Native Parlando game environments and agent policies for reinforcement learning"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2,<3",
+    "parlando-remote-agent>=0.7.0,<0.8",
+]
+
+[project.optional-dependencies]
+openenv = ["openenv-core==0.3.0", "PyYAML>=6,<7"]
+gymnasium = ["gymnasium>=1.0,<2"]
+sb3 = ["gymnasium>=1.0,<2", "stable-baselines3>=2.4,<3"]
+verifiers = [
+    "verifiers>=0.4.1,<0.5; python_version >= '3.11'",
+]
+
+[project.scripts]
+server = "parlando_rl.openenv.server:main"
+
+[tool.maturin]
+exclude = ["**/__pycache__/**", "**/*.pyc"]
+python-source = "python"
+python-packages = ["parlando_rl", "parlando_verifiers"]
+module-name = "parlando_rl._native"
+features = ["pyo3/extension-module"]
+
+[tool.uv.sources]
+parlando-remote-agent = { path = "../parlando-agent-sdk" }

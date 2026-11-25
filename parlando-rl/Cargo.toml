@@ -1,0 +1,22 @@
+[package]
+name = "parlando-rl"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = "1"
+parlando = "=0.7.0"
+pyo3 = { version = "0.27", features = ["extension-module"] }
+pyo3-async-runtimes = { version = "0.27", features = ["tokio-runtime"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "time"] }
+
+[patch.crates-io]
+parlando = { path = "../rust-server" }

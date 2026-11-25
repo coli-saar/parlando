@@ -159,14 +159,21 @@ impl ConfiguredRole {
 /// Hard per-session bounds which remain independent of activation policy.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
-pub(super) struct SessionLimits {
-    pub(super) callback_timeout_seconds: u64,
-    pub(super) shutdown_timeout_seconds: u64,
-    pub(super) session_timeout_seconds: u64,
-    pub(super) decisions: u64,
-    pub(super) accepted_actions: u64,
-    pub(super) messages: u64,
-    pub(super) rejected_actions: u64,
+pub struct SessionLimits {
+    /// Maximum time in seconds for one agent lifecycle callback.
+    pub callback_timeout_seconds: u64,
+    /// Maximum time in seconds for each agent shutdown.
+    pub shutdown_timeout_seconds: u64,
+    /// Wall-clock limit in seconds for decisions and gameplay.
+    pub session_timeout_seconds: u64,
+    /// Maximum number of decision opportunities across both roles.
+    pub decisions: u64,
+    /// Maximum number of game actions accepted across both roles.
+    pub accepted_actions: u64,
+    /// Maximum number of chat deliveries across both roles.
+    pub messages: u64,
+    /// Maximum number of rejected game actions across both roles.
+    pub rejected_actions: u64,
 }
 
 impl Default for SessionLimits {
@@ -186,7 +193,7 @@ impl Default for SessionLimits {
 
 impl SessionLimits {
     /// Rejects zero bounds and a callback timeout longer than the session deadline.
-    fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if self.callback_timeout_seconds == 0
             || self.shutdown_timeout_seconds == 0
             || self.session_timeout_seconds == 0
@@ -200,21 +207,55 @@ impl SessionLimits {
         if self.callback_timeout_seconds > self.session_timeout_seconds {
             bail!("callback timeout must not exceed the session timeout");
         }
+        let now = std::time::Instant::now();
+        for timeout in [
+            self.callback_timeout(),
+            self.shutdown_timeout(),
+            self.session_timeout(),
+        ] {
+            anyhow::ensure!(
+                now.checked_add(timeout).is_some(),
+                "session timeout exceeds the supported clock range"
+            );
+        }
         Ok(())
     }
 
+    /// Selects the first count limit reached after one complete response.
+    ///
+    /// Check game completion before calling this: completion takes priority
+    /// over all count limits reached on that same decision.
+    pub fn reached_after_response(
+        &self,
+        accepted_actions: u64,
+        messages: u64,
+        rejected_actions: u64,
+    ) -> Option<super::SessionStatus> {
+        use super::SessionStatus;
+
+        if accepted_actions >= self.accepted_actions {
+            Some(SessionStatus::ActionLimit)
+        } else if messages >= self.messages {
+            Some(SessionStatus::MessageLimit)
+        } else if rejected_actions >= self.rejected_actions {
+            Some(SessionStatus::RejectionLimit)
+        } else {
+            None
+        }
+    }
+
     /// Returns the callback timeout duration.
-    pub(super) fn callback_timeout(&self) -> Duration {
+    pub fn callback_timeout(&self) -> Duration {
         Duration::from_secs(self.callback_timeout_seconds)
     }
 
     /// Returns the shutdown timeout duration.
-    pub(super) fn shutdown_timeout(&self) -> Duration {
+    pub fn shutdown_timeout(&self) -> Duration {
         Duration::from_secs(self.shutdown_timeout_seconds)
     }
 
     /// Returns the wall-clock session deadline duration.
-    pub(super) fn session_timeout(&self) -> Duration {
+    pub fn session_timeout(&self) -> Duration {
         Duration::from_secs(self.session_timeout_seconds)
     }
 }

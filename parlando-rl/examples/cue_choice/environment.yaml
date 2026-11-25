@@ -1,0 +1,8 @@
+game: ../../../experiments/cue-choice-rl/dist/cue-choice-0.1.0.zip
+opponent:
+  factory: wasm
+  path: ../../../experiments/cue-choice-rl/dist/agent-cue_choice.dealer-1.0.0.zip
+learner_role: A
+schedule:
+  kind: alternate_after_action
+  first: player_b

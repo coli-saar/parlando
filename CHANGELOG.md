@@ -6,6 +6,8 @@ The format is based on Keep a Changelog, and this project uses semantic versioni
 
 ## Unreleased
 
+- Train ordinary Parlando agents through an OpenEnv environment with a role-private observation stream and a WASM or remote opponent. See the [OpenEnv guide](docs/training-with-openenv.md).
+
 - Python dependency names change from `parlando-python-sdk` to `parlando-game-sdk` and from `parlando-agent-sdk` to `parlando-remote-agent`. Existing Python imports continue to work.
 
 ## [0.7.0] - 2026-11-23

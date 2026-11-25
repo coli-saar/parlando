@@ -21,7 +21,7 @@ tokio::task_local! {
 }
 
 /// Enforces the caller's budget and makes the same deadline available to transport adapters.
-pub(crate) async fn with_callback_timeout<F: Future>(
+pub async fn with_callback_timeout<F: Future>(
     budget: Duration,
     callback: F,
 ) -> std::result::Result<F::Output, tokio::time::error::Elapsed> {
@@ -125,7 +125,7 @@ impl AgentResponse {
     }
 
     /// Projects the action and chat onto the headless scheduler's nonempty output.
-    pub(crate) fn from_decision(decision: Decision) -> Option<Self> {
+    pub fn from_decision(decision: Decision) -> Option<Self> {
         match (decision.action, decision.message) {
             (Some(action), Some(message)) => {
                 Some(AgentResponse::action_and_message(action, message))
@@ -137,7 +137,7 @@ impl AgentResponse {
     }
 
     /// Separates the response into the runtime's ordered action and message operations.
-    pub(crate) fn into_parts(self) -> (Option<ComponentValue>, Option<String>) {
+    pub fn into_parts(self) -> (Option<ComponentValue>, Option<String>) {
         match self {
             Self::Action(action) => (Some(action), None),
             Self::Message(message) => (None, Some(message)),
