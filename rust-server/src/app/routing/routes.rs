@@ -276,12 +276,28 @@ fn dashboard_feature_routes(prefix: &str) -> Router<Arc<ServerContext>> {
             get(admin_communication_config_javascript),
         )
         .route(
+            &participant_path("/admin/assets/privacy-notice-config.js"),
+            get(admin_privacy_notice_config_javascript),
+        )
+        .route(
+            &participant_path("/admin/assets/privacy-notice-templates.js"),
+            get(admin_privacy_notice_templates_javascript),
+        )
+        .route(
             &participant_path("/admin/assets/imprint-config.js"),
             get(admin_imprint_config_javascript),
         )
         .route(
+            &participant_path("/admin/assets/imprint-templates.js"),
+            get(admin_imprint_templates_javascript),
+        )
+        .route(
             &participant_path("/admin/assets/consent-responsibilities.js"),
             get(admin_consent_responsibilities_javascript),
+        )
+        .route(
+            &participant_path("/admin/assets/consent-templates.js"),
+            get(admin_consent_templates_javascript),
         )
         .route(
             &participant_path("/api/admin/privacy"),

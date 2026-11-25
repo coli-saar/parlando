@@ -116,6 +116,42 @@ pub(in crate::app) async fn admin_consent_responsibilities_javascript() -> Respo
     )
 }
 
+/// Serves the process-start Markdown catalogue as a browser module without rereading disk.
+pub(in crate::app) async fn admin_consent_templates_javascript() -> Response {
+    let body = format!(
+        "export default {};",
+        serde_json::to_string(crate::consent_templates::catalogue())
+            .expect("serializable consent templates")
+    );
+    let mut response = body.into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/javascript; charset=utf-8"),
+    );
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+/// Serves country-specific Markdown templates from the validated startup snapshot.
+pub(in crate::app) async fn admin_imprint_templates_javascript() -> Response {
+    let body = format!(
+        "export default {};",
+        serde_json::to_string(crate::imprint_templates::catalogue())
+            .expect("serializable imprint templates")
+    );
+    let mut response = body.into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/javascript; charset=utf-8"),
+    );
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 /// Prevents a restarted dashboard from combining newly embedded markup with stale assets.
 fn admin_dashboard_asset(body: &'static str, content_type: &'static str) -> Response {
     let mut response = body.into_response();
@@ -134,3 +170,27 @@ const ADMIN_EXPERIMENT_JAVASCRIPT: &str = include_str!("../admin_dashboard.js");
 const ADMIN_EXPERIMENT_STATE_JAVASCRIPT: &str = include_str!("../admin_dashboard_state.js");
 const ADMIN_EXPERIMENT_FORMAT_JAVASCRIPT: &str = include_str!("../admin_dashboard_format.mjs");
 const ADMIN_EXPERIMENT_API_JAVASCRIPT: &str = include_str!("../admin_dashboard_api.mjs");
+
+/// Serves jurisdiction-specific Markdown templates from the validated startup snapshot.
+pub(in crate::app) async fn admin_privacy_notice_templates_javascript() -> Response {
+    let body = format!(
+        "export default {};",
+        serde_json::to_string(crate::privacy_notice_templates::catalogue())
+            .expect("serializable privacy_notice templates")
+    );
+    let mut response = body.into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/javascript; charset=utf-8"),
+    );
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+
+/// Serves the synchronized privacy notice editor and its public supplemental fields.
+pub(in crate::app) async fn admin_privacy_notice_config_javascript() -> Response {
+    admin_dashboard_asset(include_str!("../privacy_notice_config.mjs"), "text/javascript; charset=utf-8")
+}

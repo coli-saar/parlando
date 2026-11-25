@@ -56,6 +56,29 @@ provides the public link and a Markdown download of the same notice. Changes to 
 institution settings do not rewrite an already saved notice. Keep a separate
 privacy notice describing the study's processing of personal data.
 
+### Edit or add imprint template files
+
+Each country’s complete imprint text is a Markdown file in `rust-server/templates/imprint/`. The server discovers `.md` files recursively at startup and uses them for the country selector and generation. Restart after editing templates; no rebuild is needed for template-only changes.
+
+Files support YAML front matter with `id` (a unique two-letter uppercase country code, or `EU`), `title` (the selector label), and `order` (lower values first). Without metadata, a file such as `BE.md` uses `BE` as its ID and derives a label from a leading Markdown heading or the filename. Invalid metadata or duplicate IDs/titles stop startup. Keep template files for countries referenced by saved configurations: country validation uses the loaded catalogue.
+
+The Markdown body contains the complete editable notice, including selected-template wording, legal references and source links. Contact-field substitution uses `{{field|fallback text}}` for `operator`, `address`, `responsible_person`, `email`, and `phone`. For example:
+
+```markdown
+---
+id: DE
+title: Germany
+order: 10
+---
+
+Operator: {{operator|[full legal name]}}
+Address: {{address|[full postal address]}}
+```
+
+The fallback remains visible when the contact field is empty. Other placeholders remain editable text. Existing generated notices, manual edits, previews and publication behavior are unchanged.
+
+For deployed or relocated binaries, copy the folder and set `PARLANDO_IMPRINT_TEMPLATE_DIR` before startup. By default, Parlando uses `templates/imprint/` beneath the Rust crate source directory used at build time. The supplied container images include the files under `/usr/local/share/parlando/imprint/` and configure this variable.
+
 ## Open and close intake
 
 | Intake state | Use it for |
@@ -67,3 +90,49 @@ privacy notice describing the study's processing of personal data.
 Open **Start experiment** and start **Local preview** for the pilot. Play both seats in separate browser profiles and check the resulting sessions in the dashboard. Use **Official intake** for data collection and distribute the URL from the running experiment. Record the game package revision, experiment ID, and recruitment link together.
 
 Use **Pause intake** when recruitment ends. Keep the host running while participants finish. On restart, reopen intake explicitly. See [monitor sessions and export results](data-operations/) before archiving a study.
+
+## Configure the privacy notice
+
+Under **Participant access and consent → Privacy notice**, select **EU/EEA**,
+**California**, **UK**, **Switzerland**, **Canada**, or **Brazil**. These are
+jurisdiction-specific starting points with official source links. Coverage depends
+on the operator and processing, and several laws can apply at once. In particular,
+the Canadian template requires review of provincial and public-sector rules.
+
+Generate and edit the consent forms, and complete the imprint first. The notice
+copies recognized privacy-related consent sections and the public imprint text
+and contact fields. It does not infer a legal controller from an operator name or
+a legal basis from participation consent. Complete the additional disclosures
+shown beneath the selector, including any relevant custom consent sections that
+were not recognized. Unfilled `{{placeholders}}` remain visible and trigger a
+review message; saving a draft does not certify its completeness.
+
+The generated notice is read-only. Edit its source forms or supplemental fields
+to change it. Consent-form edits, generation/removal, imprint edits and jurisdiction
+changes immediately update the preview. Switching jurisdictions preserves the
+supplemental fields. Checkbox section text becomes a source after **Generate
+consent form**. The preview uses the current runtime templates when configuration
+opens; the public page continues to show the saved revision until you save again.
+
+**Save new revision** publishes the snapshot at `information/privacy/`.
+**Privacy notice → Privacy notice** provides the preview, public link and Markdown
+download. An unconfigured public page asks the conductor to configure the notice.
+The participant footer links **Informed consent**, **Privacy notice**, and
+**Imprint** throughout participation. Rebuild and upload game client bundles to
+adopt the updated SDK footer.
+
+### Edit privacy notice template files
+
+Each Markdown file in `rust-server/templates/privacy-notice/` supplies one selector
+option using the same `id`, `title`, `description`, and `order` front matter as the
+consent catalogue. The server reads the directory once at startup. Restart after
+changing files, and save a new experiment revision to publish regenerated copy.
+`PARLANDO_PRIVACY_NOTICE_TEMPLATE_DIR` overrides the directory; the default is
+`templates/privacy-notice/` under the Rust crate source directory used at build
+time. Supplied container images include the catalogue.
+
+`{{source.imprint}}` and `{{source.consent}}` insert the synchronized public source
+blocks. Other placeholders use lowercase letters, digits and underscores, starting
+with a letter, for example `{{local_disclosure}}`; each creates an editable public
+text field. Inserted values are literal and are not interpreted as further template
+instructions. Keep template identifiers stable while saved studies reference them.

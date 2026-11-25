@@ -95,7 +95,7 @@
           <div class="workspace-management-tabs" role="group" aria-label="Experiment management">
             <button class="tab" type="button" data-tab="details">Configuration</button>
             <button class="tab" type="button" data-tab="export">Export</button>
-            <button class="tab" type="button" data-tab="privacy"><svg class="icon" aria-hidden="true"><use href="#icon-shield"></use></svg>Privacy</button>
+            <button class="tab" type="button" data-tab="privacy"><svg class="icon" aria-hidden="true"><use href="#icon-shield"></use></svg>Privacy notice</button>
           </div>
         </nav>
 
@@ -185,12 +185,13 @@
         </section>
 
         <section id="privacyPanel" class="tab-panel simple-panel" hidden>
-          <header class="section-intro"><h2>Privacy</h2><h3 id="privacyDocumentsHeading">Study documents</h3></header>
+          <header class="section-intro"><h2>Privacy notice</h2><h3 id="privacyDocumentsHeading">Study documents</h3></header>
           <div class="privacy-document-tabs" role="tablist" aria-labelledby="privacyDocumentsHeading">
             <button id="privacy-tab-documentation" class="privacy-document-tab" type="button" role="tab" data-privacy-tab="documentation" aria-controls="privacy-document-documentation" aria-selected="true" tabindex="0">Data documentation</button>
             <button id="privacy-tab-participants" class="privacy-document-tab" type="button" role="tab" data-privacy-tab="participants" aria-controls="privacy-document-participants" aria-selected="false" tabindex="-1">Participants</button>
             <button id="privacy-tab-conductors" class="privacy-document-tab" type="button" role="tab" data-privacy-tab="conductors" aria-controls="privacy-document-conductors" aria-selected="false" tabindex="-1">Study conductors</button>
             <button id="privacy-tab-data-protection" class="privacy-document-tab" type="button" role="tab" data-privacy-tab="data-protection" aria-controls="privacy-document-data-protection" aria-selected="false" tabindex="-1">Data protection managers</button>
+            <button id="privacy-tab-privacy" class="privacy-document-tab" type="button" role="tab" data-privacy-tab="privacy" aria-controls="privacy-document-privacy" aria-selected="false" tabindex="-1">Privacy notice</button>
             <button id="privacy-tab-imprint" class="privacy-document-tab" type="button" role="tab" data-privacy-tab="imprint" aria-controls="privacy-document-imprint" aria-selected="false" tabindex="-1">Imprint</button>
           </div>
           <section id="privacy-document-documentation" role="tabpanel" aria-labelledby="privacy-tab-documentation" data-privacy-document="documentation" tabindex="0">
@@ -208,6 +209,10 @@
           <section id="privacy-document-data-protection" role="tabpanel" aria-labelledby="privacy-tab-data-protection" data-privacy-document="data-protection" tabindex="0" hidden>
             <header class="section-intro"><h3>Data protection managers</h3><span class="page-actions"><a class="primary" data-privacy-download="data-protection" download>Download Markdown</a><a class="secondary" data-privacy-open="data-protection" target="_blank" rel="noopener">Open page</a></span></header>
             <div data-consent-document="data-protection"><p class="muted">Please configure the informed consent form.</p></div>
+          </section>
+          <section id="privacy-document-privacy" role="tabpanel" aria-labelledby="privacy-tab-privacy" data-privacy-document="privacy" tabindex="0" hidden>
+            <header class="section-intro"><h3>Privacy notice</h3><span class="page-actions"><a class="primary" data-privacy-download="privacy" download>Download Markdown</a><a class="secondary" data-privacy-open="privacy" target="_blank" rel="noopener">Open page</a></span></header>
+            <div id="privacyNoticeDocument"><p class="muted">Please configure the privacy notice.</p></div>
           </section>
           <section id="privacy-document-imprint" role="tabpanel" aria-labelledby="privacy-tab-imprint" data-privacy-document="imprint" tabindex="0" hidden>
             <header class="section-intro"><h3>Imprint</h3><span class="page-actions"><a class="primary" data-privacy-download="imprint" download>Download Markdown</a><a class="secondary" data-privacy-open="imprint" target="_blank" rel="noopener">Open page</a></span></header>

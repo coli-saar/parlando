@@ -47,8 +47,8 @@ input:not([type="checkbox"]), select {
 a { color: #ecc28c; }
 p, h1, h2 { margin: 0; }
 #root { min-height: 100vh; padding: 0 clamp(.75rem, 3vw, 3rem) 1.5rem; }
-.screening, #root > .parlando-session-tools, #root > .parlando-communication, #root > .online-error,
-#root > .parlando-partner-reconnect, #root > .parlando-idle-deadline {
+.screening, :is(#root, .parlando-participant-app) > .parlando-session-tools, :is(#root, .parlando-participant-app) > .parlando-communication, :is(#root, .parlando-participant-app) > .online-error,
+:is(#root, .parlando-participant-app) > .parlando-partner-reconnect, :is(#root, .parlando-participant-app) > .parlando-idle-deadline {
   width: min(100%, 1440px);
   margin-inline: auto;
 }
@@ -130,8 +130,8 @@ p, h1, h2 { margin: 0; }
 .exit-control p { margin-top: .5rem; color: var(--muted); }
 .exit-button { background: #4d2f19; border-color: #bd8f56; }
 
-#root > .parlando-session-tools,
-#root > .parlando-communication {
+:is(#root, .parlando-participant-app) > .parlando-session-tools,
+:is(#root, .parlando-participant-app) > .parlando-communication {
   margin-top: .65rem;
   padding: .45rem .65rem;
   gap: .4rem;

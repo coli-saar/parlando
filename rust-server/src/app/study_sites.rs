@@ -6,6 +6,7 @@ use axum::body::Body;
 
 /// Maps each information-page identifier to its independently editable HTML document.
 const SITES: &[(&str, &str)] = &[
+    ("privacy", include_str!("../../templates/study-sites/privacy.html")),
     (
         "imprint",
         include_str!("../../templates/study-sites/imprint.html"),
@@ -47,26 +48,13 @@ fn escape_document_text(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Headings emitted by the consent builder; only complete heading lines delimit sections.
-const CONSENT_SECTION_HEADINGS: &[&str] = &[
-    "Subject of this study",
-    "Duration and compensation",
-    "Possible benefit of the study",
-    "Experiences and risks",
-    "Data processing",
-    "Pseudonymized research data collected",
-    "Personal information collected",
-    "Confidentiality",
-    "Data storage",
-    "Disclosure and publication",
-    "Voluntary participation and withdrawal",
-    "Access, correction, and deletion",
-    "Data controller and contact person",
-    "Declaration of consent",
-    "Eligibility and study information",
-    "Communication and privacy rules",
-    "Live voice and transcription",
-];
+/// Uses the startup catalogue for section boundaries, including newly discovered Markdown files.
+fn consent_section_headings() -> Vec<&'static str> {
+    crate::consent_templates::catalogue()
+        .iter()
+        .map(|template| template.title.as_str())
+        .collect()
+}
 
 /// Sections omitted from study-conductor information; participant consent remains unchanged.
 const CONDUCTOR_EXCLUDED_SECTIONS: &[&str] = &[
@@ -101,7 +89,7 @@ fn consent_body_for_audience(body: &str, audience: &str, title: &str) -> String 
         .filter_map(|(index, line)| {
             let heading = line.trim();
             if (index == 0 || lines[index - 1].trim().is_empty())
-                && CONSENT_SECTION_HEADINGS.contains(&heading)
+                && consent_section_headings().contains(&heading)
             {
                 keep = if audience == "data-protection" {
                     DATA_PROTECTION_SECTIONS.contains(&heading)
@@ -169,13 +157,13 @@ fn conductor_responsibilities(config: &Value) -> Vec<&'static ConsentResponsibil
     }
     let mut sections = std::collections::HashSet::new();
     for (title, body) in forms {
-        if CONSENT_SECTION_HEADINGS.contains(&title.trim()) {
+        if consent_section_headings().contains(&title.trim()) {
             sections.insert(title.trim().to_owned());
         }
         let lines: Vec<_> = body.split('\n').collect();
         for (index, line) in lines.iter().enumerate() {
             if (index == 0 || lines[index - 1].trim().is_empty())
-                && CONSENT_SECTION_HEADINGS.contains(&line.trim())
+                && consent_section_headings().contains(&line.trim())
             {
                 sections.insert(line.trim().to_owned());
             }
@@ -238,6 +226,7 @@ fn information_document_title(audience: &str) -> &'static str {
         "participants" => "Information for participants",
         "conductors" => "Information for study conductors",
         "data-protection" => "Information for data protection managers",
+        "privacy" => "Privacy notice",
         _ => "Imprint",
     }
 }
@@ -254,17 +243,17 @@ fn show_consent_form_title(title: &str) -> bool {
 /// Exports readable Markdown, retaining lists and converting generated section headings.
 /// HTML-looking copy is escaped so a Markdown viewer does not interpret it as HTML.
 fn information_site_markdown(audience: &str, config: &Value, consent_url: &str) -> String {
-    if audience == "imprint" {
+    if matches!(audience, "imprint" | "privacy") {
         let text = config
-            .pointer("/direct/imprint/text")
+            .pointer(if audience == "privacy" { "/direct/privacy_notice/text" } else { "/direct/imprint/text" })
             .and_then(Value::as_str)
             .unwrap_or("");
-        return format!("# Imprint\n\n{}\n", escape_document_text(text));
+        return format!("# {}\n\n{}\n", information_document_title(audience), escape_document_text(if audience == "privacy" && text.trim().is_empty() { "Please configure the privacy notice." } else { text }));
     }
     let mut markdown = format!("# {}\n\n", information_document_title(audience));
     if audience == "data-protection" {
         markdown.push_str(&format!(
-            "[View the full informed consent form](<{consent_url}>)\n\n"
+            "[View information for participants](<{consent_url}>)\n\n"
         ));
     }
     let forms = consent_document_forms(audience, config);
@@ -280,7 +269,7 @@ fn information_site_markdown(audience: &str, config: &Value, consent_url: &str) 
         let lines: Vec<_> = body.split('\n').collect();
         for (index, line) in lines.iter().enumerate() {
             if (index == 0 || lines[index - 1].trim().is_empty())
-                && CONSENT_SECTION_HEADINGS.contains(&line.trim())
+                && consent_section_headings().contains(&line.trim())
             {
                 markdown.push_str(if show_title { "### " } else { "## " });
             }
@@ -320,7 +309,7 @@ fn information_site_html(
         }
         let link = if audience == "data-protection" {
             format!(
-                "<p><a href=\"{}\">View the full informed consent form</a></p>",
+                "<p><a href=\"{}\">View information for participants</a></p>",
                 escape_document_text(consent_url)
             )
         } else {
@@ -334,15 +323,15 @@ fn information_site_html(
             ),
         );
     }
-    if audience != "imprint" {
+    if !matches!(audience, "imprint" | "privacy") {
         return template.to_owned();
     }
     let text = config
-        .pointer("/direct/imprint/text")
+        .pointer(if audience == "privacy" { "/direct/privacy_notice/text" } else { "/direct/imprint/text" })
         .and_then(Value::as_str)
         .unwrap_or("");
     if text.trim().is_empty() {
-        return template.replace("{{content}}", "");
+        return template.replace("{{content}}", if audience == "privacy" { "<main><h1>Privacy notice</h1><p>Please configure the privacy notice.</p></main>" } else { "" });
     }
     let escaped = text
         .split('\n')
@@ -360,7 +349,7 @@ fn information_site_html(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    template.replace("{{content}}", &format!("<main><h1>Imprint</h1><pre style=\"white-space:pre-wrap;overflow-wrap:anywhere;font:inherit\">{escaped}</pre></main>"))
+    template.replace("{{content}}", &format!("<main><h1>{}</h1><pre style=\"white-space:pre-wrap;overflow-wrap:anywhere;font:inherit\">{escaped}</pre></main>", information_document_title(audience)))
 }
 
 /// Serves known sites for existing studies, without allocating a runtime.
@@ -501,22 +490,7 @@ mod tests {
     /// Every generated heading is recognized, and conductor exclusions remove full sections.
     #[test]
     fn conductor_sections_match_builder_and_preserve_other_audiences() {
-        let source = include_str!("admin_dashboard.js");
-        let catalogue = source
-            .split("const CONSENT_TEMPLATE_OPTIONS = ")
-            .nth(1)
-            .unwrap()
-            .split("\n];")
-            .next()
-            .unwrap()
-            .to_owned()
-            + "\n]";
-        let options: Vec<Value> = serde_json::from_str(&catalogue).unwrap();
-        let headings: Vec<_> = options
-            .iter()
-            .map(|item| item["title"].as_str().unwrap())
-            .collect();
-        assert_eq!(headings, CONSENT_SECTION_HEADINGS);
+        let headings = consent_section_headings();
         let body = headings
             .iter()
             .map(|title| format!("{title}\nCopy for {title}.\n\nSecond paragraph for {title}."))
@@ -637,7 +611,7 @@ mod tests {
         );
         let catalogue: Vec<ConsentResponsibility> =
             serde_json::from_str(include_str!("consent_responsibilities.json")).unwrap();
-        for heading in CONSENT_SECTION_HEADINGS {
+        for heading in consent_section_headings() {
             assert!(
                 catalogue
                     .iter()
@@ -675,7 +649,7 @@ mod tests {
                 audience == "participants"
             );
             assert_eq!(
-                markdown.contains(&format!("[View the full informed consent form](<{url}>)")),
+                markdown.contains(&format!("[View information for participants](<{url}>)")),
                 audience == "data-protection"
             );
             assert!(information_site_markdown(audience, &json!({}), url)
@@ -687,6 +661,27 @@ mod tests {
             information_site_markdown("imprint", &imprint, url),
             "# Imprint\n\nInstitute\nhttps://example.org/legal\n"
         );
+    }
+
+    /// The privacy page and download publish only the saved snapshot, never private draft fields.
+    #[test]
+    fn privacy_notice_publishes_saved_text_and_empty_instruction() {
+        let template = SITES.iter().find(|(name, _)| *name == "privacy").unwrap().1;
+        let config = json!({"direct": {"privacy_notice": {
+            "jurisdiction": "EU", "text": "Notice <script>alert(1)</script>\nhttps://example.org/law",
+            "details": {"hidden": "UNPUBLISHED_DETAIL"}
+        }}, "secret": "PRIVATE_VALUE"});
+        let html = information_site_html("privacy", template, &config, "");
+        assert!(html.contains("<h1>Privacy notice</h1>"));
+        assert!(html.contains("&lt;script&gt;"));
+        assert!(!html.contains("UNPUBLISHED_DETAIL"));
+        assert!(!html.contains("PRIVATE_VALUE"));
+        let markdown = information_site_markdown("privacy", &config, "");
+        assert!(markdown.starts_with("# Privacy notice\n\nNotice &lt;script&gt;"));
+        assert!(markdown.contains("https://example.org/law"));
+        for text in [information_site_html("privacy", template, &json!({}), ""), information_site_markdown("privacy", &json!({}), "")] {
+            assert!(text.contains("Please configure the privacy notice."));
+        }
     }
 
     /// Source URLs become safe links while non-HTTPS text remains inert.

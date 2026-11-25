@@ -137,7 +137,24 @@ async fn compiled_game_router_hosts_multiple_experiments() {
     .await;
     assert_eq!(create_status, StatusCode::OK);
     assert_eq!(created["experiment_id"], "primary");
-    for audience in ["participants", "data-protection", "conductors", "imprint"] {
+    let cookie = router.admin.lock().unwrap().as_ref().unwrap().cookie.clone();
+    for (name, expected) in [
+        ("consent", serde_json::to_value(crate::consent_templates::catalogue()).unwrap()),
+        ("imprint", serde_json::to_value(crate::imprint_templates::catalogue()).unwrap()),
+        ("privacy-notice", serde_json::to_value(crate::privacy_notice_templates::catalogue()).unwrap()),
+    ] {
+        let catalogue_response = router.clone().oneshot(
+            Request::builder().uri(format!("/admin/assets/{name}-templates.js"))
+                .header(http::header::COOKIE, cookie.clone()).body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(catalogue_response.status(), StatusCode::OK);
+        assert_eq!(catalogue_response.headers()[http::header::CONTENT_TYPE], "text/javascript; charset=utf-8");
+        assert_eq!(catalogue_response.headers()[http::header::CACHE_CONTROL], "no-store");
+        let catalogue = String::from_utf8(to_bytes(catalogue_response.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
+        let templates: Value = serde_json::from_str(catalogue.strip_prefix("export default ").unwrap().trim_end_matches(';')).unwrap();
+        assert_eq!(templates, expected);
+    }
+    for audience in ["participants", "data-protection", "conductors", "imprint", "privacy"] {
         let path = format!("/e/primary/information/{audience}/");
         assert!(created["information_sites"][audience]
             .as_str()
@@ -148,14 +165,16 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(content_type.as_deref(), Some("text/html; charset=utf-8"));
         if matches!(audience, "participants" | "conductors" | "data-protection") {
-            assert!(body.contains("Information for "));
+            assert!(body.contains(if audience == "participants" { "Information for participants" } else { "Information for " }));
             if audience == "data-protection" {
                 assert!(!body.contains("Agree?"));
-                assert!(body.contains("View the full informed consent form"));
+                assert!(body.contains("View information for participants"));
                 assert!(body.contains("/e/primary/information/participants/"));
             } else {
                 assert!(body.contains("Agree?"));
             }
+        } else if audience == "privacy" {
+            assert!(body.contains("Please configure the privacy notice."));
         } else {
             assert!(body.contains("<body></body>"));
         }
@@ -200,12 +219,14 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         let downloaded = to_bytes(download.into_body(), usize::MAX).await.unwrap();
         let markdown = String::from_utf8(downloaded.to_vec()).unwrap();
         assert!(!markdown.contains("<html"));
-        if audience == "imprint" {
+        if audience == "privacy" {
+            assert!(markdown.starts_with("# Privacy notice"));
+        } else if audience == "imprint" {
             assert!(markdown.starts_with("# Imprint"));
         } else {
-            assert!(markdown.starts_with("# Information for "));
+            assert!(markdown.starts_with(if audience == "participants" { "# Information for participants" } else { "# Information for " }));
             if audience == "data-protection" {
-                assert!(markdown.contains("[View the full informed consent form](<"));
+                assert!(markdown.contains("[View information for participants](<"));
                 assert!(!markdown.contains("Agree?"));
             } else {
                 assert!(markdown.contains("Agree?"));

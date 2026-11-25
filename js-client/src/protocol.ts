@@ -380,6 +380,15 @@ export class ParticipantClient {
   private participantRegistration: Record<string, unknown> | null = null;
   private registrationRequest: Promise<void> | null = null;
 
+  /**
+   * Returns a public study-document URL beneath this client's experiment API root.
+   * Links use the configured server origin/path, including hosted game prefixes,
+   * and contain no participant credentials or recruitment query parameters.
+   */
+  informationPageUrl(page: "participants" | "imprint" | "privacy"): string {
+    return `${this.baseUrl.replace(/\/+$/, "")}/information/${page}/`;
+  }
+
   /** Creates a managed client for one experiment-scoped API root. */
   constructor(options: ParticipantClientOptions = {}) {
     this.baseUrl = options.baseUrl ?? apiBase();

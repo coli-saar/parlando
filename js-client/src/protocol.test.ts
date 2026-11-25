@@ -384,3 +384,17 @@ describe("shared participant protocol fixtures", () => {
     });
   });
 });
+
+describe("study document URLs", () => {
+  it.each([
+    ["https://study.test/e/game~experiment", "https://study.test/e/game~experiment/information/"],
+    ["https://study.test/e/experiment/", "https://study.test/e/experiment/information/"],
+    ["/e/experiment", "/e/experiment/information/"],
+    ["", "/information/"]
+  ])("uses the configured experiment root %s", (baseUrl, expected) => {
+    const client = new ParticipantClient({ baseUrl });
+    expect(client.informationPageUrl("participants")).toBe(expected + "participants/");
+    expect(client.informationPageUrl("privacy")).toBe(expected + "privacy/");
+    expect(client.informationPageUrl("imprint")).toBe(expected + "imprint/");
+  });
+});

@@ -85,3 +85,18 @@ Parlando handles microphone access, message delivery, and connection state. Keep
 The live text panel shows up to 50 messages received by the current page. A reconnect keeps the messages already displayed. Reloading the page starts a fresh live history. Administrator replay reconstructs the conversation from recorded events and displays the messages available at the selected frame. A widget placed inside the replayed game shares the game surface's read-only behavior.
 
 See [package a game](packages/) for what the host accepts. Use the [Rust Game SDK](https://docs.rs/parlando-game-sdk/) or the [Python Game SDK](https://pypi.org/project/parlando-python-sdk/) for the language API.
+
+### Align the participant view and footer
+
+The shared participant view uses a centered column containing the session screens,
+communication controls and document footer. Set `--parlando-participant-max-width`
+on `.parlando-participant-app` to match your game's panel width. Without this value,
+the column fills its parent. For example:
+
+```css
+.parlando-participant-app { --parlando-participant-max-width: 680px; }
+.parlando-participant-app:has(.game-shell) { --parlando-participant-max-width: 920px; }
+```
+
+Replace `.game-shell` with your active game's root class. The column still shrinks
+to fit smaller screens; the footer follows the same width, including its padding.

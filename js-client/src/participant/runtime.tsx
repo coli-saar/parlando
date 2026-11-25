@@ -13,6 +13,7 @@ import { TranscriptionProgress } from "../voiceComponents.js";
 import { ParticipantClient, type ExperimentInfo } from "../protocol.js";
 import { type CommunicationPlacement, type GameSnapshot } from "./types.js";
 import { CommunicationContext, CommunicationWidget } from "./communicationWidget.js";
+import { StudyFooter } from "./studyFooter.js";
 import { SessionTools } from "./sessionControls.js";
 import { WaitingRoomNotice, PartnerReconnectNotice, IdleDeadlineNotice } from "./deadlines.js";
 import { SessionOutcomePanel, FarewellVoiceNotice } from "./outcome.js";
@@ -28,10 +29,29 @@ interface ParticipantAppRuntimeProps<TObservation, TAction, TCompletion = Record
   createAudioController: () => AudioSessionController;
 }
 
+/** Keeps public privacy and operator links available throughout the live participant flow.
+ * The shared footer remains mounted across loading, consent, waiting, play, and outcome views.
+ * A single column container isolates its placement from the host page’s flex/grid layout.
+ * Games set --parlando-participant-max-width to size the session and footer together. */
+export function ParticipantAppRuntime<TObservation, TAction = unknown, TCompletion = Record<string, unknown>>(
+  props: ParticipantAppRuntimeProps<TObservation, TAction, TCompletion>
+) {
+  return (
+    <div className="parlando-participant-app" style={{ display: "flex", flexDirection: "column", width: "100%", maxWidth: "var(--parlando-participant-max-width, 100%)", minWidth: 0, marginInline: "auto", boxSizing: "border-box" }}>
+      <ParticipantSession {...props} />
+      <StudyFooter
+        participantInformationUrl={props.apiClient.informationPageUrl("participants")}
+        privacyNoticeUrl={props.apiClient.informationPageUrl("privacy")}
+        imprintUrl={props.apiClient.informationPageUrl("imprint")}
+      />
+    </div>
+  );
+}
+
 /** Renders the server's participant state using the supplied game and audio transports.
  * A pending admission or leave keeps its current view until the server responds.
  * Reconnecting and paused sessions disable game interaction. */
-export function ParticipantAppRuntime<
+function ParticipantSession<
   TObservation,
   TAction = unknown,
   TCompletion = Record<string, unknown>

@@ -152,6 +152,9 @@ pub async fn serve_on_listener(
     wasm_metering: WasmMetering,
     on_ready: impl FnOnce(),
 ) -> Result<()> {
+    crate::consent_templates::initialize()?;
+    crate::imprint_templates::initialize()?;
+    crate::privacy_notice_templates::initialize()?;
     let public_url = checked_origin(&options.public_url)?;
     fs::create_dir_all(&options.store)?;
     let store = options.store.canonicalize()?;

@@ -13,6 +13,7 @@ pub(super) fn step_five_config() -> ExperimentConfig {
             participant_information_version: "test-v1".to_string(),
             participant_information_url: "https://example.test/privacy".to_string(),
             imprint: crate::config::ImprintConfig::default(),
+            privacy_notice: crate::config::PrivacyNoticeConfig::default(),
             consents: vec![crate::config::ConsentItemConfig {
                 id: "study".to_string(),
                 title: "Study".to_string(),

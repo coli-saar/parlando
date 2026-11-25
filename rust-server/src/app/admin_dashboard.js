@@ -4,7 +4,9 @@
 // helpers.
 
 import { bindSpeechSettings, COMMUNICATION_MODE_FIELD, configAt, readConfigFields, renderSpeechSettings, renderStandardConfigField, setConfigAt } from './communication-config.js';
+import { bindPrivacyNoticeEditor, renderPrivacyNoticeEditor, renderPrivacyNoticePreview } from './privacy-notice-config.js';
 import { bindImprintEditor, renderImprintEditor, renderImprintPreview } from './imprint-config.js';
+import CONSENT_TEMPLATE_OPTIONS from './consent-templates.js';
 import CONSENT_RESPONSIBILITIES from './consent-responsibilities.js';
 import { state } from './admin-dashboard-state.js';
 import { isMessageBundle, isSpeechBundle, sessionTimeline, roleBadge, escapeHtml, experimentDisplayStatus, fmtClockTime, fmtDate, fmtGameTime, fmtTime, formatAge, formatBytes, formatDuration, namedStatusLabel, participantDeletionPrompt, plannedProgressLayout, sessionEndCauseRows, shortSha, statusLabel, statusText } from './admin-dashboard-format.js';
@@ -581,6 +583,22 @@ function selectPrivacyDocument(key, focus = false) {
   });
 }
 
+// Reads only explicitly public source drafts; private runtime settings never enter the notice.
+function privacyNoticeSources() {
+  const imprint = Object.fromEntries(['operator', 'responsible_person', 'address', 'email', 'phone', 'text'].map(key =>
+    [key, configForm.querySelector(`[data-config-path="direct.imprint.${key}"]`)?.value || '']));
+  const consents = Array.from(configForm.querySelectorAll('.consent-item')).map(item => ({
+    title: item.querySelector('[data-consent-field="title"]').value,
+    body: item.querySelector('[data-consent-field="body"]').value,
+  }));
+  return { imprint, consents };
+}
+
+// Distinguishes the live synchronized draft from the public saved revision.
+function renderPrivacyNoticeDocument(text = '') {
+  document.getElementById('privacyNoticeDocument').innerHTML = renderPrivacyNoticePreview(text, state.configValue?.direct?.privacy_notice?.text || '');
+}
+
 // Shows current editor text immediately while keeping public links tied to saved revisions.
 function renderImprintDocument(text = '') {
   document.getElementById('imprintDocument').innerHTML = renderImprintPreview(text, state.configValue?.direct?.imprint?.text || '');
@@ -638,7 +656,7 @@ function renderConsentDocument(items = []) {
       : '<p class="muted">Please configure the informed consent form.</p>';
     const consentUrl = state.experiment?.information_sites?.participants;
     const consentLink = audience === 'data-protection' && consentUrl
-      ? `<p><a href="${escapeHtml(consentUrl)}" target="_blank" rel="noopener">View the full informed consent form</a></p>` : '';
+      ? `<p><a href="${escapeHtml(consentUrl)}" target="_blank" rel="noopener">View information for participants</a></p>` : '';
     const responsibilities = audience === 'conductors' ? conductorResponsibilities(items) : [];
     const todo = responsibilities.length ? `<section><h3>TODO for study conductors</h3><p>Responsibilities derived from the included template sections. Review additional commitments in edited text. This checklist does not perform or track the work.</p>${responsibilities.map(rule => `<section><h4>${escapeHtml(rule.title)}</h4><ul>${rule.tasks.map(task => `<li>${escapeHtml(task)}</li>`).join('')}</ul></section>`).join('')}</section>` : '';
     target.innerHTML = `<article class="privacy-document"><h2>${escapeHtml(documentTitle)}</h2>${consentLink}${content}${todo}</article>${draft ? '<p class="muted">Draft preview. Save a new revision to update the public page and download.</p>' : ''}`;
@@ -1195,6 +1213,7 @@ function setSelectedExperiment(experiment) {
   state.loadedConfigKey = null;
   state.configValue = null;
   renderImprintDocument();
+  renderPrivacyNoticeDocument();
   renderConsentDocument();
   revisionHistory.replaceChildren();
   configRevision.textContent = '';
@@ -1301,6 +1320,7 @@ async function loadConfigurationSafely() {
     state.loadedConfigKey = null;
     state.configValue = null;
     renderImprintDocument();
+    renderPrivacyNoticeDocument();
     renderConsentDocument();
     configRevision.textContent = 'Unavailable';
     configForm.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
@@ -1332,113 +1352,6 @@ async function loadRevisionHistory() {
   });
 }
 
-// Section titles and descriptions guide conductor-authored consent text in reading order.
-// Adaptation attribution lives in third-party/informed-consent-form.
-const CONSENT_TEMPLATE_OPTIONS = [
-  {
-    "id": "informed_consent_study_subject_v1",
-    "title": "Subject of this study",
-    "description": "Study purpose and what participants will do.",
-    "body": "{{Describe the study purpose, the task participants will perform, and any concepts they need to understand.}}\n\nDuring this study, you may interact with other persons and AI chatbots. {{Describe which interaction partners are used in this study and what study information and communications they receive.}}"
-  },
-  {
-    "id": "informed_consent_duration_compensation_v1",
-    "title": "Duration and compensation",
-    "description": "Expected time, payment, and payment conditions.",
-    "body": "{{State the expected and maximum duration, compensation, and conditions for receiving it.}}"
-  },
-  {
-    "id": "informed_consent_benefits_v1",
-    "title": "Possible benefit of the study",
-    "description": "Scientific contribution and potential benefits.",
-    "body": "{{Explain the scientific contribution and any expected benefits to participants or others.}}"
-  },
-  {
-    "id": "informed_consent_experiences_risks_v1",
-    "title": "Experiences and risks",
-    "description": "Participant experiences, risks, and safeguards.",
-    "body": "{{Describe the experiences, foreseeable risks, and measures to reduce them.}}"
-  },
-  {
-    "id": "informed_consent_data_processing_v1",
-    "title": "Data processing",
-    "description": "Responsible institution, processing purposes, and legal basis.",
-    "body": "{{Identify the responsible institution, applicable data protection rules, purposes, and legal basis.}}"
-  },
-  {
-    "id": "informed_consent_non_personal_information_collected_v1",
-    "title": "Pseudonymized research data collected",
-    "description": "Study records linked to a random study-specific identifier before anonymization.",
-    "body": "This study collects the following research data, where enabled for this study:\n\n- Game interaction data\n- Achieved score\n- Study-specific identifiers\n- Game actions\n- Timing\n- Results\n- Transcripts of the sent messages\n\nFor two weeks after your participation, these records are pseudonymized using a randomly generated study-specific participant ID. They remain personal data during this period, allowing the research team to locate your contributions when you request access, correction, or deletion. After this period, the research team anonymizes the research data by removing links to recruitment records and reviewing and removing identifying information from the content. Once anonymization is complete, you can no longer be identified from the anonymized data, and your individual contributions can no longer be located for access or deletion based on your identity.\n\nThe research data are stored at {{RESEARCH_DATA_STORAGE_LOCATION_AND_COUNTRY}}.\n\nAn anonymized version of the collected research data will be used for further scientific research and published. Publication will take place only after the research team has completed and verified anonymization."
-  },
-  {
-    "id": "informed_consent_personal_information_collected_v1",
-    "title": "Personal information collected",
-    "description": "Collected information that identifies or can be linked to participants.",
-    "body": "This study processes the following personal information, where applicable:\n\n- Your Prolific ID or other recruitment identifier, for recruitment verification, participation and payment administration, and linking your study record to requests for access, correction, deletion, or withdrawal during the two-week pseudonymized period. This identifier is kept separately from normal research and corpus exports.\n- Live microphone audio, if voice is enabled, for communication with the other participant and, if hosted transcription is enabled, for real-time transcription by {{TRANSCRIPTION_PROVIDER_AND_PROCESSING_REGION}}. Parlando does not store raw microphone audio. Final transcripts and timing are stored only when enabled for this study. Provider processing, retention, and international transfers are governed by {{PROVIDER_RETENTION_AND_TRANSFER_INFORMATION}}.\n\nParlando assigns a random participant ID for this study; another Parlando study assigns a different ID. {{RECRUITMENT_AND_PAYMENT_RECORD_RETENTION}} describes any separately retained recruitment or payment records and their purpose, retention period, and separation from the anonymized research data.\n\nParlando does not write participant IP addresses to its research database or corpus exports. Depending on the hosting infrastructure settings, the web server, hosting service, firewall, or reverse proxy may separately record IP addresses and access logs. For this deployment: {{HOSTING_IP_AND_ACCESS_LOG_POLICY_INCLUDING_WHETHER_LOGS_ARE_KEPT_PURPOSE_AND_RETENTION}}."
-  },
-  {
-    "id": "informed_consent_confidentiality_v1",
-    "title": "Confidentiality",
-    "description": "Who can access identifiable information.",
-    "body": "{{Explain who can access identifiable data and how confidentiality is protected.}}"
-  },
-  {
-    "id": "informed_consent_data_storage_v1",
-    "title": "Data storage",
-    "description": "Storage locations, retention, and security.",
-    "body": "Research data are stored under a randomly generated study-specific participant ID for two weeks after your participation. During this period, the research team can use the retained recruitment link or the study ID you provide to handle requests for access, correction, deletion, or withdrawal.\n\nAfter the two-week period, the research team anonymizes the research data by removing identifying links and reviewing the content for identifying information. Once this process is complete, the anonymized data cannot be linked back to you. Your individual contributions can then no longer be located based on your identity.\n\n{{STORAGE_LOCATIONS_AND_ACCESS_SAFEGUARDS}}\n{{ANONYMIZED_DATA_RETENTION_AND_REUSE}}\n{{SEPARATE_RETENTION_OF_CONSENT_PAYMENT_RECORDS_AND_BACKUPS}}\n\nThe research data are stored at {{RESEARCH_DATA_STORAGE_LOCATION_AND_COUNTRY}}."
-  },
-  {
-    "id": "informed_consent_disclosure_publication_v1",
-    "title": "Disclosure and publication",
-    "description": "Recipients, international transfers, and publication plans.",
-    "body": "An anonymized version of the collected research data will be used for further scientific research and published. Publication will take place only after the research team has completed and verified anonymization.\n\n{{Name recipients and service providers, any international transfers, and the data and license intended for publication.}}"
-  },
-  {
-    "id": "informed_consent_withdrawal_v1",
-    "title": "Voluntary participation and withdrawal",
-    "description": "Voluntary participation and how withdrawal works.",
-    "body": "Participation is voluntary. You may decline or stop participating without giving a reason. {{HOW_TO_STOP_AND_COMPENSATION_RULES}}\n\nDuring the two weeks after your participation, contact {{WITHDRAWAL_CONTACT_AND_PROCEDURE}} and provide {{STUDY_ID_OR_RECRUITMENT_IDENTIFIER_PROCEDURE}} to request withdrawal and deletion of your linked research data. After the research team has anonymized the data, it can no longer identify or remove your individual contributions based on your identity."
-  },
-  {
-    "id": "informed_consent_participant_rights_v1",
-    "title": "Access, correction, and deletion",
-    "description": "How to request access, correction, or deletion.",
-    "body": "For two weeks after participating, you may contact {{DATA_REQUEST_CONTACT}} and provide {{STUDY_ID_OR_RECRUITMENT_IDENTIFIER_PROCEDURE}} to request access to, correction of, or deletion of your pseudonymized research data. After anonymization is complete, the research team can no longer identify your individual contributions based on your identity.\n\n{{OTHER_APPLICABLE_RIGHTS_AND_COMPLAINT_ROUTE}}\n{{RIGHTS_AND_CONTACT_FOR_SEPARATELY_RETAINED_PERSONAL_RECORDS}}"
-  },
-  {
-    "id": "informed_consent_controller_contact_v1",
-    "title": "Data controller and contact person",
-    "description": "Study contacts, data protection contacts, and complaints.",
-    "body": "{{Name, position, institution, and contact details. Include the data protection contact and complaint route.}}"
-  },
-  {
-    "id": "informed_consent_declaration_v1",
-    "title": "Declaration of consent",
-    "description": "Agreement to participate and to the described data processing.",
-    "body": "I have read and understood the study information and agree to participate in this study. I agree to the collection and processing of my data for the scientific purposes described above. I understand the storage and sharing arrangements and how to withdraw my consent."
-  },
-  {
-    "id": "eligibility_and_information_v1_0",
-    "title": "Eligibility and study information",
-    "description": "Age eligibility and acknowledgment of participant information.",
-    "body": "I confirm that I am at least 18 years old. I have read and understood the Participant Information and Privacy Notice {{version}} linked above, and I have had the opportunity to ask questions."
-  },
-  {
-    "id": "participant_privacy_rules_v1_0",
-    "title": "Communication and privacy rules",
-    "description": "Rules for protecting privacy during participant communication.",
-    "body": "I will discuss only the fictional task. I will not disclose contact details, credentials, or sensitive real-world information, and I will not record, identify, copy, or redistribute another participant's communications."
-  },
-  {
-    "id": "voice_and_transcription_v1_0",
-    "title": "Live voice and transcription",
-    "description": "Consent to live voice transmission and enabled transcription.",
-    "body": "If live voice is enabled, I consent to my microphone audio being transmitted to the other participant. If hosted transcription is enabled, the audio is also sent to {{TRANSCRIPTION_PROVIDER_AND_PROCESSING_REGION}} for real-time transcription. Parlando receives the resulting text and timing information and stores final transcripts and timing only when enabled for this study. Parlando does not store raw microphone audio. Provider retention and international transfer arrangements are described in {{PROVIDER_RETENTION_AND_TRANSFER_INFORMATION}}.\n\nAfter a two-person game completes normally, live voice may remain open for up to one minute. Speech during this final minute is not transcribed or stored by Parlando. I can mute my microphone or end voice chat immediately. The research team cannot completely prevent another participant from independently recording or taking screenshots of communications.\n\nI may hear a synthetic software-agent voice. The text-to-speech service receives only text written by the software agent, not my microphone audio, messages, transcripts, identifier, or game state."
-  }
-];
-
 const PARLANDO_CONFIG_SECTIONS = [
   { title: 'Progress', description: 'The Progress tab compares completed game sessions with your target. Reaching the target leaves participant intake open.', fields: [
     { path: 'progress.planned_sessions', label: 'Planned sessions (optional)', help: 'Count one session per game played. For example, 40 people playing once in pairs would play 20 sessions. If you leave this blank, Parlando uses the target from your verified Prolific study when available. Otherwise, the Progress tab shows session counts without a target.', type: 'optional-number', min: 1 }
@@ -1455,7 +1368,8 @@ const PARLANDO_CONFIG_SECTIONS = [
     { path: 'direct.participant_information_url', label: 'Participant-information URL', help: 'Public document describing the study and its data handling.', type: 'url' },
   ], subsections: [
     { title: 'Consent items', fields: [{ path: 'direct.consents', help: 'Statements presented before participation. Accepted items are recorded with their exact presentation hash.', type: 'consents' }] },
-    { title: 'Imprint', fields: [{ path: 'direct.imprint', label: 'Imprint', type: 'imprint' }] }
+    { title: 'Imprint', fields: [{ path: 'direct.imprint', label: 'Imprint', type: 'imprint' }] },
+    { title: 'Privacy notice', fields: [{ path: 'direct.privacy_notice', type: 'privacy-notice' }] }
   ]},
   { title: 'Communication', description: 'Choose how participants communicate in this experiment.', fields: [
     COMMUNICATION_MODE_FIELD
@@ -1529,6 +1443,7 @@ function renderConfigurationForm(config, gameYaml = '{}\n') {
     control.addEventListener('change', refreshDraftActivationWarning);
   });
   configForm.querySelectorAll('[data-imprint-editor]').forEach(editor => bindImprintEditor(editor, renderImprintDocument));
+  bindPrivacyNoticeEditor(configForm, privacyNoticeSources, renderPrivacyNoticeDocument);
   bindSpeechSettings(configForm);
   renderGameSecrets();
   refreshDraftActivationWarning();
@@ -1541,6 +1456,7 @@ function renderConfigField(field, config) {
     return `<div class="config-field"><span>${escapeHtml(field.label)}</span><div class="setup-url-control"><input type="text" readonly value="${escapeHtml(value)}" aria-label="${escapeHtml(field.label)}"><button class="secondary" data-copy-prolific-setup-url type="button">${icon('copy')}Copy setup URL</button></div><span class="config-help">${escapeHtml(field.help)}</span></div>`;
   }
   const value = configAt(config, field.path);
+  if (field.type === 'privacy-notice') return renderPrivacyNoticeEditor(value || {});
   if (field.type === 'imprint') return renderImprintEditor(value || {}, state.gameSettings?.institution || '');
   if (field.type === 'consents') return renderConsentEditor(field, Array.isArray(value) ? value : []);
   if (field.type === 'agents') return renderAgentEditor(field, value || {});

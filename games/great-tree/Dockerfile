@@ -22,6 +22,12 @@ WORKDIR /app/games/great-tree/client
 RUN npm ci --no-audit --no-fund && npm run build
 
 FROM debian:bookworm-slim
+COPY --from=builder /app/rust-server/templates/informed-consent/ /usr/local/share/parlando/informed-consent/
+ENV PARLANDO_CONSENT_TEMPLATE_DIR=/usr/local/share/parlando/informed-consent
+COPY --from=builder /app/rust-server/templates/imprint/ /usr/local/share/parlando/imprint/
+ENV PARLANDO_IMPRINT_TEMPLATE_DIR=/usr/local/share/parlando/imprint
+COPY --from=builder /app/rust-server/templates/privacy-notice/ /usr/local/share/parlando/privacy-notice/
+ENV PARLANDO_PRIVACY_NOTICE_TEMPLATE_DIR=/usr/local/share/parlando/privacy-notice
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \

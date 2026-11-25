@@ -43,6 +43,7 @@ function config(): ExperimentInfo {
 
 function api() {
   return {
+    informationPageUrl: (page: string) => `https://study.test/e/game~experiment/information/${page}/`,
     getExperiment: vi.fn(async () => config()), hasCredential: vi.fn(() => false), register: vi.fn(async () => undefined),
     acceptConsents: vi.fn(async () => undefined), join: vi.fn(async () => waiting),
     getParticipantState: vi.fn(async () => active),
@@ -236,6 +237,15 @@ describe("ParticipantApp participant state machine", () => {
     expect(screen.queryByText("live")).not.toBeInTheDocument();
     act(() => socket.message({ protocol_version: 2, type: "participant_state", participant_state: { ...active, recruitment_source: "prolific" } }));
     expect(screen.getByText("Source: prolific")).toBeInTheDocument();
+    const consentLink = screen.getByRole("link", { name: "Privacy notice" });
+    expect(consentLink).toHaveAttribute("href", "https://study.test/e/game~experiment/information/privacy/");
+    expect(consentLink).toHaveAttribute("target", "_blank");
+    expect(consentLink).toHaveAttribute("rel", "noopener noreferrer");
+    const imprintLink = screen.getByRole("link", { name: "Imprint" });
+    expect(imprintLink).toHaveAttribute("href", "https://study.test/e/game~experiment/information/imprint/");
+    expect(imprintLink).toHaveAttribute("target", "_blank");
+    expect(screen.getByRole("navigation", { name: "Study information" })).toBeInTheDocument();
+
     expect(await screen.findByText("live")).toBeInTheDocument();
     expect(screen.getByText("true")).toBeInTheDocument();
   });
@@ -638,4 +648,70 @@ describe("deadline notices", () => {
     view.unmount();
     expect(clearInterval).toHaveBeenCalledOnce();
   });
+});
+
+/** Checks persistent document access across consent, waiting, play, and completion transitions. */
+it("keeps one privacy footer throughout the participant lifecycle", async () => {
+  const client = api();
+  client.getExperiment.mockResolvedValue({
+    ...config(), consents: [{ id: "consent", title: "Consent", body: "Study information.", required: true }]
+  });
+  render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+  /** Ensures a single footer stays experiment-scoped and opens documents separately. */
+  const checkLinks = () => {
+    expect(screen.getAllByRole("navigation", { name: "Study information" })).toHaveLength(1);
+    const footer = screen.getByRole("navigation", { name: "Study information" }).closest("footer")!;
+    const layout = footer.parentElement!;
+    expect(layout).toHaveClass("parlando-participant-app");
+    expect(layout).toHaveStyle("display: flex; flex-direction: column; width: 100%; box-sizing: border-box");
+    // The DOM test environment cannot resolve a game-supplied custom property.
+    expect(layout.style.marginInline).toBe("auto");
+    expect(layout.style.maxWidth).toBe("var(--parlando-participant-max-width, 100%)");
+    expect(layout.lastElementChild).toBe(footer);
+    expect(layout.children.length).toBeGreaterThan(1);
+
+    expect(screen.getByRole("link", { name: "Privacy notice" })).toHaveAttribute("href", "https://study.test/e/game~experiment/information/privacy/");
+    expect(screen.getByRole("link", { name: "Privacy notice" })).toHaveAttribute("target", "_blank");
+    expect(screen.getByRole("link", { name: "Imprint" })).toHaveAttribute("href", "https://study.test/e/game~experiment/information/imprint/");
+  };
+  checkLinks(); // Loading, before registration.
+  const enter = await screen.findByRole("button", { name: "Enter waiting room" });
+  expect(enter).toBeDisabled();
+  checkLinks();
+  fireEvent.click(screen.getByRole("checkbox", { name: /Consent/ }));
+  fireEvent.click(enter);
+  await screen.findByRole("button", { name: "Leave waiting room" });
+  checkLinks();
+  await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+  const socket = FakeWebSocket.instances[0];
+  act(() => {
+    socket.open();
+    socket.message({ protocol_version: 2, type: "participant_state", participant_state: active });
+  });
+  expect(await screen.findByText("live")).toBeInTheDocument();
+  checkLinks();
+  act(() => socket.message({ protocol_version: 2, type: "participant_state", participant_state: {
+    ...active, state: "paused", reason: { type: "partner_reconnecting", deadline_at: "2099-01-01T00:00:00Z" }
+  } }));
+  checkLinks();
+  act(() => socket.message({ protocol_version: 2, type: "participant_state", participant_state: {
+    state: "ended", public_session_id: "ROOM1", role: "A",
+    result: { outcome: "completed", reason: "game_completed", completion: null, final_observation: { view: "final" }, handoff: null }
+  } }));
+  expect(await screen.findByText(/responses have been recorded/i)).toBeInTheDocument();
+  checkLinks();
+});
+
+/** Declining consent must not remove access to the public information documents. */
+it("keeps privacy and imprint available after declining consent", async () => {
+  const client = api();
+  client.getExperiment.mockResolvedValue({
+    ...config(), consents: [{ id: "consent", title: "Consent", body: "Study information.", required: true }]
+  });
+  render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Do not consent" }));
+  expect(await screen.findByText("Consent declined")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Privacy notice" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Imprint" })).toBeInTheDocument();
+  expect(client.register).not.toHaveBeenCalled();
 });

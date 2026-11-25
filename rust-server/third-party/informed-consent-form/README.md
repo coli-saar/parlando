@@ -3,7 +3,8 @@
 Source: https://github.com/Wuhn/informed-consent-form/tree/main/template
 License: Apache-2.0 (included in LICENSE).
 
-The dashboard’s informed-consent section headings and descriptions adapt the structure of
+The Markdown templates in `templates/informed-consent/` supply the dashboard’s
+informed-consent section headings and descriptions adapt the structure of
 `study_informed_consent_1.html` (blob acbe64d503efd21e9cd72f48ee8885ca420c4e36) and
 `study_informed_consent_2.html` (blob a7cf87e98eebe57644d04e13579fbe5c06ca60e4).
 

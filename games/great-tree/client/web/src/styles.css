@@ -58,6 +58,15 @@ select {
   padding: 24px;
 }
 
+/* One centered width contract keeps the participant view, controls and footer aligned.
+   Waiting/outcome cards are narrower than the active game's board. */
+.app-shell > .parlando-participant-app {
+  --parlando-participant-max-width: 680px;
+}
+.app-shell > .parlando-participant-app:has(.game-shell) {
+  --parlando-participant-max-width: 920px;
+}
+
 /* ==================== The game panel ==================== */
 
 svg[role="img"] {

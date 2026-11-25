@@ -18,6 +18,32 @@ The default templates describe a two-week period after participation during whic
 
 This wording is a study policy, not an automatic Parlando retention feature. Parlando does not schedule two-week anonymization, review transcripts for identifying information, or remove copies in exports and backups automatically. Before using the policy, arrange the operational process, resolve pending participant requests, and complete the storage, provider, retention, and contact placeholders. Save validation rejects unresolved `{{…}}` placeholders.
 
+## Edit or add template files
+
+Consent defaults are individual Markdown files in `rust-server/templates/informed-consent/`. At process startup, Parlando reads all `.md` files in that directory and its subdirectories. Each file becomes a checkbox option. Restart the server after adding, changing, or removing files; no Rust rebuild is needed for template edits. Already saved consent forms retain their text until you regenerate and save a revision.
+
+For a deployed or relocated binary, copy the directory to the server and set `PARLANDO_CONSENT_TEMPLATE_DIR` to its path before starting Parlando. Without this variable, the default is `templates/informed-consent/` beneath the Rust crate source directory used when compiling the binary. The supplied container images install the files under `/usr/local/share/parlando/informed-consent/` and set this variable.
+
+A template can use optional YAML front matter:
+
+```markdown
+---
+id: additional_data
+title: Additional research data
+description: Explain additional measurements collected by this study.
+order: 180
+---
+
+Describe the additional measurements and their purpose.
+Contact: {{DATA_REQUEST_CONTACT}}
+```
+
+The body supplies editable text; Markdown syntax retains the existing plain-text consent presentation. The metadata supplies the stable option ID, heading, short description, and ordering. Lower `order` values come first; ties use the relative filename. Files without an order use 1000.
+
+Without front matter, the filename supplies the ID and a leading `# Heading` supplies the title. That initial heading is removed from the editable body to avoid duplication. If there is no heading, the filename supplies the title; a brief default description is generated. IDs and titles must be unique. Invalid metadata, duplicate IDs/titles, or an inaccessible directory stop startup with a filename-specific error. An empty directory yields an empty selection list.
+
+Keep the shipped titles and IDs when editing their wording. Audience filtering and conductor responsibilities refer to those titles. New custom sections appear in the participant and conductor documents and delimit sections correctly; the data protection page still includes only its designated categories. Custom obligations require manual review or additions to the responsibility catalogue.
+
 ## Open the study information sites
 
 Creating or cloning an experiment makes four separate information sites available immediately. Open **Privacy → Study documents** and select **Participants**, **Data protection managers**, **Study conductors**, or **Imprint**. Each tab offers **Open page** and **Download Markdown**. The **Data documentation** tab retains its generated report and Markdown and JSON downloads. Their paths below the participant study URL are `information/participants/`, `information/data-protection/`, `information/conductors/`, and `information/imprint/`.
@@ -64,3 +90,5 @@ The study conductor preview, public page, and Markdown download include **TODO f
 The preview follows generated-form edits; public pages and downloads reflect the saved revision. These are instructions, not automatic actions or stored completion records. Markdown exports use unchecked task items for use in your own workflow. Review custom commitments and changed deadlines manually: the mapping recognizes template headings, not arbitrary promises in edited prose. Keep headings intact for the relevant tasks to appear.
 
 The research-data and storage templates include `{{RESEARCH_DATA_STORAGE_LOCATION_AND_COUNTRY}}`, visible in the data protection document when either section is included. Complete the hosting-log policy in Personal information collected from the actual hosting configuration: Parlando does not write participant IP addresses to its research database or corpus exports, but external infrastructure may keep separate logs. The subject template discloses possible human and AI-chatbot interaction, with a conductor TODO to explain the actual partners before participation. Research-data and publication templates describe further scientific use and publication after verified anonymization; complete the associated recipients, publication route, and license details.
+
+Throughout the live participant flow—including loading, before consent, declined consent, waiting, active or paused play, closed intake, and completion—games using Parlando’s shared participant view show **Privacy** and **Imprint** links in a footer. The Privacy link opens the generated **Participant information and privacy notice**. Both open the current experiment’s public document in a new tab, leaving the game session open. Rebuild the game client bundle with the updated client SDK to include these links in existing game packages.

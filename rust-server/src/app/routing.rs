@@ -516,6 +516,9 @@ async fn open_installation(
     database_url: &str,
     router_cache: Weak<ExperimentMountCache>,
 ) -> Result<Arc<Installation>> {
+    crate::consent_templates::initialize()?;
+    crate::imprint_templates::initialize()?;
+    crate::privacy_notice_templates::initialize()?;
     descriptor.validate()?;
     descriptor.pin_component(&loaded_game)?;
     let store = experiment_store_from_url(database_url).await?;
