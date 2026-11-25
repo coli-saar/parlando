@@ -1,6 +1,6 @@
 ---
 id: "informed_consent_confidentiality_v1"
-title: "Confidentiality"
+title: "Confidentiality of the data"
 description: "Explain who can access identifiable data and how confidentiality is protected."
 order: 80
 ---

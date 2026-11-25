@@ -5,4 +5,6 @@ description: "Explain the scientific contribution and any expected benefits to p
 order: 30
 ---
 
-{{TODO: Isidora}}
+### Possible benefit of the study
+
+With participation in this study, you will contribute in providing {{TODO: add scientific contribution of this study}}.

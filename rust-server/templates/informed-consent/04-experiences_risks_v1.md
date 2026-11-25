@@ -5,4 +5,6 @@ description: "Describe the experiences, foreseeable risks, and measures to reduc
 order: 40
 ---
 
-In this study, you will participate in an cooperative game that asks you to solve a task together with another player. Participants of the study do not face any risks which are greater than risks they face in general life. All participants agree to adhere to the communication and privacy rules and to treat each other respectfully. 
+### Experiences and risks which are associated with the participation in the study
+
+In this study, you will participate in an cooperative game that asks you to solve a task together with another player. Participants of the study do not face any risks which are greater than risks they face in general life. All participants agree to adhere to the communication and privacy rules stated below and to treat each other respectfully. 
