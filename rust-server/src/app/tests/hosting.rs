@@ -148,7 +148,7 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(content_type.as_deref(), Some("text/html; charset=utf-8"));
         if matches!(audience, "participants" | "conductors" | "data-protection") {
-            assert!(body.contains("Informed consent form"));
+            assert!(body.contains("Information for "));
             if audience == "data-protection" {
                 assert!(!body.contains("Agree?"));
                 assert!(body.contains("View the full informed consent form"));
@@ -191,14 +191,26 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         assert_eq!(download.status(), StatusCode::OK);
         assert_eq!(
             download.headers()[http::header::CONTENT_TYPE],
-            "text/html; charset=utf-8"
+            "text/markdown; charset=utf-8"
         );
         assert_eq!(
             download.headers()[http::header::CONTENT_DISPOSITION],
-            format!("attachment; filename=\"primary-{audience}.html\"")
+            format!("attachment; filename=\"primary-{audience}.md\"")
         );
         let downloaded = to_bytes(download.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(downloaded.as_ref(), body.as_bytes());
+        let markdown = String::from_utf8(downloaded.to_vec()).unwrap();
+        assert!(!markdown.contains("<html"));
+        if audience == "imprint" {
+            assert!(markdown.starts_with("# Imprint"));
+        } else {
+            assert!(markdown.starts_with("# Information for "));
+            if audience == "data-protection" {
+                assert!(markdown.contains("[View the full informed consent form](<"));
+                assert!(!markdown.contains("Agree?"));
+            } else {
+                assert!(markdown.contains("Agree?"));
+            }
+        }
 
         let (status, body, _) =
             raw_request(router.clone(), http::Method::HEAD, &path, Body::empty()).await;
@@ -365,7 +377,7 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         .unwrap();
     assert_eq!(downloaded.status(), StatusCode::OK);
     let bytes = to_bytes(downloaded.into_body(), usize::MAX).await.unwrap();
-    assert_eq!(bytes.as_ref(), public_imprint.as_bytes());
+    assert_eq!(String::from_utf8(bytes.to_vec()).unwrap(), "# Imprint\n\nInstitute &amp; team\n&lt;script&gt;literal&lt;/script&gt;\n");
     let (status, body, _) = raw_request(
         router.clone(),
         http::Method::HEAD,

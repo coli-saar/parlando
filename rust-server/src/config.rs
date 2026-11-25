@@ -1162,6 +1162,10 @@ mod tests {
                 body: "b".repeat(20_001),
                 ..valid_item.clone()
             },
+            ConsentItemConfig {
+                body: "Contact {{DATA_REQUEST_CONTACT}}.".to_string(),
+                ..valid_item.clone()
+            },
         ] {
             let mut config = valid_config();
             config.direct.consents = vec![invalid];

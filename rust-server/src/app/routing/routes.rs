@@ -280,6 +280,10 @@ fn dashboard_feature_routes(prefix: &str) -> Router<Arc<ServerContext>> {
             get(admin_imprint_config_javascript),
         )
         .route(
+            &participant_path("/admin/assets/consent-responsibilities.js"),
+            get(admin_consent_responsibilities_javascript),
+        )
+        .route(
             &participant_path("/api/admin/privacy"),
             get(admin_privacy_json),
         )

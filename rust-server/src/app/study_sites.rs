@@ -1,5 +1,5 @@
 //! Public information sites belonging to a stored study, available before activation.
-//! Explicit imprint text and consent statements are published from configuration. Public reads and administrator downloads use the same renderer.
+//! Explicit imprint text and consent statements are published from configuration. Public pages and Markdown downloads share audience-specific content selection.
 
 use super::*;
 use axum::body::Body;
@@ -54,7 +54,7 @@ const CONSENT_SECTION_HEADINGS: &[&str] = &[
     "Possible benefit of the study",
     "Experiences and risks",
     "Data processing",
-    "Non-personal information collected",
+    "Pseudonymized research data collected",
     "Personal information collected",
     "Confidentiality",
     "Data storage",
@@ -78,8 +78,9 @@ const CONDUCTOR_EXCLUDED_SECTIONS: &[&str] = &[
 
 /// Data protection information includes only these generated sections.
 const DATA_PROTECTION_SECTIONS: &[&str] = &[
+    "Data processing",
     "Personal information collected",
-    "Non-personal information collected",
+    "Pseudonymized research data collected",
     "Data controller and contact person",
     "Data storage",
     "Disclosure and publication",
@@ -116,6 +117,184 @@ fn consent_body_for_audience(body: &str, audience: &str, title: &str) -> String 
         .to_owned()
 }
 
+/// Selects public consent copy once for both HTML pages and Markdown downloads.
+fn consent_document_forms(audience: &str, config: &Value) -> Vec<(String, String)> {
+    config
+        .pointer("/direct/consents")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|form| {
+            let title = form
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("Consent Form");
+            if audience == "conductors" && CONDUCTOR_EXCLUDED_SECTIONS.contains(&title.trim()) {
+                return None;
+            }
+            let body = consent_body_for_audience(
+                form.get("body").and_then(Value::as_str).unwrap_or(""),
+                audience,
+                title,
+            );
+            (!body.trim().is_empty()).then(|| (title.to_owned(), body))
+        })
+        .collect()
+}
+
+/// One operational responsibility group, shared with dashboard previews via JSON.
+#[derive(Deserialize)]
+struct ConsentResponsibility {
+    /// Catalogue identity used to keep each responsibility group unique.
+    id: String,
+    /// Human-readable group heading.
+    title: String,
+    /// Template headings which activate this group; empty means every configured form.
+    sections: Vec<String>,
+    /// Actions the study team must carry out, not actions performed by Parlando.
+    tasks: Vec<String>,
+}
+
+/// Selects tasks from original participant copy, before conductor-specific exclusions.
+/// Renamed or custom headings cannot be classified and receive the general review task.
+fn conductor_responsibilities(config: &Value) -> Vec<&'static ConsentResponsibility> {
+    static RULES: std::sync::OnceLock<Vec<ConsentResponsibility>> = std::sync::OnceLock::new();
+    let rules = RULES.get_or_init(|| {
+        serde_json::from_str(include_str!("consent_responsibilities.json"))
+            .expect("valid embedded consent responsibilities")
+    });
+    let forms = consent_document_forms("participants", config);
+    if forms.is_empty() {
+        return Vec::new();
+    }
+    let mut sections = std::collections::HashSet::new();
+    for (title, body) in forms {
+        if CONSENT_SECTION_HEADINGS.contains(&title.trim()) {
+            sections.insert(title.trim().to_owned());
+        }
+        let lines: Vec<_> = body.split('\n').collect();
+        for (index, line) in lines.iter().enumerate() {
+            if (index == 0 || lines[index - 1].trim().is_empty())
+                && CONSENT_SECTION_HEADINGS.contains(&line.trim())
+            {
+                sections.insert(line.trim().to_owned());
+            }
+        }
+    }
+    rules
+        .iter()
+        .filter(|rule| {
+            rule.sections.is_empty()
+                || rule
+                    .sections
+                    .iter()
+                    .any(|section| sections.contains(section))
+        })
+        .collect()
+}
+
+/// Renders informational tasks without interactive controls or implied completion tracking.
+fn conductor_todo_html(config: &Value) -> String {
+    let rules = conductor_responsibilities(config);
+    if rules.is_empty() {
+        return String::new();
+    }
+    let mut html = String::from("<section><h2>TODO for study conductors</h2><p>Responsibilities derived from the included template sections. Review additional commitments in edited text. This checklist does not perform or track the work.</p>");
+    for rule in rules {
+        html.push_str(&format!(
+            "<section data-responsibility=\"{}\"><h3>{}</h3><ul>",
+            escape_document_text(&rule.id),
+            escape_document_text(&rule.title)
+        ));
+        for task in &rule.tasks {
+            html.push_str(&format!("<li>{}</li>", escape_document_text(task)));
+        }
+        html.push_str("</ul></section>");
+    }
+    html.push_str("</section>");
+    html
+}
+
+/// Emits portable, initially unchecked TODOs for study-conductor Markdown downloads.
+fn conductor_todo_markdown(config: &Value) -> String {
+    let rules = conductor_responsibilities(config);
+    if rules.is_empty() {
+        return String::new();
+    }
+    let mut markdown = String::from("## TODO for study conductors\n\nResponsibilities derived from the included template sections. Review additional commitments in edited text. This checklist does not perform or track the work.\n\n");
+    for rule in rules {
+        markdown.push_str(&format!("### {}\n\n", rule.title));
+        for task in &rule.tasks {
+            markdown.push_str(&format!("- [ ] {task}\n"));
+        }
+        markdown.push('\n');
+    }
+    markdown
+}
+
+/// Names the audience document consistently across public pages and downloads.
+fn information_document_title(audience: &str) -> &'static str {
+    match audience {
+        "participants" => "Information for participants",
+        "conductors" => "Information for study conductors",
+        "data-protection" => "Information for data protection managers",
+        _ => "Imprint",
+    }
+}
+
+/// Retains meaningful custom titles while suppressing redundant generic consent headings.
+fn show_consent_form_title(title: &str) -> bool {
+    !title.trim().is_empty()
+        && !matches!(
+            title.trim().to_lowercase().as_str(),
+            "consent form" | "informed consent form"
+        )
+}
+
+/// Exports readable Markdown, retaining lists and converting generated section headings.
+/// HTML-looking copy is escaped so a Markdown viewer does not interpret it as HTML.
+fn information_site_markdown(audience: &str, config: &Value, consent_url: &str) -> String {
+    if audience == "imprint" {
+        let text = config
+            .pointer("/direct/imprint/text")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        return format!("# Imprint\n\n{}\n", escape_document_text(text));
+    }
+    let mut markdown = format!("# {}\n\n", information_document_title(audience));
+    if audience == "data-protection" {
+        markdown.push_str(&format!(
+            "[View the full informed consent form](<{consent_url}>)\n\n"
+        ));
+    }
+    let forms = consent_document_forms(audience, config);
+    if forms.is_empty() {
+        markdown.push_str("Please configure the informed consent form.\n");
+    }
+    for (title, body) in forms {
+        let show_title = show_consent_form_title(&title);
+        if show_title {
+            let title = escape_document_text(&title).replace('\n', " ");
+            markdown.push_str(&format!("## {title}\n\n"));
+        }
+        let lines: Vec<_> = body.split('\n').collect();
+        for (index, line) in lines.iter().enumerate() {
+            if (index == 0 || lines[index - 1].trim().is_empty())
+                && CONSENT_SECTION_HEADINGS.contains(&line.trim())
+            {
+                markdown.push_str(if show_title { "### " } else { "## " });
+            }
+            markdown.push_str(&escape_document_text(line));
+            markdown.push('\n');
+        }
+        markdown.push('\n');
+    }
+    if audience == "conductors" {
+        markdown.push_str(&conductor_todo_markdown(config));
+    }
+    markdown
+}
+
 /// Renders explicitly public imprint and consent copy, excluding other configuration.
 fn information_site_html(
     audience: &str,
@@ -124,25 +303,20 @@ fn information_site_html(
     consent_url: &str,
 ) -> String {
     if matches!(audience, "participants" | "conductors" | "data-protection") {
-        let forms = config.pointer("/direct/consents").and_then(Value::as_array);
         let mut content = String::new();
-        for form in forms.into_iter().flatten() {
-            let body = form.get("body").and_then(Value::as_str).unwrap_or("");
-            let title = form
-                .get("title")
-                .and_then(Value::as_str)
-                .unwrap_or("Consent Form");
-            let body = consent_body_for_audience(body, audience, title);
-            if body.trim().is_empty() {
-                continue;
-            }
-            if audience == "conductors" && CONDUCTOR_EXCLUDED_SECTIONS.contains(&title.trim()) {
-                continue;
-            }
-            content.push_str(&format!("<section><h2>{}</h2><pre style=\"white-space:pre-wrap;overflow-wrap:anywhere;font:inherit\">{}</pre></section>", escape_document_text(title), escape_document_text(&body)));
+        for (title, body) in consent_document_forms(audience, config) {
+            let heading = if show_consent_form_title(&title) {
+                format!("<h2>{}</h2>", escape_document_text(&title))
+            } else {
+                String::new()
+            };
+            content.push_str(&format!("<section>{heading}<pre style=\"white-space:pre-wrap;overflow-wrap:anywhere;font:inherit\">{}</pre></section>", escape_document_text(&body)));
         }
         if content.is_empty() {
             content.push_str("<p>Please configure the informed consent form.</p>");
+        }
+        if audience == "conductors" {
+            content.push_str(&conductor_todo_html(config));
         }
         let link = if audience == "data-protection" {
             format!(
@@ -154,7 +328,10 @@ fn information_site_html(
         };
         return template.replace(
             "{{content}}",
-            &format!("<main><h1>Informed consent form</h1>{link}{content}</main>"),
+            &format!(
+                "<main><h1>{}</h1>{link}{content}</main>",
+                information_document_title(audience)
+            ),
         );
     }
     if audience != "imprint" {
@@ -242,12 +419,12 @@ pub(super) async fn serve_information_site(
 
 /// Downloads a study document through the authenticated administrator origin.
 /// The router supplies authentication; only registered pages of stored experiments
-/// can be downloaded, and their bytes match the corresponding public page.
+/// can be downloaded, using the same selected copy as the corresponding public page.
 pub(super) async fn admin_information_site_download(
     State(context): State<Arc<ServerContext>>,
     Path((experiment_id, page)): Path<(String, String)>,
 ) -> Result<Response, AppError> {
-    let (_, html) = SITES
+    SITES
         .iter()
         .find(|(name, _)| *name == page)
         .ok_or_else(|| AppError::not_found("Information page not found."))?;
@@ -258,17 +435,16 @@ pub(super) async fn admin_information_site_download(
         .await?
         .ok_or_else(|| AppError::not_found("Experiment not found."))?;
     Ok(attachment_response(
-        information_site_html(
+        information_site_markdown(
             &page,
-            html,
             &definition.config,
             &format!(
                 "{}/information/participants/",
                 experiment_public_base_url(&context.config.server.public_base_url, &experiment_id)
             ),
         ),
-        "text/html; charset=utf-8",
-        &format!("{experiment_id}-{page}.html"),
+        "text/markdown; charset=utf-8",
+        &format!("{experiment_id}-{page}.md"),
     ))
 }
 
@@ -408,6 +584,109 @@ mod tests {
         let empty = information_site_html("data-protection", template, &json!({}), url);
         assert!(empty.contains("Please configure the informed consent form."));
         assert!(empty.contains(&format!("href=\"{url}\"")));
+    }
+
+    /// TODOs derive from original selected sections, deduplicate groups, and stay conductor-only.
+    #[test]
+    fn conductor_todos_follow_selected_responsibilities() {
+        let config = json!({"direct": {"consents": [
+            {"title": "Consent Form", "body": "Access, correction, and deletion\nContact the team.\n\nDeclaration of consent\nI agree."},
+            {"title": "Data storage", "body": "Storage details."}
+        ]}});
+        let rules = conductor_responsibilities(&config);
+        let ids: Vec<_> = rules.iter().map(|rule| rule.id.as_str()).collect();
+        assert!(ids.contains(&"requests"));
+        assert!(ids.contains(&"anonymization"));
+        assert!(ids.contains(&"consent"));
+        assert!(!ids.contains(&"voice"));
+        assert_eq!(
+            ids.len(),
+            ids.iter().collect::<std::collections::HashSet<_>>().len()
+        );
+        let url = "https://study.example/information/participants/";
+        for audience in ["participants", "conductors", "data-protection"] {
+            let template = SITES.iter().find(|(name, _)| *name == audience).unwrap().1;
+            let html = information_site_html(audience, template, &config, url);
+            let markdown = information_site_markdown(audience, &config, url);
+            assert_eq!(
+                html.contains("TODO for study conductors"),
+                audience == "conductors"
+            );
+            assert_eq!(
+                markdown.contains("TODO for study conductors"),
+                audience == "conductors"
+            );
+            if audience == "conductors" {
+                assert!(html.contains("two weeks after participation"));
+                assert!(markdown.contains("- [ ]"));
+                assert!(!html.contains("<h2>Declaration of consent</h2>"));
+            }
+        }
+        assert!(conductor_todo_html(&json!({})).is_empty());
+        assert!(conductor_todo_markdown(&json!({"direct": {"consents": []}})).is_empty());
+        let duration = json!({"direct": {"consents": [{"title": "Duration and compensation", "body": "Ten minutes."}]}});
+        assert!(!conductor_todo_html(&duration).contains("Two-week anonymization"));
+        let custom =
+            json!({"direct": {"consents": [{"title": "Custom", "body": "Custom commitment."}]}});
+        assert_eq!(
+            conductor_responsibilities(&custom)
+                .iter()
+                .map(|rule| rule.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["review"]
+        );
+        let catalogue: Vec<ConsentResponsibility> =
+            serde_json::from_str(include_str!("consent_responsibilities.json")).unwrap();
+        for heading in CONSENT_SECTION_HEADINGS {
+            assert!(
+                catalogue
+                    .iter()
+                    .any(|rule| rule.sections.iter().any(|section| section == heading)),
+                "missing duties for {heading}"
+            );
+        }
+    }
+
+    /// Markdown retains lists, headings and links while honoring every audience projection.
+    #[test]
+    fn markdown_downloads_preserve_content_and_audience_selection() {
+        let config = json!({"direct": {"consents": [{"title": "Consent Form",
+            "body": "Subject of this study\nStudy purpose.\n\nPersonal information collected\n- Contact information\n- <script>literal</script>\n\nData storage\nSecure storage."}]}});
+        let url = "https://study.example/e/test/information/participants/";
+        for audience in ["participants", "conductors", "data-protection"] {
+            let markdown = information_site_markdown(audience, &config, url);
+            assert!(
+                markdown.starts_with(&format!("# {}\n\n", information_document_title(audience)))
+            );
+            assert!(!markdown.contains("## Consent Form"));
+            assert!(!markdown.contains("# Informed consent form"));
+            let template = SITES.iter().find(|(name, _)| *name == audience).unwrap().1;
+            let html = information_site_html(audience, template, &config, url);
+            assert!(html.contains(&format!(
+                "<h1>{}</h1>",
+                information_document_title(audience)
+            )));
+            assert!(!html.contains("<h2>Consent Form</h2>"));
+            assert!(markdown.contains("## Personal information collected\n- Contact information"));
+            assert!(markdown.contains("- &lt;script&gt;literal&lt;/script&gt;"));
+            assert!(markdown.contains("## Data storage\nSecure storage."));
+            assert_eq!(
+                markdown.contains("Study purpose."),
+                audience == "participants"
+            );
+            assert_eq!(
+                markdown.contains(&format!("[View the full informed consent form](<{url}>)")),
+                audience == "data-protection"
+            );
+            assert!(information_site_markdown(audience, &json!({}), url)
+                .contains("Please configure the informed consent form."));
+        }
+        let imprint =
+            json!({"direct": {"imprint": {"text": "Institute\nhttps://example.org/legal"}}});
+        assert_eq!(
+            information_site_markdown("imprint", &imprint, url),
+            "# Imprint\n\nInstitute\nhttps://example.org/legal\n"
+        );
     }
 
     /// Source URLs become safe links while non-HTTPS text remains inert.

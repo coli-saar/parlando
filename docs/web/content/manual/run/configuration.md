@@ -29,7 +29,7 @@ United States, France, Austria, Spain, Ireland, Italy, and the Netherlands, plus
 general EU starting point. Each generated imprint names the selected template and
 lists its legal references with official source URLs, qualified by applicability
 to the operator. Standalone HTTPS source URLs are clickable in the preview, public
-page, and HTML download. The templates omit German and Austrian media-law references. The US
+page, and Markdown download. The templates omit German and Austrian media-law references. The US
 template explains the absence of a general federal imprint requirement. The EU
 option does not replace national requirements. Existing saved text is preserved;
 to use an updated template, select another country and then the intended country
@@ -52,7 +52,7 @@ edits. A draft label distinguishes unsaved text from the saved public notice.
 
 **Save new revision** publishes the exact imprint text at the study's
 `information/imprint/` URL, including while intake is closed. **Privacy → Imprint**
-provides the public link and an HTML download of the same notice. Changes to shared
+provides the public link and a Markdown download of the same notice. Changes to shared
 institution settings do not rewrite an already saved notice. Keep a separate
 privacy notice describing the study's processing of personal data.
 

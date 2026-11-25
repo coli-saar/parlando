@@ -1,0 +1,146 @@
+[
+  {
+    "id": "review",
+    "title": "Review the final notice",
+    "sections": [],
+    "tasks": [
+      "Review the complete participant notice and carry out every study-specific commitment, including additions or changes to template text. Assign a responsible person and deadlines before recruitment."
+    ]
+  },
+  {
+    "id": "requests",
+    "title": "Access, correction, deletion, and withdrawal",
+    "sections": [
+      "Access, correction, and deletion",
+      "Voluntary participation and withdrawal",
+      "Pseudonymized research data collected",
+      "Personal information collected",
+      "Data storage"
+    ],
+    "tasks": [
+      "Provide and monitor the stated request contact. Explain which study ID or recruitment identifier participants should supply and verify requests without collecting unnecessary identifiers.",
+      "During the promised two-week pseudonymized period, use the random study-specific ID or separately retained recruitment link to locate research records and handle access, correction, deletion, and withdrawal requests.",
+      "Resolve pending requests before removing identifying links. Coordinate corrections or deletions across affected records, shared sessions, exports, recipients, and backups as applicable; explain any justified limits and keep an appropriate record of the response.",
+      "Apply the stated compensation and stopping rules when participation ends or consent is withdrawn. After genuine anonymization, explain that contributions can no longer be located by identity; separately retained personal records still need their own request procedure."
+    ]
+  },
+  {
+    "id": "anonymization",
+    "title": "Two-week anonymization",
+    "sections": [
+      "Pseudonymized research data collected",
+      "Data storage",
+      "Access, correction, and deletion",
+      "Voluntary participation and withdrawal"
+    ],
+    "tasks": [
+      "Record the participation date and schedule the anonymization deadline promised in the notice (two weeks after participation in the template). Assign a person to carry out and verify the process; Parlando does not run it automatically.",
+      "Remove links between research records and recruitment identifiers, and review transcripts and other content for names, contact details, and other identifying information. Random IDs alone do not make data anonymous.",
+      "Manage identifying links and content in live records, exports, recipients' copies, and backups under the stated policy. Verify that the retained anonymized research data can no longer be linked to a participant.",
+      "Document completion of anonymization without retaining a participant-to-research-data lookup. Keep any separately required consent, recruitment, or payment records under their own purpose, retention, access, and deletion rules."
+    ]
+  },
+  {
+    "id": "study",
+    "title": "Study procedure and compensation",
+    "sections": [
+      "Subject of this study",
+      "Duration and compensation",
+      "Possible benefit of the study",
+      "Experiences and risks"
+    ],
+    "tasks": [
+      "Ensure the actual task, duration, compensation, early-stopping rules, benefits, and safeguards match the participant notice. Provide a contact for problems and apply the described risk-reduction measures.",
+      "Before participation, inform participants whether they will interact with other persons, AI chatbots, or both. Explain which study information and communications each partner receives, and ensure the notice matches the actual study setup."
+    ]
+  },
+  {
+    "id": "basis",
+    "title": "Purposes and legal basis",
+    "sections": [
+      "Data processing"
+    ],
+    "tasks": [
+      "Confirm and document the controller, purposes, and applicable legal basis before collection. Limit processing and reuse to the described purposes and approved arrangements."
+    ]
+  },
+  {
+    "id": "collection",
+    "title": "Collection and recruitment identifiers",
+    "sections": [
+      "Personal information collected",
+      "Pseudonymized research data collected"
+    ],
+    "tasks": [
+      "Check the study's enabled collection settings against the notice. Keep recruitment identifiers separate from normal research and corpus exports, use independent random study IDs, and follow the stated recruitment, payment, and request-handling purposes.",
+      "Document whether the hosting infrastructure records IP addresses or access logs, including their purpose and retention. Parlando does not write participant IP addresses to the research database or corpus exports; external infrastructure logging must be checked separately."
+    ]
+  },
+  {
+    "id": "access",
+    "title": "Access and confidentiality",
+    "sections": [
+      "Confidentiality",
+      "Data storage"
+    ],
+    "tasks": [
+      "Restrict research and administrative access to authorized roles. Apply the declared storage-location and security safeguards, retention schedules, and backup arrangements.",
+      "Complete the research-data storage location and country in the notice, and verify that the stated location matches the deployment and any separately described copies."
+    ]
+  },
+  {
+    "id": "publication",
+    "title": "Recipients, transfers, and publication",
+    "sections": [
+      "Disclosure and publication",
+      "Pseudonymized research data collected"
+    ],
+    "tasks": [
+      "Verify recipients, service providers, processing regions, transfer arrangements, and publication licenses against the notice. Review research content for identifiability before release; use controlled access until anonymization has been verified.",
+      "Arrange the promised further scientific use and publication of an anonymized research dataset. Verify anonymization before publication and complete the stated recipients, repository or publication route, and license details."
+    ]
+  },
+  {
+    "id": "contacts",
+    "title": "Contacts and complaints",
+    "sections": [
+      "Data controller and contact person"
+    ],
+    "tasks": [
+      "Keep controller, study, data-request, data-protection, and complaint contacts accurate and monitored. Assign responsibility for handling and escalating incoming requests."
+    ]
+  },
+  {
+    "id": "consent",
+    "title": "Eligibility and consent",
+    "sections": [
+      "Eligibility and study information",
+      "Declaration of consent"
+    ],
+    "tasks": [
+      "Provide the complete versioned participant information before participation, check the stated eligibility requirements, collect the required acceptance, and retain the appropriate consent evidence."
+    ]
+  },
+  {
+    "id": "communication",
+    "title": "Participant communication",
+    "sections": [
+      "Communication and privacy rules"
+    ],
+    "tasks": [
+      "Explain communication and privacy rules before interaction. Provide a route to report accidental identifying or sensitive disclosures and review affected content before sharing or publication."
+    ]
+  },
+  {
+    "id": "voice",
+    "title": "Voice and transcription",
+    "sections": [
+      "Live voice and transcription",
+      "Personal information collected"
+    ],
+    "tasks": [
+      "If voice or transcription is enabled, verify the disclosed live relay, provider, processing region, retention, transfer arrangements, and transcript-storage settings. Do not promise provider deletion without verifying its arrangements.",
+      "Provide the described microphone controls and explain the post-game voice period and independent-recording risk. Check that any text-to-speech service receives only the disclosed software-agent text."
+    ]
+  }
+]

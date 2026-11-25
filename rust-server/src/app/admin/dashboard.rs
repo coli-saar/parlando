@@ -104,6 +104,18 @@ pub(in crate::app) async fn admin_imprint_config_javascript() -> Response {
     )
 }
 
+/// Shares the conductor responsibility catalogue with browser previews.
+pub(in crate::app) async fn admin_consent_responsibilities_javascript() -> Response {
+    admin_dashboard_asset(
+        concat!(
+            "export default ",
+            include_str!("../consent_responsibilities.json"),
+            ";"
+        ),
+        "text/javascript; charset=utf-8",
+    )
+}
+
 /// Prevents a restarted dashboard from combining newly embedded markup with stale assets.
 fn admin_dashboard_asset(body: &'static str, content_type: &'static str) -> Response {
     let mut response = body.into_response();
