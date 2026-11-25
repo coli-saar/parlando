@@ -6020,3 +6020,7 @@ The two top-level release targets name their steps in Make and use the same repo
 ### Name the Python distributions for the APIs they provide
 
 Starting with the release after 0.7.0, publish the Python game SDK as `parlando-game-sdk` and the gRPC agent SDK as `parlando-remote-agent`. PyPI and crates.io resolve names independently. Changing distribution metadata allows existing Python imports and checkout paths to stay stable. Keep the published-version badges and 0.7.0 manual commands on the live projects until the renamed releases exist.
+
+## 2026-11-24 · README screenshot examples
+
+Use disposable Beacon Relay studies for participant and dashboard illustrations so the images can show a live connection, consent decision, and configured provider without participant data. The privacy figure pairs the generated final-transcript row with the external-services section. The agent figure pairs the CLI summary with outcomes from its per-session JSON files. The skill figure labels its dialogue as an example and shows output from testing, building, and checking the starter package. Refresh these figures when their controls, report fields, or CLI output change.

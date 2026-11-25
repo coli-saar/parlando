@@ -21,9 +21,7 @@ A Parlando **game** consists of a Javascript frontend that is shown in the playe
 
 Each experiment uses either typed chat or live speech, and the same game build supports both. In a typed condition, players see a message history and a text field below or beside the game. In a speech condition, they see their microphone status and a mute control, and Parlando streams audio between the two browsers. With transcription enabled, Parlando sends the speech to a transcription service and stores the final text, with word timings where the service provides them. This minimizes the personally identifiable information that we store, while still permitting fine-grained analysis of spoken conversations.
 
-<!-- SCREENSHOT PLACEHOLDER (docs/images/speech-widget.png):
-     A game in a speech condition, with the microphone level meter, connection
-     status, and mute control visible next to the board. -->
+![Beacon Relay in progress with the microphone level meter, Mute mic button, and connected session status](docs/images/speech-widget.png)
 
 ## Human and agent players
 
@@ -33,9 +31,7 @@ All three kinds of sessions run the same game rules, and an agent receives only 
 
 Agents can be packaged with the game or run in a standalone Python process. They receive and send messages as text strings. In a speech condition, Parlando passes transcripts to the agent and synthesizes the agent's replies as audio.
 
-<!-- SCREENSHOT PLACEHOLDER (docs/images/agent-agent-run.png):
-     Terminal output of `parlando run` for a batch of agent–agent sessions,
-     showing completed sessions, outcomes, and the output directory. -->
+![A Beacon Relay agent batch writes three completed sessions to the results directory. The beacons activate at four, five, and six ticks.](docs/images/agent-agent-run.png)
 
 ## Recruitment through Prolific
 
@@ -51,13 +47,9 @@ Parlando allows you to ask for a participant's consent to privacy-related items.
 
 For each experiment, Parlando produces a privacy report that lists the data it stores and the external services it uses, such as a transcription provider. You can use this report to describe the actual procedure to participants and to your ethics board. The [privacy materials](https://coli-saar.github.io/parlando/manual/privacy/) include a participant information template and material for an institutional data-protection review.
 
-<!-- SCREENSHOT PLACEHOLDER (docs/images/consent-page.png):
-     The participant consent page with the study information link, the
-     consent statement, and the accept and decline controls. -->
+![Beacon Relay consent screen with the participant information link, a checked required statement, and controls to enter the waiting room or decline](docs/images/consent-page.png)
 
-<!-- SCREENSHOT PLACEHOLDER (docs/images/privacy-report.png):
-     The privacy report of an experiment in the dashboard, listing the stored
-     data fields and the external services. -->
+![Excerpts from the generated privacy report showing which transcript fields Parlando retains and what audio it sends to Speechmatics](docs/images/privacy-report.png)
 
 
 ## Games and agents as WebAssembly components
@@ -73,9 +65,7 @@ Games also need a frontend that will run in the participants' web browser. These
 
 Parlando includes a [game creation skill](skills/generate-parlando-game/SKILL.md) for LLM coding assistants such as Claude Code or Codex. Given a description of the rules, the skill guides the assistant through implementing the game, its browser interface, and optional agents, and through testing and packaging the result with the Parlando command-line tool. The output is an ordinary Parlando game that you can read, change, and test like one written by hand.
 
-<!-- SCREENSHOT PLACEHOLDER (docs/images/game-skill.png):
-     A coding-assistant session using the generate-parlando-game skill, ending
-     with `parlando test` passing and a built package. -->
+![Example assistant session using generate-parlando-game to build Beacon Relay, with passing native tests, a passing component scenario, and a verified game ZIP](docs/images/game-skill.png)
 
 ## Getting started
 
