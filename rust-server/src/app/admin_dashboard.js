@@ -1,3 +1,4 @@
+import { safeMarkdown } from './document-markdown.js';
 // Coordinates the administrator’s selected experiment, session and editing views. Fetch
 // helpers bind reads to their selection and supply CSRF headers for mutations. Accepted
 // responses update shared dashboard state, which the view renders with the formatting
@@ -206,39 +207,6 @@ function upgradeYamlEditor() {
   updateLines();
 }
 
-// Renders conservative Markdown from escaped source without allowing active HTML or URLs.
-function safeMarkdown(source) {
-  const safeLink = (_match, label, url) => {
-    try {
-      const parsed = new URL(url, window.location.origin);
-      if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) return escapeHtml(label);
-      return `<a href="${escapeHtml(parsed.href)}" rel="noopener noreferrer" target="_blank">${escapeHtml(label)}</a>`;
-    } catch (_) { return escapeHtml(label); }
-  };
-  const inline = value => value
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/__([^_]+)__/g, '<strong>$1</strong>')
-    .replace(/~~([^~]+)~~/g, '<del>$1</del>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, safeLink);
-  return escapeHtml(source).split(/\n{2,}/).map(block => {
-    if (/^```/.test(block) && /```$/.test(block)) return `<pre><code>${block.replace(/^```[^\n]*\n?/, '').replace(/\n?```$/, '')}</code></pre>`;
-    const lines = block.split('\n');
-    if (lines.every(line => /^[-+*]\s+/.test(line))) return `<ul>${lines.map(line => {
-      const item = line.replace(/^[-+*]\s+/, '');
-      const task = item.match(/^\[([ xX])\]\s+(.*)$/);
-      return task ? `<li><input type="checkbox" disabled ${task[1].toLowerCase() === 'x' ? 'checked' : ''}> ${inline(task[2])}</li>` : `<li>${inline(item)}</li>`;
-    }).join('')}</ul>`;
-    if (lines.every(line => /^\d+\.\s+/.test(line))) return `<ol>${lines.map(line => `<li>${inline(line.replace(/^\d+\.\s+/, ''))}</li>`).join('')}</ol>`;
-    if (lines.every(line => /^&gt;\s?/.test(line))) return `<blockquote>${lines.map(line => inline(line.replace(/^&gt;\s?/, ''))).join('<br>')}</blockquote>`;
-    const linked = inline(block);
-    if (linked.startsWith('### ')) return `<h3>${linked.slice(4)}</h3>`;
-    if (linked.startsWith('## ')) return `<h2>${linked.slice(3)}</h2>`;
-    if (linked.startsWith('# ')) return `<h1>${linked.slice(2)}</h1>`;
-    return `<p>${linked.replace(/\n/g, '<br>')}</p>`;
-  }).join('') || '<p class="muted">No notes yet.</p>';
-}
-
 // Applies the selected Notes mode without rebuilding the editor or disturbing focus.
 function setNotesMode(mode) {
   state.notesMode = mode;
@@ -246,7 +214,7 @@ function setNotesMode(mode) {
   notesEditor.hidden = mode !== 'write';
   document.getElementById('notesWriteMode').setAttribute('aria-pressed', String(mode === 'write'));
   document.getElementById('notesPreviewMode').setAttribute('aria-pressed', String(mode === 'preview'));
-  if (mode === 'preview') notesPreview.innerHTML = safeMarkdown(state.notesSource);
+  if (mode === 'preview') notesPreview.innerHTML = safeMarkdown(state.notesSource) || '<p class="muted">No notes yet.</p>';
 }
 
 // Synchronizes Notes with selection changes while preserving the active editor across polling.
@@ -263,14 +231,14 @@ function renderNotes() {
       state.notesSource = value;
       state.notesDirty = value !== (state.experiment?.notes || '');
       notesSaveState.textContent = state.notesDirty ? 'Unsaved changes' : 'Saved';
-      if (state.notesMode === 'preview') notesPreview.innerHTML = safeMarkdown(value);
+      if (state.notesMode === 'preview') notesPreview.innerHTML = safeMarkdown(value) || '<p class="muted">No notes yet.</p>';
     });
   } else if (!state.notesDirty && document.activeElement !== input && input.value !== (state.experiment?.notes || '')) {
     state.notesSource = state.experiment?.notes || '';
     input.value = state.notesSource;
     input.synchronizeSourceEditor();
   }
-  notesPreview.innerHTML = safeMarkdown(state.notesSource);
+  notesPreview.innerHTML = safeMarkdown(state.notesSource) || '<p class="muted">No notes yet.</p>';
   setNotesMode(state.notesMode);
   notesSaveState.textContent = state.notesDirty ? 'Unsaved changes' : 'Saved';
 }
@@ -641,7 +609,7 @@ function renderConsentDocument(items = []) {
       .map(item => ({ ...item, body: consentBodyForAudience(item.body || '', audience, item.title || '') }))
       .filter(item => item.body.trim());
     const content = forms.length
-      ? forms.map(item => `<section>${item.title && !['consent form', 'informed consent form'].includes(item.title.trim().toLowerCase()) ? `<h3>${escapeHtml(item.title)}</h3>` : ''}<div style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(item.body)}</div></section>`).join('')
+      ? forms.map(item => `<section>${item.title && !['consent form', 'informed consent form'].includes(item.title.trim().toLowerCase()) ? `<h3>${escapeHtml(item.title)}</h3>` : ''}<div class="document-markdown">${safeMarkdown(item.body)}</div></section>`).join('')
       : '<p class="muted">Please configure the informed consent form.</p>';
     const consentUrl = state.experiment?.information_sites?.participants;
     const consentLink = audience === 'data-protection' && consentUrl

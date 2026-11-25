@@ -284,6 +284,10 @@ fn dashboard_feature_routes(prefix: &str) -> Router<Arc<ServerContext>> {
             get(admin_privacy_notice_templates_javascript),
         )
         .route(
+            &participant_path("/admin/assets/document-markdown.js"),
+            get(admin_document_markdown_javascript),
+        )
+        .route(
             &participant_path("/admin/assets/imprint-config.js"),
             get(admin_imprint_config_javascript),
         )

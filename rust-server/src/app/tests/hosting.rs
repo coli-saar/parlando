@@ -154,6 +154,17 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         let templates: Value = serde_json::from_str(catalogue.strip_prefix("export default ").unwrap().trim_end_matches(';')).unwrap();
         assert_eq!(templates, expected);
     }
+    // Public documents load the same self-hosted Markdown renderer without authentication.
+    let (status, script, content_type) = raw_request(router.clone(), http::Method::GET,
+        "/e/primary/information/document-markdown.js", Body::empty()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type.as_deref(), Some("text/javascript; charset=utf-8"));
+    assert!(script.contains("export function safeMarkdown"));
+    assert!(script.contains("enhanceDocumentMarkdown();"));
+    let (head_status, head_body, _) = raw_request(router.clone(), http::Method::HEAD,
+        "/e/primary/information/document-markdown.js", Body::empty()).await;
+    assert_eq!(head_status, StatusCode::OK);
+    assert!(head_body.is_empty());
     for audience in ["participants", "data-protection", "conductors", "imprint", "privacy"] {
         let path = format!("/e/primary/information/{audience}/");
         assert!(created["information_sites"][audience]
@@ -165,6 +176,8 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(content_type.as_deref(), Some("text/html; charset=utf-8"));
         if matches!(audience, "participants" | "conductors" | "data-protection") {
+            assert!(body.contains("/e/primary/information/document-markdown.js"));
+            if audience != "data-protection" { assert!(body.contains("data-study-markdown")); }
             assert!(body.contains(if audience == "participants" { "Information for participants" } else { "Information for " }));
             if audience == "data-protection" {
                 assert!(!body.contains("Agree?"));

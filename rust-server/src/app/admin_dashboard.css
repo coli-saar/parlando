@@ -508,3 +508,8 @@ dialog::backdrop { background: rgba(20,34,45,.35); }
 .privacy-document-tab { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--subtle); cursor: pointer; font: inherit; font-weight: 600; padding: 9px 11px; }
 .privacy-document-tab[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--text); }
 .privacy-document-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Rendered document content stays readable without inheriting source-editor whitespace. */
+.document-markdown { overflow-wrap: anywhere; }
+.document-markdown pre { overflow-x: auto; white-space: pre; }
+.document-markdown blockquote { margin-inline: 0; padding-inline-start: 1rem; border-inline-start: 3px solid #b6b6b6; }

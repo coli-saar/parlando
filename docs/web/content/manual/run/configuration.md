@@ -101,3 +101,16 @@ saved text is not regenerated automatically. `PARLANDO_PRIVACY_NOTICE_TEMPLATE_D
 overrides the directory; the default is `templates/privacy-notice/` beneath the
 Rust crate source directory used at build time. Supplied container images include
 the catalogue. Keep identifiers stable while saved studies reference them.
+
+### Format study documents with Markdown
+
+Consent, imprint and privacy-notice previews and public HTML pages render headings
+(`#` through `######`), bold/italic text, links, flat bullet/numbered/task lists,
+quotes, horizontal rules and fenced code blocks. Existing plain-text line breaks
+remain visible. Raw HTML is displayed as text; links support HTTP(S), email and
+relative destinations. `{{placeholders}}` remain literal until you replace them.
+Tables, nested lists and embedded images are not supported by this lightweight renderer.
+
+Public pages use a locally served script for formatting. With JavaScript disabled,
+the readable source text remains visible. Saving and Markdown downloads retain the
+original text; displaying a document does not modify a revision or consent record.

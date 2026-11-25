@@ -195,3 +195,8 @@ pub(in crate::app) async fn admin_privacy_notice_config_javascript() -> Response
     admin_dashboard_asset(include_str!("../privacy_notice_config.mjs"), "text/javascript; charset=utf-8")
 }
 
+
+/// Shares the safe Markdown renderer with dashboard document previews and notes.
+pub(in crate::app) async fn admin_document_markdown_javascript() -> Response {
+    admin_dashboard_asset(include_str!("../document_markdown.mjs"), "text/javascript; charset=utf-8")
+}

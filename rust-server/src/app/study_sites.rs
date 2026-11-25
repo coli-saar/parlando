@@ -284,6 +284,15 @@ fn information_site_markdown(audience: &str, config: &Value, consent_url: &str) 
     markdown
 }
 
+/// Enhances escaped plain-text documents with the same local renderer used in previews.
+/// The external module obeys the existing CSP; without JavaScript the readable source remains.
+fn markdown_document_shell(template: &str, consent_url: &str) -> String {
+    let path = consent_url.parse::<http::Uri>().map(|uri| uri.path().to_owned()).unwrap_or_default();
+    let base = path.strip_suffix("participants/").unwrap_or("../");
+    let script_url = escape_document_text(&format!("{base}document-markdown.js"));
+    template.replace("</body>", &format!("<script type=\"module\" src=\"{script_url}\"></script></body>"))
+}
+
 /// Renders explicitly public imprint and consent copy, excluding other configuration.
 fn information_site_html(
     audience: &str,
@@ -291,6 +300,8 @@ fn information_site_html(
     config: &Value,
     consent_url: &str,
 ) -> String {
+    let enhanced_template = if audience == "imprint" && config.pointer("/direct/imprint/text").and_then(Value::as_str).unwrap_or("").trim().is_empty() { template.to_owned() } else { markdown_document_shell(template, consent_url) };
+    let template = enhanced_template.as_str();
     if matches!(audience, "participants" | "conductors" | "data-protection") {
         let mut content = String::new();
         for (title, body) in consent_document_forms(audience, config) {
@@ -299,7 +310,7 @@ fn information_site_html(
             } else {
                 String::new()
             };
-            content.push_str(&format!("<section>{heading}<pre style=\"white-space:pre-wrap;overflow-wrap:anywhere;font:inherit\">{}</pre></section>", escape_document_text(&body)));
+            content.push_str(&format!("<section>{heading}<pre data-study-markdown style=\"white-space:pre-wrap;overflow-wrap:anywhere;font:inherit\">{}</pre></section>", escape_document_text(&body)));
         }
         if content.is_empty() {
             content.push_str("<p>Please configure the informed consent form.</p>");
@@ -349,7 +360,7 @@ fn information_site_html(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    template.replace("{{content}}", &format!("<main><h1>{}</h1><pre style=\"white-space:pre-wrap;overflow-wrap:anywhere;font:inherit\">{escaped}</pre></main>", information_document_title(audience)))
+    template.replace("{{content}}", &format!("<main><h1>{}</h1><pre data-study-markdown style=\"white-space:pre-wrap;overflow-wrap:anywhere;font:inherit\">{escaped}</pre></main>", information_document_title(audience)))
 }
 
 /// Serves known sites for existing studies, without allocating a runtime.
@@ -361,8 +372,11 @@ pub(super) async fn serve_information_site(
     method: &Method,
 ) -> Option<Response> {
     let audience = suffix.strip_prefix("/information/")?.trim_end_matches('/');
-    let Some((_, html)) = SITES.iter().find(|(name, _)| *name == audience) else {
-        return Some(StatusCode::NOT_FOUND.into_response());
+    let markdown_asset = audience == "document-markdown.js";
+    let html = match SITES.iter().find(|(name, _)| *name == audience) {
+        Some((_, html)) => *html,
+        None if markdown_asset => "",
+        None => return Some(StatusCode::NOT_FOUND.into_response()),
     };
     let definition = match context
         .installation
@@ -385,6 +399,12 @@ pub(super) async fn serve_information_site(
             )
                 .into_response(),
         );
+    }
+    if markdown_asset {
+        let body = concat!(include_str!("document_markdown.mjs"), "\nenhanceDocumentMarkdown();\n");
+        let mut response = ([(http::header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (http::header::CACHE_CONTROL, "no-store")], body).into_response();
+        if method == Method::HEAD { *response.body_mut() = Body::empty(); }
+        return Some(response);
     }
     let mut response = Html(information_site_html(
         audience,
@@ -682,6 +702,15 @@ mod tests {
         for text in [information_site_html("privacy", template, &json!({}), ""), information_site_markdown("privacy", &json!({}), "")] {
             assert!(text.contains("Please configure the privacy notice."));
         }
+    }
+
+    /// Script URLs remain same-origin and retain deployment/game prefixes, even via a host alias.
+    #[test]
+    fn markdown_document_shell_preserves_hosted_paths() {
+        let html = markdown_document_shell("<body>text</body>", "https://public.example/deployment/e/game~study/information/participants/");
+        assert!(html.contains("src=\"/deployment/e/game~study/information/document-markdown.js\""));
+        assert!(!html.contains("https://public.example"));
+        assert!(html.contains("type=\"module\""));
     }
 
     /// Source URLs become safe links while non-HTTPS text remains inert.

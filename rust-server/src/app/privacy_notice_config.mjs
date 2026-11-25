@@ -1,3 +1,4 @@
+import { safeMarkdown } from './document-markdown.js';
 // Jurisdiction Markdown is loaded at startup and supplied by the authenticated catalogue asset.
 import PRIVACY_TEMPLATES from './privacy-notice-templates.js';
 
@@ -39,14 +40,9 @@ export function bindPrivacyNoticeEditor(editor, onChange = () => {}) {
   preview();
 }
 
-// Links only standalone HTTPS source lines; all other copy stays escaped plain text.
-function linkedNoticeText(text) {
-  return text.split('\n').map(line => /^https:\/\/[^\s]+$/.test(line)
-    ? `<a href="${escape(line)}" rel="noopener noreferrer">${escape(line)}</a>` : escape(line)).join('\n');
-}
 
 // Escaped previews use the exact snapshot that will be saved; links open the saved public notice.
 export function renderPrivacyNoticePreview(text = '', saved = '') {
   if (!text.trim()) return '<p class="muted">Please configure the privacy notice.</p>';
-  return `<p class="muted small">${text === saved ? 'Saved privacy notice' : 'Draft preview — save a new revision to publish.'}</p><article class="privacy-document"><h1>Privacy notice</h1><pre style="white-space:pre-wrap;overflow-wrap:anywhere;font:inherit">${linkedNoticeText(text)}</pre></article>`;
+  return `<p class="muted small">${text === saved ? 'Saved privacy notice' : 'Draft preview — save a new revision to publish.'}</p><article class="privacy-document"><h1>Privacy notice</h1><div class="document-markdown">${safeMarkdown(text)}</div></article>`;
 }

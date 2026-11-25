@@ -5,6 +5,7 @@ description: "Storage locations, retention, and security."
 order: 90
 ---
 
+### Data storage 
 
 For two weeks after your participation, these records are pseudonymized using a randomly generated study-specific participant ID. They remain personal data during this period, allowing the research team to locate your contributions when you request access, correction, or deletion. After this period, the research team anonymizes the research data by removing links to recruitment records and reviewing and removing identifying information from the content. Once anonymization is complete, you can no longer be identified from the anonymized data, and your individual contributions can no longer be located for access or deletion based on your identity.
 

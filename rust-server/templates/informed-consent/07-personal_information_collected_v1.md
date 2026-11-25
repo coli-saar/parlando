@@ -5,17 +5,28 @@ description: "Collected information that identifies or can be linked to particip
 order: 70
 ---
 
-This study processes the following personal information, where applicable:
+### Collection of personal data
 
-- Your Prolific ID or other recruitment identifier, for recruitment verification, participation and payment administration, and linking your study record to requests for access, correction, deletion, or withdrawal during the two-week pseudonymized period. This identifier is kept separately from normal research and corpus exports.
-- Live microphone audio, if voice is enabled, for communication with the other participant and, if hosted transcription is enabled, for real-time transcription by {{TRANSCRIPTION_PROVIDER_AND_PROCESSING_REGION}}. Parlando does not store raw microphone audio. Final transcripts and timing are stored only when enabled for this study. Provider processing, retention, and international transfers are governed by {{PROVIDER_RETENTION_AND_TRANSFER_INFORMATION}}.
+This study collects and processes following personal data:
 
-If live voice is enabled, I consent to my microphone audio being transmitted to the other participant. If hosted transcription is enabled, the audio is also sent to {{TRANSCRIPTION_PROVIDER_AND_PROCESSING_REGION}} for real-time transcription. Parlando receives the resulting text and timing information and stores final transcripts and timing only when enabled for this study. Parlando does not store raw microphone audio. Provider retention and international transfer arrangements are described in {{PROVIDER_RETENTION_AND_TRANSFER_INFORMATION}}.
+- Prolific ID or other recruitment identifier
+- Live microphone audio
 
-After a two-person game completes normally, live voice may remain open for up to one minute. Speech during this final minute is not transcribed or stored by Parlando. I can mute my microphone or end voice chat immediately. The research team cannot completely prevent another participant from independently recording or taking screenshots of communications.
+### Processing of personal data
 
-I may hear a synthetic software-agent voice. The text-to-speech service receives only text written by the software agent, not my microphone audio, messages, transcripts, identifier, or game state.
+The data collected above will be processed in the following ways:
 
-Parlando assigns a random participant ID for this study; another Parlando study assigns a different ID. {{RECRUITMENT_AND_PAYMENT_RECORD_RETENTION}} describes any separately retained recruitment or payment records and their purpose, retention period, and separation from the anonymized research data.
+- Your Prolific ID or other recruitment identifier is used for recruitment verification, participation and payment administration, and linking your study record to requests for access, correction, deletion, or withdrawal during the study period. This identifier is kept separately from normal research and corpus exports and will be deleted upon study termination.
+- Live microphone audio will be used for communication with the other participant and sent to Speechmatics for real-time transcription. Parlando does not store raw microphone audio. Speechmatics will delete the raw microphone audio immediately after transcription. Provider processing, retention, and international transfers are governed by Speechmatics. 
 
-Parlando does not write participant IP addresses to its research database or corpus exports. Depending on the hosting infrastructure settings, the web server, hosting service, firewall, or reverse proxy may separately record IP addresses and access logs. For this deployment: {{HOSTING_IP_AND_ACCESS_LOG_POLICY_INCLUDING_WHETHER_LOGS_ARE_KEPT_PURPOSE_AND_RETENTION}}.
+### Additional information   
+
+- After a two-person game completes normally, live voice may remain open for up to one minute. Speech during this final minute is not transcribed or stored by Parlando. Participants can mute their microphone or end voice chat immediately. 
+- In case where one of the players is an AI agent, the text-to-speech service receives only text written by the agent, not the microphone audio, messages, transcripts, identifier, or game state. The agent also only receives the transcribed text and not the microphone audio.
+- Parlando assigns a random participant ID for this study which is linked to the Prolific ID or other recruitment identifier. This connection is retained for the duration of the study only for the above stated purposes.
+- Parlando does not write participant IP addresses to its research database or corpus exports. However, the underlying hosting infrastructure settings, the web server, hosting service, firewall, or reverse proxy may separately record IP addresses and access logs. 
+
+
+
+
+
