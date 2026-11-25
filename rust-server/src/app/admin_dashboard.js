@@ -5,8 +5,7 @@
 
 import { bindSpeechSettings, COMMUNICATION_MODE_FIELD, configAt, readConfigFields, renderSpeechSettings, renderStandardConfigField, setConfigAt } from './communication-config.js';
 import { bindPrivacyNoticeEditor, renderPrivacyNoticeEditor, renderPrivacyNoticePreview } from './privacy-notice-config.js';
-import { bindDocumentFields, documentFieldsFromForm } from './document-fields.js';
-import { renderImprintEditor, renderImprintPreview } from './imprint-config.js';
+import { bindImprintEditor, renderImprintEditor, renderImprintPreview } from './imprint-config.js';
 import CONSENT_TEMPLATE_OPTIONS from './consent-templates.js';
 import CONSENT_RESPONSIBILITIES from './consent-responsibilities.js';
 import { state } from './admin-dashboard-state.js';
@@ -584,18 +583,7 @@ function selectPrivacyDocument(key, focus = false) {
   });
 }
 
-// Reads only explicitly public source drafts; private runtime settings never enter the notice.
-function privacyNoticeSources() {
-  const imprint = Object.fromEntries(['operator', 'responsible_person', 'address', 'email', 'phone', 'text'].map(key =>
-    [key, configForm.querySelector(`[data-config-path="direct.imprint.${key}"]`)?.value || '']));
-  const consents = Array.from(configForm.querySelectorAll('.consent-item')).map(item => ({
-    title: item.querySelector('[data-consent-field="title"]').value,
-    body: item.querySelector('[data-consent-field="body"]').value,
-  }));
-  return { imprint, consents };
-}
-
-// Distinguishes the live synchronized draft from the public saved revision.
+// Distinguishes the editable privacy draft from the public saved revision.
 function renderPrivacyNoticeDocument(text = '') {
   document.getElementById('privacyNoticeDocument').innerHTML = renderPrivacyNoticePreview(text, state.configValue?.direct?.privacy_notice?.text || '');
 }
@@ -1443,12 +1431,8 @@ function renderConfigurationForm(config, gameYaml = '{}\n') {
     control.addEventListener('input', refreshDraftActivationWarning);
     control.addEventListener('change', refreshDraftActivationWarning);
   });
-  const refreshPrivacyNotice = bindPrivacyNoticeEditor(configForm, privacyNoticeSources, renderPrivacyNoticeDocument);
-  bindDocumentFields(configForm, state.configValue?.direct?.document_fields, () => {
-    previewConsentFromEditor();
-    renderImprintDocument(configForm.querySelector('[data-config-path="direct.imprint.text"]')?.value || '');
-    refreshPrivacyNotice?.();
-  });
+  configForm.querySelectorAll('[data-imprint-editor]').forEach(editor => bindImprintEditor(editor, renderImprintDocument));
+  configForm.querySelectorAll('[data-privacy-notice-editor]').forEach(editor => bindPrivacyNoticeEditor(editor, renderPrivacyNoticeDocument));
   bindSpeechSettings(configForm);
   renderGameSecrets();
   refreshDraftActivationWarning();
@@ -1462,7 +1446,7 @@ function renderConfigField(field, config) {
   }
   const value = configAt(config, field.path);
   if (field.type === 'privacy-notice') return renderPrivacyNoticeEditor(value || {});
-  if (field.type === 'imprint') return renderImprintEditor(value || {}, state.gameSettings?.institution || '');
+  if (field.type === 'imprint') return renderImprintEditor(value || {});
   if (field.type === 'consents') return renderConsentEditor(field, Array.isArray(value) ? value : []);
   if (field.type === 'agents') return renderAgentEditor(field, value || {});
   return renderStandardConfigField(field, config);
@@ -1609,7 +1593,7 @@ function renderConsentEditor(field, items) {
   const contents = items.length
     ? items.map(consentItemMarkup).join('')
     : '<p class="consent-empty muted small">No consent statements configured.</p>';
-  const templateOptions = CONSENT_TEMPLATE_OPTIONS.map(template => `<div class="consent-section" data-consent-section><label class="consent-template-option"><input type="checkbox" data-consent-template-option value="${escapeHtml(template.id)}" aria-controls="consent-section-${escapeHtml(template.id)}"><span><strong>${escapeHtml(template.title)}</strong><span class="config-help">${escapeHtml(template.description)}</span></span></label><div class="consent-section-text" data-consent-section-editor hidden><textarea aria-label="${escapeHtml(template.title)}" id="consent-section-${escapeHtml(template.id)}" data-consent-section-text="${escapeHtml(template.id)}" rows="4">${escapeHtml(template.body)}</textarea></div></div>`).join('');
+  const templateOptions = CONSENT_TEMPLATE_OPTIONS.map(template => `<div class="consent-section" data-consent-section><label class="consent-template-option"><input type="checkbox" data-consent-template-option value="${escapeHtml(template.id)}" aria-controls="consent-section-${escapeHtml(template.id)}"><span><strong>${escapeHtml(template.title)}</strong><span class="config-help">${escapeHtml(template.description)}</span></span></label><label class="consent-section-text" data-consent-section-editor hidden><textarea aria-label="${escapeHtml(template.title)}" id="consent-section-${escapeHtml(template.id)}" data-consent-section-text="${escapeHtml(template.id)}" rows="4">${escapeHtml(template.body)}</textarea></label></div>`).join('');
   return `<div class="config-field">${field.label ? `<span>${escapeHtml(field.label)}</span>` : ''}${field.help ? `<span class="config-help">${escapeHtml(field.help)}</span>` : ''}<div class="consent-editor" data-consent-editor data-consent-path="${escapeHtml(field.path)}"><fieldset class="consent-template-options"><legend>Consent form sections</legend><div class="consent-actions"><button class="secondary" type="button" data-select-all-consent>Select all</button></div>${templateOptions}</fieldset><p class="config-help">Select sections and edit their template text below to combine into one editable Consent Form with one acceptance requirement. Leave all options unchecked for an empty statement. Existing forms are kept.</p><div class="consent-actions"><button class="secondary" type="button" data-generate-consent>${icon('plus')}Generate consent form</button></div><div class="consent-items">${contents}</div><span class="config-help">Every generated form is required by default. Complete its title and statement before saving, and review all placeholders before collecting data.</span></div></div>`;
 }
 
@@ -1722,7 +1706,6 @@ function refreshDraftActivationWarning() {
 function configurationFromForm() {
   const config = structuredClone(state.configValue || {});
   readConfigFields(configForm, config);
-  setConfigAt(config, 'direct.document_fields', documentFieldsFromForm(configForm));
   configForm.querySelectorAll('[data-consent-editor]').forEach(editor => {
     const items = Array.from(editor.querySelectorAll('.consent-item')).map(item => ({
       id: item.querySelector('[data-consent-field="id"]').value.trim(),

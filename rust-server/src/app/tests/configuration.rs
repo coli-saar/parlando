@@ -408,19 +408,15 @@ fn persisted_configuration_redacts_provider_credentials() {
     assert!(!serialized.contains("\"database\""));
 }
 
-/// Imprint copy and generation inputs survive stored revisions, with strict country and size validation.
+/// Imprint text and selected country survive stored revisions with country and size validation.
 #[test]
 fn imprint_configuration_round_trips_and_validates() {
     let mut config = step_five_config();
     config.direct.imprint.country = "FR".to_owned();
-    config.direct.imprint.operator = "Research Institute".to_owned();
-    config.direct.imprint.responsible_person = "Ada".to_owned();
     config.direct.imprint.text = "Reviewed public notice".to_owned();
     let stored = persistable_config_json(&config).unwrap();
     let restored = experiment_config_from_json(stored, &config, "step5").unwrap();
     assert_eq!(restored.direct.imprint.text, "Reviewed public notice");
-    assert_eq!(restored.direct.imprint.operator, "Research Institute");
-    assert_eq!(restored.direct.imprint.responsible_person, "Ada");
     config.direct.imprint.country = "ZZ".to_owned();
     assert!(config.validate().is_err());
     config.direct.imprint.country = "DE".to_owned();

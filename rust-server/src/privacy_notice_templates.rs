@@ -31,7 +31,7 @@ pub(crate) fn catalogue() -> &'static [MarkdownTemplate] {
 mod tests {
     use super::*;
 
-    /// Every shipped jurisdiction survives configuration serialization with its separate additions.
+    /// Every shipped jurisdiction survives configuration serialization with its editable notice text.
     #[test]
     fn six_jurisdictions_roundtrip_and_validate() {
         let ids: Vec<_> = catalogue()
@@ -44,13 +44,6 @@ mod tests {
             config.database.url = "sqlite:///:memory:".to_owned();
             config.direct.privacy_notice.jurisdiction = id.to_owned();
             config.direct.privacy_notice.text = "Reviewed notice".to_owned();
-            config
-                .direct
-                .privacy_notice
-                .details
-                .insert("cookies".to_owned(), "Reviewed cookie practices".to_owned());
-            config.direct.document_fields.values.insert("operator".to_owned(), "Institute".to_owned());
-            config.direct.document_fields.templates.insert("consent/one".to_owned(), "Operator: {{operator}}".to_owned());
             let value = serde_json::to_value(&config).unwrap();
             let mut decoded: crate::config::ExperimentConfig =
                 serde_json::from_value(value).unwrap();
@@ -58,12 +51,6 @@ mod tests {
             decoded.database.url = config.database.url.clone();
             decoded.validate().unwrap();
             assert_eq!(decoded.direct.privacy_notice.text, "Reviewed notice");
-            assert_eq!(decoded.direct.document_fields.values["operator"], "Institute");
-            assert_eq!(decoded.direct.document_fields.templates["consent/one"], "Operator: {{operator}}");
-            assert_eq!(
-                decoded.direct.privacy_notice.details["cookies"],
-                "Reviewed cookie practices"
-            );
         }
         let mut config = crate::config::ExperimentConfig::default();
         config.database.url = "sqlite:///:memory:".to_owned();

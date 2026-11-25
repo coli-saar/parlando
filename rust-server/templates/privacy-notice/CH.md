@@ -6,33 +6,33 @@ order: 4
 ---
 
 Selected template: Switzerland
-Last reviewed: {{review_date}}
+Last reviewed: {{DATE_LAST_REVIEWED}}
 
 Study operator and public contact details
-{{source.imprint}}
+{{STUDY_OPERATOR_NAME_AND_PUBLIC_CONTACT_DETAILS}}
 
 Study data handling
-{{source.consent}}
+{{DATA_CATEGORIES_INCLUDING_VOICE_AND_HOSTING_LOGS_SOURCES_AND_PURPOSES}}
 
 Controller and privacy contact
-{{controller_details}}
+{{LEGAL_CONTROLLER_NAME_ADDRESS_EMAIL_AND_DPO_OR_REPRESENTATIVE_IF_APPLICABLE}}
 
 Collection and use
-{{collection_details}}
+{{PURPOSES_PER_DATA_CATEGORY_AND_OPTIONAL_OR_REQUIRED_COLLECTION}}
 
 Storage, retention and disclosure
-{{storage_details}}
+{{STORAGE_LOCATIONS_COUNTRIES_RETENTION_PERIODS_ANONYMIZATION_AND_RECIPIENTS}}
 
 Cookies and similar technologies
-{{cookies}}
+{{COOKIES_LOCAL_STORAGE_AND_SIMILAR_TECHNOLOGIES_PURPOSES_DURATION_AND_CHOICES_OR_NONE}}
 
 Swiss disclosures
-{{swiss_transfers}}
+{{FOREIGN_DESTINATION_COUNTRIES_AND_APPLICABLE_TRANSFER_SAFEGUARDS_OR_EXCEPTIONS}}
 
 Your rights
 Subject to applicable conditions, you may request information about processing and seek correction or deletion. You may contact the Federal Data Protection and Information Commissioner about data-protection concerns.
-{{rights_contact}}
-{{automated_decisions}}
+{{REQUEST_CONTACT_METHODS_VERIFICATION_WITHDRAWAL_LIMITS_AND_REGULATOR_COMPLAINT_ROUTE}}
+{{WHETHER_SIGNIFICANT_AUTOMATED_DECISIONS_OR_PROFILING_OCCUR_LOGIC_EFFECTS_AND_REVIEW_RIGHTS}}
 
 Official sources
 https://www.edoeb.admin.ch/en/duty-to-provide-information

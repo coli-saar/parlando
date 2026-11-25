@@ -276,10 +276,6 @@ fn dashboard_feature_routes(prefix: &str) -> Router<Arc<ServerContext>> {
             get(admin_communication_config_javascript),
         )
         .route(
-            &participant_path("/admin/assets/document-fields.js"),
-            get(admin_document_fields_javascript),
-        )
-        .route(
             &participant_path("/admin/assets/privacy-notice-config.js"),
             get(admin_privacy_notice_config_javascript),
         )
