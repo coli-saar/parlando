@@ -75,7 +75,11 @@ export function generatePrivacyNotice(jurisdiction, details = {}, source = {}) {
     'source.imprint': [contacts, imprint.text?.trim()].filter(Boolean).join('\n\n'),
     'source.consent': consentPrivacyText(source.consents),
   };
-  return template.body.replace(/{{([a-z][a-z0-9_.]*)}}/g, (token, key) => (key.startsWith('source.') ? sources[key] : details[key])?.trim() || token);
+  return template.body.replace(/{{([a-z][a-z0-9_.]*)}}/g, (token, key) => {
+    const value = (key.startsWith('source.') ? sources[key] : details[key])?.trim();
+    // These fields supplement source sections; missing additions do not require duplicate entry.
+    return value || (['collection_details', 'storage_details'].includes(key) ? '' : token);
+  });
 }
 
 // All jurisdiction details remain in the DOM so switching templates preserves previous additions.
@@ -84,7 +88,7 @@ export function renderPrivacyNoticeEditor(notice = {}) {
   return `<div class="config-fields" data-privacy-notice-editor>
     <label class="config-field"><span>Jurisdiction template</span><select data-config-path="direct.privacy_notice.jurisdiction" data-config-type="string"><option value="">Select jurisdiction</option>${PRIVACY_TEMPLATES.map(t => `<option value="${escape(t.id)}" ${notice.jurisdiction === t.id ? 'selected' : ''}>${escape(t.title)}</option>`).join('')}</select></label>
     <p class="config-help" data-privacy-scope></p>
-    <p class="config-help">The notice updates from the generated consent forms and imprint above. Recognized privacy sections are copied; include relevant custom-section content in the additional disclosures. Generate your selected consent sections first. Complete the additional disclosures and review all {{placeholders}} before publication. Several laws may apply; a single template does not establish coverage or compliance. Saving a new revision publishes the notice.</p>
+    <p class="config-help">The notice updates from the generated consent forms and imprint above. Recognized privacy sections are copied; include relevant custom-section content in the additional disclosures. Generate your selected consent sections first. Shared answers entered here also prefill linked consent and imprint fields. Complete remaining disclosures and review all {{placeholders}} before publication. Several laws may apply; a single template does not establish coverage or compliance. Saving a new revision publishes the notice.</p>
     ${keys.map(key => `<label class="config-field" data-privacy-detail="${escape(key)}"><span>${escape(FIELD_HELP[key] || key.replaceAll('_', ' '))}</span><textarea rows="3" maxlength="20000" data-config-path="direct.privacy_notice.details.${escape(key)}" data-config-type="string">${escape(notice.details?.[key] || '')}</textarea></label>`).join('')}
     <label class="config-field"><span>Generated privacy notice</span><textarea readonly rows="20" data-config-path="direct.privacy_notice.text" data-config-type="string">${escape(notice.text || '')}</textarea></label>
     <p class="config-help" data-privacy-review role="status"></p>
@@ -117,6 +121,7 @@ export function bindPrivacyNoticeEditor(form, readSource, onChange) {
   form.onchange = refresh;
   form.onclick = refresh;
   refresh();
+  return refresh;
 }
 
 // Links only standalone HTTPS source lines; all other copy stays escaped plain text.

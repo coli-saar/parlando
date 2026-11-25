@@ -5,4 +5,14 @@ description: "Study contacts, data protection contacts, and complaints."
 order: 130
 ---
 
-{{Name, position, institution, and contact details. Include the data protection contact and complaint route.}}
+Study operator: {{operator}}
+Study contact: {{responsible_person}}
+Postal address: {{address}}
+Email: {{email}}
+Telephone (if applicable): {{phone|Not provided}}
+
+Legal controller, data protection contact and representatives:
+{{controller_details}}
+
+Rights requests and complaint route:
+{{rights_contact}}

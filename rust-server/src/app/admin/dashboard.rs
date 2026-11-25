@@ -194,3 +194,8 @@ pub(in crate::app) async fn admin_privacy_notice_templates_javascript() -> Respo
 pub(in crate::app) async fn admin_privacy_notice_config_javascript() -> Response {
     admin_dashboard_asset(include_str!("../privacy_notice_config.mjs"), "text/javascript; charset=utf-8")
 }
+
+/// Serves the shared public document fact editor and linked-source handling.
+pub(in crate::app) async fn admin_document_fields_javascript() -> Response {
+    admin_dashboard_asset(include_str!("../document_fields.mjs"), "text/javascript; charset=utf-8")
+}

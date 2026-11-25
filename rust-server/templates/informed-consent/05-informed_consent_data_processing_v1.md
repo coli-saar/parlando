@@ -5,4 +5,6 @@ description: "Responsible institution, processing purposes, and legal basis."
 order: 50
 ---
 
-{{Identify the responsible institution, applicable data protection rules, purposes, and legal basis.}}
+Processing purposes and applicable rules: {{processing_purposes}}
+
+Legal basis: {{legal_basis}}

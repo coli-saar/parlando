@@ -154,6 +154,14 @@ async fn compiled_game_router_hosts_multiple_experiments() {
         let templates: Value = serde_json::from_str(catalogue.strip_prefix("export default ").unwrap().trim_end_matches(';')).unwrap();
         assert_eq!(templates, expected);
     }
+    let shared_editor = router.clone().oneshot(
+        Request::builder().uri("/admin/assets/document-fields.js")
+            .header(http::header::COOKIE, cookie.clone()).body(Body::empty()).unwrap()
+    ).await.unwrap();
+    assert_eq!(shared_editor.status(), StatusCode::OK);
+    assert_eq!(shared_editor.headers()[http::header::CACHE_CONTROL], "no-store");
+    let shared_source = String::from_utf8(to_bytes(shared_editor.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
+    assert!(shared_source.contains("export function bindDocumentFields"));
     for audience in ["participants", "data-protection", "conductors", "imprint", "privacy"] {
         let path = format!("/e/primary/information/{audience}/");
         assert!(created["information_sites"][audience]

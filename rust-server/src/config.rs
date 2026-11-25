@@ -121,9 +121,22 @@ pub struct PrivacyNoticeConfig {
     pub text: String,
 }
 
+/// Shared public answers and editable source recipes used by the document editors.
+/// Rendered consent/imprint/notice text remains the authoritative public revision snapshot.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DocumentFieldsConfig {
+    /// Canonical answers keyed by normalized Markdown placeholder names.
+    pub values: std::collections::BTreeMap<String, String>,
+    /// Source recipes for generated consent IDs and the imprint, retaining linked placeholders.
+    pub templates: std::collections::BTreeMap<String, String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DirectConfig {
+    /// Shared facts and linking metadata; never rendered directly as a public document.
+    pub document_fields: DocumentFieldsConfig,
     /// Jurisdiction selection, supplemental public disclosures, and generated notice snapshot.
     pub privacy_notice: PrivacyNoticeConfig,
     pub enabled: bool,
@@ -143,6 +156,7 @@ impl Default for DirectConfig {
             consents: vec![],
             imprint: ImprintConfig::default(),
             privacy_notice: PrivacyNoticeConfig::default(),
+            document_fields: DocumentFieldsConfig::default(),
         }
     }
 }
@@ -707,6 +721,13 @@ impl ExperimentConfig {
         }
         if self.agents.mode == AgentsMode::HumanVsHuman && self.agents.human_vs_agent.is_some() {
             bail!("agents.human_vs_agent must be omitted in human_vs_human mode");
+        }
+        let shared = &self.direct.document_fields;
+        if shared.values.len() > 200 || shared.templates.len() > 200
+            || shared.values.iter().any(|(key, value)| key.len() > 128 || value.chars().count() > 20_000)
+            || shared.templates.iter().any(|(key, value)| key.len() > 256 || value.chars().count() > 100_000)
+        {
+            bail!("shared document fields exceed field or template limits");
         }
         let privacy = &self.direct.privacy_notice;
         if !privacy.jurisdiction.is_empty()

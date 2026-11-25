@@ -43,9 +43,10 @@ placeholders and remove inapplicable lines. The templates assume a public
 annotation study without selling or editorial publishing and require review for
 the operator's legal form and applicable national requirements.
 
-Contact changes update an unedited template. Once you customize the text, contact
-changes preserve it. Selecting a different country replaces the text with that
-country’s template, using the current contact fields.
+Contact changes update linked values within the imprint while preserving custom
+wording around them. Selecting a different country replaces the text with that
+country’s template, using the current shared contact fields. Existing unlinked
+free-text notices are preserved.
 
 **Privacy → Imprint** displays the current imprint immediately, including unsaved
 edits. A draft label distinguishes unsaved text from the saved public notice.
@@ -108,7 +109,7 @@ were not recognized. Unfilled `{{placeholders}}` remain visible and trigger a
 review message; saving a draft does not certify its completeness.
 
 The generated notice is read-only. Edit its source forms or supplemental fields
-to change it. Consent-form edits, generation/removal, imprint edits and jurisdiction
+to change it. Matching fields share their values across all three document editors. Consent-form edits, generation/removal, imprint edits and jurisdiction
 changes immediately update the preview. Switching jurisdictions preserves the
 supplemental fields. Checkbox section text becomes a source after **Generate
 consent form**. The preview uses the current runtime templates when configuration
@@ -136,3 +137,36 @@ blocks. Other placeholders use lowercase letters, digits and underscores, starti
 with a letter, for example `{{local_disclosure}}`; each creates an editable public
 text field. Inserted values are literal and are not interpreted as further template
 instructions. Keep template identifiers stable while saved studies reference them.
+
+### Enter repeated information once
+
+Consent sections, imprint identity controls and privacy disclosures share answers
+for matching facts. Enter a value beside a consent section, in the imprint, or in
+the privacy notice fields (including **Shared study information**). Corresponding
+fields and linked draft text update immediately. The operator, legal controller,
+public study contact and rights-request contact remain distinct roles.
+
+Repeated placeholders, such as research-data storage location or transcription
+provider, use one answer even across several consent sections. Generate the consent
+form as usual. The saved revision retains both the rendered public text and its
+links, so later edits continue to update the forms after reopening configuration.
+Editing only a linked value inside generated text updates the shared answer;
+editing surrounding prose preserves the remaining links. Replacing a passage that
+contains several fields makes that passage local text rather than guessing which
+facts changed. Clearing a shared answer restores unresolved placeholders wherever
+that answer is required. Optional supplemental collection/storage details may be
+left empty when the source sections are complete.
+
+Previously written free-text documents are preserved rather than parsed for
+meaning. Regenerate those documents from the current templates to establish links.
+Conflicting saved field values are flagged; editing the relevant shared field
+explicitly chooses the value to use throughout the draft. **Save new revision**
+publishes the rendered snapshots; editing shared fields does not alter an already
+published revision or previously recorded consent evidence.
+
+Custom consent placeholders also create shared fields. Keys are normalized to
+lowercase with punctuation converted to underscores. Use the same placeholder
+name wherever the same fact is needed, and distinct names for different facts.
+For example, `{{research_data_storage_location_and_country}}` shares the built-in
+storage location. `{{optional_detail|}}` supplies an empty default for an optional
+fact. Inserted answer text is literal, not recursively interpreted as a template.

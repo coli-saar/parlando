@@ -13,3 +13,5 @@ This study processes the following personal information, where applicable:
 Parlando assigns a random participant ID for this study; another Parlando study assigns a different ID. {{RECRUITMENT_AND_PAYMENT_RECORD_RETENTION}} describes any separately retained recruitment or payment records and their purpose, retention period, and separation from the anonymized research data.
 
 Parlando does not write participant IP addresses to its research database or corpus exports. Depending on the hosting infrastructure settings, the web server, hosting service, firewall, or reverse proxy may separately record IP addresses and access logs. For this deployment: {{HOSTING_IP_AND_ACCESS_LOG_POLICY_INCLUDING_WHETHER_LOGS_ARE_KEPT_PURPOSE_AND_RETENTION}}.
+
+{{collection_details|}}

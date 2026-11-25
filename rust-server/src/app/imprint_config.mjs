@@ -46,26 +46,3 @@ export function renderImprintPreview(text = '', savedText = '') {
   return `<p class="muted small">${status}</p><article class="privacy-document"><h1>Imprint</h1><pre style="white-space:pre-wrap;overflow-wrap:anywhere;font:inherit">${linkedImprintText(text)}</pre></article>`;
 }
 
-// Country selection replaces the template directly. Contact edits update untouched copy;
-// manual prose remains authoritative until another country is selected.
-export function bindImprintEditor(editor, onChange = () => {}) {
-  const control = key => editor.querySelector(`[data-config-path="direct.imprint.${key}"]`);
-  const country = control('country');
-  const text = control('text');
-  const identity = () => Object.fromEntries(['operator', 'responsible_person', 'address', 'email', 'phone'].map(key => [key, control(key).value]));
-  let generated = generateImprint(country.value, identity());
-  country.addEventListener('change', () => {
-    text.value = generated = generateImprint(country.value, identity());
-    onChange(text.value);
-  });
-  text.addEventListener('input', () => onChange(text.value));
-  for (const key of ['operator', 'responsible_person', 'address', 'email', 'phone']) {
-    control(key).addEventListener('input', () => {
-      const next = generateImprint(country.value, identity());
-      if (!text.value || text.value === generated) text.value = next;
-      generated = next;
-      onChange(text.value);
-    });
-  }
-  onChange(text.value);
-}

@@ -14,3 +14,5 @@ After the two-week period, the research team anonymizes the research data by rem
 {{SEPARATE_RETENTION_OF_CONSENT_PAYMENT_RECORDS_AND_BACKUPS}}
 
 The research data are stored at {{RESEARCH_DATA_STORAGE_LOCATION_AND_COUNTRY}}.
+
+{{storage_details|}}
