@@ -7,18 +7,11 @@ order: 90
 
 ### Data storage 
 
-For two weeks after your participation, these records are pseudonymized using a randomly generated study-specific participant ID. They remain personal data during this period, allowing the research team to locate your contributions when you request access, correction, or deletion. After this period, the research team anonymizes the research data by removing links to recruitment records and reviewing and removing identifying information from the content. Once anonymization is complete, you can no longer be identified from the anonymized data, and your individual contributions can no longer be located for access or deletion based on your identity.
+The data collected and processed by Parlando will be stored as follows:
 
-The research data are stored at {{RESEARCH_DATA_STORAGE_LOCATION_AND_COUNTRY}}.
+1. _During the study_: While the study is still ongoing, all data (excluding speech data) will be stored locally at the server and is only accessible for the study conductor. {{TODO: Verify and describe Speechmatics' audio processing, storage, retention, and deletion arrangements for this deployment, consistently with the personal-data section.}}
+2. _After the study_: After the study ({{end date}}) and after the research team has completed and verified anonymization, the data will be uploaded to {{zenodo, huggingface}} and will become accessible to the general public using following license {{license}}. 
 
-An anonymized version of the collected research data will be used for further scientific research and published. Publication will take place only after the research team has completed and verified anonymization.
+The speech data which is transcribed using Speechmatics further follows their own [privacy policy](https://www.speechmatics.com/legal/privacy-policy) (see 7. Customer Data) as well as their [terms of service](https://www.speechmatics.com/legal/terms-of-service) (see 7. Data Protection). 
 
-Research data are stored under a randomly generated study-specific participant ID for two weeks after your participation. During this period, the research team can use the retained recruitment link or the study ID you provide to handle requests for access, correction, deletion, or withdrawal.
-
-After the two-week period, the research team anonymizes the research data by removing identifying links and reviewing the content for identifying information. Once this process is complete, the anonymized data cannot be linked back to you. Your individual contributions can then no longer be located based on your identity.
-
-{{STORAGE_LOCATIONS_AND_ACCESS_SAFEGUARDS}}
-{{ANONYMIZED_DATA_RETENTION_AND_REUSE}}
-{{SEPARATE_RETENTION_OF_CONSENT_PAYMENT_RECORDS_AND_BACKUPS}}
-
-The research data are stored at {{RESEARCH_DATA_STORAGE_LOCATION_AND_COUNTRY}}.
+Please also read the separately provided privacy notice at {{privacy notice URL}} for details of the data controller and privacy contacts, legal bases, storage locations, hosting logs, retention and backups, authorized recipients and service providers, international transfers, and your rights and complaint options.
