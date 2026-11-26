@@ -13,3 +13,7 @@ When participating in this study, you will be asked to play a two player, collab
 ### Risks associated with the participation in the study
 
 Participants of the study do not face any risks which are greater than risks they face in general life. All participants agree to adhere to the communication and privacy rules stated below and to treat each other respectfully. 
+
+If an interaction makes you uncomfortable or you encounter inappropriate behavior, you do not need to continue the conversation or the study. You can mute your microphone by {{instructions for muting the microphone}}. Muting your microphone stops your audio from being sent but does not end the interaction. To stop participating and leave the voice chat, close the study's browser tab. You do not need to give a reason for stopping {{TODO: check this?}}.
+
+To report a concern or ask for support, email the study team at {{study contact email}} and include the study name and your study-specific participant ID or recruitment identifier, if available. You do not need to continue participating while waiting for a reply. For questions about compensation after stopping, please contact the study team using the request instructions in the participant-rights section.
