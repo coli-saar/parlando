@@ -76,6 +76,32 @@ impl Default for CapacityConfig {
     }
 }
 
+/// Private dashboard metadata that keeps study-fact controls linked to rendered consent text.
+/// Public consent responses and acceptance hashes use the rendered body, not this metadata.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ConsentEditorData {
+    /// Study-fact values keyed by the dashboard's fixed field identifiers.
+    pub values: HashMap<String, String>,
+    /// Occurrences still controlled by study-fact inputs; manually edited ones are detached.
+    pub bindings: Vec<ConsentFactBinding>,
+}
+
+/// One linked occurrence in the rendered consent body, measured in UTF-16 code units.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ConsentFactBinding {
+    /// Key into the associated editor values.
+    pub key: String,
+    /// Inclusive start offset used by the browser editor.
+    pub start: usize,
+    /// Exclusive end offset used by the browser editor.
+    pub end: usize,
+    /// Original placeholder restored when the corresponding input is cleared.
+    pub placeholder: String,
+}
+
+/// A saved consent statement and optional private dashboard editing metadata.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ConsentItemConfig {
@@ -84,6 +110,9 @@ pub struct ConsentItemConfig {
     /// Plain-text consent copy displayed without HTML interpretation.
     pub body: String,
     pub required: bool,
+    /// Optional field values and bindings for editing; never substituted at participation time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub editor_data: Option<ConsentEditorData>,
 }
 
 /// Public operator notice: the selected template and the conductor's complete editable text.
@@ -915,6 +944,7 @@ mod tests {
             title: "Study consent".to_string(),
             body: "Agree?".to_string(),
             required: true,
+            editor_data: None,
         });
 
         config
@@ -1133,6 +1163,7 @@ mod tests {
             title: "t".repeat(500),
             body: "b".repeat(20_000),
             required: true,
+            editor_data: None,
         };
         let mut config = valid_config();
         config.direct.consents = vec![valid_item.clone()];

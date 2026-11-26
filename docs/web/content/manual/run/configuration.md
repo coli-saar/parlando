@@ -21,6 +21,27 @@ Before opening a study, verify the following for the condition you plan to run.
 - **Data collection.** Decide which conversation data you need, how long to keep it, and what you will export. Review the [consent and privacy guide](consent-privacy/).
 - **Optional integrations.** Configure credentials before relying on speech services or Prolific. See the [speech guide](../build/voice/) and [Prolific guide](prolific/).
 
+## Generate informed consent
+
+Under **Participant access and consent → Informed consent**, review the selected
+sections and choose **Generate consent form**. All sections start selected; uncheck
+any you do not need. Each generated form includes fields for name, institute,
+email, end date, license, data platform, payment, and server.
+Entering a value fills every matching placeholder in that form, including aliases
+such as `{{institution}}` and `{{institute}}` or `{{email}}` and
+`{{study contact email}}`.
+
+The statement remains editable. Directly editing a linked occurrence makes it
+independent; subsequent field changes preserve that edit. Clearing a field restores
+the original placeholders in its remaining linked occurrences. Other placeholders
+and verification TODOs still require manual review. Each form has its own values;
+these controls do not update imprint or privacy-notice drafts.
+
+Choose **Save new revision** to retain both the completed statement and its editable
+field values. Participants see the saved statement. Existing statements without
+field metadata can fill remaining placeholders, but values already written into
+ordinary prose are not inferred.
+
 ## Configure the public imprint
 
 Under **Participant access and consent → Imprint**, select the operator's country.

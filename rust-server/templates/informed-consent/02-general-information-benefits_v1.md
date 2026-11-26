@@ -7,4 +7,4 @@ order: 20
 
 ### Possible benefit of the study
 
-With participation in this study, you will contribute in providing data to better understand {{TODO}}. 
+With participation in this study, you will contribute in providing data to better understand {{research question}}. 

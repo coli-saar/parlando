@@ -163,6 +163,7 @@ fn prolific_no_consent_url_requires_a_prolific_launch() {
         title: "Study consent".to_string(),
         body: "I agree.".to_string(),
         required: true,
+        editor_data: None,
     });
     config.recruitment.prolific.completion_paths.no_consent = "NOCONSENT".to_string();
     let local = RunningParticipantUrl {

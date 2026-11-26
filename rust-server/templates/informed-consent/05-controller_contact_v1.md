@@ -7,10 +7,10 @@ order: 50
 
 ### Data controller and contact person
 
-- Responsible person: {{your name}}
+- Responsible person: {{name}}
 - Position: Researcher
-- Institution: {{your institution}}
-- Contact: {{your email}}
+- Institution: {{institution}}
+- Contact: {{email}}
 
 ### How to contact
 

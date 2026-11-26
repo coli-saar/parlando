@@ -19,6 +19,7 @@ pub(super) fn step_five_config() -> ExperimentConfig {
                 title: "Study".to_string(),
                 body: "Agree?".to_string(),
                 required: true,
+                editor_data: None,
             }],
         },
         ..ExperimentConfig::default()

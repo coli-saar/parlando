@@ -32,9 +32,27 @@ fn consent_hash_uses_exact_stored_participant_text() {
         title: "Template".to_string(),
         required: true,
         body: "Reviewed exact consent prose.".to_string(),
+        editor_data: None,
     }];
     let hash = consent_configuration_hash(&config).unwrap();
     assert!(hash.starts_with("sha256:"));
+    config.direct.consents[0].editor_data = Some(crate::config::ConsentEditorData {
+        values: std::collections::HashMap::from([("name".to_string(), "Alex".to_string())]),
+        bindings: vec![],
+    });
+    let saved = serde_json::to_value(&config).unwrap();
+    let reopened: ExperimentConfig = serde_json::from_value(saved).unwrap();
+    assert_eq!(
+        reopened.direct.consents[0]
+            .editor_data
+            .as_ref()
+            .unwrap()
+            .values["name"],
+        "Alex"
+    );
+    assert_eq!(consent_configuration_hash(&reopened).unwrap(), hash);
+    config.direct.consents[0].body.push_str(" Updated.");
+    assert_ne!(consent_configuration_hash(&config).unwrap(), hash);
 }
 
 /// Confirms current validation errors do not prevent a stored revision from being inspected.

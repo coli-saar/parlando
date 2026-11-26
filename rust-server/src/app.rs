@@ -122,7 +122,12 @@ fn consent_configuration_hash(config: &ExperimentConfig) -> Result<String, AppEr
     let presented = json!({
         "participant_information_version": config.direct.participant_information_version,
         "participant_information_url": config.direct.participant_information_url,
-        "consents": config.direct.consents,
+        "consents": config.direct.consents.iter().map(|item| json!({
+            "id": item.id,
+            "title": item.title,
+            "body": item.body,
+            "required": item.required,
+        })).collect::<Vec<_>>(),
     });
     let canonical = serde_json::to_string(&presented)
         .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
