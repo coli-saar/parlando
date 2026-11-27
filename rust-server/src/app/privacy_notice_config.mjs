@@ -25,22 +25,6 @@ export function renderPrivacyNoticeEditor(notice = {}) {
   </div>`;
 }
 
-// Updates the preview on typing; only an explicit selector change loads new template text.
-export function bindPrivacyNoticeEditor(editor, onChange = () => {}) {
-  const country = editor.querySelector('[data-config-path="direct.privacy_notice.jurisdiction"]');
-  const text = editor.querySelector('[data-config-path="direct.privacy_notice.text"]');
-  const scope = editor.querySelector('[data-privacy-scope]');
-  // Displays applicability guidance without changing the saved or edited notice.
-  const preview = () => {
-    scope.textContent = PRIVACY_TEMPLATES.find(t => t.id === country.value)?.description || '';
-    onChange(text.value);
-  };
-  country.addEventListener('change', () => { text.value = generatePrivacyNotice(country.value); preview(); });
-  text.addEventListener('input', preview);
-  preview();
-}
-
-
 // Escaped previews use the exact snapshot that will be saved; links open the saved public notice.
 export function renderPrivacyNoticePreview(text = '', saved = '') {
   if (!text.trim()) return '<p class="muted">Please configure the privacy notice.</p>';

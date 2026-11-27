@@ -22,3 +22,9 @@ it('renders marked public documents while leaving unrelated content untouched', 
   expect(document.querySelector('#other')?.textContent).toBe('**untouched**');
   expect(document.querySelector('[data-study-markdown]')).toBeNull();
 });
+
+/** SDK builds must ship the same renderer as dashboard and public study documents. */
+it('keeps the packaged Markdown renderer synchronized with the shared source', () => {
+  const packaged = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'documentMarkdown.mjs'), 'utf8');
+  expect(packaged.slice(packaged.indexOf('\n') + 1)).toBe(source);
+});

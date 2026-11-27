@@ -9,7 +9,7 @@ use argon2::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::{rngs::OsRng, RngCore};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
@@ -95,6 +95,44 @@ impl fmt::Display for PasswordWorkBusy {
 
 impl std::error::Error for PasswordWorkBusy {}
 
+/// Reusable document drafts shared by signed-in lab members; experiments receive copies.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct TemplateDocuments {
+    /// Generated consent forms including their private editor bindings.
+    pub consents: Vec<crate::config::ConsentItemConfig>,
+    /// Operator notice draft with its country selection.
+    pub imprint: crate::config::ImprintConfig,
+    /// Privacy notice draft with its jurisdiction selection.
+    pub privacy_notice: crate::config::PrivacyNoticeConfig,
+    /// Private linkage for shared values in the two notice drafts; not copied into experiments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice_fields: Option<NoticeFieldBindings>,
+}
+
+/// Tracks shared study fields in each notice while keeping their published text independent.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct NoticeFieldBindings {
+    /// Shared-field occurrences and values in the operator notice.
+    pub imprint: crate::config::ConsentEditorData,
+    /// Shared-field occurrences and values in the jurisdiction notice.
+    pub privacy_notice: crate::config::ConsentEditorData,
+}
+
+/// A named, revision-checked set of reusable document drafts.
+#[derive(Debug, Serialize)]
+pub(super) struct DocumentTemplate {
+    /// Stable library identity, independent of game and experiment IDs.
+    pub id: i64,
+    /// Human-readable name displayed in the shared selector.
+    pub name: String,
+    /// Optimistic concurrency version incremented on every successful save.
+    pub revision: i64,
+    /// Draft content copied into an experiment only by explicit application.
+    pub documents: TemplateDocuments,
+}
+
 /// Owns deployment-wide dashboard accounts and their sessions in a dedicated SQLite file.
 pub(super) struct AccountStore {
     pool: SqlitePool,
@@ -149,6 +187,12 @@ impl AccountStore {
             "CREATE TABLE IF NOT EXISTS cli_credential (
                 token_digest BLOB PRIMARY KEY, account_id INTEGER NOT NULL REFERENCES dashboard_account(id)
             )",
+            "CREATE TABLE IF NOT EXISTS document_template (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                documents_json TEXT NOT NULL
+            )",
             "CREATE TABLE IF NOT EXISTS dashboard_audit (
                 id INTEGER PRIMARY KEY,
                 actor TEXT NOT NULL,
@@ -170,6 +214,34 @@ impl AccountStore {
             password_slots,
             dummy_hash,
         })
+    }
+
+    /// Lists shared drafts without changing any experiment or published document.
+    pub async fn document_templates(&self) -> Result<Vec<DocumentTemplate>> {
+        let rows = sqlx::query_as::<_, (i64, String, i64, String)>(
+            "SELECT id, name, revision, documents_json FROM document_template ORDER BY name, id",
+        ).fetch_all(&self.pool).await?;
+        rows.into_iter().map(|(id, name, revision, text)| Ok(DocumentTemplate {
+            id, name, revision, documents: serde_json::from_str(&text)?,
+        })).collect()
+    }
+
+    /// Creates a draft or atomically replaces its expected revision; stale writes return None.
+    pub async fn save_document_template(
+        &self, id: Option<i64>, expected_revision: i64, name: &str, documents: TemplateDocuments,
+    ) -> Result<Option<DocumentTemplate>> {
+        let text = serde_json::to_string(&documents)?;
+        let row = if let Some(id) = id {
+            sqlx::query_as::<_, (i64, i64)>(
+                "UPDATE document_template SET name = ?, documents_json = ?, revision = revision + 1
+                 WHERE id = ? AND revision = ? RETURNING id, revision",
+            ).bind(name).bind(text).bind(id).bind(expected_revision).fetch_optional(&self.pool).await?
+        } else {
+            Some(sqlx::query_as::<_, (i64, i64)>(
+                "INSERT INTO document_template (name, documents_json, revision) VALUES (?, ?, 1) RETURNING id, revision",
+            ).bind(name).bind(text).fetch_one(&self.pool).await?)
+        };
+        Ok(row.map(|(id, revision)| DocumentTemplate { id, revision, name: name.to_owned(), documents }))
     }
 
     /// Starts a five-minute pairing and bounds the number of unauthenticated requests on disk.
@@ -547,6 +619,39 @@ fn token_digest(token: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shared templates survive reopening and reject conflicting edits without overwriting drafts.
+    #[tokio::test]
+    async fn document_templates_persist_and_check_revisions() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = AccountStore::open(directory.path()).await.unwrap();
+        let mut documents = TemplateDocuments::default();
+        documents.imprint.text = "Reviewed imprint".into();
+        documents.notice_fields = Some(NoticeFieldBindings {
+            imprint: crate::config::ConsentEditorData {
+                values: std::collections::HashMap::from([("name".into(), "Alex".into())]),
+                bindings: vec![],
+            },
+            privacy_notice: crate::config::ConsentEditorData::default(),
+        });
+        documents.consents.push(crate::config::ConsentItemConfig {
+            id: "consent".into(), title: "Consent Form".into(), body: "Draft {{name}}".into(),
+            required: true, editor_data: Some(crate::config::ConsentEditorData::default()),
+        });
+        let first = store.save_document_template(None, 0, "Study", documents.clone()).await.unwrap().unwrap();
+        assert_eq!(first.revision, 1);
+        let second = store.save_document_template(Some(first.id), 1, "Updated study", documents.clone()).await.unwrap().unwrap();
+        assert_eq!(second.revision, 2);
+        assert!(store.save_document_template(Some(first.id), 1, "Stale", documents).await.unwrap().is_none());
+        drop(store);
+        let reopened = AccountStore::open(directory.path()).await.unwrap();
+        let saved = reopened.document_templates().await.unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].name, "Updated study");
+        assert_eq!(saved[0].documents.imprint.text, "Reviewed imprint");
+        assert_eq!(saved[0].documents.notice_fields.as_ref().unwrap().imprint.values["name"], "Alex");
+        assert!(saved[0].documents.consents[0].editor_data.is_some());
+    }
 
     /// Checks that parallel setup writes create only one durable operator across independent pools.
     #[tokio::test]

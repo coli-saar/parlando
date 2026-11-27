@@ -142,6 +142,8 @@ pub(super) fn routes() -> Router<Arc<Host>> {
         .route("/", get(page))
         .route("/admin/dashboard.js", get(javascript))
         .route("/admin/dashboard.css", get(stylesheet))
+        .route("/admin/templates/:name", get(template_asset))
+        .route("/api/hosting/templates", get(list_document_templates).post(save_document_template).layer(DefaultBodyLimit::max(1024 * 1024)))
         .route("/admin/assets/parlando-mark.svg", get(parlando_mark))
         .route(
             "/admin/assets/parlando-wordmark.svg",
@@ -592,6 +594,58 @@ async fn index(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Js
     })))
 }
 
+/// Serves shared editor modules and startup catalogues only to signed-in lab members.
+async fn template_asset(State(host): State<Arc<Host>>, RoutePath(name): RoutePath<String>, request: Request) -> HttpResult<Response> {
+    let (parts, _) = request.into_parts();
+    admin(&host, &parts)?.browser_session(&parts).await?;
+    let body = match name.as_str() {
+        "templates.js" => include_str!("templates.js").to_owned(),
+        "templates.css" => return Ok(([(CONTENT_TYPE, "text/css; charset=utf-8")], include_str!("templates.css")).into_response()),
+        "consent-config.js" => include_str!("../app/consent_config.mjs").to_owned(),
+        "imprint-config.js" => include_str!("../app/imprint_config.mjs").to_owned(),
+        "privacy-notice-config.js" => include_str!("../app/privacy_notice_config.mjs").to_owned(),
+        "document-markdown.js" => include_str!("../app/document_markdown.mjs").to_owned(),
+        "consent-templates.js" => format!("export default {};", serde_json::to_string(crate::consent_templates::catalogue()).map_err(internal)?),
+        "imprint-templates.js" => format!("export default {};", serde_json::to_string(crate::imprint_templates::catalogue()).map_err(internal)?),
+        "privacy-notice-templates.js" => format!("export default {};", serde_json::to_string(crate::privacy_notice_templates::catalogue()).map_err(internal)?),
+        _ => return Err(not_found()),
+    };
+    Ok(([(CONTENT_TYPE, "text/javascript; charset=utf-8")], body).into_response())
+}
+
+/// Lists reusable drafts independently of deployed games and experiment configuration.
+async fn list_document_templates(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Json<Value>> {
+    let (parts, _) = request.into_parts();
+    let dashboard = admin(&host, &parts)?;
+    dashboard.browser_session(&parts).await?;
+    Ok(Json(json!({"templates": dashboard.accounts.document_templates().await.map_err(internal)?})))
+}
+
+/// Supplies an optional existing identity and expected revision for a library save.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SaveDocumentTemplate {
+    id: Option<i64>,
+    expected_revision: i64,
+    name: String,
+    documents: super::accounts::TemplateDocuments,
+}
+
+/// Saves shared drafts after authentication/CSRF checks without publishing experiment pages.
+async fn save_document_template(State(host): State<Arc<Host>>, request: Request) -> HttpResult<Json<Value>> {
+    let (parts, body) = request.into_parts();
+    let dashboard = admin(&host, &parts)?;
+    dashboard.browser_session(&parts).await?;
+    let Json(input) = parse_json::<SaveDocumentTemplate>(parts, body, &host).await?;
+    let name = input.name.trim();
+    if name.is_empty() || name.chars().count() > 200 {
+        return Err(bad_request("Template name must contain 1 to 200 characters"));
+    }
+    let saved = dashboard.accounts.save_document_template(input.id, input.expected_revision, name, input.documents)
+        .await.map_err(internal)?.ok_or_else(|| (StatusCode::CONFLICT, "Template changed. Reload it before saving.".to_owned()))?;
+    Ok(Json(serde_json::to_value(saved).map_err(internal)?))
+}
+
 /// Requires a signed-in operator to administer host accounts.
 async fn operator<'a>(host: &'a Host, parts: &Parts) -> HttpResult<(&'a Dashboard, String)> {
     let dashboard = admin(host, parts)?;
@@ -749,6 +803,40 @@ fn forbidden(message: &str) -> (StatusCode, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The library uses host authentication/CSRF and accepts document-sized drafts without a game.
+    #[tokio::test]
+    async fn document_template_routes_require_session_and_csrf() {
+        use axum::body::{to_bytes, Body};
+        use tower::ServiceExt;
+        let directory = tempfile::tempdir().unwrap();
+        let dashboard = Dashboard::open(directory.path(), "http://127.0.0.1:8000", "http://localhost:8001").await.unwrap();
+        dashboard.accounts.create("researcher", "long-test-password".into(), "experimenter").await.unwrap();
+        let login = dashboard.accounts.login("researcher", "long-test-password".into()).await.unwrap().unwrap();
+        let cookie = format!("{}={}", dashboard.cookie_name, login.token);
+        let host = Arc::new(Host {
+            wasm_metering: crate::deployment::WasmMetering::Fuel,
+            store: directory.path().to_owned(), public_url: "http://127.0.0.1:8000".into(),
+            dashboard: Some(dashboard), games: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            publication_lock: tokio::sync::Mutex::new(()), uploads: Arc::new(tokio::sync::Semaphore::new(2)),
+            _store_lock: std::fs::File::create(directory.path().join("lock")).unwrap(),
+        });
+        let router = routes().with_state(host);
+        let unauthenticated = router.clone().oneshot(Request::builder().uri("/api/hosting/templates").header(HOST, "localhost:8001").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+        let payload = json!({"id": null, "expected_revision": 0, "name": "Reusable", "documents": {"imprint": {"country": "DE", "text": "x".repeat(20000)}}});
+        for (csrf, expected) in [("wrong", StatusCode::FORBIDDEN), (login.session.csrf.as_str(), StatusCode::OK)] {
+            let response = router.clone().oneshot(Request::builder().method(Method::POST).uri("/api/hosting/templates")
+                .header(HOST, "localhost:8001").header(ORIGIN, "http://localhost:8001").header(COOKIE, &cookie)
+                .header("x-csrf-token", csrf).header(CONTENT_TYPE, "application/json")
+                .body(Body::from(payload.to_string())).unwrap()).await.unwrap();
+            assert_eq!(response.status(), expected);
+        }
+        let response = router.oneshot(Request::builder().uri("/api/hosting/templates").header(HOST, "localhost:8001").header(COOKIE, &cookie).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value = serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(value["templates"][0]["name"], "Reusable");
+    }
 
     /// Checks port isolation and compatibility with default-port cookies.
     #[test]

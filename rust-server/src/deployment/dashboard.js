@@ -1,3 +1,5 @@
+// Lazily loaded document library, reset on account changes.
+let templateLibrary = null;
 const API = "/api/hosting";
 const UPLOAD_LIMIT = 64 * 1024 * 1024;
 // Tracks the signed-in account, and pending account actions.
@@ -118,6 +120,8 @@ function roleLabel(role) {
 // Shows the authenticated workspace or the available sign-in form and clears account-specific data.
 function setAccount(account, setupAvailable = false) {
   state.generation++;
+  templateLibrary = null;
+  byId("templates").replaceChildren();
   state.expandedGames.clear();
   state.uploadedAgent = null;
   state.account = account;
@@ -284,16 +288,32 @@ async function refreshUsersView() {
 // Applies the address to the workspace controls and loads the active view.
 async function openWorkspaceView({ focus = false } = {}) {
   const users = showingUsers();
-  const title = users ? "Users" : "Games";
+  const templates = location.hash === "#templates";
+  const title = templates ? "Templates" : users ? "Users" : "Games";
   byId("page-title").textContent = title;
   document.title = `${title} · Parlando`;
-  byId("games").hidden = users;
+  byId("games").hidden = users || templates;
+  byId("templates").hidden = !templates;
   byId("users").hidden = !users;
   if (!users) byId("audit-history").open = false;
-  byId("games-nav").setAttribute("aria-current", users ? "false" : "page");
+  byId("games-nav").setAttribute("aria-current", (users || templates) ? "false" : "page");
   byId("users-nav").setAttribute("aria-current", users ? "page" : "false");
   if (focus) byId("page-title").focus();
-  if (users) await refreshUsersView();
+  byId("templates-nav").setAttribute("aria-current", templates ? "page" : "false");
+  if (templates) {
+    if (!templateLibrary) {
+      const generation = state.generation;
+      const { createTemplateLibrary } = await import('/admin/templates/templates.js');
+      if (generation !== state.generation) return;
+      if (!document.querySelector('[data-template-styles]')) {
+        const style = document.createElement('link');
+        style.rel = 'stylesheet'; style.href = '/admin/templates/templates.css'; style.dataset.templateStyles = '';
+        document.head.append(style);
+      }
+      templateLibrary = createTemplateLibrary(byId('templates'), request, notice);
+    }
+    await templateLibrary.refresh();
+  } else if (users) await refreshUsersView();
   else await refreshGames();
 }
 

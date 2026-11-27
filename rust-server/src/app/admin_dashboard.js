@@ -5,8 +5,8 @@ import { safeMarkdown } from './document-markdown.js';
 // helpers.
 
 import { bindSpeechSettings, COMMUNICATION_MODE_FIELD, configAt, readConfigFields, renderSpeechSettings, renderStandardConfigField, setConfigAt } from './communication-config.js';
-import { bindPrivacyNoticeEditor, renderPrivacyNoticeEditor, renderPrivacyNoticePreview } from './privacy-notice-config.js';
-import { bindImprintEditor, renderImprintEditor, renderImprintPreview } from './imprint-config.js';
+import { renderPrivacyNoticePreview } from './privacy-notice-config.js';
+import { renderImprintPreview } from './imprint-config.js';
 import CONSENT_TEMPLATE_OPTIONS from './consent-templates.js';
 import CONSENT_RESPONSIBILITIES from './consent-responsibilities.js';
 import { state } from './admin-dashboard-state.js';
@@ -624,8 +624,10 @@ function renderConsentDocument(items = []) {
 
 // Reads generated editor fields after edits, generation, or removal for the document preview.
 function previewConsentFromEditor() {
-  const items = Array.from(configForm.querySelectorAll('.consent-item')).map(readConsentItem);
-  renderConsentDocument(items);
+  const documents = state.documentTemplateDraft || state.configValue?.direct || {};
+  renderConsentDocument(documents.consents || []);
+  renderImprintDocument(documents.imprint?.text || '');
+  renderPrivacyNoticeDocument(documents.privacy_notice?.text || '');
 }
 
 // Refreshes document actions on every selection, including catalogue refreshes.
@@ -1166,6 +1168,7 @@ function setSelectedExperiment(experiment) {
   state.configLoadError = null;
   state.loadedConfigKey = null;
   state.configValue = null;
+  state.documentTemplateDraft = null;
   renderImprintDocument();
   renderPrivacyNoticeDocument();
   renderConsentDocument();
@@ -1273,6 +1276,7 @@ async function loadConfigurationSafely() {
     state.configLoadError = error.message;
     state.loadedConfigKey = null;
     state.configValue = null;
+  state.documentTemplateDraft = null;
     renderImprintDocument();
     renderPrivacyNoticeDocument();
     renderConsentDocument();
@@ -1321,9 +1325,7 @@ const PARLANDO_CONFIG_SECTIONS = [
     { path: 'direct.participant_information_version', label: 'Participant-information version', help: 'Version identifier recorded with the information shown to participants.' },
     { path: 'direct.participant_information_url', label: 'Participant-information URL', help: 'Public document describing the study and its data handling.', type: 'url' },
   ], subsections: [
-    { title: 'Informed consent', fields: [{ path: 'direct.consents', help: 'Statements presented before participation. Accepted items are recorded with their exact presentation hash.', type: 'consents' }] },
-    { title: 'Imprint', fields: [{ path: 'direct.imprint', label: 'Imprint', type: 'imprint' }] },
-    { title: 'Privacy notice', fields: [{ path: 'direct.privacy_notice', type: 'privacy-notice' }] }
+    { title: 'Templates', fields: [{ type: 'document-template' }] }
   ]},
   { title: 'Communication', description: 'Choose how participants communicate in this experiment.', fields: [
     COMMUNICATION_MODE_FIELD
@@ -1353,6 +1355,7 @@ const PARLANDO_CONFIG_SECTIONS = [
 // Renders the curated Parlando editor, game YAML, and write-only secret controls.
 function renderConfigurationForm(config, gameYaml = '{}\n') {
   state.configValue = structuredClone(config);
+  state.documentTemplateDraft = structuredClone({ consents: config.direct?.consents || [], imprint: config.direct?.imprint || {}, privacy_notice: config.direct?.privacy_notice || {} });
   const activationWarning = `<div id="activationWarning" class="activation-warning" role="alert" ${state.activationIssues.length ? '' : 'hidden'}><strong>This experiment cannot be started yet.</strong><span id="activationWarningItems">${state.activationIssues.map(issue => escapeHtml(issue)).join(' ')}</span></div>`;
   const sections = PARLANDO_CONFIG_SECTIONS.map(section => `
     <section class="config-group">
@@ -1383,12 +1386,7 @@ function renderConfigurationForm(config, gameYaml = '{}\n') {
   configForm.querySelectorAll('[data-reveal-secret]').forEach(button => button.addEventListener('click', () => revealSecret(button.dataset.revealSecret, button)));
   configForm.querySelectorAll('[data-delete-secret]').forEach(button => button.addEventListener('click', () => removeSecret(button.dataset.deleteSecret)));
   configForm.querySelectorAll('[data-secret-placeholder="true"]').forEach(installSecretReplacementInput);
-  configForm.querySelectorAll('[data-consent-editor]').forEach(editor => {
-    initializeConsentEditor(editor);
-    editor.addEventListener('input', previewConsentFromEditor);
-    editor.addEventListener('change', previewConsentFromEditor);
-    editor.addEventListener('click', previewConsentFromEditor);
-  });
+  initializeDocumentTemplateSelection();
   previewConsentFromEditor();
   configForm.querySelectorAll('[data-agent-editor]').forEach(initializeAgentEditor);
   configForm.querySelector('[data-copy-prolific-setup-url]')?.addEventListener('click', event => copyProlificSetupUrl(event.currentTarget));
@@ -1396,23 +1394,65 @@ function renderConfigurationForm(config, gameYaml = '{}\n') {
     control.addEventListener('input', refreshDraftActivationWarning);
     control.addEventListener('change', refreshDraftActivationWarning);
   });
-  configForm.querySelectorAll('[data-imprint-editor]').forEach(editor => bindImprintEditor(editor, renderImprintDocument));
-  configForm.querySelectorAll('[data-privacy-notice-editor]').forEach(editor => bindPrivacyNoticeEditor(editor, renderPrivacyNoticeDocument));
   bindSpeechSettings(configForm);
   renderGameSecrets();
   refreshDraftActivationWarning();
 }
 
+// Loads shared choices and copies only document fields into the current experiment draft.
+async function initializeDocumentTemplateSelection() {
+  const root = configForm.querySelector('[data-document-template-selection]');
+  const select = root.querySelector('[data-document-template-choice]');
+  const apply = root.querySelector('[data-apply-document-template]');
+  const status = root.querySelector('[data-document-template-status]');
+  let templates = [];
+  select.addEventListener('change', () => { apply.disabled = !select.value; });
+  apply.addEventListener('click', () => {
+    const template = templates.find(item => String(item.id) === select.value);
+    if (!template) return;
+    const { consents, imprint, privacy_notice } = template.documents;
+    state.documentTemplateDraft = structuredClone({ consents, imprint, privacy_notice });
+    previewConsentFromEditor();
+    refreshDraftActivationWarning();
+    status.textContent = `Applied “${template.name}” to this draft. Save a new revision to publish.`;
+  });
+  root.querySelector('[data-copy-document-template]').addEventListener('click', async event => {
+    const name = window.prompt('Name for the shared template:');
+    if (!name?.trim()) return;
+    event.currentTarget.disabled = true;
+    try {
+      const session = await fetch('/api/hosting/auth/session', { credentials: 'same-origin', cache: 'no-store' });
+      if (!session.ok) throw new Error(await session.text());
+      const account = await session.json();
+      const response = await fetch('/api/hosting/templates', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': account.csrf_token },
+        body: JSON.stringify({ id: null, expected_revision: 0, name, documents: state.documentTemplateDraft }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      status.textContent = 'Copied to Templates. Open Templates to edit the shared copy.';
+    } catch (error) { status.textContent = error.message; }
+    finally { root.querySelector('[data-copy-document-template]').disabled = false; }
+  });
+  try {
+    const response = await fetch('/api/hosting/templates', { credentials: 'same-origin', cache: 'no-store' });
+    if (!response.ok) throw new Error(await response.text());
+    const result = await response.json();
+    if (!root.isConnected) return;
+    templates = result.templates;
+    select.innerHTML += templates.map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join('');
+    if (!templates.length) status.textContent = 'No shared templates yet. Existing experiment documents are retained.';
+  } catch (error) { if (root.isConnected) status.textContent = `Templates unavailable: ${error.message}`; }
+}
+
 // Renders one curated typed Parlando setting.
 function renderConfigField(field, config) {
+  if (field.type === 'document-template') return `<div data-document-template-selection class="config-fields"><p class="config-help">Create and edit shared documents in <a href="/#templates">Templates</a>. Applying a template copies its documents into this experiment; save a new revision to publish them.</p><label class="config-field"><span>Shared template</span><select data-document-template-choice><option value="">Select a template</option></select></label><div><button type="button" class="secondary" data-apply-document-template disabled>Apply template</button> <button type="button" class="secondary" data-copy-document-template>Copy current documents to Templates</button></div><span role="status" data-document-template-status></span></div>`;
   if (field.type === 'prolific-setup-url') {
     const value = prolificSetupUrl(state.experiment);
     return `<div class="config-field"><span>${escapeHtml(field.label)}</span><div class="setup-url-control"><input type="text" readonly value="${escapeHtml(value)}" aria-label="${escapeHtml(field.label)}"><button class="secondary" data-copy-prolific-setup-url type="button">${icon('copy')}Copy setup URL</button></div><span class="config-help">${escapeHtml(field.help)}</span></div>`;
   }
   const value = configAt(config, field.path);
-  if (field.type === 'privacy-notice') return renderPrivacyNoticeEditor(value || {});
-  if (field.type === 'imprint') return renderImprintEditor(value || {});
-  if (field.type === 'consents') return renderConsentEditor(field, Array.isArray(value) ? value : []);
   if (field.type === 'agents') return renderAgentEditor(field, value || {});
   return renderStandardConfigField(field, config);
 }
@@ -1540,199 +1580,6 @@ function initializeAgentEditor(editor) {
   });
 }
 
-// Defines the study facts and the template spellings that share each value.
-const CONSENT_FACTS = [
-  ['name', 'Name', ['name', 'your name']],
-  ['institute', 'Institute', ['institute', 'institution', 'your institution']],
-  ['email', 'Email', ['email', 'your email', 'study contact email']],
-  ['end_date', 'End date', ['end date']],
-  ['license', 'License', ['license'], 'CC-by 4.0'],
-  ['data_platform', 'Data platform', ['data platform', 'zenodo, huggingface'], 'zenodo'],
-  ['payment', 'Payment', ['payment', 'amount and currency'], '€14 per hour'],
-  ['server', 'Server', ['server'], 'Debian Webserver'],
-];
-
-// Locates supported placeholders in a new body; offsets use JavaScript UTF-16 units.
-function consentFactBindings(body) {
-  return Array.from(body.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)).flatMap(match => {
-    const fact = CONSENT_FACTS.find(([, , aliases]) => aliases.includes(match[1].trim().toLowerCase()));
-    return fact ? [{ key: fact[0], start: match.index, end: match.index + match[0].length, placeholder: match[0] }] : [];
-  });
-}
-
-// Keeps bindings outside a manual edit and detaches any occurrence edited directly.
-function reconcileConsentFacts(data, previous, current) {
-  if (previous === current) return;
-  let start = 0;
-  while (start < previous.length && start < current.length && previous[start] === current[start]) start++;
-  let oldEnd = previous.length;
-  let newEnd = current.length;
-  while (oldEnd > start && newEnd > start && previous[oldEnd - 1] === current[newEnd - 1]) { oldEnd--; newEnd--; }
-  const delta = newEnd - oldEnd;
-  data.bindings = data.bindings.flatMap(binding => {
-    if (binding.end <= start) return [binding];
-    if (binding.start >= oldEnd) return [{ ...binding, start: binding.start + delta, end: binding.end + delta }];
-    return [];
-  });
-}
-
-// Renders persistent study facts above the statement; values never become HTML.
-function consentFactsMarkup(item) {
-  const data = item.editor_data || { values: {}, bindings: consentFactBindings(item.body || '') };
-  return `<div data-consent-facts data-consent-facts-state="${escapeHtml(JSON.stringify(data))}" class="consent-item-fields">${CONSENT_FACTS.map(([key, label, , placeholder = '']) => `<label><span>${label}</span><input type="text" data-consent-fact="${key}" placeholder="${escapeHtml(placeholder)}" value="${escapeHtml(data.values[key] || '')}"></label>`).join('')}</div><p class="config-help">These details fill matching placeholders in this form. Editing a filled occurrence directly makes that occurrence independent. Unfilled details remain as placeholders.</p>`;
-}
-
-// Lazily restores editing metadata without deriving facts from arbitrary saved prose.
-function consentFactState(item) {
-  if (!item.consentFactState) {
-    const body = item.querySelector('[data-consent-field="body"]').value;
-    item.consentFactState = { data: JSON.parse(item.querySelector('[data-consent-facts]').dataset.consentFactsState), body };
-  }
-  return item.consentFactState;
-}
-
-// Replaces only tracked occurrences, preserving repeated facts and unrelated manual prose.
-function updateConsentFact(item, key, value) {
-  const textarea = item.querySelector('[data-consent-field="body"]');
-  const state = consentFactState(item);
-  reconcileConsentFacts(state.data, state.body, textarea.value);
-  const oldBody = textarea.value;
-  const oldValue = state.data.values[key] || '';
-  state.data.values[key] = value;
-  let cursor = 0;
-  let body = '';
-  const bindings = [];
-  for (const binding of state.data.bindings) {
-    body += oldBody.slice(cursor, binding.start);
-    const previous = oldBody.slice(binding.start, binding.end);
-    const expected = oldValue || binding.placeholder;
-    const replacement = binding.key === key && previous === expected ? (value || binding.placeholder) : previous;
-    const start = body.length;
-    body += replacement;
-    bindings.push({ ...binding, start, end: body.length });
-    cursor = binding.end;
-  }
-  body += oldBody.slice(cursor);
-  state.data.bindings = bindings;
-  state.body = body;
-  textarea.value = body;
-}
-
-// Serializes the rendered statement and private field bindings together for save/reopen.
-function readConsentItem(item) {
-  const state = consentFactState(item);
-  const rawBody = item.querySelector('[data-consent-field="body"]').value;
-  reconcileConsentFacts(state.data, state.body, rawBody);
-  state.body = rawBody;
-  const body = rawBody.trim();
-  const leading = rawBody.length - rawBody.trimStart().length;
-  const data = structuredClone(state.data);
-  data.bindings = data.bindings
-    .filter(binding => binding.start >= leading && binding.end <= leading + body.length)
-    .map(binding => ({ ...binding, start: binding.start - leading, end: binding.end - leading }));
-  return {
-    id: item.querySelector('[data-consent-field="id"]').value.trim(),
-    title: item.querySelector('[data-consent-field="title"]').value.trim(),
-    body,
-    required: item.querySelector('[data-consent-field="required"]').checked,
-    editor_data: data,
-  };
-}
-
-// Renders one structured consent statement with explicit editable fields.
-function consentItemMarkup(item, index) {
-  return `<section class="consent-item">
-    <header class="consent-item-header"><strong>Consent form ${index + 1}</strong><button class="secondary" type="button" data-remove-consent>${icon('trash')}Remove</button></header>
-    <div class="consent-item-fields">
-      <label><span>Identifier</span><input data-consent-field="id" value="${escapeHtml(item.id || '')}" placeholder="data-processing" autocomplete="off"><span class="config-help">Stable identifier stored with the participant's decision.</span></label>
-      <label><span>Title</span><input data-consent-field="title" value="${escapeHtml(item.title || '')}" placeholder="Data processing consent"><span class="config-help">Short heading shown to the participant.</span></label>
-    </div>
-    ${consentFactsMarkup(item)}
-    <label class="consent-body"><span>Statement</span><textarea data-consent-field="body" rows="5" placeholder="Explain what the participant is agreeing to.">${escapeHtml(item.body || '')}</textarea><span class="config-help">Plain text shown in full before the participant decides.</span></label>
-    <label class="consent-required"><input data-consent-field="required" type="checkbox" ${item.required ? 'checked' : ''}><span>Acceptance is required to participate</span></label>
-  </section>`;
-}
-
-// Renders saved forms and initially selected template sections with their text editors visible.
-function renderConsentEditor(field, items) {
-  const contents = items.length
-    ? items.map(consentItemMarkup).join('')
-    : '<p class="consent-empty muted small">No consent statements configured.</p>';
-  const templateOptions = CONSENT_TEMPLATE_OPTIONS.map(template => `<div class="consent-section" data-consent-section><label class="consent-template-option"><input type="checkbox" data-consent-template-option checked value="${escapeHtml(template.id)}" aria-controls="consent-section-${escapeHtml(template.id)}"><span><strong>${escapeHtml(template.title)}</strong><span class="config-help">${escapeHtml(template.description)}</span></span></label><label class="consent-section-text" data-consent-section-editor><textarea aria-label="${escapeHtml(template.title)}" id="consent-section-${escapeHtml(template.id)}" data-consent-section-text="${escapeHtml(template.id)}" rows="4">${escapeHtml(template.body)}</textarea></label></div>`).join('');
-  return `<div class="config-field">${field.label ? `<span>${escapeHtml(field.label)}</span>` : ''}${field.help ? `<span class="config-help">${escapeHtml(field.help)}</span>` : ''}<div class="consent-editor" data-consent-editor data-consent-path="${escapeHtml(field.path)}"><fieldset class="consent-template-options"><legend>Consent form sections</legend>${templateOptions}</fieldset><p class="config-help">All sections are selected by default. Uncheck sections you do not need and edit their template text below to combine into one editable Consent Form with one acceptance requirement. Leave all options unchecked for an empty statement. Existing forms are kept.</p><div class="consent-actions"><button class="secondary" type="button" data-generate-consent>${icon('plus')}Generate consent form</button></div><div class="consent-items">${contents}</div><span class="config-help">Every generated form is required by default. Complete its title and statement before saving, and review all placeholders before collecting data.</span></div></div>`;
-}
-
-// Renumbers consent headings and restores the empty state after structural edits.
-function refreshConsentEditor(editor) {
-  const items = Array.from(editor.querySelectorAll('.consent-item'));
-  items.forEach((item, index) => { item.querySelector('.consent-item-header strong').textContent = `Consent form ${index + 1}`; });
-  const container = editor.querySelector('.consent-items');
-  const empty = container.querySelector('.consent-empty');
-  if (!items.length && !empty) container.innerHTML = '<p class="consent-empty muted small">No consent statements configured.</p>';
-  if (items.length) empty?.remove();
-}
-
-// Chooses a non-conflicting editable identifier for a newly added statement.
-function nextConsentId(editor) {
-  const ids = new Set(Array.from(editor.querySelectorAll('[data-consent-field="id"]')).map(input => input.value.trim()));
-  let number = ids.size + 1;
-  while (ids.has(`consent-${number}`)) number += 1;
-  return `consent-${number}`;
-}
-
-// Combines only checked sections and their conductor-authored text into one draft.
-// No selection creates an empty statement; edits and deliberately cleared text are preserved.
-function generateConsentForm(editor) {
-  const selected = new Set(Array.from(editor.querySelectorAll('[data-consent-template-option]:checked')).map(input => input.value));
-  const sections = CONSENT_TEMPLATE_OPTIONS.filter(item => selected.has(item.id));
-  const container = editor.querySelector('.consent-items');
-  const count = container.querySelectorAll('.consent-item').length;
-  container.querySelector('.consent-empty')?.remove();
-  const form = {
-    id: nextConsentId(editor),
-    title: 'Consent Form',
-    body: sections.map(item => `${item.title}\n${editor.querySelector(`[data-consent-section-text="${item.id}"]`).value}`).join('\n\n'),
-    required: true,
-  };
-  container.insertAdjacentHTML('beforeend', consentItemMarkup(form, count));
-  consentFactState(container.querySelectorAll('.consent-item')[count]);
-  refreshConsentEditor(editor);
-  container.querySelectorAll('[data-consent-field="body"]')[count]?.focus();
-}
-
-// Adds and removes structured consent items while preserving all other draft fields.
-function initializeConsentEditor(editor) {
-  editor.querySelectorAll('.consent-item').forEach(consentFactState);
-  editor.addEventListener('input', event => {
-    const item = event.target.closest('.consent-item');
-    if (!item) return;
-    if (event.target.matches('[data-consent-fact]')) {
-      updateConsentFact(item, event.target.dataset.consentFact, event.target.value);
-    } else if (event.target.matches('[data-consent-field="body"]')) {
-      const state = consentFactState(item);
-      reconcileConsentFacts(state.data, state.body, event.target.value);
-      state.body = event.target.value;
-    }
-  });
-  // Keep hidden section text in the current draft so toggling never discards writing.
-  editor.addEventListener('change', event => {
-    if (!event.target.matches('[data-consent-template-option]')) return;
-    const section = event.target.closest('[data-consent-section]');
-    section.querySelector('[data-consent-section-editor]').hidden = !event.target.checked;
-  });
-  editor.addEventListener('click', event => {
-    if (event.target.closest('[data-generate-consent]')) {
-      generateConsentForm(editor);
-      return;
-    }
-    const remove = event.target.closest('[data-remove-consent]');
-    if (remove) {
-      remove.closest('.consent-item')?.remove();
-      refreshConsentEditor(editor);
-    }
-  });
-}
-
 // Turns the visual configured-secret mask into an empty field only when replacement begins.
 function clearSecretPlaceholder(input) {
   if (input.dataset.secretPlaceholder !== 'true') return;
@@ -1776,10 +1623,7 @@ function refreshDraftActivationWarning() {
 function configurationFromForm() {
   const config = structuredClone(state.configValue || {});
   readConfigFields(configForm, config);
-  configForm.querySelectorAll('[data-consent-editor]').forEach(editor => {
-    const items = Array.from(editor.querySelectorAll('.consent-item')).map(readConsentItem);
-    setConfigAt(config, editor.dataset.consentPath, items);
-  });
+  if (state.documentTemplateDraft) Object.assign(config.direct, structuredClone(state.documentTemplateDraft));
   configForm.querySelectorAll('[data-agent-editor]').forEach(editor => {
     const mode = editor.querySelector('[data-agent-mode]').value;
     if (mode === 'human_vs_human') {

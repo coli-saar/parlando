@@ -393,6 +393,44 @@ describe("ParticipantApp participant state machine", () => {
     await waitFor(() => expect(client.acceptConsents).toHaveBeenCalledWith({ research: true, information: true }));
   });
 
+  it("renders Markdown and requires all three final declarations before accepting the form", async () => {
+    const client = api();
+    client.getExperiment.mockResolvedValue({
+      ...config(),
+      consents: [{ id: "form", title: "Consent Form", required: true, body: [
+        "### Study information", "**Read this carefully.**", "- First detail\n- Second detail",
+        "[Privacy notice](https://study.test/privacy)", "<script>unsafe()</script>",
+        "### Communication and privacy rules", "I have read and adhere to the communication rules.",
+        "1. Be respectful.\n2. Protect others' privacy.",
+        "### Eligibility", "I confirm that I am at least 18 years old.",
+        "### Declaration of consent", "I agree to participate in this study."
+      ].join("\n\n") }]
+    });
+    const { container } = render(<ParticipantAppRuntime apiClient={client as never} createAudioController={() => audio as never} renderGame={game} />);
+    const enter = await screen.findByRole("button", { name: "Enter waiting room" });
+    expect(screen.getByRole("heading", { name: "Study information" })).toBeInTheDocument();
+    expect(container.querySelector("strong")?.textContent).toBe("Read this carefully.");
+    expect(container.querySelector("ul li")?.textContent).toBe("First detail");
+    expect(screen.getAllByRole("link", { name: "Privacy notice" })[0]).toHaveAttribute("href", "https://study.test/privacy");
+    expect(container.querySelector("script")).toBeNull();
+    expect(screen.getAllByRole("checkbox")).toHaveLength(3);
+    const rules = screen.getByRole("checkbox", { name: /I have read and adhere/ });
+    const eligibility = screen.getByRole("checkbox", { name: /I confirm that I am/ });
+    const agreement = screen.getByRole("checkbox", { name: /I agree to participate/ });
+    expect(enter).toBeDisabled();
+    fireEvent.click(rules);
+    fireEvent.click(eligibility);
+    expect(enter).toBeDisabled();
+    fireEvent.click(agreement);
+    expect(enter).toBeEnabled();
+    fireEvent.click(rules);
+    expect(enter).toBeDisabled();
+    expect(client.acceptConsents).not.toHaveBeenCalled();
+    fireEvent.click(rules);
+    fireEvent.click(enter);
+    await waitFor(() => expect(client.acceptConsents).toHaveBeenCalledWith({ form: true }));
+  });
+
   it("does not fabricate a local refusal for an invalid Prolific configuration", async () => {
     const client = api();
     client.getExperiment.mockResolvedValue({

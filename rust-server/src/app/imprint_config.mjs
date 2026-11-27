@@ -29,18 +29,6 @@ export function renderImprintEditor(imprint = {}) {
     </div>`;
 }
 
-// Only selecting a country replaces text; typing and reopening preserve the conductor's wording.
-export function bindImprintEditor(editor, onChange = () => {}) {
-  const country = editor.querySelector('[data-config-path="direct.imprint.country"]');
-  const text = editor.querySelector('[data-config-path="direct.imprint.text"]');
-  country.addEventListener('change', () => {
-    text.value = generateImprint(country.value);
-    onChange(text.value);
-  });
-  text.addEventListener('input', () => onChange(text.value));
-  onChange(text.value);
-}
-
 // Renders the editor's Markdown in the Privacy tab while keeping raw HTML inert.
 // Draft labeling distinguishes the immediate preview from the saved public page/download.
 export function renderImprintPreview(text = '', savedText = '') {

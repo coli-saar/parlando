@@ -13,6 +13,7 @@ import { TranscriptionProgress } from "../voiceComponents.js";
 import { ParticipantClient, type ExperimentInfo } from "../protocol.js";
 import { type CommunicationPlacement, type GameSnapshot } from "./types.js";
 import { CommunicationContext, CommunicationWidget } from "./communicationWidget.js";
+import { ParticipantConsentForm } from "./consent.js";
 import { StudyFooter } from "./studyFooter.js";
 import { SessionTools } from "./sessionControls.js";
 import { WaitingRoomNotice, PartnerReconnectNotice, IdleDeadlineNotice } from "./deadlines.js";
@@ -347,20 +348,11 @@ function ParticipantSession<
             </p>
           )}
           {publicConfig.consents.map((consent) => (
-            <label className="consent-row" key={consent.id}>
-              <input
-                checked={Boolean(consentDecisions[consent.id])}
-                onChange={(event) => setConsentDecisions((current) => ({ ...current, [consent.id]: event.target.checked }))}
-                type="checkbox"
-              />
-              <span>
-                <strong>
-                  {consent.title}
-                  {consent.required && " (required)"}
-                </strong>
-                <span>{consent.body}</span>
-              </span>
-            </label>
+            <ParticipantConsentForm
+              key={`${consent.id}:${consent.body}`}
+              consent={consent}
+              onChange={(accepted) => setConsentDecisions((current) => ({ ...current, [consent.id]: accepted }))}
+            />
           ))}
         </div>
       )}
